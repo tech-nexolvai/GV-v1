@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch cancels the older run — keeps Actions minutes
+# down, which matters because this is a private repo billing against a quota.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: lint, types, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Python 3.12 is the declared target in AGENTS.md section 4. Test the floor
+      # we promise, not whatever is newest.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Black
+        run: black --check .
+
+      # Strict in the safety-critical zones. mypy is a no-op while these packages
+      # are empty, and starts biting the moment real code lands.
+      - name: Mypy (strict — verdict, rules, evidence)
+        run: mypy verdict rules evidence
+
+      - name: Mypy (rest of the tree)
+        run: mypy app workflow extraction retrieval reports eval
+        continue-on-error: true
+
+      # pytest exits 5 when it collects nothing. The tree is currently empty, so
+      # treat "no tests" as success — but ONLY that code, never a real failure.
+      - name: Tests
+        run: |
+          set +e
+          pytest -q
+          code=$?
+          set -e
+          if [ "$code" -eq 5 ]; then
+            echo "::notice::No tests collected yet — the test tree is still empty."
+            exit 0
+          fi
+          exit "$code"
+
+  # ---------------------------------------------------------------------------
+  # Guards. These are the checks that turn the project's invariants from prose
+  # into build failures. Each is added by its own issue; until then the step is
+  # a placeholder so the wiring is obvious.
+  #
+  #   #33  licence policy   — fail on any AGPL dependency (e.g. pymupdf)
+  #   #36  verdict isolation — fail if verdict/ imports extraction, retrieval,
+  #                            network or model code, or contains eval(
+  #   #38  repo hygiene      — fail if anything under data/ is ever tracked
+  # ---------------------------------------------------------------------------
+  guards:
+    name: safety guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cheap and useful today: proprietary client material must never be
+      # committed. Full version lands with #38.
+      - name: No client data in version control
+        run: |
+          if git ls-files --error-unmatch data/ >/dev/null 2>&1; then
+            echo "::error::Files under data/ are tracked. Client drawings and"
+            echo "::error::checklists are proprietary and must never be committed."
+            git ls-files data/
+            exit 1
+          fi
+          echo "OK — nothing under data/ is tracked."
+
+      - name: Placeholder — licence policy (#33)
+        run: echo "Implemented by issue #33."
+
+      - name: Placeholder — verdict isolation (#36)
+        run: echo "Implemented by issue #36."

@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "gv-v1"
 version = "0.1.0"
@@ -15,12 +19,24 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "black", "mypy"]
 
+# Flat layout with several top-level packages: setuptools cannot auto-discover it,
+# and without this it tries to package data/ and frontend/ too. List them explicitly.
+[tool.setuptools.packages.find]
+include = [
+    "app*", "workflow*", "extraction*", "evidence*", "rules*",
+    "verdict*", "retrieval*", "reports*", "eval*", "units*",
+]
+exclude = ["data*", "frontend*", "docs*", "tests*", "scripts*", ".venv*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
 [tool.black]
 line-length = 100
+# Pin the target: without it black formats for the newest Python it knows about,
+# which then fails to parse on the 3.12 CI runs.
+target-version = ["py312"]
 
 [tool.mypy]
 python_version = "3.12"

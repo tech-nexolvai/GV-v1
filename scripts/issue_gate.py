@@ -16,6 +16,7 @@ the agent — decides whether work may start. Exit code is the contract:
 
 No third-party dependencies: standard library plus the `gh` CLI.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,13 +37,17 @@ STATUS = {
     "ready": (READY, "All dependencies are settled. Implement it."),
     "needs-architecture": (
         BLOCKED,
-        "An architectural decision must be ratified first. Architecture comes before "
-        "implementation — the admin owns that decision.",
+        (
+            "An architectural decision must be ratified first. Architecture comes before "
+            "implementation — the admin owns that decision."
+        ),
     ),
     "blocked-client": (
         BLOCKED,
-        "A client answer is required. The value or rule this issue depends on does not "
-        "exist yet, and it must not be guessed.",
+        (
+            "A client answer is required. The value or rule this issue depends on does not "
+            "exist yet, and it must not be guessed."
+        ),
     ),
     "blocked-data": (
         BLOCKED,
@@ -58,20 +63,18 @@ STATUS = {
     ),
     "admin-only": (
         ADMIN_ONLY,
-        "This is a decision or a client question. It is the admin's to resolve and must "
-        "never be answered by the dev or by a coding agent.",
+        (
+            "This is a decision or a client question. It is the admin's to resolve and must "
+            "never be answered by the dev or by a coding agent."
+        ),
     ),
 }
 
-CONTRACT_RE = re.compile(
-    r"##\s*Agent contract\s*\n+```yaml\n(.*?)\n```", re.S | re.I
-)
+CONTRACT_RE = re.compile(r"##\s*Agent contract\s*\n+```yaml\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
 
 
 def gh_json(path: str):
-    p = subprocess.run(
-        ["gh", "api", path], capture_output=True, text=True
-    )
+    p = subprocess.run(["gh", "api", path], capture_output=True, text=True, check=False)
     if p.returncode != 0:
         sys.stderr.write(f"gh api failed for {path}:\n{p.stderr}\n")
         sys.exit(MALFORMED)
@@ -118,7 +121,7 @@ def section(body: str, heading: str) -> str:
     m = re.search(
         rf"^#{{2,3}}\s*{re.escape(heading)}\s*$\n(.*?)(?=^#{{2,3}}\s|^\*\*Source:|^---\s*$|\Z)",
         body or "",
-        re.S | re.M,
+        re.DOTALL | re.MULTILINE,
     )
     return m.group(1).strip() if m else ""
 
@@ -129,6 +132,7 @@ def post_comment(number: int, text: str) -> None:
         input=json.dumps({"body": text}),
         capture_output=True,
         text=True,
+        check=False,
     )
     if p.returncode != 0:
         sys.stderr.write(f"warning: could not post comment: {p.stderr}\n")
@@ -144,13 +148,19 @@ def set_state(number: int, state: str | None, assign_self: bool) -> None:
     want = keep + ([f"state:{state}"] if state else [])
     subprocess.run(
         ["gh", "api", f"repos/{REPO}/issues/{number}", "-X", "PATCH", "--input", "-"],
-        input=json.dumps({"labels": sorted(set(want))}), capture_output=True, text=True,
+        input=json.dumps({"labels": sorted(set(want))}),
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if assign_self:
         me = gh_json("user")["login"]
         subprocess.run(
             ["gh", "api", f"repos/{REPO}/issues/{number}/assignees", "-X", "POST", "--input", "-"],
-            input=json.dumps({"assignees": [me]}), capture_output=True, text=True,
+            input=json.dumps({"assignees": [me]}),
+            capture_output=True,
+            text=True,
+            check=False,
         )
         sys.stderr.write(f"Assigned #{number} to {me}, state -> {state}.\n")
 
@@ -165,9 +175,16 @@ def decision_brief(number: int, title: str, body: str) -> None:
     print(f"DECISION WORK — #{number} (admin)")
     print("=" * 62)
     print(f"title: {title}\n")
-    for h in ("Decision required", "Evidence (verified, `docs/V1_RESEARCH_AND_PLAN.md` §F1)",
-              "Recommendation", "Consequence if rejected", "Question for Raj",
-              "What we need", "Why it blocks", "Why it matters"):
+    for h in (
+        "Decision required",
+        "Evidence (verified, `docs/V1_RESEARCH_AND_PLAN.md` §F1)",
+        "Recommendation",
+        "Consequence if rejected",
+        "Question for Raj",
+        "What we need",
+        "Why it blocks",
+        "Why it matters",
+    ):
         s = section(body, h)
         if s:
             print(f"--- {h} ---\n{s}\n")
@@ -183,23 +200,27 @@ def decision_brief(number: int, title: str, body: str) -> None:
     else:
         print("  1. This needs an answer from the client. It cannot be derived from the repo.")
         print("  2. Do not assume a value. An assumed tolerance becomes a false PASS.")
-        print(f"  3. When the client answers:  python scripts/ratify.py {ref} --answer \"...\"")
+        print(f'  3. When the client answers:  python scripts/ratify.py {ref} --answer "..."')
     print()
-    print(f"  Preview what this unblocks:  python scripts/ratify.py {ref} --dry-run "
-          + ("--adr <file>" if ref.upper().startswith("D") else "--answer x"))
+    print(
+        f"  Preview what this unblocks:  python scripts/ratify.py {ref} --dry-run "
+        + ("--adr <file>" if ref.upper().startswith("D") else "--answer x")
+    )
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("issue", type=int)
-    ap.add_argument("--comment", action="store_true",
-                    help="post the stop reason to the issue")
-    ap.add_argument("--role", choices=("dev", "admin"), default="dev",
-                    help="who is working this (default: dev)")
-    ap.add_argument("--start", action="store_true",
-                    help="mark in-progress and assign to yourself (only if READY)")
-    ap.add_argument("--review", action="store_true",
-                    help="mark as in-review (PR opened)")
+    ap.add_argument("--comment", action="store_true", help="post the stop reason to the issue")
+    ap.add_argument(
+        "--role", choices=("dev", "admin"), default="dev", help="who is working this (default: dev)"
+    )
+    ap.add_argument(
+        "--start",
+        action="store_true",
+        help="mark in-progress and assign to yourself (only if READY)",
+    )
+    ap.add_argument("--review", action="store_true", help="mark as in-review (PR opened)")
     args = ap.parse_args()
 
     iss = gh_json(f"repos/{REPO}/issues/{args.issue}")
@@ -332,7 +353,7 @@ def main() -> int:
                 f"{why}\n\n"
                 + (f"**Requires:** {req}\n\n" if req else "")
                 + "_Posted automatically by `scripts/issue_gate.py`. "
-                  "Implementation must not begin until this is cleared by the admin._",
+                "Implementation must not begin until this is cleared by the admin._",
             )
         return code
 
@@ -371,7 +392,7 @@ def main() -> int:
     print("  2. If you need a value, tolerance or decision that is not in this issue,")
     print("     STOP and comment. Never choose one yourself.")
     print("  3. Every Definition of Done item must be met before opening the PR.")
-    print("  4. PR description must contain 'Closes #%d'." % args.issue)
+    print(f"  4. PR description must contain 'Closes #{args.issue}'.")
     print("  5. Never edit AGENTS.md, CLAUDE.md, memory.md, docs/ or rules/rulebook/.")
     print()
     if args.start:
@@ -379,8 +400,10 @@ def main() -> int:
     elif args.review:
         set_state(args.issue, "in-review", False)
     else:
-        print("NEXT: re-run with --start to claim it "
-              "(sets state:in-progress and assigns it to you).")
+        print(
+            "NEXT: re-run with --start to claim it "
+            "(sets state:in-progress and assigns it to you)."
+        )
     return READY
 
 

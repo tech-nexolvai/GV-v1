@@ -17,6 +17,7 @@ issue, which is what `AGENTS.md` §2.6 and §2.7 require of rule and tolerance c
 
 Only the admin runs this.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,24 +28,31 @@ import sys
 from pathlib import Path
 
 REPO = "tech-nexolvai/GV-v1"
-CONTRACT_RE = re.compile(r"(##\s*Agent contract\s*\n+```yaml\n)(.*?)(\n```)", re.S | re.I)
+CONTRACT_RE = re.compile(
+    r"(##\s*Agent contract\s*\n+```yaml\n)(.*?)(\n```)", re.DOTALL | re.IGNORECASE
+)
 
 
 def gh(args, payload=None):
     cmd = ["gh", "api"] + args
     if payload is not None:
         cmd += ["--input", "-"]
-        p = subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True)
+        p = subprocess.run(
+            cmd, input=json.dumps(payload), capture_output=True, text=True, check=False
+        )
     else:
-        p = subprocess.run(cmd, capture_output=True, text=True)
+        p = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if p.returncode != 0:
         raise SystemExit(f"gh api failed ({' '.join(args)}):\n{p.stderr.strip()[:300]}")
     return json.loads(p.stdout) if p.stdout.strip() else None
 
 
 def all_issues():
-    return [i for i in gh([f"repos/{REPO}/issues?state=all&per_page=100", "--paginate"])
-            if "pull_request" not in i]
+    return [
+        i
+        for i in gh([f"repos/{REPO}/issues?state=all&per_page=100", "--paginate"])
+        if "pull_request" not in i
+    ]
 
 
 def main() -> int:
@@ -72,7 +80,7 @@ def main() -> int:
         # Strip markdown emphasis first: the status line is written '**Status:** Accepted',
         # with the colon inside the bold, and may also appear as '**Status**: Accepted'.
         text = re.sub(r"[*_]", "", adr.read_text(encoding="utf-8"))
-        if not re.search(r"^\s*Status\s*:\s*Accepted\b", text, re.M | re.I):
+        if not re.search(r"^\s*Status\s*:\s*Accepted\b", text, re.MULTILINE | re.IGNORECASE):
             raise SystemExit(
                 f"{adr} does not say 'Status: Accepted'.\n"
                 "A decision is not ratified until it is recorded as accepted."
@@ -87,7 +95,6 @@ def main() -> int:
         evidence = f"Client answer recorded: {args.answer.strip()}"
 
     issues = all_issues()
-    by_num = {i["number"]: i for i in issues}
 
     # ---- locate the D/Q issue itself ----
     target = next((i for i in issues if i["title"].upper().startswith(ref + " ")), None)
@@ -99,7 +106,7 @@ def main() -> int:
         if not m:
             continue
         block = m.group(2)
-        req_lines = re.findall(r"^\s*-\s*(.+)$", block, re.M)
+        req_lines = re.findall(r"^\s*-\s*(.+)$", block, re.MULTILINE)
         # only the requires list matters; 'read:' items are file paths, never D#/Q#
         reqs = [r.strip() for r in req_lines if re.match(r"^[DQ]\d+\b", r.strip())]
         if any(r.split()[0] == ref for r in reqs):
@@ -123,7 +130,9 @@ def main() -> int:
     for i in unblocked:
         print(f"  -> UNBLOCK  #{i['number']} {i['title'][:56]}")
     for i, rem in still:
-        print(f"  -> partial  #{i['number']} {i['title'][:44]} (still needs {', '.join(r.split()[0] for r in rem)})")
+        print(
+            f"  -> partial  #{i['number']} {i['title'][:44]} (still needs {', '.join(r.split()[0] for r in rem)})"
+        )
 
     if args.dry_run:
         print("\ndry run — nothing changed")
@@ -143,31 +152,46 @@ def main() -> int:
         block = re.sub(r"requires:(?:\s*\[\])?(?:\n\s*-\s*.+)*", new_req, block, count=1)
 
         if not remaining:
-            block = re.sub(r"^status:\s*\S+", "status: ready", block, count=1, flags=re.M)
-            block = re.sub(r"^owner:\s*\S+", "owner: dev", block, count=1, flags=re.M)
+            block = re.sub(r"^status:\s*\S+", "status: ready", block, count=1, flags=re.MULTILINE)
+            block = re.sub(r"^owner:\s*\S+", "owner: dev", block, count=1, flags=re.MULTILINE)
 
-        new_body = body[:m.start(2)] + block + body[m.end(2):]
+        new_body = body[: m.start(2)] + block + body[m.end(2) :]
         gh([f"repos/{REPO}/issues/{i['number']}", "-X", "PATCH"], {"body": new_body})
 
         cur = {l["name"] for l in i["labels"]}
         if not remaining:
             keep = {l for l in cur if not l.startswith(("status:", "owner:"))}
-            gh([f"repos/{REPO}/issues/{i['number']}", "-X", "PATCH"],
-               {"labels": sorted(keep | {"status:ready", "owner:dev"})})
-            note = (f"✅ **Unblocked — now `status: ready`**\n\n{ref} is ratified. {evidence}\n\n"
-                    f"The dev can start this with `python scripts/issue_gate.py {i['number']}`.")
+            gh(
+                [f"repos/{REPO}/issues/{i['number']}", "-X", "PATCH"],
+                {"labels": sorted(keep | {"status:ready", "owner:dev"})},
+            )
+            note = (
+                f"✅ **Unblocked — now `status: ready`**\n\n{ref} is ratified. {evidence}\n\n"
+                f"The dev can start this with `python scripts/issue_gate.py {i['number']}`."
+            )
         else:
-            note = (f"☑️ **{ref} ratified**, but this issue is still blocked.\n\n{evidence}\n\n"
-                    f"**Still requires:** {', '.join(remaining)}")
+            note = (
+                f"☑️ **{ref} ratified**, but this issue is still blocked.\n\n{evidence}\n\n"
+                f"**Still requires:** {', '.join(remaining)}"
+            )
         gh([f"repos/{REPO}/issues/{i['number']}/comments", "-X", "POST"], {"body": note})
 
     # ---- close the D/Q issue with its audit trail ----
     if target:
-        gh([f"repos/{REPO}/issues/{target['number']}/comments", "-X", "POST"],
-           {"body": (f"**Ratified.**\n\n{evidence}\n\n"
-                     + (f"Unblocked: {', '.join('#' + str(i['number']) for i in unblocked)}\n"
-                        if unblocked else "No issues were waiting on this.\n")
-                     + "\n_Recorded by `scripts/ratify.py`._")})
+        gh(
+            [f"repos/{REPO}/issues/{target['number']}/comments", "-X", "POST"],
+            {
+                "body": (
+                    f"**Ratified.**\n\n{evidence}\n\n"
+                    + (
+                        f"Unblocked: {', '.join('#' + str(i['number']) for i in unblocked)}\n"
+                        if unblocked
+                        else "No issues were waiting on this.\n"
+                    )
+                    + "\n_Recorded by `scripts/ratify.py`._"
+                )
+            },
+        )
         gh([f"repos/{REPO}/issues/{target['number']}", "-X", "PATCH"], {"state": "closed"})
         print(f"  closed #{target['number']}")
 

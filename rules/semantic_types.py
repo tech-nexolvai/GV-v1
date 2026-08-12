@@ -18,7 +18,7 @@ class SemanticType(str, Enum):
     SINK_CUTOUT_WIDTH = "sink_cutout_width"
 
     # --- context / discriminators / inputs ---
-    WALL_CONFIG = "wall_config"          # back_left_right | back_left | back_only | island
+    WALL_CONFIG = "wall_config"  # back_left_right | back_left | back_only | island
     FIELD_DIMENSION = "field_dimension"  # on-site measured wall-to-wall; USER_INPUT, on no drawing
 
     # --- materials / finish ---
@@ -27,15 +27,17 @@ class SemanticType(str, Enum):
 
 class OperandSource(str, Enum):
     """Where a rule operand comes from (see RULE_ENGINE_SPEC.md §3e)."""
-    ARCH = "ARCH"                # approved architectural set
-    SHOP = "SHOP"                # vendor shop drawing
-    LITERAL = "LITERAL"          # fixed standard value (global rules)
-    USER_INPUT = "USER_INPUT"    # human-provided (e.g. on-site field dimension)
+
+    ARCH = "ARCH"  # approved architectural set
+    SHOP = "SHOP"  # vendor shop drawing
+    LITERAL = "LITERAL"  # fixed standard value (global rules)
+    USER_INPUT = "USER_INPUT"  # human-provided (e.g. on-site field dimension)
 
 
 class WallConfig(str, Enum):
     """PROVISIONAL — confirm with Raj. Drives tolerance + field-cut count per rule variant."""
-    BACK_LEFT_RIGHT = "back_left_right"   # 3 walls (Raj's starting case, tol ~1/8")
-    BACK_LEFT = "back_left"               # 2 walls (L)
-    BACK_ONLY = "back_only"              # 1 wall
-    ISLAND = "island"                    # no walls
+
+    BACK_LEFT_RIGHT = "back_left_right"  # 3 walls (Raj's starting case, tol ~1/8")
+    BACK_LEFT = "back_left"  # 2 walls (L)
+    BACK_ONLY = "back_only"  # 1 wall
+    ISLAND = "island"  # no walls
