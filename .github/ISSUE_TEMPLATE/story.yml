@@ -1,0 +1,85 @@
+name: Story (implementation work)
+description: A deliverable unit of work for the dev. Must carry an agent contract.
+labels: ["type:story"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every story needs an **agent contract** and both **traceability** lines, or
+        `scripts/issue_gate.py` will report it MALFORMED and no work can start.
+
+  - type: textarea
+    id: contract
+    attributes:
+      label: Agent contract
+      description: >
+        Machine-read by scripts/issue_gate.py. Set status to `ready` only when every
+        dependency is settled. If a decision or client answer is outstanding, use
+        `needs-architecture` or `blocked-client` and list it under requires.
+      value: |
+        ```yaml
+        status: needs-architecture
+        owner: admin
+        requires:
+          - D0 (#0)
+        read:
+          - AGENTS.md
+          - CONTRIBUTING.md
+          - docs/V1_RESEARCH_AND_PLAN.md
+        verification: tests/.../test_.py
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why this exists. Cite the client material or plan finding it comes from.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What to build. The dev implements this and nothing else.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Testable checkboxes. Include failure modes, not just the happy path.
+      value: |
+        - [ ]
+        - [ ] Missing or ambiguous input yields NOT FOUND / REVIEW REQUIRED, never a default
+    validations:
+      required: true
+
+  - type: input
+    id: source
+    attributes:
+      label: Source (traceability)
+      description: Where the requirement came from — workbook cell, plan section, or architecture doc.
+      placeholder: "Countertop_Checks_Updated.xlsx D24 · docs/V1_RESEARCH_AND_PLAN.md §F1"
+    validations:
+      required: true
+
+  - type: input
+    id: verification
+    attributes:
+      label: Verification (traceability)
+      description: The test file that proves it. Must match the contract's verification field.
+      placeholder: "tests/units/test_measurement.py"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: This touches `verdict/`, `rules/` or `evidence/` (needs the `safety-critical` label and mandatory tests)
+        - label: No tolerance, threshold or numeric value in this issue is a guess

@@ -8,6 +8,38 @@
 
 ---
 
+## 0. START HERE — working from an issue number (read before writing any code)
+
+Work in this repo is driven entirely by GitHub issues. If you have been given an issue number and
+nothing else, that is by design — the issue body contains everything you need.
+
+**Run the gate first. Always.**
+
+```bash
+python scripts/issue_gate.py <issue-number>
+```
+
+- **exit 0** → READY. The gate prints your brief: what to read, the scope, the acceptance criteria, the
+  Definition of Done and the branch name. Implement exactly that.
+- **exit 2** → BLOCKED. **Stop. Write no code.** Either an architectural decision has not been ratified
+  (`needs-architecture`) or a client answer is missing (`blocked-client`). Architecture is decided
+  first, by the admin. Add `--comment` to record the block on the issue.
+- **exit 3** → ADMIN ONLY. A decision or a client question. Never yours to answer.
+- **exit 4** → MALFORMED. No agent contract on the issue. Do not guess; ask the admin.
+
+**The abstention rule — the one that matters most:**
+
+> If you need a value, tolerance, threshold or decision that is not written in the issue, **stop and
+> comment on the issue. Never choose one yourself.**
+
+A guessed tolerance does not cause an obvious bug. It produces a confident, plausible, wrong verdict
+that a reviewer may sign off and a factory may build. The rule in §1 binds contributors exactly as it
+binds the code: **missing input → abstain, never invent.**
+
+Full protocol, scope discipline and the four mistakes that get rejected: **[`CONTRIBUTING.md`](CONTRIBUTING.md)**.
+
+---
+
 ## 1. What we are building (and the one rule)
 An AI-assisted tool that reviews a vendor **shop drawing** against the approved **architectural
 set** and a **checklist/rulebook**, and returns **PASS / FAIL / NOT FOUND / REVIEW REQUIRED**
