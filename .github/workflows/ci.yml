@@ -118,3 +118,16 @@ jobs:
       - name: Verdict isolation
         run: |
           pytest tests/test_verdict_isolation.py -q
+
+      # Custom rules encoding the golden rules at the expression level, where the
+      # import-graph test cannot reach: no float or rounding in the decision path, no
+      # defaulted tolerance, no PASS returned from an exception handler.
+      #
+      # Semgrep OSS runs entirely on the runner — no account, no login, and no code
+      # leaves. That matters because the client's rule logic is commercially sensitive.
+      - name: Install semgrep
+        run: pip install semgrep
+
+      - name: Golden rules (semgrep)
+        run: |
+          semgrep --config .semgrep/gv-rules.yaml --error --quiet

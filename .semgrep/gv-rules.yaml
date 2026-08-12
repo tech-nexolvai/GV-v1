@@ -1,0 +1,188 @@
+# Custom Semgrep rules encoding this project's golden rules.
+#
+# Runs entirely inside CI — no account, no login, no code leaves the runner. That matters
+# because the client's rule logic and tolerances are commercially sensitive.
+#
+# These catch what the other guards cannot. tests/test_verdict_isolation.py works at the
+# import level; ruff and mypy work at the style and type level. These work at the
+# *expression* level, which is where a false PASS actually gets written.
+
+rules:
+  # -------------------------------------------------------------------------
+  - id: gv-no-float-in-decision-path
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - verdict/
+        - units/
+        - rules/
+    pattern-either:
+      - pattern: float(...)
+      - pattern: <... float(...) ...>
+    message: >
+      float() in the decision path. AGENTS.md section 6 requires exact arithmetic:
+      Fraction for imperial fractions, Decimal for canonical values. A float rounding
+      error inside a tolerance comparison is a silent false PASS — the exact failure
+      this product exists to prevent. Use Fraction or Decimal.
+
+  # -------------------------------------------------------------------------
+  - id: gv-no-rounding-in-decision-path
+    languages: [python]
+    severity: WARNING
+    paths:
+      include:
+        - verdict/
+        - units/
+    pattern-either:
+      - pattern: round(...)
+      - pattern: math.floor(...)
+      - pattern: math.ceil(...)
+    message: >
+      Rounding inside the decision path. On the real client drawing the mm and inch
+      renderings of one dimension already differ by up to 1.600 mm, against a 1/16 inch
+      tolerance of 1.5875 mm (ADR-0001). Additional rounding can consume what is left of
+      the tolerance budget. If rounding is genuinely required, it must be explicit in the
+      rule and recorded in the calculation trace.
+
+  # -------------------------------------------------------------------------
+  - id: gv-no-nondeterminism-in-verdict
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - verdict/
+    pattern-either:
+      - pattern: random.$F(...)
+      - pattern: time.time()
+      - pattern: datetime.now(...)
+      - pattern: datetime.datetime.now(...)
+      - pattern: os.environ
+      - pattern: os.getenv(...)
+    message: >
+      Non-determinism in the verdict engine. The same operands and rule snapshot must
+      always produce the same finding — that is what makes a verdict reproducible and
+      auditable months later. No clocks, no randomness, no environment lookups.
+
+  # -------------------------------------------------------------------------
+  - id: gv-no-pass-from-exception-handler
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - verdict/
+        - rules/
+        - evidence/
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try:
+                  ...
+              except $E:
+                  ...
+                  return Outcome.PASS
+          - pattern: |
+              try:
+                  ...
+              except $E:
+                  ...
+                  return "PASS"
+    message: >
+      Returning PASS from an exception handler. An error means we do not know the answer,
+      and AGENTS.md section 2.4 is explicit: never turn a missing or uncertain value into a
+      PASS. Return NOT_FOUND or REVIEW_REQUIRED instead.
+
+  # -------------------------------------------------------------------------
+  - id: gv-no-silently-swallowed-errors
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - verdict/
+        - rules/
+        - evidence/
+        - units/
+    pattern-either:
+      - pattern: |
+          try:
+              ...
+          except $E:
+              pass
+      - pattern: |
+          try:
+              ...
+          except:
+              ...
+    message: >
+      Silently swallowed exception in the safety-critical path. A swallowed error becomes an
+      unqualified operand, and an unqualified operand must abstain rather than proceed.
+      Handle it explicitly and route it to NOT_FOUND or REVIEW_REQUIRED.
+
+  # -------------------------------------------------------------------------
+  - id: gv-no-default-tolerance
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - verdict/
+        - rules/
+    pattern-either:
+      - pattern: "def $F(..., tolerance = $DEFAULT, ...): ..."
+      - pattern: "def $F(..., tol = $DEFAULT, ...): ..."
+      - pattern: $D.get("tolerance", ...)
+      - pattern: $D.get("tol", ...)
+    message: >
+      A defaulted tolerance. No tolerance value exists anywhere in the client material yet
+      (see issue 10 and docs/V1_RESEARCH_AND_PLAN.md section 4, Q2), so any default here is
+      invented. An unset tolerance is NOT zero — a zero tolerance fails everything, and a
+      guessed one passes the wrong things. Require it explicitly, or use the
+      TOLERANCE_UNCONFIRMED sentinel which forces REVIEW_REQUIRED.
+
+  # -------------------------------------------------------------------------
+  - id: gv-no-defaulted-parameter-lookup
+    languages: [python]
+    severity: WARNING
+    paths:
+      include:
+        - rules/
+    pattern-either:
+      - pattern: $PARAMS.get($KEY, $FALLBACK)
+    message: >
+      Parameter lookup with a fallback. AGENTS.md section 2.4 — never invent a value. A
+      missing project parameter must become NOT_FOUND, not a plausible default. The
+      "typical" values in the client checklist (3/4 inch door, 1 inch field cut) are seeded
+      values a human confirms, never silent fallbacks.
+
+  # -------------------------------------------------------------------------
+  - id: gv-no-hardcoded-semantic-type
+    languages: [python]
+    severity: WARNING
+    paths:
+      include:
+        - rules/
+        - verdict/
+        - evidence/
+        - extraction/
+      exclude:
+        - rules/semantic_types.py
+    pattern-regex: '"(countertop_overall_width|cabinet_width|filler_width|wall_config|field_dimension|sink_cutout_width|CT0\d\d)"'
+    message: >
+      Hard-coded semantic type string. These names are provisional and still unconfirmed
+      with the client (issue 16). Reference the constants in rules/semantic_types.py so a
+      rename stays a one-file change.
+
+  # -------------------------------------------------------------------------
+  - id: gv-no-agpl-import
+    languages: [python]
+    severity: ERROR
+    pattern-either:
+      - pattern: import fitz
+      - pattern: import pymupdf
+      - pattern: import ultralytics
+      - pattern: from fitz import $X
+      - pattern: from pymupdf import $X
+      - pattern: from ultralytics import $X
+    message: >
+      AGPL dependency. AGENTS.md section 2.8 forbids PyMuPDF and Ultralytics YOLO — this is
+      a commercial product and AGPL would force disclosure. Use pdfplumber (MIT),
+      pypdfium2, or pikepdf (MPL-2.0) instead.
