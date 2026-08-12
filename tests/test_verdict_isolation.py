@@ -105,9 +105,8 @@ def _imports_in(path: Path) -> set[str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 found.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            if node.level == 0 and node.module:
-                found.add(node.module.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            found.add(node.module.split(".")[0])
     return found
 
 
@@ -140,10 +139,13 @@ def _uses_dynamic_execution(package: str) -> list[str]:
     for file in _py_files(package):
         tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id in {"eval", "exec", "compile", "__import__"}:
-                    rel = file.relative_to(REPO_ROOT)
-                    offenders.append(f"{rel}:{node.lineno} calls {node.func.id}()")
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in {"eval", "exec", "compile", "__import__"}
+            ):
+                rel = file.relative_to(REPO_ROOT)
+                offenders.append(f"{rel}:{node.lineno} calls {node.func.id}()")
     return offenders
 
 
