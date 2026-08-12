@@ -94,8 +94,12 @@ jobs:
           fi
           echo "OK — nothing under data/ is tracked."
 
-      - name: Placeholder — licence policy (#33)
-        run: echo "Implemented by issue #33."
+      # NB: a bare ' #' in a YAML scalar starts a comment before the shell sees the
+      # line, which truncates the command. Use block scalars and avoid '#' in them.
+      - name: Placeholder — licence policy
+        run: |
+          echo "Licence policy check is implemented by issue 33."
 
-      - name: Placeholder — verdict isolation (#36)
-        run: echo "Implemented by issue #36."
+      - name: Placeholder — verdict isolation
+        run: |
+          echo "Verdict isolation check is implemented by issue 36."
