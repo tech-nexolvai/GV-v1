@@ -26,8 +26,14 @@ body:
           - AGENTS.md
           - CONTRIBUTING.md
           - docs/V1_RESEARCH_AND_PLAN.md
+          - docs/DESIGN.md
+        implements: <module path, e.g. units/measurement.py>
+        design: MISSING
         verification: tests/.../test_.py
         ```
+
+        `design: MISSING` blocks the readiness gate on purpose. Replace it with a
+        section reference (e.g. `docs/DESIGN.md §3.1`) once the architecture exists.
     validations:
       required: true
 

@@ -254,6 +254,63 @@ def main() -> int:
         )
         return BLOCKED
 
+    # ---------------- design must exist before implementation ----------------
+    # 'ready' only ever meant "no decision or client answer outstanding". It said nothing
+    # about whether the design exists — so an agent would invent the architecture per
+    # issue and the pieces would not fit. Readiness now requires a design contract.
+    design = str(contract.get("design") or "").strip()
+    if code == READY and (not design or design.upper() == "MISSING"):
+        # No architecture yet. The dev stops. The admin is instead told to draft it —
+        # an agent may write the design; only the admin ratifies it.
+        if args.role == "admin":
+            print(f"DESIGN WORK NEEDED — #{args.issue} (admin)")
+            print("=" * 62)
+            print(f"title : {title}")
+            print(f"implements: {contract.get('implements', '(not stated)')}\n")
+            for h in ("Context", "Scope", "Acceptance criteria"):
+                s = section(body, h)
+                if s:
+                    print(f"--- {h} ---\n{s}\n")
+            print("DRAFT THE ARCHITECTURE FIRST — then implementation becomes possible.")
+            print("  1. Add a section to docs/DESIGN.md covering, at minimum:")
+            print("       - which module owns the code (exact file path)")
+            print("       - the public interface: types and function signatures")
+            print("       - what it may and may not import (see DESIGN.md §2)")
+            print("       - how it connects to the types already defined there")
+            print("  2. An agent MAY draft this. Only the admin ratifies it.")
+            print("     If it changes a boundary or a golden rule, write an ADR too.")
+            print("  3. Set the issue's contract fields:")
+            print("       design: docs/DESIGN.md §<n>")
+            print("       implements: <module path>")
+            print("  4. Re-run this gate. It will then report READY.")
+            print()
+            print("Do NOT write implementation code before step 3. Designing while")
+            print("implementing is how the interface ends up shaped by the first caller.")
+            return READY
+        sys.stderr.write(
+            f"STOP — #{args.issue} has no design contract\n{'=' * 62}\n"
+            f"  title : {title}\n\n"
+            "This issue's dependencies are settled, but nothing states which module owns\n"
+            "the code or what its interface is. Implementing it would mean inventing the\n"
+            "architecture, and architecture is the admin's to define.\n\n"
+            "WHAT TO DO INSTEAD:\n"
+            "  - Do not start coding, and do not choose a module or interface yourself.\n"
+            "  - Comment on the issue asking the admin for a design contract, or propose\n"
+            "    one for review — clearly labelled as a proposal, not a decision.\n"
+            "  - Admin path:  python scripts/issue_gate.py "
+            f"{args.issue} --role admin\n"
+            "    That prints the design brief and the steps to draft docs/DESIGN.md.\n"
+        )
+        if args.comment:
+            post_comment(
+                args.issue,
+                "🚫 **Blocked — no design contract**\n\nDependencies are settled, but this issue does "
+                "not state which module owns the code or what its interface is. Implementing it would "
+                "mean inventing architecture.\n\nAdmin: add the section to `docs/DESIGN.md` and set the "
+                "`design:` field.\n\n_Posted automatically by `scripts/issue_gate.py`._",
+            )
+        return BLOCKED
+
     # ---------------- not ready ----------------
     if code != READY:
         req = ", ".join(f"#{r}" if str(r).isdigit() else str(r) for r in requires)
@@ -290,6 +347,8 @@ def main() -> int:
     print(f"title       : {title}")
     print(f"owner       : {contract.get('owner', 'dev')}")
     print(f"branch      : {args.issue}-{slug}")
+    print(f"implements  : {contract.get('implements', '(not stated)')}")
+    print(f"design      : {design}")
     print(f"verification: {contract.get('verification', '(none stated)')}")
     print()
     print("READ THESE FIRST, IN ORDER:")
