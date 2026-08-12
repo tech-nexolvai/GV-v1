@@ -7,17 +7,43 @@ name = "gv-v1"
 version = "0.1.0"
 description = "Graniti Vicentia V1 — AI-assisted shop drawing review"
 requires-python = ">=3.12"
-dependencies = [
-    # Fill as phases land (see AGENTS.md §4). Known V1 deps:
-    # "fastapi", "pydantic>=2", "sqlalchemy>=2", "alembic",
-    # "pdfplumber", "pypdfium2", "pikepdf", "opencv-python-headless", "shapely",
-    # "reportlab", "pypdf", "openpyxl",
-    # "hatchet-sdk", "boto3", "opentelemetry-sdk",
-    # NO AGPL: do NOT add PyMuPDF or ultralytics.
-]
+# The deterministic core (units/, rules/, verdict/) deliberately runs on the standard
+# library alone — that is what lets the verdict service stay isolated. Everything else
+# is an optional group, installed only by the phase that needs it.
+dependencies = []
 
+# Approved V1 stack, per AGENTS.md §4. Declared here so the licence policy applies to
+# them, but not installed until their phase lands (see AGENTS.md §8 build order).
+#
+# NO AGPL — never add PyMuPDF or Ultralytics YOLO. Enforced by tests/test_licences.py,
+# which fails the build rather than trusting this comment.
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "black", "mypy"]
+
+# Phase 1-2 — extraction (all MIT / Apache / MPL)
+extraction = [
+    "pdfplumber",
+    "pypdfium2",
+    "pikepdf",
+    "opencv-python-headless",
+    "shapely",
+]
+
+# Phase 3 — rule authoring and validation
+rules = ["pydantic>=2", "pyyaml"]
+
+# Phase 6 — control plane and durable platform
+platform = [
+    "fastapi",
+    "sqlalchemy>=2",
+    "alembic",
+    "hatchet-sdk",
+    "boto3",
+    "opentelemetry-sdk",
+]
+
+# Phase 7 — reports and redlines
+reports = ["reportlab", "pypdf", "openpyxl"]
 
 # Flat layout with several top-level packages: setuptools cannot auto-discover it,
 # and without this it tries to package data/ and frontend/ too. List them explicitly.

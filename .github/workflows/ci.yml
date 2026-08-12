@@ -35,6 +35,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # AGENTS.md section 2.8 forbids AGPL. Run it early and on its own so a licence
+      # violation is unmistakable in the log rather than buried in the test summary.
+      - name: Licence policy (no AGPL)
+        run: pytest tests/test_licences.py -q
+
       - name: Ruff
         run: ruff check .
 
@@ -96,10 +101,6 @@ jobs:
 
       # NB: a bare ' #' in a YAML scalar starts a comment before the shell sees the
       # line, which truncates the command. Use block scalars and avoid '#' in them.
-      - name: Placeholder — licence policy
-        run: |
-          echo "Licence policy check is implemented by issue 33."
-
       - name: Placeholder — verdict isolation
         run: |
           echo "Verdict isolation check is implemented by issue 36."
