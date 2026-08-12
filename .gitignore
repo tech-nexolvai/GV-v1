@@ -6,6 +6,7 @@ eval/gold_set/cases/
 # --- Secrets ---
 .env
 *.pem
+*.key
 
 # --- Python ---
 __pycache__/
@@ -23,7 +24,9 @@ build/
 node_modules/
 frontend/dist/
 
-# --- OS / editor ---
+# --- OS / editor / agent ---
 .DS_Store
 .idea/
 .vscode/
+# Explicit rather than incidental: this file holds per-machine tool settings.
+.claude/settings.local.json
