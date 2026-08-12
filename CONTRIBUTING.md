@@ -40,13 +40,59 @@ That contract — not your judgement — determines readiness.
 
 ---
 
+## Claiming work: readiness vs execution state
+
+Two different questions, tracked separately — conflating them hides both.
+
+| Question | Answered by |
+|---|---|
+| *May work start?* | `status:` label + the contract (`ready`, `needs-architecture`, …) |
+| *Is it being worked?* | `state:` label (`state:in-progress`, `state:in-review`), plus the assignee |
+
+```bash
+python scripts/issue_gate.py 40 --start    # claims it: state:in-progress + assigns to you
+python scripts/issue_gate.py 40 --review   # PR opened: state:in-review
+```
+
+`--start` only works on a READY issue — you cannot claim something blocked.
+
+---
+
 ## Architecture comes before implementation
 
 If the gate reports `needs-architecture`, an architectural decision (a **D-series** issue) has not been
-ratified yet. **The decision is made first, by the admin.** Only then does the story become `ready`.
+ratified. If it reports `blocked-client`, a value the issue depends on does not exist yet — most often a
+**tolerance**.
 
-If it reports `blocked-client`, a value or rule the issue depends on does not exist yet — most often a
-**tolerance**. Wait for the answer.
+**Dev:** stop. That is the end of your involvement with that issue.
+
+**Admin:** the decision *is* the next action, and the gate will hand you the brief:
+
+```bash
+python scripts/issue_gate.py 1 --role admin      # prints the decision brief for D1
+```
+
+### The loop that unblocks work
+
+1. `issue_gate.py <decision-issue> --role admin` — prints context, options, recommendation, and what
+   the decision unblocks
+2. Draft an ADR in `docs/adr/` from `TEMPLATE.md` — **an agent may write this**
+3. The **admin** sets `Status: Accepted`. Nothing else may. `ratify.py` refuses to proceed otherwise
+4. Ratify, and every dependent story is rewritten automatically:
+
+```bash
+python scripts/ratify.py D1 --adr docs/adr/0001-unit-policy.md
+python scripts/ratify.py Q2 --answer "1/8 inch for three-wall vanity tops"
+
+python scripts/ratify.py D2 --adr <file> --dry-run   # preview what it would unblock
+```
+
+Ratifying rewrites each dependent story's contract to `status: ready`, swaps its labels, and comments on
+it. A story with several dependencies is only released when the **last** one clears — ratifying D2 while
+Q2 and Q13 remain outstanding leaves the story blocked and says so.
+
+This is what makes "architecture first" real rather than aspirational: a blocked story cannot pass the
+gate until its ADR exists and is accepted, and once it is, nobody has to remember to update anything.
 
 Do not work around a block by picking a plausible value. That is the single most damaging thing you can
 do to this codebase, and the reason is in the next section.

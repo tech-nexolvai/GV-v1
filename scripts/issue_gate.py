@@ -116,7 +116,7 @@ def section(body: str, heading: str) -> str:
     bold '**Source:**' trailer, or a section swallows everything after it.
     """
     m = re.search(
-        rf"^#{{2,3}}\s*{re.escape(heading)}\s*$\n(.*?)(?=^#{{2,3}}\s|^\*\*Source:|\Z)",
+        rf"^#{{2,3}}\s*{re.escape(heading)}\s*$\n(.*?)(?=^#{{2,3}}\s|^\*\*Source:|^---\s*$|\Z)",
         body or "",
         re.S | re.M,
     )
@@ -136,11 +136,70 @@ def post_comment(number: int, text: str) -> None:
         sys.stderr.write(f"Posted a comment on #{number}.\n")
 
 
+def set_state(number: int, state: str | None, assign_self: bool) -> None:
+    """Execution state, kept separate from readiness. Readiness answers 'may work start?';
+    execution state answers 'is it being worked?'. Conflating them hides both."""
+    cur = [l["name"] for l in gh_json(f"repos/{REPO}/issues/{number}/labels")]
+    keep = [l for l in cur if not l.startswith("state:")]
+    want = keep + ([f"state:{state}"] if state else [])
+    subprocess.run(
+        ["gh", "api", f"repos/{REPO}/issues/{number}", "-X", "PATCH", "--input", "-"],
+        input=json.dumps({"labels": sorted(set(want))}), capture_output=True, text=True,
+    )
+    if assign_self:
+        me = gh_json("user")["login"]
+        subprocess.run(
+            ["gh", "api", f"repos/{REPO}/issues/{number}/assignees", "-X", "POST", "--input", "-"],
+            input=json.dumps({"assignees": [me]}), capture_output=True, text=True,
+        )
+        sys.stderr.write(f"Assigned #{number} to {me}, state -> {state}.\n")
+
+
+def decision_brief(number: int, title: str, body: str) -> None:
+    """Printed when the ADMIN works a decision or client question.
+
+    The agent may *draft* the architecture; the admin *ratifies* it. That split keeps
+    the judgement with the person who holds the plan context while still letting an
+    agent do the writing.
+    """
+    print(f"DECISION WORK — #{number} (admin)")
+    print("=" * 62)
+    print(f"title: {title}\n")
+    for h in ("Decision required", "Evidence (verified, `docs/V1_RESEARCH_AND_PLAN.md` §F1)",
+              "Recommendation", "Consequence if rejected", "Question for Raj",
+              "What we need", "Why it blocks", "Why it matters"):
+        s = section(body, h)
+        if s:
+            print(f"--- {h} ---\n{s}\n")
+    ref = title.split()[0].rstrip(":—-").strip()
+    print("WHAT TO DO")
+    if ref.upper().startswith("D"):
+        print("  1. Draft an ADR in docs/adr/ using docs/adr/TEMPLATE.md.")
+        print("     Record context, the options considered, the decision and its consequences.")
+        print("  2. The ADR is a PROPOSAL until the admin sets 'Status: Accepted'.")
+        print("     A coding agent must NOT set it to Accepted on its own.")
+        print(f"  3. Once accepted:  python scripts/ratify.py {ref} --adr docs/adr/<file>.md")
+        print("     That rewrites every dependent story to 'status: ready' automatically.")
+    else:
+        print("  1. This needs an answer from the client. It cannot be derived from the repo.")
+        print("  2. Do not assume a value. An assumed tolerance becomes a false PASS.")
+        print(f"  3. When the client answers:  python scripts/ratify.py {ref} --answer \"...\"")
+    print()
+    print(f"  Preview what this unblocks:  python scripts/ratify.py {ref} --dry-run "
+          + ("--adr <file>" if ref.upper().startswith("D") else "--answer x"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("issue", type=int)
     ap.add_argument("--comment", action="store_true",
                     help="post the stop reason to the issue")
+    ap.add_argument("--role", choices=("dev", "admin"), default="dev",
+                    help="who is working this (default: dev)")
+    ap.add_argument("--start", action="store_true",
+                    help="mark in-progress and assign to yourself (only if READY)")
+    ap.add_argument("--review", action="store_true",
+                    help="mark as in-review (PR opened)")
     args = ap.parse_args()
 
     iss = gh_json(f"repos/{REPO}/issues/{args.issue}")
@@ -172,6 +231,28 @@ def main() -> int:
     requires = contract.get("requires") or []
     if isinstance(requires, str):
         requires = [requires]
+
+    # ---------------- admin working a decision or client question ----------------
+    # The dev is stopped here (exit 3). The admin is not: this is precisely their work,
+    # and their agent may draft the ADR that unblocks everything downstream.
+    if status == "admin-only" and args.role == "admin":
+        decision_brief(args.issue, title, body)
+        if args.start:
+            set_state(args.issue, "in-progress", True)
+        return READY
+
+    # An admin hitting a needs-architecture story should be pointed at the decision,
+    # not just told "blocked" — the decision is the actual next action.
+    if status == "needs-architecture" and args.role == "admin":
+        req = ", ".join(str(r) for r in requires)
+        sys.stderr.write(
+            f"NOT YET — #{args.issue} {title}\n{'=' * 62}\n"
+            f"This story is waiting on architecture: {req or 'an unrecorded decision'}\n\n"
+            "Work the decision first. For each one:\n"
+            "  python scripts/issue_gate.py <decision-issue> --role admin\n\n"
+            "Ratifying it will flip this story to 'status: ready' automatically.\n"
+        )
+        return BLOCKED
 
     # ---------------- not ready ----------------
     if code != READY:
@@ -233,6 +314,14 @@ def main() -> int:
     print("  3. Every Definition of Done item must be met before opening the PR.")
     print("  4. PR description must contain 'Closes #%d'." % args.issue)
     print("  5. Never edit AGENTS.md, CLAUDE.md, memory.md, docs/ or rules/rulebook/.")
+    print()
+    if args.start:
+        set_state(args.issue, "in-progress", True)
+    elif args.review:
+        set_state(args.issue, "in-review", False)
+    else:
+        print("NEXT: re-run with --start to claim it "
+              "(sets state:in-progress and assigns it to you).")
     return READY
 
 

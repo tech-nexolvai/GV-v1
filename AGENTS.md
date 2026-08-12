@@ -36,6 +36,20 @@ A guessed tolerance does not cause an obvious bug. It produces a confident, plau
 that a reviewer may sign off and a factory may build. The rule in §1 binds contributors exactly as it
 binds the code: **missing input → abstain, never invent.**
 
+Claim a ready issue with `--start` (sets `state:in-progress` and assigns it to you). Readiness
+(`status:`) and execution state (`state:`) are tracked separately and deliberately.
+
+**If you are the admin, not the dev**, add `--role admin`. A decision or client question then becomes
+workable rather than refused, and the gate prints a decision brief. Your agent may **draft** the ADR in
+`docs/adr/`; only you may set `Status: Accepted`. Then:
+
+```bash
+python scripts/ratify.py D1 --adr docs/adr/0001-unit-policy.md
+```
+
+That rewrites every story waiting on D1 to `status: ready` automatically — which is what makes
+architecture-before-implementation hold without anyone having to remember it.
+
 Full protocol, scope discipline and the four mistakes that get rejected: **[`CONTRIBUTING.md`](CONTRIBUTING.md)**.
 
 ---
