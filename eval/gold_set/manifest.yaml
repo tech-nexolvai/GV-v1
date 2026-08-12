@@ -1,0 +1,27 @@
+# Gold-set manifest — the "answer key" index for the evaluation harness (Phase 0).
+# The actual reviewed packages + answers live under cases/ (git-ignored: proprietary).
+# This template is safe to commit. Primary metric measured against it = critical false-PASS rate.
+
+version: 0
+cases: []
+
+# --- example case shape (do not treat as real data) ---
+# - id: CT-<project>-001
+#   product_type: countertop
+#   arch: data/drawings/<project>/arch/<file>.pdf
+#   shop: data/drawings/<project>/shop/<file>.pdf
+#   ground_truth:
+#     observations:
+#       - semantic_type: countertop_overall_width
+#         source: SHOP
+#         value: 6012
+#         unit: mm
+#         page: 3
+#         polygon: [x0, y0, x1, y1]
+#         item_id: "A_CAB_run_1"
+#     matches:
+#       - arch_item: "A_CAB_1"
+#         shop_item: "S_CAB_1"
+#     expected_findings:
+#       - check: CT-WIDTH-001
+#         outcome: PASS            # PASS | FAIL | NOT_FOUND | REVIEW_REQUIRED

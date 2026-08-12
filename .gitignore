@@ -1,0 +1,29 @@
+# --- Proprietary client inputs — NEVER commit ---
+data/
+eval/gold_set/cases/
+*.dwg
+
+# --- Secrets ---
+.env
+*.pem
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/

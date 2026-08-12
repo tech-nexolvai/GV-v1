@@ -1,0 +1,32 @@
+[project]
+name = "gv-v1"
+version = "0.1.0"
+description = "Graniti Vicentia V1 — AI-assisted shop drawing review"
+requires-python = ">=3.12"
+dependencies = [
+    # Fill as phases land (see AGENTS.md §4). Known V1 deps:
+    # "fastapi", "pydantic>=2", "sqlalchemy>=2", "alembic",
+    # "pdfplumber", "pypdfium2", "pikepdf", "opencv-python-headless", "shapely",
+    # "reportlab", "pypdf", "openpyxl",
+    # "hatchet-sdk", "boto3", "opentelemetry-sdk",
+    # NO AGPL: do NOT add PyMuPDF or ultralytics.
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "black", "mypy"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.black]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# Extra-strict in the safety-critical zones:
+# verdict/, rules/, evidence/ must type-check clean before merge.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
