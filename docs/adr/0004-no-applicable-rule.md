@@ -1,6 +1,6 @@
 # ADR-0004 — An explicit `NO_APPLICABLE_RULE` outcome
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-13
 **Decides:** D7 (#7)
 **Deciders:** admin (AnantBisht07)

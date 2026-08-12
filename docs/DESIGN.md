@@ -1,6 +1,6 @@
 # DESIGN — module architecture for the deterministic core
 
-**Status:** Proposed — requires admin ratification (see `docs/adr/`)
+**Status:** Accepted — ratified by ADR-0002 on 2026-08-13
 **Date:** 2026-08-12
 **Scope:** Track A (the deterministic core). Tracks B and C are sketched at the end.
 

@@ -99,8 +99,22 @@ jobs:
           fi
           echo "OK — nothing under data/ is tracked."
 
+      # The most important invariant in the product: AGENTS.md section 2.1 forbids any
+      # path from AI, OCR or retrieval into the verdict. Asserts the import table in
+      # docs/DESIGN.md section 2, transitively.
+      #
       # NB: a bare ' #' in a YAML scalar starts a comment before the shell sees the
       # line, which truncates the command. Use block scalars and avoid '#' in them.
-      - name: Placeholder — verdict isolation
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install test tooling
         run: |
-          echo "Verdict isolation check is implemented by issue 36."
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Verdict isolation
+        run: |
+          pytest tests/test_verdict_isolation.py -q

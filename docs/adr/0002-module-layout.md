@@ -1,12 +1,12 @@
 # ADR-0002 — Module layout and a stdlib-only `units/` package
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-13
 **Decides:** the module architecture in `docs/DESIGN.md` §1–§2
 **Deciders:** admin (AnantBisht07)
 
-> Drafted by a coding agent. **Not in force until the admin sets `Status: Accepted`.**
-> Accepting this also promotes `docs/DESIGN.md` from Proposed to Accepted.
+> Drafted by a coding agent. **Accepted by the admin on 2026-08-13.**
+> This also promotes `docs/DESIGN.md` to Accepted.
 
 ## Context
 

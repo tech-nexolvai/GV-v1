@@ -1,11 +1,11 @@
 # ADR-0003 — Typed `derivations:` DAG in the rule schema
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-13
 **Decides:** D2 (#2)
 **Deciders:** admin (AnantBisht07)
 
-> Drafted by a coding agent. **Not in force until the admin sets `Status: Accepted`.**
+> Drafted by a coding agent. **Accepted by the admin on 2026-08-13.**
 
 ## Context
 

@@ -1,12 +1,11 @@
 # ADR-0001 — Unit policy: canonical mm for storage, authored-unit arithmetic for verdicts
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-13
 **Decides:** D1 (#1)
 **Deciders:** admin (AnantBisht07)
 
-> Drafted by a coding agent. **Not in force until the admin sets `Status: Accepted`.**
-> `scripts/ratify.py` refuses to unblock anything until then.
+> Drafted by a coding agent. **Accepted by the admin on 2026-08-13.**
 
 ## Context
 
