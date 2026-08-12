@@ -1,0 +1,123 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai
+#
+# A generic AI reviewer on this repo would mostly produce noise. The value is a reviewer
+# that knows the invariants in AGENTS.md, because the failure mode here is not an ugly
+# function — it is a plausible-looking change that turns a wrong answer into a confident
+# PASS on a drawing that then gets manufactured.
+#
+# The automated guards (tests/test_licences.py, test_verdict_isolation.py,
+# test_repo_hygiene.py) already fail the build on the mechanical violations. This reviewer
+# is for the judgement calls a test cannot make.
+
+language: en-GB
+
+tone_instructions: >
+  Be direct and specific. Prioritise correctness and safety over style. This project decides
+  whether manufactured cabinetry matches an approved design, and its primary safety metric is
+  the critical false-PASS rate: a wrong FAIL creates review work, a wrong PASS can be built.
+  Flag anything that could turn a missing, ambiguous or unqualified input into a PASS.
+  Do not comment on formatting — ruff and black already enforce it in CI.
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: false
+  poem: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_filters:
+    - "!**/*.pdf"
+    - "!**/*.xlsx"
+    - "!data/**"
+    - "!eval/gold_set/cases/**"
+    - "!.venv/**"
+
+  path_instructions:
+    - path: "verdict/**"
+      instructions: >
+        This is the isolated deterministic verdict engine and the crown jewel of the product.
+        Reject, and explain, any of the following:
+        (1) a `float` anywhere — all arithmetic must be `Fraction` or `Decimal`, because a
+        float rounding error in a tolerance comparison is a silent false PASS;
+        (2) any import of extraction, retrieval, evidence, network, model SDK, or database
+        code — AGENTS.md §2.1 forbids any path from AI or retrieval into the verdict;
+        (3) `eval`, `exec`, `compile` or `__import__` — rules select operations by name from
+        a typed registry and must never supply code (§2.2);
+        (4) a missing or unqualified operand producing anything other than NOT_FOUND or
+        REVIEW_REQUIRED — never a default, never zero, never a guess;
+        (5) a comparison whose boundary semantics (<= vs <) are undocumented or untested on
+        both sides;
+        (6) an operation that reads a clock, a file, an environment variable or a network.
+        Also check the calculation trace is complete enough that a reviewer could reproduce
+        the verdict by hand. If they could not, the trace is incomplete.
+
+    - path: "units/**"
+      instructions: >
+        This package must import the Python standard library and NOTHING else — that is the
+        single constraint that lets verdict/ depend on it safely (ADR-0002). Flag any
+        third-party or project import immediately.
+        Per ADR-0001, unit handling is safety-critical: on the real client drawing, the mm and
+        inch renderings of the same dimension differ by up to 1.600 mm, against a 1/16"
+        tolerance of 1.5875 mm. Flag any implicit conversion between unit systems inside a
+        single arithmetic operation, and any code path that discards the original authored
+        token.
+
+    - path: "rules/**"
+      instructions: >
+        Rule schema, applicability and parameters. Flag: a tolerance with a hard-coded literal
+        rather than a parameter or applicability variant; any default value for a missing
+        parameter (AGENTS.md §2.4 — never invent a value); a semantic type written as a string
+        literal instead of a constant from rules/semantic_types.py; any executable expression
+        in rule data; and a derivation graph that is not validated acyclic at publish time
+        (ADR-0003).
+        An unset tolerance is NOT zero. If you see one treated as zero, that is a false-PASS
+        bug, not a style issue.
+
+    - path: "evidence/**"
+      instructions: >
+        The two-stage evidence model and the Evidence Gate. Only CORROBORATED or
+        HUMAN_CONFIRMED observations may become verdict operands. Flag anything that promotes
+        a RAW_CANDIDATE, resolves a numeric disagreement by confidence or model preference, or
+        lets retrieval output become an authoritative value. Conflicting readings must become
+        REVIEW_REQUIRED, never an average and never a pick.
+
+    - path: "extraction/**"
+      instructions: >
+        Flag any AGPL dependency — PyMuPDF and Ultralytics YOLO are specifically forbidden
+        (AGENTS.md §2.8); use pdfplumber, pypdfium2 or pikepdf. Extractor output is an
+        ObservationCandidate, never a fact. Flag anything that writes a canonical value
+        directly.
+
+    - path: "tests/**"
+      instructions: >
+        Tests in the safety-critical zones must cover failure modes, not just the happy path:
+        missing operand, ambiguous input, unit mismatch, empty list, and boundary-exact values
+        on both sides. A guard test that could never fail is worse than no test, because it
+        looks like coverage. Flag any assertion that would pass on an empty or absent input.
+
+    - path: "docs/**"
+      instructions: >
+        Plain English, no jargon dumps, no over-promising, and never a claim of 100% automation
+        (AGENTS.md §2.10). Flag any tolerance or numeric value presented as confirmed when the
+        client has not supplied it — see the open questions in docs/V1_RESEARCH_AND_PLAN.md §4.
+
+    - path: ".github/workflows/**"
+      instructions: >
+        Flag any step that would let a guard fail silently, any `continue-on-error` on a
+        safety check, and any use of credentials in a job that runs the verdict tests.
+
+  tools:
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: false
+    actionlint:
+      enabled: true
+
+chat:
+  auto_reply: true
