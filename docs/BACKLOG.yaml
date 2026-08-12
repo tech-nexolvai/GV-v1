@@ -1,0 +1,1487 @@
+---
+# GV V1 — backlog definition (source of truth for GitHub issue creation)
+# Generated from docs/V1_RESEARCH_AND_PLAN.md on 2026-08-12.
+# Repo: tech-nexolvai/GV-v1
+#
+# Structure (GitHub-native; `tech-nexolvai` is a User account so org-level
+# issue *types* are unavailable — hierarchy uses sub-issues + labels + milestones):
+#   Milestone  = track/phase
+#   Epic       = issue, label type:epic, parent of stories via sub-issues
+#   Story      = issue, label type:story, child of an epic
+#   Decision   = issue, label type:decision — ADR to be ratified, blocks stories
+#   Question   = issue, label type:question — client-blocking, chaseable
+#
+# Traceability convention (DO-178C/ISO-26262 style, applied lightly):
+#   every story states Source (where the requirement came from) and
+#   Verification (the test that proves it). No story is Done without both.
+
+meta:
+  repo: tech-nexolvai/GV-v1
+  plan: docs/V1_RESEARCH_AND_PLAN.md
+
+# --------------------------------------------------------------------------
+labels:
+  - {name: "type:epic",        color: "5319e7", description: "Container for a body of work"}
+  - {name: "type:story",       color: "1d76db", description: "Deliverable unit of work"}
+  - {name: "type:decision",    color: "b60205", description: "Architectural decision requiring sign-off"}
+  - {name: "type:question",    color: "d876e3", description: "Open question for the client"}
+  - {name: "type:spike",       color: "c5def5", description: "Time-boxed investigation"}
+
+  - {name: "area:units",       color: "0e8a16", description: "Exact arithmetic, units, tokens"}
+  - {name: "area:rules",       color: "0e8a16", description: "Rule schema, authoring, applicability"}
+  - {name: "area:verdict",     color: "0e8a16", description: "Isolated deterministic verdict engine"}
+  - {name: "area:evidence",    color: "0e8a16", description: "Candidates, canonical model, evidence gate"}
+  - {name: "area:extraction",  color: "0e8a16", description: "PDF repair, vector, OCR, geometry"}
+  - {name: "area:matching",    color: "0e8a16", description: "Arch-to-shop matching and retrieval"}
+  - {name: "area:eval",        color: "0e8a16", description: "Gold set, metrics, release gates"}
+  - {name: "area:platform",    color: "0e8a16", description: "API, workflow, deployment"}
+  - {name: "area:frontend",    color: "0e8a16", description: "Reviewer UI and reports"}
+  - {name: "area:infra",       color: "0e8a16", description: "Tooling, CI, repo hygiene"}
+
+  - {name: "safety-critical",  color: "b60205", description: "Touches verdict/rules/evidence — tests mandatory, false-PASS risk"}
+  - {name: "blocked:client",   color: "e99695", description: "Waiting on the client (Raj)"}
+  - {name: "blocked:decision", color: "e99695", description: "Waiting on a D-series decision"}
+  - {name: "blocked:data",     color: "e99695", description: "Waiting on real drawings or gold set"}
+
+  - {name: "P0",               color: "d93f0b", description: "Critical path"}
+  - {name: "P1",               color: "fbca04", description: "Important, not blocking"}
+  - {name: "P2",               color: "fef2c0", description: "Later"}
+
+  - {name: "size:S",           color: "ededed", description: "≲1 day"}
+  - {name: "size:M",           color: "ededed", description: "2–4 days"}
+  - {name: "size:L",           color: "ededed", description: "≳1 week"}
+
+# --------------------------------------------------------------------------
+milestones:
+  - title: "M0 — Foundations & Guardrails"
+    description: "Repo, tooling, CI and the boundary tests that keep the verdict path honest. Unblocked."
+  - title: "M1 — Deterministic Core (Track A)"
+    description: "Units, typed operations, rule schema, parameters, eval harness. Unblocked, safety-critical, the crown jewel."
+  - title: "M2 — Evidence & Extraction (Track B)"
+    description: "Real drawings: extraction, chain closure, canonical evidence, gate, matching. Blocked on client data."
+  - title: "M3 — Durable Platform & Reviewer Product (Track C)"
+    description: "Deferred until extraction accuracy is proven on real GV drawings."
+  - title: "M-DEC — Decisions & Client Questions"
+    description: "D-series decisions and Q-series client questions. Several are blocking."
+
+# --------------------------------------------------------------------------
+# Shared Definition of Done, appended to every story body.
+definition_of_done: |
+  ### Definition of Done
+  - [ ] Unit tests written and passing; failure modes tested, not just happy path
+  - [ ] `ruff` + `black` clean; `mypy` clean (strict for `verdict/`, `rules/`, `evidence/`)
+  - [ ] No new dependency without a licence check (no AGPL — see `AGENTS.md` §2.8)
+  - [ ] Gold-set run does not regress critical false-PASS (once a gold set exists)
+  - [ ] Plain-English docstrings/copy; no over-promising
+  - [ ] Traceability recorded: Source and Verification named in this issue
+
+# ==========================================================================
+decisions:
+  - id: D1
+    title: "D1 — Unit policy: canonical mm vs authored-unit arithmetic"
+    labels: [type:decision, area:units, safety-critical, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Decision required
+      `AGENTS.md` §6 mandates canonical mm and conversion of all values. Measured evidence from the
+      real GV shop drawing shows this is unsafe as written.
+
+      ## Evidence (verified, `docs/V1_RESEARCH_AND_PLAN.md` §F1)
+      Every dimension is written twice — mm with the inch fraction in brackets, e.g. `984 [38 3/4]`.
+      Each unit system closes **exactly** within itself, but they do not convert exactly to each other:
+
+      | mm on drawing | inch on drawing | inch → mm | delta |
+      |---:|---:|---:|---:|
+      | 6012 | 236 3/4 | 6013.450 | **1.450** |
+      | 100  | 4       | 101.600  | **1.600** |
+      | 864  | 34      | 863.600  | 0.400 |
+
+      **Worst delta 1.600 mm exceeds a 1/16″ tolerance (1.5875 mm).**
+
+      Mixing units inside one arithmetic check therefore injects up to 1.6 mm of pure rounding noise.
+      A check could FAIL a perfect drawing, or — the dangerous case — PASS a drawing that is out of
+      tolerance. That is a false-PASS, the primary safety metric.
+
+      ## Recommendation
+      1. Canonical mm for storage, cross-document comparison and display.
+      2. Additionally persist the **exact original token** (`Fraction`) and its original unit on every
+         observation. Never discard what the drawing actually said.
+      3. Rule-level `arithmetic_unit`. All operands in one arithmetic operation must share the authored
+         unit system; otherwise apply an explicitly declared rounding allowance or return REVIEW REQUIRED.
+      4. The bracketed alternate unit becomes a **corroboration lane** with a rounding-aware band,
+         never an independent operand.
+
+      ## Consequence if rejected
+      Tolerances at or below 1/16″ cannot be trusted, and the primary safety metric is compromised.
+
+      **This amends a golden rule in `AGENTS.md` §6 and needs explicit sign-off.**
+
+  - id: D2
+    title: "D2 — Add a typed `derivations:` DAG to the rule schema"
+    labels: [type:decision, area:rules, safety-critical, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Decision required
+      Client formulas chain. `CT010 = C.T_OH + CT007 + CT008 + CT009 + B.S_THK`, where `CT009` is
+      itself obtained by rearranging that same formula and then compared to a minimum. `CT004 =
+      CAB_SIDE_THK + CT011 + CT012 + CT013 + CAB_SIDE_THK`.
+
+      The current schema has a single `operation:` block and cannot express any of this.
+
+      ## Recommendation
+      Add a `derivations:` block — named intermediates, each computed by a **typed** operation from
+      inputs, parameters or earlier derivations, forming a DAG validated as **acyclic at publish time**.
+      Still typed, still no `eval`, still exact arithmetic.
+
+      ## Consequence if rejected
+      Most of the client's real checks are inexpressible. Larger gap than the aggregate operations
+      `docs/RULE_ENGINE_SPEC.md` already identified.
+
+      Source: `docs/V1_RESEARCH_AND_PLAN.md` §F6
+
+  - id: D3
+    title: "D3 — Add `severity` to the rule schema"
+    labels: [type:decision, area:rules, safety-critical, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Decision required
+      Two problems, one fix.
+
+      1. The client checklist explicitly asks for a **warning** (`CT009` back-offset: *"program should
+         throw warning"*). Our outcome model has only PASS / FAIL / NOT FOUND / REVIEW REQUIRED.
+      2. More seriously: **"critical false-PASS rate" is the primary release metric, and nothing in the
+         schema defines which checks are critical.** The metric is currently unmeasurable as specified.
+
+      ## Recommendation
+      Add `severity: CRITICAL | MAJOR | MINOR | ADVISORY` to the rule schema. Define the primary metric
+      as false-PASS on CRITICAL rules. Render ADVISORY outcomes as warnings, not failures.
+
+      Source: `docs/V1_RESEARCH_AND_PLAN.md` §F7
+
+  - id: D4
+    title: "D4 — Add a `PRODUCT_SPEC` document role"
+    labels: [type:decision, area:evidence, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Decision required
+      `document_role` is currently `ARCH | SHOP`. Sink interior dimensions come from the
+      **manufacturer's cut sheet** (the client's example is Kohler K-2330-G) — a third document.
+
+      Without a `PRODUCT_SPEC` role, the entire sink-cutout family (three of the five countertop checks)
+      has no authoritative source and can only ever return NOT FOUND.
+
+      ## Recommendation
+      Add the role; ingest cut sheets as versioned, hashed documents like any other source; add a
+      per-project product/spec registry.
+
+      Depends on **Q7** (will GV supply cut sheets per project?).
+
+      Source: `docs/V1_RESEARCH_AND_PLAN.md` §F4
+
+  - id: D5
+    title: "D5 — Add a `project_parameter_sets` aggregate"
+    labels: [type:decision, area:rules, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Decision required
+      Nine values required by the rules appear on **no drawing at all**: door thickness, countertop
+      overhang, backsplash thickness, cabinet side panel thickness, field cut size, filler min/max,
+      sink front offset minimum, sink depth, and the field wall-to-wall dimension. The client sources
+      them from "G.C / Client", "Company standard" or on-site measurement.
+
+      The backend data model (proposal §10.1) has **no aggregate for these**.
+
+      ## Recommendation
+      Versioned `project_parameter_sets` with layered resolution (global standard → project override →
+      run override), full provenance, and a hard rule: **a missing parameter is NOT FOUND, never a
+      silent default.** Also a UI requirement — the reviewer must enter and see them.
+
+      Source: `docs/V1_RESEARCH_AND_PLAN.md` §F5
+
+  - id: D6
+    title: "D6 — Canonical semantic vocabulary = the client's `CT0xx` codes"
+    labels: [type:decision, area:rules, P1]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Decision required
+      `rules/semantic_types.py` currently uses our own provisional names
+      (`countertop_overall_width`, …). The client's own workbook uses `CT001`–`CT013`, `B.S_THK`,
+      `C.T_OH`, `CAB_SIDE_THK`, and `A_/S_/F_` prefixes for arch/shop/field.
+
+      The client codes are unambiguous, already their language, and — critically — **anchored to an
+      annotated diagram** (`CT_image10`) that defines each one positionally.
+
+      ## Recommendation
+      Adopt `CT0xx` as canonical, keep our descriptive names as aliases. Resolves the open
+      "semantic type vocabulary" question in `memory.md`, and inverts the current provisional approach.
+
+      Source: `docs/V1_RESEARCH_AND_PLAN.md` §3
+
+  - id: D7
+    title: "D7 — Explicit \"no applicable rule\" outcome"
+    labels: [type:decision, area:rules, safety-critical, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Decision required
+      Every client countertop check is scoped to walls on three sides (confirmed by the client's own
+      image, *"Vanity with a wall on 3 sides"*). Island, back-only and two-wall layouts have **no
+      authored rule**.
+
+      ## Recommendation
+      The applicability resolver must return an explicit **"no applicable rule"** outcome, surfaced as
+      REVIEW REQUIRED. An unchecked package must never render as clean.
+
+      **Silence is the most dangerous possible false-PASS** — a reviewer seeing no findings will
+      reasonably assume the package was checked.
+
+      Source: `docs/V1_RESEARCH_AND_PLAN.md` §F12
+
+  - id: D8
+    title: "D8 — Derived expectations may be shown, never issued as instructions"
+    labels: [type:decision, area:rules, P1]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Decision required
+      The client's variable table marks most values *"Calculated / System Calc"* and asks the system to
+      distribute surplus width across adjustable cabinets. That is closer to design assistance than to
+      validation, and `README.md` states the product "validates drawings; it never designs them".
+
+      ## Recommendation
+      The engine may compute derived **expectations** and display them in a finding as "derived expected
+      value" with the full calculation trace — that is arithmetic, and it is how a reviewer understands a
+      FAIL. But V1 must not emit computed dimensions to a vendor as instructions without reviewer
+      sign-off.
+
+      Worth stating explicitly rather than leaving to interpretation — it is a contractual and liability
+      boundary, not just a technical one.
+
+      Source: `docs/V1_RESEARCH_AND_PLAN.md` §F11
+
+# ==========================================================================
+questions:
+  - id: Q1
+    title: "Q1 — How many field cuts, and are they added or trimmed? (blocks CT-1)"
+    labels: [type:question, blocked:client, area:rules, safety-critical, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Question for Raj
+      `Countertop_Checks_Updated.xlsx` cell `D21` says:
+
+      > *"If the wall to wall dimension is 84", total width = 1" (field cut) + Wall to Wall dimension :
+      > 84" + 1" (field cut)"*
+
+      This reads as either **85″** (one field cut) or **86″** (two field cuts).
+
+      A third reading comes from the real shop drawing, which annotates
+      **"5″ FILLER PANEL TO BE FIELD CUT AS PER SITE CONDITION"** at both ends — suggesting the field cut
+      is *taken out of an oversized filler*, not *added to the countertop*.
+
+      ## Why it blocks
+      This changes CT-1's arithmetic directly. We will not guess.
+
+      ## What we need
+      1. For a three-wall vanity, how many field cuts apply, and what is the default size?
+      2. Is the field cut **added** to the countertop dimension, or **removed** from the filler?
+      3. Is `docs/RULE_ENGINE_SPEC.md`'s assumption (2 cuts for three-wall, 1 for two-wall, 0 for island)
+         correct?
+
+      Blocks: CT-1 authoring.
+
+  - id: Q2
+    title: "Q2 — Tolerance values per check and per wall configuration (blocks all verdicts)"
+    labels: [type:question, blocked:client, area:rules, safety-critical, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Question for Raj
+      **No tolerance value appears anywhere in the client material.** We read both workbooks cell by cell
+      and all 16 embedded diagrams.
+
+      The 1/8″ and 1/16″ figures in `docs/RULE_ENGINE_SPEC.md` are **our assumption**, not a client
+      confirmation. `memory.md` records only that "tolerance depends on wall layout".
+
+      ## Why it blocks
+      A tolerance is the entire difference between PASS and FAIL. An assumed tolerance produces
+      confidently wrong verdicts — including false-PASS, our primary safety metric.
+
+      ## What we need
+      A tolerance for each check, per wall configuration where it varies:
+      - Countertop width (CT-1)
+      - Countertop depth (CT-2)
+      - Sink cutout width / depth / offsets (CT-3 family)
+      - Cabinet width, arch vs shop
+      - Filler width min and max
+
+      Note also **D1**: at 1/16″ the tolerance is smaller than the drawing's own mm/inch rounding
+      spread (1.6 mm), so very tight tolerances need the unit policy resolved too.
+
+      Until answered, tolerances are explicit placeholders that **fail loudly** — never defaults.
+
+  - id: Q3
+    title: "Q3 — Does \"cabinet width\" include the end panel?"
+    labels: [type:question, blocked:client, area:rules, safety-critical, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Question for Raj
+      In `Cabinet_Checks.xlsx` diagram `CAB_image2`, the **"Cab 1 Width"** bracket appears to span both
+      the `51 [2]` end segment **and** the `533 [21]` cabinet body.
+
+      ## Why it matters
+      If cabinet width includes the end panel, the CT-1 sum double-counts it (end panels would be
+      counted both as part of the cabinet and separately). Materially changes the arithmetic.
+
+      ## What we need
+      - Does `CAB_1` width mean the carcass only, or carcass + end panel?
+      - Are `END PANEL` and `FILLER PANEL` distinct items with separate widths? The real drawing labels
+        both at the same location.
+
+  - id: Q4
+    title: "Q4 — Which checks are critical vs advisory? (severity)"
+    labels: [type:question, blocked:client, area:rules, safety-critical, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Question for Raj
+      Our primary safety metric is the **critical false-PASS rate** — a wrong PASS that could be
+      manufactured. To measure it we must know which checks are critical.
+
+      The checklist already implies a lesser severity: the `CT009` back-offset rule says the program
+      should *"throw warning"*, not fail.
+
+      ## What we need
+      For each check, a severity:
+      - **CRITICAL** — a wrong PASS could be manufactured and cost money
+      - **MAJOR** — real defect, caught downstream
+      - **MINOR** — cosmetic or easily corrected
+      - **ADVISORY** — warning only, never a FAIL
+
+      Related: **D3**.
+
+  - id: Q5
+    title: "Q5 — Sink front offset: minimum or exact equality?"
+    labels: [type:question, blocked:client, area:rules, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Question for Raj
+      The workbook contradicts itself:
+      - `X19` — *"Front offset B. Typical dimension is 4" **minimum**"*
+      - `X27` (pass criteria) — *"Front offset **= 4"**. Back offset = 2.375"*
+      - `CT007` acquisition — *"Global **Minimum**"*, source *"Company standard"*
+
+      A minimum (`≥ 4"`) and an equality (`= 4"`) are different checks producing different verdicts on
+      the same drawing.
+
+      ## What we need
+      Which is it, for front offset and for back offset independently? Our reading is that front is a
+      minimum and back is a target coordinated with the faucet hole — please confirm.
+
+  - id: Q6
+    title: "Q6 — CT009 / CT010: which is observed and which is derived?"
+    labels: [type:question, blocked:client, area:rules, P0]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Question for Raj
+      Both `CT009` (Sink Back Offset) and `CT010` (Countertop Depth) are marked *"Calculated / System
+      Calc"*, and each is defined in terms of the other:
+
+      ```
+      CT010 = C.T_OH + CT007 + CT008 + CT009 + B.S_THK
+      CT009 warning if (CT010 − C.T_OH − CT007 − CT008 − B.S_THK) < global minimum
+      ```
+
+      ## What we need
+      Our reading: `CT010` is **read from the drawing**, and `CT009` is **solved for** and then checked
+      against a minimum. Please confirm — the direction determines which value is evidence and which is
+      arithmetic, and only evidence needs an extraction route.
+
+  - id: Q7
+    title: "Q7 — Client questions needed before Phase 3 (non-blocking today)"
+    labels: [type:question, blocked:client, area:rules, P1]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## Questions for Raj — needed before the rules phase, not blocking today
+
+      **Q7 — Sink cut sheets.** Will GV supply the manufacturer's spec sheet (e.g. Kohler K-2330-G) per
+      project? The sink checks have no authoritative source without it. Confirms **D4**.
+
+      **Q8 — The other branch.** `Condition 1` only defines `F_Wall_2_Wall > A_Wall_2_Wall`. What happens
+      when the **field dimension is smaller** than design? Common and consequential — cabinets must
+      shrink or be cut.
+
+      **Q9 — Non-adjustable cabinets.** The note says sink cabinets and cabinets with equipment cannot be
+      adjusted. How are these identified **in the drawing** so the distribution logic can exclude them?
+
+      **Q10 — "U.N.O." handling.** "Unless Noted Otherwise" appears twice — a drawing note can override a
+      global constant. Proposed V1 policy: detect the override and return REVIEW REQUIRED rather than
+      auto-applying it. Confirm?
+
+      **Q11 — ADA.** The sink cut sheet carries a "Recommended ADA Installation" block, and the real
+      drawing's cabinet height (864 mm) is exactly the 34″ ADA maximum. Is ADA compliance in V1 scope?
+
+      **Q12 — Dual units.** When the mm and bracketed inch values disagree beyond rounding, which governs?
+
+      **Q13 — Two depth formulas.** `cabinet_depth + overhang` (sheet `I23`) vs the five-term `CT010`.
+      Both? Should they cross-check each other?
+
+      **Q14 — Wall configurations.** Are layouts other than three-wall in V1 scope? Today only three-wall
+      has authored rules.
+
+  - id: Q15
+    title: "Q15 — Confirm suspected errors in the client checklist"
+    labels: [type:question, blocked:client, area:rules, P1]
+    milestone: "M-DEC — Decisions & Client Questions"
+    body: |
+      ## For Raj — suspected typos, please confirm
+
+      We will **not** silently "fix" a client specification. Each of these looks like a copy-paste slip;
+      please confirm so we can author the rule correctly.
+
+      | # | Cell | Text as written | Suspected intent |
+      |---|---|---|---|
+      | Q15 | `S19` | "Sink cutout width (A) = sink interior **depth** (E) − 0.25 − 0.25" | interior **width** |
+      | Q16 | `S29` | "Width of countertop <> Sink cutout **depth** (A) + F + G" | **width** |
+      | Q17 | `I3` | header "CT-2 : Countertop **Width** Verification" | rule name says **Depth** |
+      | Q18 | `D3/I3/N3/S3/X3` | three different checks all labelled **CT-3** | unique IDs needed |
+      | Q19 | `S27` | "Width of **countertop** = Sink cutout width (A) + F + G" | describes the **sink cabinet** (`CT004`), not the whole countertop |
+      | Q20 | workbook | two naming schemes coexist: letters A–G on Sheet1, `CT0xx` on the variable sheet | adopt `CT0xx` as canonical, letters as aliases |
+
+      Related: **D6**.
+
+# ==========================================================================
+epics:
+
+  # ---------------- M0 ----------------
+  - id: A1
+    title: "Epic A1 — Foundations & guardrails"
+    milestone: "M0 — Foundations & Guardrails"
+    labels: [type:epic, area:infra, P0]
+    body: |
+      Repo, tooling, CI and — most importantly — the automated boundary tests that keep the verdict path
+      honest. Everything here is unblocked.
+
+      The guardrail that matters most is **A1.4**: a test that fails the build if `verdict/` ever imports
+      extraction, retrieval, network or model code. `AGENTS.md` §2.1 states this boundary as a rule; a
+      rule not enforced by a test is a rule that will eventually be broken by a well-meaning refactor.
+
+      Source: `AGENTS.md` §2, §6 · `docs/V1_RESEARCH_AND_PLAN.md` §6 Track A1
+    stories:
+      - title: "A1.1 — Pin the dependency set and enforce the licence policy"
+        labels: [type:story, area:infra, P0, "size:S"]
+        body: |
+          ## Context
+          `pyproject.toml` lists V1 dependencies as comments only. `AGENTS.md` §2.8 forbids AGPL
+          dependencies (PyMuPDF, Ultralytics YOLO) — currently enforced by a code comment.
+
+          ## Scope
+          - Move the approved V1 dependencies into real `dependencies` / optional groups
+          - Add an approved-licence allowlist
+          - Add a CI check that fails on a disallowed licence
+
+          ## Acceptance criteria
+          - [ ] `pip install -e .[dev]` produces a working environment from a clean checkout
+          - [ ] A test/CI step fails if a package with a disallowed licence is present
+          - [ ] Adding `pymupdf` to the environment makes CI fail (proven, not assumed)
+
+          **Source:** `AGENTS.md` §2.8, §4 · **Verification:** `tests/test_licences.py`
+
+      - title: "A1.2 — Lint, format and type-check configuration"
+        labels: [type:story, area:infra, P0, "size:S"]
+        body: |
+          ## Context
+          `pyproject.toml` configures ruff/black/mypy/pytest but nothing runs them, and `mypy` strictness
+          is described in a comment rather than enforced per-package.
+
+          ## Scope
+          `ruff` + `black` repo-wide; `mypy` strict specifically for `verdict/`, `rules/`, `evidence/`.
+
+          ## Acceptance criteria
+          - [ ] `ruff check .`, `black --check .`, `mypy` all pass on a clean checkout
+          - [ ] mypy strictness is enforced by config for the three safety-critical packages
+          - [ ] An untyped function added to `verdict/` fails the type check
+
+          **Source:** `AGENTS.md` §6 · **Verification:** CI job output
+
+      - title: "A1.3 — CI pipeline (GitHub Actions)"
+        labels: [type:story, area:infra, P0, "size:S"]
+        body: |
+          ## Context
+          No CI exists. Every other guardrail in this epic is advisory until something runs it on push.
+
+          ## Scope
+          Actions workflow running lint, format check, type check and tests on push and PR.
+
+          ## Acceptance criteria
+          - [ ] Workflow runs on push and pull request
+          - [ ] Failing tests block the PR
+          - [ ] Run time stays under ~5 minutes for the core suite
+
+          ## ⚠️ Known blocker
+          The active GitHub account (`AnantBisht07`) **lacks the `workflow` OAuth scope**, so pushing
+          `.github/workflows/` will be rejected. Fix before starting:
+          ```
+          gh auth refresh -h github.com -s workflow
+          ```
+
+          **Source:** `AGENTS.md` §6 · **Verification:** a green CI run on a PR
+
+      - title: "A1.4 — Verdict isolation guard test"
+        labels: [type:story, area:verdict, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          `AGENTS.md` §2.1 — *"No path from AI/OCR/retrieval into the verdict."* This is the single most
+          important invariant in the product and it is currently protected only by discipline.
+
+          ## Scope
+          A static import-graph test over `verdict/` that fails if it imports, transitively, any of:
+          extraction, retrieval, network/HTTP, model SDKs (boto3/bedrock), ORM/database, or filesystem
+          access beyond reading its own rule snapshots. Plus a check that `eval(`/`exec(` appear nowhere
+          in `verdict/`.
+
+          ## Acceptance criteria
+          - [ ] Test walks the transitive import graph, not just direct imports
+          - [ ] Adding `import boto3` to any module in `verdict/` fails the test (proven in the test suite
+                itself, e.g. via a fixture module)
+          - [ ] Adding `eval(` to `verdict/` fails the test
+          - [ ] Failure message names the offending module and the forbidden import chain
+
+          ## Out of scope
+          Runtime container isolation (network policy, credentials) — that is M3.
+
+          **Source:** `AGENTS.md` §2.1, §2.2; backend proposal §8.2
+          **Verification:** `tests/test_verdict_isolation.py`
+
+      - title: "A1.5 — ADR log and decision record template"
+        labels: [type:story, area:infra, P1, "size:S"]
+        body: |
+          ## Context
+          Eight decisions (D1–D8) need ratifying, and `memory.md` is a decision log without a format for
+          new entries. Safety-critical work needs decisions to be traceable to their rationale.
+
+          ## Scope
+          `docs/adr/` with a short template (context, decision, consequences, status, date) and D1–D8
+          seeded as records once ratified.
+
+          ## Acceptance criteria
+          - [ ] Template exists and is used by at least one real ADR
+          - [ ] `memory.md` links to the ADR log rather than duplicating it
+
+          **Source:** `CLAUDE.md` conventions · **Verification:** review
+
+      - title: "A1.6 — Repo hygiene: protect client data"
+        labels: [type:story, area:infra, P0, "size:S"]
+        body: |
+          ## Context
+          `data/` holds proprietary client checklists and will hold real drawings. `.gitignore` covers it,
+          but two gaps were found during setup.
+
+          ## Scope
+          - Add an explicit `.claude/settings.local.json` ignore (currently only incidentally matched)
+          - `eval/gold_set/cases/.gitkeep` is itself ignored, so the directory vanishes on a fresh clone —
+            the harness must `mkdir -p` rather than assume it exists
+          - Add a CI check that fails if anything under `data/` is ever staged
+
+          ## Acceptance criteria
+          - [ ] `git status --ignored` shows all client material excluded
+          - [ ] A test/CI step fails if a file under `data/` is tracked
+          - [ ] Fresh clone + harness run does not fail on a missing directory
+
+          **Source:** `AGENTS.md` §11 (proprietary sources) · **Verification:** `tests/test_repo_hygiene.py`
+
+  # ---------------- M1 ----------------
+  - id: A2
+    title: "Epic A2 — Units, tokens and the dual-unit policy"
+    milestone: "M1 — Deterministic Core (Track A)"
+    labels: [type:epic, area:units, safety-critical, P0]
+    body: |
+      The exact-arithmetic foundation, and where the verified F1 risk lives.
+
+      Measured on the real GV drawing: the mm and bracketed-inch values of the same dimension differ by
+      up to **1.600 mm**, which is **larger than a 1/16″ tolerance (1.5875 mm)**. Each unit system closes
+      exactly within itself; converting between them does not. This epic implements the policy that keeps
+      that rounding noise out of verdicts.
+
+      **Blocked by D1** for the policy decision, though most of the code (exact types, parsers) can
+      proceed immediately.
+
+      Source: `docs/V1_RESEARCH_AND_PLAN.md` §F1, §F2 · `AGENTS.md` §6
+    stories:
+      - title: "A2.1 — Exact numeric core (no floats anywhere)"
+        labels: [type:story, area:units, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          `AGENTS.md` §6 — `Fraction` for imperial fractions, `Decimal` for canonical values, canonical
+          unit mm. A single `float` anywhere in this path silently reintroduces rounding error into a
+          safety-critical calculation.
+
+          ## Scope
+          A `Measurement` value type carrying: exact value (`Fraction`), canonical mm (`Decimal`),
+          original unit, and the original text token. Immutable, hashable, totally ordered.
+
+          ## Acceptance criteria
+          - [ ] Arithmetic on `Measurement` is exact; no `float` appears in the type or its operations
+          - [ ] A test asserts no module in `verdict/` or `rules/` imports or produces `float`
+          - [ ] `1/3` inch round-trips without loss
+          - [ ] Canonical mm conversion uses exact `Decimal("25.4")`
+          - [ ] The original token is never discarded (D1 requirement 2)
+
+          **Source:** `AGENTS.md` §6; plan §F1 · **Verification:** `tests/units/test_measurement.py`
+
+      - title: "A2.2 — Imperial fraction parser"
+        labels: [type:story, area:units, safety-critical, P0, "size:S"]
+        body: |
+          ## Context
+          Client rules are authored entirely in inches: `3/4"`, `0.25"`, `2.375"`, `38 3/4`, `1/16`.
+
+          ## Scope
+          Parse all client-observed imperial forms into exact `Fraction`.
+
+          ## Acceptance criteria
+          - [ ] Handles whole (`4`), fraction (`3/4`), mixed (`38 3/4`), decimal (`2.375`), and quoted (`5"`)
+          - [ ] `2.375"` and `2 3/8"` parse to the identical `Fraction`
+          - [ ] Malformed input raises a typed error — never a silent default or best guess
+          - [ ] Ambiguous/unknown unit is rejected so it can become REVIEW REQUIRED upstream
+
+          **Source:** client checklist; `AGENTS.md` §6 · **Verification:** `tests/units/test_imperial.py`
+
+      - title: "A2.3 — Dual-dimension token parser (`984 [38 3/4]`)"
+        labels: [type:story, area:units, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          Every dimension on the real GV drawing is written twice: millimetres with the inch fraction in
+          brackets. This is the drawing's native convention and the basis of the corroboration lane (F2).
+
+          ## Scope
+          Parse a dual token into a `DualDimension(primary, alternate)` preserving both exactly, plus
+          which was the drawing's primary.
+
+          ## Acceptance criteria
+          - [ ] Parses `984 [38 3/4]`, `6012 [236 3/4]`, `51 [2]`, `864 [34]`
+          - [ ] Both readings preserved exactly; neither silently discarded
+          - [ ] A single-unit dimension parses without a false "missing alternate" error
+          - [ ] Real drawing values from plan §F1 used as test fixtures
+
+          **Source:** plan §F1, §F2; real shop drawing in `Cabinet_Checks.xlsx`
+          **Verification:** `tests/units/test_dual_dimension.py`
+
+      - title: "A2.4 — Cross-unit consistency checker (rounding-aware)"
+        labels: [type:story, area:units, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          The two readings of one dimension disagree by up to 1.600 mm purely from rounding. Treating
+          disagreement as an error would flag every drawing; ignoring it would hide real errors.
+
+          ## Scope
+          Given a `DualDimension`, decide: consistent-within-rounding / inconsistent-beyond-rounding.
+          The band derives from each side's rounding quantum, not a magic constant.
+
+          ## Acceptance criteria
+          - [ ] Every row of the plan §F1 table classifies as consistent-within-rounding
+          - [ ] A genuine transcription error (e.g. `984 [39 3/4]`) classifies as inconsistent
+          - [ ] Inconsistent → CONFLICTING evidence → REVIEW REQUIRED, never auto-resolved
+          - [ ] The band is derived and documented, not hard-coded
+
+          ## Note
+          This is the F2 corroboration lane: a consistent dual reading is independent evidence for the
+          number, obtainable from vector extraction alone, before any OCR. It corroborates the **reading**,
+          not the **semantic association**.
+
+          **Source:** plan §F1, §F2; `AGENTS.md` §9 (OCR disagreement → REVIEW)
+          **Verification:** `tests/units/test_cross_unit_consistency.py`
+
+      - title: "A2.5 — `arithmetic_unit` policy enforcement"
+        labels: [type:story, area:units, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          The core of **D1**. Mixing authored unit systems inside one arithmetic operation injects up to
+          1.6 mm of rounding noise — enough to consume a 1/16″ tolerance entirely.
+
+          ## Scope
+          Rules declare an `arithmetic_unit`. The engine verifies all operands entering one operation
+          share the authored unit system; otherwise it applies an explicitly declared rounding allowance
+          or returns REVIEW REQUIRED.
+
+          ## Acceptance criteria
+          - [ ] Operands in mixed authored units, with no declared allowance, produce REVIEW REQUIRED —
+                never a silent conversion
+          - [ ] A regression test reproduces the F1 scenario and proves the false-PASS is prevented
+          - [ ] The calculation trace records the arithmetic unit used
+
+          ## Blocked by
+          **D1** must be ratified before this is implemented — it amends `AGENTS.md` §6.
+
+          **Source:** plan §F1, D1 · **Verification:** `tests/units/test_arithmetic_unit_policy.py`
+
+  - id: A3
+    title: "Epic A3 — Semantic vocabulary"
+    milestone: "M1 — Deterministic Core (Track A)"
+    labels: [type:epic, area:rules, P1]
+    body: |
+      A single source of truth for semantic type names, so a rename stays a one-file change.
+
+      `rules/semantic_types.py` already exists with provisional names. **D6** proposes inverting the
+      approach: adopt the client's own `CT0xx` codes as canonical (they are unambiguous and anchored to
+      the annotated diagram `CT_image10`), keeping our descriptive names as aliases.
+
+      Source: plan §3, D6 · `memory.md` open question "semantic type vocabulary"
+    stories:
+      - title: "A3.1 — Adopt `CT0xx` canonical codes with aliases"
+        labels: [type:story, area:rules, P1, "size:M"]
+        body: |
+          ## Context
+          The client workbook defines `CT001`–`CT013`, `B.S_THK`, `C.T_OH`, `CAB_SIDE_THK`. `CT011`–`CT013`
+          are defined **only in the diagram** (`CT_image10`): `CT012` is the sink hole width, `CT011`/`CT013`
+          the clearances from the sink cabinet's interior faces to the cutout.
+
+          ## Scope
+          Restructure `rules/semantic_types.py` around client codes + descriptive aliases + a short
+          human description and its diagram anchor for each.
+
+          ## Acceptance criteria
+          - [ ] Every `CT0xx` from the client workbook is represented, including `CT011`–`CT013`
+          - [ ] Each carries its client name, our descriptive alias, and its source reference
+          - [ ] Lookup works by either name
+          - [ ] Still marked PROVISIONAL pending **Q20** confirmation
+
+          ## Blocked by
+          **D6** (approach), **Q20** (name confirmation) — but the structure can land now.
+
+          **Source:** `Countertop_Checks_Updated.xlsx` sheet `Countertop_Checks`; diagram `CT_image10`
+          **Verification:** `tests/rules/test_semantic_types.py`
+
+      - title: "A3.2 — Cabinet and field vocabulary"
+        labels: [type:story, area:rules, P1, "size:S"]
+        body: |
+          ## Context
+          `Cabinet_Checks.xlsx` uses a prefix convention: `A_` arch, `S_` shop, `F_` field-measured.
+
+          ## Scope
+          Add `A_/S_/F_Wall_2_Wall_Dim`, `A_/S_CAB_n`, `A_/S_Filler_Left/Right`,
+          `Filler_Width_Min/Max`, and the document-role dimension that the prefix implies.
+
+          ## Acceptance criteria
+          - [ ] Prefix maps to document role (`ARCH` / `SHOP` / `USER_INPUT`) mechanically, not by string
+                matching at call sites
+          - [ ] Adding a new prefixed name requires no change outside the vocabulary module
+
+          **Source:** `Cabinet_Checks.xlsx` · **Verification:** `tests/rules/test_semantic_types.py`
+
+      - title: "A3.3 — Ban hard-coded semantic strings"
+        labels: [type:story, area:rules, P1, "size:S"]
+        body: |
+          ## Context
+          The whole point of a single source of truth is defeated by one inline `"cabinet_width"`.
+
+          ## Scope
+          A lint rule or test that fails if a known semantic type appears as a string literal outside the
+          vocabulary module.
+
+          ## Acceptance criteria
+          - [ ] Test fails when a semantic name is hard-coded elsewhere
+          - [ ] Failure message points at the file and the constant to use instead
+
+          **Source:** `rules/semantic_types.py` module docstring · **Verification:** `tests/rules/test_no_hardcoded_types.py`
+
+  - id: A4
+    title: "Epic A4 — Typed operation registry"
+    milestone: "M1 — Deterministic Core (Track A)"
+    labels: [type:epic, area:verdict, safety-critical, P0]
+    body: |
+      The crown jewel. Every PASS/FAIL in the product is exact arithmetic performed here.
+
+      `AGENTS.md` §2.2 — rules select from a typed registry only; **no `eval`, no executable rule text**.
+      New operations are code-reviewed and tested, never supplied as rule data.
+
+      Extends the initial set with the aggregates `docs/RULE_ENGINE_SPEC.md` identified, plus
+      `pairwise_within_tolerance` which the client's arch-vs-shop cabinet comparison requires and which
+      no existing spec covers (F8).
+
+      Source: `AGENTS.md` §7 · `docs/RULE_ENGINE_SPEC.md` §2 · plan §F8
+    stories:
+      - title: "A4.1 — Registry framework and calculation trace"
+        labels: [type:story, area:verdict, safety-critical, P0, "size:L"]
+        body: |
+          ## Context
+          Operations must be selected by name from a typed registry, validated for arity and type before
+          execution, and must emit a trace a reviewer can follow. A type/arity mismatch is a rule-authoring
+          error and must never degrade into a silent pass.
+
+          ## Scope
+          Operation interface, registration, arity/type validation, and a structured calculation trace
+          (operands with provenance, intermediate values, comparison, tolerance, outcome).
+
+          ## Acceptance criteria
+          - [ ] Operations are resolved by name from the registry; an unknown name is a loud error
+          - [ ] Arity/type mismatch raises a rule-authoring error before any arithmetic runs
+          - [ ] Every execution returns a trace sufficient to reconstruct the verdict by hand
+          - [ ] Trace records engine version and operation version
+          - [ ] No `eval`/`exec` anywhere (enforced by A1.4)
+
+          **Source:** `AGENTS.md` §7; backend proposal §8.2 · **Verification:** `tests/verdict/test_registry.py`
+
+      - title: "A4.2 — Scalar operations"
+        labels: [type:story, area:verdict, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          The initial set named in both architecture documents.
+
+          ## Scope
+          `exists`, `equals`, `within_tolerance`, `minimum`, `maximum`, `between`, `one_of`, `contains`,
+          `difference_between`, `conditional_required`.
+
+          ## Acceptance criteria
+          - [ ] Each operation has exhaustive tests including boundary cases (exactly at tolerance,
+                exactly at a bound)
+          - [ ] Boundary semantics are explicit and documented (`≤` vs `<`)
+          - [ ] Unknown/missing operand → NOT FOUND; ambiguous → REVIEW REQUIRED; never a default
+          - [ ] All arithmetic exact — no float path
+
+          **Source:** `AGENTS.md` §7 · **Verification:** `tests/verdict/test_scalar_ops.py`
+
+      - title: "A4.3 — Aggregate operations (incl. `sum_within_tolerance`)"
+        labels: [type:story, area:verdict, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          `sum_within_tolerance` is the operation CT-1 needs — the client's headline check.
+
+          ## Scope
+          `sum`, `count`, `count_equals`, `sum_within_tolerance`, `all_within_tolerance`.
+
+          ## Acceptance criteria
+          - [ ] `sum_within_tolerance(target, addends, tol)` matches `docs/RULE_ENGINE_SPEC.md` §5 semantics
+          - [ ] Variable-length addend lists supported
+          - [ ] An empty list where ≥1 is required → NOT FOUND, never a zero sum
+          - [ ] Real drawing chain values used as fixtures (`51+533+457+984 = 2025` exactly)
+          - [ ] Trace shows every addend with provenance and the running total
+
+          **Source:** `docs/RULE_ENGINE_SPEC.md` §2, §5 · **Verification:** `tests/verdict/test_aggregate_ops.py`
+
+      - title: "A4.4 — `pairwise_within_tolerance` with count-mismatch handling"
+        labels: [type:story, area:verdict, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          `Cabinet_Checks.xlsx` compares `A_CAB_1…7` against `S_CAB_1…7` — a list-to-list comparison keyed
+          by identifier. **No existing or proposed operation covers this** (plan §F8).
+
+          ## Scope
+          `pairwise_within_tolerance(list_a, list_b, key, tolerance)`.
+
+          ## Acceptance criteria
+          - [ ] Pairs by identifier, not by position — position is not a safe key
+          - [ ] **A count mismatch is itself a finding** and must never silently compare the shorter list
+          - [ ] An unmatched item on either side is reported individually, not aggregated away
+          - [ ] Trace lists every pair, its delta, and its outcome
+
+          ## Why this matters
+          Silently comparing 7 arch cabinets against 6 shop cabinets and reporting PASS is exactly the
+          false-PASS shape the product exists to prevent.
+
+          **Source:** plan §F8; `Cabinet_Checks.xlsx` · **Verification:** `tests/verdict/test_pairwise_ops.py`
+
+      - title: "A4.5 — `alignment` operation"
+        labels: [type:story, area:verdict, safety-critical, P1, "size:S"]
+        body: |
+          ## Context
+          Named in `docs/RULE_ENGINE_SPEC.md` §2 for colinearity checks (e.g. equal drawer fronts).
+
+          ## Scope
+          `alignment(positions, tolerance)` — positions colinear/aligned within tolerance.
+
+          ## Acceptance criteria
+          - [ ] Deterministic and exact; documented definition of "aligned"
+          - [ ] Fewer than 2 positions → NOT FOUND rather than a vacuous PASS
+
+          **Source:** `docs/RULE_ENGINE_SPEC.md` §2 · **Verification:** `tests/verdict/test_alignment.py`
+
+      - title: "A4.6 — Adversarial and property tests for the registry"
+        labels: [type:story, area:verdict, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          `AGENTS.md` §6 — the verdict engine gets exhaustive typed-op tests. The failure mode we care
+          about is not "wrong answer" but "confident wrong PASS".
+
+          ## Scope
+          Property-based tests plus a deliberate adversarial suite: missing operands, unit mismatch,
+          empty lists, boundary-exact values, duplicate identifiers, and every documented error path.
+
+          ## Acceptance criteria
+          - [ ] Property test: no input combination yields PASS when any operand is missing or unqualified
+          - [ ] Every operation has an explicit test for its NOT FOUND and REVIEW REQUIRED paths
+          - [ ] Boundary-exact values tested on both sides for every comparison operation
+
+          **Source:** `AGENTS.md` §6, §9 · **Verification:** `tests/verdict/test_properties.py`
+
+  - id: A5
+    title: "Epic A5 — Rule schema, derivations and snapshots"
+    milestone: "M1 — Deterministic Core (Track A)"
+    labels: [type:epic, area:rules, safety-critical, P0]
+    body: |
+      The rule model: YAML authoring → validation → immutable hashed JSON snapshot, with a deterministic
+      applicability resolver choosing which snapshot applies.
+
+      Two additions beyond `docs/RULE_ENGINE_SPEC.md`, both driven by the client material:
+      **derivations** (D2) because client formulas chain, and **severity** (D3) because the primary
+      release metric is unmeasurable without it.
+
+      Source: `AGENTS.md` §7 · `docs/RULE_ENGINE_SPEC.md` §3 · plan §F6, §F7, §F12
+    stories:
+      - title: "A5.1 — Rule models and JSON Schema"
+        labels: [type:story, area:rules, safety-critical, P0, "size:L"]
+        body: |
+          ## Context
+          Rules are authored in reviewable YAML and validated on publish; an invalid rule must never
+          reach the engine.
+
+          ## Scope
+          Pydantic v2 models + generated JSON Schema covering `docs/RULE_ENGINE_SPEC.md` §3: inputs
+          (source, semantic_type, scope, cardinality), parameters, applicability variants, operation,
+          `on_missing` / `on_ambiguous`, plus `severity` (D3) and `arithmetic_unit` (D1).
+
+          ## Acceptance criteria
+          - [ ] Every construct in `RULE_ENGINE_SPEC.md` §3 is expressible
+          - [ ] Invalid rules are rejected with a message naming the field and why
+          - [ ] Unknown fields are rejected, not ignored
+          - [ ] Round-trip YAML → model → JSON is lossless
+
+          **Source:** `docs/RULE_ENGINE_SPEC.md` §3 · **Verification:** `tests/rules/test_rule_schema.py`
+
+      - title: "A5.2 — `derivations:` DAG with acyclicity validation"
+        labels: [type:story, area:rules, safety-critical, P0, "size:L"]
+        body: |
+          ## Context
+          Implements **D2**. Client formulas chain: `CT010` is built from five operands, one of which
+          (`CT009`) is derived by rearranging that same formula. A single `operation:` block cannot
+          express this.
+
+          ## Scope
+          Named intermediates, each computed by a typed operation from inputs, parameters or earlier
+          derivations. Validated **acyclic at publish time**, never at execution time.
+
+          ## Acceptance criteria
+          - [ ] A derivation may reference inputs, parameters and earlier derivations
+          - [ ] A cycle is rejected at publish with the cycle path in the message
+          - [ ] Still no `eval` — every derivation step is a registry operation
+          - [ ] Each intermediate appears in the calculation trace with its inputs
+          - [ ] `CT004` and `CT010` are both expressible (proven by test)
+
+          ## Blocked by
+          **D2**
+
+          **Source:** plan §F6; `Countertop_Checks` sheet formulas · **Verification:** `tests/rules/test_derivations.py`
+
+      - title: "A5.3 — Applicability resolver and explicit \"no applicable rule\""
+        labels: [type:story, area:rules, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          Implements **D7**. Rule selection is deterministic and must never be delegated to a model.
+          Every client countertop check is scoped to walls on three sides — other layouts have no rule.
+
+          ## Scope
+          Resolver picking the published snapshot and applicability variant from explicit scope fields
+          (`wall_config` etc.), exposing `applicability.<field>` to the operation.
+
+          ## Acceptance criteria
+          - [ ] Variant selection is deterministic and reproducible from explicit fields only
+          - [ ] Discriminator that cannot be established → REVIEW REQUIRED (never a guessed layout)
+          - [ ] **No matching rule → explicit "no applicable rule" outcome surfaced as REVIEW REQUIRED**
+          - [ ] A package with an island countertop cannot render as clean (proven by test)
+
+          ## Why this matters
+          Silence is the most dangerous false-PASS: a reviewer seeing no findings will assume the package
+          was checked.
+
+          ## Blocked by
+          **D7**
+
+          **Source:** plan §F12; `RULE_ENGINE_SPEC.md` §3c · **Verification:** `tests/rules/test_applicability.py`
+
+      - title: "A5.4 — Immutable hashed rule snapshots"
+        labels: [type:story, area:rules, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          `AGENTS.md` §2.7 — everything versioned and immutable; every finding stores the exact rule
+          snapshot ID so any verdict can be reproduced later.
+
+          ## Scope
+          YAML → validated → canonical JSON snapshot with a content hash. Append-only; republishing
+          creates a new snapshot, never an in-place edit.
+
+          ## Acceptance criteria
+          - [ ] Snapshot ID is a deterministic content hash
+          - [ ] Byte-identical input yields an identical ID; any change yields a new one
+          - [ ] Editing a published snapshot in place is impossible (enforced, not documented)
+          - [ ] A finding can name the exact snapshot that produced it
+
+          **Source:** `AGENTS.md` §2.7; backend proposal §8.1 · **Verification:** `tests/rules/test_snapshots.py`
+
+      - title: "A5.5 — Tolerance placeholders that fail loudly"
+        labels: [type:story, area:rules, safety-critical, P0, "size:S"]
+        body: |
+          ## Context
+          **No tolerance value exists in the client material (Q2).** We must be able to author rules
+          structurally before the numbers arrive — without ever shipping a guessed tolerance.
+
+          ## Scope
+          An explicit `TOLERANCE_UNCONFIRMED` sentinel. A rule carrying one is publishable for
+          development but cannot produce PASS/FAIL.
+
+          ## Acceptance criteria
+          - [ ] A rule with an unconfirmed tolerance returns REVIEW REQUIRED, never PASS or FAIL
+          - [ ] An unset tolerance is **not** treated as zero
+          - [ ] Publishing to production with an unconfirmed tolerance is blocked
+          - [ ] A report lists all rules awaiting a confirmed tolerance
+
+          ## Blocked by
+          **Q2** for the real values — but this mechanism unblocks authoring now.
+
+          **Source:** plan §4 Q2, §7 risks · **Verification:** `tests/rules/test_tolerance_placeholder.py`
+
+  - id: A6
+    title: "Epic A6 — Author the real client rules"
+    milestone: "M1 — Deterministic Core (Track A)"
+    labels: [type:epic, area:rules, safety-critical, P0]
+    body: |
+      Turning the client's checklist into executable, versioned rules. Each rule is authored against the
+      client's own wording and cites the workbook cell it came from.
+
+      Several are structurally authorable now with placeholder tolerances (A5.5) and become releasable
+      once **Q1**–**Q6** are answered.
+
+      Source: `data/checklists/*.xlsx` · plan §1, §4
+    stories:
+      - title: "A6.1 — CT-1 Countertop Width Verification"
+        labels: [type:story, area:rules, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          The client's headline check and the proof case for the whole rule engine.
+
+          ```
+          CT001 = CT002 + CT003 + CT004 + CT005 + CT006   (+ field cuts)
+          ```
+          i.e. countertop width = left filler + cabinets + right filler + field cuts.
+
+          ## Scope
+          Author `CT-WIDTH-001` per `docs/RULE_ENGINE_SPEC.md` §4, reconciled with the client workbook.
+
+          ## Acceptance criteria
+          - [ ] Uses `sum_within_tolerance` over variable-length cabinet and filler lists
+          - [ ] Applicability variant selects tolerance and field-cut count by `wall_config`
+          - [ ] Executes end-to-end against synthetic operands with a full trace
+          - [ ] Real drawing values used as a fixture (`51+533+457+984 = 2025` exactly)
+          - [ ] Tolerance is a loud placeholder until **Q2**
+
+          ## Blocked by
+          **Q1** (field cut count — changes the arithmetic), **Q2** (tolerance), **Q3** (does cabinet
+          width include the end panel)
+
+          **Source:** `Countertop_Checks_Updated.xlsx` `D23`/`D24`/`D27`; `RULE_ENGINE_SPEC.md` §4
+          **Verification:** `tests/rules/test_ct1_width.py`
+
+      - title: "A6.2 — CT-2 Countertop Depth Verification"
+        labels: [type:story, area:rules, safety-critical, P1, "size:M"]
+        body: |
+          ## Context
+          The workbook gives **two different depth formulas**:
+          - `I23` — countertop depth = cabinet depth + overhang, where cabinet depth = carcass + door (3/4″ typical)
+          - `CT010` — `C.T_OH + CT007 + CT008 + CT009 + B.S_THK`
+
+          ## Scope
+          Author both, and — if the client confirms — a cross-check that they agree.
+
+          ## Acceptance criteria
+          - [ ] Both formulas expressible via `derivations:` (A5.2)
+          - [ ] Field cuts explicitly **not** applied to depth (client note `I14`)
+          - [ ] Cross-check behaviour follows the answer to **Q13**
+
+          ## Blocked by
+          **Q13** (both? cross-check?), **Q2** (tolerance), **D2** (derivations)
+
+          **Source:** `Countertop_Checks_Updated.xlsx` `I14`/`I19`/`I23`/`I27`; sheet `Countertop_Checks`
+          **Verification:** `tests/rules/test_ct2_depth.py`
+
+      - title: "A6.3 — CT-3 sink cutout family (width, depth, offsets)"
+        labels: [type:story, area:rules, safety-critical, P1, "size:L"]
+        body: |
+          ## Context
+          Three checks that the workbook confusingly labels all "CT-3" (see **Q18**):
+          - Sink cutout depth `D = E − 0.25 − 0.25` (undermount reveal)
+          - Sink cutout width `A = E − 0.25 − 0.25` (see **Q15** — likely interior *width*)
+          - Front offset ≥ 4″, back offset ≈ 2.375″ coordinated with the faucet hole
+
+          ## Scope
+          Author all three with unique IDs.
+
+          ## Acceptance criteria
+          - [ ] Unique rule IDs (not three rules called CT-3)
+          - [ ] Reveal (0.25″ each side) is a **project parameter**, not a constant — the workbook says
+                *"typical, might vary based on fabricator"*
+          - [ ] Front vs back offset semantics follow **Q5**
+          - [ ] Missing cut sheet → NOT FOUND, never assumed
+
+          ## Blocked by
+          **Q7**/**D4** (`PRODUCT_SPEC` role — sink interior dims come from the manufacturer cut sheet),
+          **Q5**, **Q15**, **Q18**
+
+          **Source:** `Countertop_Checks_Updated.xlsx` cols N/S/X; diagrams `CT_image7`, `CT_image8`, `CT_image10`
+          **Verification:** `tests/rules/test_ct3_sink.py`
+
+      - title: "A6.4 — Cabinet filler distribution (Condition 1)"
+        labels: [type:story, area:rules, safety-critical, P1, "size:L"]
+        body: |
+          ## Context
+          ```
+          if   F_Wall_2_Wall_Dim > A_Wall_2_Wall_Dim
+          then Diff = F − A = Filler_Right + Filler_Left
+          UNO  Filler_Right = Filler_Left
+          if   Diff > Filler_Width_Max × 2 → distribute the extra across the cabinets
+          note some cabinets cannot be adjusted (sink, equipment)
+          ```
+
+          ## Scope
+          Author as typed rules: the sum constraint, the each-filler min/max constraint, the
+          equal-unless-noted constraint, and the overflow condition.
+
+          ## Acceptance criteria
+          - [ ] Field dimension is a `USER_INPUT` operand (it is on no drawing)
+          - [ ] Each filler checked against min and max
+          - [ ] Overflow (`Diff > max × 2`) produces a distinct, explicit outcome — not a bare FAIL
+          - [ ] Non-adjustable cabinets excluded from distribution once **Q9** defines how they are identified
+          - [ ] The `F < A` branch is **not** silently treated as PASS (see **Q8**)
+
+          ## Blocked by
+          **Q8** (undefined branch), **Q9** (identifying non-adjustable cabinets), **D8** (how far we go
+          toward computing a recommendation)
+
+          **Source:** `Cabinet_Checks.xlsx` `H18`–`H25`, `N18`–`N22`
+          **Verification:** `tests/rules/test_filler_distribution.py`
+
+      - title: "A6.5 — Arch-vs-shop pairwise cabinet comparison"
+        labels: [type:story, area:rules, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          `A_Wall_2_Wall_Dim`, `A_CAB_1…7`, `A_Filler_Left/Right` against their `S_` equivalents. The
+          purest `arch_vs_shop` check in the client material, and the one that most directly catches a
+          vendor deviating from the approved design.
+
+          ## Scope
+          Author using `pairwise_within_tolerance` (A4.4).
+
+          ## Acceptance criteria
+          - [ ] Pairs by identifier, never by position
+          - [ ] Cabinet **count mismatch** is reported as its own finding
+          - [ ] Each mismatched cabinet is an individually addressable finding with its own evidence
+          - [ ] Tolerance placeholder until **Q2**
+
+          **Source:** `Cabinet_Checks.xlsx` `D17`–`F27` · **Verification:** `tests/rules/test_arch_vs_shop_cabinets.py`
+
+      - title: "A6.6 — Cabinet height decomposition"
+        labels: [type:story, area:rules, P2, "size:S"]
+        body: |
+          ## Context
+          `Cabinet Height = Toe-Kick Height + Drawer 1 + Drawer 2 + Drawer 3 Height`.
+
+          This rule appears **only in a diagram** (`CAB_image2`) and in no text checklist — we would have
+          missed it reading the spreadsheet cells alone.
+
+          ## Scope
+          Author as a vertical `sum_within_tolerance`.
+
+          ## Acceptance criteria
+          - [ ] Variable drawer count supported (three is the example, not the rule)
+          - [ ] Confirmed with the client before release — it is inferred from a diagram
+
+          ## Blocked by
+          Client confirmation that this is a real required check.
+
+          **Source:** `Cabinet_Checks.xlsx` diagram `CAB_image2`; plan §F9
+          **Verification:** `tests/rules/test_cabinet_height.py`
+
+  - id: A7
+    title: "Epic A7 — Project parameters"
+    milestone: "M1 — Deterministic Core (Track A)"
+    labels: [type:epic, area:rules, P0]
+    body: |
+      Implements **D5**. Nine values the rules require appear on **no drawing at all** — overhang,
+      backsplash thickness, panel thickness, door thickness, field cut size, filler min/max, sink front
+      offset minimum, sink depth, and the on-site field dimension.
+
+      The backend data model has no aggregate for these today, and without them most client checks
+      cannot execute.
+
+      Source: plan §F5, D5
+    stories:
+      - title: "A7.1 — Versioned parameter set model"
+        labels: [type:story, area:rules, P0, "size:M"]
+        body: |
+          ## Scope
+          `project_parameter_sets`: versioned, immutable, each parameter carrying value, unit, source
+          (`G.C / Client`, `Company standard`, `Measured`) and who set it when.
+
+          ## Acceptance criteria
+          - [ ] Parameter sets are versioned and immutable; a change creates a new version
+          - [ ] Every parameter records provenance
+          - [ ] A finding can name the exact parameter-set version it used
+
+          **Source:** plan §F5 · **Verification:** `tests/rules/test_parameters.py`
+
+      - title: "A7.2 — Layered resolution: global → project → run"
+        labels: [type:story, area:rules, P0, "size:M"]
+        body: |
+          ## Context
+          The client distinguishes company standards (front offset 4″), project settings (overhang,
+          backsplash), and per-run inputs (the measured field dimension).
+
+          ## Acceptance criteria
+          - [ ] Resolution order is deterministic and documented
+          - [ ] The resolved value reports which layer supplied it
+          - [ ] Overriding a company standard is recorded, not silent
+
+          **Source:** plan §F5; `Cabinet_Checks.xlsx` `T21` ("User Input / Global Input / Project Based Input")
+          **Verification:** `tests/rules/test_parameter_layering.py`
+
+      - title: "A7.3 — `USER_INPUT` operand source"
+        labels: [type:story, area:rules, safety-critical, P0, "size:S"]
+        body: |
+          ## Context
+          `F_Wall_2_Wall_Dim` is measured on site and appears on no drawing. `OperandSource.USER_INPUT`
+          already exists in `rules/semantic_types.py`; the engine must honour it.
+
+          ## Acceptance criteria
+          - [ ] A `USER_INPUT` operand is sealed like any other and carries its provenance
+          - [ ] It is clearly distinguished from extracted evidence in the finding
+          - [ ] It cannot be supplied by any model or retrieval path
+
+          **Source:** `RULE_ENGINE_SPEC.md` §3e; `memory.md` · **Verification:** `tests/rules/test_user_input_operands.py`
+
+      - title: "A7.4 — Missing parameter → NOT FOUND, never a default"
+        labels: [type:story, area:rules, safety-critical, P0, "size:S"]
+        body: |
+          ## Context
+          `AGENTS.md` §2.4 — never invent a value. A defaulted parameter is an invented value wearing a
+          plausible number, and it produces a confident, wrong verdict.
+
+          ## Acceptance criteria
+          - [ ] A missing required parameter yields NOT FOUND
+          - [ ] No parameter has an implicit fallback anywhere in the resolution path
+          - [ ] "Typical" values from the checklist (3/4″ door, 1″ field cut) are **seeded defaults a human
+                confirms**, never silent fallbacks
+          - [ ] Test proves a missing parameter cannot produce PASS
+
+          **Source:** `AGENTS.md` §2.4, §9 · **Verification:** `tests/rules/test_missing_parameter.py`
+
+  - id: A8
+    title: "Epic A8 — Evaluation harness and release gates"
+    milestone: "M1 — Deterministic Core (Track A)"
+    labels: [type:epic, area:eval, safety-critical, P0]
+    body: |
+      Makes the release gates in `AGENTS.md` §9 executable rather than aspirational.
+
+      The harness can be built now against synthetic cases and accept real cases unchanged when the gold
+      set arrives. **This is deliberately built before the data** so that the day the gold set lands we
+      can measure it, rather than starting to build a measuring device.
+
+      Source: `AGENTS.md` §9 · system design §14 · plan §6 Track A8
+    stories:
+      - title: "A8.1 — Gold case schema and manifest loader"
+        labels: [type:story, area:eval, P0, "size:M"]
+        body: |
+          ## Context
+          `eval/gold_set/manifest.yaml` exists as a commented template with `cases: []`.
+
+          ## Scope
+          Formalise the case schema (observations with page/polygon, matches, expected findings) and a
+          loader that validates it.
+
+          ## Acceptance criteria
+          - [ ] Manifest validated on load; a malformed case is a loud error
+          - [ ] Cases live outside version control (proprietary) while the schema is committed
+          - [ ] Loader creates missing directories rather than assuming them (see A1.6)
+
+          **Source:** `eval/gold_set/manifest.yaml` · **Verification:** `tests/eval/test_manifest.py`
+
+      - title: "A8.2 — Metric implementations"
+        labels: [type:story, area:eval, safety-critical, P0, "size:L"]
+        body: |
+          ## Context
+          Nine metrics are specified in priority order; **critical false-PASS is #1** and blocks release.
+
+          ## Scope
+          Critical false-PASS rate, evidence page/polygon correctness, numeric and unit exact-match
+          accuracy, identifier/item match precision, FAIL recall, NOT FOUND and REVIEW REQUIRED recall,
+          reviewer correction rate, reviewer minutes, automation coverage.
+
+          ## Acceptance criteria
+          - [ ] Critical false-PASS computed over CRITICAL-severity rules only (needs **D3**)
+          - [ ] Each metric has a test with a hand-computed expected value
+          - [ ] Metrics run on synthetic cases today, real cases unchanged later
+
+          ## Blocked by
+          **D3** (severity) — the primary metric is undefined without it. **Q4** for the classification.
+
+          **Source:** `AGENTS.md` §9; system design §14 · **Verification:** `tests/eval/test_metrics.py`
+
+      - title: "A8.3 — Release gate runner"
+        labels: [type:story, area:eval, safety-critical, P0, "size:M"]
+        body: |
+          ## Context
+          `AGENTS.md` §9 — a change ships only if **all** gates hold. Today they are prose.
+
+          ## Scope
+          An executable check of each gate: OCR disagreement never auto-resolved; unknown unit cannot
+          enter verdict; missing approved source → NOT FOUND; advisory retrieval never an operand; rule
+          change requires full gold-set regression; evidence localisation meets threshold.
+
+          ## Acceptance criteria
+          - [ ] Each gate is an executable assertion with a clear pass/fail
+          - [ ] The runner reports which gate failed and why
+          - [ ] Wired into CI once a gold set exists
+          - [ ] Optimising reviewer-minutes/coverage is blocked while any safety gate fails
+
+          **Source:** `AGENTS.md` §9 · **Verification:** `tests/eval/test_release_gates.py`
+
+      - title: "A8.4 — Synthetic case generator"
+        labels: [type:story, area:eval, P1, "size:M"]
+        body: |
+          ## Context
+          The gold set is the long pole and may be weeks away. We should not be blind until it arrives.
+
+          ## Scope
+          Generate synthetic packages with known-correct answers — including deliberately seeded errors —
+          so the engine and metrics are exercised end to end.
+
+          ## Acceptance criteria
+          - [ ] Generates cases with known expected findings across all four outcomes
+          - [ ] Seeds specific error classes: off-by-tolerance, count mismatch, missing operand, unit mismatch
+          - [ ] Includes the F1 dual-unit rounding scenario
+          - [ ] Clearly labelled synthetic; can never be mistaken for real client data
+
+          **Source:** plan §6, §8 · **Verification:** `tests/eval/test_synthetic_cases.py`
+
+  # ---------------- M2 (blocked) ----------------
+  - id: B1
+    title: "Epic B1 — Gold set (BLOCKED: the long pole)"
+    milestone: "M2 — Evidence & Extraction (Track B)"
+    labels: [type:epic, area:eval, blocked:client, blocked:data, P0]
+    body: |
+      Annotate representative cabinet and countertop packages: values, units, identifiers, polygons,
+      matches and expected findings.
+
+      ## Why this is the single most important blocked item
+      Without a gold set **no metric can be computed and no release gate can pass**, regardless of how
+      much code exists. Phase 0's exit gate is "held-out ground truth exists" — we cannot reach it alone.
+
+      ## Waiting on Raj
+      - One complete real project (shop + arch set, with a countertop-on-cabinets example)
+      - 5–10 previously reviewed drawings with their mark-ups
+      - Agreement on the review policy
+
+      **Recommend escalating now rather than at Phase 3.**
+
+      Source: `AGENTS.md` §8 Phase 0; `memory.md` client status; plan §8
+
+  - id: B2
+    title: "Epic B2 — Extraction core (BLOCKED: needs real PDFs)"
+    milestone: "M2 — Evidence & Extraction (Track B)"
+    labels: [type:epic, area:extraction, blocked:data, P1]
+    body: |
+      Digital-first extraction: pikepdf repair → pypdfium2 render → pdfplumber vector geometry, with
+      PaddleOCR + docTR only where needed.
+
+      ## Scope note from the research
+      Extraction is **not dimensions-only**. The real drawing carries rule-relevant facts in free text
+      (*"5″ FILLER PANEL TO BE FIELD CUT AS PER SITE CONDITION"*), material codes (`PL-02`, `WD-03`),
+      view tags (circled `D`/`E`/`F`/`G`) and the title block. `memory.md` records "dimensions live on
+      dimension lines" — true but incomplete.
+
+      Blocked: `data/drawings/` is empty.
+
+      Source: plan §F10; system design §11
+
+  - id: B3
+    title: "Epic B3 — Dimension-chain closure validator"
+    milestone: "M2 — Evidence & Extraction (Track B)"
+    labels: [type:epic, area:extraction, blocked:data, P0]
+    body: |
+      The highest-value early win available, and the strongest candidate for Phase 1's "one deterministic
+      check".
+
+      ## Why
+      Verified exactly on the real drawing, in both unit systems independently:
+      ```
+      2025 + 1968 + 2019 = 6012          79 3/4 + 77 1/2 + 79 1/2 = 236 3/4
+        51 + 533 + 457 + 984 = 2025            2 + 21 + 18 + 38 3/4 = 79 3/4
+      ```
+      If a chain fails to close, we have mis-read or mis-associated something — detectable **with no
+      ground truth, no client answer key and no rule**. It validates extraction quality by itself.
+
+      Design can start now; execution needs real PDFs.
+
+      Source: plan §F3
+
+  - id: B4
+    title: "Epic B4 — Canonical evidence and the Evidence Gate"
+    milestone: "M2 — Evidence & Extraction (Track B)"
+    labels: [type:epic, area:evidence, safety-critical, blocked:data, P0]
+    body: |
+      `ObservationCandidate` → `CanonicalObservation` → sealed `VerdictOperand`. The gate that decides
+      what is allowed to become a verdict operand — the boundary the whole product's safety rests on.
+
+      Includes the **dual-unit corroboration lane** (plan §F2): a consistent mm/inch pair is independent
+      evidence for a number, available from vector extraction before any OCR, and materially reduces how
+      often we need PaddleOCR + docTR agreement. It corroborates the *reading*, not the *semantic
+      association* — that distinction must be explicit in the code.
+
+      Also implements **D4** (`PRODUCT_SPEC` document role).
+
+      Source: `AGENTS.md` §2.3, §8 Phase 2–3; backend proposal §7; plan §F2, §F4
+
+  - id: B5
+    title: "Epic B5 — Arch-to-shop matching"
+    milestone: "M2 — Evidence & Extraction (Track B)"
+    labels: [type:epic, area:matching, blocked:data, P1]
+    body: |
+      Exact normalised identifier → aliases → hard filters → geometry, with lexical/vector lanes only if
+      justified. Retrieval stays **advisory** — it may suggest where to look, never supply an operand.
+
+      The real drawing's `PL-02` / `WD-03` codes are exactly the coded-identifier class that makes dense
+      embeddings unsafe on their own (`X-223` vs `X-233`).
+
+      Source: `AGENTS.md` §2.5, §8 Phase 5; backend proposal §7.3
+
+  # ---------------- M3 (deferred) ----------------
+  - id: C1
+    title: "Epic C1 — Bounded LangGraph extraction agent (DEFERRED)"
+    milestone: "M3 — Durable Platform & Reviewer Product (Track C)"
+    labels: [type:epic, area:extraction, P2]
+    body: |
+      LangGraph around ambiguous regions only, 6–8 steps, ≤2 OCR retries, ≤2 VLM calls, abstain → REVIEW
+      REQUIRED. Cannot select rules, alter tolerances or issue verdicts.
+
+      Exit gate: it must **beat fixed routing** on accuracy, cost or reviewer time — otherwise we don't
+      ship it.
+
+      Source: `AGENTS.md` §8 Phase 4; system design §7
+
+  - id: C2
+    title: "Epic C2 — Durable platform: FastAPI, Hatchet, outbox, observability (DEFERRED)"
+    milestone: "M3 — Durable Platform & Reviewer Product (Track C)"
+    labels: [type:epic, area:platform, P2]
+    body: |
+      Control plane, package state machine, transactional outbox, Hatchet workflows with page
+      parallelism and retries, OpenTelemetry tracing, and true runtime isolation of the verdict container
+      (no egress, no credentials).
+
+      **Ordering principle (`AGENTS.md` §8): do not build the durable platform before extraction accuracy
+      is proven on real GV drawings.**
+
+      Source: `AGENTS.md` §8 Phase 6; backend proposal §9, §11, §13
+
+  - id: C3
+    title: "Epic C3 — Reviewer product: findings, redlines, ledger, approvals (DEFERRED)"
+    milestone: "M3 — Durable Platform & Reviewer Product (Track C)"
+    labels: [type:epic, area:frontend, P2]
+    body: |
+      Evidence-linked findings side by side (arch | shop | result), redline PDF, correction ledger and
+      approvals. Exit gate: a reviewer can validate every decision quickly and auditably.
+
+      Includes the **project parameter entry UI** (D5) — the reviewer must supply values that appear on
+      no drawing — and rendering of **derived expected values** with their calculation trace (D8).
+
+      Source: `AGENTS.md` §8 Phase 7; plan §F5, §F11
