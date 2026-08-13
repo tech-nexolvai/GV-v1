@@ -259,11 +259,32 @@ sequences — because pairing by position is unsafe, and a key-set difference is
 
 Shared rules for all operations:
 
-- A missing required operand → `NOT_FOUND`. Never a default, never zero.
-- An empty list where ≥1 is required → `NOT_FOUND`. Never a zero sum.
-- Ambiguity → `REVIEW_REQUIRED`.
+- **Operations receive resolved, qualified values only.** Missing and ambiguous input is the
+  engine's boundary (§3.10 steps 1–4), not each operation's. An operation handed `None` raises a
+  programming error rather than deciding an outcome — defence in depth, never duplicated policy.
+  *(An earlier version of this list stated `NOT_FOUND` and `REVIEW_REQUIRED` as operation rules,
+  which contradicted §3.10 and invited every operation to reimplement the policy slightly
+  differently. Corrected by ADR-0012.)*
+- An empty list where ≥1 is required → `NOT_FOUND`, decided by the engine before the operation
+  runs. Never a zero sum.
 - Boundary semantics stated explicitly in the docstring (`≤` vs `<`) and tested on both sides.
 - No operation reads a clock, a file, an environment variable or a network.
+
+Settled edge cases (ADR-0012):
+
+- `exists` — `None`, empty string and empty collection are **absent**; **zero is present**, because
+  `0 mm` is a real measurement and an empty string is a failed extraction.
+- `contains` — literal and case-sensitive, with no normalisation. Normalising is a judgement about
+  whether two spellings mean the same thing, and it belongs upstream in evidence where it is
+  recorded and auditable.
+- `equals` — `Measurement`, `str`, `StrEnum`, `int`, `Fraction`. Never `float`. Two `Measurement`s
+  must share their authored unit; mixed units raise rather than convert.
+- `one_of` with an empty allowed set — a rule-authoring error rejected at publish, not a `FAIL`.
+- `difference_between` — usable inside `derivations:`, never as a rule's terminal operation: it
+  states no expectation, so no honest outcome exists for it.
+- `conditional_required(*, when, value)` — `when=True` and present → `PASS`; `when=True` and absent
+  → `NOT_FOUND`; `when=False` → `PASS` with the trace recording that the requirement was **not
+  exercised**, so a condition that never fires is visible rather than silently reassuring.
 
 *#48–#52.*
 
