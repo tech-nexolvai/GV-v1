@@ -33,6 +33,7 @@ from enum import StrEnum
 from types import MappingProxyType
 
 from rules.schema import Quantity
+from verdict.outcomes import Outcome
 
 #: Prefix on every parameter-set identifier, so the algorithm is visible in stored data.
 HASH_ALGORITHM = "sha256"
@@ -507,3 +508,69 @@ def is_user_input(resolved: ResolvedParameter) -> bool:
     shop drawing, because that is the number most likely to be wrong or out of date.
     """
     return resolved.layer is ParameterLayer.RUN and resolved.value.provenance in HUMAN_PROVENANCES
+
+
+# ---------------------------------------------------------------------------
+# Missing is NOT FOUND, never a default (#67)
+# ---------------------------------------------------------------------------
+
+
+def outcome_for_missing_parameter() -> Outcome:
+    """The outcome a check must produce when a parameter no layer supplies is required.
+
+    One function rather than each caller choosing, because the choice is not theirs to make.
+    `AGENTS.md` §2.4 forbids inventing a value, and the failure mode of getting this wrong is
+    not a crash — it is a check that quietly proceeds on a substituted number and returns a
+    confident PASS.
+
+    Deliberately returns ``NOT_FOUND`` rather than ``REVIEW_REQUIRED``: the two mean different
+    things to a reviewer. ``NOT_FOUND`` says a required input is absent, which sends them to
+    supply it. ``REVIEW_REQUIRED`` says the inputs conflict or need judgement, which sends them
+    to adjudicate something. A missing parameter is the former.
+    """
+    return Outcome.NOT_FOUND
+
+
+def resolve_required(name: str, *sets: ParameterSet) -> ResolvedParameter | Outcome:
+    """Resolve a parameter, returning :data:`Outcome.NOT_FOUND` instead of raising.
+
+    For callers that want the outcome rather than the exception — the engine executing a rule,
+    for instance, which must record an outcome either way. Behaviour is otherwise identical to
+    :func:`resolve`, including the absence of any fallback: this returns the *outcome* of the
+    value being missing, never a stand-in for the value.
+    """
+    try:
+        return resolve(name, *sets)
+    except ParameterMissingError:
+        return outcome_for_missing_parameter()
+
+
+def seed_company_standards(
+    parameters: Mapping[str, ParameterValue], *, version: int = 1
+) -> ParameterSet:
+    """Build the GLOBAL set holding GV's company standards.
+
+    This exists to make a distinction visible that is otherwise easy to lose. The client's
+    checklist gives "typical" figures — a 3/4 inch door thickness, a 1 inch field cut — and
+    there are two very different ways to honour them.
+
+    As a **code default**, a typical value is applied silently to every project, and nobody can
+    tell afterwards whether a number was chosen or merely assumed. As a **seeded standard**, it
+    is a value with `Company standard` provenance, attributed to whoever set it, sitting in a
+    layer any project can override and a reviewer can see. Same numbers, entirely different
+    accountability.
+
+    Everything here is therefore an ordinary parameter that a person confirmed, not a fallback.
+    A parameter absent from this set is still :class:`ParameterMissingError` — seeding is how
+    standards are recorded, not a way to avoid the missing case.
+    """
+    for name, parameter in parameters.items():
+        if parameter.provenance is not Provenance.COMPANY_STANDARD:
+            raise ValueError(
+                f"{name!r} has provenance {parameter.provenance.value!r}. The GLOBAL layer holds "
+                "company standards; a project-specific or measured value belongs in a layer "
+                "where it can be seen to be an override rather than a standard."
+            )
+    return ParameterSet(
+        project_id=None, layer=ParameterLayer.GLOBAL, version=version, parameters=parameters
+    )
