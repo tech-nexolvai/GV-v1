@@ -303,3 +303,100 @@ def test_a_finding_can_name_the_exact_snapshot() -> None:
     assert snapshot.label.startswith("CT-WIDTH-001 1.0.0 (")
     assert snapshot.short_id in snapshot.snapshot_id
     assert len(snapshot.short_id) == 8
+
+
+# ---------------------------------------------------------------------------
+# One content hash per (rule id, version) — ADR-0006
+# ---------------------------------------------------------------------------
+
+
+def test_editing_a_published_rule_without_bumping_the_version_is_an_error() -> None:
+    """The whole point. Two snapshots sharing a version leave "the highest version"
+    naming two different rules, and the resolver with no defined way to choose."""
+    from rules.snapshot import VersionConflictError
+
+    store = SnapshotStore()
+    store.add(publish(_rule()))
+    edited = _rule(
+        operation=OperationRef(
+            type="within_tolerance",
+            operands={"actual": "countertop_width"},
+            tolerance=Tolerance(value="1/16", unit=Unit.INCH),  # tightened, version unchanged
+        )
+    )
+    with pytest.raises(VersionConflictError) as err:
+        store.add(publish(edited))
+    assert "CT-WIDTH-001" in str(err.value)
+    assert "1.0.0" in str(err.value)
+    assert "bump the version" in str(err.value)
+
+
+def test_bumping_the_version_is_the_way_through() -> None:
+    store = SnapshotStore()
+    store.add(publish(_rule()))
+    tighter = _rule(
+        version="1.0.1",
+        operation=OperationRef(
+            type="within_tolerance",
+            operands={"actual": "countertop_width"},
+            tolerance=Tolerance(value="1/16", unit=Unit.INCH),
+        ),
+    )
+    store.add(publish(tighter))
+    assert len(store) == 2
+
+
+def test_republishing_identical_content_remains_idempotent() -> None:
+    """The uniqueness check must not break the no-op case."""
+    store = SnapshotStore()
+    first = store.add(publish(_rule()))
+    second = store.add(publish(_rule()))
+    assert first is second
+    assert len(store) == 1
+
+
+def test_latest_returns_the_highest_version() -> None:
+    store = SnapshotStore()
+    store.add(publish(_rule(version="1.0.0")))
+    newest = store.add(publish(_rule(version="2.1.0")))
+    store.add(publish(_rule(version="1.9.3")))
+    latest = store.latest("CT-WIDTH-001")
+    assert latest is not None
+    assert latest.snapshot_id == newest.snapshot_id
+
+
+def test_latest_compares_versions_numerically_not_as_strings() -> None:
+    """String ordering puts "1.0.10" below "1.0.9" — a silently wrong answer to
+    "which is newest", and exactly the kind of bug that shows up only after ten releases."""
+    store = SnapshotStore()
+    store.add(publish(_rule(version="1.0.9")))
+    tenth = store.add(publish(_rule(version="1.0.10")))
+    latest = store.latest("CT-WIDTH-001")
+    assert latest is not None
+    assert latest.version == "1.0.10"
+    assert latest.snapshot_id == tenth.snapshot_id
+
+
+def test_latest_compares_the_minor_component_numerically_too() -> None:
+    store = SnapshotStore()
+    store.add(publish(_rule(version="1.9.0")))
+    store.add(publish(_rule(version="1.10.0")))
+    latest = store.latest("CT-WIDTH-001")
+    assert latest is not None
+    assert latest.version == "1.10.0"
+
+
+def test_latest_for_an_unpublished_rule_returns_none() -> None:
+    """A rule that does not exist yet is a normal state, not an integrity failure —
+    the caller turns it into NO_APPLICABLE_RULE."""
+    assert SnapshotStore().latest("CT-NEVER-PUBLISHED") is None
+
+
+def test_two_different_rules_may_share_a_version() -> None:
+    """The constraint is per rule id. Every rule starting at 1.0.0 is normal."""
+    store = SnapshotStore()
+    store.add(publish(_rule(id="CT-WIDTH-001")))
+    store.add(publish(_rule(id="CT-DEPTH-002")))
+    assert len(store) == 2
+    assert store.latest("CT-WIDTH-001") is not None
+    assert store.latest("CT-DEPTH-002") is not None
