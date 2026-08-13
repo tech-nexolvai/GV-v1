@@ -348,6 +348,37 @@ Steps 1–4 all precede any arithmetic. The engine never computes on unqualified
 
 ---
 
+## 3.11 Which rule version a review uses (ADR-0005)
+
+Three axes are routinely confused. They are separate, and only the second is about versions.
+
+| Axis | Decided by | Example |
+|---|---|---|
+| **Which rule and variant applies** | the **drawing** | a three-wall countertop selects the `back_left_right` variant, a two-wall selects `back_left` — different tolerances, one rule |
+| **Which rulebook version applies** | the **run** | a tolerance was edited last month; a re-run of an old review must not silently apply the new one |
+| **Per-vendor rules** | nobody — this does not exist | rules are GV's own standards |
+
+**Tolerances differing between layouts (1/8″ vs 1/16″) is the first axis, not the second.**
+Those are variants of one rule selected by `wall_config`. Reading that as a version difference
+is the mistake this section exists to prevent.
+
+### The rule
+
+- The resolver takes the **latest published snapshot per applicable rule at run time**.
+- **Every finding records the snapshot IDs it used.** This is a correctness requirement of the
+  engine, not a reporting nicety: a finding without them is unreproducible and looks identical
+  to one that is.
+- **An old review is reproduced by replaying its recorded snapshots**, never by re-resolving.
+- **Per-project pinning is not built in V1**, deferred behind a measured need.
+- **Per-vendor rule sets do not exist.** Vendor identity is recorded for error-pattern
+  reporting only, never to select a rulebook.
+
+Consequence: a re-run that does not replay uses current rules and may differ from the original.
+Accepted — the original findings stay intact and reproducible from what they recorded, so
+"what judged this drawing on the day?" is always answerable.
+
+---
+
 ## 4. Testing convention
 
 `tests/<package>/test_<module>.py`, mirroring the source tree. Every Track A story names its test file
