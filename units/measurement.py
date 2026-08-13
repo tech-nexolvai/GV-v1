@@ -93,3 +93,41 @@ class Measurement:
             raise MixedUnitError(
                 f"cannot combine {self.unit.value!r} and {other.unit.value!r} measurements"
             )
+
+
+def to_exact_fraction(value: object) -> Fraction:
+    """Convert an authored numeric value into an exact Fraction.
+
+    Accepts what a rule author or a drawing actually writes: ``3``, ``"1/8"``, ``"38 3/4"``,
+    ``"2.375"``. This lives in ``units`` rather than in the rule schema because turning
+    authored text into an exact number is a units concern, and keeping it here means
+    ``rules/`` and ``verdict/`` never need to mention floating point at all.
+
+    A float is rejected rather than converted: accepting one would let binary rounding into
+    a tolerance, which is the failure ADR-0001 exists to prevent.
+
+    Every rejection raises ``ValueError``, including the type errors. That is deliberate --
+    Pydantic wraps ``ValueError`` into a validation error naming the offending field, while a
+    ``TypeError`` escapes as a bare traceback. A rule author needs to be told which field is
+    wrong, so correct behaviour wins over the usual type-error convention here.
+    """
+
+    from units.imperial import ImperialParseError, parse_imperial
+
+    if isinstance(value, Fraction):
+        return value
+    if isinstance(value, bool):  # bool subclasses int; it is never a measurement
+        raise ValueError("a boolean is not a measurement")  # noqa: TRY004
+    if isinstance(value, int):
+        return Fraction(value)
+    if isinstance(value, float):
+        raise ValueError(  # noqa: TRY004
+            "float is not allowed; write the exact value as text, "
+            'e.g. "1/8" or "2.375", so it stays exact'
+        )
+    if isinstance(value, str):
+        try:
+            return parse_imperial(value)
+        except ImperialParseError as error:
+            raise ValueError(str(error)) from error
+    raise ValueError(f"cannot read {value!r} as an exact numeric value")

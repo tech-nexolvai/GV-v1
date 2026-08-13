@@ -7,10 +7,12 @@ name = "gv-v1"
 version = "0.1.0"
 description = "Graniti Vicentia V1 — AI-assisted shop drawing review"
 requires-python = ">=3.12"
-# The deterministic core (units/, rules/, verdict/) deliberately runs on the standard
-# library alone — that is what lets the verdict service stay isolated. Everything else
-# is an optional group, installed only by the phase that needs it.
-dependencies = []
+# units/ and verdict/ run on the standard library alone — that is what lets the verdict
+# service stay isolated, and tests/test_verdict_isolation.py enforces it.
+#
+# rules/ is permitted pydantic (docs/DESIGN.md section 2) because rule files are authored
+# by humans and must be validated strictly before publication. Pydantic is MIT.
+dependencies = ["pydantic>=2.10"]
 
 # Approved V1 stack, per AGENTS.md §4. Declared here so the licence policy applies to
 # them, but not installed until their phase lands (see AGENTS.md §8 build order).
@@ -29,8 +31,8 @@ extraction = [
     "shapely",
 ]
 
-# Phase 3 — rule authoring and validation
-rules = ["pydantic>=2", "pyyaml"]
+# Phase 3 — rule authoring: YAML loading. Validation itself is a runtime dependency.
+rules = ["pyyaml"]
 
 # Phase 6 — control plane and durable platform
 platform = [
