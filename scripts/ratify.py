@@ -145,11 +145,29 @@ def main() -> int:
         m = CONTRACT_RE.search(body)
         block = m.group(2)
 
-        if remaining:
-            new_req = "requires:\n" + "\n".join(f"  - {r}" for r in remaining)
-        else:
-            new_req = "requires: []"
-        block = re.sub(r"requires:(?:\s*\[\])?(?:\n\s*-\s*.+)*", new_req, block, count=1)
+        # Rewrite the requires list line by line. A regex spanning the whole block was
+        # tried first and duplicated entries instead of replacing them: `\s` matches
+        # newlines, so the trailing-item pattern backtracked into the following lines and
+        # left part of the old list behind. Explicit beats clever when the output is a
+        # dependency record somebody trusts.
+        lines = block.splitlines()
+        rebuilt: list[str] = []
+        cursor = 0  # not `i` — that is the issue in the enclosing loop
+        while cursor < len(lines):
+            if lines[cursor].strip().startswith("requires:"):
+                if remaining:
+                    rebuilt.append("requires:")
+                    rebuilt.extend(f"  - {r}" for r in remaining)
+                else:
+                    rebuilt.append("requires: []")
+                cursor += 1
+                # skip every old list item belonging to this key
+                while cursor < len(lines) and lines[cursor].lstrip().startswith("- "):
+                    cursor += 1
+                continue
+            rebuilt.append(lines[cursor])
+            cursor += 1
+        block = "\n".join(rebuilt)
 
         if not remaining:
             block = re.sub(r"^status:\s*\S+", "status: ready", block, count=1, flags=re.MULTILINE)
