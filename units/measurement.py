@@ -131,3 +131,24 @@ def to_exact_fraction(value: object) -> Fraction:
         except ImperialParseError as error:
             raise ValueError(str(error)) from error
     raise ValueError(f"cannot read {value!r} as an exact numeric value")
+
+
+def ensure_exact(value: object, *, context: str) -> None:
+    """Raise if a value would smuggle floating point into the decision path.
+
+    Lives here rather than at the call site for the same reason as :func:`to_exact_fraction`:
+    the exactness contract belongs to ``units``, and keeping the check here means ``rules`` and
+    ``verdict`` never need to mention floating point at all — which is what lets the guard in
+    ``tests/units/test_measurement.py`` ban the word outright in those packages.
+
+    Raises ``TypeError``, because being handed a float is a caller contract violation rather
+    than bad data: the type annotations already forbid it, so reaching here means something
+    upstream ignored them.
+    """
+
+    if isinstance(value, float):
+        raise TypeError(
+            f"{context} cannot be a float. ADR-0001 requires exact arithmetic, and a float "
+            "would reintroduce the rounding error the unit policy exists to prevent. Use "
+            "Measurement or Fraction."
+        )
