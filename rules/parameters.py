@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -277,3 +277,156 @@ class ParameterSetStore:
 
     def __len__(self) -> int:
         return len(self._by_id)
+
+
+# ---------------------------------------------------------------------------
+# Layered resolution — GLOBAL -> PROJECT -> RUN (#65)
+# ---------------------------------------------------------------------------
+
+
+class ParameterMissingError(Exception):
+    """Raised when no layer supplies a parameter the check needs.
+
+    The caller turns this into ``NOT_FOUND``. There is deliberately no fallback path:
+    `AGENTS.md` §2.4 forbids inventing a value, and a defaulted parameter is an invented value
+    wearing a plausible number. The "typical" figures in the client's checklist — a 3/4 inch
+    door, a 1 inch field cut — are seeded values a human confirms, never silent defaults.
+    """
+
+
+class LayerConflictError(Exception):
+    """Raised when two parameter sets occupy the same layer, or belong to different projects.
+
+    Both are ambiguities rather than merges. "Last wins" has no defined meaning between two
+    PROJECT sets, and resolving one project's parameters against another's is the isolation
+    failure ADR-0006 describes — a finding that is internally consistent and completely wrong,
+    which no tolerance check would catch.
+    """
+
+
+#: Lowest precedence first. Resolution walks this order, so a later layer shadows an earlier
+#: one. Written as data rather than as a sequence of ``if`` statements because the order *is*
+#: the policy, and it should be legible in one line.
+LAYER_PRECEDENCE: tuple[ParameterLayer, ...] = (
+    ParameterLayer.GLOBAL,
+    ParameterLayer.PROJECT,
+    ParameterLayer.RUN,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowedParameter:
+    """A value that was overridden, kept so the override is visible rather than silent."""
+
+    value: ParameterValue
+    layer: ParameterLayer
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedParameter:
+    """The value a check will use, and the record of what it displaced.
+
+    Carrying ``shadowed`` is what makes an override auditable. Reporting only the winner would
+    satisfy "which layer supplied it" while still hiding that a company standard was displaced
+    — and that is precisely the thing a reviewer needs to see. It is cheap to record here and
+    impossible to reconstruct afterwards.
+    """
+
+    name: str
+    value: ParameterValue
+    layer: ParameterLayer
+    shadowed: tuple[ShadowedParameter, ...] = ()
+
+    @property
+    def overrides_a_company_standard(self) -> bool:
+        """True when this value displaced a GLOBAL company standard.
+
+        The case a reviewer most needs surfaced: GV's own standard was set aside for this
+        project or this run, and somebody should be able to see that at a glance.
+        """
+        return any(s.layer is ParameterLayer.GLOBAL for s in self.shadowed)
+
+    def explain(self) -> str:
+        """One line of plain English for a report or a finding."""
+        head = (
+            f"{self.name} = {self.value.value.exact_value} {self.value.value.unit.value} "
+            f"({self.layer.value}, {self.value.provenance.value}, set by {self.value.set_by})"
+        )
+        if not self.shadowed:
+            return head
+        displaced = ", ".join(
+            f"{s.value.value.exact_value} {s.value.value.unit.value} ({s.layer.value})"
+            for s in self.shadowed
+        )
+        return f"{head}; overrides {displaced}"
+
+
+def _ordered(sets: Sequence[ParameterSet]) -> tuple[ParameterSet, ...]:
+    """Return the sets in precedence order, refusing the two ambiguous arrangements.
+
+    Checked here rather than at the call site because a caller that assembled the wrong sets
+    has no way to notice: the resolution would succeed and quietly answer the wrong question.
+    """
+    by_layer: dict[ParameterLayer, ParameterSet] = {}
+    for parameter_set in sets:
+        if parameter_set.layer in by_layer:
+            raise LayerConflictError(
+                f"two parameter sets at the {parameter_set.layer.value} layer. 'Last wins' has "
+                "no defined meaning between them, so this is an ambiguity rather than a merge."
+            )
+        by_layer[parameter_set.layer] = parameter_set
+
+    projects = {s.project_id for s in sets if s.project_id is not None}
+    if len(projects) > 1:
+        raise LayerConflictError(
+            f"parameter sets from more than one project: {sorted(projects)}. Resolving one "
+            "project's parameters against another's would produce a finding that is internally "
+            "consistent and completely wrong, and no tolerance check would catch it."
+        )
+
+    return tuple(by_layer[layer] for layer in LAYER_PRECEDENCE if layer in by_layer)
+
+
+def resolve(name: str, *sets: ParameterSet) -> ResolvedParameter:
+    """Resolve one parameter across the layers, highest precedence winning.
+
+    ``GLOBAL -> PROJECT -> RUN``, last wins. The result records which layer supplied the value
+    and every value it displaced.
+
+    Raises :class:`ParameterMissingError` when no layer supplies it — the caller turns that into
+    ``NOT_FOUND`` rather than substituting anything.
+    """
+    ordered = _ordered(sets)
+
+    found: list[ShadowedParameter] = []
+    for parameter_set in ordered:
+        value = parameter_set.get(name)
+        if value is not None:
+            found.append(ShadowedParameter(value=value, layer=parameter_set.layer))
+
+    if not found:
+        looked_in = ", ".join(s.layer.value for s in ordered) or "no layers"
+        raise ParameterMissingError(
+            f"{name!r} is set by no layer (looked in: {looked_in}). A missing parameter is "
+            "NOT_FOUND, never a default — AGENTS.md §2.4."
+        )
+
+    winner = found[-1]
+    return ResolvedParameter(
+        name=name,
+        value=winner.value,
+        layer=winner.layer,
+        # Reversed so the most recently displaced value reads first.
+        shadowed=tuple(reversed(found[:-1])),
+    )
+
+
+def resolve_all(*sets: ParameterSet) -> dict[str, ResolvedParameter]:
+    """Resolve every parameter named by any layer.
+
+    Useful for showing a reviewer the full effective parameter set for a review, including
+    which values were overridden and by whom.
+    """
+    ordered = _ordered(sets)
+    names = sorted({name for s in ordered for name in s.names()})
+    return {name: resolve(name, *sets) for name in names}
