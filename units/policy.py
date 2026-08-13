@@ -9,7 +9,7 @@ from fractions import Fraction
 
 from units.dual import DualDimension
 from units.errors import UnknownRoundingError
-from units.measurement import INCH_TO_MM, Measurement, Unit
+from units.measurement import INCH_TO_MM, Measurement, MixedUnitError, Unit
 
 _WHOLE_RE = re.compile(r"\d+")
 _DECIMAL_RE = re.compile(r"\d+\.(?P<places>\d+)")
@@ -89,3 +89,22 @@ def check_dual(d: DualDimension) -> Consistency:
     if difference <= allowance:
         return Consistency.CONSISTENT_WITHIN_ROUNDING
     return Consistency.INCONSISTENT
+
+
+def require_same_unit(*ms: Measurement) -> Unit:
+    """Return the common authored unit, rejecting empty or mixed operands.
+
+    This guard never converts a measurement. Callers in the verdict layer translate
+    ``MixedUnitError`` into the appropriate review outcome.
+    """
+
+    if not ms:
+        raise ValueError("at least one measurement is required")
+
+    expected = ms[0].unit
+    for measurement in ms[1:]:
+        if measurement.unit is not expected:
+            raise MixedUnitError(
+                f"cannot combine {expected.value!r} and {measurement.unit.value!r} measurements"
+            )
+    return expected
