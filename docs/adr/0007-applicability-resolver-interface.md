@@ -1,11 +1,13 @@
 # ADR-0007 — The applicability resolver returns abstentions in band, not an empty list
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-13
 **Decides:** D11 (#89)
 **Deciders:** admin (AnantBisht07)
 
-> Drafted by a coding agent. Only the admin may set `Status: Accepted`.
+> Drafted by a coding agent. **Accepted by the admin on 2026-08-13**, with the third
+> open question decided against the draft's recommendation — see *Three questions the
+> draft left open*.
 
 ## Context
 
@@ -89,6 +91,7 @@ class Abstention:
 class Resolution:
     applicable: tuple[ApplicableRule, ...]
     abstentions: tuple[Abstention, ...]
+    project: ProjectScope                  # carried through, never used to filter
 
 def resolve(store: SnapshotStore, context: CheckContext) -> Resolution: ...
 ```
@@ -120,6 +123,43 @@ safe only because `publish` enforces one content hash per `(rule_id, version)`.
 
 `SnapshotStore` gains one public accessor, `rule_ids()`, because candidate selection cannot
 reach into `_by_id` from another module.
+
+## Three questions the draft left open
+
+**How `product_type` matches — exactly, and it becomes a controlled vocabulary.** Matching is
+exact and case-sensitive; no normalising and no aliases, because loose matching silently widens
+which rules fire. Going further than the draft asked, `product_type` stops being a free string
+and becomes a `ProductType` enum validated at publish. A free string means `"Countertop"` or a
+typo publishes cleanly and then matches nothing — a rule that exists, looks authored, and never
+fires. That is silence again, arriving by a different route.
+
+**A rule with an unconfirmed tolerance still resolves as applicable.** It is returned in
+`applicable`, and the engine (#47) is what refuses to decide, because that is where tolerances
+are read. Diverting it to an abstention here would hide it from coverage; keeping it applicable
+means an unconfirmed rule is counted as a check we intended to run and could not complete,
+which is the honest reading.
+
+**`applicability: None` is an authoring error, not "applies unconditionally".** The draft
+recommended treating a missing block as unconditional. **Rejected by the admin**, and rightly:
+that is absence silently becoming a positive, which is the discipline this project has applied
+everywhere else — `NOT_CORROBORATED` rather than folding a missing second reading into
+`CONSISTENT` (#42), `UnknownRoundingError` rather than a default band (#42), and a mandatory
+version bump rather than an inferred one (ADR-0006).
+
+A rule that applies to every item of its product type must **say so**:
+
+```python
+class GlobalApplicability(BaseModel):
+    scope: Literal["global"]        # applicability: {scope: global}
+
+applicability: Applicability | GlobalApplicability      # required, no default
+```
+
+The field is required, so a rule that omits it fails validation at publish rather than
+resolving against every item on a silent default. The cost is one deliberate line in every
+global rule. The thing it buys is that a forgotten discriminator can never be read as
+"applies to everything" — which, for a rule with a tolerance, would apply the wrong tolerance
+to every layout rather than none.
 
 ## Consequences
 

@@ -24,7 +24,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from rules.semantic_types import OperandSource, SemanticType
+from rules.semantic_types import OperandSource, ProductType, SemanticType
 from units.measurement import Measurement, Unit, to_exact_fraction
 from verdict.outcomes import Outcome, Severity
 
@@ -217,6 +217,25 @@ class Applicability(BaseModel):
         return next((v for v in self.variants if v.when == value), None)
 
 
+class GlobalApplicability(BaseModel):
+    """An explicit declaration that a rule applies to every item of its product type.
+
+    A rule with no layout discriminator — a minimum filler width, say — must still *say* that
+    it applies unconditionally. It cannot simply omit its applicability (ADR-0007).
+
+    Leaving the field out would be absence silently becoming a positive, which is the one
+    thing this project refuses everywhere else: a missing second reading is
+    ``NOT_CORROBORATED`` rather than consistent, a missing rounding token raises rather than
+    defaults, and a changed rule needs a version bump rather than an inferred one. Here the
+    stake is higher than usual — a forgotten discriminator read as "applies to everything"
+    would apply one layout's tolerance to every layout, rather than to none.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    scope: Literal["global"]
+
+
 class Derivation(BaseModel):
     """A named intermediate computed by a typed operation (ADR-0003).
 
@@ -278,7 +297,7 @@ class Rule(BaseModel):
 
     id: str = Field(min_length=1)
     version: _SEMVER
-    product_type: str = Field(min_length=1)
+    product_type: ProductType
     check_type: CheckType
     severity: Severity
     arithmetic_unit: Unit
@@ -289,7 +308,7 @@ class Rule(BaseModel):
     inputs: dict[str, InputSelector] = Field(default_factory=dict)
     parameters: dict[str, Parameter] = Field(default_factory=dict)
     derivations: tuple[Derivation, ...] = ()
-    applicability: Applicability | None = None
+    applicability: Applicability | GlobalApplicability
     operation: OperationRef
 
     on_missing: Outcome = Outcome.NOT_FOUND
@@ -356,7 +375,9 @@ class Rule(BaseModel):
         FAIL. The release gate uses this to keep unconfirmed rules out of production.
         """
         tolerances = (
-            [v.tolerance for v in self.applicability.variants] if self.applicability else []
+            [v.tolerance for v in self.applicability.variants]
+            if isinstance(self.applicability, Applicability)
+            else []
         )
         if self.operation.tolerance is not None:
             tolerances.append(self.operation.tolerance)
