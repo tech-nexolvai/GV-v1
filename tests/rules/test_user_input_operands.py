@@ -9,8 +9,8 @@ can never be produced by a model.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 from fractions import Fraction
+from pathlib import Path
 
 import pytest
 
