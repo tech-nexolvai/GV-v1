@@ -12,6 +12,7 @@ from verdict.outcomes import Outcome
 from verdict.registry import (
     REGISTRY,
     Arity,
+    OperationKind,
     OperationResult,
     OperationSpec,
     RuleAuthoringError,
@@ -20,7 +21,6 @@ from verdict.registry import (
     resolve,
     validate_operands,
 )
-from verdict.trace import CalculationTrace, TracedOperand
 
 
 @pytest.fixture(autouse=True)
@@ -33,24 +33,15 @@ def _empty_registry() -> None:
 
 
 def _result() -> OperationResult:
-    actual = Measurement(Fraction(6012), Unit.MM, "6012")
-    expected = Measurement(Fraction(6012), Unit.MM, "6012")
     tolerance = Measurement(Fraction(1), Unit.MM, "1")
-    trace = CalculationTrace(
-        operation="example",
-        operands=(
-            TracedOperand("actual", actual, "SHOP", "shop-v1/page-4/region-2"),
-            TracedOperand("expected", expected, "ARCH", "arch-v3/page-7/region-8"),
-        ),
+    delta = Measurement(Fraction(0), Unit.MM, None)
+    return OperationResult(
+        outcome=Outcome.PASS,
+        delta=delta,
         intermediates=(("delta", Measurement(Fraction(0), Unit.MM, None)),),
         comparison="|6012 - 6012| = 0 <= 1",
         tolerance=tolerance,
-        arithmetic_unit=Unit.MM,
-        outcome=Outcome.PASS,
-        engine_version="1.0.0",
-        operation_version="1.0.0",
     )
-    return OperationResult(Outcome.PASS, Measurement(Fraction(0), Unit.MM, None), trace)
 
 
 def _operation(**_: object) -> OperationResult:
@@ -159,36 +150,33 @@ def test_list_arity_accepts_sequences_and_identifier_keyed_mappings() -> None:
     validate_operands(spec, {"actual": actual, "addends": {"CAB-1": actual}})
 
 
-def test_trace_contains_every_value_needed_for_manual_reconstruction() -> None:
-    """The result records provenance, arithmetic, outcome, and both versions."""
+def test_result_contains_calculation_facts_for_engine_trace() -> None:
+    """An operation reports arithmetic facts without inventing evidence provenance."""
 
     result = _result()
-    trace = result.trace
 
     assert result.outcome is Outcome.PASS
     assert result.delta == Measurement(Fraction(0), Unit.MM, None)
-    assert [operand.name for operand in trace.operands] == ["actual", "expected"]
-    assert [operand.source for operand in trace.operands] == ["SHOP", "ARCH"]
-    assert all(operand.evidence_ref is not None for operand in trace.operands)
-    assert trace.intermediates == (("delta", Measurement(Fraction(0), Unit.MM, None)),)
-    assert trace.comparison == "|6012 - 6012| = 0 <= 1"
-    assert trace.tolerance == Measurement(Fraction(1), Unit.MM, "1")
-    assert trace.arithmetic_unit is Unit.MM
-    assert trace.outcome is Outcome.PASS
-    assert trace.engine_version == "1.0.0"
-    assert trace.operation_version == "1.0.0"
+    assert result.intermediates == (("delta", Measurement(Fraction(0), Unit.MM, None)),)
+    assert result.comparison == "|6012 - 6012| = 0 <= 1"
+    assert result.tolerance == Measurement(Fraction(1), Unit.MM, "1")
+    assert not hasattr(result, "trace")
 
 
 def test_trace_and_operation_spec_are_immutable() -> None:
     """Reviewed metadata and emitted audit records cannot change afterward."""
 
     spec = _spec()
-    trace = _result().trace
+    result = _result()
 
     with pytest.raises(FrozenInstanceError):
-        trace.outcome = Outcome.FAIL  # type: ignore[misc]
+        result.outcome = Outcome.FAIL  # type: ignore[misc]
     with pytest.raises(TypeError):
         spec.operands["actual"] = Arity.LIST  # type: ignore[index]
+
+
+def test_operation_kind_defaults_to_verdict() -> None:
+    assert _spec().kind is OperationKind.VERDICT
 
 
 @pytest.mark.parametrize(
