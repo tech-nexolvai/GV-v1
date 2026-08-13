@@ -302,6 +302,19 @@ class Rule(BaseModel):
     severity: Severity
     arithmetic_unit: Unit
 
+    cross_unit_allowance: Quantity | None = None
+    """How much two renderings of the same number may differ before this check refuses to
+    combine them (ADR-0011).
+
+    Deliberately **not** the tolerance. A tolerance is how much the drawing may be *wrong*; this
+    is how much the drawing's own mm and inch renderings of one dimension may *disagree*. On the
+    real GV drawing that noise reaches 1.600 mm against a 1/16 inch tolerance of 1.5875 mm, so
+    letting a tolerance absorb it would pass a drawing that is out of tolerance.
+
+    ``None`` means mixing is refused: the check returns REVIEW REQUIRED rather than converting
+    silently. The safe default is abstention, so a rule that says nothing gets it.
+    """
+
     name: str = ""
     description: str = ""
 
