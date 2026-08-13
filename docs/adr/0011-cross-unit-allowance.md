@@ -1,12 +1,11 @@
 # ADR-0011 — A declared cross-unit allowance, distinct from tolerance
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-13
 **Decides:** D12 (#97)
 **Deciders:** admin (AnantBisht07)
 
-> Drafted by a coding agent. **Not in force until the admin sets `Status: Accepted`.**
-> `scripts/ratify.py` refuses to unblock anything until then.
+> Drafted by a coding agent. **Accepted by the admin on 2026-08-14.**
 
 ## Context
 

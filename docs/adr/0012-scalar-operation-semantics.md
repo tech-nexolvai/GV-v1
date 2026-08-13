@@ -1,11 +1,11 @@
 # ADR-0012 — Scalar operation semantics, and where missing input is handled
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-14
 **Decides:** D13 (#100)
 **Deciders:** admin (AnantBisht07)
 
-> Drafted by a coding agent. **Not in force until the admin sets `Status: Accepted`.**
+> Drafted by a coding agent. **Accepted by the admin on 2026-08-14.**
 >
 > Five of the seven items below follow directly from decisions already ratified, and are marked
 > **derived** — they are recorded here for one place to look, not because they are new choices.
