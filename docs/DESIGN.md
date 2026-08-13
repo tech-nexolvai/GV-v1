@@ -25,7 +25,7 @@ units/          NEW. Exact arithmetic primitives. STDLIB ONLY.
   imperial.py       "38 3/4" -> Fraction
   dual.py           "984 [38 3/4]" -> DualDimension
   policy.py         cross-unit consistency + arithmetic-unit policy
-  errors.py         typed unit/parse errors
+  errors.py         typed unit/parse errors (ImperialParseError, UnknownRoundingError)
 
 rules/          Rule authoring, schema, applicability, vocabulary, parameters
   semantic_types.py     EXISTS. Canonical vocabulary
@@ -133,14 +133,22 @@ def parse_dual(text: str) -> DualDimension:
 class Consistency(StrEnum):
     CONSISTENT_WITHIN_ROUNDING = "consistent_within_rounding"
     INCONSISTENT = "inconsistent"
+    NOT_CORROBORATED = "not_corroborated"   # single-unit token; nothing to cross-check
 
 def rounding_band(m: Measurement) -> Decimal:
     """Half the rounding quantum implied by how the value was written.
-    Derived, never a magic constant."""
+    Derived, never a magic constant. Raises UnknownRoundingError when raw_text is
+    absent — a computed Measurement has no authored token, and the band applies to
+    authored values only. Never derive the quantum from the Fraction denominator:
+    "2.375" is 19/8, implying 1/8 where the author wrote 1/1000, which yields a band
+    ~100x too loose and would accept genuine inconsistencies."""
 
 def check_dual(d: DualDimension) -> Consistency:
     """The F2 corroboration lane. CONSISTENT is independent evidence for the
-    reading (not the semantic association). INCONSISTENT -> CONFLICTING -> REVIEW."""
+    reading (not the semantic association). INCONSISTENT -> CONFLICTING -> REVIEW.
+    NOT_CORROBORATED when there is no alternate reading: the observation stays
+    RAW_CANDIDATE, but it is NOT conflicting — absence is not disagreement, and
+    folding it into either other value would be false evidence or false conflict."""
 
 def require_same_unit(*ms: Measurement) -> Unit:
     """The D1 guard. Raises MixedUnitError if operands were authored in different
@@ -376,6 +384,58 @@ is the mistake this section exists to prevent.
 Consequence: a re-run that does not replay uses current rules and may differ from the original.
 Accepted — the original findings stay intact and reproducible from what they recorded, so
 "what judged this drawing on the day?" is always answerable.
+
+---
+
+## 3.12 Project scope (ADR-0006)
+
+A project is one finalized vendor and one brand. It does **two distinct jobs**, and conflating
+them is a mistake:
+
+| Role | What it does |
+|---|---|
+| **Resolver key** | supplies parameter overrides for a check — filler min/max, field cut size, tolerances — layering over global defaults, exactly as the client's checklist describes with *"Global / Project Based Input"* |
+| **Isolation boundary** | retrieval and matching filter by project, so one project's references can never be offered as evidence in another's review |
+
+### What lives where
+
+```python
+# rules/project.py — the minimal projection the resolver needs
+@dataclass(frozen=True, slots=True)
+class ProjectScope:
+    project_id: str
+    parameter_overrides: Mapping[str, Quantity]
+```
+
+**No brand or vendor field here.** Those are business metadata belonging to the full project
+record in the control plane (Track C). `rules/` must not import `app/` (§2), so the deterministic
+core takes only the identifier and the overrides.
+
+**Vendor is metadata, never a rule key.** It identifies the project and feeds error-pattern
+reporting. Every vendor is held to the same rule for the same layout — rules are GV's own
+standards, and selecting a rule set by vendor would mean holding one vendor to a different
+standard than another. A one-off exception is a reviewer-approved note on a finding.
+
+**Brand-prototype standards are deferred** to a later layer, behind a measured need.
+
+### The four resolver keys together
+
+```
+category (cabinet/countertop)     -> which checklist
++ layout/config (wall_config)     -> which variant (1/8" vs 1/16")
++ project scope                   -> parameter overrides + reference isolation
++ effective version               -> which snapshot, recorded on the finding
+= the rule and parameters for this check
+```
+
+### Effective version: highest semver
+
+The resolver selects the **highest `rule.version`** among published snapshots for a rule id, and
+`publish` enforces that **`(rule_id, version)` maps to exactly one content hash**. Editing a
+published rule without bumping its version is a hard error, not a silent second snapshot — which
+turns an ambiguity the resolver could not have resolved into a loud failure at publish time.
+
+To change a published rule, bump its version.
 
 ---
 
