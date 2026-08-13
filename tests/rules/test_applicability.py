@@ -8,6 +8,8 @@ sends a reviewer to the right place.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from rules.applicability import (
@@ -17,6 +19,7 @@ from rules.applicability import (
     Resolution,
     resolve,
 )
+from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
 from rules.project import ProjectScope
 from rules.schema import (
     Applicability,
@@ -87,7 +90,23 @@ def _store(*rules: Rule) -> SnapshotStore:
 
 
 def _project(project_id: str = "PRJ-1", **overrides: Quantity) -> ProjectScope:
-    return ProjectScope(project_id=project_id, parameter_overrides=overrides)
+    return ProjectScope(
+        project_id=project_id,
+        parameter_set=ParameterSet(
+            project_id=project_id,
+            layer=ParameterLayer.PROJECT,
+            version=1,
+            parameters={
+                name: ParameterValue(
+                    value=quantity,
+                    provenance=Provenance.GC_CLIENT,
+                    set_by="Raj",
+                    set_at=datetime(2026, 8, 13, 9, 30, tzinfo=UTC),
+                )
+                for name, quantity in overrides.items()
+            },
+        ),
+    )
 
 
 def _context(
@@ -371,8 +390,20 @@ def test_a_resolution_carries_its_own_project_and_no_other() -> None:
     resolution = resolve(_store(_rule()), _context(project=mine))
 
     assert resolution.project.project_id == "PRJ-1"
-    assert resolution.project.override_for("filler_width_min") == override
     assert resolution.project != theirs
+
+    carried = resolution.project.override_for("filler_width_min")
+    assert carried is not None
+    assert carried.value == override
+    assert carried.provenance is Provenance.GC_CLIENT, "provenance must survive resolution"
+
+
+def test_a_resolution_pins_the_parameter_set_version_a_finding_will_record() -> None:
+    """A finding names the exact numbers that judged the drawing, not "whatever was current"."""
+    resolution = resolve(_store(_rule()), _context(project=_project("PRJ-1")))
+
+    assert resolution.project.parameter_set_version == 1
+    assert resolution.project.parameter_set_id.startswith("sha256:")
 
 
 def test_the_project_does_not_change_which_variant_is_chosen() -> None:
