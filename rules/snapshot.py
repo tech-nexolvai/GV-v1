@@ -255,6 +255,16 @@ class SnapshotStore:
             return None
         return max(candidates, key=lambda s: _version_key(s.version))
 
+    def rule_ids(self) -> tuple[str, ...]:
+        """Every distinct rule id in the store, sorted.
+
+        The applicability resolver needs the candidate set and lives in another module, so it
+        cannot read ``_by_id``. Sorted rather than insertion-ordered because resolution must
+        not depend on the order snapshots were added — the same store rebuilt in a different
+        order has to resolve identically (ADR-0006).
+        """
+        return tuple(sorted({s.rule_id for s in self._by_id.values()}))
+
     def versions_of(self, rule_id: str) -> tuple[RuleSnapshot, ...]:
         """Every stored snapshot for one rule, oldest identifier order not implied.
 

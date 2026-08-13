@@ -25,6 +25,22 @@ class SemanticType(str, Enum):
     MATERIAL = "material"
 
 
+class ProductType(str, Enum):
+    """What kind of thing a rule checks — the client's checklist, in one word.
+
+    A controlled vocabulary rather than a free string (ADR-0007). The applicability resolver
+    matches this exactly and case-sensitively, so a free string would let ``"Countertop"`` or a
+    typo publish cleanly and then match nothing: a rule that exists, looks authored, and never
+    fires. Validation at publish turns that into a loud authoring error instead.
+
+    Adding a product type is a one-line change here, which is the point of keeping the
+    vocabulary in one module.
+    """
+
+    COUNTERTOP = "countertop"
+    CABINET = "cabinet"
+
+
 class OperandSource(str, Enum):
     """Where a rule operand comes from (see RULE_ENGINE_SPEC.md §3e)."""
 

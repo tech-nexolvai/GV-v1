@@ -15,12 +15,13 @@ from rules.schema import (
     Applicability,
     ApplicabilityVariant,
     CheckType,
+    GlobalApplicability,
     InputSelector,
     OperationRef,
     Rule,
     Tolerance,
 )
-from rules.semantic_types import OperandSource, SemanticType
+from rules.semantic_types import OperandSource, ProductType, SemanticType
 from rules.snapshot import (
     RuleSnapshot,
     SnapshotConflictError,
@@ -38,8 +39,10 @@ def _rule(**overrides: object) -> Rule:
     base: dict[str, object] = {
         "id": "CT-WIDTH-001",
         "version": "1.0.0",
-        "product_type": "countertop",
+        "product_type": ProductType.COUNTERTOP,
         "check_type": CheckType.INTERNAL,
+        # Required since ADR-0007: a rule states its applicability rather than omitting it.
+        "applicability": GlobalApplicability(scope="global"),
         "severity": Severity.CRITICAL,
         "arithmetic_unit": Unit.MM,
         "inputs": {
@@ -90,7 +93,7 @@ def test_identifier_is_full_length_and_names_its_algorithm() -> None:
     [
         ("version", "1.0.1"),
         ("severity", Severity.MAJOR),
-        ("product_type", "cabinet"),
+        ("product_type", ProductType.CABINET),
         ("arithmetic_unit", Unit.INCH),
         ("description", "changed"),
     ],

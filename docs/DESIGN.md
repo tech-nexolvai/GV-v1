@@ -294,14 +294,14 @@ class ApplicabilityVariant(BaseModel):
 
 class Rule(BaseModel):
     id: str; version: str
-    product_type: str
+    product_type: ProductType                   # controlled vocabulary, ADR-0007
     check_type: Literal["internal", "arch_vs_shop", "global"]
     severity: Severity                          # D3
     arithmetic_unit: Unit                       # D1
     inputs: dict[str, InputSelector]
     parameters: dict[str, Parameter] = {}
     derivations: list[Derivation] = []          # D2 — validated acyclic at publish
-    applicability: Applicability | None
+    applicability: Applicability | GlobalApplicability   # required, ADR-0007
     operation: OperationRef
     on_missing: Outcome = Outcome.NOT_FOUND
     on_ambiguous: Outcome = Outcome.REVIEW_REQUIRED
@@ -311,6 +311,11 @@ class Rule(BaseModel):
 
 `extra="forbid"` is deliberate: an unknown field in a rule file is an authoring error, and silently
 ignoring it is how a tolerance goes missing unnoticed.
+
+`applicability` is **required** for the same reason (ADR-0007). A rule with no layout
+discriminator declares `applicability: {scope: global}`; omitting the block is an authoring error,
+not an implicit "applies to everything". A forgotten discriminator read as unconditional would
+apply one layout's tolerance to every layout.
 
 *#53. Derivations #54 (D2). Applicability #55 (D7). Snapshots #56.*
 
@@ -436,6 +441,55 @@ published rule without bumping its version is a hard error, not a silent second 
 turns an ambiguity the resolver could not have resolved into a loud failure at publish time.
 
 To change a published rule, bump its version.
+
+---
+
+## 3.13 `rules/applicability.py` — which rules apply, and what went unchecked (ADR-0007)
+
+```python
+@dataclass(frozen=True, slots=True)
+class CheckContext:
+    product_type: ProductType
+    project: ProjectScope
+    discriminators: Mapping[str, str]        # {"wall_config": "back_left_right"}
+
+@dataclass(frozen=True, slots=True)
+class ApplicableRule:
+    snapshot: RuleSnapshot                   # the effective version
+    variant: ApplicabilityVariant | None     # None only for {scope: global}
+
+@dataclass(frozen=True, slots=True)
+class Abstention:
+    outcome: Outcome                         # NO_APPLICABLE_RULE | REVIEW_REQUIRED
+    reason: str
+    rule_id: str | None
+
+@dataclass(frozen=True, slots=True)
+class Resolution:
+    applicable: tuple[ApplicableRule, ...]
+    abstentions: tuple[Abstention, ...]
+    project: ProjectScope
+
+def resolve(store: SnapshotStore, context: CheckContext) -> Resolution: ...
+```
+
+**Abstentions are returned in band, never as an empty list.** An empty list is silence, and it
+makes every caller responsible for remembering that empty means `NO_APPLICABLE_RULE` — a caller
+that forgets emits nothing, so no finding exists to be wrong. Coverage is
+`checked_count / considered_count`, which is what makes "we checked 6 of 9" reportable rather
+than implied.
+
+**Two abstentions, two different instructions.** A discriminator the drawing did not establish
+is `REVIEW_REQUIRED` and sends a reviewer to the drawing. A discriminator whose value no variant
+covers is `NO_APPLICABLE_RULE` and sends them to the rulebook.
+
+**Project scope is carried, never used to filter.** No rule is selected by project; the scope
+rides through to supply the parameter layer §3.9 reads.
+
+**No priority and no firing order.** Width, depth and sink checks all apply to one countertop.
+`applicable` is sorted by rule id for stable reporting only.
+
+*#55.*
 
 ---
 

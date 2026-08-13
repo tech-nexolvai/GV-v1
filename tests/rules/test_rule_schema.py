@@ -20,6 +20,7 @@ from rules.schema import (
     Cardinality,
     CheckType,
     Derivation,
+    GlobalApplicability,
     InputSelector,
     OperationRef,
     Parameter,
@@ -29,7 +30,7 @@ from rules.schema import (
     Tolerance,
     rule_json_schema,
 )
-from rules.semantic_types import OperandSource, SemanticType
+from rules.semantic_types import OperandSource, ProductType, SemanticType
 from units.measurement import Unit
 from verdict.outcomes import Outcome, Severity
 
@@ -38,7 +39,9 @@ def _minimal_rule(**overrides: object) -> Rule:
     base: dict[str, object] = {
         "id": "CT-WIDTH-001",
         "version": "1.0.0",
-        "product_type": "countertop",
+        "product_type": ProductType.COUNTERTOP,
+        # Required since ADR-0007: a rule states its applicability rather than omitting it.
+        "applicability": GlobalApplicability(scope="global"),
         "check_type": CheckType.INTERNAL,
         "severity": Severity.CRITICAL,
         "arithmetic_unit": Unit.MM,
