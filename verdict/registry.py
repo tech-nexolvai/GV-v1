@@ -11,12 +11,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from fractions import Fraction
 from types import MappingProxyType
 from typing import Final
 
 from units.measurement import Measurement
 from verdict.outcomes import Outcome
-from verdict.trace import CalculationTrace
 
 
 class UnknownOperationError(LookupError):
@@ -36,14 +36,37 @@ class Arity(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class OperationResult:
-    """The deterministic result and audit trace returned by an operation."""
+    """Calculation facts returned by a verdict-producing operation.
+
+    The engine combines these facts with sealed operand provenance and version metadata
+    to build the final calculation trace. Operations receive resolved values rather than
+    evidence records, so they cannot truthfully construct that trace themselves.
+    """
 
     outcome: Outcome
     delta: Measurement | None
-    trace: CalculationTrace
+    intermediates: tuple[tuple[str, object], ...]
+    comparison: str
+    tolerance: Measurement | None
 
 
-OperationFunction = Callable[..., OperationResult]
+@dataclass(frozen=True, slots=True)
+class DerivationResult:
+    """An exact value produced for a later verdict operation."""
+
+    value: Measurement | Fraction | int | str
+    intermediates: tuple[tuple[str, object], ...]
+    expression: str
+
+
+class OperationKind(StrEnum):
+    """Whether an operation decides a verdict or derives an intermediate value."""
+
+    VERDICT = "verdict"
+    DERIVATION = "derivation"
+
+
+OperationFunction = Callable[..., OperationResult | DerivationResult]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +77,7 @@ class OperationSpec:
     version: str
     operands: Mapping[str, Arity]
     fn: OperationFunction
+    kind: OperationKind = OperationKind.VERDICT
 
     def __post_init__(self) -> None:
         """Validate and defensively freeze registry metadata."""
@@ -66,6 +90,8 @@ class OperationSpec:
             raise RuleAuthoringError(f"operation {self.name!r} must declare operands")
         if not callable(self.fn):
             raise RuleAuthoringError(f"operation {self.name!r} function must be callable")
+        if not isinstance(self.kind, OperationKind):
+            raise RuleAuthoringError(f"operation {self.name!r} has invalid kind")
 
         frozen_operands: dict[str, Arity] = {}
         for operand_name, arity in self.operands.items():
