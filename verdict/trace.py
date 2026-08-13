@@ -28,7 +28,7 @@ class CalculationTrace:
     intermediates: tuple[tuple[str, object], ...]
     comparison: str
     tolerance: Measurement | None
-    arithmetic_unit: Unit
+    arithmetic_unit: Unit | None
     outcome: Outcome
     engine_version: str
     operation_version: str
