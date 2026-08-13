@@ -362,7 +362,11 @@ def main() -> int:
     # Strip the internal story code ("A5.1 — ") first: it tells a reader nothing, and
     # '53-a5-1-rule-models...' is noisier than '53-rule-models...'.
     subject = re.sub(r"^[A-Za-z]\d+(?:\.\d+)*\s*[—–-]\s*", "", title)
-    slug = re.sub(r"[^a-z0-9]+", "-", subject.lower()).strip("-")[:48]
+    slug = re.sub(r"[^a-z0-9]+", "-", subject.lower()).strip("-")
+    # Truncate on a word boundary. A hard character cut produced names like
+    # '...-explicit-no-applicabl', which reads as a typo rather than a shortening.
+    if len(slug) > 48:
+        slug = slug[:48].rsplit("-", 1)[0]
     read = contract.get("read") or []
     if isinstance(read, str):
         read = [read]
