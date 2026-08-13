@@ -40,7 +40,6 @@ from verdict.engine import ENGINE_VERSION, execute
 from verdict.operands import EvidenceStatus, VerdictOperand
 from verdict.outcomes import Outcome, Severity
 from verdict.registry import REGISTRY, Arity, OperationResult, OperationSpec, register
-from verdict.trace import CalculationTrace
 
 WHEN = datetime(2026, 8, 14, 9, 0, tzinfo=UTC)
 
@@ -57,17 +56,9 @@ def _spy(**kwargs: object) -> OperationResult:
     return OperationResult(
         outcome=Outcome.PASS,
         delta=None,
-        trace=CalculationTrace(
-            operation="spy",
-            operands=(),
-            intermediates=(),
-            comparison="spy passed",
-            tolerance=None,
-            arithmetic_unit=Unit.MM,
-            outcome=Outcome.PASS,
-            engine_version=ENGINE_VERSION,
-            operation_version="1.0.0",
-        ),
+        intermediates=(),
+        comparison="spy passed",
+        tolerance=None,
     )
 
 
@@ -415,3 +406,30 @@ def test_an_operation_that_raises_abstains_rather_than_passing() -> None:
     assert finding.outcome is Outcome.REVIEW_REQUIRED
     assert finding.outcome is not Outcome.PASS
     assert "could not be completed" in finding.reason
+
+
+def test_a_rule_terminating_in_a_derivation_is_a_loud_authoring_error() -> None:
+    """ADR-0012 item 6. `difference_between` and friends produce a value and state no
+    expectation, so no honest outcome exists for them. Publish-time validation should catch
+    this first; the engine is the backstop, and a broken rule must be loud rather than quietly
+    producing a verdict it cannot justify."""
+    from verdict.registry import DerivationResult, OperationKind, RuleAuthoringError
+
+    def _derive(**_: object) -> DerivationResult:
+        return DerivationResult(
+            value=Measurement(Fraction(2), Unit.MM, "2"), intermediates=(), expression="a - b"
+        )
+
+    REGISTRY.pop("spy", None)
+    register(
+        OperationSpec(
+            name="spy",
+            version="1.0.0",
+            operands={"x": Arity.SCALAR},
+            fn=_derive,
+            kind=OperationKind.DERIVATION,
+        )
+    )
+
+    with pytest.raises(RuleAuthoringError, match="states no expectation"):
+        execute(publish(_rule()), {"width": _operand()})

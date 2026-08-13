@@ -34,7 +34,12 @@ from units.measurement import Measurement, MixedUnitError, Unit
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.outcomes import Outcome
-from verdict.registry import RuleAuthoringError, validate_operands
+from verdict.registry import (
+    OperationKind,
+    OperationResult,
+    RuleAuthoringError,
+    validate_operands,
+)
 from verdict.registry import resolve as resolve_operation
 from verdict.trace import CalculationTrace, TracedOperand
 
@@ -207,6 +212,16 @@ def execute(
     # ---- steps 5 and 6: derive, then decide ------------------------------------
     try:
         spec = resolve_operation(rule.operation.type)
+        if spec.kind is OperationKind.DERIVATION:
+            # A derivation states no expectation, so no honest outcome exists for it. ADR-0012
+            # rejects this at publish; reaching here means a rule got past that validation, and
+            # a broken rule must be loud rather than quietly producing an unjustifiable verdict.
+            raise RuleAuthoringError(
+                f"rule {rule.id!r} terminates in {rule.operation.type!r}, which derives a value "
+                "rather than deciding. It states no expectation, so there is no honest outcome "
+                "for it. Use it inside a derivations block and finish with an operation that "
+                "has a criterion (ADR-0012)."
+            )
         call_args = {
             key: operands[ref].value
             for key, ref in rule.operation.operands.items()
@@ -244,13 +259,17 @@ def execute(
             notes=notes,
         )
 
+    assert isinstance(result, OperationResult)  # guaranteed by the kind check above
+
     # ---- step 7: the finding ---------------------------------------------------
+    # The operation returns calculation facts; only the engine has seen the operand provenance,
+    # so only the engine can truthfully assemble the trace.
     trace = CalculationTrace(
         operation=rule.operation.type,
         operands=_traced(operands),
-        intermediates=result.trace.intermediates,
-        comparison=result.trace.comparison,
-        tolerance=tolerance.as_measurement() if tolerance is not None else None,
+        intermediates=result.intermediates,
+        comparison=result.comparison,
+        tolerance=result.tolerance,
         arithmetic_unit=arithmetic_unit,
         outcome=result.outcome,
         engine_version=ENGINE_VERSION,
@@ -264,7 +283,7 @@ def execute(
         rule_id=rule.id,
         outcome=result.outcome,
         severity=rule.severity,
-        reason=result.trace.comparison,
+        reason=result.comparison,
         snapshot_id=snapshot.snapshot_id,
         engine_version=ENGINE_VERSION,
         trace=trace,
