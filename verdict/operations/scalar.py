@@ -69,9 +69,9 @@ def _result(
     outcome: Outcome,
     comparison: str,
     *,
+    tolerance: Measurement | None,
     delta: Measurement | None = None,
     intermediates: tuple[tuple[str, object], ...] = (),
-    tolerance: Measurement | None = None,
 ) -> OperationResult:
     return OperationResult(outcome, delta, intermediates, comparison, tolerance)
 
@@ -103,6 +103,7 @@ def exists(*, value: object | None) -> OperationResult:
     return _result(
         Outcome.PASS if present else Outcome.FAIL,
         "value is present" if present else "value is absent",
+        tolerance=None,
     )
 
 
@@ -116,6 +117,7 @@ def equals(*, actual: ScalarValue, expected: ScalarValue) -> OperationResult:
     return _result(
         Outcome.PASS if matched else Outcome.FAIL,
         f"{_value_text(actual)} {'==' if matched else '!='} {_value_text(expected)}",
+        tolerance=None,
     )
 
 
@@ -155,6 +157,7 @@ def minimum(*, x: Measurement, bound: Measurement) -> OperationResult:
     return _result(
         Outcome.PASS if passed else Outcome.FAIL,
         f"{x.exact} {'>=' if passed else '<'} {bound.exact} {unit.value}",
+        tolerance=None,
     )
 
 
@@ -168,6 +171,7 @@ def maximum(*, x: Measurement, bound: Measurement) -> OperationResult:
     return _result(
         Outcome.PASS if passed else Outcome.FAIL,
         f"{x.exact} {'<=' if passed else '>'} {bound.exact} {unit.value}",
+        tolerance=None,
     )
 
 
@@ -184,6 +188,7 @@ def between(*, x: Measurement, lo: Measurement, hi: Measurement) -> OperationRes
     return _result(
         Outcome.PASS if passed else Outcome.FAIL,
         f"{lo.exact} <= {x.exact} <= {hi.exact} {unit.value} is {passed}",
+        tolerance=None,
     )
 
 
@@ -202,6 +207,7 @@ def one_of(*, x: ScalarValue, set: Sequence[ScalarValue]) -> OperationResult:
     return _result(
         Outcome.PASS if matched else Outcome.FAIL,
         f"{_value_text(x)} {'is' if matched else 'is not'} one of {len(set)} allowed values",
+        tolerance=None,
     )
 
 
@@ -216,6 +222,7 @@ def contains(*, text: str, substr: str) -> OperationResult:
     return _result(
         Outcome.PASS if matched else Outcome.FAIL,
         f"{substr!r} {'is' if matched else 'is not'} contained in {text!r}",
+        tolerance=None,
     )
 
 
@@ -260,12 +267,14 @@ def conditional_required(*, when: bool, value: object | None) -> OperationResult
         return _result(
             Outcome.PASS,
             "requirement not exercised because condition is false",
+            tolerance=None,
             intermediates=(("requirement_exercised", False),),
         )
     present = not _is_absent(value)
     return _result(
         Outcome.PASS if present else Outcome.NOT_FOUND,
         "required value is present" if present else "required value is absent",
+        tolerance=None,
         intermediates=(("requirement_exercised", True),),
     )
 
