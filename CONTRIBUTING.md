@@ -120,11 +120,17 @@ Missing input → abstain. Never invent. That rule binds the codebase *and* the 
 
 1. `python scripts/issue_gate.py <N>` — if it does not exit `0`, stop.
 2. Read every file the gate listed, in the order given.
-3. Branch from `main` using the name the gate printed: `<N>-<slug>`.
+3. Branch from `main` using **the name the gate printed** — do not invent one.
+   The convention is `<issue-number>-<what-the-issue-is-about>`, e.g.
+   `56-immutable-hashed-rule-snapshots`. The number comes first so any branch is traceable to
+   its issue at a glance; the internal story code (`A5.4`) is deliberately stripped because it
+   tells a reader nothing.
 4. Implement **only** what the issue's **Scope** states.
 5. Write the test named in `verification` before or alongside the implementation.
 6. Satisfy every **Definition of Done** checkbox.
 7. Open a PR whose description contains `Closes #<N>`.
+8. **Never delete the branch after merging.** No `--delete-branch`. Merged branches stay on the
+   remote as a record of what was done and when — a merged PR alone does not preserve that.
 
 ### Scope discipline
 

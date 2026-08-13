@@ -358,7 +358,11 @@ def main() -> int:
         return code
 
     # ---------------- ready: print the brief ----------------
-    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:48]
+    # Branch naming: <issue-number>-<what-the-issue-is-about>.
+    # Strip the internal story code ("A5.1 — ") first: it tells a reader nothing, and
+    # '53-a5-1-rule-models...' is noisier than '53-rule-models...'.
+    subject = re.sub(r"^[A-Za-z]\d+(?:\.\d+)*\s*[—–-]\s*", "", title)
+    slug = re.sub(r"[^a-z0-9]+", "-", subject.lower()).strip("-")[:48]
     read = contract.get("read") or []
     if isinstance(read, str):
         read = [read]
