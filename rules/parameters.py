@@ -430,3 +430,80 @@ def resolve_all(*sets: ParameterSet) -> dict[str, ResolvedParameter]:
     ordered = _ordered(sets)
     names = sorted({name for s in ordered for name in s.names()})
     return {name: resolve(name, *sets) for name in names}
+
+
+# ---------------------------------------------------------------------------
+# USER_INPUT — the operand a human types in (#66)
+# ---------------------------------------------------------------------------
+
+
+class UserInputError(ValueError):
+    """Raised when a value claiming to be user input could not have come from a person."""
+
+
+#: Provenances that represent a human deciding or measuring something, as opposed to a value
+#: read off a drawing. Used to check that a `USER_INPUT` operand really is one.
+HUMAN_PROVENANCES: frozenset[Provenance] = frozenset({Provenance.MEASURED, Provenance.GC_CLIENT})
+
+
+def user_input(
+    value: Quantity,
+    *,
+    set_by: str,
+    set_at: datetime,
+    provenance: Provenance = Provenance.MEASURED,
+) -> ParameterValue:
+    """Build the value behind a ``USER_INPUT`` operand.
+
+    The field wall-to-wall dimension is the case this exists for: someone measures the room and
+    types the number in, because it is on no drawing. It is a RUN-layer parameter — set for one
+    review — carrying who supplied it and when.
+
+    **A model cannot produce one of these.** Not because this function refuses, but because
+    :class:`Provenance` is a closed vocabulary with no member a model could claim, and `rules/`
+    cannot import extraction or retrieval at all. The check below is the last of three, not the
+    only one.
+    """
+    if provenance not in HUMAN_PROVENANCES:
+        raise UserInputError(
+            f"{provenance.value!r} is not a human source. A USER_INPUT operand is measured or "
+            "specified by a person; a value from anywhere else is evidence and belongs in the "
+            "canonical observation path, where the evidence gate can qualify it."
+        )
+    return ParameterValue(value=value, provenance=provenance, set_by=set_by, set_at=set_at)
+
+
+def user_input_set(
+    project_id: str,
+    version: int,
+    parameters: Mapping[str, ParameterValue],
+) -> ParameterSet:
+    """Collect user inputs for one review into a RUN-layer parameter set.
+
+    RUN rather than PROJECT because these are measured for a single review: the room was that
+    width on the day somebody stood in it. Recording them as project settings would imply they
+    apply to every later review of the same project, which is exactly the assumption that makes
+    a stale field dimension look authoritative.
+    """
+    for name, parameter in parameters.items():
+        if parameter.provenance not in HUMAN_PROVENANCES:
+            raise UserInputError(
+                f"{name!r} has provenance {parameter.provenance.value!r}, which is not a human "
+                "source. A run-layer input is something a person measured or specified."
+            )
+    return ParameterSet(
+        project_id=project_id,
+        layer=ParameterLayer.RUN,
+        version=version,
+        parameters=parameters,
+    )
+
+
+def is_user_input(resolved: ResolvedParameter) -> bool:
+    """True when this value came from a person rather than from a drawing.
+
+    A finding shows user inputs differently: a reviewer checking a failed cabinet-filler check
+    needs to see at a glance that the field dimension was typed in by someone, not read off the
+    shop drawing, because that is the number most likely to be wrong or out of date.
+    """
+    return resolved.layer is ParameterLayer.RUN and resolved.value.provenance in HUMAN_PROVENANCES
