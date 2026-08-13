@@ -52,6 +52,18 @@ class SnapshotConflictError(Exception):
     """
 
 
+class VersionConflictError(Exception):
+    """Raised when a `(rule_id, version)` pair would map to a second content hash.
+
+    ADR-0006 selects the effective rule by highest version, which is only well defined if a
+    version identifies exactly one rule. Two snapshots sharing `CT-WIDTH-001 1.0.0` with
+    different content would leave the resolver with no defined way to choose — and the check
+    would still run, producing a confident verdict from a rule nobody could later identify.
+
+    The fix is always the same: bump the version.
+    """
+
+
 def canonical_json(rule: Rule) -> str:
     """Return the rule as canonical JSON: sorted keys, no insignificant whitespace.
 
@@ -81,6 +93,16 @@ def compute_snapshot_id(rule: Rule) -> str:
     """
     digest = hashlib.sha256(canonical_json(rule).encode("utf-8")).hexdigest()
     return f"{HASH_ALGORITHM}:{digest}"
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    """Return a sortable key for a semantic version.
+
+    Compared numerically per component, because string ordering puts "1.0.10" *below*
+    "1.0.9" — a silently wrong answer to "which is newest". `Rule.version` is validated
+    against a three-part numeric pattern on the way in, so the parse is safe here.
+    """
+    return tuple(int(part) for part in version.split("."))
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +188,9 @@ class SnapshotStore:
 
     def __init__(self) -> None:
         self._by_id: dict[str, RuleSnapshot] = {}
+        # (rule_id, version) -> snapshot_id. The index that makes "highest version" a
+        # well-defined question: one version, one rule.
+        self._by_rule_version: dict[tuple[str, str], str] = {}
 
     def add(self, snapshot: RuleSnapshot) -> RuleSnapshot:
         """Store a snapshot, or return the existing one when it is already present.
@@ -183,7 +208,22 @@ class SnapshotStore:
                     "produced some other way."
                 )
             return existing
+
+        # ADR-0006: one version, one rule. Republishing identical content returned above,
+        # so reaching here with a known (rule_id, version) means the content changed.
+        key = (snapshot.rule_id, snapshot.version)
+        clash = self._by_rule_version.get(key)
+        if clash is not None:
+            raise VersionConflictError(
+                f"{snapshot.rule_id} {snapshot.version} is already published as {clash[:15]}..., "
+                f"and this is different content ({snapshot.snapshot_id[:15]}...). "
+                "A published rule cannot be changed in place — bump the version instead. "
+                "Otherwise 'the highest version' no longer identifies a single rule, and a "
+                "verdict could not be traced to the rule that produced it."
+            )
+
         self._by_id[snapshot.snapshot_id] = snapshot
+        self._by_rule_version[key] = snapshot.snapshot_id
         return snapshot
 
     def get(self, snapshot_id: str) -> RuleSnapshot:
@@ -199,6 +239,21 @@ class SnapshotStore:
 
     def __len__(self) -> int:
         return len(self._by_id)
+
+    def latest(self, rule_id: str) -> RuleSnapshot | None:
+        """Return the effective snapshot for a rule: the one with the highest version.
+
+        Returns ``None`` when the rule has never been published. That is a normal state — a
+        rule that does not exist yet is not an integrity failure — and the caller turns it
+        into NO_APPLICABLE_RULE rather than an exception.
+
+        Safe to call precisely because :meth:`add` guarantees one content hash per version;
+        without that, "the highest version" could name two different rules.
+        """
+        candidates = self.versions_of(rule_id)
+        if not candidates:
+            return None
+        return max(candidates, key=lambda s: _version_key(s.version))
 
     def versions_of(self, rule_id: str) -> tuple[RuleSnapshot, ...]:
         """Every stored snapshot for one rule, oldest identifier order not implied.
