@@ -514,6 +514,89 @@ rides through to supply the parameter layer §3.9 reads.
 
 ---
 
+## 3.14 `evidence/` — candidate, canonical, sealed operand
+
+The plane between reading a drawing and deciding anything. `verdict/` already defines what it
+will accept (`VerdictOperand`, `EvidenceStatus`); this is what produces it.
+
+**Three stages, and the boundaries between them are the product.** `AGENTS.md` §2.3: AI creates
+candidates, not facts. Raw extractor output becomes a `CanonicalObservation` only after
+normalisation and corroboration, and a sealed `VerdictOperand` only after the gate.
+
+```python
+# evidence/candidate.py — what an extractor said
+@dataclass(frozen=True, slots=True)
+class ObservationCandidate:
+    extractor: str                 # "pdfplumber" | "paddleocr" | "doctr" | "nova"
+    extractor_version: str
+    raw_text: str                  # exactly what was read, never cleaned
+    parsed_value: Measurement | None
+    unit_guess: Unit | None        # a guess, and named as one
+    semantic_guess: SemanticType | None
+    page: int
+    polygon: tuple[tuple[int, int], ...]
+    confidence: Decimal | None     # diagnostic metadata, never authority
+    ambiguity_flags: tuple[str, ...]
+```
+
+**A candidate is not evidence and its type says so.** Everything uncertain is named a *guess*, and
+`confidence` is explicitly diagnostic: a high-confidence VLM reading is still a candidate until
+something else agrees with it.
+
+```python
+# evidence/canonical.py — a normalised, corroborated fact
+@dataclass(frozen=True, slots=True)
+class CanonicalObservation:
+    document_version_id: str
+    document_role: DocumentRole    # ARCH | SHOP | PRODUCT_SPEC (ADR-0006)
+    page: int
+    polygon: tuple[tuple[int, int], ...]
+    semantic_type: SemanticType
+    value: Measurement             # exact, authored unit preserved
+    status: EvidenceStatus
+    authority: Authority           # AUTHORITATIVE | ADVISORY
+    supported_by: tuple[str, ...]  # candidate ids that agree
+    conflicts_with: tuple[str, ...]
+    evidence_crop_uri: str | None
+```
+
+### Corroboration, and the free lane
+
+Two independent routes must agree before a candidate becomes `CORROBORATED`. The obvious route is
+a second reader — PaddleOCR against docTR — which costs time and money on every page.
+
+**The cheap lane comes from the drawings themselves.** Every dimension on a GV drawing is written
+twice, `984 [38 3/4]`, and `units.check_dual` already decides whether the two agree within their
+rounding. A consistent pair is independent evidence for the *reading* obtainable from vector
+extraction alone.
+
+It corroborates the **reading**, not the **semantic association**. Knowing `984` was read
+correctly says nothing about whether it is the countertop's width or a cabinet's. That still needs
+geometry or a human, and conflating the two would promote a correctly-read number attached to the
+wrong item — a finding that is internally consistent and completely wrong.
+
+### The gate
+
+```python
+# evidence/gate.py
+def seal(observation: CanonicalObservation, name: str) -> VerdictOperand | GateRefusal
+```
+
+The only route into `verdict/`. Refuses anything not `CORROBORATED` or `HUMAN_CONFIRMED`, anything
+`ADVISORY`, and anything whose unit is unknown. A refusal carries its reason so the finding can say
+which of the four it was.
+
+`evidence/` may import `units/`, `rules/` and `verdict/`'s **contract** types — never the engine
+(§2). The dependency points that way on purpose: the gate builds what the verdict accepts, and the
+verdict never reaches back.
+
+### What cannot be designed yet
+
+Extraction internals — geometry association, OCR routing, crop refinement — need real drawings.
+`data/drawings/` is empty, and designing them now would be guesswork dressed as a specification.
+The evidence *contracts* above are designable because the architecture documents specify them and
+`verdict/` already fixes one end.
+
 ## 4. Testing convention
 
 `tests/<package>/test_<module>.py`, mirroring the source tree. Every Track A story names its test file
