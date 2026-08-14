@@ -41,7 +41,7 @@ class FindingChain:
     finding: Finding
     rule_snapshot: RuleSnapshot          # the snapshot id, never just the rule id
     parameter_versions: Mapping[str, str]
-    operands: tuple[SealedOperand, ...]  # each with its evidence reference
+    operands: tuple[VerdictOperand, ...]  # each with its evidence reference
     trace: CalculationTrace
     engine_version: str
 ```

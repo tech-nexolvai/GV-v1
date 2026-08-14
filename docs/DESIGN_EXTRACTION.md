@@ -251,3 +251,37 @@ the safe thing. A score field on an approved fact would be enough to lose that.
 - **Lane ordering**: fusion tests assert an exact-identifier match is never displaced.
 - ⚠ Stories marked undesignable carry characterisation tests written **against real drawings when they
   arrive**, not fixtures invented now. A fixture invented today encodes today's guess as ground truth.
+
+---
+
+## 10. The names the shipped code already uses
+
+`verdict/operands.py` is built and its types are fixed. Anything in `evidence/` or `extraction/` must
+match them exactly rather than introduce a parallel vocabulary:
+
+```python
+class EvidenceStatus(StrEnum):          # FIVE members, not four
+    RAW_CANDIDATE      # one unverified route produced it. Not evidence yet
+    CORROBORATED       # may enter a verdict
+    HUMAN_CONFIRMED    # may enter a verdict
+    CONFLICTING        # never resolved by confidence or by preferring a reader
+    REJECTED           # found invalid
+
+QUALIFIED_STATUSES = {CORROBORATED, HUMAN_CONFIRMED}     # the only two that reach arithmetic
+
+@dataclass(frozen=True, slots=True)
+class VerdictOperand:                    # the engine's input type. Not "SealedOperand"
+    name: str
+    value: Measurement | Fraction | str | None
+    status: EvidenceStatus
+    source: str                          # SHOP | ARCH | PRODUCT_SPEC | LITERAL | USER_INPUT
+    evidence_ref: str | None = None
+```
+
+`evidence/gate.py` returns `VerdictOperand | GateRefusal` (`DESIGN.md` §3.14). It **imports** these
+from `verdict/operands.py` — they are contract types, and §2 permits exactly that while forbidding the
+engine. The dependency points one way on purpose: the gate builds what the verdict accepts, and the
+verdict never reaches back.
+
+Do not redefine `EvidenceStatus` in `evidence/`. Two enums with overlapping members is how a
+`CONFLICTING` reading quietly becomes a qualified one.
