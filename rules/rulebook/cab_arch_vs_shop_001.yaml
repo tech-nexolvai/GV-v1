@@ -1,0 +1,38 @@
+id: CAB-ARCH-VS-SHOP-001
+version: 1.0.0
+product_type: cabinet
+check_type: arch_vs_shop
+severity: CRITICAL
+arithmetic_unit: mm
+
+name: Architectural versus shop cabinet widths
+description: >
+  Compare every shop cabinet width with the cabinet carrying the same identifier
+  in the approved architectural drawing. Missing counterparts remain visible and
+  are never treated as passing comparisons.
+
+applicability:
+  scope: global
+
+inputs:
+  architectural_cabinets:
+    source: ARCH
+    semantic_type: cabinet_width
+    scope: same_assembly
+    cardinality: many
+  shop_cabinets:
+    source: SHOP
+    semantic_type: cabinet_width
+    scope: same_assembly
+    cardinality: many
+
+operation:
+  type: pairwise_within_tolerance
+  operands:
+    left: architectural_cabinets
+    right: shop_cabinets
+  tolerance:
+    value: UNCONFIRMED
+
+on_missing: NOT_FOUND
+on_ambiguous: REVIEW_REQUIRED
