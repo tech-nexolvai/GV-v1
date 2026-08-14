@@ -24,6 +24,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from rules.derivations import Derivation, validate_derivation_references
 from rules.semantic_types import OperandSource, ProductType, SemanticType
 from units.measurement import Measurement, Unit, to_exact_fraction
 from verdict.outcomes import Outcome, Severity
@@ -236,26 +237,6 @@ class GlobalApplicability(BaseModel):
     scope: Literal["global"]
 
 
-class Derivation(BaseModel):
-    """A named intermediate computed by a typed operation (ADR-0003).
-
-    Inputs may reference an input, a parameter, or an *earlier* derivation. Acyclicity is
-    validated at publish time by :meth:`Rule._derivations_are_acyclic`, never at execution.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    name: str
-    operation: str
-    inputs: tuple[str, ...]
-
-    @model_validator(mode="after")
-    def _has_inputs(self) -> Derivation:
-        if not self.inputs:
-            raise ValueError(f"derivation {self.name!r} has no inputs")
-        return self
-
-
 class OperationRef(BaseModel):
     """The operation to execute, named rather than supplied as code.
 
@@ -346,24 +327,18 @@ class Rule(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _derivations_are_acyclic(self) -> Rule:
-        """Reject a derivation graph that cannot be evaluated.
+    def _derivations_are_backward_only(self) -> Rule:
+        """Reject unresolved or forward references while constructing the rule.
 
-        Checked at publish time rather than at execution: a cycle is an authoring error, and
-        discovering it mid-verdict would mean failing a package for a bug in our rulebook.
+        Construction-time validation is earlier than publication: an invalid ``Rule`` cannot
+        exist to be handed to the publisher. Restricting references to earlier names makes a
+        cycle unrepresentable instead of relying on an execution-time cycle check.
         """
-        known = set(self.inputs) | set(self.parameters)
-        for derivation in self.derivations:
-            unknown = [i for i in derivation.inputs if i not in known]
-            if unknown:
-                raise ValueError(
-                    f"derivation {derivation.name!r} references {unknown!r}, which is not an "
-                    "input, a parameter, or an earlier derivation. Derivations may only look "
-                    "backwards, which is what keeps the graph acyclic."
-                )
-            if derivation.name in known:
-                raise ValueError(f"derivation {derivation.name!r} redefines an existing name")
-            known.add(derivation.name)
+        validate_derivation_references(
+            self.derivations,
+            inputs=self.inputs,
+            parameters=self.parameters,
+        )
         return self
 
     @model_validator(mode="after")
