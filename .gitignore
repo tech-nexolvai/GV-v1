@@ -2,6 +2,11 @@
 data/
 eval/gold_set/cases/
 *.dwg
+# Client spreadsheets belong in data/, which is ignored above. This catches the case
+# where one is dropped somewhere tracked instead — docs/ is committed, and a checklist
+# landing there was how three of them reached a remote branch once.
+*.xlsx
+*.xls
 
 # --- Secrets ---
 .env
