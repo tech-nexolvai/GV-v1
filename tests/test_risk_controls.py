@@ -23,7 +23,6 @@ from enum import StrEnum
 from pathlib import Path
 
 import pytest
-import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MATRIX = REPO_ROOT / "docs" / "RISK_CONTROLS.md"
@@ -121,9 +120,27 @@ def parse_matrix(path: Path = MATRIX) -> tuple[Row, ...]:
 # ---------------------------------------------------------------------------
 
 
+_RULE_ID = re.compile(r"^\s*-\s*id:\s*(?P<id>[\w-]+)\s*$", re.MULTILINE)
+
+
 def _semgrep_rule_ids() -> frozenset[str]:
-    rules = yaml.safe_load(SEMGREP_RULES.read_text(encoding="utf-8"))
-    return frozenset(rule["id"] for rule in rules.get("rules", []))
+    """Read rule ids by pattern rather than by parsing YAML.
+
+    Deliberately dependency-free. PyYAML lives in the `rules` extra, and the guards CI job installs
+    only `dev` — so importing it made this guard fail to *collect* on CI while passing locally. A
+    guard that needs a dependency to run is a guard that will one day not run.
+
+    The failure mode is safe: a rule id this misses simply does not resolve, so an ENFORCED row
+    fails loudly rather than passing quietly. The assertion below catches a total parse failure,
+    which would otherwise make every semgrep reference fail for a confusing reason.
+    """
+    ids = frozenset(m.group("id") for m in _RULE_ID.finditer(SEMGREP_RULES.read_text("utf-8")))
+    if not ids:
+        raise MatrixError(
+            f"no rule ids parsed from {SEMGREP_RULES}. Either the file moved or its formatting "
+            "changed; every semgrep reference would otherwise fail for the wrong reason."
+        )
+    return ids
 
 
 def _test_node_exists(spec: str) -> bool:
