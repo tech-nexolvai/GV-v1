@@ -597,6 +597,65 @@ Extraction internals — geometry association, OCR routing, crop refinement — 
 The evidence *contracts* above are designable because the architecture documents specify them and
 `verdict/` already fixes one end.
 
+## 3.15 `eval/metrics.py` — the release metrics (D3, #69)
+
+`eval/release_gates.py` is already built and already names its inputs, so this interface is fixed by
+its consumer rather than chosen here. The gate runner reads these keys off `ReleaseGateInputs.metrics`:
+
+| Key | Direction | Gate |
+|---|---|---|
+| `critical_false_pass_rate` | maximum | safety metrics |
+| `numeric_exact_match_accuracy` | minimum | safety metrics |
+| `unit_exact_match_accuracy` | minimum | safety metrics |
+| `identifier_match_precision` | minimum | safety metrics |
+| `evidence_localisation_rate` | minimum | localisation |
+
+```python
+@dataclass(frozen=True, slots=True)
+class MetricResult:
+    key: str
+    value: Fraction | None      # None means NOT MEASURED. Never 0, never 1
+    numerator: int
+    denominator: int
+    check_type: CheckType | None    # None = across every check type
+    note: str = ""                  # why it is unmeasured, when it is
+
+def compute_all(
+    predicted: Sequence[Finding],
+    gold: Sequence[ExpectedFinding],
+) -> Mapping[str, MetricResult]: ...
+```
+
+### Three rules this module exists to hold
+
+**Values are exact rationals.** `Fraction`, never float. `release_gates._exact` accepts
+`Fraction | Decimal | int` and rejects everything else including `bool`, so a float metric is
+silently discarded and its gate reports NOT EVALUATED. ADR-0001 applies here as much as in the
+verdict path.
+
+**An empty denominator is `None`, not zero.** A critical false-PASS rate of `0` computed over zero
+critical cases renders as a perfect score. It means *nobody measured anything*. Those two must never
+look alike, which is why `value` is `Fraction | None` rather than defaulting. The same trap is
+already written into `D6.2` and `F4.2`: a check that passes when there is nothing to check against
+reports a green gate for an unmeasured change.
+
+**Two of the nine cannot be computed from a gold set at all.** Reviewer correction rate needs the
+correction ledger (`D5.4`) and reviewer minutes needs review sessions (`C1.10`) — both are production
+records, not properties of a drawing. They return `MetricResult(value=None, note=...)` naming what is
+missing. Fabricating them from synthetic cases would produce a number that looks like evidence and
+is not.
+
+### What Q4 does and does not decide
+
+`Q4` (#12) assigns a severity to each check. It determines what `critical_false_pass_rate` *reports*,
+not whether it can be *computed* — this module reads `Finding.severity`, it does not classify.
+
+Until Q4 is answered no rule declares `CRITICAL`, so the metric's denominator is zero and it reports
+**not measured**. That is the correct output, and it is exactly why the `None` case above is not a
+detail.
+
+---
+
 ## 4. Testing convention
 
 `tests/<package>/test_<module>.py`, mirroring the source tree. Every Track A story names its test file
