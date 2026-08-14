@@ -1,8 +1,8 @@
-# ADR-0008 — Derivations bind operands by name, and cycles stay unrepresentable
+# ADR-0013 — Derivations bind operands by name, and cycles stay unrepresentable
 
 **Status:** Accepted
 **Date:** 2026-08-14
-**Decides:** D12 (#109)
+**Decides:** D14 (#109)
 **Deciders:** admin (AnantBisht07)
 **Amends:** [ADR-0003](0003-rule-derivations.md)
 
