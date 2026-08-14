@@ -37,6 +37,7 @@ from verdict.operations.aggregate import (
 from verdict.operations.aggregate import (
     sum as sum_measurements,
 )
+from verdict.operations.alignment import ALIGNMENT_SPECS
 from verdict.operations.pairwise import PAIRWISE_SPECS, pairwise_within_tolerance
 from verdict.operations.scalar import (
     SCALAR_SPECS,
@@ -55,7 +56,7 @@ from verdict.registry import (
     validate_operands,
 )
 
-ALL_SPECS = (*SCALAR_SPECS, *AGGREGATE_SPECS, *PAIRWISE_SPECS)
+ALL_SPECS = (*SCALAR_SPECS, *AGGREGATE_SPECS, *PAIRWISE_SPECS, *ALIGNMENT_SPECS)
 UNQUALIFIED = (
     EvidenceStatus.RAW_CANDIDATE,
     EvidenceStatus.CONFLICTING,
