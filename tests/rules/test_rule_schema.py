@@ -193,8 +193,16 @@ def test_a_derivation_may_reference_an_earlier_derivation() -> None:
     rule = _minimal_rule(
         parameters={"overhang": Parameter(), "backsplash": Parameter()},
         derivations=(
-            Derivation(name="front", operation="sum", inputs=("overhang", "backsplash")),
-            Derivation(name="total", operation="sum", inputs=("front", "countertop_width")),
+            Derivation(
+                name="front",
+                operation="sum",
+                operands={"values": ("overhang", "backsplash")},
+            ),
+            Derivation(
+                name="total",
+                operation="sum",
+                operands={"values": ("front", "countertop_width")},
+            ),
         ),
         operation=OperationRef(type="exists", operands={"x": "total"}),
     )
@@ -206,29 +214,39 @@ def test_a_derivation_referencing_a_later_one_is_rejected() -> None:
     with pytest.raises(ValidationError, match="may only look"):
         _minimal_rule(
             derivations=(
-                Derivation(name="a", operation="sum", inputs=("b",)),
-                Derivation(name="b", operation="sum", inputs=("countertop_width",)),
+                Derivation(name="a", operation="sum", operands={"values": ("b",)}),
+                Derivation(
+                    name="b",
+                    operation="sum",
+                    operands={"values": ("countertop_width",)},
+                ),
             )
         )
 
 
 def test_a_self_referencing_derivation_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        _minimal_rule(derivations=(Derivation(name="a", operation="sum", inputs=("a",)),))
+        _minimal_rule(
+            derivations=(Derivation(name="a", operation="sum", operands={"values": ("a",)}),)
+        )
 
 
 def test_a_derivation_cannot_shadow_an_input() -> None:
     with pytest.raises(ValidationError, match="redefines"):
         _minimal_rule(
             derivations=(
-                Derivation(name="countertop_width", operation="sum", inputs=("countertop_width",)),
+                Derivation(
+                    name="countertop_width",
+                    operation="sum",
+                    operands={"values": ("countertop_width",)},
+                ),
             )
         )
 
 
 def test_a_derivation_with_no_inputs_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        Derivation(name="a", operation="sum", inputs=())
+        Derivation(name="a", operation="sum", operands={})
 
 
 # ---------------------------------------------------------------------------
