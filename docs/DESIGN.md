@@ -547,10 +547,10 @@ something else agrees with it.
 # evidence/canonical.py — a normalised, corroborated fact
 @dataclass(frozen=True, slots=True)
 class CanonicalObservation:
-    document_version_id: str
+    document_version_id: UUID      # ADR-0016 — a surrogate key, not an authored name
     document_role: DocumentRole    # ARCH | SHOP | PRODUCT_SPEC (ADR-0006)
     page: int
-    polygon: tuple[tuple[int, int], ...]
+    polygon: Polygon               # ADR-0016 — validated, and carries its own space
     semantic_type: SemanticType
     value: Measurement             # exact, authored unit preserved
     status: EvidenceStatus
