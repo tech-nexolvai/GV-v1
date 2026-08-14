@@ -64,6 +64,65 @@ without a record. Legal-hold and Object-Lock content is exempt.
 
 ---
 
+## 2.5 F1.1 — the risk-control traceability matrix
+
+The system design closes with ten named risks, each paired with a control. Nothing checks that the
+controls exist, and the gap is not hypothetical: **two of the ten had no owner at all** until the
+table was first written by hand, which is why `F5` and `B11` exist.
+
+### Borrowed from ISO 14971
+
+Medical-device risk management separates two verifications that are routinely conflated, and the
+distinction is exactly the one we need:
+
+| | Question | Automatable here |
+|---|---|---|
+| **Verification of implementation** | does the control exist? | yes — the artifact is on disk or it is not |
+| **Verification of effectiveness** | does it actually reduce the risk? | no — recorded as a named claim |
+
+A test file that exists but asserts nothing verifies implementation and not effectiveness. We check
+implementation mechanically and **state effectiveness as a claim naming the test that would fail if
+the risk materialised** — being honest that the second is not automated beats implying it is.
+
+### Reference syntax — every claim must be checkable
+
+Prose like *"enforced by B4"* cannot be verified: `B4` is an epic, not an artifact. Each row names
+references in a closed syntax instead:
+
+```
+test:tests/test_licences.py                     file must exist
+test:tests/test_gate.py::test_only_two_states   test must be collectable
+semgrep:gv-no-default-tolerance                 rule id must exist in .semgrep/gv-rules.yaml
+module:verdict/registry.py                      file must exist
+```
+
+### Status, and the check that makes this worth building
+
+```python
+class ControlStatus(StrEnum):
+    ENFORCED = "ENFORCED"   # every reference resolves
+    PARTIAL  = "PARTIAL"    # some resolve, some do not — the dangerous middle
+    PLANNED  = "PLANNED"    # none resolve yet; the issue that will build it is named
+```
+
+The guard asserts in **both** directions:
+
+- an `ENFORCED` row whose artifact is missing fails — a control was deleted or never landed
+- a `PLANNED` row whose artifact now **exists** also fails — the table has fallen behind reality
+- a `PARTIAL` row must have at least one reference resolving and at least one not
+
+The second rule is the one that earns its keep. `PARTIAL` is where the real failure lives: a control
+half-built, with an issue closed and everyone assuming the rest came with it. When `#157` was written
+its own body claimed *"C5 shipped hashes"* — `storage/` did not exist and every C5 issue was open.
+The story describing the failure contained the failure.
+
+### Deliberately offline
+
+No network, no issue-state lookup. CI runs it as an ordinary test, and artifact existence is a
+stronger signal than issue state anyway: a closed issue is a claim, a file on disk is a fact.
+
+---
+
 ## 3. F2 — observability and release metrics
 
 ### 3.1 One trace
