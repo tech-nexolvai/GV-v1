@@ -303,7 +303,7 @@ class InputSelector(BaseModel):
     scope: Scope
     cardinality: Cardinality
 
-class Derivation(BaseModel):        # D2, ADR-0008
+class Derivation(BaseModel):        # D2, ADR-0013
     name: str
     operation: str
     operands: dict[str, str]        # operand name -> input, parameter or earlier derivation
