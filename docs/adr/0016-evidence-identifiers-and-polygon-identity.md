@@ -7,6 +7,15 @@
 
 > Drafted by a coding agent. **Accepted by the admin on 2026-08-14.**
 
+> **Corrected 2026-08-15.** The first version of this record added a `page_extent: StoredExtent`
+> field to `Polygon` and justified the zero-area check with an integer shoelace formula. Both were
+> wrong, and wrong the same way: they were reasoned from a question asked on #170 rather than from
+> `DESIGN_EXTRACTION.md` §5, which the issue cites and which defines the stored space as
+> **`Decimal`, normalised 0..1**. Page bounds are therefore intrinsic to the space and need no
+> field, `StoredExtent` was a type invented here that exists in no design document, and stored
+> coordinates are not integers. The three decisions below are unchanged; the interface and the
+> arithmetic justification are corrected.
+
 ## Context
 
 Three mismatches on one seam, all surfaced while answering #170.
@@ -119,17 +128,39 @@ page and have no way to tell.
 ```python
 @dataclass(frozen=True, slots=True)
 class Polygon:
-    points: tuple[StoredPoint, ...]
+    points: tuple[StoredPoint, ...]     # Decimal, normalised 0..1 (DESIGN_EXTRACTION §5)
     space: Literal["stored"]
     document_version_id: UUID
-    page: int                      # NEW — part of the space, not a label
-    page_extent: StoredExtent
+    page: int                      # part of the space, not a label
 ```
 
 `contains` and `overlaps` raise when any of `document_version_id`, `page` or `space` differ. The
 existing reason for raising rather than returning `False` applies unchanged and is worth
 restating: `False` is a factual claim about geometry, and there is no true geometric answer to a
 question about two unrelated planes.
+
+**There is no `page_extent` field, and the polygon needs none.** `DESIGN_EXTRACTION.md` §5 defines
+the stored space as *normalised 0..1, rotation-applied*, so the page bounds are `0` and `1` by
+definition of the space. "Outside the page" is `x < 0 or x > 1 or y < 0 or y > 1`, which
+`__post_init__` can enforce with nothing but the points it already holds.
+
+This also makes the `page` field above matter more, not less: because **every** page's stored
+space is exactly `0..1`, two polygons on different pages do not merely share a coordinate range —
+they share it identically. There is no value a comparison could inspect that would reveal the
+mistake.
+
+### 4. Degeneracy is decided exactly, and not by Shapely
+
+A consequence of the same fact. Shapely computes in `float64`, so a zero-area test against its
+`area` is a float comparison — and "is this exactly zero" is the one question a float should not be
+asked, because a legitimately thin polygon and a degenerate one differ by less than the error.
+
+The stored coordinates are `Decimal`, so the shoelace formula gives an exact answer when computed
+over `Fraction(point.x)` — no context precision to configure, nothing to round, and degenerate is
+`== 0` exactly. This matches how `units/` already treats authored values under ADR-0001.
+
+Shapely remains the right tool for the spatial predicates, where an approximate answer to "do these
+overlap" is acceptable and an exact one is not available anyway.
 
 ## Consequences
 
