@@ -43,12 +43,32 @@ class ProductType(str, Enum):
 
 
 class OperandSource(str, Enum):
-    """Where a rule operand comes from (see RULE_ENGINE_SPEC.md section 3e)."""
+    """Where a rule operand comes from (see RULE_ENGINE_SPEC.md section 3e).
+
+    The distinction that matters here is **what can be re-checked later**, not how
+    authoritative the origin felt at the time. A value read from a hashed document can be
+    read again in six months against the exact bytes it came from; a value someone typed
+    cannot, however senior the person was.
+    """
 
     ARCH = "ARCH"
     SHOP = "SHOP"
     LITERAL = "LITERAL"
     USER_INPUT = "USER_INPUT"
+
+    PRODUCT_SPEC = "PRODUCT_SPEC"
+    """Read from a manufacturer's specification document, ingested as a versioned, hashed
+    artifact exactly like a drawing (ADR-0015).
+
+    Sink interior dimensions come from here — the client's checklist points at the
+    "production specification", and the worked example was a Kohler cut sheet.
+
+    **Not** for a value supplied by a person. A dimension sent by email or read out on a
+    call is `USER_INPUT`, even when the sender is the manufacturer. Labelling it
+    `PRODUCT_SPEC` would let a remembered number carry a document's provenance, and a
+    reviewer reading the finding would have no signal that the expected value could not be
+    verified against anything.
+    """
 
 
 class WallConfig(str, Enum):
@@ -95,7 +115,15 @@ _PREFIX_SOURCES = {
     "A": OperandSource.ARCH,
     "S": OperandSource.SHOP,
     "F": OperandSource.USER_INPUT,
+    "P": OperandSource.PRODUCT_SPEC,
 }
+
+#: Sources whose values come off a document we have hashed and pinned, so a finding drawn
+#: from one can be re-checked against the exact bytes later. `LITERAL` and `USER_INPUT` are
+#: deliberately absent: neither has a document behind it (ADR-0015).
+DOCUMENT_BACKED_SOURCES: frozenset[OperandSource] = frozenset(
+    {OperandSource.ARCH, OperandSource.SHOP, OperandSource.PRODUCT_SPEC}
+)
 _PARAMETERS = {
     "Filler_Width_Min",
     "Filler_Width_Max",
