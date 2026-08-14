@@ -607,14 +607,50 @@ and an ambiguity test. Happy-path-only tests do not satisfy the Definition of Do
 
 ---
 
-## 5. Tracks B and C
+## 5. Tracks B–F
 
-Deliberately not designed yet — designing extraction before we have real PDFs would be guesswork.
-`docs/V1_RESEARCH_AND_PLAN.md` §6 holds the intent; a design section is added here when Track B starts.
+This document covers the deterministic core: units, rules, verdict and the evidence contracts. The
+remaining tracks are designed in companion documents, indexed here.
 
-The one Track B commitment worth recording now: **dimension-chain closure** (#27) is a first-class
-extraction validator, not a rule. It verifies extraction quality with no ground truth, because the
-drawing's own dimension chains sum exactly within each unit system.
+| Document | Covers | Epics |
+|---|---|---|
+| `DESIGN_EXTRACTION.md` | pages, drawing model, geometry, revision, matching | B6–B11 |
+| `DESIGN_PLATFORM.md` | data model, API, lifecycle, workflow, storage | C1–C5 |
+| `DESIGN_PRODUCT.md` | findings API, reports, review, governance | D1–D7 |
+| `DESIGN_AI.md` | bounded agent, model adapter | E1–E2 |
+| `DESIGN_CONTROLS.md` | security, observability, evaluation, budget, triggers | F1–F6 |
+
+### What is designable now, and what is not
+
+The original position in this section was that Tracks B and C could not be designed before we had real
+PDFs. That is still true — but only of part of the work, and treating it as true of all of it has been
+holding up design that has nothing to do with drawings.
+
+**Designable now**, because the architecture documents already fix the contracts and nothing about them
+depends on seeing a drawing:
+
+- every Track C module — schema, API surface, state machine, workflow seam, storage interface
+- the Track B *contracts* — the page manifest, the drawing-model types, coordinate spaces, the
+  `MatchCandidate` boundary, revision identity
+- Track D, E and F in full — a report format, an approval path, a tool allow-list, a budget ceiling and
+  an audit event are all specified by the architecture, not by any particular drawing
+
+**Not designable now**, and named precisely so the gap cannot quietly widen:
+
+- **dimension-line and witness-line detection** (B10.2) — which vector primitives real drawings use
+- **text-to-dimension-line association** (B10.3) — the placement conventions this vendor actually follows
+- **OCR routing and crop refinement** (B2.4, E1) — which regions fail, and how they fail
+- **span resolution thresholds** (B10.4) — endpoint alignment tolerance is an empirical number
+
+For those, a story's Implementation plan states the approach and the open decisions rather than an
+invented interface. `data/drawings/` is still empty, and a specification written ahead of the evidence is
+worse than an honest gap because it looks finished.
+
+### The one Track B commitment recorded here
+
+**Dimension-chain closure** (#27) is a first-class extraction validator, not a rule. It verifies
+extraction quality with no ground truth, because the drawing's own dimension chains sum exactly within
+each unit system.
 
 ---
 

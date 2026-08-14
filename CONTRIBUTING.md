@@ -99,6 +99,54 @@ do to this codebase, and the reason is in the next section.
 
 ---
 
+## What a story must contain before it can be worked
+
+Current spec-driven practice — GitHub Spec Kit, AWS Kiro, and the tooling that grew up around coding
+agents in 2025–26 — separates three things that are easy to blur:
+
+| Artifact | Answers | Lives in |
+|---|---|---|
+| **Spec** | *what* and *why* | the issue: Context, Scope, Acceptance criteria |
+| **Plan** | *how* — interface, files, order of work | the issue: **Implementation plan** |
+| **Design** | which module owns it, and what it may import | `docs/DESIGN*.md`, cited by `design:` |
+
+The reason for the split is the failure mode it prevents. An issue that states only *what* leaves the
+interface to whoever implements it first, and the pieces stop fitting. An issue that inlines the whole
+architecture duplicates `DESIGN.md` and drifts from it. So: **architecture in the design docs, execution
+order in the issue, and the `design:` field is the link between them.**
+
+### The Implementation plan section
+
+Every story carries one. It has five parts:
+
+**Approach** — the ordered steps. Not a restatement of the scope; the sequence someone would actually
+work in, including what must exist first.
+
+**Interface** — the types and signatures this story adds, as real Python. This is the part that stops
+two stories inventing incompatible versions of the same thing. If it contradicts the design doc, the
+design doc wins and the issue is wrong.
+
+**Files** — exact paths, marked new or changed, including the test file.
+
+**Golden-rule check** — which of the invariants in `AGENTS.md` §2 this story can plausibly violate, and
+what specifically keeps it from doing so. Adapted from Spec Kit's *Constitution Check*: the point is to
+name the rule **before** writing the code, not to audit afterwards. A story that touches `verdict/`,
+`rules/` or `evidence/` and claims no applicable rule is almost certainly wrong.
+
+**Test plan** — the specific cases, failure modes first. For a safety-critical module this must include
+a boundary-exact test on both sides, a missing-operand test and an ambiguity test (`DESIGN.md` §4).
+
+### When a plan cannot honestly be written
+
+Some stories describe work whose shape genuinely is not knowable yet — extraction internals that depend
+on drawings nobody has seen. `DESIGN.md` §5 names them, and for those the Implementation plan states the
+**approach and the open decisions** rather than a false interface.
+
+That is not a lesser plan. A specification invented ahead of the evidence is worse than an honest gap,
+because it looks finished.
+
+---
+
 ## The abstention rule
 
 > **If you need a value, tolerance, threshold or decision that is not written in the issue, stop and
