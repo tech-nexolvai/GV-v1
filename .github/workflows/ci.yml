@@ -131,3 +131,14 @@ jobs:
       - name: Golden rules (semgrep)
         run: |
           semgrep --config .semgrep/gv-rules.yaml --error --quiet
+
+      # Every risk in the architecture's register must name a control that exists. Runs after
+      # semgrep because it verifies semgrep rule ids among other references, and after the other
+      # guards because it is the guard that checks the guards are still there.
+      #
+      # It fails in both directions: an ENFORCED control whose artifact is missing, and a PLANNED
+      # one whose artifact has quietly appeared. The second is what stops the register drifting
+      # into a document nobody trusts.
+      - name: Risk-control traceability
+        run: |
+          pytest tests/test_risk_controls.py -q
