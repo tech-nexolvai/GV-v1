@@ -48,11 +48,16 @@ operations. All are pure, deterministic, unit-normalized.
 ```yaml
 inputs:
   <name>:
-    source: SHOP | ARCH
+    source: SHOP | ARCH | PRODUCT_SPEC
     semantic_type: <canonical semantic type>   # e.g. cabinet_width
     scope: same_assembly | same_view | package  # how far to look (uses canonical item/view links)
     cardinality: one | many
 ```
+- `source: PRODUCT_SPEC` reads from a manufacturer's specification document ingested as a
+  versioned, hashed artifact — the sink-cutout family's expected values come from here
+  (ADR-0015). A value a person supplied is `USER_INPUT`, however authoritative they are: the
+  distinction is whether the number can be re-read against stored bytes later, not where it
+  originally came from.
 - `cardinality: one` → must resolve to exactly one observation. 0 → `on_missing`; >1 ambiguous → `on_ambiguous`.
 - `cardinality: many` → resolves to a list (0..n). Empty when the rule requires ≥1 → `on_missing`.
 - `scope: same_assembly` uses the canonical model's item/view relationships (the elevation tag / vendor

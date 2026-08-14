@@ -1,6 +1,6 @@
 # ADR-0015 — `PRODUCT_SPEC` as a document-backed operand source
 
-**Status:** Proposed        <!-- Proposed | Accepted | Rejected | Superseded by ADR-NNNN -->
+**Status:** Accepted        <!-- Proposed | Accepted | Rejected | Superseded by ADR-NNNN -->
 **Date:** 2026-08-14
 **Decides:** D4 (#4)
 **Deciders:** admin
