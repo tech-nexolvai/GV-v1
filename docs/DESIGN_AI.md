@@ -34,7 +34,7 @@ inside a handler is one refactor away from being skipped.
 ### 3.1 Fixed extraction first, always
 
 ```python
-def is_ambiguous(state: EvidenceState, ctx: RegionContext) -> bool:
+def is_ambiguous(status: EvidenceStatus, ctx: RegionContext) -> bool:
     """Deterministic predicate over evidence state. Never over model output."""
 ```
 
