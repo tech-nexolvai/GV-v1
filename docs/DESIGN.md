@@ -303,10 +303,10 @@ class InputSelector(BaseModel):
     scope: Scope
     cardinality: Cardinality
 
-class Derivation(BaseModel):        # D2
+class Derivation(BaseModel):        # D2, ADR-0008
     name: str
     operation: str
-    inputs: list[str]               # inputs, parameters or earlier derivations
+    operands: dict[str, str]        # operand name -> input, parameter or earlier derivation
 
 class ApplicabilityVariant(BaseModel):
     when: str
@@ -321,7 +321,7 @@ class Rule(BaseModel):
     arithmetic_unit: Unit                       # D1
     inputs: dict[str, InputSelector]
     parameters: dict[str, Parameter] = {}
-    derivations: list[Derivation] = []          # D2 — validated acyclic at publish
+    derivations: list[Derivation] = []          # D2 — backward-only, so acyclic by construction
     applicability: Applicability | GlobalApplicability   # required, ADR-0007
     operation: OperationRef
     on_missing: Outcome = Outcome.NOT_FOUND

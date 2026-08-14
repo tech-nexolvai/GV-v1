@@ -1,11 +1,18 @@
 # ADR-0003 — Typed `derivations:` DAG in the rule schema
 
-**Status:** Accepted
+**Status:** Accepted — amended by [ADR-0008](0008-derivation-operand-binding.md)
 **Date:** 2026-08-13
 **Decides:** D2 (#2)
 **Deciders:** admin (AnantBisht07)
 
 > Drafted by a coding agent. **Accepted by the admin on 2026-08-13.**
+
+> **Amended 2026-08-14 by ADR-0008 (D12).** Two changes: derivations bind operands **by name**
+> (`operands: {minuend: …, subtrahend: …}`) rather than as the positional `inputs:` list shown
+> below, because a positional list cannot bind to a keyword-only operation and a swapped pair in
+> a subtraction validates cleanly while computing the wrong number. And the promise below of a
+> rejection *"with the cycle path in the message"* is **withdrawn**: backward-only referencing
+> makes a cycle unrepresentable, so there is no path to walk. The decision otherwise stands.
 
 ## Context
 
