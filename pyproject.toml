@@ -11,8 +11,9 @@ requires-python = ">=3.12"
 # service stay isolated, and tests/test_verdict_isolation.py enforces it.
 #
 # rules/ is permitted pydantic (docs/DESIGN.md section 2) because rule files are authored
-# by humans and must be validated strictly before publication. Pydantic is MIT.
-dependencies = ["pydantic>=2.10"]
+# by humans and must be validated strictly before publication. Evidence polygons wrap
+# Shapely rather than exposing it. Pydantic is MIT and Shapely is BSD-3-Clause.
+dependencies = ["pydantic>=2.10", "shapely>=2"]
 
 # Approved V1 stack, per AGENTS.md §4. Declared here so the licence policy applies to
 # them, but not installed until their phase lands (see AGENTS.md §8 build order).
@@ -28,7 +29,6 @@ extraction = [
     "pypdfium2",
     "pikepdf",
     "opencv-python-headless",
-    "shapely",
 ]
 
 # Phase 3 — rule authoring: YAML loading. Validation itself is a runtime dependency.
