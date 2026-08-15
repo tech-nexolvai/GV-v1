@@ -26,7 +26,7 @@ from sqlalchemy import ForeignKey, Index, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, Immutable, TimestampedUUID
+from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime
 
 
 class GoldSet(Base, TimestampedUUID):
@@ -71,7 +71,13 @@ class GoldCase(Base, TimestampedUUID, Immutable):
 
     annotations: Mapped[dict[str, object]] = mapped_column(JSONB)
     annotated_by: Mapped[str] = mapped_column(String(200))
-    annotated_on: Mapped[datetime | None] = mapped_column(default=None)
+    annotated_on: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=None)
+    """Timezone-aware like every other timestamp here.
+
+    A bare `datetime` maps to a naive column, which the round-trip test caught: an annotation date
+    recorded in one timezone and read in another would silently shift, and the whole point of a
+    gold case is that it is the fixed reference everything else is measured against.
+    """
 
     __table_args__ = (
         UniqueConstraint("gold_set_id", "document_version_id"),
