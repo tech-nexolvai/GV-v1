@@ -59,11 +59,23 @@ Concretely:
 
 ### What this deliberately does **not** decide
 
-**`CT011`–`CT013` are not adopted.** They appear only inside formula `F38` and are never defined as
-rows in the variable table. We do not know what they measure. Creating enum members for them would
-be inventing three semantic types and giving them the authority of the client's own vocabulary —
-the same class of error as the `±1/8″` placeholder, which reached `RULE_ENGINE_SPEC` §4 and began
-reading as fact. They stay unmapped, and `Q15` (#16) asks him to define them.
+**~~`CT011`–`CT013` are not adopted.~~** *(Corrected 2026-08-15 — see below.)*
+
+> **Correction.** The original text of this clause said `CT011`–`CT013` were undefined and must stay
+> unmapped, on the grounds that they appear only inside formula `F38` and never as rows in the
+> variable table.
+>
+> **That was wrong.** They are defined — in the diagram `CT_image10`, positionally, like every other
+> code: `CT012` is the sink hole width, and `CT011` / `CT013` are the clearances from the sink
+> cabinet's interior faces to the cutout. Confirmed by reading the extracted image directly.
+>
+> The error is worth recording because of what caused it. This ADR argues that the codes should be
+> adopted *because they are anchored to a diagram* — and then a text summary saying "never defined as
+> rows" was taken as meaning "undefined", without opening the diagram it was summarising. The
+> client's substantive content is disproportionately in embedded images rather than cells, which is
+> a known trap here and was fallen into anyway.
+>
+> **All thirteen codes are adopted.** `#44` implements them.
 
 **Which of `CT009` / `CT010` is read and which is derived stays open.** His table marks *both*
 "Calculated" and each formula references the other. That is `Q6` (#14) and this ADR does not touch
