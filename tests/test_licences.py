@@ -33,7 +33,12 @@ FORBIDDEN_PACKAGES = {
 
 # Packages whose metadata mentions AGPL only because they *interoperate* with an AGPL
 # tool, or that are dual-licensed in our favour. Each entry needs a written reason.
-ALLOWED_EXCEPTIONS: dict[str, str] = {}
+ALLOWED_EXCEPTIONS: dict[str, str] = {
+    # Shapely 2 requires NumPy, whose own licence is BSD-3-Clause. NumPy's package
+    # metadata reproduces third-party GCC runtime text that mentions how that runtime
+    # may be combined with AGPL software; the installed NumPy distribution is not AGPL.
+    "numpy": "BSD-3-Clause; AGPL appears only in bundled GCC runtime licence text",
+}
 
 
 def _licence_text(dist) -> str:  # type: ignore[no-untyped-def]
