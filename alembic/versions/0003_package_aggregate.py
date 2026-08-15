@@ -38,13 +38,7 @@ PACKAGE_STATES = (
 )
 
 
-def _state_type(name: str) -> sa.Enum:
-    return sa.Enum(
-        *PACKAGE_STATES,
-        name=name,
-        native_enum=False,
-        create_constraint=True,
-    )
+PACKAGE_STATE_VALUES = ", ".join(f"'{state}'" for state in PACKAGE_STATES)
 
 
 def upgrade() -> None:
@@ -73,10 +67,14 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("package_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("revision_number", sa.Integer(), nullable=False),
-        sa.Column("state", _state_type("package_revision_state"), nullable=False),
+        sa.Column("state", sa.String(length=32), nullable=False),
         sa.Column("supersedes_id", sa.Uuid(as_uuid=True), nullable=True),
         sa.ForeignKeyConstraint(["package_id"], ["packages.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["supersedes_id"], ["package_revisions.id"], ondelete="RESTRICT"),
+        sa.CheckConstraint(
+            f"state IN ({PACKAGE_STATE_VALUES})",
+            name="package_revision_state",
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("package_id", "revision_number"),
     )
@@ -86,12 +84,20 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("package_revision_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("sequence", sa.Integer(), nullable=False),
-        sa.Column("from_state", _state_type("package_event_from_state"), nullable=True),
-        sa.Column("to_state", _state_type("package_event_to_state"), nullable=False),
+        sa.Column("from_state", sa.String(length=32), nullable=True),
+        sa.Column("to_state", sa.String(length=32), nullable=False),
         sa.Column("actor", sa.String(length=200), nullable=False),
         sa.Column("reason", sa.String(length=1000), nullable=True),
         sa.ForeignKeyConstraint(
             ["package_revision_id"], ["package_revisions.id"], ondelete="RESTRICT"
+        ),
+        sa.CheckConstraint(
+            f"from_state IS NULL OR from_state IN ({PACKAGE_STATE_VALUES})",
+            name="package_event_from_state",
+        ),
+        sa.CheckConstraint(
+            f"to_state IN ({PACKAGE_STATE_VALUES})",
+            name="package_event_to_state",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("package_revision_id", "sequence"),

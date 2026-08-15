@@ -12,8 +12,7 @@ from __future__ import annotations
 from enum import StrEnum
 from uuid import UUID
 
-from sqlalchemy import Enum as SQLAlchemyEnum
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, Immutable, TimestampedUUID
@@ -41,27 +40,7 @@ class PackageState(StrEnum):
     SUPERSEDED = "SUPERSEDED"
 
 
-PACKAGE_REVISION_STATE_TYPE = SQLAlchemyEnum(
-    PackageState,
-    name="package_revision_state",
-    native_enum=False,
-    create_constraint=True,
-    validate_strings=True,
-)
-PACKAGE_EVENT_FROM_STATE_TYPE = SQLAlchemyEnum(
-    PackageState,
-    name="package_event_from_state",
-    native_enum=False,
-    create_constraint=True,
-    validate_strings=True,
-)
-PACKAGE_EVENT_TO_STATE_TYPE = SQLAlchemyEnum(
-    PackageState,
-    name="package_event_to_state",
-    native_enum=False,
-    create_constraint=True,
-    validate_strings=True,
-)
+PACKAGE_STATE_VALUES = ", ".join(f"'{state.value}'" for state in PackageState)
 
 
 class Project(Base, TimestampedUUID):
@@ -91,7 +70,7 @@ class PackageRevision(Base, TimestampedUUID):
 
     package_id: Mapped[UUID] = mapped_column(ForeignKey("packages.id", ondelete="RESTRICT"))
     revision_number: Mapped[int]
-    state: Mapped[PackageState] = mapped_column(PACKAGE_REVISION_STATE_TYPE)
+    state: Mapped[str] = mapped_column(String(32))
     supersedes_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("package_revisions.id", ondelete="RESTRICT"),
         default=None,
@@ -102,7 +81,13 @@ class PackageRevision(Base, TimestampedUUID):
         foreign_keys=[supersedes_id],
     )
 
-    __table_args__ = (UniqueConstraint("package_id", "revision_number"),)
+    __table_args__ = (
+        CheckConstraint(
+            f"state IN ({PACKAGE_STATE_VALUES})",
+            name="package_revision_state",
+        ),
+        UniqueConstraint("package_id", "revision_number"),
+    )
 
 
 class PackageStateEvent(Base, TimestampedUUID, Immutable):
@@ -114,11 +99,19 @@ class PackageStateEvent(Base, TimestampedUUID, Immutable):
         ForeignKey("package_revisions.id", ondelete="RESTRICT")
     )
     sequence: Mapped[int]
-    from_state: Mapped[PackageState | None] = mapped_column(
-        PACKAGE_EVENT_FROM_STATE_TYPE, default=None
-    )
-    to_state: Mapped[PackageState] = mapped_column(PACKAGE_EVENT_TO_STATE_TYPE)
+    from_state: Mapped[str | None] = mapped_column(String(32), default=None)
+    to_state: Mapped[str] = mapped_column(String(32))
     actor: Mapped[str] = mapped_column(String(200))
     reason: Mapped[str | None] = mapped_column(String(1000), default=None)
 
-    __table_args__ = (UniqueConstraint("package_revision_id", "sequence"),)
+    __table_args__ = (
+        CheckConstraint(
+            f"from_state IS NULL OR from_state IN ({PACKAGE_STATE_VALUES})",
+            name="package_event_from_state",
+        ),
+        CheckConstraint(
+            f"to_state IN ({PACKAGE_STATE_VALUES})",
+            name="package_event_to_state",
+        ),
+        UniqueConstraint("package_revision_id", "sequence"),
+    )

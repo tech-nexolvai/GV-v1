@@ -6,7 +6,8 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import Engine, UniqueConstraint, delete, inspect, select
-from sqlalchemy.exc import IntegrityError, StatementError
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.db.base import Base, Immutable
 from app.db.session import session_factory, unit_of_work
@@ -77,6 +78,22 @@ def _aggregate() -> tuple[Project, Package, PackageRevision]:
     return project, package, revision
 
 
+def _persist_aggregate(
+    session: Session,
+    project: Project,
+    package: Package,
+    revision: PackageRevision,
+) -> None:
+    """Persist parents before children because the models expose identifiers, not relationships."""
+
+    session.add(project)
+    session.flush()
+    session.add(package)
+    session.flush()
+    session.add(revision)
+    session.flush()
+
+
 def test_revision_supersedes_predecessor_without_updating_it(postgres_engine: Engine) -> None:
     """Input: revision 2 superseding revision 1. Outcome: both rows retain separate identity."""
 
@@ -85,7 +102,7 @@ def test_revision_supersedes_predecessor_without_updating_it(postgres_engine: En
     project, package, first = _aggregate()
     first_id = first.id
     with unit_of_work(factory) as session:
-        session.add_all((project, package, first))
+        _persist_aggregate(session, project, package, first)
     with unit_of_work(factory) as session:
         second = PackageRevision(
             package_id=package.id,
@@ -110,7 +127,7 @@ def test_duplicate_event_sequence_is_rejected(postgres_engine: Engine) -> None:
     factory = session_factory(postgres_engine)
     project, package, revision = _aggregate()
     with pytest.raises(IntegrityError), unit_of_work(factory) as session:
-        session.add_all((project, package, revision))
+        _persist_aggregate(session, project, package, revision)
         session.add_all(
             (
                 PackageStateEvent(
@@ -138,10 +155,9 @@ def test_unknown_state_is_rejected_before_insert(postgres_engine: Engine) -> Non
     _create_schema(postgres_engine)
     factory = session_factory(postgres_engine)
     project, package, revision = _aggregate()
-    revision.state = "AUTOMATICALLY_APPROVED"  # type: ignore[assignment]
-    with pytest.raises(StatementError), unit_of_work(factory) as session:
-        session.add_all((project, package, revision))
-        session.flush()
+    revision.state = "AUTOMATICALLY_APPROVED"
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        _persist_aggregate(session, project, package, revision)
 
 
 def test_deleting_project_with_package_is_restricted(postgres_engine: Engine) -> None:
@@ -152,7 +168,7 @@ def test_deleting_project_with_package_is_restricted(postgres_engine: Engine) ->
     project, package, revision = _aggregate()
     project_id: UUID = project.id
     with unit_of_work(factory) as session:
-        session.add_all((project, package, revision))
+        _persist_aggregate(session, project, package, revision)
     with pytest.raises(IntegrityError), unit_of_work(factory) as session:
         session.execute(delete(Project).where(Project.id == project_id))
 
@@ -164,7 +180,7 @@ def test_state_events_are_read_in_explicit_sequence_order(postgres_engine: Engin
     factory = session_factory(postgres_engine)
     project, package, revision = _aggregate()
     with unit_of_work(factory) as session:
-        session.add_all((project, package, revision))
+        _persist_aggregate(session, project, package, revision)
         session.add_all(
             (
                 PackageStateEvent(
