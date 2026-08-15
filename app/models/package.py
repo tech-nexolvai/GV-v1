@@ -1,0 +1,124 @@
+"""Projects, packages, revisions and their ordered state-event history.
+
+Revisions supersede older rows rather than replacing them.  State events are immutable,
+ordered records so later lifecycle work can reconstruct exactly what happened.
+
+Source: backend proposal section 10.1, ``AGENTS.md`` sections 2.7 and 6, issue #192.
+Verification: ``tests/db/test_package_models.py``.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from uuid import UUID
+
+from sqlalchemy import Enum as SQLAlchemyEnum
+from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base, Immutable, TimestampedUUID
+
+
+class PackageState(StrEnum):
+    """Persisted package lifecycle states fixed by ``DESIGN_PLATFORM.md`` section 5."""
+
+    CREATED = "CREATED"
+    UPLOADING = "UPLOADING"
+    UPLOADED = "UPLOADED"
+    INGESTING = "INGESTING"
+    EXTRACTING = "EXTRACTING"
+    MATCHING = "MATCHING"
+    VALIDATING_EVIDENCE = "VALIDATING_EVIDENCE"
+    RUNNING_CHECKS = "RUNNING_CHECKS"
+    GENERATING_OUTPUTS = "GENERATING_OUTPUTS"
+    AWAITING_REVIEW = "AWAITING_REVIEW"
+    APPROVED = "APPROVED"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
+    FAILED_RETRYABLE = "FAILED_RETRYABLE"
+    FAILED_PERMANENT = "FAILED_PERMANENT"
+    NEEDS_INPUT = "NEEDS_INPUT"
+    CANCELLED = "CANCELLED"
+    SUPERSEDED = "SUPERSEDED"
+
+
+PACKAGE_REVISION_STATE_TYPE = SQLAlchemyEnum(
+    PackageState,
+    name="package_revision_state",
+    native_enum=False,
+    create_constraint=True,
+    validate_strings=True,
+)
+PACKAGE_EVENT_FROM_STATE_TYPE = SQLAlchemyEnum(
+    PackageState,
+    name="package_event_from_state",
+    native_enum=False,
+    create_constraint=True,
+    validate_strings=True,
+)
+PACKAGE_EVENT_TO_STATE_TYPE = SQLAlchemyEnum(
+    PackageState,
+    name="package_event_to_state",
+    native_enum=False,
+    create_constraint=True,
+    validate_strings=True,
+)
+
+
+class Project(Base, TimestampedUUID):
+    """The structural isolation boundary for all package data below it."""
+
+    __tablename__ = "projects"
+
+    name: Mapped[str] = mapped_column(String(200))
+    # The A7 parameter-set table has not landed yet. As with GoldCase.document_version_id,
+    # retain the identity now and add its foreign key in a later, additive migration.
+    company_standards_id: Mapped[UUID | None] = mapped_column(default=None)
+
+
+class Package(Base, TimestampedUUID):
+    """One reviewable drawing package owned by exactly one project."""
+
+    __tablename__ = "packages"
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="RESTRICT"))
+    vendor: Mapped[str | None] = mapped_column(String(200), default=None)
+
+
+class PackageRevision(Base, TimestampedUUID):
+    """One historical package revision, optionally superseding its predecessor."""
+
+    __tablename__ = "package_revisions"
+
+    package_id: Mapped[UUID] = mapped_column(ForeignKey("packages.id", ondelete="RESTRICT"))
+    revision_number: Mapped[int]
+    state: Mapped[PackageState] = mapped_column(PACKAGE_REVISION_STATE_TYPE)
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"),
+        default=None,
+    )
+
+    supersedes: Mapped[PackageRevision | None] = relationship(
+        remote_side="PackageRevision.id",
+        foreign_keys=[supersedes_id],
+    )
+
+    __table_args__ = (UniqueConstraint("package_id", "revision_number"),)
+
+
+class PackageStateEvent(Base, TimestampedUUID, Immutable):
+    """An append-only, explicitly ordered package lifecycle transition."""
+
+    __tablename__ = "package_state_events"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT")
+    )
+    sequence: Mapped[int]
+    from_state: Mapped[PackageState | None] = mapped_column(
+        PACKAGE_EVENT_FROM_STATE_TYPE, default=None
+    )
+    to_state: Mapped[PackageState] = mapped_column(PACKAGE_EVENT_TO_STATE_TYPE)
+    actor: Mapped[str] = mapped_column(String(200))
+    reason: Mapped[str | None] = mapped_column(String(1000), default=None)
+
+    __table_args__ = (UniqueConstraint("package_revision_id", "sequence"),)
