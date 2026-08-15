@@ -1,6 +1,6 @@
 # ADR-0017 — The client's `CT0xx` codes are the canonical vocabulary
 
-**Status:** Proposed        <!-- Proposed | Accepted | Rejected | Superseded by ADR-NNNN -->
+**Status:** Accepted        <!-- Proposed | Accepted | Rejected | Superseded by ADR-NNNN -->
 **Date:** 2026-08-15
 **Decides:** D6 (#6)
 **Deciders:** admin
