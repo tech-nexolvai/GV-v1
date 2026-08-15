@@ -37,7 +37,9 @@ class Authority(StrEnum):
 class CorroborationLane(StrEnum):
     """Typed non-candidate routes that independently corroborated a reading."""
 
+    SECOND_READER = "SECOND_READER"
     DUAL_UNIT = "DUAL_UNIT"
+    HUMAN = "HUMAN"
 
 
 def _validate_candidate_ids(candidate_ids: tuple[str, ...], *, field: str) -> None:
