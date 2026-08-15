@@ -6,6 +6,10 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
 
+# Imported for its side effects: a model registers in Base.metadata only when its module is
+# imported. Without this, autogenerate compares against an empty schema and silently produces a
+# migration that creates nothing. See app/models/__init__.py.
+import app.models  # noqa: F401  (side-effect import, must come after Base)
 from alembic import context
 from app.db.base import Base
 from app.db.session import settings_from_environment
