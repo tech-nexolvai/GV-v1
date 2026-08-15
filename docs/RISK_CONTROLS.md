@@ -52,8 +52,8 @@ the tie.
 ## R2 — Wrong item/view association
 
 **Control (§16):** Exact identifiers first, metadata and geometry checks, human confirmation for ambiguity.
-**Status:** PLANNED
-**Refs:** module:extraction/model/assembly.py, module:extraction/geometry/text_association.py, module:retrieval/approval.py
+**Status:** PARTIAL
+**Refs:** test:tests/test_vendor_neutrality.py, module:extraction/model/assembly.py, module:extraction/geometry/text_association.py, module:retrieval/approval.py
 **Owner:** #168, #180, #190
 **Effectiveness claim:** an ambiguous association returns no association rather than the nearest
 guess, and a partial assembly run is never silently summed. This is the failure that produces a

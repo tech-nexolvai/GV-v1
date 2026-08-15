@@ -187,6 +187,25 @@ class ApplicabilityVariant(BaseModel):
     extras: dict[str, int] = Field(default_factory=dict)
 
 
+#: Discriminator names that identify *who submitted the drawing*. Forbidden by ADR-0006.
+#:
+#: `manufacturer` is deliberately absent. It identifies a *product* — the maker of a sink whose
+#: cut sheet supplies an expected dimension (ADR-0015, `PRODUCT_SPEC`) — not the party being
+#: reviewed. A rule may legitimately vary by which sink is specified; it may never vary by who
+#: drew it.
+RESERVED_DISCRIMINATORS: frozenset[str] = frozenset(
+    {
+        "vendor",
+        "vendor_id",
+        "vendor_name",
+        "supplier",
+        "supplier_id",
+        "fabricator",
+        "submitter",
+    }
+)
+
+
 class Applicability(BaseModel):
     """The discriminator that selects a variant, e.g. ``wall_config``.
 
@@ -198,6 +217,29 @@ class Applicability(BaseModel):
 
     discriminator: str
     variants: tuple[ApplicabilityVariant, ...]
+
+    @model_validator(mode="after")
+    def _discriminator_is_not_vendor_identity(self) -> Applicability:
+        """Vendor identity is metadata, never a rule key (ADR-0006).
+
+        Every vendor is held to the same rule for the same layout. Selecting a variant by who
+        submitted the drawing is the system deciding how carefully to check based on who it is
+        checking, and a looser tolerance for a trusted supplier is a false PASS with a paper trail
+        saying it was intentional.
+
+        Rejected at construction rather than at review, because this would not arrive as an obvious
+        mistake. It would arrive as *"vendor X's drawings use a different convention"* — reasonable
+        on its face, and the point at which per-vendor scrutiny becomes possible.
+        """
+        if self.discriminator.strip().lower() in RESERVED_DISCRIMINATORS:
+            raise ValueError(
+                f"{self.discriminator!r} cannot select an applicability variant. Vendor identity is "
+                "metadata, never a rule key (ADR-0006): every vendor is held to the same rule for "
+                "the same layout. If their drawings genuinely differ, the difference is in the "
+                "drawing — a layout, a unit convention — and that is what the discriminator should "
+                "name."
+            )
+        return self
 
     @model_validator(mode="after")
     def _variants_are_present_and_distinct(self) -> Applicability:
