@@ -121,19 +121,12 @@ def test_a_gold_case_binds_to_both_a_version_and_a_content_hash() -> None:
     assert not columns["content_hash"].nullable
 
 
-def test_the_document_version_foreign_key_is_deliberately_absent_for_now() -> None:
-    """`document_versions` arrives with C1.3 (#193), still open.
+def test_a_gold_case_references_a_stored_document_version() -> None:
+    """An annotation cannot point at document bytes the platform never stored."""
 
-    Recorded as a test rather than only a comment so the gap is visible: when #193 lands, this
-    fails and whoever sees it adds the constraint in a new migration. An unconstrained UUID
-    silently permits a gold case pointing at a document version that was never stored.
-    """
     foreign_keys = {fk.column.table.name for fk in Base.metadata.tables["gold_cases"].foreign_keys}
     assert "gold_sets" in foreign_keys
-    assert "document_versions" not in foreign_keys, (
-        "document_versions now exists — add the foreign key on gold_cases.document_version_id in a "
-        "NEW migration and update this test."
-    )
+    assert "document_versions" in foreign_keys
 
 
 # ---------------------------------------------------------------------------
