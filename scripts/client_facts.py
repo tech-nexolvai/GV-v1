@@ -122,11 +122,23 @@ def load(path: Path = FACTS_PATH) -> dict[str, ClientFact]:
                 f"{entry.group('ref')} is missing: {', '.join(sorted(missing))}. Every field is "
                 "required — a fact without a source is an assertion."
             )
+        # A mistyped `status` or `blocks` would otherwise raise ValueError, which `issue_gate.py`
+        # does not catch — the gate would exit with a traceback instead of its controlled stop, and
+        # a traceback is the one output nobody reads as "you may not start this yet".
+        try:
+            status = Status(fields["status"])
+            blocks = Blocks(fields["blocks"])
+        except ValueError as error:
+            raise ClientFactsError(
+                f"{entry.group('ref')} has an invalid field: {error}. `status` is ANSWERED or OPEN; "
+                "`blocks` is formula, value or nothing."
+            ) from error
+
         facts[entry.group("ref")] = ClientFact(
             ref=entry.group("ref"),
             title=entry.group("title").strip(),
-            status=Status(fields["status"]),
-            blocks=Blocks(fields["blocks"]),
+            status=status,
+            blocks=blocks,
             issue=fields["issue"],
             answer=fields["answer"],
             source=fields["source"],

@@ -51,6 +51,10 @@ class Step:
     name: str
     command: list[str]
     optional: bool = False
+    """The tool may be absent; skip it and say so rather than failing."""
+
+    advisory: bool = False
+    """Reported but never fails the chain — CI runs it with continue-on-error."""
 
 
 def _python(*args: str) -> list[str]:
@@ -64,6 +68,12 @@ def _semgrep() -> str:
 
 
 STEPS: list[Step] = [
+    # First, because it is the one failure that cannot be undone by a later commit: client drawings
+    # are proprietary, and CI rejects anything tracked under data/. A local run that reports success
+    # with a drawing staged would send someone to push it.
+    Step(
+        "repo hygiene (no client data)", _python("-m", "pytest", "tests/test_repo_hygiene.py", "-q")
+    ),
     Step("licence policy", _python("-m", "pytest", "tests/test_licences.py", "-q")),
     Step("ruff", _python("-m", "ruff", "check", ".")),
     Step("black", _python("-m", "black", "--check", ".")),
@@ -77,6 +87,14 @@ STEPS: list[Step] = [
         "semgrep (golden rules)",
         [_semgrep(), "--config", ".semgrep/gv-rules.yaml", "--error", "--quiet"],
         optional=True,
+    ),
+    # CI runs this with continue-on-error, so it must not fail the local chain either — but it is
+    # where type errors in the newer packages show up first, and silently omitting it would make a
+    # local run weaker than CI rather than equal to it.
+    Step(
+        "mypy (rest of the tree, non-blocking)",
+        _python("-m", "mypy", "app", "workflow", "extraction", "retrieval", "reports", "eval"),
+        advisory=True,
     ),
     Step("tests", _python("-m", "pytest", "-q")),
 ]
@@ -143,7 +161,10 @@ def main() -> int:
         tail = (result.stdout or result.stderr).strip().splitlines()
         print("  " + (tail[-1] if tail else "(no output)"))
         if result.returncode != 0:
-            failures.append(step.name)
+            if step.advisory:
+                print("    (advisory — CI does not fail on this either)")
+            else:
+                failures.append(step.name)
             for line in tail[-25:]:
                 print(f"    {line}")
 
