@@ -99,6 +99,33 @@ do to this codebase, and the reason is in the next section.
 
 ---
 
+## Before you push
+
+```bash
+make check          # the CI chain, locally, in the same order
+make check-fast     # same without semgrep, for a tight edit loop
+```
+
+Every CI failure on this project so far has been an **environment difference**, not a logic bug: a
+dependency in an extra the job did not install, a test module that resolved locally and not on the
+runner, a linter nobody ran. `scripts/check.py` closes that gap and does two things `pytest` alone
+does not.
+
+**It refuses to run in a drifted environment.** If your interpreter is missing an extra that CI
+installs, it says so and stops. A green run in a stale venv is worse than a red one, because it is
+believed.
+
+**It tells you what it could not check.** The PostgreSQL tests skip without `DATABASE_URL`, and a
+model/migration mismatch has already reached CI that way. To run them:
+
+```bash
+make db
+export DATABASE_URL=postgresql+psycopg://gv:gv@localhost:5433/gv
+make check
+```
+
+---
+
 ## What a story must contain before it can be worked
 
 Current spec-driven practice — GitHub Spec Kit, AWS Kiro, and the tooling that grew up around coding

@@ -24,6 +24,9 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path as _Path
+
+sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 REPO = "tech-nexolvai/GV-v1"
 
@@ -208,6 +211,34 @@ def decision_brief(number: int, title: str, body: str) -> None:
     )
 
 
+def client_fact_verdict(requires: list[object]) -> tuple[list[str], list[str]]:
+    """Resolve every `Qn` in `requires` against `docs/CLIENT_FACTS.md`.
+
+    Returns (stopping, provisional) as printable lines. This is what stops a dependency being an
+    argument: the file says whether an open question changes the *formula* or only supplies a
+    *value*, and those are not the same kind of blocked. Three stories were held up by the second
+    kind before this existed.
+    """
+    try:
+        from client_facts import ClientFactsError, load, lookup
+    except ImportError:  # pragma: no cover - the gate must work even if this module moves
+        return [], []
+
+    try:
+        facts = load()
+    except (ClientFactsError, OSError) as error:
+        return [f"could not read the client facts: {error}"], []
+
+    stopping: list[str] = []
+    provisional: list[str] = []
+    for item in requires:
+        fact = lookup(str(item), facts)
+        if fact is None:
+            continue
+        (stopping if fact.stops_work else provisional).append(fact.gate_line())
+    return stopping, provisional
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("issue", type=int)
@@ -335,6 +366,29 @@ def main() -> int:
     # ---------------- not ready ----------------
     if code != READY:
         req = ", ".join(f"#{r}" if str(r).isdigit() else str(r) for r in requires)
+        stopping, provisional = client_fact_verdict(requires)
+        if provisional and not stopping:
+            # Every outstanding question supplies a value, not a formula. The rule can be authored
+            # with an UNCONFIRMED tolerance, which cannot reach production (ADR-0011). Say so
+            # rather than reporting a flat stop that somebody then has to argue about.
+            print(f"READY (PROVISIONAL) — #{args.issue} may be implemented")
+            print("=" * 62)
+            print(f"title  : {title}")
+            for line in provisional:
+                print(f"  - {line}")
+            print("\nAuthor it with the value left UNCONFIRMED. The check will return REVIEW")
+            print("REQUIRED for every drawing and cannot be released (ADR-0011, D6.4).")
+            return READY
+        if stopping:
+            sys.stderr.write(
+                f"STOP — #{args.issue} depends on an unanswered question that changes the "
+                f"calculation\n{'=' * 62}\n"
+                + "".join(f"  - {line}\n" for line in stopping)
+                + "\nSource: docs/CLIENT_FACTS.md, which is the authority. Do not infer the "
+                "answer from\nthe checklist — it contradicts itself in several places, which is "
+                "why that file exists.\n"
+            )
+            return BLOCKED
         msg = (
             f"STOP — #{args.issue} is not ready to implement\n"
             f"{'=' * 62}\n"
