@@ -53,7 +53,7 @@ reports = ["reportlab", "pypdf", "openpyxl"]
 # and without this it tries to package data/ and frontend/ too. List them explicitly.
 [tool.setuptools.packages.find]
 include = [
-    "app*", "workflow*", "extraction*", "evidence*", "rules*",
+    "app*", "workflow*", "extraction*", "evidence*", "rules*", "storage*",
     "verdict*", "retrieval*", "reports*", "eval*", "units*",
 ]
 exclude = ["data*", "frontend*", "docs*", "tests*", "scripts*", ".venv*"]
