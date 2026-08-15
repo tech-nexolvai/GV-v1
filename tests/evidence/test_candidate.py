@@ -16,6 +16,7 @@ from units.measurement import Measurement, Unit
 
 def candidate(**overrides: object) -> ObservationCandidate:
     values: dict[str, object] = {
+        "candidate_id": "candidate-paddleocr-001",
         "extractor": "paddleocr",
         "extractor_version": "3.1.0",
         "raw_text": "  984 [38 3/4]\n",
@@ -39,6 +40,7 @@ def candidate(**overrides: object) -> ObservationCandidate:
 def test_candidate_preserves_raw_text_and_extractor_identity_exactly() -> None:
     observation = candidate()
 
+    assert observation.candidate_id == "candidate-paddleocr-001"
     assert observation.extractor == "paddleocr"
     assert observation.extractor_version == "3.1.0"
     assert observation.raw_text == "  984 [38 3/4]\n"
@@ -111,6 +113,7 @@ def test_polygon_preserves_extractor_image_space() -> None:
 @pytest.mark.parametrize(
     ("overrides", "error", "message"),
     [
+        ({"candidate_id": ""}, ValueError, "non-empty"),
         ({"page": -1}, ValueError, "zero or greater"),
         ({"page": False}, TypeError, "must be an integer"),
         ({"unit_guess": "mm"}, TypeError, "Unit or None"),
@@ -128,6 +131,7 @@ def test_invalid_candidate_boundary_values_are_rejected(
 
 def test_extractor_version_is_a_required_constructor_argument() -> None:
     values = {
+        "candidate_id": "candidate-paddleocr-001",
         "extractor": "paddleocr",
         "raw_text": "984",
         "parsed_value": None,
