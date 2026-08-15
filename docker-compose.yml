@@ -1,0 +1,27 @@
+# Local PostgreSQL for the persistence tests.
+#
+# Without it, the database tests skip and a mismatch between a model and its migration only
+# surfaces on CI — which is how #201's naive-timestamp bug was found. Port 5433 rather than 5432
+# so this never collides with a PostgreSQL already running on the machine.
+#
+#   docker compose up -d db
+#   export DATABASE_URL=postgresql+psycopg://gv:gv@localhost:5433/gv
+#   python scripts/check.py
+#
+# The data is deliberately not persisted to a volume: these are tests, and a stale test database
+# that survives a schema change is a source of confusing failures rather than useful state.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gv
+      POSTGRES_PASSWORD: gv
+      POSTGRES_DB: gv
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gv"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

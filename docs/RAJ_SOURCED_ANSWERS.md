@@ -1,5 +1,10 @@
 # What Raj has actually stated — sourced audit
 
+> **Not authoritative for client facts.** `docs/CLIENT_FACTS.md` is. This file is research
+> and history: it marks things "NOT STATED" that the embedded diagrams do state, and its
+> Q-numbering is not the issue numbering. Where the two disagree, `CLIENT_FACTS.md` is right.
+
+
 **Purpose:** separate what Raj *said* (with exact source) from what we've been *inferring*. Anything marked NOT STATED or IMPLIED goes back to Raj as a real question.
 
 **Primary sources searched (all of them):**
