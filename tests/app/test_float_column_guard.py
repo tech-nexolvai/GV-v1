@@ -19,7 +19,7 @@ def _run_semgrep(tmp_path: Path, source: str) -> subprocess.CompletedProcess[str
     app.mkdir()
     (app / "model.py").write_text(source, encoding="utf-8")
     return subprocess.run(
-        [semgrep, "--config", str(REPO_ROOT / ".semgrep" / "gv-rules.yaml"), "--error", "app"],
+        [semgrep, "--config", str(REPO_ROOT / ".semgrep" / "gv-rules.yaml"), "--error", "."],
         cwd=tmp_path,
         capture_output=True,
         text=True,
