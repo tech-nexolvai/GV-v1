@@ -42,7 +42,7 @@ file and `cases:` requires real content.
 ## R1 — Numerically plausible but incorrect extraction
 
 **Control (§16):** Independent verification, evidence polygons and strict eligibility states.
-**Status:** PARTIAL
+**Status:** ENFORCED
 **Refs:** module:evidence/corroborate.py, module:evidence/gate.py, module:evidence/polygon.py
 **Owner:** #120, #121, #170
 **Effectiveness claim:** two independent readers disagreeing produces `CONFLICTING` and never a
