@@ -28,7 +28,7 @@ from eval.metrics import (
     unit_exact_match_accuracy,
 )
 from rules.semantic_types import OperandSource, SemanticType
-from units.measurement import Unit
+from units.measurement import Measurement, Unit
 from verdict.finding import Finding
 from verdict.outcomes import Outcome, Severity, is_decision
 from verdict.trace import CalculationTrace, TracedOperand
@@ -63,7 +63,7 @@ def _finding(rule_id: str, outcome: Outcome, severity: Severity = Severity.CRITI
 
 
 def _expected(check: str, outcome: Outcome) -> ExpectedFinding:
-    return ExpectedFinding(check=check, outcome=outcome)
+    return ExpectedFinding(check=check, outcome=outcome, reason=f"Expected {outcome.value} in test")
 
 
 def _obs(
@@ -76,8 +76,7 @@ def _obs(
     return GoldObservation(
         semantic_type=SemanticType.CABINET_WIDTH,
         source=OperandSource.SHOP,
-        value=Fraction(value),
-        unit=unit,
+        value=Measurement(Fraction(value), unit, value),
         page=page,
         polygon=polygon,
         item_id=item,

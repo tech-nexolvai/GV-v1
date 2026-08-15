@@ -9,14 +9,16 @@ Source: issue #68 and ``docs/V1_RESEARCH_AND_PLAN.md`` section 6.
 
 from __future__ import annotations
 
-from fractions import Fraction
+from collections.abc import Mapping
+from datetime import date
 from pathlib import Path
+from uuid import UUID
 
 import yaml  # type: ignore[import-untyped]  # PyYAML does not publish inline type information.
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from rules.semantic_types import OperandSource, ProductType, SemanticType
-from units.measurement import Unit, to_exact_fraction
+from units.measurement import Measurement
 from verdict.outcomes import Outcome
 
 DEFAULT_MANIFEST_PATH = Path(__file__).with_name("manifest.yaml")
@@ -34,16 +36,23 @@ class GoldObservation(BaseModel):
 
     semantic_type: SemanticType
     source: OperandSource
-    value: Fraction
-    unit: Unit
+    value: Measurement
     page: int = Field(ge=1)
     polygon: tuple[int, int, int, int]
     item_id: str = Field(min_length=1)
 
     @field_validator("value", mode="before")
     @classmethod
-    def _value_is_exact(cls, value: object) -> Fraction:
-        return to_exact_fraction(value)
+    def _measurement_is_authored_exactly(cls, value: object) -> object:
+        """Reject lossy numeric input before Pydantic can coerce it to ``Fraction``."""
+
+        if isinstance(value, Mapping):
+            exact = value.get("exact")
+            if isinstance(exact, (bool, float)):
+                raise ValueError(  # noqa: TRY004 - Pydantic must attach the field path.
+                    "measurement exact must be authored as exact text, never a float or boolean"
+                )
+        return value
 
 
 class GoldMatch(BaseModel):
@@ -62,6 +71,29 @@ class ExpectedFinding(BaseModel):
 
     check: str = Field(min_length=1)
     outcome: Outcome
+    reason: str = Field(min_length=1)
+
+
+class Provenance(BaseModel):
+    """Who authored a gold case and which immutable document version it reviewed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    annotator: str = Field(min_length=1)
+    annotated_on: date
+    document_version_id: UUID
+    content_hash: str = Field(min_length=1)
+
+
+class Disagreement(BaseModel):
+    """A second annotator's differing reading, preserved rather than resolved."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    annotator: str = Field(min_length=1)
+    field: str = Field(min_length=1)
+    their_value: str
+    note: str = ""
 
 
 class GroundTruth(BaseModel):
@@ -84,6 +116,8 @@ class GoldCase(BaseModel):
     arch: Path
     shop: Path
     ground_truth: GroundTruth
+    provenance: Provenance
+    disagreements: tuple[Disagreement, ...] = ()
 
 
 class GoldManifest(BaseModel):

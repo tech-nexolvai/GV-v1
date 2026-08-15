@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 
-from eval.gold_set.schema import GoldCase, GoldManifest, GroundTruth
+from eval.gold_set.schema import GoldCase, GoldManifest, GroundTruth, Provenance
 from eval.synthetic import (
     F1_AUTHORED_TOKEN,
     SYNTHETIC_CASES_DIRECTORY,
@@ -132,6 +134,12 @@ def test_synthetic_loader_rejects_real_cases_and_real_case_directory(tmp_path: P
         arch=Path("arch.pdf"),
         shop=Path("shop.pdf"),
         ground_truth=GroundTruth(observations=(), matches=(), expected_findings=()),
+        provenance=Provenance(
+            annotator="reviewer@example.com",
+            annotated_on=date(2026, 8, 15),
+            document_version_id=UUID("12345678-1234-5678-1234-567812345678"),
+            content_hash="sha256:real-case",
+        ),
     )
 
     with pytest.raises(TypeError, match="GoldCase"):

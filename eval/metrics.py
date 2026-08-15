@@ -165,7 +165,7 @@ def numeric_exact_match_accuracy(
     correct = 0
     for observation in predicted:
         reference = truth.get((observation.item_id, observation.semantic_type))
-        if reference is not None and observation.value == reference.value:
+        if reference is not None and observation.value.exact == reference.value.exact:
             correct += 1
     return _rate(
         "numeric_exact_match_accuracy",
@@ -188,7 +188,7 @@ def unit_exact_match_accuracy(
     correct = 0
     for observation in predicted:
         reference = truth.get((observation.item_id, observation.semantic_type))
-        if reference is not None and observation.unit is reference.unit:
+        if reference is not None and observation.value.unit is reference.value.unit:
             correct += 1
     return _rate(
         "unit_exact_match_accuracy",
