@@ -144,6 +144,18 @@ CLIENT_CODES: dict[str, ClientCode] = {
 }
 
 
+#: Lookup tables built once. `__members__` rather than iteration, because iterating an enum yields
+#: only canonical members and would drop every descriptive alias — the half of this vocabulary that
+#: exists so a rule written with either name resolves.
+#:
+#: Built as explicit maps rather than caught `ValueError`/`KeyError`: `.semgrep/gv-rules.yaml`
+#: forbids a swallowed exception in the decision path, and it is right to. The behaviour here would
+#: have been safe today, but a `try/except: pass` is one added return statement away from hiding a
+#: failure, and this module feeds rule selection.
+_BY_VALUE: dict[str, SemanticType] = {t.value: t for t in SemanticType}
+_BY_NAME: dict[str, SemanticType] = dict(SemanticType.__members__)
+
+
 def resolve_semantic(name: str) -> SemanticType:
     """Look a semantic type up by the client's code **or** by our descriptive name.
 
@@ -153,14 +165,12 @@ def resolve_semantic(name: str) -> SemanticType:
     """
     text = name.strip()
     for candidate in (text, text.upper(), text.lower()):
-        try:
-            return SemanticType(candidate)
-        except ValueError:
-            pass
-        try:
-            return SemanticType[candidate.upper().replace(".", "_").replace(" ", "_")]
-        except KeyError:
-            pass
+        by_value = _BY_VALUE.get(candidate)
+        if by_value is not None:
+            return by_value
+        by_name = _BY_NAME.get(candidate.upper().replace(".", "_").replace(" ", "_"))
+        if by_name is not None:
+            return by_name
     raise UnknownVocabularyError(
         f"unknown semantic type {name!r}. Known: the client's codes ({', '.join(sorted(CLIENT_CODES))}) "
         "or our descriptive aliases. A code the client has not defined must not be invented — "
