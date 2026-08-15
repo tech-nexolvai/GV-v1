@@ -71,6 +71,18 @@ class OperandSource(str, Enum):
     """
 
 
+class DocumentRole(str, Enum):
+    """Document-backed sources carried by canonical observations.
+
+    Values derive from :class:`OperandSource` so both vocabularies remain an identity
+    mapping rather than acquiring a translation layer.
+    """
+
+    ARCH = OperandSource.ARCH.value
+    SHOP = OperandSource.SHOP.value
+    PRODUCT_SPEC = OperandSource.PRODUCT_SPEC.value
+
+
 class WallConfig(str, Enum):
     """Provisional wall layouts that drive rule applicability variants."""
 
