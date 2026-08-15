@@ -142,7 +142,11 @@ def _case(
         operands=operands,
         parameters={},
         discriminators={},
-        expected=ExpectedFinding(check=snapshot.rule_id, outcome=expected),
+        expected=ExpectedFinding(
+            check=snapshot.rule_id,
+            outcome=expected,
+            reason=f"Explicit synthetic expectation for {case_id}",
+        ),
         seeded_error=seeded_error,
     )
 

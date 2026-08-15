@@ -15,7 +15,7 @@ from eval.gold_set.schema import (
     load_manifest,
 )
 from rules.semantic_types import OperandSource, ProductType, SemanticType
-from units.measurement import Unit
+from units.measurement import Measurement, Unit
 from verdict.outcomes import Outcome
 
 
@@ -30,15 +30,26 @@ def _valid_case() -> dict[str, object]:
                 {
                     "semantic_type": "countertop_overall_width",
                     "source": "SHOP",
-                    "value": "6012",
-                    "unit": "mm",
+                    "value": {"exact": "6012", "unit": "mm", "raw_text": "6012"},
                     "page": 3,
                     "polygon": [10, 20, 110, 40],
                     "item_id": "S-CT-1",
                 }
             ],
             "matches": [{"arch_item": "A-CAB-1", "shop_item": "S-CAB-1"}],
-            "expected_findings": [{"check": "CT-WIDTH-001", "outcome": "PASS"}],
+            "expected_findings": [
+                {
+                    "check": "CT-WIDTH-001",
+                    "outcome": "PASS",
+                    "reason": "The reviewed dimensions close exactly.",
+                }
+            ],
+        },
+        "provenance": {
+            "annotator": "reviewer@example.com",
+            "annotated_on": "2026-08-15",
+            "document_version_id": "12345678-1234-5678-1234-567812345678",
+            "content_hash": "sha256:reviewed-package",
         },
     }
 
@@ -68,8 +79,7 @@ def test_valid_case_preserves_exact_observation_and_controlled_types(tmp_path: P
     assert case.product_type is ProductType.COUNTERTOP
     assert observation.semantic_type is SemanticType.COUNTERTOP_OVERALL_WIDTH
     assert observation.source is OperandSource.SHOP
-    assert observation.value == Fraction(6012)
-    assert observation.unit is Unit.MM
+    assert observation.value == Measurement(Fraction(6012), Unit.MM, "6012")
     assert observation.polygon == (10, 20, 110, 40)
     assert case.ground_truth.expected_findings[0].outcome is Outcome.PASS
 
@@ -79,7 +89,7 @@ def test_valid_case_preserves_exact_observation_and_controlled_types(tmp_path: P
     [
         ("page", 0),
         ("polygon", [10, 20, 110]),
-        ("value", 0.1),
+        ("value", {"exact": 0.1, "unit": "mm", "raw_text": "0.1"}),
         ("semantic_type", "made_up_width"),
         ("source", "UNKNOWN"),
     ],
