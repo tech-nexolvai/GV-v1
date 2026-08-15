@@ -56,11 +56,9 @@ class GoldCase(Base, TimestampedUUID, Immutable):
 
     gold_set_id: Mapped[UUID] = mapped_column(ForeignKey("gold_sets.id"))
 
-    # No foreign key yet: `document_versions` arrives with C1.3 (#193), which is still open. The
-    # constraint must be added in a new migration when it lands — an unconstrained UUID silently
-    # permits a gold case pointing at a document version that was never stored, which is precisely
-    # the "annotation applied to the wrong revision" failure this table is meant to prevent.
-    document_version_id: Mapped[UUID]
+    document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="RESTRICT")
+    )
 
     content_hash: Mapped[str] = mapped_column(String(64))
     """SHA-256 of the bytes annotated.

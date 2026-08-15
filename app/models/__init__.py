@@ -15,6 +15,14 @@ migrated, and the first sign of it is a missing table in production.
 
 from __future__ import annotations
 
+from app.models.document import (
+    Document,
+    DocumentKind,
+    DocumentVersion,
+    Page,
+    PageType,
+    SourceArtifact,
+)
 from app.models.evaluation import (
     EvaluationRun,
     GoldCase,
@@ -24,6 +32,9 @@ from app.models.evaluation import (
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
 
 __all__ = [
+    "Document",
+    "DocumentKind",
+    "DocumentVersion",
     "EvaluationRun",
     "GoldCase",
     "GoldSet",
@@ -32,5 +43,8 @@ __all__ = [
     "PackageRevision",
     "PackageState",
     "PackageStateEvent",
+    "Page",
+    "PageType",
     "Project",
+    "SourceArtifact",
 ]
