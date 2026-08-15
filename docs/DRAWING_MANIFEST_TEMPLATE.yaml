@@ -1,0 +1,49 @@
+# Template for data/drawings/MANIFEST.yaml — copy it there when the drawings arrive.
+#
+# Lives in docs/ because data/ is gitignored: client drawings are proprietary and
+# tests/test_repo_hygiene.py fails the build if anything under data/ is ever committed. The
+# template is ours; the filled-in manifest sits beside the drawings and stays out of git.
+#
+# Check coverage with:   python scripts/check_drawing_coverage.py
+#
+# Nothing reads the PDFs. Extraction (B2) is blocked on #274, which is the very issue this
+# manifest exists to close — so a human records what each package contains and the script checks
+# the declarations cover the six requirements. Declare honestly: a wrong declaration produces a
+# COVERED report for a set that does not cover, which is worse than no report at all.
+
+# ---------------------------------------------------------------------------
+# Fields. Omit any that do not apply to a package rather than writing "false".
+# ---------------------------------------------------------------------------
+#
+#   package:        a name you can trace back to the job
+#   wall_config:    back_only | back_left_right | island
+#   page_origin:    scanned | vector          (how the pages were produced)
+#   two_revisions:  true    — this package carries two revisions of the same sheet
+#   arch_and_shop:  true    — both the architect's and the shop drawings for this job
+#   known_defect:   true    — a reviewer found a real error in this package
+#   dual_unit:      true    — dimensions written as 984 [38 3/4]
+#
+# Across the whole set you need: all three wall_config values, both page_origin values, and at
+# least one package declaring each of the four flags.
+
+- package: EXAMPLE-replace-me-0001
+  wall_config: back_left_right
+  page_origin: vector
+  arch_and_shop: true
+  dual_unit: true
+
+- package: EXAMPLE-replace-me-0002
+  wall_config: island
+  page_origin: scanned      # at least one scanned package, or OCR is never exercised
+  two_revisions: true
+
+- package: EXAMPLE-replace-me-0003
+  wall_config: back_only
+  page_origin: scanned
+  known_defect: true        # the most important one — see below
+
+# On known_defect: the primary metric is the critical false-PASS rate — how often the system says
+# "this is fine" when it is not. That is only measurable on packages where the correct answer is
+# FAIL. A set of entirely correct drawings can only show the system agrees with correct work, which
+# is the easy half and not the half that matters. One or two real errors are worth more than ten
+# clean packages.
