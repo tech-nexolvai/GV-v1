@@ -21,10 +21,16 @@ from app.models.evaluation import (
     GoldSet,
     MetricResult,
 )
+from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
 
 __all__ = [
     "EvaluationRun",
     "GoldCase",
     "GoldSet",
     "MetricResult",
+    "Package",
+    "PackageRevision",
+    "PackageState",
+    "PackageStateEvent",
+    "Project",
 ]
