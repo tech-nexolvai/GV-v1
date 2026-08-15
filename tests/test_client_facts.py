@@ -208,3 +208,13 @@ def test_a_mistyped_field_raises_the_error_the_gate_catches(tmp_path: Path) -> N
     )
     with pytest.raises(ClientFactsError, match="invalid field"):
         load(broken)
+
+
+def test_the_stop_heading_does_not_assume_the_cause() -> None:
+    """`fact_stopping` holds three different problems: an open formula question, an unknown `Qn`,
+    and a facts-file parse error. A heading claiming "a question changes the calculation" gives the
+    wrong remediation for the latter two — it sends someone to chase a client answer when the real
+    problem is a typo in a contract."""
+    source = (Path(__file__).resolve().parent.parent / "scripts" / "issue_gate.py").read_text()
+    assert "unresolved client-fact dependency" in source
+    assert "depends on a question that changes the calculation" not in source

@@ -330,17 +330,21 @@ def main() -> int:
     fact_stopping, fact_provisional = client_fact_verdict(requires)
     if fact_stopping:
         sys.stderr.write(
-            f"STOP — #{args.issue} depends on a question that changes the calculation\n"
+            # Deliberately generic: this list also holds unknown Qn references and facts-file
+            # parse errors, and telling somebody to go and get a client answer when the real
+            # problem is a typo in a contract sends them to the wrong place entirely.
+            f"STOP — #{args.issue} has an unresolved client-fact dependency\n"
             f"{'=' * 62}\n"
             + "".join(f"  - {line}\n" for line in fact_stopping)
-            + "\nSource: docs/CLIENT_FACTS.md, which is the authority. Do not infer the answer "
-            "from the\nchecklist — it contradicts itself in several places, which is why that "
-            "file exists.\n"
+            + "\nSource: docs/CLIENT_FACTS.md, which is the authority for what the client has "
+            "and\nhas not told us. Each line above says what is wrong; fix that, rather than "
+            "inferring\nan answer from the checklist — it contradicts itself in several places, "
+            "which is why\nthat file exists.\n"
         )
         if args.comment:
             post_comment(
                 args.issue,
-                "🚫 **Blocked — an unanswered question changes the calculation**\n\n"
+                "🚫 **Blocked — unresolved client-fact dependency**\n\n"
                 + "\n".join(f"- {line}" for line in fact_stopping)
                 + "\n\n_Source: `docs/CLIENT_FACTS.md`. Posted by `scripts/issue_gate.py`._",
             )

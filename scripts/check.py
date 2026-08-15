@@ -140,6 +140,7 @@ def main() -> int:
         )
 
     failures: list[str] = []
+    advisory_failures: list[str] = []
     skipped_steps: list[str] = []
 
     for step in STEPS:
@@ -162,6 +163,7 @@ def main() -> int:
         print("  " + (tail[-1] if tail else "(no output)"))
         if result.returncode != 0:
             if step.advisory:
+                advisory_failures.append(step.name)
                 print("    (advisory — CI does not fail on this either)")
             else:
                 failures.append(step.name)
@@ -177,9 +179,17 @@ def main() -> int:
     print("\n" + "=" * 64)
     if skipped_steps:
         print(f"  not run: {', '.join(skipped_steps)}")
+    if advisory_failures:
+        # Reported separately and never fatal. Printing "All checks passed" over a failed advisory
+        # step would be the same overstatement this script exists to prevent — a green summary that
+        # is not quite true is worse than a yellow one that is.
+        print(f"  advisory failures (CI does not block on these): {', '.join(advisory_failures)}")
     if failures:
         print(f"  FAILED: {', '.join(failures)}")
         return 1
+    if advisory_failures:
+        print("  Blocking checks passed. The advisory step above did not.")
+        return 0
     print("  All checks passed. This is what CI will run.")
     return 0
 
