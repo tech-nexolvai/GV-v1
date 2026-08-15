@@ -9,6 +9,29 @@
 
 rules:
   # -------------------------------------------------------------------------
+  - id: gv-no-float-column
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - app/
+    pattern-either:
+      - pattern: Float(...)
+      - pattern: DOUBLE_PRECISION(...)
+      - pattern: mapped_column(Float)
+      - pattern: mapped_column(Float(...))
+      - pattern: mapped_column(..., Float, ...)
+      - pattern: mapped_column(..., Float(...), ...)
+      - pattern: mapped_column(DOUBLE_PRECISION)
+      - pattern: mapped_column(DOUBLE_PRECISION(...))
+      - pattern: mapped_column(..., DOUBLE_PRECISION, ...)
+      - pattern: mapped_column(..., DOUBLE_PRECISION(...), ...)
+    message: >
+      Floating-point database column in app/. ADR-0001 and DESIGN_PLATFORM section 3.1
+      require exact values to use NUMERIC. A persisted approximation can cross the evidence
+      boundary looking authoritative and produce a silent false PASS. Use Numeric.
+
+  # -------------------------------------------------------------------------
   - id: gv-no-float-in-decision-path
     languages: [python]
     severity: ERROR

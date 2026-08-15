@@ -39,6 +39,8 @@ platform = [
     "fastapi",
     "sqlalchemy>=2",
     "alembic",
+    # LGPL-2.0-or-later with the PostgreSQL linking exception; not AGPL.
+    "psycopg[binary]",
     "hatchet-sdk",
     "boto3",
     "opentelemetry-sdk",
