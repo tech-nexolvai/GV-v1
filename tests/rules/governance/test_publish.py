@@ -16,6 +16,7 @@ from rules.governance.publish import (
     NotApprovable,
     NotAuthorised,
     PublicationLog,
+    PublicationTarget,
     RegressionFailed,
     RegressionOutcome,
     Role,
@@ -65,6 +66,8 @@ def _failing(_: object) -> RegressionOutcome:
     return RegressionOutcome(passed=False, summary="critical false-PASS rose on 2 cases")
 
 
+DEV = PublicationTarget.DEVELOPMENT
+
 ADMIN = Approver(name="anant", role=Role.RULE_ADMIN)
 OTHER_ADMIN = Approver(name="someone-else", role=Role.RULE_ADMIN)
 REVIEWER = Approver(name="keyur", role=Role.REVIEWER)
@@ -81,7 +84,7 @@ def _proposal(author: str = "keyur", **kw: object) -> object:
 
 def test_an_authorised_approver_publishes() -> None:
     store, log = SnapshotStore(), PublicationLog()
-    snapshot = publish(_proposal(), approver=ADMIN, store=store, log=log, regression=_passing)  # type: ignore[arg-type]
+    snapshot = publish(_proposal(), approver=ADMIN, store=store, log=log, regression=_passing, target=DEV)  # type: ignore[arg-type]
     assert store.latest("CT-WIDTH-001") is not None
     assert log.for_snapshot(snapshot.snapshot_id) is not None
 
@@ -89,7 +92,7 @@ def test_an_authorised_approver_publishes() -> None:
 def test_the_approval_records_who_proposed_and_who_approved() -> None:
     """The question asked later is 'who approved the thing that produced this finding?'."""
     store, log = SnapshotStore(), PublicationLog()
-    snapshot = publish(_proposal(author="keyur"), approver=ADMIN, store=store, log=log, regression=_passing)  # type: ignore[arg-type]
+    snapshot = publish(_proposal(author="keyur"), approver=ADMIN, store=store, log=log, regression=_passing, target=DEV)  # type: ignore[arg-type]
     record = log.for_snapshot(snapshot.snapshot_id)
     assert record is not None
     assert record.author == "keyur"
@@ -107,7 +110,7 @@ def test_a_reviewer_cannot_publish_a_rule() -> None:
     does not, and the roles are not interchangeable."""
     store, log = SnapshotStore(), PublicationLog()
     with pytest.raises(NotAuthorised, match="cannot publish a rule"):
-        publish(_proposal(), approver=REVIEWER, store=store, log=log, regression=_passing)  # type: ignore[arg-type]
+        publish(_proposal(), approver=REVIEWER, store=store, log=log, regression=_passing, target=DEV)  # type: ignore[arg-type]
     assert len(store) == 0 and len(log) == 0
 
 
@@ -116,7 +119,7 @@ def test_the_author_cannot_approve_their_own_proposal() -> None:
     store, log = SnapshotStore(), PublicationLog()
     author_as_admin = Approver(name="keyur", role=Role.RULE_ADMIN)
     with pytest.raises(SelfApproval, match="cannot also approve"):
-        publish(_proposal(author="keyur"), approver=author_as_admin, store=store, log=log, regression=_passing)  # type: ignore[arg-type]
+        publish(_proposal(author="keyur"), approver=author_as_admin, store=store, log=log, regression=_passing, target=DEV)  # type: ignore[arg-type]
     assert len(store) == 0 and len(log) == 0
 
 
@@ -130,6 +133,7 @@ def test_self_approval_is_not_defeated_by_capitalisation() -> None:
             store=store,
             log=log,
             regression=_passing,
+            target=DEV,
         )
 
 
@@ -154,7 +158,7 @@ def test_an_invalid_proposal_cannot_be_published_by_anyone() -> None:
         rationale="test",
     )
     with pytest.raises(NotApprovable, match="did not validate"):
-        publish(bad, approver=ADMIN, store=store, log=log, regression=_passing)
+        publish(bad, approver=ADMIN, store=store, log=log, regression=_passing, target=DEV)
     assert len(store) == 0
 
 
@@ -162,7 +166,7 @@ def test_a_failed_regression_blocks_publication_with_no_override() -> None:
     """`AGENTS.md` §9. There is deliberately no parameter that lets this through."""
     store, log = SnapshotStore(), PublicationLog()
     with pytest.raises(RegressionFailed, match="no override"):
-        publish(_proposal(), approver=ADMIN, store=store, log=log, regression=_failing)  # type: ignore[arg-type]
+        publish(_proposal(), approver=ADMIN, store=store, log=log, regression=_failing, target=DEV)  # type: ignore[arg-type]
     assert len(store) == 0 and len(log) == 0
 
 
@@ -190,7 +194,7 @@ def test_an_unauthorised_approver_is_told_that_rather_than_a_regression_failure(
     not publish sends someone to fix the wrong thing."""
     store, log = SnapshotStore(), PublicationLog()
     with pytest.raises(NotAuthorised):
-        publish(_proposal(), approver=REVIEWER, store=store, log=log, regression=_failing)  # type: ignore[arg-type]
+        publish(_proposal(), approver=REVIEWER, store=store, log=log, regression=_failing, target=DEV)  # type: ignore[arg-type]
 
 
 def test_the_regression_check_does_not_run_when_an_earlier_gate_refuses() -> None:
@@ -203,7 +207,7 @@ def test_the_regression_check_does_not_run_when_an_earlier_gate_refuses() -> Non
 
     store, log = SnapshotStore(), PublicationLog()
     with pytest.raises(NotAuthorised):
-        publish(_proposal(), approver=REVIEWER, store=store, log=log, regression=counting)  # type: ignore[arg-type]
+        publish(_proposal(), approver=REVIEWER, store=store, log=log, regression=counting, target=DEV)  # type: ignore[arg-type]
     assert calls == []
 
 
@@ -216,9 +220,9 @@ def test_an_approval_is_never_overwritten() -> None:
     """Append-only, for the same reason the correction ledger is: the record of who approved what
     is exactly what someone would tidy after a rule turns out to have been wrong."""
     store, log = SnapshotStore(), PublicationLog()
-    publish(_proposal(), approver=ADMIN, store=store, log=log, regression=_passing)  # type: ignore[arg-type]
+    publish(_proposal(), approver=ADMIN, store=store, log=log, regression=_passing, target=DEV)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="already recorded as approved"):
-        publish(_proposal(), approver=OTHER_ADMIN, store=store, log=log, regression=_passing)  # type: ignore[arg-type]
+        publish(_proposal(), approver=OTHER_ADMIN, store=store, log=log, regression=_passing, target=DEV)  # type: ignore[arg-type]
 
 
 def test_an_approver_must_be_a_named_person() -> None:
@@ -238,7 +242,7 @@ def test_publishing_a_new_version_leaves_the_old_snapshot_retrievable() -> None:
     that would turn a reproducible finding into an unreproducible one.
     """
     store, log = SnapshotStore(), PublicationLog()
-    first = publish(_proposal(), approver=ADMIN, store=store, log=log, regression=_passing)  # type: ignore[arg-type]
+    first = publish(_proposal(), approver=ADMIN, store=store, log=log, regression=_passing, target=DEV)  # type: ignore[arg-type]
 
     second = publish(
         propose(_rule(version="1.1.0"), author="keyur", rationale="tighter"),
@@ -246,6 +250,7 @@ def test_publishing_a_new_version_leaves_the_old_snapshot_retrievable() -> None:
         store=store,
         log=log,
         regression=_passing,
+        target=DEV,
     )
 
     assert store.get(first.snapshot_id).snapshot_id == first.snapshot_id
@@ -255,13 +260,14 @@ def test_publishing_a_new_version_leaves_the_old_snapshot_retrievable() -> None:
 
 def test_the_publication_log_keeps_every_approval_not_only_the_latest() -> None:
     store, log = SnapshotStore(), PublicationLog()
-    publish(_proposal(), approver=ADMIN, store=store, log=log, regression=_passing)  # type: ignore[arg-type]
+    publish(_proposal(), approver=ADMIN, store=store, log=log, regression=_passing, target=DEV)  # type: ignore[arg-type]
     publish(
         propose(_rule(version="1.1.0"), author="keyur", rationale="tighter"),
         approver=ADMIN,
         store=store,
         log=log,
         regression=_passing,
+        target=DEV,
     )
     assert len(log) == 2
     assert len(log.all()) == 2

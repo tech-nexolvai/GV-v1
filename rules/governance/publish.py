@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 
 from rules.governance.proposal import RuleProposal
+from rules.publication import assert_production_ready
 from rules.snapshot import RuleSnapshot, SnapshotStore
 from rules.snapshot import publish as build_snapshot
 
@@ -60,6 +61,22 @@ class Approver:
                 "an approver must be a named person. 'Approved by rule_admin' answers a different "
                 "question from 'approved by whom', and only the second is defensible later."
             )
+
+
+class PublicationTarget(StrEnum):
+    """Where a snapshot is being published to.
+
+    The distinction exists because `ADR-0011`'s readiness gate belongs at **release**, not at
+    authoring. A rule carrying an unconfirmed tolerance should be authorable, reviewable and
+    testable — that is what the `UNCONFIRMED` sentinel is *for*. What it must never do is reach
+    production, where it looks like a working check while returning REVIEW REQUIRED for everything.
+    """
+
+    DEVELOPMENT = "development"
+    """Authoring and testing. Unconfirmed tolerances are permitted and expected."""
+
+    PRODUCTION = "production"
+    """Real drawings. Every tolerance must be a real client-supplied number."""
 
 
 class NotAuthorised(Exception):
@@ -120,6 +137,13 @@ class ApprovalRecord:
     author: str
     rationale: str
     regression_summary: str
+    target: PublicationTarget
+    """Which boundary this was approved for.
+
+    Recorded because "was this approved for production?" is a different question from "was this
+    approved?", and only the first one matters when a finding is disputed.
+    """
+
     approved_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __str__(self) -> str:
@@ -164,6 +188,7 @@ def publish(
     store: SnapshotStore,
     log: PublicationLog,
     regression: RegressionCheck,
+    target: PublicationTarget,
 ) -> RuleSnapshot:
     """Publish a proposal, or refuse and say which gate stopped it.
 
@@ -191,6 +216,13 @@ def publish(
             "approval is that a second person looked."
         )
 
+    # ADR-0011, at the release boundary only. Authoring a rule with a placeholder tolerance is
+    # what the sentinel is for; releasing one is the mistake. The ±1/8" that circulated for weeks
+    # was our own placeholder from a sample file, and it reached RULE_ENGINE_SPEC §4 reading as
+    # fact — this is what stops the next one arriving in the same disguise.
+    if target is PublicationTarget.PRODUCTION:
+        assert_production_ready(proposal.proposed)
+
     outcome = regression(proposal)
     if not outcome.passed:
         raise RegressionFailed(
@@ -207,6 +239,7 @@ def publish(
         author=proposal.author,
         rationale=proposal.rationale,
         regression_summary=outcome.summary,
+        target=target,
     )
 
     # Atomicity, without a transaction. `SnapshotStore` is append-only by design (§2.7) and has no
