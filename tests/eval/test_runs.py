@@ -86,9 +86,9 @@ def test_the_reconstructed_metric_is_the_same_type_the_metrics_layer_produces() 
 # Persistence — needs a database
 # ---------------------------------------------------------------------------
 
-pytest_plugins = ("tests.app.postgres_fixture",)
 
-
+# The postgres fixture is registered in tests/conftest.py so every test package can use
+# it. A bare plugin name only resolves for tests in the same directory as the fixture.
 @pytest.fixture
 def session(postgres_engine):  # type: ignore[no-untyped-def]
     from app.db.base import Base
