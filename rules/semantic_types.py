@@ -10,20 +10,162 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+#: The vocabulary is **provisional** until Q20 (#16) confirms the codes are final.
+#:
+#: The client's workbook carries two naming schemes side by side — letters A–G on Sheet1 and
+#: `CT0xx` on the variable sheet. ADR-0017 adopts `CT0xx`; Q20 confirms he has not renamed them.
+#: A rename lands as an alias entry rather than a schema migration, which is why the structure can
+#: ship ahead of the confirmation.
+VOCABULARY_STATUS = "PROVISIONAL — pending Q20 (#16) confirmation"
+
 
 class SemanticType(str, Enum):
-    """Canonical meanings used by observations and rule selectors."""
+    """Canonical meanings, named in the client's own codes (ADR-0017).
 
-    COUNTERTOP_OVERALL_WIDTH = "countertop_overall_width"
+    The codes win over our descriptive names because they are **anchored to a diagram**.
+    `CT_image10` defines each one positionally on an annotated drawing, and prose about geometry is
+    where two readers diverge: "countertop width" is unambiguous until somebody asks whether it
+    includes the end panel.
+
+    Where one of our names maps to exactly one code it is declared here as a Python enum alias, so
+    `SemanticType.SINK_CUTOUT_WIDTH is SemanticType.CT012` and existing rules keep resolving.
+    Where the client's code carries a **position** that our generic name does not, no alias is
+    declared — see `CABINET_WIDTH` below.
+    """
+
+    # -- the run, left to right (CT_image10, top row) ------------------------
+    CT001 = "CT001"
+    CT002 = "CT002"
+    CT003 = "CT003"
+    CT004 = "CT004"
+    CT005 = "CT005"
+    CT006 = "CT006"
+
+    # -- the sink, front to back and left to right ---------------------------
+    CT007 = "CT007"
+    CT008 = "CT008"
+    CT009 = "CT009"
+    CT010 = "CT010"
+    CT011 = "CT011"
+    CT012 = "CT012"
+    CT013 = "CT013"
+
+    # -- named variables the workbook uses alongside the codes ---------------
+    BACKSPLASH_THICKNESS = "B.S_THK"
+    COUNTERTOP_OVERHANG = "C.T_OH"
+    CABINET_SIDE_THICKNESS = "CAB_SIDE_THK"
+
+    # -- our descriptive names, as true aliases where the mapping is 1:1 -----
+    # The repeated value IS the mechanism: Python makes the second name an alias of the first, so
+    # `SemanticType.SINK_CUTOUT_WIDTH is SemanticType.CT012` and a rule written with either name
+    # matches evidence tagged with the other. Two parallel members would compare unequal, which is
+    # the bug this avoids. PIE796 flags the duplication; here it is intended.
+    WALL_TO_WALL_DIMENSION = "CT001"  # noqa: PIE796
+    SINK_CUTOUT_WIDTH = "CT012"  # noqa: PIE796
+    COUNTERTOP_DEPTH = "CT010"  # noqa: PIE796
+    SINK_OFFSET_FRONT = "CT007"  # noqa: PIE796
+    SINK_CUTOUT_DEPTH = "CT008"  # noqa: PIE796
+    SINK_OFFSET_BACK = "CT009"  # noqa: PIE796
+
+    # -- generic types the client expresses positionally ---------------------
+    # `CABINET_WIDTH` is deliberately NOT an alias of CT003. The client has three positional codes
+    # — CT003 left, CT004 sink cabinet, CT005 right — for a three-cabinet layout, while our type is
+    # generic and carries the position in an index (`S_CAB_7`). Aliasing one to the other would
+    # silently claim every cabinet is the left one.
     CABINET_WIDTH = "cabinet_width"
     FILLER_WIDTH = "filler_width"
-    SINK_CUTOUT_WIDTH = "sink_cutout_width"
-    WALL_TO_WALL_DIMENSION = "wall_to_wall_dimension"
+    COUNTERTOP_OVERALL_WIDTH = "countertop_overall_width"
 
+    # -- no client code exists for these -------------------------------------
     WALL_CONFIG = "wall_config"
     FIELD_DIMENSION = "field_dimension"
-
     MATERIAL = "material"
+
+    def label(self) -> str:
+        """The plain-English name, for reports and error messages.
+
+        A rule file reading `CT007 - CT008` is unreadable without the diagram to hand, and the
+        people debugging a failed check are usually us. This is what keeps the codes usable.
+        """
+        described = CLIENT_CODES.get(self.value)
+        return described.description if described else self.value.replace("_", " ")
+
+
+@dataclass(frozen=True, slots=True)
+class ClientCode:
+    """One client code, what it measures, and where that is defined.
+
+    `anchor` matters as much as `description`. Every one of these is defined **positionally on a
+    drawing**, not in prose, and the anchor is what a reviewer opens to check a rule against the
+    thing it is supposed to measure.
+    """
+
+    code: str
+    description: str
+    descriptive_alias: str | None
+    anchor: str
+
+
+#: Every code the client's workbook uses, with the diagram that defines it.
+#:
+#: `CT011`–`CT013` are here on the strength of `CT_image10` alone — they appear in formula `F38`
+#: but never as rows in the variable table. ADR-0017 originally excluded them for that reason and
+#: was **wrong**: the diagram defines them as clearly as the rest. Reading the summary instead of
+#: the image is the recurring failure with this client's material.
+CLIENT_CODES: dict[str, ClientCode] = {
+    "CT001": ClientCode("CT001", "wall to wall dimension", "wall_to_wall_dimension", "CT_image10"),
+    "CT002": ClientCode("CT002", "cabinet filler, left", "filler_width (left)", "CT_image10"),
+    "CT003": ClientCode("CT003", "cabinet 1 width, left cabinet underneath", None, "CT_image10"),
+    "CT004": ClientCode("CT004", "cabinet 2 width, sink cabinet underneath", None, "CT_image10"),
+    "CT005": ClientCode("CT005", "cabinet 3 width, right cabinet underneath", None, "CT_image10"),
+    "CT006": ClientCode("CT006", "cabinet filler, right", "filler_width (right)", "CT_image10"),
+    "CT007": ClientCode("CT007", "sink front offset", "sink_offset_front", "CT_image10"),
+    "CT008": ClientCode("CT008", "sink hole depth", "sink_cutout_depth", "CT_image10"),
+    "CT009": ClientCode("CT009", "sink back offset", "sink_offset_back", "CT_image10"),
+    "CT010": ClientCode("CT010", "countertop depth", "countertop_depth", "CT_image10"),
+    "CT011": ClientCode(
+        "CT011",
+        "clearance from the sink cabinet's left interior face to the cutout",
+        None,
+        "CT_image10",
+    ),
+    "CT012": ClientCode("CT012", "sink hole width", "sink_cutout_width", "CT_image10"),
+    "CT013": ClientCode(
+        "CT013",
+        "clearance from the sink cabinet's right interior face to the cutout",
+        None,
+        "CT_image10",
+    ),
+    "B.S_THK": ClientCode("B.S_THK", "backsplash thickness", "backsplash_thickness", "workbook"),
+    "C.T_OH": ClientCode("C.T_OH", "countertop overhang", "countertop_overhang", "workbook"),
+    "CAB_SIDE_THK": ClientCode(
+        "CAB_SIDE_THK", "cabinet side panel thickness", "cabinet_side_thickness", "workbook"
+    ),
+}
+
+
+def resolve_semantic(name: str) -> SemanticType:
+    """Look a semantic type up by the client's code **or** by our descriptive name.
+
+    Raises rather than guessing. A name we do not recognise is a rule referring to something that
+    does not exist, and resolving it to the nearest match would let that rule publish and then
+    check the wrong quantity.
+    """
+    text = name.strip()
+    for candidate in (text, text.upper(), text.lower()):
+        try:
+            return SemanticType(candidate)
+        except ValueError:
+            pass
+        try:
+            return SemanticType[candidate.upper().replace(".", "_").replace(" ", "_")]
+        except KeyError:
+            pass
+    raise UnknownVocabularyError(
+        f"unknown semantic type {name!r}. Known: the client's codes ({', '.join(sorted(CLIENT_CODES))}) "
+        "or our descriptive aliases. A code the client has not defined must not be invented — "
+        "see ADR-0017."
+    )
 
 
 class ProductType(str, Enum):
