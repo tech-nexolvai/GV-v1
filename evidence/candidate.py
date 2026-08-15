@@ -27,6 +27,7 @@ class ObservationCandidate:
     remains independently auditable.
     """
 
+    candidate_id: str
     extractor: str
     extractor_version: str
     raw_text: str
@@ -41,6 +42,8 @@ class ObservationCandidate:
     def __post_init__(self) -> None:
         """Reject values that would blur the raw candidate boundary."""
 
+        if not isinstance(self.candidate_id, str) or not self.candidate_id.strip():
+            raise ValueError("candidate_id must be a non-empty string")
         if not isinstance(self.extractor, str):
             raise TypeError("extractor must be a string")
         if not isinstance(self.extractor_version, str):
