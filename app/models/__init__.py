@@ -30,15 +30,25 @@ from app.models.evaluation import (
     MetricResult,
 )
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
+from app.models.runs import (
+    ExtractionRun,
+    ModelInvocation,
+    ModelInvocationOutcome,
+    TaskRun,
+    WorkflowRun,
+)
 
 __all__ = [
     "Document",
     "DocumentKind",
     "DocumentVersion",
     "EvaluationRun",
+    "ExtractionRun",
     "GoldCase",
     "GoldSet",
     "MetricResult",
+    "ModelInvocation",
+    "ModelInvocationOutcome",
     "Package",
     "PackageRevision",
     "PackageState",
@@ -47,4 +57,6 @@ __all__ = [
     "PageType",
     "Project",
     "SourceArtifact",
+    "TaskRun",
+    "WorkflowRun",
 ]
