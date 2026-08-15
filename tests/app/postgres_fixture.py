@@ -1,4 +1,4 @@
-"""Isolated PostgreSQL schemas for persistence integration tests."""
+"""PostgreSQL fixture loaded only by persistence integration tests."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from sqlalchemy.engine import make_url
 
 @pytest.fixture
 def postgres_engine() -> Iterator[Engine]:
-    """Yield an engine confined to a temporary schema in the configured PostgreSQL database."""
+    """Yield an engine confined to a temporary schema in the configured database."""
 
     raw_url = os.environ.get("DATABASE_URL")
     if raw_url is None:

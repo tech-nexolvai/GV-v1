@@ -10,6 +10,8 @@ from sqlalchemy import Engine
 from alembic import command
 from app.db.base import Base
 
+pytest_plugins = ("tests.app.postgres_fixture",)
+
 
 def test_initial_migration_and_current_metadata_have_no_difference(
     postgres_engine: Engine,

@@ -21,6 +21,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import NAMING_CONVENTION, Base, TimestampedUUID, UTCDateTime
 from app.db.session import engine_from_settings, session_factory, unit_of_work
 
+pytest_plugins = ("tests.app.postgres_fixture",)
+
 EXPECTED_NAMING_CONVENTION = {
     "ix": "ix_%(table_name)s_%(column_0_N_name)s",
     "uq": "uq_%(table_name)s_%(column_0_N_name)s",
