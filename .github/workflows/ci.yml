@@ -19,6 +19,22 @@ jobs:
     name: lint, types, tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: gv_test
+          POSTGRES_PASSWORD: gv_test
+          POSTGRES_DB: gv_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gv_test -d gv_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://gv_test:gv_test@localhost:5432/gv_test
 
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +49,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,rules]"
+          pip install -e ".[dev,rules,platform]"
 
       # AGENTS.md section 2.8 forbids AGPL. Run it early and on its own so a licence
       # violation is unmistakable in the log rather than buried in the test summary.
@@ -127,6 +143,9 @@ jobs:
       # leaves. That matters because the client's rule logic is commercially sensitive.
       - name: Install semgrep
         run: pip install semgrep
+
+      - name: Prove database float-column guard
+        run: pytest tests/app/test_float_column_guard.py -q
 
       - name: Golden rules (semgrep)
         run: |
