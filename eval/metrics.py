@@ -130,19 +130,42 @@ def evidence_localisation_rate(
     Both must be right. A correct page with the wrong polygon is not a partial success — a reviewer
     sent to the wrong part of the right page still cannot verify the finding at a glance, which is
     the entire purpose of localising it (`AGENTS.md` §9).
+
+    Delegates to `eval/localisation.py` (#172), which reports page and box separately and judges the
+    box by intersection-over-union. The original version here required the predicted polygon to
+    equal the annotation exactly — unusably strict, since no extraction lane reproduces a hand-drawn
+    box to the pixel, so it would have read zero forever and told nobody anything.
+
+    An unannotated prediction makes this NOT MEASURED rather than lowering the score: the gate is
+    unmeasurable, not failed, and those are different facts.
     """
-    truth = {(obs.item_id, obs.semantic_type): obs for obs in gold}
-    located = 0
-    for observation in predicted:
-        reference = truth.get((observation.item_id, observation.semantic_type))
-        if reference is None:
-            continue
-        if observation.page == reference.page and observation.polygon == reference.polygon:
-            located += 1
+    from eval.localisation import DEFAULT_IOU_THRESHOLD, MissingAnnotation, measure
+
+    if not gold:
+        return _rate(
+            "evidence_localisation_rate",
+            0,
+            0,
+            empty_note="the gold set contains no annotated observations",
+        )
+
+    try:
+        results = measure(predicted, gold, threshold=DEFAULT_IOU_THRESHOLD)
+    except MissingAnnotation as error:
+        return MetricResult(
+            key="evidence_localisation_rate",
+            value=None,
+            numerator=0,
+            denominator=0,
+            note=str(error),
+        )
+
+    result = results["all"]
+    located = min(result.page_correct, result.box_correct)
     return _rate(
         "evidence_localisation_rate",
         located,
-        len(truth),
+        result.compared,
         empty_note="the gold set contains no annotated observations",
     )
 
