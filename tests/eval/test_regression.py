@@ -34,6 +34,10 @@ from eval.regression import (
 )
 from eval.release_metrics import Direction
 
+#: One identity shared by comparable runs. Identity is the id, not the version string — two
+#: unrelated sets can both be at "1.0".
+GOLD_SET_ID = uuid4()
+
 
 def _run(
     *,
@@ -41,9 +45,10 @@ def _run(
     snapshots: list[str] | None = None,
     extractors: dict[str, str] | None = None,
     gold_version: str = "1.0",
+    gold_set_id: object = None,
 ) -> EvaluationRun:
     run = EvaluationRun(
-        gold_set_id=uuid4(),
+        gold_set_id=gold_set_id or GOLD_SET_ID,
         gold_set_version=gold_version,
         code_version=code,
         rule_snapshot_ids=snapshots if snapshots is not None else ["snap-1"],
@@ -155,10 +160,29 @@ def test_no_baseline_is_refused_rather_than_scored_as_a_pass() -> None:
 
 
 def test_runs_against_different_gold_sets_are_refused() -> None:
-    """The cases changed, so a difference says nothing about the code — and attributing a gold-set
-    edit to whoever pushed next is worse than refusing."""
-    with pytest.raises(IncomparableRuns, match="cases changed"):
-        compare(_run(gold_version="1.0"), _run(gold_version="2.0"), {}, {})
+    """Identity is the id. Different sets hold different cases, so a difference between them says
+    nothing about the code."""
+    with pytest.raises(IncomparableRuns, match="different cases"):
+        compare(_run(), _run(gold_set_id=uuid4()), {}, {})
+
+
+def test_two_unrelated_sets_sharing_a_version_string_are_still_refused() -> None:
+    """The bug this replaces: comparing on `gold_set_version` accepted two unrelated sets that both
+    happened to be at "1.0"."""
+    with pytest.raises(IncomparableRuns):
+        compare(_run(gold_version="1.0"), _run(gold_set_id=uuid4(), gold_version="1.0"), {}, {})
+
+
+def test_the_same_set_at_a_new_version_is_comparable_and_attributed() -> None:
+    """`attribute()` has a branch for a changed gold-set version, and comparing on the version
+    string made that branch unreachable — compare() refused the runs before attribution ran."""
+    report = compare(
+        _run(gold_version="1.0"),
+        _run(gold_version="1.1"),
+        {PRIMARY_METRIC: _metric(PRIMARY_METRIC, "1/100")},
+        {PRIMARY_METRIC: _metric(PRIMARY_METRIC, "1/100")},
+    )
+    assert report.attributed_to == "gold set version"
 
 
 # ---------------------------------------------------------------------------
@@ -239,3 +263,36 @@ def test_exact_fractions_survive_the_comparison() -> None:
         direction=Direction.MAXIMUM,
     )
     assert not delta.regressed and not delta.improved
+
+
+# ---------------------------------------------------------------------------
+# A metric with no declared direction is not judged by value
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("before", "after"), [("1/10", "9/10"), ("9/10", "1/10")])
+def test_an_unconfigured_metric_is_never_called_better_or_worse(before: str, after: str) -> None:
+    """Both directions, because assigning a default classified one of them as a regression on an
+    invented rule — and the comment above that line claimed the metric could not be judged."""
+    report = compare(
+        _run(),
+        _run(code="x"),
+        {"experimental_thing": _metric("experimental_thing", before)},
+        {"experimental_thing": _metric("experimental_thing", after)},
+    )
+    assert not report.worse
+    assert not report.better
+    assert [d.metric for d in report.unchanged] == ["experimental_thing"]
+
+
+def test_an_unconfigured_metric_still_regresses_when_the_measurement_is_lost() -> None:
+    """Direction-independent: losing the measurement is a regression whichever way it was meant to
+    move."""
+    report = compare(
+        _run(),
+        _run(code="x"),
+        {"experimental_thing": _metric("experimental_thing", "1/2")},
+        {"experimental_thing": _metric("experimental_thing", None)},
+    )
+    assert [d.metric for d in report.worse] == ["experimental_thing"]
+    assert report.worse[0].direction is None

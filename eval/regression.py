@@ -45,9 +45,10 @@ class NoBaseline(Exception):
 class IncomparableRuns(Exception):
     """The two runs scored different gold sets.
 
-    A baseline from a different gold set is not a baseline: the cases changed, so a difference says
-    nothing about the code. Comparing anyway would attribute a gold-set edit to whoever happened to
-    push next.
+    Identity is `gold_set_id`, not `gold_set_version`. Two unrelated sets can both be at version
+    "1.0", and comparing those says nothing at all — whereas one set at 1.0 against the same set at
+    1.1 is a meaningful comparison whose difference may well be the added cases, which is exactly
+    what `attribute()` exists to point out.
     """
 
 
@@ -59,7 +60,12 @@ class MetricDelta:
     check_type: str
     before: Fraction | None
     after: Fraction | None
-    direction: Direction
+    direction: Direction | None
+    """None when the metric declares no direction in `release_metrics.DIRECTIONS`.
+
+    A value change cannot then be called better or worse without inventing which way is good, and
+    an invented direction is how a metric silently regresses in the flattering direction.
+    """
 
     @property
     def measurement_lost(self) -> bool:
@@ -78,8 +84,10 @@ class MetricDelta:
         greener as coverage is removed, which is the opposite of what it is for.
         """
         if self.measurement_lost:
+            # Direction-independent: losing the measurement is a regression whichever way the
+            # metric was supposed to move.
             return True
-        if self.before is None or self.after is None:
+        if self.before is None or self.after is None or self.direction is None:
             return False
         return (
             self.after > self.before
@@ -91,7 +99,7 @@ class MetricDelta:
     def improved(self) -> bool:
         """Better than the baseline. Gaining a measurement is not an improvement in the value —
         there was no value before — so it is reported separately rather than counted here."""
-        if self.before is None or self.after is None:
+        if self.before is None or self.after is None or self.direction is None:
             return False
         return (
             self.after < self.before
@@ -211,11 +219,12 @@ def compare(
             "gate that cannot tell them apart approves every change made before the first baseline."
         )
 
-    if baseline.gold_set_version != candidate.gold_set_version:
+    if baseline.gold_set_id != candidate.gold_set_id:
         raise IncomparableRuns(
-            f"baseline scored gold set {baseline.gold_set_version} and this run scored "
-            f"{candidate.gold_set_version}. The cases changed, so a difference says nothing about "
-            "the code."
+            f"baseline scored gold set {baseline.gold_set_id} and this run scored "
+            f"{candidate.gold_set_id}. Different sets hold different cases, so a difference between "
+            "them says nothing about the code. Note that two unrelated sets can share a version "
+            "string, which is why identity is the id."
         )
 
     worse: list[MetricDelta] = []
@@ -223,18 +232,15 @@ def compare(
     unchanged: list[MetricDelta] = []
 
     for metric in sorted(set(baseline_metrics) | set(candidate_metrics)):
-        direction = DIRECTIONS.get(metric)
-        if direction is None:
-            # A metric with no declared direction cannot be judged. Skipping it silently would let
-            # an unclassified metric regress unnoticed, so it is reported as unchanged with the
-            # values visible rather than dropped.
-            direction = Direction.MINIMUM
+        # No default. Assigning one would classify an unconfigured metric by an invented rule, and
+        # the comment claiming it "cannot be judged" would be contradicted by the line below it.
+        # It still appears in the report, with its values visible, under `unchanged`.
         delta = MetricDelta(
             metric=metric,
             check_type=check_type,
             before=_value(baseline_metrics.get(metric)),
             after=_value(candidate_metrics.get(metric)),
-            direction=direction,
+            direction=DIRECTIONS.get(metric),
         )
         if delta.regressed:
             worse.append(delta)
