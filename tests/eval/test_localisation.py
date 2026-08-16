@@ -334,3 +334,22 @@ def test_the_boundaries_are_accepted(edge: Fraction) -> None:
     """0 and 1 are legitimate: "any overlap at all" and "pixel-perfect" are both statable
     positions, even if neither is likely to be chosen."""
     assert measure([_obs()], [_obs()], threshold=edge)[ALL_CHECKS].measured
+
+
+def test_no_predictions_is_not_reported_as_an_empty_gold_set() -> None:
+    """Both are unmeasured, and they are different failures. Annotations exist and nothing was
+    predicted against them — that is a broken extraction lane, not a missing gold set, and the note
+    decides which one somebody goes and fixes."""
+    from eval.metrics import evidence_localisation_rate
+
+    result = evidence_localisation_rate([], [_obs("a"), _obs("b")])
+
+    assert result.value is None
+    assert "no observations were predicted" in result.note
+    assert "2 annotated" in result.note
+
+
+def test_an_empty_gold_set_still_says_the_gold_set_is_empty() -> None:
+    from eval.metrics import evidence_localisation_rate
+
+    assert "gold set contains no annotated" in evidence_localisation_rate([], []).note

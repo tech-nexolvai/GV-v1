@@ -168,7 +168,14 @@ def evidence_localisation_rate(
         "evidence_localisation_rate",
         located,
         result.compared,
-        empty_note="the gold set contains no annotated observations",
+        # Not the same sentence as the empty-gold case above. Reaching here with nothing compared
+        # means the annotations exist and nothing was predicted against them — the extraction lane
+        # produced no observations at all. Saying "no annotated observations" would describe the
+        # wrong failure and send someone to fix the gold set instead of the extractor.
+        empty_note=(
+            "no observations were predicted, so there was nothing to localise against "
+            f"{len(gold)} annotated observation(s)"
+        ),
     )
 
 
