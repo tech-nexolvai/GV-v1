@@ -640,7 +640,7 @@ already written into `D6.2` and `F4.2`: a check that passes when there is nothin
 reports a green gate for an unmeasured change.
 
 **Two of the nine cannot be computed from a gold set at all.** Reviewer correction rate needs the
-correction ledger (`D5.4`) and reviewer minutes needs review sessions (`C1.10`) — both are production
+correction ledger (`D5.1`) and reviewer minutes needs review sessions (`C1.10`) — both are production
 records, not properties of a drawing. They return `MetricResult(value=None, note=...)` naming what is
 missing. Fabricating them from synthetic cases would produce a number that looks like evidence and
 is not.

@@ -29,7 +29,7 @@ Every issue carries a machine-readable contract near the top of its body:
 ```yaml
 status: ready          # ready | needs-architecture | blocked-client | blocked-data | deferred | epic | admin-only
 owner: dev
-requires: []           # decisions or client answers that must land first
+requires: []           # decisions, client answers or producing issues that must land first
 read:
   - AGENTS.md
   - docs/V1_RESEARCH_AND_PLAN.md
@@ -37,6 +37,16 @@ verification: tests/units/test_measurement.py
 ```
 
 That contract — not your judgement — determines readiness.
+
+**If a story consumes a table, type, module or file that another open issue is responsible for
+creating, name that issue in `requires:` *and* set `status: deferred` until that issue is merged —
+the gate prints an issue number in `requires:` but does not enforce it, so `status:` is what
+actually holds a build-order dependency.**
+
+That sentence exists because a whole cluster of stories declared `status: ready` with `requires: []`
+while depending on tables nothing had built yet, and the gate dutifully reported READY for every one
+of them. `requires:` is documentation; `status:` is the lock. Write both, and understand that only
+one of them stops anybody. The full worked example is `docs/BUILD_ORDER.md`.
 
 ---
 

@@ -31,7 +31,7 @@ ABSTENTIONS: frozenset[Outcome] = frozenset(
 )
 
 #: Metrics that describe what human reviewers did, which no gold set can answer. They need
-#: production records: the correction ledger (D5.4) and review sessions (C1.10).
+#: production records: the correction ledger (D5.1) and review sessions (C1.10).
 REVIEW_DERIVED: frozenset[str] = frozenset({"reviewer_correction_rate", "reviewer_minutes"})
 
 
@@ -331,7 +331,7 @@ def automation_coverage(predicted: Sequence[Finding]) -> MetricResult:
 def review_derived_placeholders() -> Mapping[str, MetricResult]:
     """The two metrics a gold set cannot answer, stated as unmeasured rather than omitted.
 
-    Reviewer correction rate needs the correction ledger (`D5.4`); reviewer minutes needs review
+    Reviewer correction rate needs the correction ledger (`D5.1`); reviewer minutes needs review
     sessions (`C1.10`). Both describe what humans did in production, which is not a property of a
     drawing.
 
@@ -344,7 +344,7 @@ def review_derived_placeholders() -> Mapping[str, MetricResult]:
             value=None,
             numerator=0,
             denominator=0,
-            note="needs the correction ledger (D5.4) — not derivable from a gold set",
+            note="needs the correction ledger (D5.1) — not derivable from a gold set",
         ),
         "reviewer_minutes": MetricResult(
             key="reviewer_minutes",
