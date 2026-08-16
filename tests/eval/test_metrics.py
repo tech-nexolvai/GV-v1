@@ -245,13 +245,22 @@ def test_compute_all_returns_every_metric_including_unmeasurable_ones() -> None:
     assert set(results) == set(METRIC_ORDER)
 
 
-@pytest.mark.parametrize("key", ["reviewer_correction_rate", "reviewer_minutes"])
-def test_review_derived_metrics_say_what_they_need(key: str) -> None:
+@pytest.mark.parametrize(
+    ("key", "story"),
+    [("reviewer_correction_rate", "D5.1"), ("reviewer_minutes", "C1.10")],
+)
+def test_review_derived_metrics_say_what_they_need(key: str, story: str) -> None:
     """Returned as unmeasured rather than omitted. A metric that silently disappears from a report
-    reads as one that was not needed."""
+    reads as one that was not needed.
+
+    Each metric must name *its own* blocker. This was `"D5.4" in note or "C1.10" in note`, which
+    passes whenever either string appears in either note — so it held while the correction ledger
+    was labelled D5.4 (it is D5.1; D5.4 is this metric), and would have gone on holding if the two
+    notes were swapped. A test that cannot fail on a wrong answer is not measuring the answer.
+    """
     result = compute_all([], [])[key]
     assert result.value is None
-    assert "D5.4" in result.note or "C1.10" in result.note
+    assert story in result.note
 
 
 def test_gate_inputs_omits_unmeasured_metrics_rather_than_zeroing_them() -> None:
