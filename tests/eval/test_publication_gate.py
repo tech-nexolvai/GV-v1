@@ -324,7 +324,7 @@ def test_publication_is_refused_when_no_baseline_exists(session) -> None:  # typ
     """A first-ever run has nothing to regress against. Passing it would approve every change made
     before somebody remembers to designate a baseline."""
     gold_set = _gold_set(session)
-    with pytest.raises(RegressionUnavailable, match="baseline"):
+    with pytest.raises(RegressionUnavailable, match="no baseline run exists"):
         gate(
             _proposal(),
             session=session,
@@ -394,3 +394,70 @@ def test_the_verdict_converts_to_what_publish_consumes(session) -> None:  # type
     outcome = verdict.as_outcome()
     assert outcome.passed
     assert outcome.summary.strip()
+
+
+def test_nothing_is_recorded_when_there_is_no_baseline(session) -> None:  # type: ignore[no-untyped-def]
+    """Found by CodeRabbit on #317.
+
+    `record_run` flushes rather than commits and `unit_of_work` rolls back on an exception, so a run
+    recorded and then refused would vanish with the transaction. Worse than a lost row: a first run
+    has no baseline, so it would raise, roll back, and leave nothing behind to become one — the gate
+    would refuse forever for a reason it had itself created.
+
+    Resolving the baseline first means nothing is scored or written on that path at all.
+    """
+    from app.models.evaluation import EvaluationRun
+
+    gold_set = _gold_set(session)
+    before = session.query(EvaluationRun).count()
+
+    with pytest.raises(RegressionUnavailable, match="no baseline run exists"):
+        gate(
+            _proposal(),
+            session=session,
+            gold_set=gold_set,
+            manifest=_manifest(),
+            scorer=_scorer("1/100"),
+            code_version="new-code",
+            extractor_versions={},
+        )
+
+    assert session.query(EvaluationRun).count() == before
+
+
+def test_the_scorer_is_not_run_when_there_is_no_baseline(session) -> None:  # type: ignore[no-untyped-def]
+    """A gold-set pass is expensive. Paying for one whose result is discarded is waste, and on a
+    real gold set it is minutes rather than milliseconds."""
+    calls: list[object] = []
+
+    def counting(snapshot, manifest):  # type: ignore[no-untyped-def]
+        calls.append(snapshot)
+        return _metrics("1/100")
+
+    with pytest.raises(RegressionUnavailable):
+        gate(
+            _proposal(),
+            session=session,
+            gold_set=_gold_set(session),
+            manifest=_manifest(),
+            scorer=counting,
+            code_version="new-code",
+            extractor_versions={},
+        )
+    assert calls == []
+
+
+def test_the_refusal_says_a_baseline_is_a_decision_not_a_side_effect(session) -> None:  # type: ignore[no-untyped-def]
+    """Bootstrapping is deliberate: `record_run(..., is_baseline=True)`. Letting a failed
+    publication attempt become the reference would make the first mistake the standard."""
+    with pytest.raises(RegressionUnavailable) as err:
+        gate(
+            _proposal(),
+            session=session,
+            gold_set=_gold_set(session),
+            manifest=_manifest(),
+            scorer=_scorer("1/100"),
+            code_version="new-code",
+            extractor_versions={},
+        )
+    assert "is_baseline=True" in str(err.value)

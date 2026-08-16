@@ -21,6 +21,12 @@ to read the baseline. Putting it there made `rules/` import SQLAlchemy — and s
 project cares about most. `tests/test_verdict_isolation.py` caught it on the first run. `eval/` is
 already permitted to depend on both `rules/` and `app/`, so the gate belongs here.
 
+**Why the baseline is resolved first.** `record_run` flushes rather than commits, and `unit_of_work`
+rolls back when its body raises. A run recorded and then refused would vanish with the transaction —
+and since a first run has no baseline, it would raise, roll back, and leave nothing behind to become
+one. The gate would refuse forever for a reason it had itself created. Checking first also avoids
+paying for a scoring pass whose result is discarded.
+
 **Why the baseline must be a stored run.** Scoring twice with the same code and comparing the results
 proves only that the code is deterministic. The comparison has to be against a run recorded earlier,
 under versions that may differ — which is what makes it a regression test rather than a self-check.
@@ -110,6 +116,22 @@ def gate(
             f"that cannot run: {proposal.validation}"
         )
 
+    # Resolved BEFORE anything is scored or recorded. `record_run` flushes rather than commits, and
+    # `unit_of_work` rolls back when the body raises — so a run recorded here and then refused would
+    # be discarded with the transaction. That is not merely a lost row: with no baseline, every
+    # first run would raise, roll back, and leave nothing behind to become one. Bootstrapping would
+    # be impossible, and the gate would refuse forever for a reason it had itself created.
+    #
+    # Failing before the work also avoids paying for a scoring pass whose result is thrown away.
+    previous = stored_baseline(session, gold_set_version=gold_set.version)
+    if previous is None:
+        raise RegressionUnavailable(
+            f"no baseline run exists for gold set {gold_set.version}, so there is nothing to "
+            "compare against. Record one deliberately with `record_run(..., is_baseline=True)` — a "
+            "baseline is a decision about which result is the reference, not a side effect of the "
+            "first publication attempt."
+        )
+
     snapshot = build_snapshot(proposal.proposed)
     metrics = scorer(snapshot, manifest)
 
@@ -122,23 +144,11 @@ def gate(
         results=metrics,
     )
 
-    previous = stored_baseline(session, gold_set_version=gold_set.version)
-    if previous is not None and previous.id == candidate.id:
-        # Comparing a run against itself would always pass. It can happen if the run just recorded
-        # were flagged as the baseline, and it would look exactly like a clean regression.
-        raise RegressionUnavailable(
-            "the baseline resolved to the run just recorded. A run compared against itself always "
-            "passes, which is indistinguishable from a genuine clean result."
-        )
-
+    # A run cannot be its own baseline here: `previous` was resolved before `candidate` existed.
     try:
-        report = compare(
-            previous, candidate, metrics_for(session, previous) if previous else {}, metrics
-        )
-    except NoBaseline as error:
-        raise RegressionUnavailable(
-            f"{error} Record a baseline run for gold set {gold_set.version} first."
-        ) from error
+        report = compare(previous, candidate, metrics_for(session, previous), metrics)
+    except NoBaseline as error:  # pragma: no cover - guarded above
+        raise RegressionUnavailable(str(error)) from error
     except IncomparableRuns as error:
         raise RegressionUnavailable(str(error)) from error
 
