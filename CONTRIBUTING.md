@@ -45,8 +45,20 @@ actually holds a build-order dependency.**
 
 That sentence exists because a whole cluster of stories declared `status: ready` with `requires: []`
 while depending on tables nothing had built yet, and the gate dutifully reported READY for every one
-of them. `requires:` is documentation; `status:` is the lock. Write both, and understand that only
-one of them stops anybody. The full worked example is `docs/BUILD_ORDER.md`.
+of them.
+
+Only one kind of `requires:` entry is machine-checked:
+
+| Entry | Meaning | Enforced by the gate |
+|---|---|---|
+| `Q5` | a client answer | **yes** — resolved against `docs/CLIENT_FACTS.md` |
+| `D3` | a decision or ADR | no — held by `status: needs-architecture` |
+| `199` | the issue that builds what this one consumes | no — held by `status: deferred` |
+
+So write both fields, and understand that only `status:` stops anybody. Producing issues go in as
+bare digits in a block list — `- 199`, never `- #199`, because the parser strips whitespace-`#` as a
+YAML comment and the brief adds the `#` back when it prints. The full worked example is
+`docs/BUILD_ORDER.md`.
 
 ---
 

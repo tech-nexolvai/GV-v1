@@ -22,14 +22,36 @@ because: CONTRIBUTING.md defines the field as "decisions or client answers that 
 source: CONTRIBUTING.md (contract block + comment) · scripts/issue_gate.py (`client_fact_verdict` matches `\bQ\d+\b` only; digit entries are display-formatted) · the `deferred` entry in the gate's `STATUS` table
 affects: scripts/issue_gate.py, CONTRIBUTING.md, every agent contract; the cluster in D2
 
+> **Amended 2026-08-17 — `requires:` also carries producing issues, as documentation.**
+> As written, this ruling admits only `Dn` and `Qn` entries, which contradicts the rule added to
+> CONTRIBUTING.md and the eight contracts now naming a producing issue. Resolved in favour of
+> allowing both, because the distinction the ruling actually establishes is not *which* entries may
+> appear but *which are enforced*:
+>
+> | Entry | Meaning | Enforced by the gate |
+> |---|---|---|
+> | `Qn` | a client answer | **yes** — resolved against `docs/CLIENT_FACTS.md` |
+> | `Dn` | a decision or ADR | no — held by `status: needs-architecture` |
+> | a bare issue number | the issue that builds what this one consumes | no — held by `status: deferred` |
+>
+> Only `Qn` is machine-checked. Everything else in `requires:` is documentation, and `status:` is
+> what stops anybody. Recording a producer there is still worth doing — it is how a reader learns
+> why a story is deferred — but it must never be mistaken for a lock.
+>
+> Format: bare digits in a block list (`- 199`), never `#199`. The parser strips whitespace-`#` as a
+> YAML comment and the brief adds the `#` back when printing.
+
 ### D2. Correct build order for the review cluster, and the `requires:` each should carry
-status: DECIDED
+status: DECIDED — **superseded in part; the amendment below is the authoritative order**
 decision: Order: **#200 → {#202, #234} → #233 → {#230, #235} → #236**. Contracts should read — **#200** `status: ready`, `requires: []` (root: the review + `correction_ledger` *tables*, `app/models/review.py`). **#202** `status: deferred`, `requires: [#200]` (DB append-only over those tables; plus the earlier immutable-table stories outside this cluster). **#234** `status: deferred`, `requires: [#200]` (exceptions only; independent of the ledger). **#233** `status: deferred`, `requires: [#200, #202]` (ledger write/query *logic*; its own criterion cites C1.12). **#230** `status: deferred`, `requires: [#233, #200]` (a correction writes the ledger in the same transaction). **#235** `status: deferred`, `requires: [#233]` (reads ledger corrections). **#236** `status: deferred`, `requires: [#233, #200, #230]` (ledger, plus the `review_action` and `observation` FKs it joins for per-extractor attribution). Consequence you may not have noticed: this is not one bad contract — **six of the seven declare `status: ready, requires: []`**, so the gate reports READY for all six; only #200 is genuinely ready.
 because: each downstream contract's own Scope/Acceptance names the artifact it consumes (#230 "writes to the correction ledger (D5.1)"; #233 "append-only … (C1.12)"; #236 "computed from the ledger" + per-extractor), and #200 is the only one whose inputs already exist on `main`; note #200 owns the ledger *table* while #233 owns the ledger *logic*, so their boundary must stay explicit or they collide.
 source: the seven GitHub agent contracts (scope + acceptance) · docs/DESIGN_PRODUCT.md §4 · docs/DESIGN_PLATFORM.md §3.3 (immutable-table list) · AGENTS.md §8 (correction ledger is Phase 7)
 affects: #195, #198, #199, #200, #202, #230, #233, #234, #235, #236
 
 > **Amended 2026-08-17 — the cluster is nine issues, not seven, and #200 is not a root.**
+> **This amendment is the authoritative build order.** Where the ruling above and this block differ,
+> this block governs; the ruling is kept because its per-issue reasoning from #202 onward still
+> holds unchanged.
 > #200's correction pins "the finding revision it applies to", and no issue in the seven creates a
 > findings table. **#199** (C1.9 — `check_runs`, `verdict_inputs`, `findings`, `finding_evidence`)
 > does. #199 in turn stores the rule **snapshot** id, so it needs **#198** (C1.8), and requires that
