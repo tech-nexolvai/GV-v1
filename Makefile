@@ -4,7 +4,7 @@
 .PHONY: check check-fast db db-stop install
 
 install:            ## install exactly what CI installs
-	pip install -e ".[dev,rules,platform]"
+	python -m pip install -e ".[dev,rules,platform]"
 
 check:              ## the full CI chain, locally
 	python scripts/check.py

@@ -144,3 +144,77 @@ def test_q1_records_that_field_cuts_are_added_not_trimmed() -> None:
     answer = FACTS["Q1"].answer
     assert "ADDED" in answer
     assert '5"' in FACTS["Q1"].source or "5" in FACTS["Q1"].source
+
+
+# ---------------------------------------------------------------------------
+# The gate's classification — found by CodeRabbit on PR #305
+# ---------------------------------------------------------------------------
+
+
+def _verdict(requires: list[str]) -> tuple[list[str], list[str]]:
+    from issue_gate import client_fact_verdict
+
+    return client_fact_verdict(list(requires))
+
+
+def test_an_open_formula_question_stops_even_a_ready_contract() -> None:
+    """The bug this replaces: the check ran only on the already-blocked path, so a contract saying
+    `status: ready` with `requires: Q5` sailed through — Q5 being a question that changes the
+    calculation. The status field stops being the last word; that is the point of the facts file."""
+    stopping, _ = _verdict(["Q5 (#13)"])
+    assert stopping and "changes the formula" in stopping[0]
+
+
+def test_an_answered_question_is_neither_stopping_nor_provisional() -> None:
+    """Q1 is answered. Announcing it as "an unconfirmed value prevents release" would be false."""
+    stopping, provisional = _verdict(["Q1 (#9)"])
+    assert stopping == [] and provisional == []
+
+
+def test_a_blocks_nothing_question_is_neither() -> None:
+    """Q11 (ADA scope) never blocked anything, so it must not be reported as provisional."""
+    stopping, provisional = _verdict(["Q11 (#15)"])
+    assert stopping == [] and provisional == []
+
+
+def test_only_an_open_value_question_is_provisional() -> None:
+    _, provisional = _verdict(["Q2 (#10)"])
+    assert provisional and "PROVISIONAL" in provisional[0]
+
+
+def test_an_unknown_question_reference_fails_closed() -> None:
+    """A typo must not silently delete a dependency. Failing open is the wrong direction for a
+    guard whose whole job is to say what has not been checked."""
+    stopping, _ = _verdict(["Q21 (#99)"])
+    assert stopping and "not in docs/CLIENT_FACTS.md" in stopping[0]
+
+
+def test_a_non_question_dependency_is_ignored() -> None:
+    """Story dependencies like `#215` are handled by the existing status machinery, not here."""
+    stopping, provisional = _verdict(["#215"])
+    assert stopping == [] and provisional == []
+
+
+def test_a_mistyped_field_raises_the_error_the_gate_catches(tmp_path: Path) -> None:
+    """`Status("OPNE")` would raise ValueError, which `issue_gate.py` does not catch — the gate
+    would exit with a traceback, and a traceback is the one output nobody reads as "stop"."""
+    broken = tmp_path / "facts.md"
+    broken.write_text(
+        "<!-- CLIENT FACTS START -->\n"
+        "## Q1 — typo\nstatus:  OPNE\nblocks:  value\nissue:   #1\nanswer:  —\n"
+        "source:  a source long enough to satisfy the other check entirely\n"
+        "<!-- CLIENT FACTS END -->\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ClientFactsError, match="invalid field"):
+        load(broken)
+
+
+def test_the_stop_heading_does_not_assume_the_cause() -> None:
+    """`fact_stopping` holds three different problems: an open formula question, an unknown `Qn`,
+    and a facts-file parse error. A heading claiming "a question changes the calculation" gives the
+    wrong remediation for the latter two — it sends someone to chase a client answer when the real
+    problem is a typo in a contract."""
+    source = (Path(__file__).resolve().parent.parent / "scripts" / "issue_gate.py").read_text()
+    assert "unresolved client-fact dependency" in source
+    assert "depends on a question that changes the calculation" not in source

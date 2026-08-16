@@ -1,4 +1,6 @@
-# Local PostgreSQL for the persistence tests.
+# Local PostgreSQL for the persistence tests. Pinned to postgres:17 to match .github/workflows/ci.yml —
+# a different major version locally would let a migration behave differently in the two places,
+# which is the class of difference this file exists to remove.
 #
 # Without it, the database tests skip and a mismatch between a model and its migration only
 # surfaces on CI — which is how #201's naive-timestamp bug was found. Port 5433 rather than 5432
@@ -13,7 +15,7 @@
 
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:17
     environment:
       POSTGRES_USER: gv
       POSTGRES_PASSWORD: gv

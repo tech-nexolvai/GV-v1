@@ -229,13 +229,29 @@ def client_fact_verdict(requires: list[object]) -> tuple[list[str], list[str]]:
     except (ClientFactsError, OSError) as error:
         return [f"could not read the client facts: {error}"], []
 
+    from client_facts import Blocks, Status
+
     stopping: list[str] = []
     provisional: list[str] = []
     for item in requires:
-        fact = lookup(str(item), facts)
+        text = str(item)
+        fact = lookup(text, facts)
         if fact is None:
+            # An unknown Qn fails CLOSED. Ignoring it would mean a typo silently removes a
+            # dependency, which is the failure mode this file exists to end.
+            if re.search(r"\bQ\d+\b", text):
+                stopping.append(
+                    f"{text} is not in docs/CLIENT_FACTS.md. Either the reference is wrong or the "
+                    "question was never recorded — both mean nobody has checked whether it blocks."
+                )
             continue
-        (stopping if fact.stops_work else provisional).append(fact.gate_line())
+        if fact.stops_work:
+            stopping.append(fact.gate_line())
+        elif fact.status is Status.OPEN and fact.blocks is Blocks.VALUE:
+            # Only these ship provisional. An ANSWERED fact blocks nothing, and a `blocks: nothing`
+            # one never did — announcing either as "an unconfirmed value prevents release" would be
+            # false.
+            provisional.append(fact.gate_line())
     return stopping, provisional
 
 
@@ -306,6 +322,34 @@ def main() -> int:
         )
         return BLOCKED
 
+    # ---------------- client facts, before any path can report READY ----------------
+    # This ran only on the already-blocked path, so a contract saying `status: ready` with
+    # `requires: Q5` sailed through — Q5 being an open question that changes the calculation. The
+    # whole point of docs/CLIENT_FACTS.md is that the status field stops being the last word, so it
+    # has to be consulted before readiness is granted, not after it is denied.
+    fact_stopping, fact_provisional = client_fact_verdict(requires)
+    if fact_stopping:
+        sys.stderr.write(
+            # Deliberately generic: this list also holds unknown Qn references and facts-file
+            # parse errors, and telling somebody to go and get a client answer when the real
+            # problem is a typo in a contract sends them to the wrong place entirely.
+            f"STOP — #{args.issue} has an unresolved client-fact dependency\n"
+            f"{'=' * 62}\n"
+            + "".join(f"  - {line}\n" for line in fact_stopping)
+            + "\nSource: docs/CLIENT_FACTS.md, which is the authority for what the client has "
+            "and\nhas not told us. Each line above says what is wrong; fix that, rather than "
+            "inferring\nan answer from the checklist — it contradicts itself in several places, "
+            "which is why\nthat file exists.\n"
+        )
+        if args.comment:
+            post_comment(
+                args.issue,
+                "🚫 **Blocked — unresolved client-fact dependency**\n\n"
+                + "\n".join(f"- {line}" for line in fact_stopping)
+                + "\n\n_Source: `docs/CLIENT_FACTS.md`. Posted by `scripts/issue_gate.py`._",
+            )
+        return BLOCKED
+
     # ---------------- design must exist before implementation ----------------
     # 'ready' only ever meant "no decision or client answer outstanding". It said nothing
     # about whether the design exists — so an agent would invent the architecture per
@@ -366,8 +410,8 @@ def main() -> int:
     # ---------------- not ready ----------------
     if code != READY:
         req = ", ".join(f"#{r}" if str(r).isdigit() else str(r) for r in requires)
-        stopping, provisional = client_fact_verdict(requires)
-        if provisional and not stopping:
+        provisional = fact_provisional
+        if provisional:
             # Every outstanding question supplies a value, not a formula. The rule can be authored
             # with an UNCONFIRMED tolerance, which cannot reach production (ADR-0011). Say so
             # rather than reporting a flat stop that somebody then has to argue about.
@@ -379,16 +423,6 @@ def main() -> int:
             print("\nAuthor it with the value left UNCONFIRMED. The check will return REVIEW")
             print("REQUIRED for every drawing and cannot be released (ADR-0011, D6.4).")
             return READY
-        if stopping:
-            sys.stderr.write(
-                f"STOP — #{args.issue} depends on an unanswered question that changes the "
-                f"calculation\n{'=' * 62}\n"
-                + "".join(f"  - {line}\n" for line in stopping)
-                + "\nSource: docs/CLIENT_FACTS.md, which is the authority. Do not infer the "
-                "answer from\nthe checklist — it contradicts itself in several places, which is "
-                "why that file exists.\n"
-            )
-            return BLOCKED
         msg = (
             f"STOP — #{args.issue} is not ready to implement\n"
             f"{'=' * 62}\n"
