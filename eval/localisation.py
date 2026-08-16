@@ -94,6 +94,14 @@ class LocalisationResult:
     check_type: str
     page_correct: int
     box_correct: int
+    both_correct: int
+    """Predictions where page **and** box are right on the *same* observation.
+
+    Not `min(page_correct, box_correct)`: those can count different observations. One prediction on
+    the right page with a bad box and another on the wrong page with a good box gives one of each,
+    and a minimum of one — reporting half the observations localised when none of them are.
+    """
+
     compared: int
     mean_iou: Fraction | None
     threshold: Fraction
@@ -109,22 +117,29 @@ class LocalisationResult:
         return Fraction(self.box_correct, self.compared) if self.compared else None
 
     @property
+    def joint_accuracy(self) -> Fraction | None:
+        """Share of predictions that are fully localised — the number the gate is about."""
+        return Fraction(self.both_correct, self.compared) if self.compared else None
+
+    @property
     def measured(self) -> bool:
         return self.compared > 0
 
     @property
     def passed(self) -> bool | None:
-        """Both must clear the threshold, or `None` when nothing was measured.
+        """The share fully localised must clear the threshold, or `None` when nothing was measured.
 
         `None` rather than `False`: an unmeasured gate and a failed one are different facts, and the
         release report is built on keeping them apart.
         """
         if not self.measured:
             return None
-        page = self.page_accuracy
-        box = self.box_accuracy
-        assert page is not None and box is not None
-        return page >= self.threshold and box >= self.threshold
+        joint = self.joint_accuracy
+        assert joint is not None
+        # The joint rate, not the two rates independently. Requiring each separately would pass a
+        # set where 90% of pages and 90% of boxes are right but the failures are disjoint, so only
+        # 80% of findings actually point at anything.
+        return joint >= self.threshold
 
     def __str__(self) -> str:
         if not self.measured:
@@ -135,9 +150,9 @@ class LocalisationResult:
 
         verdict = "PASS" if self.passed else "FAIL"
         return (
-            f"{self.check_type}: page {pct(self.page_accuracy)}, "
-            f"box {pct(self.box_accuracy)} (mean IoU {pct(self.mean_iou)}) "
-            f"— {verdict} against {pct(self.threshold)}"
+            f"{self.check_type}: {pct(self.joint_accuracy)} fully localised "
+            f"(page {pct(self.page_accuracy)}, box {pct(self.box_accuracy)}, "
+            f"mean IoU {pct(self.mean_iou)}) — {verdict} against {pct(self.threshold)}"
         )
 
 
@@ -155,6 +170,12 @@ def measure(
 
     Raises `MissingAnnotation` when a prediction has no counterpart — see the module docstring.
     """
+    if not 0 <= threshold <= 1:
+        raise ValueError(
+            f"threshold {threshold} is not a proportion. Above 1 nothing can ever pass and below 0 "
+            "everything does — either way the gate stops meaning anything, silently."
+        )
+
     truth: Mapping[tuple[str, object], GoldObservation] = {
         (obs.item_id, obs.semantic_type): obs for obs in annotated
     }
@@ -181,18 +202,21 @@ def measure(
     for check_type, pairs in grouped.items():
         page_correct = 0
         box_correct = 0
+        both_correct = 0
         ious: list[Fraction] = []
         for observation, reference in pairs:
-            if observation.page == reference.page:
-                page_correct += 1
+            page_ok = observation.page == reference.page
             overlap = intersection_over_union(observation.polygon, reference.polygon)
+            box_ok = overlap >= threshold
             ious.append(overlap)
-            if overlap >= threshold:
-                box_correct += 1
+            page_correct += page_ok
+            box_correct += box_ok
+            both_correct += page_ok and box_ok
         results[check_type] = LocalisationResult(
             check_type=check_type,
             page_correct=page_correct,
             box_correct=box_correct,
+            both_correct=both_correct,
             compared=len(pairs),
             mean_iou=sum(ious, Fraction(0)) / len(ious) if ious else None,
             threshold=threshold,
@@ -203,6 +227,7 @@ def measure(
             check_type=ALL_CHECKS,
             page_correct=0,
             box_correct=0,
+            both_correct=0,
             compared=0,
             mean_iou=None,
             threshold=threshold,

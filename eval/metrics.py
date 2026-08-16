@@ -161,7 +161,9 @@ def evidence_localisation_rate(
         )
 
     result = results["all"]
-    located = min(result.page_correct, result.box_correct)
+    # The joint count, not min(page, box): those can count different observations, reporting half
+    # the set localised when none of it is.
+    located = result.both_correct
     return _rate(
         "evidence_localisation_rate",
         located,

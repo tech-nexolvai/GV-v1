@@ -236,7 +236,7 @@ def test_the_report_shows_page_and_box_and_the_threshold() -> None:
 
 
 def test_the_report_says_when_a_check_type_was_not_measured() -> None:
-    text = report({ALL_CHECKS: LocalisationResult(ALL_CHECKS, 0, 0, 0, None, HALF)})
+    text = report({ALL_CHECKS: LocalisationResult(ALL_CHECKS, 0, 0, 0, 0, None, HALF)})
     assert "NOT MEASURED" in text
     assert "An unmeasured gate is not a passed one" in text
 
@@ -260,3 +260,77 @@ def test_the_headline_metric_reports_not_measured_on_a_missing_annotation() -> N
     result = evidence_localisation_rate([_obs("cab-999")], [_obs("cab-1")])
     assert result.value is None
     assert "no annotation" in result.note
+
+
+# ---------------------------------------------------------------------------
+# Joint correctness — found by CodeRabbit on #318
+# ---------------------------------------------------------------------------
+
+
+def test_complementary_failures_localise_nothing() -> None:
+    """The bug this replaces. One prediction on the right page with a bad box, another on the wrong
+    page with a good box: page_correct is 1 and box_correct is 1, so `min` of the two returns 1 —
+    reporting half the set localised when **neither** observation points at anything.
+    """
+    predicted = [
+        _obs("a", page=1, box=(0, 0, 10, 10)),
+        _obs("b", page=1, box=(0, 0, 10, 10)),
+    ]
+    annotated = [
+        _obs("a", page=1, box=(500, 500, 510, 510)),  # right page, wrong box
+        _obs("b", page=9, box=(0, 0, 10, 10)),  # wrong page, right box
+    ]
+    result = measure(predicted, annotated, threshold=HALF)[ALL_CHECKS]
+
+    assert result.page_correct == 1
+    assert result.box_correct == 1
+    assert result.both_correct == 0
+    assert result.joint_accuracy == 0
+    assert result.passed is False
+
+
+def test_the_headline_metric_uses_the_joint_count() -> None:
+    from eval.metrics import evidence_localisation_rate
+
+    predicted = [_obs("a", page=1, box=(0, 0, 10, 10)), _obs("b", page=1, box=(0, 0, 10, 10))]
+    annotated = [
+        _obs("a", page=1, box=(500, 500, 510, 510)),
+        _obs("b", page=9, box=(0, 0, 10, 10)),
+    ]
+    assert evidence_localisation_rate(predicted, annotated).value == 0
+
+
+def test_the_gate_uses_the_joint_rate_not_the_two_rates_independently() -> None:
+    """Requiring each separately would pass a set where 90% of pages and 90% of boxes are right but
+    the failures are disjoint, so only 80% of findings point at anything."""
+    predicted = [_obs(f"c{n}", page=1, box=(0, 0, 10, 10)) for n in range(4)]
+    annotated = [
+        _obs("c0", page=1, box=(0, 0, 10, 10)),
+        _obs("c1", page=1, box=(0, 0, 10, 10)),
+        _obs("c2", page=1, box=(900, 900, 910, 910)),
+        _obs("c3", page=9, box=(0, 0, 10, 10)),
+    ]
+    result = measure(predicted, annotated, threshold=HALF)[ALL_CHECKS]
+    assert result.page_accuracy == Fraction(3, 4)
+    assert result.box_accuracy == Fraction(3, 4)
+    assert result.joint_accuracy == Fraction(2, 4)
+
+
+# ---------------------------------------------------------------------------
+# The threshold must be a proportion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [Fraction(2), Fraction(-1, 10), Fraction(11, 10)])
+def test_a_threshold_outside_zero_to_one_is_rejected(bad: Fraction) -> None:
+    """Above 1 nothing can ever pass; below 0 everything does. Either way the gate stops meaning
+    anything, silently."""
+    with pytest.raises(ValueError, match="not a proportion"):
+        measure([_obs()], [_obs()], threshold=bad)
+
+
+@pytest.mark.parametrize("edge", [Fraction(0), Fraction(1)])
+def test_the_boundaries_are_accepted(edge: Fraction) -> None:
+    """0 and 1 are legitimate: "any overlap at all" and "pixel-perfect" are both statable
+    positions, even if neither is likely to be chosen."""
+    assert measure([_obs()], [_obs()], threshold=edge)[ALL_CHECKS].measured
