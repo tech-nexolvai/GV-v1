@@ -19,13 +19,16 @@ around is the point. Two of them matter more than the rest:
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from datetime import date
 from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.orm import Session
 
+from app.models.evaluation import EvaluationRun, GoldSet
 from eval.gold_set.schema import (
     ExpectedFinding,
     GoldCase,
@@ -37,12 +40,14 @@ from eval.metrics import MetricResult as ComputedMetric
 from eval.publication_gate import (
     NoGoldSet,
     RegressionUnavailable,
+    Scorer,
     as_regression_check,
     gate,
 )
-from rules.governance.proposal import propose
+from rules.governance.proposal import RuleProposal, propose
 from rules.schema import CheckType, GlobalApplicability, InputSelector, OperationRef, Rule
 from rules.semantic_types import OperandSource, ProductType, SemanticType
+from rules.snapshot import RuleSnapshot
 from units.measurement import Unit
 from verdict.operations.aggregate import AGGREGATE_SPECS
 from verdict.operations.scalar import SCALAR_SPECS
@@ -75,7 +80,7 @@ def _rule(rule_id: str = "CT-WIDTH-001", version: str = "1.0.0") -> Rule:
     )
 
 
-def _proposal(rule: Rule | None = None):  # type: ignore[no-untyped-def]
+def _proposal(rule: Rule | None = None) -> RuleProposal:
     return propose(rule or _rule(), author="keyur", rationale="tighten the width check")
 
 
@@ -114,8 +119,8 @@ def _metrics(false_pass: str) -> dict[str, ComputedMetric]:
     return {PRIMARY: ComputedMetric(PRIMARY, frac, frac.numerator, frac.denominator)}
 
 
-def _scorer(false_pass: str):  # type: ignore[no-untyped-def]
-    def score(snapshot, manifest):  # type: ignore[no-untyped-def]
+def _scorer(false_pass: str) -> Scorer:
+    def score(snapshot: RuleSnapshot, manifest: GoldManifest) -> Mapping[str, ComputedMetric]:
         return _metrics(false_pass)
 
     return score
@@ -252,7 +257,7 @@ def test_the_adapter_propagates_a_refusal_rather_than_reporting_a_pass() -> None
 
 
 @pytest.fixture
-def session(postgres_engine):  # type: ignore[no-untyped-def]
+def session(postgres_engine: object) -> Iterator[Session]:
     from app.db.base import Base
     from app.db.session import session_factory
 
@@ -261,16 +266,14 @@ def session(postgres_engine):  # type: ignore[no-untyped-def]
         yield db
 
 
-def _gold_set(session, version: str = "1.0"):  # type: ignore[no-untyped-def]
-    from app.models.evaluation import GoldSet
-
+def _gold_set(session: Session, version: str = "1.0") -> GoldSet:
     gold_set = GoldSet(name="countertops", version=version)
     session.add(gold_set)
     session.flush()
     return gold_set
 
 
-def _baseline_run(session, gold_set, false_pass: str):  # type: ignore[no-untyped-def]
+def _baseline_run(session: Session, gold_set: GoldSet, false_pass: str) -> EvaluationRun:
     from eval.runs import record_run
 
     run = record_run(
@@ -286,7 +289,7 @@ def _baseline_run(session, gold_set, false_pass: str):  # type: ignore[no-untype
     return run
 
 
-def test_a_worse_false_pass_rate_blocks_publication(session) -> None:  # type: ignore[no-untyped-def]
+def test_a_worse_false_pass_rate_blocks_publication(session: Session) -> None:
     gold_set = _gold_set(session)
     _baseline_run(session, gold_set, "1/100")
 
@@ -304,7 +307,7 @@ def test_a_worse_false_pass_rate_blocks_publication(session) -> None:  # type: i
     assert verdict.report is not None and verdict.report.critical_false_pass_regressed
 
 
-def test_an_improved_rate_permits_publication(session) -> None:  # type: ignore[no-untyped-def]
+def test_an_improved_rate_permits_publication(session: Session) -> None:
     gold_set = _gold_set(session)
     _baseline_run(session, gold_set, "5/100")
 
@@ -320,7 +323,7 @@ def test_an_improved_rate_permits_publication(session) -> None:  # type: ignore[
     assert verdict.passed
 
 
-def test_publication_is_refused_when_no_baseline_exists(session) -> None:  # type: ignore[no-untyped-def]
+def test_publication_is_refused_when_no_baseline_exists(session: Session) -> None:
     """A first-ever run has nothing to regress against. Passing it would approve every change made
     before somebody remembers to designate a baseline."""
     gold_set = _gold_set(session)
@@ -336,7 +339,7 @@ def test_publication_is_refused_when_no_baseline_exists(session) -> None:  # typ
         )
 
 
-def test_the_comparison_is_against_a_stored_run_not_a_fresh_one(session) -> None:  # type: ignore[no-untyped-def]
+def test_the_comparison_is_against_a_stored_run_not_a_fresh_one(session: Session) -> None:
     """Scoring twice with the same code proves only that the code is deterministic. The baseline
     has to be a run recorded earlier, under versions that may differ."""
     gold_set = _gold_set(session)
@@ -356,10 +359,9 @@ def test_the_comparison_is_against_a_stored_run_not_a_fresh_one(session) -> None
     assert verdict.report.candidate_run_id != str(baseline.id)
 
 
-def test_the_run_is_recorded_even_when_it_regresses(session) -> None:  # type: ignore[no-untyped-def]
+def test_the_run_is_recorded_even_when_it_regresses(session: Session) -> None:
     """A blocked publication is still evidence. Discarding the run would lose the record of what was
     attempted and why it was stopped."""
-    from app.models.evaluation import EvaluationRun
 
     gold_set = _gold_set(session)
     _baseline_run(session, gold_set, "1/100")
@@ -379,7 +381,7 @@ def test_the_run_is_recorded_even_when_it_regresses(session) -> None:  # type: i
     assert verdict.run is not None
 
 
-def test_the_verdict_converts_to_what_publish_consumes(session) -> None:  # type: ignore[no-untyped-def]
+def test_the_verdict_converts_to_what_publish_consumes(session: Session) -> None:
     gold_set = _gold_set(session)
     _baseline_run(session, gold_set, "5/100")
     verdict = gate(
@@ -396,7 +398,7 @@ def test_the_verdict_converts_to_what_publish_consumes(session) -> None:  # type
     assert outcome.summary.strip()
 
 
-def test_nothing_is_recorded_when_there_is_no_baseline(session) -> None:  # type: ignore[no-untyped-def]
+def test_nothing_is_recorded_when_there_is_no_baseline(session: Session) -> None:
     """Found by CodeRabbit on #317.
 
     `record_run` flushes rather than commits and `unit_of_work` rolls back on an exception, so a run
@@ -406,7 +408,6 @@ def test_nothing_is_recorded_when_there_is_no_baseline(session) -> None:  # type
 
     Resolving the baseline first means nothing is scored or written on that path at all.
     """
-    from app.models.evaluation import EvaluationRun
 
     gold_set = _gold_set(session)
     before = session.query(EvaluationRun).count()
@@ -425,12 +426,12 @@ def test_nothing_is_recorded_when_there_is_no_baseline(session) -> None:  # type
     assert session.query(EvaluationRun).count() == before
 
 
-def test_the_scorer_is_not_run_when_there_is_no_baseline(session) -> None:  # type: ignore[no-untyped-def]
+def test_the_scorer_is_not_run_when_there_is_no_baseline(session: Session) -> None:
     """A gold-set pass is expensive. Paying for one whose result is discarded is waste, and on a
     real gold set it is minutes rather than milliseconds."""
     calls: list[object] = []
 
-    def counting(snapshot, manifest):  # type: ignore[no-untyped-def]
+    def counting(snapshot: RuleSnapshot, manifest: GoldManifest) -> Mapping[str, ComputedMetric]:
         calls.append(snapshot)
         return _metrics("1/100")
 
@@ -447,7 +448,7 @@ def test_the_scorer_is_not_run_when_there_is_no_baseline(session) -> None:  # ty
     assert calls == []
 
 
-def test_the_refusal_says_a_baseline_is_a_decision_not_a_side_effect(session) -> None:  # type: ignore[no-untyped-def]
+def test_the_refusal_says_a_baseline_is_a_decision_not_a_side_effect(session: Session) -> None:
     """Bootstrapping is deliberate: `record_run(..., is_baseline=True)`. Letting a failed
     publication attempt become the reference would make the first mistake the standard."""
     with pytest.raises(RegressionUnavailable) as err:
