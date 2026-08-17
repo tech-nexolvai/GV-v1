@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -322,3 +323,32 @@ def test_a_cases_reference_needs_real_content() -> None:
     gold set report as a populated one."""
     assert not resolves("cases:eval/gold_set/cases")
     assert resolves("cases:tests")
+
+
+# ---------------------------------------------------------------------------
+# The prose under the table must agree with the table
+# ---------------------------------------------------------------------------
+
+
+def test_the_summary_counts_match_the_table() -> None:
+    """Prose drifts; the table is the fact.
+
+    Three separate drifts had accumulated before this check existed. The summary named retrieval
+    contamination as enforced after `#257` demoted `R7`, and still said five risks were planned after
+    `#309` promoted `R8`. Nothing caught either, because the guard verified every reference in the
+    table and never read the paragraph a person actually reads first.
+    """
+    text = (REPO_ROOT / "docs" / "RISK_CONTROLS.md").read_text(encoding="utf-8")
+    actual = Counter(row.status for row in ROWS)
+
+    for status in ControlStatus:
+        match = re.search(rf"^{status.value}: (\d+)", text, re.MULTILINE)
+        assert match, (
+            f"the summary states no count for {status.value}. It is the first thing a reader sees, "
+            "so it has to be checkable rather than a sentence somebody remembered to update."
+        )
+        stated = int(match.group(1))
+        assert stated == actual[status], (
+            f"the summary says {stated} {status.value} row(s); the table has {actual[status]}. "
+            "Update the paragraph, not this test."
+        )

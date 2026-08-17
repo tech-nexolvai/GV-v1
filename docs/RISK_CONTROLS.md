@@ -161,16 +161,21 @@ a human to raise the change.
 
 ## What this table says today
 
-Three of ten risks are enforced: rule injection, retrieval contamination and licensing. All three are
-properties of the deterministic core, which is the part that is built.
+ENFORCED: 3 — R1 (numerically plausible extraction), R6 (rule injection), R9 (licensing). All three
+are properties of the deterministic core, which is the part that is built.
 
-Two are partial. **R5 (false PASS) is the one to look at** — the metric and the release gates both
-exist, and there is no gold set to run them against, so the project's primary safety metric currently
-reports NOT MEASURED for every check. That is not a bug in the metric; it is `#274` and `#188`
-waiting on the client.
+PARTIAL: 5 — R2, R3, R5, R7, R8. **R5 (false PASS) is the one to look at** — the metric and the
+release gates both exist, and there is no gold set to run them against, so the project's primary
+safety metric currently reports NOT MEASURED for every check. That is not a bug in the metric; it is
+`#274` and `#188` waiting on the client. **R7 (retrieval contamination)** was read as enforced until
+`#257`: its control is about a running process, and only the import graph proved it.
 
-Five are planned, and they cluster in `evidence/`, `extraction/`, `retrieval/` and `storage/` — the
-four packages that are still empty.
+PLANNED: 2 — R4 (agent loops or cost runaway), R10 (corrections silently become rules).
+
+The counts above are checked against the table by `tests/test_risk_controls.py`. They were wrong
+before that check existed — this paragraph still called retrieval contamination enforced after `#257`
+demoted it, and still said five risks were planned after `#309` promoted `R8`. Prose drifts; the
+table is the fact.
 
 A reader should take from this that the deterministic core is defensible and the extraction pipeline
 is not yet, which is the true position and the reason the build order is what it is.

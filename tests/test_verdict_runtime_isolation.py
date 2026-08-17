@@ -27,6 +27,7 @@ from deploy.verdict_isolation.preflight import (
     EgressState,
     IsolationBroken,
     assert_isolated,
+    assert_no_route_off_the_network,
     check_environment,
     parse_allowlist,
     parse_probe_target,
@@ -64,6 +65,30 @@ def _dropped(address: str, port: int, timeout: float) -> None:
     raise TimeoutError("timed out")
 
 
+#: A routing table with no default route — what `internal: true` produces. The header line is
+#: reproduced because the parser skips it.
+NO_DEFAULT_ROUTE = (
+    "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+    "eth0\t0000530A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n"
+)
+
+#: The same table with a default route added: somewhere to send anything not directly connected.
+WITH_DEFAULT_ROUTE = (
+    NO_DEFAULT_ROUTE + "eth0\t00000000\t0100530A\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"
+)
+
+
+def _routes(table: str):
+    def read() -> str:
+        return table
+
+    return read
+
+
+def _no_route_table() -> str:
+    raise OSError(2, "No such file or directory")
+
+
 # ---------------------------------------------------------------------------
 # The environment is an allow-list (D5)
 # ---------------------------------------------------------------------------
@@ -71,7 +96,7 @@ def _dropped(address: str, port: int, timeout: float) -> None:
 
 def test_an_isolated_process_starts() -> None:
     """The control has to be able to say yes, or the refusals below prove nothing."""
-    assert_isolated(ISOLATED, connect=_no_route)
+    assert_isolated(ISOLATED, connect=_no_route, read_routes=_routes(NO_DEFAULT_ROUTE))
 
 
 def test_a_model_credential_is_refused() -> None:
@@ -176,14 +201,14 @@ def test_a_silent_drop_is_indeterminate_not_blocked() -> None:
 
 def test_a_reachable_network_refuses_to_start() -> None:
     with pytest.raises(IsolationBroken, match="is reachable"):
-        assert_isolated(ISOLATED, connect=_reachable)
+        assert_isolated(ISOLATED, connect=_reachable, read_routes=_routes(NO_DEFAULT_ROUTE))
 
 
 def test_an_indeterminate_network_refuses_to_start() -> None:
     """Fail-closed. "Cannot determine" is not "isolated", and an unverifiable safety control is a
     failed one — the same reason `NOT_MEASURED` is never treated as a pass in the release gates."""
     with pytest.raises(IsolationBroken, match="could not be determined"):
-        assert_isolated(ISOLATED, connect=_dropped)
+        assert_isolated(ISOLATED, connect=_dropped, read_routes=_routes(NO_DEFAULT_ROUTE))
 
 
 # ---------------------------------------------------------------------------
@@ -258,3 +283,42 @@ def test_socket_is_still_forbidden_inside_the_verdict_package() -> None:
     from tests.test_verdict_isolation import FORBIDDEN_FOR_VERDICT
 
     assert "socket" in FORBIDDEN_FOR_VERDICT
+
+
+# ---------------------------------------------------------------------------
+# The routing table is what establishes isolation; the probe corroborates it
+# ---------------------------------------------------------------------------
+
+
+def test_a_default_route_refuses_to_start() -> None:
+    """The gap a single probe could not close. A network can block the one address the probe dials
+    and still route everywhere else — the probe would report success. With a default route present
+    the kernel can send a packet anywhere, and that is decided here rather than sampled."""
+    with pytest.raises(IsolationBroken, match="default route"):
+        assert_isolated(ISOLATED, connect=_no_route, read_routes=_routes(WITH_DEFAULT_ROUTE))
+
+
+def test_no_default_route_is_accepted() -> None:
+    assert_no_route_off_the_network(_routes(NO_DEFAULT_ROUTE))
+
+
+def test_an_unreadable_routing_table_refuses_to_start() -> None:
+    """Unknown is refused, the same rule as an indeterminate probe. This is what happens on a
+    developer machine, correctly — a laptop is not an isolated network."""
+    with pytest.raises(IsolationBroken, match="could not be read"):
+        assert_isolated(ISOLATED, connect=_no_route, read_routes=_no_route_table)
+
+
+def test_a_reachable_address_is_refused_even_when_the_routes_look_clean() -> None:
+    """Why the probe is kept. If the table says there is no way out and a packet reaches something
+    anyway, the two disagree and neither should be trusted."""
+    with pytest.raises(IsolationBroken, match="disagree"):
+        assert_isolated(ISOLATED, connect=_reachable, read_routes=_routes(NO_DEFAULT_ROUTE))
+
+
+@pytest.mark.parametrize("bad", ["1.1.1.1:0", "1.1.1.1:70000", "1.1.1.1:-1"])
+def test_a_port_outside_the_valid_range_is_refused(bad: str) -> None:
+    """A port above 65535 makes `socket.connect` raise `OverflowError`, which is not an `OSError`,
+    so it would escape the probe and surface as a traceback rather than a refusal."""
+    with pytest.raises(IsolationBroken, match="outside 1-65535"):
+        parse_probe_target(bad)

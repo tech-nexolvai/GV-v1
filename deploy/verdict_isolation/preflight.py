@@ -26,8 +26,17 @@ Three rulings shape what follows, all from `docs/decisions/F1_6_RUNTIME_ISOLATIO
   egress except the database" is literally true rather than true-if-you-trust-the-resolver.
 * **D4 — what cannot be determined is refused.** Reachable, blocked and *indeterminate* are three
   outcomes, not two. An unverifiable safety control is a failed one.
+
 * **D5 — the environment is an allow-list.** A deny-list of known model providers fails open the
   first time somebody adds a provider nobody enumerated.
+
+**What establishes isolation, and what merely corroborates it.** Worth being exact, because an
+earlier version of this module was not. Dialling an address and finding it unreachable shows that
+*that address* is unreachable; it says nothing about anywhere else, and no number of samples turns
+that into "no egress except the database". The claim is established by the kernel routing table: with
+no default route there is nowhere to send a packet that is not directly connected — not "does not",
+*cannot*. `assert_no_route_off_the_network` checks that property; `probe_egress` corroborates it, and
+exists so that a routing table which disagrees with reality is caught rather than believed.
 """
 
 from __future__ import annotations
@@ -37,6 +46,7 @@ import os
 import socket
 from collections.abc import Iterable, Mapping
 from enum import StrEnum
+from pathlib import Path
 from typing import Final
 
 #: Config naming the permitted destination, as IP or CIDR. Required — see `assert_isolated`.
@@ -150,6 +160,12 @@ def parse_probe_target(raw: str | None) -> tuple[str, int]:
         raise IsolationBroken(
             f"{EGRESS_PROBE_VARIABLE} port {port_text!r} is not a number."
         ) from error
+    if not 1 <= port <= 65535:
+        # Not pedantry: a port above 65535 makes `socket.connect` raise `OverflowError`, which is
+        # not an `OSError`, so it would escape the probe's handling and surface as a traceback
+        # instead of the refusal this module promises. A control that crashes instead of refusing
+        # is one whose contract nobody can rely on.
+        raise IsolationBroken(f"{EGRESS_PROBE_VARIABLE} port {port} is outside 1-65535.")
     return address, port
 
 
@@ -213,10 +229,72 @@ def _connect(address: str, port: int, timeout: float) -> None:
         sock.connect((address, port))
 
 
+#: Where Linux publishes the kernel routing table. Read rather than probed, because it answers a
+#: different and stronger question — see `assert_no_route_off_the_network`.
+ROUTE_TABLE: Final = "/proc/net/route"
+
+
+def _read_route_table() -> str:
+    return Path(ROUTE_TABLE).read_text(encoding="ascii")
+
+
+def assert_no_route_off_the_network(read: object = None) -> None:
+    """Refuse unless the kernel holds no default route.
+
+    **Why this exists, and why the probe alone was not enough.** Dialling one address and finding it
+    unreachable shows that *that address* is unreachable. It says nothing about the rest of the
+    internet: a network could block the probe target and still route to somewhere else entirely, and
+    the probe would report success. The claim "no egress except the database" cannot be established
+    by sampling, however many addresses are sampled.
+
+    The routing table answers the question properly. With no default route the kernel has nowhere to
+    send a packet whose destination is not directly connected — not "does not", *cannot*. That is a
+    property of the machine rather than an observation about one destination, and it is what
+    `internal: true` produces.
+
+    The probe is kept, and its role changes: it corroborates that the routing table describes
+    reality. Two independent checks disagreeing is worth knowing about.
+
+    Unreadable table means unknown, and unknown is refused (D4). On a developer machine there is no
+    `/proc/net/route` and this refuses — correctly, because a laptop is not an isolated network and
+    the verdict service should not run on one.
+    """
+    reader = read if read is not None else _read_route_table
+    try:
+        table = reader()  # type: ignore[operator]
+    except OSError as error:
+        raise IsolationBroken(
+            f"the kernel routing table at {ROUTE_TABLE} could not be read, so whether this process "
+            "has a route off its network is unknown. Unknown is refused: an unverifiable control is "
+            "a failed one. This is the expected result outside a Linux container, and the verdict "
+            "service is not meant to run outside one."
+        ) from error
+
+    default_routes: list[str] = []
+    for line in table.splitlines()[1:]:  # first line is the column header
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        interface, destination, gateway = fields[0], fields[1], fields[2]
+        # Destination 00000000 with a non-zero gateway is the default route: "send anything you do
+        # not otherwise know how to deliver here", which is exactly the capability being excluded.
+        if destination == "00000000" and gateway != "00000000":
+            default_routes.append(f"{interface} via gateway {gateway}")
+
+    if default_routes:
+        raise IsolationBroken(
+            f"the kernel holds a default route ({', '.join(default_routes)}), so this process can "
+            "send a packet to any address on the internet. Isolation here is a property of the "
+            "network, not of a firewall rule: give the verdict service a network with no gateway "
+            "(`internal: true`) rather than one it is merely discouraged from using."
+        )
+
+
 def assert_isolated(
     environment: Mapping[str, str] | None = None,
     *,
     connect: object = None,
+    read_routes: object = None,
 ) -> None:
     """Raise `IsolationBroken` unless this process is provably isolated.
 
@@ -240,12 +318,20 @@ def assert_isolated(
             "report success in exactly the case this check exists to catch."
         )
 
+    # The property first: no route off the network. This is what actually establishes "no egress
+    # except the database" — the probe below cannot, because one unreachable address says nothing
+    # about the others.
+    assert_no_route_off_the_network(read_routes)
+
+    # Then the corroboration. If the routing table says there is no way out and a packet reaches
+    # something anyway, one of the two is wrong and neither should be trusted.
     state = probe_egress(address, port, connect=connect)
     if state is EgressState.REACHABLE:
         raise IsolationBroken(
-            f"{address}:{port} is reachable, so this process has egress beyond the database. "
-            "The verdict service must not run: a path out is a path by which something other than "
-            "exact arithmetic on qualified evidence could influence a verdict."
+            f"{address}:{port} is reachable, so this process has egress beyond the database — and "
+            "it reached it despite a routing table that says it cannot, so the two disagree. The "
+            "verdict service must not run: a path out is a path by which something other than exact "
+            "arithmetic on qualified evidence could influence a verdict."
         )
     if state is EgressState.INDETERMINATE:
         raise IsolationBroken(
