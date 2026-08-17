@@ -37,6 +37,7 @@ PROJECT_PACKAGES = {
     "rules",
     "units",
     "verdict",
+    "vocabulary",
     "workflow",
 }
 
@@ -255,3 +256,58 @@ def test_guard_detects_eval(tmp_path: Path, monkeypatch) -> None:  # type: ignor
 
     offenders = _uses_dynamic_execution("fakeverdict")
     assert offenders and "eval()" in offenders[0], f"eval not detected, got {offenders}"
+
+
+def test_extraction_does_not_import_rules() -> None:
+    """`docs/DESIGN_EXTRACTION.md` §2: an extractor that knows which rule is coming is an extractor
+    that can be tuned to satisfy it.
+
+    Stated since the design was written and enforced by nothing, which is how `evidence/` came to
+    import `rules.semantic_types` unnoticed. The vocabulary those imports wanted now lives in
+    `vocabulary/`, so the rule and the code agree.
+    """
+    chains = transitive_imports("extraction")
+    offenders = [
+        f"{mod}  (via {' -> '.join(chain)})"
+        for mod, chain in sorted(chains.items())
+        if mod in {"rules", "verdict", "retrieval"}
+    ]
+    assert not offenders, "extraction/ imports a package it must not:\n  " + "\n  ".join(offenders)
+
+
+def test_evidence_does_not_import_rules_or_extraction() -> None:
+    """`evidence/` was importing `rules.semantic_types` for the vocabulary, which now has a neutral
+    home, so this can be enforced.
+
+    **`verdict` is deliberately not in this list, and that is a gap, not an oversight.** The design
+    contradicts itself: §2's table says `evidence/` may import `units/` and must never import
+    `verdict/`, while §10 says *"`verdict/operands.py` is built and its types are fixed. Anything in
+    `evidence/` or `extraction/` must match them exactly rather than introduce a parallel
+    vocabulary."* `evidence/` imports `EvidenceStatus` from there, following §10 and breaching §2.
+
+    Both readings are defensible and the fix — moving `EvidenceStatus` into `vocabulary/` as well,
+    with `verdict/operands.py` re-exporting it — changes the most safety-critical package in the
+    system. That is an admin decision, not one to make inside a guard. Until it is ruled, this
+    asserts the half that is settled rather than asserting nothing.
+    """
+    # Direct imports, not transitive. `evidence/` still reaches `rules/` through `verdict/`, and
+    # `verdict/` importing `rules/` is legitimate — so a transitive assertion here would be
+    # asserting the unresolved §2/§10 contradiction rather than the thing that was fixed.
+    offenders = [
+        f"{path.relative_to(REPO_ROOT)} imports {module}"
+        for path in _py_files("evidence")
+        for module in sorted(_imports_in(path))
+        if module in {"rules", "extraction", "retrieval"}
+    ]
+    assert not offenders, "evidence/ imports a package it must not:\n  " + "\n  ".join(offenders)
+
+
+def test_the_vocabulary_imports_nothing_from_the_project() -> None:
+    """The property that lets everything depend on it, and the same one `units/` holds. A vocabulary
+    that grew a dependency would carry it into every package that names a concept.
+    """
+    chains = transitive_imports("vocabulary")
+    offenders = [mod for mod in sorted(chains) if mod in PROJECT_PACKAGES and mod != "vocabulary"]
+    assert (
+        not offenders
+    ), f"vocabulary/ must import nothing from the project, but reaches {offenders}"

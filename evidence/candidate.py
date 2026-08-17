@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from evidence.coordinates import ImagePoint
-from rules.semantic_types import SemanticType
 from units.measurement import Measurement, Unit
+from vocabulary.semantic_types import SemanticType
 
 
 @dataclass(frozen=True, slots=True)

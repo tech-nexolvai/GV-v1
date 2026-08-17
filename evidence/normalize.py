@@ -17,7 +17,7 @@ from evidence.candidate import ObservationCandidate
 from evidence.canonical import Authority, CanonicalObservation, EvidenceStatus
 from evidence.coordinates import PageTransform
 from evidence.polygon import Polygon
-from rules.semantic_types import DocumentRole
+from vocabulary.semantic_types import DocumentRole
 
 
 class NormalizationReason(StrEnum):
