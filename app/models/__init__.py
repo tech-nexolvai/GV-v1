@@ -23,6 +23,13 @@ from app.models.document import (
     PageType,
     SourceArtifact,
 )
+from app.models.drawing import (
+    Alias,
+    DrawingItem,
+    DrawingView,
+    ItemIdentifier,
+    duplicate_identifiers,
+)
 from app.models.evaluation import (
     CaseResult,
     EvaluationRun,
@@ -54,11 +61,14 @@ from app.models.runs import (
 )
 
 __all__ = [
+    "Alias",
     "CanonicalObservation",
     "CaseResult",
     "Document",
     "DocumentKind",
     "DocumentVersion",
+    "DrawingItem",
+    "DrawingView",
     "EvaluationRun",
     "EvidenceArtifact",
     "EvidenceArtifactKind",
@@ -68,6 +78,7 @@ __all__ = [
     "ExtractionRun",
     "GoldCase",
     "GoldSet",
+    "ItemIdentifier",
     "MetricResult",
     "ModelInvocation",
     "ModelInvocationOutcome",
@@ -85,4 +96,5 @@ __all__ = [
     "SourceArtifact",
     "TaskRun",
     "WorkflowRun",
+    "duplicate_identifiers",
 ]
