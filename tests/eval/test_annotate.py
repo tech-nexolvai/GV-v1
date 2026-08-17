@@ -19,6 +19,7 @@ from eval.gold_set.schema import (
     GoldObservation,
     GroundTruth,
     Provenance,
+    ReviewedDocument,
 )
 from rules.semantic_types import OperandSource, ProductType, SemanticType
 from units.measurement import Measurement, Unit
@@ -46,8 +47,18 @@ def provenance() -> Provenance:
     return Provenance(
         annotator="reviewer@example.com",
         annotated_on=date(2026, 8, 15),
-        document_version_id=DOCUMENT_VERSION_ID,
-        content_hash="sha256:reviewed-package",
+        documents=(
+            ReviewedDocument(
+                source=OperandSource.ARCH,
+                document_version_id=DOCUMENT_VERSION_ID,
+                content_hash="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            ReviewedDocument(
+                source=OperandSource.SHOP,
+                document_version_id=DOCUMENT_VERSION_ID,
+                content_hash="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+        ),
     )
 
 
@@ -83,7 +94,10 @@ def test_build_case_preserves_exact_measurement_and_provenance() -> None:
     assert value.exact == Fraction(155, 4)
     assert value.unit is Unit.INCH
     assert value.raw_text == "38 3/4"
-    assert case.provenance.document_version_id == DOCUMENT_VERSION_ID
+    # One entry per reviewed document (#187). A gold case reads the architectural and shop
+    # drawings both, and a single hash for the case let a swapped arch PDF pass unnoticed.
+    assert {d.source for d in case.provenance.documents} == {OperandSource.ARCH, OperandSource.SHOP}
+    assert all(d.document_version_id == DOCUMENT_VERSION_ID for d in case.provenance.documents)
 
 
 def test_measurement_round_trips_through_hand_editable_yaml() -> None:
@@ -133,7 +147,7 @@ def test_expected_finding_without_reason_is_invalid() -> None:
 
 @pytest.mark.parametrize(
     "missing",
-    ["annotator", "annotated_on", "document_version_id", "content_hash"],
+    ["annotator", "annotated_on", "documents"],
 )
 def test_missing_provenance_is_rejected(missing: str) -> None:
     """Reviewer identity, date and immutable document identity are all required inputs."""

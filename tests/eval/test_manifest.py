@@ -48,8 +48,18 @@ def _valid_case() -> dict[str, object]:
         "provenance": {
             "annotator": "reviewer@example.com",
             "annotated_on": "2026-08-15",
-            "document_version_id": "12345678-1234-5678-1234-567812345678",
-            "content_hash": "sha256:reviewed-package",
+            "documents": [
+                {
+                    "source": "ARCH",
+                    "document_version_id": "12345678-1234-5678-1234-567812345678",
+                    "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                },
+                {
+                    "source": "SHOP",
+                    "document_version_id": "12345678-1234-5678-1234-567812345678",
+                    "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                },
+            ],
         },
     }
 

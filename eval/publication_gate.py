@@ -36,12 +36,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from app.models.evaluation import EvaluationRun, GoldSet
-from eval.gold_set.schema import GoldManifest
+from eval.gold_set.schema import DEFAULT_CASES_DIRECTORY, GoldManifest
+from eval.gold_set.store import (
+    MissingDrawing,
+    StaleAnnotation,
+    UnverifiableDocument,
+    verify,
+)
 from eval.metrics import MetricResult as ComputedMetric
 from eval.regression import IncomparableRuns, NoBaseline, RegressionReport, compare, gate_outcome
 from eval.runs import baseline as stored_baseline
@@ -99,6 +106,7 @@ def gate(
     code_version: str,
     extractor_versions: Mapping[str, str],
     case_outcomes: Mapping[UUID, Mapping[str, tuple[Outcome, Outcome]]] | None = None,
+    cases_directory: Path = DEFAULT_CASES_DIRECTORY,
 ) -> RegressionVerdict:
     """Score the proposal against the gold set and decide whether it may be published.
 
@@ -138,6 +146,21 @@ def gate(
             "baseline is a decision about which result is the reference, not a side effect of the "
             "first publication attempt."
         )
+
+    # Verified before scoring, not after and not by the caller. `#187` makes an annotation a
+    # statement about specific bytes; if a drawing has changed, every value, page and polygon in its
+    # annotation may now point somewhere else, and a score computed from it is confidently wrong
+    # rather than absent. This is the one place that decides whether a rule reaches production, so
+    # it is the last place that should take the gold set on trust.
+    #
+    # No flag to skip it, for the same reason there is no override above.
+    for case in sorted(manifest.cases, key=lambda c: c.id):
+        try:
+            verify(case, root=cases_directory)
+        except (StaleAnnotation, MissingDrawing, UnverifiableDocument) as error:
+            raise RegressionUnavailable(
+                f"the gold set cannot be scored against: {error}"
+            ) from error
 
     snapshot = build_snapshot(proposal.proposed)
     metrics = scorer(snapshot, manifest)
