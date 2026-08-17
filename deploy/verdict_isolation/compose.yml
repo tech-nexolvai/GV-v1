@@ -1,0 +1,76 @@
+# The run configuration that carries verdict isolation.
+#
+# #257's acceptance requires the isolation to live in the run configuration, so that a deployment
+# change cannot quietly lose it. That is what this file is: the network shape and the environment
+# allow-list, in one place, next to the preflight that refuses to start without them.
+#
+# NOT RUNNABLE YET, deliberately. No story in this repo builds a verdict service image — there is no
+# Dockerfile and the root docker-compose.yml defines only PostgreSQL. That gap is recorded as D6 in
+# docs/decisions/F1_6_RUNTIME_ISOLATION.md. `image:` below is left unset rather than pointed at
+# something invented, because a placeholder that happens to start is worse than one that does not.
+#
+# Two properties matter here and they are easy to lose:
+#
+#   internal: true  — the verdict network has no gateway, so the kernel holds no route off it. That
+#   is what makes the preflight's probe return ENETUNREACH, which is the definitive answer. A
+#   firewall that DROPs packets instead would produce a timeout, which the preflight treats as
+#   indeterminate and refuses (D4). Blocking by removing the route is not merely tidier here — it is
+#   the configuration whose isolation can actually be demonstrated from inside.
+#
+#   The database is pinned to a fixed address and handed to the process as a CIDR. Names are refused
+#   (D3): resolving one is itself egress, and it leaves a step a poisoned resolver could redirect.
+#
+#   IPv6 is not configured, and the preflight refuses if it finds a globally routable IPv6 route.
+#   `/proc/net/route` is IPv4 only, so a container with a working IPv6 stack would otherwise pass a
+#   check that never looked at the way it could actually get out.
+#
+# The environment below is built, not inherited. Compose passes only what is listed. Do not add
+# `env_file:` or bare `- SOME_VAR` pass-through entries: the preflight refuses any variable outside
+# its allow-list, and it will refuse this service rather than let an inherited credential through.
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: gv
+      POSTGRES_PASSWORD: gv
+      POSTGRES_DB: gv
+    networks:
+      verdict:
+        ipv4_address: 10.83.0.2
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gv"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  verdict:
+    # image: <the verdict service image — see D6; no story builds one yet>
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["python", "-m", "deploy.verdict_isolation.entrypoint"]
+    command: ["python", "-m", "verdict"]
+    networks:
+      verdict:
+        ipv4_address: 10.83.0.3
+    environment:
+      # The database, by address. Never a hostname.
+      DATABASE_URL: "postgresql+psycopg://gv:gv@10.83.0.2:5432/gv"
+      # The only destination this process may reach. The whole subnet, not just the database's
+      # address: the kernel holds a connected route to 10.83.0.0/24, so that is genuinely what this
+      # process can reach, and the preflight compares the allowlist against the routing table. A
+      # /32 here would have been a claim the routes contradict. Only `db` and `verdict` are on it.
+      GV_VERDICT_DB_ALLOWLIST: "10.83.0.0/24"
+      # Somewhere outside that range, which must prove unreachable. A public anycast resolver: if
+      # this process can open a socket to it, the network is not what this file says it is.
+      GV_VERDICT_EGRESS_PROBE: "1.1.1.1:443"
+      PYTHONHASHSEED: "0"
+
+networks:
+  verdict:
+    # No gateway. This is the control; the preflight only checks that it was applied.
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.83.0.0/24
