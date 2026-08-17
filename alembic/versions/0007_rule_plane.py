@@ -36,7 +36,10 @@ def _identity_columns() -> tuple[sa.Column[object], sa.Column[object]]:
     """The `TimestampedUUID` pair, in one place. Written out by hand on the first attempt at this
     migration, which is how it grew an `updated_at` the mixin does not supply — a NOT NULL column
     nothing ever wrote, so every insert failed."""
-    return (*_identity_columns(),)
+    return (
+        sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    )
 
 
 def upgrade() -> None:

@@ -17,6 +17,9 @@ This catches both statically. It is strictly weaker than the round-trip test and
 from __future__ import annotations
 
 import ast
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -97,3 +100,30 @@ def test_check_constraint_names_are_unqualified(path: Path, table: str) -> None:
             f"{path.name}/{table}: CheckConstraint name {name!r} is already qualified. Pass the "
             f"short name; the convention adds 'ck_{table}_'."
         )
+
+
+def test_every_migration_renders_without_a_database() -> None:
+    """Alembic can emit the whole upgrade as SQL without connecting to anything, which makes it the
+    strongest check available on a machine with no database.
+
+    Worth having because the two checks above passed a migration whose identity helper called
+    itself — `return (*_identity_columns(),)`, produced by a careless edit — and recursed until the
+    interpreter gave up. Names and columns both looked right; nothing had tried to run it. A check
+    that verifies shape and never execution will keep approving files that cannot execute.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head", "--sql"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        # Never connected to: offline mode needs a URL to pick a dialect and nothing more.
+        env={
+            **os.environ,
+            "DATABASE_URL": "postgresql+psycopg://offline:offline@localhost/offline",
+        },
+        check=False,
+    )
+    assert (
+        result.returncode == 0
+    ), f"alembic could not render the migrations:\n{result.stderr[-2000:]}"
+    assert "CREATE TABLE" in result.stdout
