@@ -39,6 +39,11 @@ from app.models.evidence import (
     ObservationCandidate,
 )
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
+from app.models.rules import (
+    RuleApplicabilityScope,
+    RuleDefinition,
+    RuleSnapshot,
+)
 from app.models.runs import (
     ExtractionRun,
     ModelInvocation,
@@ -72,6 +77,9 @@ __all__ = [
     "Page",
     "PageType",
     "Project",
+    "RuleApplicabilityScope",
+    "RuleDefinition",
+    "RuleSnapshot",
     "SourceArtifact",
     "TaskRun",
     "WorkflowRun",
