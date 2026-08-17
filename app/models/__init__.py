@@ -29,6 +29,15 @@ from app.models.evaluation import (
     GoldSet,
     MetricResult,
 )
+from app.models.evidence import (
+    CanonicalObservation,
+    EvidenceArtifact,
+    EvidenceArtifactKind,
+    EvidenceCandidateRole,
+    EvidenceCorroborationLane,
+    EvidenceSupportingCandidate,
+    ObservationCandidate,
+)
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
 from app.models.runs import (
     ExtractionRun,
@@ -39,16 +48,23 @@ from app.models.runs import (
 )
 
 __all__ = [
+    "CanonicalObservation",
     "Document",
     "DocumentKind",
     "DocumentVersion",
     "EvaluationRun",
+    "EvidenceArtifact",
+    "EvidenceArtifactKind",
+    "EvidenceCandidateRole",
+    "EvidenceCorroborationLane",
+    "EvidenceSupportingCandidate",
     "ExtractionRun",
     "GoldCase",
     "GoldSet",
     "MetricResult",
     "ModelInvocation",
     "ModelInvocationOutcome",
+    "ObservationCandidate",
     "Package",
     "PackageRevision",
     "PackageState",
