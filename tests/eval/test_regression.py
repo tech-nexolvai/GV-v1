@@ -410,3 +410,33 @@ def test_a_report_without_case_rows_says_it_did_not_compare_them() -> None:
     )
     assert report.cases_compared is False
     assert report.cases_worse == ()
+
+
+def test_no_case_in_common_is_not_a_comparison() -> None:
+    """Both runs have rows and share nothing. The loop compares zero pairs, so returning True would
+    report a clean comparison that never happened — the exact failure the third value exists for."""
+    before = [_Row("case-1", "CT-1", "PASS", "PASS")]
+    after = [_Row("case-2", "CT-1", "FAIL", "PASS")]
+    worse, _better, compared = compare_cases(before, after)
+    assert not compared and not worse
+
+
+def test_an_unchanged_outcome_can_still_become_wrong_when_the_answer_key_moves() -> None:
+    """`compare()` accepts the same gold set at a new version, so the expectation can differ between
+    runs. Skipping on the outcome alone hid these entirely, and judging both outcomes against the
+    candidate's key misclassified them."""
+    before = [_Row("case-1", "CT-1", "PASS", "PASS")]
+    after = [_Row("case-1", "CT-1", "PASS", "FAIL")]  # outcome same, annotation corrected
+    worse, better, compared = compare_cases(before, after)
+    assert compared
+    assert [d.gold_case_id for d in worse] == ["case-1"]
+    assert not better
+    assert worse[0].expectation_changed
+
+
+def test_a_case_judged_against_its_own_run_expectation() -> None:
+    """The reverse: the system did not change, the annotation did, and the case is now correct."""
+    before = [_Row("case-1", "CT-1", "FAIL", "PASS")]
+    after = [_Row("case-1", "CT-1", "FAIL", "FAIL")]
+    _, better, _ = compare_cases(before, after)
+    assert [d.gold_case_id for d in better] == ["case-1"]

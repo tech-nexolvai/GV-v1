@@ -17,8 +17,12 @@ from __future__ import annotations
 from fractions import Fraction
 
 import pytest
+from sqlalchemy.orm import Session
 
+from app.models.document import Document, DocumentKind, DocumentVersion, SourceArtifact
+from app.models.evaluation import GoldCase, GoldSet
 from app.models.evaluation import MetricResult as MetricRow
+from app.models.package import Package, PackageRevision, PackageState, Project
 from eval.metrics import MetricResult as ComputedMetric
 from eval.runs import VALUE_SCALE, _approximate, load_metric
 
@@ -223,36 +227,49 @@ def test_a_baseline_is_scoped_to_its_gold_set_version(session) -> None:  # type:
 # ---------------------------------------------------------------------------
 
 
-def _gold_case(session, gold_set):  # type: ignore[no-untyped-def]
-    """A gold case needs a document version, which needs the whole document aggregate above it."""
-    from app.models.document import Document, DocumentKind, DocumentVersion, SourceArtifact
-    from app.models.evaluation import GoldCase
-    from app.models.package import Package, PackageRevision, Project
+def _gold_case(session: Session, gold_set: GoldSet) -> GoldCase:
+    """A gold case needs a document version, which needs the package aggregate above it.
 
+    Built from `tests/db/test_evidence_models.py` rather than from memory: the first version of this
+    helper invented a `revision_label` field that `PackageRevision` does not have — it is
+    `revision_number`, an integer — and the two tests using it failed on CI, where the database that
+    would have caught it actually exists.
+
+    One `flush` at the end. `TimestampedUUID` assigns ids in a construction listener, so the parent
+    ids are already available and flushing between each insert only to obtain them would be a
+    misreading of when they appear.
+    """
+    digest = "b" * 64
     project = Project(name="GV Case Results Test")
     package = Package(project_id=project.id, vendor=None)
-    revision = PackageRevision(package_id=package.id, revision_label="A", state="RECEIVED")
-    artifact = SourceArtifact(storage_key="k/1.pdf", sha256="a" * 64, size=1, content_type="pdf")
-    document = Document(package_revision_id=revision.id, kind=DocumentKind.SHOP_DRAWING)
-    version = DocumentVersion(
-        document_id=document.id, source_artifact_id=artifact.id, sha256="b" * 64, page_count=1
+    revision = PackageRevision(package_id=package.id, revision_number=1, state=PackageState.CREATED)
+    artifact = SourceArtifact(
+        storage_key=f"originals/{project.id}/drawing.pdf",
+        sha256=digest,
+        size=100,
+        backend_version_id=None,
     )
-    session.add_all([project, package, revision, artifact, document, version])
-    session.flush()
-
+    document = Document(package_revision_id=revision.id, kind=DocumentKind.SHOP)
+    version = DocumentVersion(
+        document_id=document.id,
+        source_artifact_id=artifact.id,
+        # Equal to the artifact's on purpose: the composite foreign key requires both to match.
+        sha256=digest,
+        page_count=1,
+    )
     case = GoldCase(
         gold_set_id=gold_set.id,
         document_version_id=version.id,
-        content_hash="b" * 64,
+        content_hash=digest,
         annotations={},
         annotated_by="anant",
     )
-    session.add(case)
+    session.add_all((project, package, revision, artifact, document, version, case))
     session.flush()
     return case
 
 
-def test_a_run_records_how_each_case_fared(session) -> None:  # type: ignore[no-untyped-def]
+def test_a_run_records_how_each_case_fared(session: Session) -> None:
     """`metric_results` says a rate moved; this says which cases moved."""
     from app.models.evaluation import CaseResult
     from eval.runs import record_run
@@ -276,7 +293,7 @@ def test_a_run_records_how_each_case_fared(session) -> None:  # type: ignore[no-
     assert (rows[0].check, rows[0].outcome, rows[0].expected) == ("CT-1", "FAIL", "PASS")
 
 
-def test_a_run_may_be_recorded_without_case_results(session) -> None:  # type: ignore[no-untyped-def]
+def test_a_run_may_be_recorded_without_case_results(session: Session) -> None:
     """Scoring only aggregate metrics is legitimate. What must not happen is such a run later
     reading as though its cases were compared and found identical — `compare_cases` reports that as
     'not compared' rather than as no change."""
@@ -303,7 +320,7 @@ def test_a_case_result_is_immutable() -> None:
     assert issubclass(CaseResult, Immutable)
 
 
-def test_one_case_and_check_is_recorded_once_per_run(session) -> None:  # type: ignore[no-untyped-def]
+def test_one_case_and_check_is_recorded_once_per_run(session: Session) -> None:
     """Two rows for one `(run, case, check)` would make "did this case pass?" have two answers."""
     from sqlalchemy.exc import IntegrityError
 

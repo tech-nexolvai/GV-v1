@@ -137,18 +137,45 @@ class CaseDelta:
     check: str
     before: str
     after: str
-    expected: str
+    expected_before: str
+    expected_after: str
+    """The answer key **as each run recorded it**, kept separately.
+
+    `compare()` accepts the same gold set at a new version, so the expectation can differ between the
+    two runs. Judging both outcomes against the candidate's key would then misclassify: a case whose
+    outcome never moved can go from correct to wrong purely because the annotation was corrected, and
+    calling that a system regression sends somebody to debug code that did not change.
+    """
+
+    @property
+    def was_correct(self) -> bool:
+        return self.before == self.expected_before
+
+    @property
+    def is_correct(self) -> bool:
+        return self.after == self.expected_after
 
     @property
     def newly_correct(self) -> bool:
-        return self.after == self.expected and self.before != self.expected
+        return self.is_correct and not self.was_correct
 
     @property
     def newly_wrong(self) -> bool:
-        return self.before == self.expected and self.after != self.expected
+        return self.was_correct and not self.is_correct
+
+    @property
+    def expectation_changed(self) -> bool:
+        """The answer key moved under this case. Worth surfacing: it is a change to what "right"
+        means, not to the system, and the two get confused."""
+        return self.expected_before != self.expected_after
 
     def __str__(self) -> str:
-        return f"{self.gold_case_id[:8]}/{self.check}: {self.before} -> {self.after} (expected {self.expected})"
+        key = (
+            f"expected {self.expected_after}"
+            if not self.expectation_changed
+            else f"expected {self.expected_before} -> {self.expected_after}"
+        )
+        return f"{self.gold_case_id[:8]}/{self.check}: {self.before} -> {self.after} ({key})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,12 +351,24 @@ def gate_outcome(report: RegressionReport) -> tuple[bool, str]:
 
 class CaseResultRow(Protocol):
     """The shape `compare_cases` needs, so it can be given `app.models.CaseResult` rows or plain
-    records in a test without `eval/` importing the ORM."""
+    records in a test without `eval/` importing the ORM.
 
-    gold_case_id: object
-    check: str
-    outcome: str
-    expected: str
+    Read-only properties rather than plain attributes. A mutable attribute in a Protocol matches
+    invariantly, so `Mapped[UUID]` on the ORM model would not satisfy a bare `gold_case_id: object`
+    — and nothing here writes to these, so the weaker requirement is also the honest one.
+    """
+
+    @property
+    def gold_case_id(self) -> object: ...
+
+    @property
+    def check(self) -> str: ...
+
+    @property
+    def outcome(self) -> str: ...
+
+    @property
+    def expected(self) -> str: ...
 
 
 def compare_cases(
@@ -354,24 +393,28 @@ def compare_cases(
         return {(str(row.gold_case_id), row.check): row for row in rows}
 
     before, after = keyed(baseline), keyed(candidate)
-    if not before or not after:
+    shared = before.keys() & after.keys()
+    if not shared:
+        # Not "nothing changed". Two runs with rows but no case in common have not been compared at
+        # all — the same thing an empty input means, and reporting it as a clean result would be the
+        # exact failure this function's third return value exists to prevent.
         return (), (), False
 
     worse: list[CaseDelta] = []
     better: list[CaseDelta] = []
-    for key in sorted(before.keys() & after.keys()):
+    for key in sorted(shared):
         was, now = before[key], after[key]
-        if was.outcome == now.outcome:
-            continue
         delta = CaseDelta(
             gold_case_id=key[0],
             check=key[1],
             before=was.outcome,
             after=now.outcome,
-            # The candidate's expectation: it is the run being judged, and if the answer key moved
-            # between the two runs that is a gold-set change, which `compare()` already refuses on.
-            expected=now.expected,
+            expected_before=was.expected,
+            expected_after=now.expected,
         )
+        # Deliberately not `if was.outcome == now.outcome: continue`. An unchanged outcome can still
+        # change from correct to wrong when the answer key moved beneath it, and skipping on the
+        # outcome alone hides exactly those cases.
         if delta.newly_wrong:
             worse.append(delta)
         elif delta.newly_correct:

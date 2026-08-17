@@ -30,7 +30,13 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.evaluation import CaseResult, EvaluationRun, GoldSet, MetricResult
+from app.models.evaluation import (
+    CaseResult,
+    EvaluationRun,
+    GoldCase,
+    GoldSet,
+    MetricResult,
+)
 from eval.metrics import MetricResult as ComputedMetric
 from verdict.outcomes import Outcome
 
@@ -117,6 +123,27 @@ def record_run(
             )
         )
 
+    if case_outcomes:
+        # Both foreign keys would accept a case from a different gold set, and the row would then
+        # contradict `EvaluationRun.gold_set_id` — a run claiming to score one set while carrying
+        # results from another. Nothing downstream would notice; a comparison would simply be wrong.
+        supplied = set(case_outcomes)
+        belonging = {
+            row[0]
+            for row in session.execute(
+                select(GoldCase.id).where(
+                    GoldCase.gold_set_id == gold_set.id, GoldCase.id.in_(supplied)
+                )
+            )
+        }
+        strangers = sorted(str(case_id) for case_id in supplied - belonging)
+        if strangers:
+            raise MissingProvenanceError(
+                f"{len(strangers)} gold case(s) do not belong to gold set {gold_set.name!r} "
+                f"{gold_set.version}: {strangers[:5]}. A run records results for one set, and a "
+                "stray case would make the run contradict its own gold_set_id."
+            )
+
     for gold_case_id, per_check in (case_outcomes or {}).items():
         for check, (observed, expected) in per_check.items():
             session.add(
@@ -192,3 +219,17 @@ def baseline(session: Session, *, gold_set_version: str) -> EvaluationRun | None
         .order_by(EvaluationRun.created_at.desc())
         .limit(1)
     ).first()
+
+
+def case_results_for(session: Session, run: EvaluationRun) -> list[CaseResult] | None:
+    """Per-case rows for a run, or `None` when it recorded none.
+
+    `None` rather than an empty list, deliberately. A run scored before `#315`, or by a caller that
+    passed no `case_outcomes`, has no rows — and an empty list would flow into `compare_cases` as a
+    set of cases that all stayed the same. The distinction is the same one `MetricResult.value`
+    draws between `None` and zero, and it exists for the same reason.
+    """
+    rows = list(
+        session.execute(select(CaseResult).where(CaseResult.evaluation_run_id == run.id)).scalars()
+    )
+    return rows or None
