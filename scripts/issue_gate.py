@@ -76,6 +76,41 @@ STATUS = {
 CONTRACT_RE = re.compile(r"##\s*Agent contract\s*\n+```yaml\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
 
 
+def open_issue_dependencies(requires: list[object]) -> list[str]:
+    """Which issue numbers in `requires` name work that has not landed.
+
+    Until this existed, an issue number in `requires:` was printed in the brief and checked by
+    nothing — `status:` was the only lock, and it is maintained by hand. A sweep found **twelve**
+    stories reporting READY while the issue they declared a dependency on was still open, in two
+    stacked ways: the number was often written `- #165`, which the contract parser strips as a YAML
+    comment so the entry vanished entirely, and the status still said `ready` besides.
+
+    So this resolves them. A story cannot claim to be ready for work whose input does not exist, and
+    the claim is now checked rather than trusted.
+
+    A number that cannot be resolved — a network failure, a deleted issue — is reported as blocking.
+    An unverifiable dependency is not a satisfied one, the same rule the client-fact check uses.
+    """
+    blocking: list[str] = []
+    for item in requires:
+        text = str(item).strip().lstrip("#")
+        if not text.isdigit():
+            continue  # Dn and Qn are handled elsewhere; Qn by the client-fact check.
+        result = subprocess.run(
+            ["gh", "api", f"repos/{REPO}/issues/{text}", "--jq", "[.state, .title] | @tsv"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            blocking.append(f"#{text} could not be resolved, so whether it has landed is unknown")
+            continue
+        state, _, title = result.stdout.strip().partition("\t")
+        if state == "open":
+            blocking.append(f"#{text} is still open — {title}")
+    return blocking
+
+
 def gh_json(path: str):
     p = subprocess.run(["gh", "api", path], capture_output=True, text=True, check=False)
     if p.returncode != 0:
@@ -327,6 +362,23 @@ def main() -> int:
     # `requires: Q5` sailed through — Q5 being an open question that changes the calculation. The
     # whole point of docs/CLIENT_FACTS.md is that the status field stops being the last word, so it
     # has to be consulted before readiness is granted, not after it is denied.
+    still_open = open_issue_dependencies(requires)
+    if still_open:
+        sys.stderr.write(
+            f"STOP — #{args.issue} depends on work that has not landed\n{'=' * 62}\n"
+            + "".join(f"  - {line}\n" for line in still_open)
+            + "\nThe contract names these in `requires:`. Until this check existed they were "
+            "printed\nand enforced by nothing, so twelve stories reported READY against inputs "
+            "that did not\nexist yet. Build the dependency first, or correct the contract if the "
+            "dependency is wrong.\n"
+        )
+        if args.comment:
+            post_comment(
+                args.issue,
+                "Gate: blocked on dependencies that have not landed — " + "; ".join(still_open),
+            )
+        return BLOCKED
+
     fact_stopping, fact_provisional = client_fact_verdict(requires)
     if fact_stopping:
         sys.stderr.write(
