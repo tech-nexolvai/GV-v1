@@ -59,7 +59,7 @@ class RuleDefinition(Base, TimestampedUUID):
     """The authored identifier, e.g. `CT-WIDTH-001`. Unique — two definitions sharing one id would
     make "the latest version of this rule" ambiguous, and version selection depends on it."""
 
-    __table_args__ = (CheckConstraint("rule_id <> ''", name="rule_definition_rule_id"),)
+    __table_args__ = (CheckConstraint("rule_id <> ''", name="definition_rule_id_present"),)
 
 
 class RuleSnapshot(Base, TimestampedUUID, Immutable):
@@ -116,12 +116,12 @@ class RuleSnapshot(Base, TimestampedUUID, Immutable):
         UniqueConstraint(
             "rule_definition_id", "version", name="uq_rule_snapshots_definition_version"
         ),
-        CheckConstraint("snapshot_id LIKE 'sha256:%'", name="rule_snapshot_id_is_prefixed"),
-        CheckConstraint("canonical_json <> ''", name="rule_snapshot_canonical_json"),
-        CheckConstraint("version <> ''", name="rule_snapshot_version"),
-        CheckConstraint("product_type <> ''", name="rule_snapshot_product_type"),
+        CheckConstraint("snapshot_id LIKE 'sha256:%'", name="snapshot_id_is_prefixed"),
+        CheckConstraint("canonical_json <> ''", name="snapshot_canonical_json_present"),
+        CheckConstraint("version <> ''", name="snapshot_version_present"),
+        CheckConstraint("product_type <> ''", name="snapshot_product_type_present"),
         CheckConstraint(
-            "unconfirmed_tolerance_count >= 0", name="rule_snapshot_unconfirmed_tolerance_count"
+            "unconfirmed_tolerance_count >= 0", name="snapshot_unconfirmed_count_not_negative"
         ),
     )
 
@@ -159,15 +159,15 @@ class RuleApplicabilityScope(Base, TimestampedUUID, Immutable):
             "value",
             name="uq_rule_applicability_scopes_snapshot_discriminator_value",
         ),
-        CheckConstraint("discriminator <> ''", name="rule_applicability_scope_discriminator"),
+        CheckConstraint("discriminator <> ''", name="scope_discriminator_present"),
         # ADR-0006 forbids keying a rule on who submitted the drawing. That is enforced at authoring
         # time in `rules/schema.py`, but this table would otherwise be a way in behind it — a row
         # written by any other path, now or later, would carry a vendor-keyed rule that the resolver
         # would honour. The database refuses instead.
         CheckConstraint(
             f"discriminator NOT IN ({_RESERVED_SQL})",
-            name="rule_applicability_scope_discriminator_not_reserved",
+            name="scope_discriminator_not_reserved",
         ),
-        CheckConstraint("value <> ''", name="rule_applicability_scope_value"),
+        CheckConstraint("value <> ''", name="scope_value_present"),
         Index("ix_rule_applicability_scopes_lookup", "discriminator", "value"),
     )
