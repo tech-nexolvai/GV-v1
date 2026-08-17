@@ -241,11 +241,17 @@ def _create_provenance_constraint() -> None:
             conflicting_count integer;
             has_dual_unit boolean;
         BEGIN
-            observation_id := CASE
-                WHEN TG_TABLE_NAME = 'canonical_observations' THEN NEW.id
-                WHEN TG_OP = 'DELETE' THEN OLD.canonical_observation_id
-                ELSE NEW.canonical_observation_id
-            END;
+            IF TG_TABLE_NAME = 'canonical_observations' THEN
+                IF TG_OP = 'DELETE' THEN
+                    observation_id := OLD.id;
+                ELSE
+                    observation_id := NEW.id;
+                END IF;
+            ELSIF TG_OP = 'DELETE' THEN
+                observation_id := OLD.canonical_observation_id;
+            ELSE
+                observation_id := NEW.canonical_observation_id;
+            END IF;
 
             SELECT status INTO observation_status
             FROM canonical_observations WHERE id = observation_id;
