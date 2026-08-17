@@ -11,7 +11,12 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Final
 
-from storage.hashing import SHA256_PATTERN, ArtifactCorrupt, sha256_stream
+from storage.hashing import (
+    SHA256_PATTERN,
+    ArtifactCorrupt,
+    IntegrityRecordMissing,
+    sha256_stream,
+)
 from storage.store import ArtifactConflict, StoredArtifact
 
 DEFAULT_ROOT: Final = Path.home() / ".gv-v1" / "artifacts"
@@ -59,8 +64,12 @@ class LocalStore:
     def _read_digest(path: Path, key: str) -> str:
         try:
             digest = path.read_text(encoding="ascii")
-        except (FileNotFoundError, UnicodeDecodeError) as error:
-            raise ArtifactCorrupt(f"artifact key {key!r} has no valid integrity record") from error
+        except FileNotFoundError as error:
+            raise IntegrityRecordMissing(f"artifact key {key!r} has no integrity record") from error
+        except UnicodeDecodeError as error:
+            raise ArtifactCorrupt(
+                f"artifact key {key!r} has a malformed integrity record"
+            ) from error
         if SHA256_PATTERN.fullmatch(digest) is None:
             raise ArtifactCorrupt(f"artifact key {key!r} has a malformed integrity record")
         return digest
@@ -97,17 +106,24 @@ class LocalStore:
             raise TypeError("data must be a binary file-like object")
 
         target = self._path(key)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".gv-stage-", dir=target.parent)
-        temporary = Path(temporary_name)
         integrity = self._integrity_path(key)
-        integrity.parent.mkdir(parents=True, exist_ok=True)
-        integrity_descriptor, integrity_name = tempfile.mkstemp(
-            prefix=".gv-integrity-stage-", dir=integrity.parent
-        )
-        integrity_temporary = Path(integrity_name)
+        descriptor: int | None = None
+        integrity_descriptor: int | None = None
+        temporary: Path | None = None
+        integrity_temporary: Path | None = None
         try:
-            with os.fdopen(descriptor, "wb") as staged:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(prefix=".gv-stage-", dir=target.parent)
+            temporary = Path(temporary_name)
+            integrity.parent.mkdir(parents=True, exist_ok=True)
+            integrity_descriptor, integrity_name = tempfile.mkstemp(
+                prefix=".gv-integrity-stage-", dir=integrity.parent
+            )
+            integrity_temporary = Path(integrity_name)
+
+            staged_file = os.fdopen(descriptor, "wb")
+            descriptor = None
+            with staged_file as staged:
                 while chunk := data.read(READ_CHUNK):
                     if not isinstance(chunk, bytes):
                         raise TypeError("data must yield bytes")
@@ -117,19 +133,15 @@ class LocalStore:
 
             with temporary.open("rb") as staged:
                 digest, size = sha256_stream(staged)
-            with os.fdopen(integrity_descriptor, "w", encoding="ascii", newline="") as record:
+            record_file = os.fdopen(integrity_descriptor, "w", encoding="ascii", newline="")
+            integrity_descriptor = None
+            with record_file as record:
                 record.write(digest)
                 record.flush()
                 os.fsync(record.fileno())
 
-            if target.exists():
-                if not self._same_bytes(target, temporary):
-                    raise ArtifactConflict(f"artifact key {key!r} already stores different bytes")
-            else:
-                if not self._publish(temporary, target) and not self._same_bytes(target, temporary):
-                    raise ArtifactConflict(
-                        f"artifact key {key!r} was concurrently written with different bytes"
-                    ) from None
+            if target.exists() and not self._same_bytes(target, temporary):
+                raise ArtifactConflict(f"artifact key {key!r} already stores different bytes")
 
             if integrity.exists():
                 recorded = self._read_digest(integrity, key)
@@ -144,6 +156,14 @@ class LocalStore:
                         f"artifact key {key!r} was concurrently given a different integrity record"
                     )
 
+            if target.exists():
+                if not self._same_bytes(target, temporary):
+                    raise ArtifactConflict(f"artifact key {key!r} already stores different bytes")
+            elif not self._publish(temporary, target) and not self._same_bytes(target, temporary):
+                raise ArtifactConflict(
+                    f"artifact key {key!r} was concurrently written with different bytes"
+                ) from None
+
             return StoredArtifact(
                 key=key,
                 sha256=digest,
@@ -151,22 +171,33 @@ class LocalStore:
                 backend_version_id=None,
             )
         finally:
-            temporary.unlink(missing_ok=True)
-            integrity_temporary.unlink(missing_ok=True)
+            if descriptor is not None:
+                os.close(descriptor)
+            if integrity_descriptor is not None:
+                os.close(integrity_descriptor)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            if integrity_temporary is not None:
+                integrity_temporary.unlink(missing_ok=True)
 
     def get(self, key: str) -> BinaryIO:
         """Verify and open a stored artifact, raising if its bytes changed."""
 
         target = self._path(key)
         expected = self._read_digest(self._integrity_path(key), key)
-        with target.open("rb") as stored:
+        stored = target.open("rb")
+        try:
             actual, _ = sha256_stream(stored)
-        if actual != expected:
-            raise ArtifactCorrupt(
-                f"artifact key {key!r} failed SHA-256 verification: "
-                f"expected {expected}, got {actual}"
-            )
-        return target.open("rb")
+            if actual != expected:
+                raise ArtifactCorrupt(
+                    f"artifact key {key!r} failed SHA-256 verification: "
+                    f"expected {expected}, got {actual}"
+                )
+            stored.seek(0)
+            return stored
+        except BaseException:
+            stored.close()
+            raise
 
     def exists(self, key: str) -> bool:
         """Return whether ``key`` identifies a regular stored file."""

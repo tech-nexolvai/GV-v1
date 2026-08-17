@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 import tracemalloc
 from io import BytesIO
 from pathlib import Path
@@ -10,7 +12,13 @@ import pytest
 from sqlalchemy import Float
 
 from app.models import SourceArtifact
-from storage.hashing import CHUNK, ArtifactCorrupt, content_key, sha256_stream
+from storage.hashing import (
+    CHUNK,
+    ArtifactCorrupt,
+    IntegrityRecordMissing,
+    content_key,
+    sha256_stream,
+)
 from storage.local import INTEGRITY_DIRECTORY, LocalStore
 
 
@@ -80,7 +88,7 @@ def test_corrupted_artifact_raises_on_read(tmp_path: Path) -> None:
 
 
 def test_missing_integrity_record_raises_on_read(tmp_path: Path) -> None:
-    """Input: checksum record removed. Outcome: ArtifactCorrupt. Why: absence cannot mean trusted."""
+    """Input: record removed. Outcome: missing-record error. Why: absence is not corruption."""
 
     store = LocalStore(tmp_path / "artifacts")
     key = "crops/value.png"
@@ -88,8 +96,75 @@ def test_missing_integrity_record_raises_on_read(tmp_path: Path) -> None:
     integrity = store.root / INTEGRITY_DIRECTORY / "crops" / "value.png.sha256"
     integrity.unlink()
 
-    with pytest.raises(ArtifactCorrupt, match="no valid integrity record"):
+    with pytest.raises(IntegrityRecordMissing, match="has no integrity record"):
         store.get(key)
+
+
+def test_failed_put_closes_every_staging_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Input: source read fails. Outcome: all FDs close. Why: retries must not exhaust FDs."""
+
+    opened: list[int] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording_mkstemp(
+        suffix: str | None = None,
+        prefix: str | None = None,
+        dir: str | os.PathLike[str] | None = None,
+        text: bool = False,
+    ) -> tuple[int, str]:
+        descriptor, name = real_mkstemp(suffix, prefix, dir, text)
+        opened.append(descriptor)
+        return descriptor, name
+
+    class FailingStream:
+        def read(self, size: int = -1) -> bytes:
+            del size
+            raise RuntimeError("simulated source failure")
+
+    monkeypatch.setattr("storage.local.tempfile.mkstemp", recording_mkstemp)
+    store = LocalStore(tmp_path / "artifacts")
+
+    with pytest.raises(RuntimeError, match="simulated source failure"):
+        store.put("originals/failure.pdf", FailingStream(), content_type="application/pdf")  # type: ignore[arg-type]
+
+    assert len(opened) == 2
+    for descriptor in opened:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+def test_interrupted_put_leaves_a_recoverable_integrity_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Input: publish stops midway. Outcome: retry works. Why: interruption is not corruption."""
+
+    store = LocalStore(tmp_path / "artifacts")
+    key = "originals/interrupted.pdf"
+    payload = b"recoverable bytes"
+    real_publish = LocalStore._publish
+    calls = 0
+
+    def interrupt_second_publish(temporary: Path, target: Path) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated interruption")
+        return real_publish(temporary, target)
+
+    monkeypatch.setattr(LocalStore, "_publish", staticmethod(interrupt_second_publish))
+    with pytest.raises(OSError, match="simulated interruption"):
+        store.put(key, BytesIO(payload), content_type="application/pdf")
+
+    assert not store.exists(key)
+    assert not (store.root / "originals" / "interrupted.pdf").exists()
+    assert (store.root / INTEGRITY_DIRECTORY / "originals" / "interrupted.pdf.sha256").is_file()
+
+    monkeypatch.setattr(LocalStore, "_publish", staticmethod(real_publish))
+    store.put(key, BytesIO(payload), content_type="application/pdf")
+    with store.get(key) as stored:
+        assert stored.read() == payload
 
 
 @pytest.mark.parametrize(

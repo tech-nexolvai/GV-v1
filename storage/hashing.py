@@ -19,6 +19,10 @@ class ArtifactCorrupt(Exception):
     """Raised when stored bytes do not match their recorded SHA-256."""
 
 
+class IntegrityRecordMissing(Exception):
+    """Raised when stored bytes have no published integrity record."""
+
+
 def sha256_stream(data: BinaryIO) -> tuple[str, int]:
     """Return the hex SHA-256 and byte count without loading the object into memory.
 
