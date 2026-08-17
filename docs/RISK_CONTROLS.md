@@ -112,12 +112,19 @@ retrieval can produce neither.
 ## R8 — Revision confusion
 
 **Control (§16):** Immutable document hashes and revision-aware source selection.
-**Status:** PLANNED
+**Status:** PARTIAL
 **Refs:** module:storage/hashing.py, module:extraction/revision.py, module:extraction/supersession.py
 **Owner:** #219, #183, #184, #185
-**Effectiveness claim:** unresolved supersession produces REVIEW REQUIRED for every finding drawn
-from the sheet, with no tie-break. Neither half is built: **`storage/` does not exist**, contrary to
-the claim in #157's own body that C5 had shipped hashes.
+**Effectiveness claim:** the hashing half is built (#219): a stored artifact carries a SHA-256
+recorded at write time and every local read verifies against it, so a document that changes on disk
+cannot be read back as though it had not. **The revision half is not built.** Nothing yet decides
+*which* revision of a sheet to trust, so a superseded drawing is still selectable and produces a
+confident finding rather than REVIEW REQUIRED — the failure this risk is actually about.
+
+This is the dangerous state described at the top of this file, and the reason PARTIAL is a status
+rather than a rounding of PLANNED up to ENFORCED: hashing makes tampering detectable, which is easy
+to mistake for revision safety. It is not. Detecting that bytes changed says nothing about whether
+the right sheet was chosen. #183, #184 and #185 close the half that matters here.
 
 ## R9 — Licensing surprise
 
