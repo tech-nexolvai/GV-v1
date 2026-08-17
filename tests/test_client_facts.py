@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from client_facts import (
     Blocks,
+    ClientFact,
     ClientFactsError,
     Status,
     load,
@@ -29,8 +30,10 @@ from client_facts import (
 FACTS = load()
 
 #: Every question tracked as an issue. Pinned literally rather than derived from the file, so
-#: deleting an entry fails here instead of quietly shrinking what we think we know.
-EXPECTED = tuple(f"Q{n}" for n in range(1, 21))
+#: deleting an entry fails here instead of quietly shrinking what we think we know. Growing the list
+#: is expected — the client keeps answering, and answering raises new questions — so adding a number
+#: here is a normal edit. Removing one should hurt.
+EXPECTED = tuple(f"Q{n}" for n in range(1, 22))
 
 
 def test_every_question_is_present() -> None:
@@ -72,10 +75,29 @@ def test_an_answered_question_actually_carries_an_answer() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _synthetic(status: Status, blocks: Blocks) -> ClientFact:
+    """A fact built here rather than borrowed from the file.
+
+    These tests used to reach for a live question — `Q5` was the standing example of one that stops
+    work. Raj then answered it, and three tests failed for a reason that had nothing to do with the
+    code: the client answering is the system working. Behaviour is asserted against a fact we
+    construct; the file's own contents are asserted separately, above.
+    """
+    return ClientFact(
+        ref="Q0",
+        title="synthetic",
+        status=status,
+        blocks=blocks,
+        issue="#0",
+        answer="—" if status is Status.OPEN else "an answer",
+        source="a source long enough to satisfy the source check on every fact",
+    )
+
+
 def test_an_open_formula_question_stops_work() -> None:
-    """Q5 — sink offset minimum versus exact — changes the operation, not a number. A rule authored
+    """A question that changes the operation, not a number. A rule authored
     before it lands computes the wrong thing at exactly 4 inches and passes confidently."""
-    assert FACTS["Q5"].stops_work
+    assert _synthetic(Status.OPEN, Blocks.FORMULA).stops_work
 
 
 def test_an_open_value_question_does_not_stop_work() -> None:
@@ -96,7 +118,7 @@ def test_an_answered_question_stops_nothing_whatever_it_blocks() -> None:
 
 
 def test_the_gate_line_says_which_kind_of_blocked() -> None:
-    assert "changes the formula" in FACTS["Q5"].gate_line()
+    assert "changes the formula" in _synthetic(Status.OPEN, Blocks.FORMULA).gate_line()
     assert "PROVISIONAL" in FACTS["Q2"].gate_line()
     assert "ANSWERED" in FACTS["Q1"].gate_line()
 
@@ -161,7 +183,10 @@ def test_an_open_formula_question_stops_even_a_ready_contract() -> None:
     """The bug this replaces: the check ran only on the already-blocked path, so a contract saying
     `status: ready` with `requires: Q5` sailed through — Q5 being a question that changes the
     calculation. The status field stops being the last word; that is the point of the facts file."""
-    stopping, _ = _verdict(["Q5 (#13)"])
+    open_formula = next(
+        ref for ref, fact in FACTS.items() if fact.stops_work
+    )  # whichever is open today; the point is the contract cannot outrank it
+    stopping, _ = _verdict([f"{open_formula} (#0)"])
     assert stopping and "changes the formula" in stopping[0]
 
 
@@ -185,7 +210,10 @@ def test_only_an_open_value_question_is_provisional() -> None:
 def test_an_unknown_question_reference_fails_closed() -> None:
     """A typo must not silently delete a dependency. Failing open is the wrong direction for a
     guard whose whole job is to say what has not been checked."""
-    stopping, _ = _verdict(["Q21 (#99)"])
+    # Deliberately far outside the range. The previous version used `Q21`, on the assumption that
+    # it would never exist — and the client added a twenty-first question, so the test stopped
+    # testing what it claimed to.
+    stopping, _ = _verdict(["Q9999 (#99)"])
     assert stopping and "not in docs/CLIENT_FACTS.md" in stopping[0]
 
 
