@@ -396,3 +396,30 @@ def test_link_local_ipv6_is_not_treated_as_a_way_out() -> None:
 def test_an_absent_ipv6_table_is_an_answer_not_an_unknown() -> None:
     """The one absence here that is proof rather than ignorance: no file means no stack."""
     assert_no_route_off_the_network(_ALLOWED, read=_routes(NO_DEFAULT_ROUTE), read_ipv6=_no_ipv6)
+
+
+@pytest.mark.parametrize(
+    "row",
+    ["eth0\t0000530A\n", "eth0\tnothex\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n"],
+)
+def test_a_route_row_that_cannot_be_read_is_refused(row: str) -> None:
+    """Truncated and non-hex rows were skipped, so a route whose destination could not be read
+    counted as one that was not there. Unknown is refused here as everywhere else (D4)."""
+    with pytest.raises(IsolationBroken, match="unreadable|unparseable"):
+        assert_no_route_off_the_network(
+            _ALLOWED, read=_routes(NO_DEFAULT_ROUTE + row), read_ipv6=_no_ipv6
+        )
+
+
+def test_an_ipv6_route_row_that_cannot_be_read_is_refused() -> None:
+    with pytest.raises(IsolationBroken, match="unreadable IPv6"):
+        assert_no_route_off_the_network(
+            _ALLOWED, read=_routes(NO_DEFAULT_ROUTE), read_ipv6=lambda: "fe80 0a eth0\n"
+        )
+
+
+def test_blank_lines_are_not_mistaken_for_malformed_routes() -> None:
+    """A trailing newline is formatting, not a route."""
+    assert_no_route_off_the_network(
+        _ALLOWED, read=_routes(NO_DEFAULT_ROUTE + "\n"), read_ipv6=_no_ipv6
+    )

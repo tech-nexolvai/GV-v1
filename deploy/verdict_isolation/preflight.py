@@ -308,8 +308,14 @@ def assert_no_route_off_the_network(
 
     escapes: list[str] = []
     for line in table.splitlines()[1:]:  # the first line is the column header
+        if not line.strip():
+            continue
         fields = line.split()
         if len(fields) < 8:
+            # Not skipped. A truncated row is a route whose destination cannot be read, and passing
+            # it over would let an unknown reachable network count as an absent one — the same
+            # "unknown is refused" rule this module applies everywhere else (D4).
+            escapes.append(f"unreadable route row: {line.strip()!r}")
             continue
         interface, destination, gateway, mask = fields[0], fields[1], fields[2], fields[7]
         if interface == "lo":
@@ -351,8 +357,11 @@ def _assert_no_ipv6_route(read: ReadTable | None = None) -> None:
 
     reachable: list[str] = []
     for line in table.splitlines():
+        if not line.strip():
+            continue
         fields = line.split()
         if len(fields) < 10:
+            reachable.append(f"unreadable IPv6 route row: {line.strip()!r}")
             continue
         destination, prefix_length, interface = fields[0], fields[1], fields[-1]
         if interface == "lo":
