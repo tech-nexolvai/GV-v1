@@ -32,41 +32,40 @@ _RESERVED = (
 )
 
 
+def _identity_columns() -> tuple[sa.Column[object], sa.Column[object]]:
+    """The `TimestampedUUID` pair, in one place. Written out by hand on the first attempt at this
+    migration, which is how it grew an `updated_at` the mixin does not supply — a NOT NULL column
+    nothing ever wrote, so every insert failed."""
+    return (*_identity_columns(),)
+
+
 def upgrade() -> None:
     op.create_table(
         "rule_definitions",
-        sa.Column("id", sa.UUID(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        *_identity_columns(),
         sa.Column("rule_id", sa.String(length=200), nullable=False),
-        sa.CheckConstraint("rule_id <> ''", name="ck_rule_definitions_definition_rule_id_present"),
+        sa.CheckConstraint("rule_id <> ''", name="definition_rule_id_present"),
         sa.PrimaryKeyConstraint("id", name="pk_rule_definitions"),
     )
     op.create_index("ix_rule_definitions_rule_id", "rule_definitions", ["rule_id"], unique=True)
 
     op.create_table(
         "rule_snapshots",
-        sa.Column("id", sa.UUID(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("rule_definition_id", sa.UUID(), nullable=False),
+        *_identity_columns(),
+        sa.Column("rule_definition_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("snapshot_id", sa.String(length=100), nullable=False),
         sa.Column("version", sa.String(length=50), nullable=False),
         sa.Column("canonical_json", sa.String(), nullable=False),
         sa.Column("product_type", sa.String(length=100), nullable=False),
         sa.Column("check_type", sa.String(length=100), nullable=False),
         sa.Column("unconfirmed_tolerance_count", sa.Integer(), nullable=False),
-        sa.CheckConstraint(
-            "snapshot_id LIKE 'sha256:%'", name="ck_rule_snapshots_snapshot_id_is_prefixed"
-        ),
-        sa.CheckConstraint(
-            "canonical_json <> ''", name="ck_rule_snapshots_snapshot_canonical_json_present"
-        ),
-        sa.CheckConstraint("version <> ''", name="ck_rule_snapshots_snapshot_version_present"),
-        sa.CheckConstraint(
-            "product_type <> ''", name="ck_rule_snapshots_snapshot_product_type_present"
-        ),
+        sa.CheckConstraint("snapshot_id LIKE 'sha256:%'", name="snapshot_id_is_prefixed"),
+        sa.CheckConstraint("canonical_json <> ''", name="snapshot_canonical_json_present"),
+        sa.CheckConstraint("version <> ''", name="snapshot_version_present"),
+        sa.CheckConstraint("product_type <> ''", name="snapshot_product_type_present"),
         sa.CheckConstraint(
             "unconfirmed_tolerance_count >= 0",
-            name="ck_rule_snapshots_snapshot_unconfirmed_count_not_negative",
+            name="snapshot_unconfirmed_count_not_negative",
         ),
         sa.ForeignKeyConstraint(
             ["rule_definition_id"],
@@ -87,20 +86,19 @@ def upgrade() -> None:
 
     op.create_table(
         "rule_applicability_scopes",
-        sa.Column("id", sa.UUID(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("rule_snapshot_id", sa.UUID(), nullable=False),
+        *_identity_columns(),
+        sa.Column("rule_snapshot_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("discriminator", sa.String(length=100), nullable=False),
         sa.Column("value", sa.String(length=200), nullable=False),
         sa.CheckConstraint(
             "discriminator <> ''",
-            name="ck_rule_applicability_scopes_scope_discriminator_present",
+            name="scope_discriminator_present",
         ),
         sa.CheckConstraint(
             f"discriminator NOT IN ({_RESERVED})",
-            name="ck_rule_applicability_scopes_scope_discriminator_not_reserved",
+            name="scope_discriminator_not_reserved",
         ),
-        sa.CheckConstraint("value <> ''", name="ck_rule_applicability_scopes_scope_value_present"),
+        sa.CheckConstraint("value <> ''", name="scope_value_present"),
         sa.ForeignKeyConstraint(
             ["rule_snapshot_id"],
             ["rule_snapshots.id"],
