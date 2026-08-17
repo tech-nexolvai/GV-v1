@@ -63,8 +63,8 @@ finding which is internally consistent, fully traced and completely wrong.
 
 **Control (§16):** Crop-bounded structured outputs; the VLM cannot create verdict authority.
 **Status:** PARTIAL
-**Refs:** test:tests/test_verdict_isolation.py, module:extraction/models/validation.py, module:extraction/models/context.py
-**Owner:** #250, #252
+**Refs:** test:tests/test_verdict_isolation.py, module:extraction/models/validation.py, module:extraction/models/context.py, module:deploy/verdict_isolation/preflight.py
+**Owner:** #250, #252, #257
 **Effectiveness claim:** the isolation guard already makes model output unreachable from `verdict/`
 transitively, so a hallucinated value cannot reach a decision. What is missing is the input side —
 crop-bounded context and strict payload validation that rejects unknown fields.
@@ -102,12 +102,23 @@ text because there is no code path that would execute it.
 ## R7 — Retrieval contaminates truth
 
 **Control (§16):** Authority class enforced; the verdict process has no retrieval access.
-**Status:** ENFORCED
-**Refs:** test:tests/test_verdict_isolation.py, module:verdict/operands.py
-**Owner:** #36
+**Status:** PARTIAL
+**Refs:** test:tests/test_verdict_isolation.py, module:verdict/operands.py, module:deploy/verdict_isolation/preflight.py, test:tests/test_verdict_container_isolation.py::test_the_running_verdict_container_reaches_only_the_database
+**Owner:** #36, #257
 **Effectiveness claim:** the guard walks the transitive import graph, so `verdict/` cannot reach
 `retrieval/` even indirectly. `VerdictOperand` admits only `CORROBORATED` and `HUMAN_CONFIRMED`, and
 retrieval can produce neither.
+
+**Why this moved down from ENFORCED.** Nothing regressed. The control text is *"the verdict process
+has no retrieval access"* — a statement about a running process — and until #257 the only thing
+proving it was the import graph, which is a statement about source code. Reading ENFORCED was
+narrower than it looked, in the same way R8 read as revision safety when only hashing was built.
+`deploy/verdict_isolation/preflight.py` now refuses to start a process that has egress or holds a
+credential, which closes the second half in principle. The last reference is deliberately one that
+does not resolve yet: no story builds the verdict container, so nothing actually *runs* the
+preflight. That reference resolves when a container integration test can be collected, and only then
+is this ENFORCED — because this matrix checks that artifacts exist, and an existing file nobody
+executes would otherwise read as a working control.
 
 ## R8 — Revision confusion
 
