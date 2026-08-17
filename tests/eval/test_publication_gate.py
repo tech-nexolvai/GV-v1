@@ -105,8 +105,11 @@ def _case(case_id: str = "GC-001") -> GoldCase:
     return GoldCase(
         id=case_id,
         product_type=ProductType.COUNTERTOP,
-        arch=Path(f"{case_id}-a.pdf"),
-        shop=Path(f"{case_id}-s.pdf"),
+        # Absolute, so verification finds them whatever `cases_directory` the caller passes — and
+        # because that is how real client drawings live: outside the repository, which
+        # `tests/test_repo_hygiene.py` enforces.
+        arch=DRAWINGS / f"{case_id}-a.pdf",
+        shop=DRAWINGS / f"{case_id}-s.pdf",
         ground_truth=GroundTruth(
             observations=(),
             matches=(),
