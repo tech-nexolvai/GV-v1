@@ -216,3 +216,120 @@ def test_a_baseline_is_scoped_to_its_gold_set_version(session) -> None:  # type:
     )
     assert baseline(session, gold_set_version="1.0") is not None
     assert baseline(session, gold_set_version="2.0") is None
+
+
+# ---------------------------------------------------------------------------
+# Per-case results (#315)
+# ---------------------------------------------------------------------------
+
+
+def _gold_case(session, gold_set):  # type: ignore[no-untyped-def]
+    """A gold case needs a document version, which needs the whole document aggregate above it."""
+    from app.models.document import Document, DocumentKind, DocumentVersion, SourceArtifact
+    from app.models.evaluation import GoldCase
+    from app.models.package import Package, PackageRevision, Project
+
+    project = Project(name="GV Case Results Test")
+    package = Package(project_id=project.id, vendor=None)
+    revision = PackageRevision(package_id=package.id, revision_label="A", state="RECEIVED")
+    artifact = SourceArtifact(storage_key="k/1.pdf", sha256="a" * 64, size=1, content_type="pdf")
+    document = Document(package_revision_id=revision.id, kind=DocumentKind.SHOP_DRAWING)
+    version = DocumentVersion(
+        document_id=document.id, source_artifact_id=artifact.id, sha256="b" * 64, page_count=1
+    )
+    session.add_all([project, package, revision, artifact, document, version])
+    session.flush()
+
+    case = GoldCase(
+        gold_set_id=gold_set.id,
+        document_version_id=version.id,
+        content_hash="b" * 64,
+        annotations={},
+        annotated_by="anant",
+    )
+    session.add(case)
+    session.flush()
+    return case
+
+
+def test_a_run_records_how_each_case_fared(session) -> None:  # type: ignore[no-untyped-def]
+    """`metric_results` says a rate moved; this says which cases moved."""
+    from app.models.evaluation import CaseResult
+    from eval.runs import record_run
+    from verdict.outcomes import Outcome
+
+    gold_set = _gold_set(session)
+    case = _gold_case(session, gold_set)
+
+    run = record_run(
+        session,
+        gold_set=gold_set,
+        code_version="abc1234",
+        rule_snapshot_ids=["snap-1"],
+        extractor_versions={"pdfplumber": "0.11.0"},
+        results=_computed(),
+        case_outcomes={case.id: {"CT-1": (Outcome.FAIL, Outcome.PASS)}},
+    )
+
+    rows = session.query(CaseResult).filter(CaseResult.evaluation_run_id == run.id).all()
+    assert len(rows) == 1
+    assert (rows[0].check, rows[0].outcome, rows[0].expected) == ("CT-1", "FAIL", "PASS")
+
+
+def test_a_run_may_be_recorded_without_case_results(session) -> None:  # type: ignore[no-untyped-def]
+    """Scoring only aggregate metrics is legitimate. What must not happen is such a run later
+    reading as though its cases were compared and found identical — `compare_cases` reports that as
+    'not compared' rather than as no change."""
+    from app.models.evaluation import CaseResult
+    from eval.runs import record_run
+
+    run = record_run(
+        session,
+        gold_set=_gold_set(session),
+        code_version="abc1234",
+        rule_snapshot_ids=["snap-1"],
+        extractor_versions={"pdfplumber": "0.11.0"},
+        results=_computed(),
+    )
+    assert session.query(CaseResult).filter(CaseResult.evaluation_run_id == run.id).count() == 0
+
+
+def test_a_case_result_is_immutable() -> None:
+    """Like every other evaluation record. One edited after the fact silently changes what a
+    historical comparison meant."""
+    from app.db.base import Immutable
+    from app.models.evaluation import CaseResult
+
+    assert issubclass(CaseResult, Immutable)
+
+
+def test_one_case_and_check_is_recorded_once_per_run(session) -> None:  # type: ignore[no-untyped-def]
+    """Two rows for one `(run, case, check)` would make "did this case pass?" have two answers."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.evaluation import CaseResult
+    from eval.runs import record_run
+    from verdict.outcomes import Outcome
+
+    gold_set = _gold_set(session)
+    case = _gold_case(session, gold_set)
+    run = record_run(
+        session,
+        gold_set=gold_set,
+        code_version="abc1234",
+        rule_snapshot_ids=["snap-1"],
+        extractor_versions={"pdfplumber": "0.11.0"},
+        results=_computed(),
+        case_outcomes={case.id: {"CT-1": (Outcome.PASS, Outcome.PASS)}},
+    )
+    session.add(
+        CaseResult(
+            evaluation_run_id=run.id,
+            gold_case_id=case.id,
+            check="CT-1",
+            outcome="FAIL",
+            expected="PASS",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        session.flush()

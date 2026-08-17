@@ -25,12 +25,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from fractions import Fraction
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.evaluation import EvaluationRun, GoldSet, MetricResult
+from app.models.evaluation import CaseResult, EvaluationRun, GoldSet, MetricResult
 from eval.metrics import MetricResult as ComputedMetric
+from verdict.outcomes import Outcome
 
 #: Scale of the `value` column. Kept here so the rounding is visible at the point it happens rather
 #: than only in a migration.
@@ -61,13 +63,19 @@ def record_run(
     rule_snapshot_ids: Sequence[str],
     extractor_versions: Mapping[str, str],
     results: Mapping[str, ComputedMetric],
+    case_outcomes: Mapping[UUID, Mapping[str, tuple[Outcome, Outcome]]] | None = None,
     check_type: str = "all",
     is_baseline: bool = False,
 ) -> EvaluationRun:
-    """Store one run and its metrics.
+    """Store one run, its metrics, and how each gold case fared.
 
     Every provenance field is required. `AGENTS.md` §9 makes the release gate a comparison, and a
     comparison against a run whose versions are unknown cannot attribute what moved.
+
+    `case_outcomes` maps a gold case to `{check: (observed, expected)}`. Optional, because a caller
+    scoring only aggregate metrics is a legitimate thing to do — but a run recorded without it can
+    only ever be compared as rates, and `eval/regression.py` will say so rather than implying the
+    cases were identical.
     """
     missing = [
         name
@@ -108,6 +116,18 @@ def record_run(
                 note=computed.note or None,
             )
         )
+
+    for gold_case_id, per_check in (case_outcomes or {}).items():
+        for check, (observed, expected) in per_check.items():
+            session.add(
+                CaseResult(
+                    evaluation_run_id=run.id,
+                    gold_case_id=gold_case_id,
+                    check=check,
+                    outcome=observed.value,
+                    expected=expected.value,
+                )
+            )
     session.flush()
     return run
 

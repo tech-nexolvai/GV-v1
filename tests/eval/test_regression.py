@@ -16,6 +16,7 @@ gets weaker.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from fractions import Fraction
 from uuid import uuid4
 
@@ -30,6 +31,7 @@ from eval.regression import (
     NoBaseline,
     attribute,
     compare,
+    compare_cases,
     gate_outcome,
 )
 from eval.release_metrics import Direction
@@ -296,3 +298,115 @@ def test_an_unconfigured_metric_still_regresses_when_the_measurement_is_lost() -
     )
     assert [d.metric for d in report.worse] == ["experimental_thing"]
     assert report.worse[0].direction is None
+
+
+# ---------------------------------------------------------------------------
+# Per-case deltas (#315) — a rate says something broke, the case says what
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Row:
+    """Stands in for `app.models.CaseResult`, so this file needs no database."""
+
+    gold_case_id: str
+    check: str
+    outcome: str
+    expected: str
+
+
+def test_a_case_that_started_failing_is_named() -> None:
+    """The whole point. 1% to 4% on fifty cases is three cases, and which three is the difference
+    between a morning's debugging and an afternoon's."""
+    before = [_Row("case-7", "CT-1", "PASS", "PASS"), _Row("case-8", "CT-1", "PASS", "PASS")]
+    after = [_Row("case-7", "CT-1", "FAIL", "PASS"), _Row("case-8", "CT-1", "PASS", "PASS")]
+
+    worse, better, compared = compare_cases(before, after)
+    assert compared
+    assert not better
+    assert [d.gold_case_id for d in worse] == ["case-7"]
+
+
+def test_a_case_that_started_passing_is_named_too() -> None:
+    before = [_Row("case-7", "CT-1", "FAIL", "PASS")]
+    after = [_Row("case-7", "CT-1", "PASS", "PASS")]
+    _, better, _ = compare_cases(before, after)
+    assert [d.gold_case_id for d in better] == ["case-7"]
+
+
+def test_a_change_between_two_wrong_answers_is_neither() -> None:
+    """`NOT_FOUND` becoming `REVIEW_REQUIRED` is movement, and it is not a regression or a fix — the
+    case was wrong before and is wrong now. Counting it either way would put noise in the one report
+    somebody reads when a release is blocked."""
+    before = [_Row("case-9", "CT-1", "NOT_FOUND", "PASS")]
+    after = [_Row("case-9", "CT-1", "REVIEW_REQUIRED", "PASS")]
+    worse, better, _ = compare_cases(before, after)
+    assert not worse and not better
+
+
+def test_no_case_rows_is_reported_as_not_compared_rather_than_as_no_change() -> None:
+    """The distinction this turns on. Two empty tuples read exactly like "nothing changed", and a
+    run recorded before #315 has no case rows at all — so absence has to be reported as absence, the
+    same way `MetricResult.value` keeps `None` apart from zero."""
+    worse, better, compared = compare_cases(None, [_Row("case-1", "CT-1", "PASS", "PASS")])
+    assert not compared and not worse and not better
+
+
+def test_an_empty_case_list_is_also_not_a_comparison() -> None:
+    *_, compared = compare_cases([], [_Row("case-1", "CT-1", "PASS", "PASS")])
+    assert not compared
+
+
+def test_a_case_only_one_run_scored_is_not_a_delta() -> None:
+    """Adding a gold case is not a regression, and removing one is a change to the answer key rather
+    than to the system."""
+    before = [_Row("case-1", "CT-1", "PASS", "PASS")]
+    after = [_Row("case-1", "CT-1", "PASS", "PASS"), _Row("case-2", "CT-1", "FAIL", "PASS")]
+    worse, better, compared = compare_cases(before, after)
+    assert compared
+    assert not worse and not better
+
+
+def test_the_same_case_is_tracked_per_check() -> None:
+    """A case carries several checks and a regression is usually one of them moving."""
+    before = [_Row("case-1", "CT-1", "PASS", "PASS"), _Row("case-1", "CT-2", "PASS", "PASS")]
+    after = [_Row("case-1", "CT-1", "FAIL", "PASS"), _Row("case-1", "CT-2", "PASS", "PASS")]
+    worse, _, _ = compare_cases(before, after)
+    assert [d.check for d in worse] == ["CT-1"]
+
+
+def test_a_metric_change_and_its_per_case_deltas_agree() -> None:
+    """#315's acceptance criterion: a rise in the false-PASS rate with no newly-failing case means
+    one of the two is wrong. Here two of four cases regress, and the rate moves by two."""
+    before = [_Row(f"case-{n}", "CT-1", "PASS", "PASS") for n in range(4)]
+    after = [
+        _Row("case-0", "CT-1", "FAIL", "PASS"),
+        _Row("case-1", "CT-1", "FAIL", "PASS"),
+        _Row("case-2", "CT-1", "PASS", "PASS"),
+        _Row("case-3", "CT-1", "PASS", "PASS"),
+    ]
+    worse, _, _ = compare_cases(before, after)
+
+    report = compare(
+        _run(),
+        _run(code="def456"),
+        {"fail_recall": _metric("fail_recall", "4/4")},
+        {"fail_recall": _metric("fail_recall", "2/4")},
+        baseline_cases=before,
+        candidate_cases=after,
+    )
+    moved = 4 - 2  # denominators match, so the numerator delta is a count of cases
+    assert len(worse) == moved
+    assert len(report.cases_worse) == moved
+    assert report.worse[0].metric == "fail_recall"
+
+
+def test_a_report_without_case_rows_says_it_did_not_compare_them() -> None:
+    report = compare(
+        _run(),
+        _run(code="x"),
+        {PRIMARY_METRIC: _metric(PRIMARY_METRIC, "1/100")},
+        {PRIMARY_METRIC: _metric(PRIMARY_METRIC, "2/100")},
+    )
+    assert report.cases_compared is False
+    assert report.cases_worse == ()
