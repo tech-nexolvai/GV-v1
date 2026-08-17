@@ -35,6 +35,7 @@ from eval.gold_set.schema import (
     GoldManifest,
     GroundTruth,
     Provenance,
+    ReviewedDocument,
 )
 from eval.metrics import MetricResult as ComputedMetric
 from eval.publication_gate import (
@@ -104,8 +105,18 @@ def _case(case_id: str = "GC-001") -> GoldCase:
         provenance=Provenance(
             annotator="anant",
             annotated_on=date(2026, 8, 16),
-            document_version_id=uuid4(),
-            content_hash="a" * 64,
+            documents=(
+                ReviewedDocument(
+                    source=OperandSource.ARCH,
+                    document_version_id=uuid4(),
+                    content_hash="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+                ReviewedDocument(
+                    source=OperandSource.SHOP,
+                    document_version_id=uuid4(),
+                    content_hash="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
+            ),
         ),
     )
 

@@ -9,6 +9,7 @@ Source: issue #68 and ``docs/V1_RESEARCH_AND_PLAN.md`` section 6.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
@@ -74,15 +75,82 @@ class ExpectedFinding(BaseModel):
     reason: str = Field(min_length=1)
 
 
+#: Sources whose bytes exist and can therefore be hashed. `LITERAL` and `USER_INPUT` cannot: one is
+#: written into a rule, the other is what somebody typed, and neither has a document to bind to.
+HASHED_SOURCES: frozenset[OperandSource] = frozenset(
+    {OperandSource.ARCH, OperandSource.SHOP, OperandSource.PRODUCT_SPEC}
+)
+
+#: `sha256:<64 lowercase hex>` — the form `storage/hashing.py` emits. One dialect across the system,
+#: so a gold case's hash and a stored artifact's can be compared without anybody re-deriving either.
+CONTENT_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+class ReviewedDocument(BaseModel):
+    """One document an annotator read, bound to the exact bytes they read.
+
+    A gold case reads more than one. `GoldMatch` pairs an `arch_item` with a `shop_item`, so the
+    architectural drawing is annotated as surely as the shop drawing is — and until `#187` this
+    schema carried a single `content_hash` for the case. Swapping the architectural PDF would have
+    invalidated every match while the integrity check reported the case intact, which is the one
+    failure a gold set exists to prevent.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: OperandSource
+    document_version_id: UUID
+    content_hash: str
+
+    @field_validator("source")
+    @classmethod
+    def _source_has_bytes(cls, value: OperandSource) -> OperandSource:
+        if value not in HASHED_SOURCES:
+            raise ValueError(
+                f"{value.value} has no document to hash. A literal lives in a rule and a user input "
+                "is what somebody typed; binding either to a content hash would claim a provenance "
+                "that cannot be re-checked."
+            )
+        return value
+
+    @field_validator("content_hash")
+    @classmethod
+    def _hash_is_canonical(cls, value: str) -> str:
+        if CONTENT_HASH.fullmatch(value) is None:
+            raise ValueError(
+                f"content hash {value!r} must be 'sha256:<64 lowercase hex>'. The prefix names the "
+                "algorithm, and it is the form storage/hashing.py already emits — two dialects would "
+                "mean a stored artifact and its gold case could not be compared without translation."
+            )
+        return value
+
+
 class Provenance(BaseModel):
-    """Who authored a gold case and which immutable document version it reviewed."""
+    """Who authored a gold case and which immutable documents they reviewed."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     annotator: str = Field(min_length=1)
     annotated_on: date
-    document_version_id: UUID
-    content_hash: str = Field(min_length=1)
+    documents: tuple[ReviewedDocument, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _one_document_per_source(self) -> Provenance:
+        sources = [document.source for document in self.documents]
+        duplicates = sorted({s.value for s in sources if sources.count(s) > 1})
+        if duplicates:
+            raise ValueError(
+                f"two documents claim the same source: {duplicates}. An observation names its source, "
+                "so a repeated one leaves no way to say which bytes it was read from."
+            )
+        return self
+
+    def hash_for(self, source: OperandSource) -> str | None:
+        """The recorded hash for one source, or `None` when that source was not reviewed."""
+        for document in self.documents:
+            if document.source is source:
+                return document.content_hash
+        return None
 
 
 class Disagreement(BaseModel):

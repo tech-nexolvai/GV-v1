@@ -9,7 +9,13 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from eval.gold_set.schema import GoldCase, GoldManifest, GroundTruth, Provenance
+from eval.gold_set.schema import (
+    GoldCase,
+    GoldManifest,
+    GroundTruth,
+    Provenance,
+    ReviewedDocument,
+)
 from eval.synthetic import (
     F1_AUTHORED_TOKEN,
     SYNTHETIC_CASES_DIRECTORY,
@@ -19,7 +25,7 @@ from eval.synthetic import (
     load_synthetic_cases,
     run_synthetic_case,
 )
-from rules.semantic_types import ProductType
+from rules.semantic_types import OperandSource, ProductType
 from units.dual import parse_dual
 from units.policy import Consistency, check_dual
 from verdict.operations.scalar import SCALAR_SPECS
@@ -137,8 +143,13 @@ def test_synthetic_loader_rejects_real_cases_and_real_case_directory(tmp_path: P
         provenance=Provenance(
             annotator="reviewer@example.com",
             annotated_on=date(2026, 8, 15),
-            document_version_id=UUID("12345678-1234-5678-1234-567812345678"),
-            content_hash="sha256:real-case",
+            documents=(
+                ReviewedDocument(
+                    source=OperandSource.SHOP,
+                    document_version_id=UUID("12345678-1234-5678-1234-567812345678"),
+                    content_hash="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+            ),
         ),
     )
 
