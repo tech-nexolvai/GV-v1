@@ -17,8 +17,12 @@ from __future__ import annotations
 from fractions import Fraction
 
 import pytest
+from sqlalchemy.orm import Session
 
+from app.models.document import Document, DocumentKind, DocumentVersion, SourceArtifact
+from app.models.evaluation import GoldCase, GoldSet
 from app.models.evaluation import MetricResult as MetricRow
+from app.models.package import Package, PackageRevision, PackageState, Project
 from eval.metrics import MetricResult as ComputedMetric
 from eval.runs import VALUE_SCALE, _approximate, load_metric
 
@@ -216,3 +220,146 @@ def test_a_baseline_is_scoped_to_its_gold_set_version(session) -> None:  # type:
     )
     assert baseline(session, gold_set_version="1.0") is not None
     assert baseline(session, gold_set_version="2.0") is None
+
+
+# ---------------------------------------------------------------------------
+# Per-case results (#315)
+# ---------------------------------------------------------------------------
+
+
+def _gold_case(session: Session, gold_set: GoldSet) -> GoldCase:
+    """A gold case needs a document version, which needs the package aggregate above it.
+
+    Built from `tests/db/test_evidence_models.py` rather than from memory: the first version of this
+    helper invented a `revision_label` field that `PackageRevision` does not have — it is
+    `revision_number`, an integer — and the two tests using it failed on CI, where the database that
+    would have caught it actually exists.
+
+    Flushed in stages, and **not** because the ids need populating — `TimestampedUUID` assigns those
+    in a construction listener, so they are available immediately. The flushes order the inserts.
+    These models are wired with plain `ForeignKey` columns rather than ORM `relationship()`s, so
+    SQLAlchemy has no dependency graph to sort a single `add_all` by, and `documents` can be inserted
+    before the `package_revisions` row it points at. Collapsing them to one flush passed locally,
+    where the database tests skip, and failed on CI with a foreign-key violation.
+    """
+    digest = "b" * 64
+    project = Project(name="GV Case Results Test")
+    package = Package(project_id=project.id, vendor=None)
+    revision = PackageRevision(package_id=package.id, revision_number=1, state=PackageState.CREATED)
+    artifact = SourceArtifact(
+        storage_key=f"originals/{project.id}/drawing.pdf",
+        sha256=digest,
+        size=100,
+        backend_version_id=None,
+    )
+    document = Document(package_revision_id=revision.id, kind=DocumentKind.SHOP)
+    version = DocumentVersion(
+        document_id=document.id,
+        source_artifact_id=artifact.id,
+        # Equal to the artifact's on purpose: the composite foreign key requires both to match.
+        sha256=digest,
+        page_count=1,
+    )
+    case = GoldCase(
+        gold_set_id=gold_set.id,
+        document_version_id=version.id,
+        content_hash=digest,
+        annotations={},
+        annotated_by="anant",
+    )
+    session.add(project)
+    session.flush()
+    session.add(package)
+    session.flush()
+    session.add(revision)
+    session.flush()
+    session.add_all((artifact, document))
+    session.flush()
+    session.add(version)
+    session.flush()
+    session.add(case)
+    session.flush()
+    return case
+
+
+def test_a_run_records_how_each_case_fared(session: Session) -> None:
+    """`metric_results` says a rate moved; this says which cases moved."""
+    from app.models.evaluation import CaseResult
+    from eval.runs import record_run
+    from verdict.outcomes import Outcome
+
+    gold_set = _gold_set(session)
+    case = _gold_case(session, gold_set)
+
+    run = record_run(
+        session,
+        gold_set=gold_set,
+        code_version="abc1234",
+        rule_snapshot_ids=["snap-1"],
+        extractor_versions={"pdfplumber": "0.11.0"},
+        results=_computed(),
+        case_outcomes={case.id: {"CT-1": (Outcome.FAIL, Outcome.PASS)}},
+    )
+
+    rows = session.query(CaseResult).filter(CaseResult.evaluation_run_id == run.id).all()
+    assert len(rows) == 1
+    assert (rows[0].check, rows[0].outcome, rows[0].expected) == ("CT-1", "FAIL", "PASS")
+
+
+def test_a_run_may_be_recorded_without_case_results(session: Session) -> None:
+    """Scoring only aggregate metrics is legitimate. What must not happen is such a run later
+    reading as though its cases were compared and found identical — `compare_cases` reports that as
+    'not compared' rather than as no change."""
+    from app.models.evaluation import CaseResult
+    from eval.runs import record_run
+
+    run = record_run(
+        session,
+        gold_set=_gold_set(session),
+        code_version="abc1234",
+        rule_snapshot_ids=["snap-1"],
+        extractor_versions={"pdfplumber": "0.11.0"},
+        results=_computed(),
+    )
+    assert session.query(CaseResult).filter(CaseResult.evaluation_run_id == run.id).count() == 0
+
+
+def test_a_case_result_is_immutable() -> None:
+    """Like every other evaluation record. One edited after the fact silently changes what a
+    historical comparison meant."""
+    from app.db.base import Immutable
+    from app.models.evaluation import CaseResult
+
+    assert issubclass(CaseResult, Immutable)
+
+
+def test_one_case_and_check_is_recorded_once_per_run(session: Session) -> None:
+    """Two rows for one `(run, case, check)` would make "did this case pass?" have two answers."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.evaluation import CaseResult
+    from eval.runs import record_run
+    from verdict.outcomes import Outcome
+
+    gold_set = _gold_set(session)
+    case = _gold_case(session, gold_set)
+    run = record_run(
+        session,
+        gold_set=gold_set,
+        code_version="abc1234",
+        rule_snapshot_ids=["snap-1"],
+        extractor_versions={"pdfplumber": "0.11.0"},
+        results=_computed(),
+        case_outcomes={case.id: {"CT-1": (Outcome.PASS, Outcome.PASS)}},
+    )
+    session.add(
+        CaseResult(
+            evaluation_run_id=run.id,
+            gold_case_id=case.id,
+            check="CT-1",
+            outcome="FAIL",
+            expected="PASS",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        session.flush()

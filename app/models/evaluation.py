@@ -22,7 +22,14 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Index, Numeric, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -139,4 +146,65 @@ class MetricResult(Base, TimestampedUUID, Immutable):
         UniqueConstraint("evaluation_run_id", "metric", "check_type"),
         # F4.2 compares a metric across runs, not one run at a time.
         Index("ix_metric_results_metric_check_type", "metric", "check_type"),
+    )
+
+
+class CaseResult(Base, TimestampedUUID, Immutable):
+    """How one gold case fared on one check, in one run.
+
+    `metric_results` says a rate moved. This says which cases moved, which is the difference between
+    a morning's debugging and an afternoon's: going from 1% to 4% on fifty cases is three cases, and
+    the useful question is always *which* three.
+
+    It also gives a second route to attribution. `eval/regression.py:attribute()` returns `None` when
+    more than one version changed, which is the honest answer — but if the three newly-failing cases
+    are all scanned pages, that points at the OCR lane whatever else moved.
+
+    `Immutable`, like every other evaluation record. A result edited after the fact silently changes
+    what a historical comparison meant.
+
+    **No finding reference yet.** The scope for `#315` asks for the finding each result came from,
+    and there is no findings table — that is `#199` (C1.9), which is deferred behind `#195`/`#198`.
+    Rather than invent a column pointing at nothing, the outcome is stored now and the reference is
+    added by a later migration once findings exist. The per-case comparison this story exists for
+    needs the outcome; the finding link makes the debugging faster, not the regression visible.
+    """
+
+    __tablename__ = "case_results"
+
+    evaluation_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("evaluation_runs.id", ondelete="RESTRICT"), index=True
+    )
+    gold_case_id: Mapped[UUID] = mapped_column(
+        ForeignKey("gold_cases.id", ondelete="RESTRICT"), index=True
+    )
+
+    check: Mapped[str] = mapped_column(String(200), index=True)
+    """Which check this result is for. A case carries several, and a regression is usually one of
+    them moving rather than the whole case."""
+
+    outcome: Mapped[str] = mapped_column(String(32))
+    """What the system concluded — a `verdict.outcomes.Outcome` value.
+
+    Stored as text rather than a database enum for the same reason `metric_results.metric` is: the
+    vocabulary belongs to `verdict/`, and a migration every time it gains a member would put schema
+    churn in the path of the deterministic core.
+    """
+
+    expected: Mapped[str] = mapped_column(String(32))
+    """What the gold set said should happen. Stored beside the outcome rather than joined at read
+    time, because the answer key is versioned and a comparison has to mean what it meant then."""
+
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_run_id", "gold_case_id", "check", name="uq_case_results_run_case_check"
+        ),
+        # `check` is a reserved SQL keyword, so it has to be quoted in raw constraint text.
+        # SQLAlchemy quotes it for us in the DDL it generates; this string it passes through as
+        # written, and unquoted it is a syntax error rather than a constraint.
+        CheckConstraint("\"check\" <> ''", name="case_result_check_present"),
+        CheckConstraint("outcome <> ''", name="case_result_outcome_present"),
+        CheckConstraint("expected <> ''", name="case_result_expected_present"),
+        # A comparison walks every case of one run, then the same for the baseline.
+        Index("ix_case_results_run_check", "evaluation_run_id", "check"),
     )

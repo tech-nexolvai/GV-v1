@@ -24,6 +24,7 @@ from app.models.document import (
     SourceArtifact,
 )
 from app.models.evaluation import (
+    CaseResult,
     EvaluationRun,
     GoldCase,
     GoldSet,
@@ -54,6 +55,7 @@ from app.models.runs import (
 
 __all__ = [
     "CanonicalObservation",
+    "CaseResult",
     "Document",
     "DocumentKind",
     "DocumentVersion",

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -44,11 +45,12 @@ from eval.gold_set.schema import GoldManifest
 from eval.metrics import MetricResult as ComputedMetric
 from eval.regression import IncomparableRuns, NoBaseline, RegressionReport, compare, gate_outcome
 from eval.runs import baseline as stored_baseline
-from eval.runs import metrics_for, record_run
+from eval.runs import case_results_for, metrics_for, record_run
 from rules.governance.proposal import RuleProposal
 from rules.governance.publish import RegressionOutcome
 from rules.snapshot import RuleSnapshot
 from rules.snapshot import publish as build_snapshot
+from verdict.outcomes import Outcome
 
 #: Scores a proposed snapshot against the gold set. Supplied by the caller: the real implementation
 #: needs the extraction pipeline, which is blocked on #274.
@@ -96,12 +98,17 @@ def gate(
     scorer: Scorer,
     code_version: str,
     extractor_versions: Mapping[str, str],
+    case_outcomes: Mapping[UUID, Mapping[str, tuple[Outcome, Outcome]]] | None = None,
 ) -> RegressionVerdict:
     """Score the proposal against the gold set and decide whether it may be published.
 
     There is deliberately **no override parameter**. A rule that regresses a release gate does not
     ship, and an escape hatch would be used exactly once, under deadline, on the change that most
     needed the check.
+
+    `case_outcomes` is optional and, when given, makes the report name the cases that moved rather
+    than only the rates (`#315`). Without it the report says `cases_compared=False` — which is not
+    "no case changed", and the distinction is the reason that flag exists.
     """
     if not manifest.cases:
         raise NoGoldSet(
@@ -142,11 +149,22 @@ def gate(
         rule_snapshot_ids=[snapshot.snapshot_id],
         extractor_versions=extractor_versions,
         results=metrics,
+        case_outcomes=case_outcomes,
     )
 
     # A run cannot be its own baseline here: `previous` was resolved before `candidate` existed.
     try:
-        report = compare(previous, candidate, metrics_for(session, previous), metrics)
+        report = compare(
+            previous,
+            candidate,
+            metrics_for(session, previous),
+            metrics,
+            # Loaded for both runs rather than only the candidate. A baseline recorded before `#315`
+            # has no case rows, and `compare_cases` reports that as not-compared instead of letting
+            # an absent baseline read as a set of unchanged cases.
+            baseline_cases=case_results_for(session, previous),
+            candidate_cases=case_results_for(session, candidate),
+        )
     except NoBaseline as error:  # pragma: no cover - guarded above
         raise RegressionUnavailable(str(error)) from error
     except IncomparableRuns as error:

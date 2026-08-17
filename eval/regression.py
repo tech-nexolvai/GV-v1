@@ -21,9 +21,10 @@ reporting cases we never stored.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from typing import Protocol
 
 from app.models.evaluation import EvaluationRun
 from eval.metrics import MetricResult as ComputedMetric
@@ -125,6 +126,59 @@ class MetricDelta:
 
 
 @dataclass(frozen=True, slots=True)
+class CaseDelta:
+    """One gold case whose outcome on one check changed between two runs.
+
+    `expected` comes from the run that recorded it, not from the gold set as it stands now. The
+    answer key is versioned, and a comparison has to mean what it meant when it was made.
+    """
+
+    gold_case_id: str
+    check: str
+    before: str
+    after: str
+    expected_before: str
+    expected_after: str
+    """The answer key **as each run recorded it**, kept separately.
+
+    `compare()` accepts the same gold set at a new version, so the expectation can differ between the
+    two runs. Judging both outcomes against the candidate's key would then misclassify: a case whose
+    outcome never moved can go from correct to wrong purely because the annotation was corrected, and
+    calling that a system regression sends somebody to debug code that did not change.
+    """
+
+    @property
+    def was_correct(self) -> bool:
+        return self.before == self.expected_before
+
+    @property
+    def is_correct(self) -> bool:
+        return self.after == self.expected_after
+
+    @property
+    def newly_correct(self) -> bool:
+        return self.is_correct and not self.was_correct
+
+    @property
+    def newly_wrong(self) -> bool:
+        return self.was_correct and not self.is_correct
+
+    @property
+    def expectation_changed(self) -> bool:
+        """The answer key moved under this case. Worth surfacing: it is a change to what "right"
+        means, not to the system, and the two get confused."""
+        return self.expected_before != self.expected_after
+
+    def __str__(self) -> str:
+        key = (
+            f"expected {self.expected_after}"
+            if not self.expectation_changed
+            else f"expected {self.expected_before} -> {self.expected_after}"
+        )
+        return f"{self.gold_case_id[:8]}/{self.check}: {self.before} -> {self.after} ({key})"
+
+
+@dataclass(frozen=True, slots=True)
 class RegressionReport:
     """What moved between two runs, and what it means for publication."""
 
@@ -140,6 +194,16 @@ class RegressionReport:
 
     baseline_run_id: str
     candidate_run_id: str
+
+    cases_worse: tuple[CaseDelta, ...] = ()
+    cases_better: tuple[CaseDelta, ...] = ()
+    cases_compared: bool = False
+    """Whether per-case results existed on **both** runs.
+
+    False is not "no cases changed" — it is "nobody looked", and the two must not read alike. A run
+    recorded before `#315`, or by a caller scoring only aggregate metrics, has no case rows, and a
+    report that showed an empty `cases_worse` for it would claim a clean comparison it never made.
+    """
 
     @property
     def critical_false_pass_regressed(self) -> bool:
@@ -204,6 +268,8 @@ def compare(
     baseline_metrics: Mapping[str, ComputedMetric],
     candidate_metrics: Mapping[str, ComputedMetric],
     *,
+    baseline_cases: Sequence[CaseResultRow] | None = None,
+    candidate_cases: Sequence[CaseResultRow] | None = None,
     check_type: str = "all",
 ) -> RegressionReport:
     """Compare a candidate run against its baseline.
@@ -249,6 +315,8 @@ def compare(
         else:
             unchanged.append(delta)
 
+    cases_worse, cases_better, cases_compared = compare_cases(baseline_cases, candidate_cases)
+
     return RegressionReport(
         worse=tuple(worse),
         better=tuple(better),
@@ -256,6 +324,9 @@ def compare(
         attributed_to=attribute(baseline, candidate),
         baseline_run_id=str(baseline.id),
         candidate_run_id=str(candidate.id),
+        cases_worse=cases_worse,
+        cases_better=cases_better,
+        cases_compared=cases_compared,
     )
 
 
@@ -276,3 +347,77 @@ def gate_outcome(report: RegressionReport) -> tuple[bool, str]:
         f"{len(report.better)} metric(s) improved, {len(report.worse)} regressed outside the "
         f"blocking gates, {len(report.unchanged)} unchanged"
     )
+
+
+class CaseResultRow(Protocol):
+    """The shape `compare_cases` needs, so it can be given `app.models.CaseResult` rows or plain
+    records in a test without `eval/` importing the ORM.
+
+    Read-only properties rather than plain attributes. A mutable attribute in a Protocol matches
+    invariantly, so `Mapped[UUID]` on the ORM model would not satisfy a bare `gold_case_id: object`
+    — and nothing here writes to these, so the weaker requirement is also the honest one.
+    """
+
+    @property
+    def gold_case_id(self) -> object: ...
+
+    @property
+    def check(self) -> str: ...
+
+    @property
+    def outcome(self) -> str: ...
+
+    @property
+    def expected(self) -> str: ...
+
+
+def compare_cases(
+    baseline: Sequence[CaseResultRow] | None,
+    candidate: Sequence[CaseResultRow] | None,
+) -> tuple[tuple[CaseDelta, ...], tuple[CaseDelta, ...], bool]:
+    """Which cases got better, which got worse, and whether the question was asked at all.
+
+    The third value is the one that matters most. `#263` compares rates, and a rate that moved tells
+    you something broke without telling you what; this names the cases. But a run with no case rows
+    would otherwise produce two empty tuples that read exactly like "nothing changed" — so absence is
+    reported as absence rather than as a clean result, the same distinction `MetricResult.value`
+    draws between `None` and zero.
+
+    A case present in one run and not the other is not a delta. Adding a gold case is not a
+    regression, and removing one is a change to the answer key rather than to the system.
+    """
+    if baseline is None or candidate is None:
+        return (), (), False
+
+    def keyed(rows: Sequence[CaseResultRow]) -> dict[tuple[str, str], CaseResultRow]:
+        return {(str(row.gold_case_id), row.check): row for row in rows}
+
+    before, after = keyed(baseline), keyed(candidate)
+    shared = before.keys() & after.keys()
+    if not shared:
+        # Not "nothing changed". Two runs with rows but no case in common have not been compared at
+        # all — the same thing an empty input means, and reporting it as a clean result would be the
+        # exact failure this function's third return value exists to prevent.
+        return (), (), False
+
+    worse: list[CaseDelta] = []
+    better: list[CaseDelta] = []
+    for key in sorted(shared):
+        was, now = before[key], after[key]
+        delta = CaseDelta(
+            gold_case_id=key[0],
+            check=key[1],
+            before=was.outcome,
+            after=now.outcome,
+            expected_before=was.expected,
+            expected_after=now.expected,
+        )
+        # Deliberately not `if was.outcome == now.outcome: continue`. An unchanged outcome can still
+        # change from correct to wrong when the answer key moved beneath it, and skipping on the
+        # outcome alone hides exactly those cases.
+        if delta.newly_wrong:
+            worse.append(delta)
+        elif delta.newly_correct:
+            better.append(delta)
+
+    return tuple(worse), tuple(better), True
