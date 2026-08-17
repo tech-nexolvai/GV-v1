@@ -18,6 +18,7 @@ import pytest
 from eval.gold_set.schema import (
     GoldCase,
     GoldManifest,
+    GoldObservation,
     GroundTruth,
     Provenance,
     ReviewedDocument,
@@ -247,3 +248,93 @@ def test_stale_reports_everything_rather_than_the_first_failure(tmp_path: Path) 
     broken = _case(tmp_path, case_id="CT-002", shop_hash=_hash(b"never written"))
     assert stale([good], root=tmp_path) == []
     assert stale([good, broken], root=tmp_path) == ["CT-002: StaleAnnotation"]
+
+
+# ---------------------------------------------------------------------------
+# Every source the answer key reads must be bound to bytes
+# ---------------------------------------------------------------------------
+
+
+def _ground_truth_reading(source: OperandSource) -> GroundTruth:
+    from fractions import Fraction
+
+    from rules.semantic_types import SemanticType
+    from units.measurement import Measurement, Unit
+
+    return GroundTruth(
+        observations=(
+            GoldObservation(
+                semantic_type=SemanticType.CT001,
+                source=source,
+                value=Measurement(exact=Fraction(6012), unit=Unit.MM, raw_text="6012"),
+                page=1,
+                polygon=(0, 0, 10, 10),
+                item_id="item-1",
+            ),
+        ),
+        matches=(),
+        expected_findings=(),
+    )
+
+
+def test_a_case_reading_a_drawing_it_never_hashed_is_refused(tmp_path: Path) -> None:
+    """ "At least one document" was not enough. An annotation citing the architectural drawing, with
+    only the shop drawing recorded, verifies clean while half of it is unbound — the same gap that
+    prompted this schema, one level down."""
+    shop_only = ReviewedDocument(
+        source=OperandSource.SHOP, document_version_id=uuid4(), content_hash=_hash(b"s")
+    )
+    with pytest.raises(ValueError, match="records no content hash"):
+        GoldCase(
+            id="CT-002",
+            product_type=ProductType.COUNTERTOP,
+            arch=Path("arch.pdf"),
+            shop=Path("shop.pdf"),
+            ground_truth=_ground_truth_reading(OperandSource.ARCH),
+            provenance=Provenance(
+                annotator="a", annotated_on=date(2026, 8, 17), documents=(shop_only,)
+            ),
+        )
+
+
+def test_a_match_requires_both_drawings_to_be_hashed(tmp_path: Path) -> None:
+    """`GoldMatch` names no source, but pairing an arch_item with a shop_item means both were read —
+    the association is the annotation."""
+    from eval.gold_set.schema import GoldMatch
+
+    shop_only = ReviewedDocument(
+        source=OperandSource.SHOP, document_version_id=uuid4(), content_hash=_hash(b"s")
+    )
+    with pytest.raises(ValueError, match="ARCH"):
+        GoldCase(
+            id="CT-003",
+            product_type=ProductType.COUNTERTOP,
+            arch=Path("arch.pdf"),
+            shop=Path("shop.pdf"),
+            ground_truth=GroundTruth(
+                observations=(),
+                matches=(GoldMatch(arch_item="A_1", shop_item="S_1"),),
+                expected_findings=(),
+            ),
+            provenance=Provenance(
+                annotator="a", annotated_on=date(2026, 8, 17), documents=(shop_only,)
+            ),
+        )
+
+
+def test_a_case_reading_only_the_shop_drawing_needs_only_that_hash(tmp_path: Path) -> None:
+    """The requirement is what was read, not both always. Over-requiring would make a shop-only case
+    unrepresentable, and somebody would record a hash for a drawing nobody opened."""
+    shop_only = ReviewedDocument(
+        source=OperandSource.SHOP, document_version_id=uuid4(), content_hash=_hash(b"s")
+    )
+    GoldCase(
+        id="CT-004",
+        product_type=ProductType.COUNTERTOP,
+        arch=Path("arch.pdf"),
+        shop=Path("shop.pdf"),
+        ground_truth=_ground_truth_reading(OperandSource.SHOP),
+        provenance=Provenance(
+            annotator="a", annotated_on=date(2026, 8, 17), documents=(shop_only,)
+        ),
+    )

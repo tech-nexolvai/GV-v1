@@ -19,6 +19,8 @@ around is the point. Two of them matter more than the rest:
 
 from __future__ import annotations
 
+import hashlib
+import tempfile
 from collections.abc import Iterator, Mapping
 from datetime import date
 from fractions import Fraction
@@ -85,12 +87,26 @@ def _proposal(rule: Rule | None = None) -> RuleProposal:
     return propose(rule or _rule(), author="keyur", rationale="tighten the width check")
 
 
+#: Where the fixture's drawings are written. Real files with real hashes, because the gate now
+#: verifies every case before scoring — a fixture with invented hashes would have to be exempted, and
+#: an exemption is how the check stops applying to the thing it was written for.
+DRAWINGS = Path(tempfile.mkdtemp(prefix="gv-gold-"))
+
+
+def _drawing(name: str, body: bytes) -> str:
+    path = DRAWINGS / name
+    path.write_bytes(body)
+    return f"sha256:{hashlib.sha256(body).hexdigest()}"
+
+
 def _case(case_id: str = "GC-001") -> GoldCase:
+    arch_hash = _drawing(f"{case_id}-a.pdf", f"architectural {case_id}".encode())
+    shop_hash = _drawing(f"{case_id}-s.pdf", f"shop {case_id}".encode())
     return GoldCase(
         id=case_id,
         product_type=ProductType.COUNTERTOP,
-        arch=Path("data/drawings/a.pdf"),
-        shop=Path("data/drawings/s.pdf"),
+        arch=Path(f"{case_id}-a.pdf"),
+        shop=Path(f"{case_id}-s.pdf"),
         ground_truth=GroundTruth(
             observations=(),
             matches=(),
@@ -109,12 +125,12 @@ def _case(case_id: str = "GC-001") -> GoldCase:
                 ReviewedDocument(
                     source=OperandSource.ARCH,
                     document_version_id=uuid4(),
-                    content_hash="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    content_hash=arch_hash,
                 ),
                 ReviewedDocument(
                     source=OperandSource.SHOP,
                     document_version_id=uuid4(),
-                    content_hash="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    content_hash=shop_hash,
                 ),
             ),
         ),

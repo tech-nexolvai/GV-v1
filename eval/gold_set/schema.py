@@ -187,6 +187,37 @@ class GoldCase(BaseModel):
     provenance: Provenance
     disagreements: tuple[Disagreement, ...] = ()
 
+    @model_validator(mode="after")
+    def _every_source_read_is_bound_to_bytes(self) -> GoldCase:
+        """Refuse a case whose answer key relies on a document it never bound to a hash.
+
+        Requiring "at least one document" is not enough, and the gap is the same one that prompted
+        this schema: an annotation citing the architectural drawing, with only the shop drawing
+        recorded, verifies clean while half of it is unbound. Whatever the answer key read has to be
+        checkable, or the check reports on the part nobody was worried about.
+        """
+        recorded = {document.source for document in self.provenance.documents}
+        missing = sorted(s.value for s in _hashable_sources_used(self.ground_truth) - recorded)
+        if missing:
+            raise ValueError(
+                f"case {self.id!r} reads {missing} but records no content hash for "
+                f"{'them' if len(missing) > 1 else 'it'}. An annotation against bytes nothing "
+                "verifies cannot be trusted, and the integrity check would report the case intact."
+            )
+        return self
+
+
+def _hashable_sources_used(ground_truth: GroundTruth) -> set[OperandSource]:
+    """Every source with bytes that this case's answer key actually relied on.
+
+    `GoldMatch` names no source explicitly, but pairing an `arch_item` with a `shop_item` means both
+    drawings were read — the association is the annotation.
+    """
+    used = {o.source for o in ground_truth.observations if o.source in HASHED_SOURCES}
+    if ground_truth.matches:
+        used |= {OperandSource.ARCH, OperandSource.SHOP}
+    return used
+
 
 class GoldManifest(BaseModel):
     """Versioned index of local proprietary gold cases."""
