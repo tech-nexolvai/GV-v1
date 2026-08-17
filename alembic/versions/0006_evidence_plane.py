@@ -19,7 +19,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 UNITS = "'mm', 'in'"
-DOCUMENT_ROLES = "'arch', 'shop', 'product_spec'"
+DOCUMENT_ROLES = "'ARCH', 'SHOP', 'PRODUCT_SPEC'"
 STATUSES = "'RAW_CANDIDATE', 'CORROBORATED', 'HUMAN_CONFIRMED', 'CONFLICTING', 'REJECTED'"
 AUTHORITIES = "'AUTHORITATIVE', 'ADVISORY'"
 LANES = "'SECOND_READER', 'DUAL_UNIT', 'HUMAN'"
