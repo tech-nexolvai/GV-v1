@@ -235,9 +235,12 @@ def _gold_case(session: Session, gold_set: GoldSet) -> GoldCase:
     `revision_number`, an integer — and the two tests using it failed on CI, where the database that
     would have caught it actually exists.
 
-    One `flush` at the end. `TimestampedUUID` assigns ids in a construction listener, so the parent
-    ids are already available and flushing between each insert only to obtain them would be a
-    misreading of when they appear.
+    Flushed in stages, and **not** because the ids need populating — `TimestampedUUID` assigns those
+    in a construction listener, so they are available immediately. The flushes order the inserts.
+    These models are wired with plain `ForeignKey` columns rather than ORM `relationship()`s, so
+    SQLAlchemy has no dependency graph to sort a single `add_all` by, and `documents` can be inserted
+    before the `package_revisions` row it points at. Collapsing them to one flush passed locally,
+    where the database tests skip, and failed on CI with a foreign-key violation.
     """
     digest = "b" * 64
     project = Project(name="GV Case Results Test")
@@ -264,7 +267,17 @@ def _gold_case(session: Session, gold_set: GoldSet) -> GoldCase:
         annotations={},
         annotated_by="anant",
     )
-    session.add_all((project, package, revision, artifact, document, version, case))
+    session.add(project)
+    session.flush()
+    session.add(package)
+    session.flush()
+    session.add(revision)
+    session.flush()
+    session.add_all((artifact, document))
+    session.flush()
+    session.add(version)
+    session.flush()
+    session.add(case)
     session.flush()
     return case
 
