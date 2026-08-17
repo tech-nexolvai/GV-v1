@@ -14,9 +14,9 @@ from enum import StrEnum
 from uuid import UUID
 
 from evidence.polygon import Polygon
-from rules.semantic_types import DocumentRole, SemanticType
 from units.measurement import Measurement
 from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus
+from vocabulary.semantic_types import DocumentRole, SemanticType
 
 __all__ = [
     "QUALIFIED_STATUSES",
