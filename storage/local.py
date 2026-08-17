@@ -6,16 +6,22 @@ Verification: ``tests/storage/test_local_store.py``.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Final
 
+from storage.hashing import (
+    SHA256_PATTERN,
+    ArtifactCorrupt,
+    IntegrityRecordMissing,
+    sha256_stream,
+)
 from storage.store import ArtifactConflict, StoredArtifact
 
 DEFAULT_ROOT: Final = Path.home() / ".gv-v1" / "artifacts"
 READ_CHUNK: Final = 1024 * 1024
+INTEGRITY_DIRECTORY: Final = ".gv-integrity"
 
 
 class LocalStore:
@@ -45,22 +51,38 @@ class LocalStore:
         parsed = PurePosixPath(key)
         if parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
             raise ValueError("artifact key must not be absolute or contain '.' or '..'")
+        if parsed.parts[0] == INTEGRITY_DIRECTORY:
+            raise ValueError(f"artifact key namespace {INTEGRITY_DIRECTORY!r} is reserved")
         return self._root.joinpath(*parsed.parts)
 
+    def _integrity_path(self, key: str) -> Path:
+        parsed = PurePosixPath(key)
+        relative = Path(*parsed.parts)
+        return self._root / INTEGRITY_DIRECTORY / relative.parent / f"{relative.name}.sha256"
+
     @staticmethod
-    def _metadata(path: Path, key: str) -> StoredArtifact:
-        digest = hashlib.sha256()
-        size = 0
-        with path.open("rb") as stored:
-            while chunk := stored.read(READ_CHUNK):
-                digest.update(chunk)
-                size += len(chunk)
-        return StoredArtifact(
-            key=key,
-            sha256=digest.hexdigest(),
-            size=size,
-            backend_version_id=None,
-        )
+    def _read_digest(path: Path, key: str) -> str:
+        try:
+            digest = path.read_text(encoding="ascii")
+        except FileNotFoundError as error:
+            raise IntegrityRecordMissing(f"artifact key {key!r} has no integrity record") from error
+        except UnicodeDecodeError as error:
+            raise ArtifactCorrupt(
+                f"artifact key {key!r} has a malformed integrity record"
+            ) from error
+        if SHA256_PATTERN.fullmatch(digest) is None:
+            raise ArtifactCorrupt(f"artifact key {key!r} has a malformed integrity record")
+        return digest
+
+    @staticmethod
+    def _publish(temporary: Path, target: Path) -> bool:
+        """Atomically link a staged file, returning whether this call installed it."""
+
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            return False
+        return True
 
     @staticmethod
     def _same_bytes(left: Path, right: Path) -> bool:
@@ -84,11 +106,24 @@ class LocalStore:
             raise TypeError("data must be a binary file-like object")
 
         target = self._path(key)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".gv-stage-", dir=target.parent)
-        temporary = Path(temporary_name)
+        integrity = self._integrity_path(key)
+        descriptor: int | None = None
+        integrity_descriptor: int | None = None
+        temporary: Path | None = None
+        integrity_temporary: Path | None = None
         try:
-            with os.fdopen(descriptor, "wb") as staged:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(prefix=".gv-stage-", dir=target.parent)
+            temporary = Path(temporary_name)
+            integrity.parent.mkdir(parents=True, exist_ok=True)
+            integrity_descriptor, integrity_name = tempfile.mkstemp(
+                prefix=".gv-integrity-stage-", dir=integrity.parent
+            )
+            integrity_temporary = Path(integrity_name)
+
+            staged_file = os.fdopen(descriptor, "wb")
+            descriptor = None
+            with staged_file as staged:
                 while chunk := data.read(READ_CHUNK):
                     if not isinstance(chunk, bytes):
                         raise TypeError("data must yield bytes")
@@ -96,30 +131,78 @@ class LocalStore:
                 staged.flush()
                 os.fsync(staged.fileno())
 
+            with temporary.open("rb") as staged:
+                digest, size = sha256_stream(staged)
+            record_file = os.fdopen(integrity_descriptor, "w", encoding="ascii", newline="")
+            integrity_descriptor = None
+            with record_file as record:
+                record.write(digest)
+                record.flush()
+                os.fsync(record.fileno())
+
+            if target.exists() and not self._same_bytes(target, temporary):
+                raise ArtifactConflict(f"artifact key {key!r} already stores different bytes")
+
+            if integrity.exists():
+                recorded = self._read_digest(integrity, key)
+                if recorded != digest:
+                    raise ArtifactCorrupt(
+                        f"artifact key {key!r} conflicts with its integrity record"
+                    )
+            elif not self._publish(integrity_temporary, integrity):
+                recorded = self._read_digest(integrity, key)
+                if recorded != digest:
+                    raise ArtifactCorrupt(
+                        f"artifact key {key!r} was concurrently given a different integrity record"
+                    )
+
             if target.exists():
                 if not self._same_bytes(target, temporary):
                     raise ArtifactConflict(f"artifact key {key!r} already stores different bytes")
-            else:
-                try:
-                    os.link(temporary, target)
-                except FileExistsError:
-                    if not self._same_bytes(target, temporary):
-                        raise ArtifactConflict(
-                            f"artifact key {key!r} was concurrently written with different bytes"
-                        ) from None
-            return self._metadata(target, key)
+            elif not self._publish(temporary, target) and not self._same_bytes(target, temporary):
+                raise ArtifactConflict(
+                    f"artifact key {key!r} was concurrently written with different bytes"
+                ) from None
+
+            return StoredArtifact(
+                key=key,
+                sha256=digest,
+                size=size,
+                backend_version_id=None,
+            )
         finally:
-            temporary.unlink(missing_ok=True)
+            if descriptor is not None:
+                os.close(descriptor)
+            if integrity_descriptor is not None:
+                os.close(integrity_descriptor)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            if integrity_temporary is not None:
+                integrity_temporary.unlink(missing_ok=True)
 
     def get(self, key: str) -> BinaryIO:
-        """Open a stored artifact for binary reading."""
+        """Verify and open a stored artifact, raising if its bytes changed."""
 
-        return self._path(key).open("rb")
+        target = self._path(key)
+        expected = self._read_digest(self._integrity_path(key), key)
+        stored = target.open("rb")
+        try:
+            actual, _ = sha256_stream(stored)
+            if actual != expected:
+                raise ArtifactCorrupt(
+                    f"artifact key {key!r} failed SHA-256 verification: "
+                    f"expected {expected}, got {actual}"
+                )
+            stored.seek(0)
+            return stored
+        except BaseException:
+            stored.close()
+            raise
 
     def exists(self, key: str) -> bool:
         """Return whether ``key`` identifies a regular stored file."""
 
-        return self._path(key).is_file()
+        return self._path(key).is_file() and self._integrity_path(key).is_file()
 
     def uri(self, key: str) -> str:
         """Return the stable absolute ``file:`` URI for ``key``."""
