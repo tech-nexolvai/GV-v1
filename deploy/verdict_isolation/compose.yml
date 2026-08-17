@@ -20,6 +20,10 @@
 #   The database is pinned to a fixed address and handed to the process as a CIDR. Names are refused
 #   (D3): resolving one is itself egress, and it leaves a step a poisoned resolver could redirect.
 #
+#   IPv6 is not configured, and the preflight refuses if it finds a globally routable IPv6 route.
+#   `/proc/net/route` is IPv4 only, so a container with a working IPv6 stack would otherwise pass a
+#   check that never looked at the way it could actually get out.
+#
 # The environment below is built, not inherited. Compose passes only what is listed. Do not add
 # `env_file:` or bare `- SOME_VAR` pass-through entries: the preflight refuses any variable outside
 # its allow-list, and it will refuse this service rather than let an inherited credential through.
@@ -53,8 +57,11 @@ services:
     environment:
       # The database, by address. Never a hostname.
       DATABASE_URL: "postgresql+psycopg://gv:gv@10.83.0.2:5432/gv"
-      # The only destination this process may reach.
-      GV_VERDICT_DB_ALLOWLIST: "10.83.0.2/32"
+      # The only destination this process may reach. The whole subnet, not just the database's
+      # address: the kernel holds a connected route to 10.83.0.0/24, so that is genuinely what this
+      # process can reach, and the preflight compares the allowlist against the routing table. A
+      # /32 here would have been a claim the routes contradict. Only `db` and `verdict` are on it.
+      GV_VERDICT_DB_ALLOWLIST: "10.83.0.0/24"
       # Somewhere outside that range, which must prove unreachable. A public anycast resolver: if
       # this process can open a socket to it, the network is not what this file says it is.
       GV_VERDICT_EGRESS_PROBE: "1.1.1.1:443"

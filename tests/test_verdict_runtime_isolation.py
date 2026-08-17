@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: An environment that should pass: the database pinned by address, a probe target outside it.
 ISOLATED = {
     "DATABASE_URL": "postgresql+psycopg://gv:gv@10.83.0.2:5432/gv",
-    DB_ALLOWLIST_VARIABLE: "10.83.0.2/32",
+    DB_ALLOWLIST_VARIABLE: "10.83.0.0/24",
     EGRESS_PROBE_VARIABLE: "1.1.1.1:443",
     "PATH": "/usr/local/bin:/usr/bin",
 }
@@ -89,6 +89,15 @@ def _no_route_table() -> str:
     raise OSError(2, "No such file or directory")
 
 
+def _no_ipv6() -> str:
+    """No IPv6 table. Unlike the IPv4 case this is an answer, not an unknown: the file's absence is
+    the fact that there is no stack to route anything."""
+    raise OSError(2, "No such file or directory")
+
+
+_ALLOWED = (ipaddress.IPv4Network("10.83.0.0/24"),)
+
+
 # ---------------------------------------------------------------------------
 # The environment is an allow-list (D5)
 # ---------------------------------------------------------------------------
@@ -96,7 +105,12 @@ def _no_route_table() -> str:
 
 def test_an_isolated_process_starts() -> None:
     """The control has to be able to say yes, or the refusals below prove nothing."""
-    assert_isolated(ISOLATED, connect=_no_route, read_routes=_routes(NO_DEFAULT_ROUTE))
+    assert_isolated(
+        ISOLATED,
+        connect=_no_route,
+        read_routes=_routes(NO_DEFAULT_ROUTE),
+        read_ipv6_routes=_no_ipv6,
+    )
 
 
 def test_a_model_credential_is_refused() -> None:
@@ -201,14 +215,24 @@ def test_a_silent_drop_is_indeterminate_not_blocked() -> None:
 
 def test_a_reachable_network_refuses_to_start() -> None:
     with pytest.raises(IsolationBroken, match="is reachable"):
-        assert_isolated(ISOLATED, connect=_reachable, read_routes=_routes(NO_DEFAULT_ROUTE))
+        assert_isolated(
+            ISOLATED,
+            connect=_reachable,
+            read_routes=_routes(NO_DEFAULT_ROUTE),
+            read_ipv6_routes=_no_ipv6,
+        )
 
 
 def test_an_indeterminate_network_refuses_to_start() -> None:
     """Fail-closed. "Cannot determine" is not "isolated", and an unverifiable safety control is a
     failed one — the same reason `NOT_MEASURED` is never treated as a pass in the release gates."""
     with pytest.raises(IsolationBroken, match="could not be determined"):
-        assert_isolated(ISOLATED, connect=_dropped, read_routes=_routes(NO_DEFAULT_ROUTE))
+        assert_isolated(
+            ISOLATED,
+            connect=_dropped,
+            read_routes=_routes(NO_DEFAULT_ROUTE),
+            read_ipv6_routes=_no_ipv6,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -295,25 +319,37 @@ def test_a_default_route_refuses_to_start() -> None:
     and still route everywhere else — the probe would report success. With a default route present
     the kernel can send a packet anywhere, and that is decided here rather than sampled."""
     with pytest.raises(IsolationBroken, match="default route"):
-        assert_isolated(ISOLATED, connect=_no_route, read_routes=_routes(WITH_DEFAULT_ROUTE))
+        assert_isolated(
+            ISOLATED,
+            connect=_no_route,
+            read_routes=_routes(WITH_DEFAULT_ROUTE),
+            read_ipv6_routes=_no_ipv6,
+        )
 
 
 def test_no_default_route_is_accepted() -> None:
-    assert_no_route_off_the_network(_routes(NO_DEFAULT_ROUTE))
+    assert_no_route_off_the_network(_ALLOWED, read=_routes(NO_DEFAULT_ROUTE), read_ipv6=_no_ipv6)
 
 
 def test_an_unreadable_routing_table_refuses_to_start() -> None:
     """Unknown is refused, the same rule as an indeterminate probe. This is what happens on a
     developer machine, correctly — a laptop is not an isolated network."""
     with pytest.raises(IsolationBroken, match="could not be read"):
-        assert_isolated(ISOLATED, connect=_no_route, read_routes=_no_route_table)
+        assert_isolated(
+            ISOLATED, connect=_no_route, read_routes=_no_route_table, read_ipv6_routes=_no_ipv6
+        )
 
 
 def test_a_reachable_address_is_refused_even_when_the_routes_look_clean() -> None:
     """Why the probe is kept. If the table says there is no way out and a packet reaches something
     anyway, the two disagree and neither should be trusted."""
     with pytest.raises(IsolationBroken, match="disagree"):
-        assert_isolated(ISOLATED, connect=_reachable, read_routes=_routes(NO_DEFAULT_ROUTE))
+        assert_isolated(
+            ISOLATED,
+            connect=_reachable,
+            read_routes=_routes(NO_DEFAULT_ROUTE),
+            read_ipv6_routes=_no_ipv6,
+        )
 
 
 @pytest.mark.parametrize("bad", ["1.1.1.1:0", "1.1.1.1:70000", "1.1.1.1:-1"])
@@ -322,3 +358,41 @@ def test_a_port_outside_the_valid_range_is_refused(bad: str) -> None:
     so it would escape the probe and surface as a traceback rather than a refusal."""
     with pytest.raises(IsolationBroken, match="outside 1-65535"):
         parse_probe_target(bad)
+
+
+def test_a_gatewayless_default_route_is_still_a_default_route() -> None:
+    """The form the first version missed. `default dev eth0` carries no gateway and grants exactly
+    the same reachability, so requiring a non-zero gateway checked only one shape of mistake."""
+    on_link = NO_DEFAULT_ROUTE + "eth0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n"
+    with pytest.raises(IsolationBroken, match="default route"):
+        assert_no_route_off_the_network(_ALLOWED, read=_routes(on_link), read_ipv6=_no_ipv6)
+
+
+def test_a_route_to_an_unrelated_subnet_is_refused() -> None:
+    """Egress does not have to be a default route. A route to somewhere else entirely is a way out,
+    and until the allowlist was passed in there was nothing to compare it against."""
+    extra = NO_DEFAULT_ROUTE + "eth1\t0000A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n"
+    with pytest.raises(IsolationBroken, match="outside the permitted range"):
+        assert_no_route_off_the_network(_ALLOWED, read=_routes(extra), read_ipv6=_no_ipv6)
+
+
+def test_a_global_ipv6_route_is_refused() -> None:
+    """`/proc/net/route` is IPv4 only, so a container with working IPv6 sailed through a check that
+    never looked at it."""
+    table = "20010db8000000000000000000000000 20 " + " ".join(["00"] * 7) + " eth0\n"
+    with pytest.raises(IsolationBroken, match="IPv6"):
+        assert_no_route_off_the_network(
+            _ALLOWED, read=_routes(NO_DEFAULT_ROUTE), read_ipv6=lambda: table
+        )
+
+
+def test_link_local_ipv6_is_not_treated_as_a_way_out() -> None:
+    table = "fe800000000000000000000000000000 0a " + " ".join(["00"] * 7) + " eth0\n"
+    assert_no_route_off_the_network(
+        _ALLOWED, read=_routes(NO_DEFAULT_ROUTE), read_ipv6=lambda: table
+    )
+
+
+def test_an_absent_ipv6_table_is_an_answer_not_an_unknown() -> None:
+    """The one absence here that is proof rather than ignorance: no file means no stack."""
+    assert_no_route_off_the_network(_ALLOWED, read=_routes(NO_DEFAULT_ROUTE), read_ipv6=_no_ipv6)

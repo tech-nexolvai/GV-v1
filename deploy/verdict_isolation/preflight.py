@@ -30,13 +30,15 @@ Three rulings shape what follows, all from `docs/decisions/F1_6_RUNTIME_ISOLATIO
 * **D5 — the environment is an allow-list.** A deny-list of known model providers fails open the
   first time somebody adds a provider nobody enumerated.
 
-**What establishes isolation, and what merely corroborates it.** Worth being exact, because an
-earlier version of this module was not. Dialling an address and finding it unreachable shows that
+**What establishes isolation, and what merely corroborates it.** Worth being exact, because two
+earlier versions of this module were not. Dialling an address and finding it unreachable shows that
 *that address* is unreachable; it says nothing about anywhere else, and no number of samples turns
-that into "no egress except the database". The claim is established by the kernel routing table: with
-no default route there is nowhere to send a packet that is not directly connected — not "does not",
-*cannot*. `assert_no_route_off_the_network` checks that property; `probe_egress` corroborates it, and
-exists so that a routing table which disagrees with reality is caught rather than believed.
+that into "no egress except the database". The claim is established from the kernel routing tables,
+which are the complete list of places a packet can be sent: every route must stay inside the
+permitted range, there must be no default route in either its gateway or on-link form, and IPv6 must
+offer nothing globally routable. `assert_no_route_off_the_network` checks that; `probe_egress`
+corroborates it, and exists so that a routing table which disagrees with reality is caught rather
+than believed.
 """
 
 from __future__ import annotations
@@ -44,7 +46,8 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
-from collections.abc import Iterable, Mapping
+import struct
+from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
 from pathlib import Path
 from typing import Final
@@ -190,7 +193,7 @@ def probe_egress(
     port: int,
     *,
     timeout: float = PROBE_TIMEOUT_SECONDS,
-    connect: object = None,
+    connect: Callable[[str, int, float], None] | None = None,
 ) -> EgressState:
     """Dial an address that must be unreachable, and report which of the three states applies.
 
@@ -210,7 +213,7 @@ def probe_egress(
     """
     dial = connect if connect is not None else _connect
     try:
-        dial(address, port, timeout)  # type: ignore[operator]
+        dial(address, port, timeout)
     except OSError as error:
         import errno
 
@@ -229,79 +232,162 @@ def _connect(address: str, port: int, timeout: float) -> None:
         sock.connect((address, port))
 
 
-#: Where Linux publishes the kernel routing table. Read rather than probed, because it answers a
+#: Where Linux publishes the kernel routing tables. Read rather than probed, because they answer a
 #: different and stronger question — see `assert_no_route_off_the_network`.
 ROUTE_TABLE: Final = "/proc/net/route"
+IPV6_ROUTE_TABLE: Final = "/proc/net/ipv6_route"
+
+#: IPv6 destinations a route may legitimately cover without granting egress: loopback, link-local
+#: and multicast. Anything else is somewhere a packet can actually go.
+_IPV6_LOCAL: Final = (
+    ipaddress.IPv6Network("::1/128"),
+    ipaddress.IPv6Network("fe80::/10"),
+    ipaddress.IPv6Network("ff00::/8"),
+    ipaddress.IPv6Network("::/128"),
+)
+
+ReadTable = Callable[[], str]
 
 
 def _read_route_table() -> str:
     return Path(ROUTE_TABLE).read_text(encoding="ascii")
 
 
-def assert_no_route_off_the_network(read: object = None) -> None:
-    """Refuse unless the kernel holds no default route.
+def _read_ipv6_route_table() -> str:
+    return Path(IPV6_ROUTE_TABLE).read_text(encoding="ascii")
+
+
+def _little_endian_network(destination: str, mask: str) -> ipaddress.IPv4Network:
+    """Decode one `/proc/net/route` row. Both columns are little-endian hex, not dotted quads."""
+    address = ipaddress.IPv4Address(struct.unpack("<I", bytes.fromhex(destination))[0])
+    netmask = ipaddress.IPv4Address(struct.unpack("<I", bytes.fromhex(mask))[0])
+    return ipaddress.IPv4Network(f"{address}/{netmask}", strict=False)
+
+
+def assert_no_route_off_the_network(
+    allowlist: Iterable[ipaddress.IPv4Network],
+    *,
+    read: ReadTable | None = None,
+    read_ipv6: ReadTable | None = None,
+) -> None:
+    """Refuse unless every route the kernel holds stays inside the permitted range.
 
     **Why this exists, and why the probe alone was not enough.** Dialling one address and finding it
     unreachable shows that *that address* is unreachable. It says nothing about the rest of the
-    internet: a network could block the probe target and still route to somewhere else entirely, and
-    the probe would report success. The claim "no egress except the database" cannot be established
-    by sampling, however many addresses are sampled.
+    internet: a network could block the probe target and still route somewhere else entirely, and the
+    probe would report success. The claim "no egress except the database" cannot be established by
+    sampling, however many addresses are sampled.
 
-    The routing table answers the question properly. With no default route the kernel has nowhere to
-    send a packet whose destination is not directly connected — not "does not", *cannot*. That is a
-    property of the machine rather than an observation about one destination, and it is what
-    `internal: true` produces.
+    The routing table answers it properly, because it is the complete list of places a packet can be
+    sent. Three things have to be checked and an earlier version of this function checked only the
+    first, which made it weaker than it read:
 
-    The probe is kept, and its role changes: it corroborates that the routing table describes
-    reality. Two independent checks disagreeing is worth knowing about.
+    * **Any default route, gateway or not.** Requiring a non-zero gateway missed the on-link form
+      (`default dev eth0`), which grants exactly the same reachability.
+    * **Every other route, against the allowlist.** A route to some unrelated subnet is egress even
+      though it is not a default route, so the permitted range has to be passed in and compared —
+      otherwise this function is only ever checking for one shape of mistake.
+    * **IPv6.** `/proc/net/route` is IPv4 only. A container with working IPv6 would have sailed
+      through a check that never looked. An absent IPv6 table is proof the stack is off, which is
+      the one absence here that is an answer rather than an unknown.
 
-    Unreadable table means unknown, and unknown is refused (D4). On a developer machine there is no
-    `/proc/net/route` and this refuses — correctly, because a laptop is not an isolated network and
-    the verdict service should not run on one.
+    Unreadable IPv4 table means unknown, and unknown is refused (D4). On a developer machine there is
+    no `/proc/net/route` and this refuses — correctly, because a laptop is not an isolated network.
     """
+    permitted = tuple(allowlist)
     reader = read if read is not None else _read_route_table
     try:
-        table = reader()  # type: ignore[operator]
+        table = reader()
     except OSError as error:
         raise IsolationBroken(
-            f"the kernel routing table at {ROUTE_TABLE} could not be read, so whether this process "
-            "has a route off its network is unknown. Unknown is refused: an unverifiable control is "
-            "a failed one. This is the expected result outside a Linux container, and the verdict "
-            "service is not meant to run outside one."
+            f"the kernel routing table at {ROUTE_TABLE} could not be read, so where this process can "
+            "send a packet is unknown. Unknown is refused: an unverifiable control is a failed one. "
+            "This is the expected result outside a Linux container, and the verdict service is not "
+            "meant to run outside one."
         ) from error
 
-    default_routes: list[str] = []
-    for line in table.splitlines()[1:]:  # first line is the column header
+    escapes: list[str] = []
+    for line in table.splitlines()[1:]:  # the first line is the column header
         fields = line.split()
-        if len(fields) < 3:
+        if len(fields) < 8:
             continue
-        interface, destination, gateway = fields[0], fields[1], fields[2]
-        # Destination 00000000 with a non-zero gateway is the default route: "send anything you do
-        # not otherwise know how to deliver here", which is exactly the capability being excluded.
-        if destination == "00000000" and gateway != "00000000":
-            default_routes.append(f"{interface} via gateway {gateway}")
+        interface, destination, gateway, mask = fields[0], fields[1], fields[2], fields[7]
+        if interface == "lo":
+            continue
+        try:
+            network = _little_endian_network(destination, mask)
+        except (ValueError, struct.error):
+            escapes.append(f"{interface}: unparseable route {destination}/{mask}")
+            continue
+        if network.prefixlen == 0:
+            # A default route, with or without a gateway. The on-link form carries no gateway and
+            # grants the same reachability, which is why the gateway is not part of this test.
+            escapes.append(f"{interface}: default route (via {gateway})")
+        elif not any(network.subnet_of(allowed) for allowed in permitted):
+            escapes.append(f"{interface}: route to {network}, which is outside the permitted range")
 
-    if default_routes:
+    if escapes:
         raise IsolationBroken(
-            f"the kernel holds a default route ({', '.join(default_routes)}), so this process can "
-            "send a packet to any address on the internet. Isolation here is a property of the "
+            "the kernel can send packets outside the permitted range — "
+            + "; ".join(escapes)
+            + f". Permitted: {[str(n) for n in permitted]}. Isolation here is a property of the "
             "network, not of a firewall rule: give the verdict service a network with no gateway "
-            "(`internal: true`) rather than one it is merely discouraged from using."
+            "(`internal: true`) whose subnet the allowlist covers, rather than one it is merely "
+            "discouraged from using."
+        )
+
+    _assert_no_ipv6_route(read_ipv6)
+
+
+def _assert_no_ipv6_route(read: ReadTable | None = None) -> None:
+    """Refuse if IPv6 offers a way out. An absent table means the stack is off, which is an answer."""
+    reader = read if read is not None else _read_ipv6_route_table
+    try:
+        table = reader()
+    except OSError:
+        # Not the same as the IPv4 case. There, an unreadable table hides routes that may exist;
+        # here, the file's absence *is* the fact that there is no IPv6 stack to route anything.
+        return
+
+    reachable: list[str] = []
+    for line in table.splitlines():
+        fields = line.split()
+        if len(fields) < 10:
+            continue
+        destination, prefix_length, interface = fields[0], fields[1], fields[-1]
+        if interface == "lo":
+            continue
+        try:
+            address = ipaddress.IPv6Address(int(destination, 16))
+            network = ipaddress.IPv6Network((address, int(prefix_length, 16)), strict=False)
+        except ValueError:
+            reachable.append(f"{interface}: unparseable IPv6 route {destination}/{prefix_length}")
+            continue
+        if not any(network.subnet_of(local) for local in _IPV6_LOCAL):
+            reachable.append(f"{interface}: IPv6 route to {network}")
+
+    if reachable:
+        raise IsolationBroken(
+            "IPv6 offers a way out of this network — "
+            + "; ".join(reachable)
+            + ". The database is reached over IPv4, so IPv6 has no legitimate destination here. "
+            "Disable it for this container rather than relying on nothing choosing to use it."
         )
 
 
 def assert_isolated(
     environment: Mapping[str, str] | None = None,
     *,
-    connect: object = None,
-    read_routes: object = None,
+    connect: Callable[[str, int, float], None] | None = None,
+    read_routes: ReadTable | None = None,
+    read_ipv6_routes: ReadTable | None = None,
 ) -> None:
     """Raise `IsolationBroken` unless this process is provably isolated.
 
-    Called by the entrypoint before the verdict service is `exec`ed. Every failure raises rather
-    than warns: `docs/DESIGN_CONTROLS.md` §2.3 requires a verdict process that finds itself with
-    network access to fail to start rather than run degraded, and a warning is how a control becomes
-    a line in a log nobody reads.
+    Called by the entrypoint before the verdict service is `exec`ed. Every failure raises rather than
+    warns: `docs/DESIGN_CONTROLS.md` §2.3 requires a verdict process that finds itself with network
+    access to fail to start rather than run degraded, and a warning is how a control becomes a line
+    in a log nobody reads.
     """
     environment = os.environ if environment is None else environment
 
@@ -313,32 +399,33 @@ def assert_isolated(
 
     if _within(address, allowlist):
         raise IsolationBroken(
-            f"the egress probe target {address} is inside the permitted range {[str(n) for n in allowlist]}. "
-            "Probing an address the process is allowed to reach proves nothing at all — it would "
-            "report success in exactly the case this check exists to catch."
+            f"the egress probe target {address} is inside the permitted range "
+            f"{[str(n) for n in allowlist]}. Probing an address the process is allowed to reach "
+            "proves nothing at all — it would report success in exactly the case this check exists "
+            "to catch."
         )
 
-    # The property first: no route off the network. This is what actually establishes "no egress
-    # except the database" — the probe below cannot, because one unreachable address says nothing
-    # about the others.
-    assert_no_route_off_the_network(read_routes)
+    # The property first: every route the kernel holds stays inside the permitted range. This is
+    # what establishes "no egress except the database". The probe below cannot, because one
+    # unreachable address says nothing about the others.
+    assert_no_route_off_the_network(allowlist, read=read_routes, read_ipv6=read_ipv6_routes)
 
     # Then the corroboration. If the routing table says there is no way out and a packet reaches
     # something anyway, one of the two is wrong and neither should be trusted.
     state = probe_egress(address, port, connect=connect)
     if state is EgressState.REACHABLE:
         raise IsolationBroken(
-            f"{address}:{port} is reachable, so this process has egress beyond the database — and "
-            "it reached it despite a routing table that says it cannot, so the two disagree. The "
+            f"{address}:{port} is reachable, so this process has egress beyond the database — and it "
+            "reached it despite a routing table that says it cannot, so the two disagree. The "
             "verdict service must not run: a path out is a path by which something other than exact "
             "arithmetic on qualified evidence could influence a verdict."
         )
     if state is EgressState.INDETERMINATE:
         raise IsolationBroken(
             f"whether {address}:{port} is reachable could not be determined — the connection was "
-            "dropped silently rather than refused or routed. That is not the same as isolation, "
-            "and an unverifiable control is a failed one. Give the process no route to anything "
-            "but the database, rather than a rule that discards its packets."
+            "dropped silently rather than refused or routed. That is not the same as isolation, and "
+            "an unverifiable control is a failed one. Give the process no route to anything but the "
+            "database, rather than a rule that discards its packets."
         )
 
 
