@@ -23,6 +23,14 @@ dependencies = ["pydantic>=2.10", "shapely>=2"]
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "black", "mypy"]
 
+# Phase C2 — the control-plane API (#203). All permissive:
+#   fastapi MIT · uvicorn BSD-3-Clause · starlette BSD-3-Clause (transitive)
+#   pydantic-settings MIT · httpx BSD-3-Clause (test client)
+# Recorded here because AGENTS.md §2.8 applies to anything installed, and
+# tests/test_licences.py reads the metadata of what is actually present rather than
+# trusting this comment.
+api = ["fastapi", "uvicorn", "pydantic-settings", "httpx"]
+
 # Phase 1-2 — extraction (all MIT / Apache / MPL)
 extraction = [
     "pdfplumber",
