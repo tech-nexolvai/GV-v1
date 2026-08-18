@@ -30,7 +30,7 @@ from app.config import Settings
 from app.errors import REQUEST_ID_STATE, _envelope, install_error_handlers
 
 #: The six API groups that will hang off this app: packages, documents, findings, review, rules and
-#: operations. None exist yet; the skeleton is what they attach to.
+#: operations. Findings is the first one wired; the rest attach the same way.
 API_PREFIX = "/api/v1"
 
 
@@ -51,6 +51,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = resolved
     install_error_handlers(app)
+
+    # Imported here rather than at module scope: the router pulls in the ORM and the query layer, and
+    # a module-level import would make `app.main` drag the database into anything that merely wants
+    # `create_app` — including the isolation tests, whose whole job is to prove what does not import
+    # what.
+    from app.api import findings
+
+    app.include_router(findings.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def _request_id(
