@@ -260,6 +260,31 @@ def test_a_diagonal_line_has_no_axis_and_refuses() -> None:
     assert "axis" in result.reason
 
 
+def test_a_merely_skewed_line_resolves_rather_than_refusing() -> None:
+    """**A known gap, pinned so it is a decision rather than a surprise.**
+
+    Only an *exact* tie has no dominant axis. This line leans 30° off horizontal and is resolved
+    against the x axis, silently — which is this module's own failure mode, since nothing upstream
+    promises dimension lines arrive near-axis-aligned. #179 says nothing about axis, and #178
+    deskews the *page*, which is a different guarantee: a perfectly deskewed sheet can still carry a
+    diagonal dimension.
+
+    This test asserts the behaviour as it stands, not as it should be. The margin separating
+    "aligned enough to project" from "diagonal, refuse" is empirical and `data/drawings/` is empty,
+    so guessing one now would encode today's guess as ground truth. When that number arrives this
+    test is the one that has to change, and it says so.
+    """
+    line = DimensionExtent(
+        start=StoredPoint(_d("0.10"), _d("0.10")),
+        end=StoredPoint(_d("0.40"), _d("0.2732")),  # rise/run ≈ tan(30°)
+        document_version_id=DOCUMENT,
+        page=PAGE,
+    )
+
+    result = resolve_span(line, (_item("0.10", "0.40"),), endpoint_tolerance=TOLERANCE)
+    assert isinstance(result, Span), "today it resolves; a future axis-dominance margin refuses"
+
+
 def test_a_refusal_always_says_what_could_not_be_decided() -> None:
     with pytest.raises(ValueError, match="what could not be decided"):
         CannotResolve("  ")
