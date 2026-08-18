@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import inspect
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -39,7 +39,15 @@ def _d(value: str) -> Decimal:
     return Decimal(value)
 
 
-def _box(x0: str, x1: str, y0: str = "0.20", y1: str = "0.30", *, document=None, page=None):
+def _box(
+    x0: str,
+    x1: str,
+    y0: str = "0.20",
+    y1: str = "0.30",
+    *,
+    document: UUID | None = None,
+    page: int | None = None,
+) -> Polygon:
     """A rectangle in stored space. Only the axis under test carries meaning."""
     return Polygon(
         points=(
@@ -61,8 +69,8 @@ def _item(
     y0: str = "0.20",
     y1: str = "0.30",
     *,
-    document=None,
-    page=None,
+    document: UUID | None = None,
+    page: int | None = None,
 ) -> DrawingItem:
     resolved_document = document or DOCUMENT
     resolved_page = PAGE if page is None else page
@@ -293,6 +301,24 @@ def test_a_float_tolerance_is_refused() -> None:
             (_item("0.10", "0.40"),),
             endpoint_tolerance=0.001,  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "Infinity", "-Infinity"])
+def test_a_tolerance_that_is_not_a_finite_number_is_refused(value: str) -> None:
+    """`Decimal("NaN")` is a `Decimal` and `Decimal("NaN") < 0` is `False`, so it passed both earlier
+    checks — and then every `abs(...) <= NaN` below was `False` too. A dimension line sitting exactly
+    on an item refused, with the reason "no item starts and ends where the dimension line does".
+
+    That is the failure this module exists to prevent, wearing the costume of the safe answer: a
+    reviewer reads the refusal and goes looking for a cabinet that was never missing. Infinity is the
+    mirror image — everything aligns and whichever item comes first wins.
+    """
+    item = _item("0.10", "0.40")
+    line = _line("0.10", "0.40")
+
+    assert isinstance(resolve_span(line, (item,), endpoint_tolerance=TOLERANCE), Span)
+    with pytest.raises(ValueError, match="finite"):
+        resolve_span(line, (item,), endpoint_tolerance=Decimal(value))
 
 
 def test_a_negative_tolerance_is_refused() -> None:

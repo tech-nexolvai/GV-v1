@@ -193,6 +193,17 @@ def _check_tolerance(tolerance: Decimal) -> None:
             "endpoint_tolerance must be a Decimal. A float tolerance would make the boundary "
             "between 'spans this cabinet' and 'spans the run' depend on binary rounding."
         )
+    if not tolerance.is_finite():
+        # NaN slipped through every check below it: `Decimal("NaN") < 0` is False, and so is every
+        # `abs(...) <= NaN` afterwards, so a line sitting exactly on an item refused with the reason
+        # "no item starts and ends where the dimension line does". A refusal naming the wrong cause
+        # is worse than a crash — a reviewer goes looking for a missing cabinet. Infinity is the
+        # mirror image: every item aligns, and the first one found wins.
+        raise ValueError(
+            "endpoint_tolerance must be a finite number. A NaN or infinite tolerance does not "
+            "widen or narrow the match, it removes it — every comparison silently answers the same "
+            "way and the refusal names a cause that is not the real one."
+        )
     if tolerance < 0:
         raise ValueError("endpoint_tolerance cannot be negative")
 
