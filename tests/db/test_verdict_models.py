@@ -92,6 +92,21 @@ def _run(session: Session) -> CheckRun:
     return run
 
 
+def _finding_for(
+    run: CheckRun, outcome: Outcome, severity: Severity = Severity.CRITICAL
+) -> Finding:
+    """A finding carries the revision its run belongs to (#334): the composite foreign key refuses a
+    finding claiming a revision its own run does not have."""
+    return Finding(
+        check_run_id=run.id,
+        package_revision_id=run.package_revision_id,
+        outcome=outcome.value,
+        severity=severity.value,
+        trace={},
+        parameter_set_versions={},
+    )
+
+
 def _operand(run: CheckRun, name: str, value: str, status: EvidenceStatus) -> VerdictInput:
     exact = Fraction(value)
     return VerdictInput(
@@ -188,6 +203,7 @@ def test_a_finding_recomputes_from_its_own_stored_operands(postgres_engine: Engi
         session.add(
             Finding(
                 check_run_id=run.id,
+                package_revision_id=run.package_revision_id,
                 outcome=Outcome.PASS.value,
                 severity=Severity.CRITICAL.value,
                 trace={"sum": "2501.5", "unit": "mm"},
@@ -281,35 +297,29 @@ def test_one_finding_per_check_run(postgres_engine: Engine) -> None:
     _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
 
-    def finding(run_id, outcome: Outcome) -> Finding:
-        return Finding(
-            check_run_id=run_id,
-            outcome=outcome.value,
-            severity=Severity.CRITICAL.value,
-            trace={},
-            parameter_set_versions={},
-        )
-
     with unit_of_work(factory) as session:
-        session.add(finding(_run(session).id, Outcome.PASS))
+        session.add(_finding_for(_run(session), Outcome.PASS))
     with pytest.raises(IntegrityError), unit_of_work(factory) as session:
         existing = session.scalars(select(CheckRun)).one()
-        session.add(finding(existing.id, Outcome.FAIL))
+        session.add(_finding_for(existing, Outcome.FAIL))
+
+
+def _bad_outcome(run: CheckRun) -> Finding:
+    return Finding(
+        check_run_id=run.id,
+        package_revision_id=run.package_revision_id,
+        outcome="PROBABLY_FINE",
+        severity=Severity.CRITICAL.value,
+        trace={},
+        parameter_set_versions={},
+    )
 
 
 def test_an_unknown_outcome_is_refused(postgres_engine: Engine) -> None:
     _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with pytest.raises(IntegrityError), unit_of_work(factory) as session:
-        session.add(
-            Finding(
-                check_run_id=_run(session).id,
-                outcome="PROBABLY_FINE",
-                severity=Severity.CRITICAL.value,
-                trace={},
-                parameter_set_versions={},
-            )
-        )
+        session.add(_bad_outcome(_run(session)))
 
 
 def test_a_snapshot_cannot_be_deleted_while_a_run_cites_it(postgres_engine: Engine) -> None:
@@ -329,15 +339,6 @@ def test_a_re_run_produces_a_new_finding_rather_than_editing_one(postgres_engine
     factory = session_factory(postgres_engine)
     with unit_of_work(factory) as session:
         for outcome in (Outcome.FAIL, Outcome.PASS):
-            run = _run(session)
-            session.add(
-                Finding(
-                    check_run_id=run.id,
-                    outcome=outcome.value,
-                    severity=Severity.CRITICAL.value,
-                    trace={},
-                    parameter_set_versions={},
-                )
-            )
+            session.add(_finding_for(_run(session), outcome))
     with unit_of_work(factory) as session:
         assert {f.outcome for f in session.scalars(select(Finding))} == {"FAIL", "PASS"}
