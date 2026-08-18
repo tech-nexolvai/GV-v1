@@ -35,3 +35,6 @@ frontend/dist/
 .vscode/
 # Explicit rather than incidental: this file holds per-machine tool settings.
 .claude/settings.local.json
+
+# Subagent worktrees. Live git repos; never part of this one.
+.claude/worktrees/
