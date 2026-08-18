@@ -53,7 +53,9 @@ platform = [
     "opentelemetry-sdk",
 ]
 
-# Phase 7 — reports and redlines
+# Phase 7 — reports and redlines. Licences checked when D2.1 (#225) first imported them:
+# reportlab BSD (and its Pillow dependency MIT-CMU) · pypdf BSD-3-Clause · openpyxl MIT.
+# PyMuPDF is the obvious library for this job and is the forbidden one — AGPL, AGENTS.md §2.8.
 reports = ["reportlab", "pypdf", "openpyxl"]
 
 # Flat layout with several top-level packages: setuptools cannot auto-discover it,
