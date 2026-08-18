@@ -1,6 +1,7 @@
 """Authentication and project-scoped authorisation."""
 
 from app.auth.dependencies import (
+    AUTHORISATION_MARKER,
     UNSCOPED_ROUTES,
     AuthenticationNotConfigured,
     authenticate,
@@ -8,9 +9,10 @@ from app.auth.dependencies import (
     require_project_access,
     require_role,
 )
-from app.auth.roles import PERMISSIONS, Action, Principal, Role
+from app.auth.roles import PERMISSIONS, Action, Principal, Role, validate_permissions
 
 __all__ = [
+    "AUTHORISATION_MARKER",
     "PERMISSIONS",
     "UNSCOPED_ROUTES",
     "Action",
@@ -21,4 +23,5 @@ __all__ = [
     "require_action",
     "require_project_access",
     "require_role",
+    "validate_permissions",
 ]

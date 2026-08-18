@@ -55,18 +55,30 @@ PERMISSIONS: dict[Action, frozenset[Role]] = {
     Action.MANAGE_PROJECT: frozenset({Role.ADMIN}),
 }
 
-_unassigned = set(Action) - set(PERMISSIONS)
-_empty = {action for action, roles in PERMISSIONS.items() if not roles}
-if _unassigned or _empty:  # pragma: no cover - a wiring error, caught at import
-    raise RuntimeError(
-        f"actions with no roles assigned: {sorted(a.value for a in _unassigned | _empty)}. "
-        "An unassigned action is one no check can evaluate, and the safe reading of that is not "
-        "obvious — so it fails here rather than at the first request.\n\n"
-        "An action mapped to an *empty* set counts too, and it is the easier one to write by "
-        "accident: it passes a presence check, reads as deliberate, and means nobody may ever take "
-        "the action. A permission nobody holds and nobody intended is indistinguishable from a "
-        "broken endpoint."
-    )
+
+def validate_permissions(mapping: dict[Action, frozenset[Role]]) -> None:
+    """Refuse a permission table that cannot answer the question it exists for.
+
+    A callable rather than inline code at import, so it can be *tested*. The first version ran the
+    check at module level and the test asserted that the shipped mapping was fine — which would still
+    have passed with the validator deleted. A guard whose test cannot fail on a wrong answer is the
+    pattern this project keeps meeting.
+    """
+    unassigned = set(Action) - set(mapping)
+    empty = {action for action, roles in mapping.items() if not roles}
+    if unassigned or empty:
+        raise RuntimeError(
+            f"actions with no roles assigned: {sorted(a.value for a in unassigned | empty)}. "
+            "An unassigned action is one no check can evaluate, and the safe reading of that is not "
+            "obvious — so it fails here rather than at the first request.\n\n"
+            "An action mapped to an *empty* set counts too, and it is the easier one to write by "
+            "accident: it passes a presence check, reads as deliberate, and means nobody may ever "
+            "take the action. A permission nobody holds and nobody intended is indistinguishable "
+            "from a broken endpoint."
+        )
+
+
+validate_permissions(PERMISSIONS)
 
 
 @dataclass(frozen=True, slots=True)

@@ -21,6 +21,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.auth import (
+    AUTHORISATION_MARKER,
     PERMISSIONS,
     UNSCOPED_ROUTES,
     Action,
@@ -50,6 +51,28 @@ def _principal(*roles: Role, projects: frozenset | None = None) -> Principal:
         roles=frozenset(roles),
         projects=projects if projects is not None else frozenset({PROJECT_A}),
     )
+
+
+def _impostor(project_id: str) -> str:
+    """Named to look like the real check, and carrying no marker.
+
+    Defined at module level because `from __future__ import annotations` makes the `Depends(...)`
+    inside an `Annotated[...]` a *string*, resolved from module globals — a dependency defined inside
+    a test function is never seen, and FastAPI silently resolves the real name instead. That is what
+    made the first version of this test pass for the wrong reason.
+    """
+    return "not a check"
+
+
+_impostor.__name__ = "require_project_access"
+
+
+def _layer_one(principal: Annotated[Principal, Depends(require_project_access)]) -> Principal:
+    return principal
+
+
+def _layer_two(principal: Annotated[Principal, Depends(_layer_one)]) -> Principal:
+    return principal
 
 
 def _app_with(principal: Principal) -> FastAPI:
@@ -217,32 +240,49 @@ def test_require_role_and_require_action_agree() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _dependency_names(route: APIRoute) -> set[str]:
-    names = {
-        getattr(dependency.call, "__name__", "") for dependency in route.dependant.dependencies
-    }
-    names |= {
-        getattr(sub.call, "__name__", "")
-        for dependency in route.dependant.dependencies
-        for sub in dependency.dependencies
-    }
-    return names
+def _walk(dependant: object) -> list[object]:
+    """Every callable in a route's dependency graph, at any depth.
+
+    Recursive rather than two levels deep. The first version looked at the route's dependencies and
+    their immediate children, so a legitimate authorisation dependency nested any deeper read as
+    absent — and the audit would have reported a properly guarded route as unguarded, which is the
+    failure that gets a guard deleted rather than fixed.
+    """
+    found: list[object] = []
+    for dependency in getattr(dependant, "dependencies", []):
+        if dependency.call is not None:
+            found.append(dependency.call)
+        found.extend(_walk(dependency))
+    return found
+
+
+def _enforcers(route: APIRoute) -> list[object]:
+    """The callables that actually enforce authorisation, recognised by mark rather than by name.
+
+    `require_role` and `require_action` both return a closure called `dependency`, so matching on
+    `__name__` meant *any* callable with that name satisfied the audit — including one enforcing
+    nothing. The marker is set by the module that does the enforcing.
+    """
+    return [c for c in _walk(route.dependant) if getattr(c, AUTHORISATION_MARKER, False)]
 
 
 def _guarded(route: APIRoute) -> bool:
     """Whether a route carries any authorisation at all."""
-    return bool({"authenticate", "require_project_access", "dependency"} & _dependency_names(route))
+    return bool(_enforcers(route))
 
 
 def _project_scoped(route: APIRoute) -> bool:
-    """Whether a route carries the *project* boundary specifically.
+    """Whether a route carries the *project* boundary specifically, by identity.
 
     Separate from `_guarded`, because the first version conflated them: any dependency counted, so a
     route under `/projects/{project_id}/...` carrying only a role check read as guarded while having
     no project scope at all. A reviewer holding the right role could then reach another project's
     data — the exact failure this story exists to prevent, passing its own enumerating test.
+
+    Compared by identity, not by name: a function called `require_project_access` that checked
+    nothing would otherwise satisfy the audit.
     """
-    return "require_project_access" in _dependency_names(route)
+    return any(callable_ is require_project_access for callable_ in _walk(route.dependant))
 
 
 def test_every_route_is_guarded_or_explicitly_exempt() -> None:
@@ -340,3 +380,69 @@ def test_an_unguarded_route_is_actually_caught() -> None:
         if isinstance(route, APIRoute) and route.path not in UNSCOPED_ROUTES and not _guarded(route)
     ]
     assert "/projects/{project_id}/forgot-the-guard" in unguarded
+
+
+def test_a_lookalike_dependency_does_not_satisfy_the_audit() -> None:
+    """Matching on `__name__` meant any callable with the right name counted. This one enforces
+    nothing and is named to look like it does."""
+    app = create_app(_settings())
+
+    # `_impostor` is defined at module level and named `require_project_access`. It has to be
+    # module-level: `from __future__ import annotations` makes the `Depends(...)` inside an
+    # `Annotated[...]` a string resolved from module globals, so a shadow defined here would be
+    # invisible and FastAPI would resolve the real function — which is what made the first version
+    # of this test pass for the wrong reason.
+    @app.get("/projects/{project_id}/impostor")
+    async def impostor(
+        _: Annotated[str, Depends(_impostor)],
+    ) -> dict[str, str]:  # pragma: no cover - never called
+        return {}
+
+    offenders = [
+        route.path
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        and "{project_id}" in route.path
+        and not _project_scoped(route)
+    ]
+    assert "/projects/{project_id}/impostor" in offenders
+
+
+def test_a_deeply_nested_authorisation_dependency_is_still_found() -> None:
+    """The audit walks the whole graph. A two-level look would report a properly guarded route as
+    unguarded — the failure that gets a guard deleted rather than fixed."""
+    app = create_app(_settings())
+
+    @app.get("/projects/{project_id}/deep")
+    async def deep(
+        principal: Annotated[Principal, Depends(_layer_two)],
+    ) -> dict[str, str]:  # pragma: no cover - never called
+        return {"id": principal.id}
+
+    route = next(r for r in app.routes if isinstance(r, APIRoute) and r.path.endswith("/deep"))
+    assert _project_scoped(route) and _guarded(route)
+
+
+def test_the_permission_validator_refuses_an_empty_role_set() -> None:
+    """The validator itself, not the shipped mapping. The previous test asserted only that today's
+    table is fine, so it would have passed with the validator deleted."""
+    from app.auth.roles import validate_permissions
+
+    with pytest.raises(RuntimeError, match="no roles assigned"):
+        validate_permissions({action: frozenset() for action in Action})
+
+
+def test_the_permission_validator_refuses_a_missing_action() -> None:
+    from app.auth.roles import validate_permissions
+
+    partial = {action: frozenset({Role.ADMIN}) for action in Action}
+    partial.pop(Action.PUBLISH_RULE)
+    with pytest.raises(RuntimeError, match="publish_rule"):
+        validate_permissions(partial)
+
+
+def test_the_validator_accepts_the_shipped_table() -> None:
+    """It has to be able to say yes, or the refusals prove nothing."""
+    from app.auth.roles import validate_permissions
+
+    validate_permissions(PERMISSIONS)

@@ -89,6 +89,13 @@ def require_project_access(project_id: UUID, principal: Authenticated) -> Princi
     return principal
 
 
+#: Stamped on every callable that enforces authorisation, so the route audit can recognise one by
+#: fact rather than by name. `require_role` and `require_action` both return a closure called
+#: `dependency`, and matching on `__name__` meant any function with that name satisfied the audit —
+#: including one that enforced nothing.
+AUTHORISATION_MARKER = "_gv_enforces_authorisation"
+
+
 def require_role(*roles: Role) -> Callable[..., Principal]:
     """Require one of `roles`, independently of project membership.
 
@@ -108,6 +115,7 @@ def require_role(*roles: Role) -> Callable[..., Principal]:
             )
         return principal
 
+    setattr(dependency, AUTHORISATION_MARKER, True)
     return dependency
 
 
@@ -129,4 +137,9 @@ def require_action(action: Action) -> Callable[..., Principal]:
             )
         return principal
 
+    setattr(dependency, AUTHORISATION_MARKER, True)
     return dependency
+
+
+setattr(require_project_access, AUTHORISATION_MARKER, True)
+setattr(authenticate, AUTHORISATION_MARKER, True)
