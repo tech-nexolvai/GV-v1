@@ -12,6 +12,7 @@ what the boundary exists to prevent.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
@@ -446,3 +447,32 @@ def test_the_validator_accepts_the_shipped_table() -> None:
     from app.auth.roles import validate_permissions
 
     validate_permissions(PERMISSIONS)
+
+
+def test_importing_the_module_is_what_runs_the_validator() -> None:
+    """The three tests above call the validator by hand, so all three still pass if the call at the
+    bottom of `roles.py` is deleted — and then a table with a hole in it ships silently.
+
+    This runs the module itself, with the permission table replaced by an empty one before execution.
+    The module must refuse to import. Rewriting the source rather than asserting the call is present
+    is the difference between checking the mechanism works and checking it is spelled correctly:
+    a call that had been commented out, moved above the table, or wrapped in a swallowed exception
+    would satisfy a text search and fail here.
+    """
+    import ast
+
+    source = Path("app/auth/roles.py").read_text()
+    tree = ast.parse(source)
+    replaced = False
+    for node in tree.body:
+        target = node.target if isinstance(node, ast.AnnAssign) else None
+        if isinstance(target, ast.Name) and target.id == "PERMISSIONS":
+            node.value = ast.Dict(keys=[], values=[])
+            replaced = True
+    assert replaced, "PERMISSIONS is no longer a module-level annotated assignment"
+
+    with pytest.raises(RuntimeError, match="no roles assigned|has no entry"):
+        exec(  # noqa: S102 - executing our own source with one literal swapped is the point
+            compile(ast.fix_missing_locations(tree), "app/auth/roles.py", "exec"),
+            {"__name__": "app.auth.roles_under_test"},
+        )
