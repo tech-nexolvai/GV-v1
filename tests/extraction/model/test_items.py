@@ -16,7 +16,9 @@ from evidence.coordinates import StoredPoint
 from evidence.polygon import Polygon
 from extraction.model.items import (
     DrawingItem,
+    IdentifierKind,
     ItemCorroborationError,
+    PrintedIdentifier,
     ViewIdentity,
     contains,
 )
@@ -175,3 +177,68 @@ def test_the_vocabulary_comes_from_the_neutral_package() -> None:
     from extraction.model import items
 
     assert items.SemanticType.__module__.startswith("vocabulary")
+
+
+# ---------------------------------------------------------------------------
+# The printed identifier — found by review after #330 merged
+# ---------------------------------------------------------------------------
+
+
+def test_an_item_may_carry_no_identifier() -> None:
+    """The acceptance criterion this type could not satisfy. The first version had only `id`, a
+    generated storage key, and no field for what is printed on the drawing — so "an item with no
+    identifier" was not representable at all, and most fillers carry none."""
+    assert _item().identifiers == ()
+
+
+def test_a_generated_id_is_not_the_printed_identifier() -> None:
+    """Conflating the two is what hid the gap: every item had an `id`, so it looked as though every
+    item had an identifier."""
+    item = _item()
+    assert item.id is not None
+    assert not item.identifiers
+
+
+def test_an_item_may_carry_several_identifiers_of_different_kinds() -> None:
+    """A cabinet often carries both a vendor code and a mark, and they disagree often enough that
+    keeping only one would lose the disagreement."""
+    item = _item(
+        identifiers=(
+            PrintedIdentifier(kind=IdentifierKind.VENDOR_UNIQUE, value_as_printed="B24"),
+            PrintedIdentifier(kind=IdentifierKind.MARK, value_as_printed="C-3"),
+        )
+    )
+    assert {entry.kind for entry in item.identifiers} == {
+        IdentifierKind.VENDOR_UNIQUE,
+        IdentifierKind.MARK,
+    }
+
+
+def test_two_identifiers_of_one_kind_are_refused() -> None:
+    """Two marks on one item is a reading to resolve, not a fact to store."""
+    with pytest.raises(ValueError, match="same kind"):
+        _item(
+            identifiers=(
+                PrintedIdentifier(kind=IdentifierKind.MARK, value_as_printed="C-3"),
+                PrintedIdentifier(kind=IdentifierKind.MARK, value_as_printed="C-4"),
+            )
+        )
+
+
+def test_an_identifier_is_kept_exactly_as_printed() -> None:
+    """Not normalised. B9.2 handles OCR variants at match time, where the original is still there to
+    show a reviewer — normalising at read time destroys the evidence they check against."""
+    printed = PrintedIdentifier(kind=IdentifierKind.MARK, value_as_printed="  B-24 ")
+    assert printed.value_as_printed == "  B-24 "
+
+
+def test_an_empty_identifier_is_refused() -> None:
+    """An identifier that says nothing is not an identifier, and storing one would let it match."""
+    for empty in ("", "   "):
+        with pytest.raises(ValueError, match="non-empty text printed"):
+            PrintedIdentifier(kind=IdentifierKind.MARK, value_as_printed=empty)
+
+
+def test_the_identifier_kind_comes_from_the_vocabulary() -> None:
+    with pytest.raises(TypeError, match="IdentifierKind"):
+        PrintedIdentifier(kind="mark", value_as_printed="C-3")  # type: ignore[arg-type]
