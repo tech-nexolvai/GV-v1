@@ -9,15 +9,27 @@ both work because they fail rather than asking people to remember, and immutabil
 same.
 
 **A trigger, not `REVOKE`.** The story's plan proposed revoking `UPDATE, DELETE` from `gv_app` and
-`gv_worker`. Neither role exists, and more importantly CI and local development connect as the
-database owner — `REVOKE` does not restrict a table owner or a superuser, so the revoke would have
-run, the test would have attempted an update, and it would have **succeeded**. The guard would have
-been decoration. A `BEFORE UPDATE OR DELETE` trigger refuses whoever is connected, which is what the
-acceptance means by "fails at the database".
+`gv_worker`. Neither role exists, and CI and local development connect as the database owner —
+`REVOKE` does not restrict an owner or a superuser, so the revoke would have run, the test would have
+attempted an update, and it would have **succeeded**. The guard would have been decoration.
 
-Grants are still worth adding when real application roles exist; a trigger is the floor, not a
-substitute. This is noted rather than done, because inventing roles nothing connects as would be the
-same mistake in a different place.
+**What this does and does not stop, precisely.** The trigger refuses every ordinary `UPDATE` and
+`DELETE`: application code, a psql session, an ORM flush, a well-meant data fix. It does **not** make
+the tables tamper-proof, and it is worth being exact rather than letting "append-only" be read as
+more than it is:
+
+* a table **owner** can `ALTER TABLE ... DISABLE TRIGGER` or drop it outright;
+* a **superuser** can set `session_replication_role = replica` and bypass user triggers entirely.
+
+Both require deliberate action by a role that can already rewrite the schema, so this is the boundary
+of what a trigger can offer — not a hole in this migration. Closing it needs the application to
+connect as a role that owns nothing and holds only `INSERT` and `SELECT`, which is the grant half of
+`C1.12` and is deferred because no such role exists yet and nothing connects as one. Inventing roles
+nothing uses would be the same mistake as the `REVOKE` above: a control that looks enforced and is
+not.
+
+`tests/db/test_append_only.py` demonstrates the owner bypass rather than asserting it is impossible,
+so the limit is recorded where somebody will meet it.
 
 **Schema changes still work.** A row trigger fires on `UPDATE` and `DELETE` of *rows*. `ALTER TABLE`,
 `DROP TABLE` and every other DDL are untouched, so migrations that legitimately change these tables

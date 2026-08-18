@@ -201,3 +201,35 @@ def test_every_protected_table_actually_has_its_trigger(postgres_engine: Engine)
         }
     missing = sorted(set(immutable_table_names()) - installed)
     assert not missing, f"marked immutable but unprotected in the database: {missing}"
+
+
+def test_an_owner_can_disable_the_trigger_and_that_is_the_boundary(postgres_engine: Engine) -> None:
+    """The limit, demonstrated rather than claimed away.
+
+    The migration says the trigger refuses ordinary mutation, and it does. It does **not** make these
+    tables tamper-proof: a table owner can disable or drop the trigger, and a superuser can bypass
+    every user trigger with `session_replication_role = replica`. Both need deliberate action from a
+    role that can already rewrite the schema.
+
+    This test exists so that "append-only" is not read as more than it is. Closing the gap needs the
+    application to connect as a role owning nothing and holding only INSERT and SELECT — the grant
+    half of C1.12, deferred because no such role exists and nothing connects as one. Asserting the
+    bypass were impossible would be a comfortable test and a false one.
+    """
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        _artifact(session)
+
+    with unit_of_work(factory) as session:
+        session.execute(
+            text("ALTER TABLE source_artifacts DISABLE TRIGGER source_artifacts_append_only")
+        )
+        session.execute(text("UPDATE source_artifacts SET size = 7"))
+        session.execute(
+            text("ALTER TABLE source_artifacts ENABLE TRIGGER source_artifacts_append_only")
+        )
+
+    # And it protects again the moment it is re-enabled, so the guard is not left off by the test.
+    with pytest.raises(DBAPIError, match="append-only"), unit_of_work(factory) as session:
+        session.execute(text("UPDATE source_artifacts SET size = 8"))
