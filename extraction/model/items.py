@@ -30,10 +30,39 @@ Verification: `tests/extraction/model/test_items.py`
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from uuid import UUID, uuid4
 
 from evidence.polygon import Polygon
 from vocabulary.semantic_types import SemanticType
+
+
+class IdentifierKind(str, Enum):
+    """What sort of identifier is printed. Matching rules differ by kind, so the distinction is
+    carried rather than flattened: a catalogue number is shared by every unit of that model, while a
+    mark is unique to one drawing."""
+
+    VENDOR_UNIQUE = "vendor_unique"
+    MARK = "mark"
+    CATALOGUE = "catalogue"
+
+
+@dataclass(frozen=True, slots=True)
+class PrintedIdentifier:
+    """An identifier printed on an item, kept exactly as printed.
+
+    Not normalised here. `B9.2` handles OCR variants at match time, where the original is still
+    available to show a reviewer — normalising at read time destroys the evidence they check against.
+    """
+
+    kind: IdentifierKind
+    value_as_printed: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, IdentifierKind):
+            raise TypeError("kind must be an IdentifierKind")
+        if not isinstance(self.value_as_printed, str) or not self.value_as_printed.strip():
+            raise ValueError("an identifier must be the non-empty text printed on the drawing")
 
 
 class ItemCorroborationError(ValueError):
@@ -76,6 +105,19 @@ class DrawingItem:
     item_type: SemanticType
     extent: Polygon
     id: UUID = field(default_factory=uuid4)
+    """Storage identity, generated. **Not** the identifier printed on the drawing — see
+    `identifiers`. Conflating the two is what made the first version of this type unable to
+    represent an item with nothing printed on it, which is most fillers."""
+
+    identifiers: tuple[PrintedIdentifier, ...] = ()
+    """What is printed on the item, if anything.
+
+    Empty by default, because plenty of fillers carry no identifier at all and requiring one would
+    make somebody invent a value — an invented identifier is worse than an absent one, because it
+    matches. Several are allowed: a cabinet often carries both a vendor code and a mark, and they
+    disagree often enough that keeping only one would lose the disagreement.
+    """
+
     corroborated: bool = False
     """Always `False` here. Present so the field exists on the type that `evidence/` promotes into
     and `app/models/drawing.py` persists, not so that a caller may set it — see `__post_init__`."""
@@ -90,6 +132,17 @@ class DrawingItem:
             )
         if not isinstance(self.extent, Polygon):
             raise TypeError("extent must be an evidence.polygon.Polygon")
+        if not isinstance(self.identifiers, tuple) or any(
+            not isinstance(entry, PrintedIdentifier) for entry in self.identifiers
+        ):
+            raise TypeError("identifiers must be a tuple of PrintedIdentifier values")
+        kinds = [entry.kind for entry in self.identifiers]
+        duplicates = sorted({k.value for k in kinds if kinds.count(k) > 1})
+        if duplicates:
+            raise ValueError(
+                f"the item carries two identifiers of the same kind: {duplicates}. Two marks on one "
+                "item is a reading to resolve, not a fact to store — B7.3 decides which is the item's."
+            )
         if self.corroborated:
             raise ItemCorroborationError(
                 "an item cannot be constructed already corroborated. Items are read off a drawing, "
