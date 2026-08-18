@@ -30,6 +30,7 @@ from app.auth import (
     authenticate,
     require_action,
     require_project_access,
+    require_role,
 )
 from app.config import Settings
 from app.main import create_app
@@ -216,17 +217,32 @@ def test_require_role_and_require_action_agree() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _guarded(route: APIRoute) -> bool:
-    """Whether a route carries any authorisation dependency, however it was applied."""
+def _dependency_names(route: APIRoute) -> set[str]:
     names = {
         getattr(dependency.call, "__name__", "") for dependency in route.dependant.dependencies
     }
-    nested = {
+    names |= {
         getattr(sub.call, "__name__", "")
         for dependency in route.dependant.dependencies
         for sub in dependency.dependencies
     }
-    return bool({"authenticate", "require_project_access", "dependency"} & (names | nested))
+    return names
+
+
+def _guarded(route: APIRoute) -> bool:
+    """Whether a route carries any authorisation at all."""
+    return bool({"authenticate", "require_project_access", "dependency"} & _dependency_names(route))
+
+
+def _project_scoped(route: APIRoute) -> bool:
+    """Whether a route carries the *project* boundary specifically.
+
+    Separate from `_guarded`, because the first version conflated them: any dependency counted, so a
+    route under `/projects/{project_id}/...` carrying only a role check read as guarded while having
+    no project scope at all. A reviewer holding the right role could then reach another project's
+    data — the exact failure this story exists to prevent, passing its own enumerating test.
+    """
+    return "require_project_access" in _dependency_names(route)
 
 
 def test_every_route_is_guarded_or_explicitly_exempt() -> None:
@@ -246,6 +262,54 @@ def test_every_route_is_guarded_or_explicitly_exempt() -> None:
         f"routes with no authorisation and no exemption: {unguarded}. Add a dependency, or add the "
         "path to UNSCOPED_ROUTES with a reason."
     )
+
+
+def test_a_project_route_must_carry_the_project_boundary_specifically() -> None:
+    """A role check is not a scope check. `require_role` says what may be done; only
+    `require_project_access` says to whose data — and a route that has the first and not the second
+    is reachable across projects by anyone holding the role."""
+    app = create_app(_settings())
+
+    @app.get("/projects/{project_id}/role-checked-only")
+    async def role_only(
+        project_id: str,
+        principal: Annotated[Principal, Depends(require_role(Role.REVIEWER))],
+    ) -> dict[str, str]:  # pragma: no cover - never called
+        return {"project": project_id}
+
+    offenders = [
+        route.path
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        and "{project_id}" in route.path
+        and not _project_scoped(route)
+    ]
+    assert "/projects/{project_id}/role-checked-only" in offenders
+
+
+def test_every_project_route_carries_the_project_boundary() -> None:
+    """The enumerating test, sharpened. It is not enough that a project route has *a* dependency."""
+    app = create_app(_settings())
+    unscoped = [
+        route.path
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        and "{project_id}" in route.path
+        and not _project_scoped(route)
+    ]
+    assert not unscoped, (
+        f"project routes without require_project_access: {unscoped}. A role check says what may be "
+        "done, not to whose data."
+    )
+
+
+def test_an_action_mapped_to_no_roles_is_refused_at_import() -> None:
+    """An empty set passes a presence check, reads as deliberate, and means nobody may ever take the
+    action — indistinguishable from a broken endpoint."""
+    import app.auth.roles as roles_module
+
+    for action, allowed in roles_module.PERMISSIONS.items():
+        assert allowed, f"{action.value} is mapped to an empty role set"
 
 
 def test_the_exemptions_are_only_the_operational_endpoints() -> None:

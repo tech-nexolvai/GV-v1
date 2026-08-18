@@ -56,11 +56,16 @@ PERMISSIONS: dict[Action, frozenset[Role]] = {
 }
 
 _unassigned = set(Action) - set(PERMISSIONS)
-if _unassigned:  # pragma: no cover - a wiring error, caught at import
+_empty = {action for action, roles in PERMISSIONS.items() if not roles}
+if _unassigned or _empty:  # pragma: no cover - a wiring error, caught at import
     raise RuntimeError(
-        f"actions with no roles assigned: {sorted(a.value for a in _unassigned)}. An unassigned "
-        "action is one no check can evaluate, and the safe reading of that is not obvious — so it "
-        "fails here rather than at the first request."
+        f"actions with no roles assigned: {sorted(a.value for a in _unassigned | _empty)}. "
+        "An unassigned action is one no check can evaluate, and the safe reading of that is not "
+        "obvious — so it fails here rather than at the first request.\n\n"
+        "An action mapped to an *empty* set counts too, and it is the easier one to write by "
+        "accident: it passes a presence check, reads as deliberate, and means nobody may ever take "
+        "the action. A permission nobody holds and nobody intended is indistinguishable from a "
+        "broken endpoint."
     )
 
 
