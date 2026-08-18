@@ -99,6 +99,11 @@ jobs:
     name: safety guards
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # The board drift check reads every open issue. Read-only, and scoped to this job rather than
+    # raised workflow-wide so the quality job keeps the narrower grant it already has.
+    permissions:
+      contents: read
+      issues: read
 
     steps:
       - uses: actions/checkout@v4
@@ -165,3 +170,18 @@ jobs:
       - name: Risk-control traceability
         run: |
           pytest tests/test_risk_controls.py -q
+
+      # Two things claim to say whether a story may be worked on: the contract in the issue body,
+      # which scripts/issue_gate.py reads, and the status label, which every human, board view and
+      # filter reads. Nothing made them agree, so they drifted — a sweep found eighteen
+      # disagreements across 135 open issues, twelve of them showing 'ready' on work the gate stops.
+      #
+      # This is a board check, not a code check, so it can fail a pull request that changed nothing.
+      # That is the point. The alternative is a sweep somebody remembers to run, and the last one
+      # was the first one.
+      - name: Board status drift (label vs contract)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pytest tests/test_board_drift.py -q
+          python scripts/check_board_drift.py
