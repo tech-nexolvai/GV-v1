@@ -34,7 +34,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: Extras CI installs for the main job. Kept in step with `.github/workflows/ci.yml`.
-REQUIRED_EXTRAS = ("dev", "rules", "platform")
+REQUIRED_EXTRAS = ("dev", "rules", "platform", "reports")
 
 #: One importable module per extra, to detect drift without shelling out to pip.
 EXTRA_PROBES = {
