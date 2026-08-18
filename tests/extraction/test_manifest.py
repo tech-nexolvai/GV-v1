@@ -331,15 +331,14 @@ def test_a_classification_is_added_by_building_a_new_record_not_by_mutating_one(
     assert classified.content_hash == original.content_hash
 
 
-def test_the_page_type_vocabulary_has_exactly_one_meaning_across_the_tree() -> None:
-    """`app/models/document.py` carries its own copy for a database check constraint. Two enums with
-    overlapping members is how a value quietly means two things, so the duplication is held in step
-    by this test until the shipped model can converge on the shared vocabulary."""
+def test_the_page_type_the_database_constrains_is_this_very_enum() -> None:
+    """One definition, not two that agree. `app/models/document.py` re-exports this enum rather than
+    declaring its own, so the manifest and the `pages` check constraint cannot drift apart — there
+    is nothing to drift. Asserting identity rather than equal members is the point: two enums with
+    matching values still let one value come to mean two things."""
     from app.models.document import PageType as PersistedPageType
 
-    assert {member.value for member in PageType} == {
-        member.value for member in PersistedPageType
-    }, "the manifest vocabulary and the pages table disagree about what a page can be"
+    assert PersistedPageType is PageType
 
 
 # ---------------------------------------------------------------------------

@@ -11,9 +11,10 @@ plausible type.
 is the one place all of them may import — it holds names, not decisions, and imports nothing itself
 (`tests/test_verdict_isolation.py` asserts that). `SemanticType` moved here for the same reason.
 
-`app/models/document.py` currently carries an identical copy for its database check constraint. The
-two are kept in step by a test rather than by hope; converging them is a change to a shipped model
-and belongs to whoever owns that migration.
+`app/models/document.py` used to declare its own identical copy for the `pages` check constraint. It
+now imports this one and re-exports the name, so `app.models.document.PageType` keeps working and
+there is exactly one definition rather than two that happen to agree. The constraint is derived from
+the members, so it renders the same SQL as before.
 
 Source: backend proposal §10.1 `pages` · Design: `docs/DESIGN_EXTRACTION.md` §3.2 ·
 Verification: `tests/extraction/test_manifest.py`

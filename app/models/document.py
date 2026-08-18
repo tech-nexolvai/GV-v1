@@ -27,6 +27,21 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, Immutable, TimestampedUUID
+from vocabulary.page_types import PageType
+
+#: ``PageType`` is re-exported, not redefined. This module owned an identical copy of the enum,
+#: which is how one value quietly comes to mean two things; the single definition now lives in
+#: ``vocabulary/``, the one package ``extraction/``, ``evidence/`` and ``app/`` may all import and
+#: which imports nothing itself. ``app.models.document.PageType`` keeps working unchanged, and the
+#: page-type check constraint below is still derived from the members, so it renders identically.
+__all__ = [
+    "Document",
+    "DocumentKind",
+    "DocumentVersion",
+    "Page",
+    "PageType",
+    "SourceArtifact",
+]
 
 
 class DocumentKind(StrEnum):
@@ -36,17 +51,6 @@ class DocumentKind(StrEnum):
     SHOP = "shop"
     SCHEDULE = "schedule"
     PRODUCT_SPEC = "product_spec"
-
-
-class PageType(StrEnum):
-    """Closed page classifications from ``DESIGN_EXTRACTION.md`` section 3.2."""
-
-    PLAN = "plan"
-    ELEVATION = "elevation"
-    SECTION = "section"
-    DETAIL = "detail"
-    SCHEDULE = "schedule"
-    TITLE = "title"
 
 
 DOCUMENT_KIND_VALUES = ", ".join(f"'{kind.value}'" for kind in DocumentKind)
