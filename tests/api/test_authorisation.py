@@ -12,12 +12,15 @@ what the boundary exists to prevent.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI
+from fastapi.dependencies.utils import get_dependant
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
@@ -257,22 +260,88 @@ def _walk(dependant: object) -> list[object]:
     return found
 
 
-def _enforcers(route: APIRoute) -> list[object]:
+@dataclass(frozen=True, slots=True)
+class _Mounted:
+    """One route the application will actually serve, with everything that guards it."""
+
+    path: str
+    """The full served path, every enclosing prefix applied. `route.path` alone is the path *within*
+    its router, so a route included under `/api/v1` would be audited under the wrong name."""
+
+    route: APIRoute
+    inherited: tuple[object, ...]
+    """Callables from `include_router(dependencies=[...])`. These do **not** appear in the route's
+    own dependant, so a router guarded at include time would read as completely unguarded."""
+
+
+def _from_depends(depends: Sequence[object], path: str) -> list[object]:
+    """Every callable reachable from a list of `Depends(...)` markers, at any depth."""
+    found: list[object] = []
+    for marker in depends:
+        call = getattr(marker, "dependency", None)
+        if call is None:
+            continue
+        found.append(call)
+        found.extend(_walk(get_dependant(path=path, call=call)))
+    return found
+
+
+def _mounted_routes(app: FastAPI) -> list[_Mounted]:
+    """Every `APIRoute` the app serves, including those reached through `include_router`.
+
+    **This is the fix for a guard that would have stopped guarding the moment the API grew.** On this
+    version of FastAPI, `include_router` no longer flattens the child routes into `app.routes`. It
+    appends one opaque object and resolves children at match time. So the previous enumeration —
+    `for route in app.routes if isinstance(route, APIRoute)` — saw *nothing* from any included
+    router, and every test built on it would have passed vacuously while the API filled up with
+    unaudited endpoints. Verified directly: after one `include_router`, `app.routes` contains zero
+    `APIRoute` objects.
+
+    It went unnoticed because `app/main.py` currently declares its routes with `@app.get`, which
+    still produces real `APIRoute` entries. The guard works today and would have quietly stopped
+    working on the first wired router — which is exactly when it starts to matter.
+    """
+
+    def descend(
+        routes: Iterable[object], prefix: str, inherited: tuple[object, ...]
+    ) -> list[_Mounted]:
+        found: list[_Mounted] = []
+        for route in routes:
+            context = getattr(route, "include_context", None)
+            if context is not None:
+                inner = getattr(route, "original_router", None)
+                found.extend(
+                    descend(
+                        getattr(inner, "routes", []),
+                        prefix + getattr(context, "prefix", ""),
+                        inherited
+                        + tuple(_from_depends(getattr(context, "dependencies", []), prefix)),
+                    )
+                )
+            elif isinstance(route, APIRoute):
+                found.append(_Mounted(prefix + route.path, route, inherited))
+        return found
+
+    return descend(app.routes, "", ())
+
+
+def _enforcers(mounted: _Mounted) -> list[object]:
     """The callables that actually enforce authorisation, recognised by mark rather than by name.
 
     `require_role` and `require_action` both return a closure called `dependency`, so matching on
     `__name__` meant *any* callable with that name satisfied the audit — including one enforcing
     nothing. The marker is set by the module that does the enforcing.
     """
-    return [c for c in _walk(route.dependant) if getattr(c, AUTHORISATION_MARKER, False)]
+    reachable = _walk(mounted.route.dependant) + list(mounted.inherited)
+    return [c for c in reachable if getattr(c, AUTHORISATION_MARKER, False)]
 
 
-def _guarded(route: APIRoute) -> bool:
+def _guarded(mounted: _Mounted) -> bool:
     """Whether a route carries any authorisation at all."""
-    return bool(_enforcers(route))
+    return bool(_enforcers(mounted))
 
 
-def _project_scoped(route: APIRoute) -> bool:
+def _project_scoped(mounted: _Mounted) -> bool:
     """Whether a route carries the *project* boundary specifically, by identity.
 
     Separate from `_guarded`, because the first version conflated them: any dependency counted, so a
@@ -283,7 +352,8 @@ def _project_scoped(route: APIRoute) -> bool:
     Compared by identity, not by name: a function called `require_project_access` that checked
     nothing would otherwise satisfy the audit.
     """
-    return any(callable_ is require_project_access for callable_ in _walk(route.dependant))
+    reachable = _walk(mounted.route.dependant) + list(mounted.inherited)
+    return any(callable_ is require_project_access for callable_ in reachable)
 
 
 def test_every_route_is_guarded_or_explicitly_exempt() -> None:
@@ -295,9 +365,9 @@ def test_every_route_is_guarded_or_explicitly_exempt() -> None:
     """
     app = create_app(_settings())
     unguarded = [
-        route.path
-        for route in app.routes
-        if isinstance(route, APIRoute) and route.path not in UNSCOPED_ROUTES and not _guarded(route)
+        mounted.path
+        for mounted in _mounted_routes(app)
+        if mounted.path not in UNSCOPED_ROUTES and not _guarded(mounted)
     ]
     assert not unguarded, (
         f"routes with no authorisation and no exemption: {unguarded}. Add a dependency, or add the "
@@ -319,11 +389,9 @@ def test_a_project_route_must_carry_the_project_boundary_specifically() -> None:
         return {"project": project_id}
 
     offenders = [
-        route.path
-        for route in app.routes
-        if isinstance(route, APIRoute)
-        and "{project_id}" in route.path
-        and not _project_scoped(route)
+        mounted.path
+        for mounted in _mounted_routes(app)
+        if "{project_id}" in mounted.path and not _project_scoped(mounted)
     ]
     assert "/projects/{project_id}/role-checked-only" in offenders
 
@@ -332,11 +400,9 @@ def test_every_project_route_carries_the_project_boundary() -> None:
     """The enumerating test, sharpened. It is not enough that a project route has *a* dependency."""
     app = create_app(_settings())
     unscoped = [
-        route.path
-        for route in app.routes
-        if isinstance(route, APIRoute)
-        and "{project_id}" in route.path
-        and not _project_scoped(route)
+        mounted.path
+        for mounted in _mounted_routes(app)
+        if "{project_id}" in mounted.path and not _project_scoped(mounted)
     ]
     assert not unscoped, (
         f"project routes without require_project_access: {unscoped}. A role check says what may be "
@@ -376,9 +442,9 @@ def test_an_unguarded_route_is_actually_caught() -> None:
         return {"project": project_id}
 
     unguarded = [
-        route.path
-        for route in app.routes
-        if isinstance(route, APIRoute) and route.path not in UNSCOPED_ROUTES and not _guarded(route)
+        mounted.path
+        for mounted in _mounted_routes(app)
+        if mounted.path not in UNSCOPED_ROUTES and not _guarded(mounted)
     ]
     assert "/projects/{project_id}/forgot-the-guard" in unguarded
 
@@ -400,11 +466,9 @@ def test_a_lookalike_dependency_does_not_satisfy_the_audit() -> None:
         return {}
 
     offenders = [
-        route.path
-        for route in app.routes
-        if isinstance(route, APIRoute)
-        and "{project_id}" in route.path
-        and not _project_scoped(route)
+        mounted.path
+        for mounted in _mounted_routes(app)
+        if "{project_id}" in mounted.path and not _project_scoped(mounted)
     ]
     assert "/projects/{project_id}/impostor" in offenders
 
@@ -420,7 +484,7 @@ def test_a_deeply_nested_authorisation_dependency_is_still_found() -> None:
     ) -> dict[str, str]:  # pragma: no cover - never called
         return {"id": principal.id}
 
-    route = next(r for r in app.routes if isinstance(r, APIRoute) and r.path.endswith("/deep"))
+    route = next(m for m in _mounted_routes(app) if m.path.endswith("/deep"))
     assert _project_scoped(route) and _guarded(route)
 
 
@@ -476,3 +540,91 @@ def test_importing_the_module_is_what_runs_the_validator() -> None:
             compile(ast.fix_missing_locations(tree), "app/auth/roles.py", "exec"),
             {"__name__": "app.auth.roles_under_test"},
         )
+
+
+# ---------------------------------------------------------------------------
+# Routes reached through include_router — where this guard silently stopped working
+# ---------------------------------------------------------------------------
+
+
+def test_a_route_behind_include_router_is_visible_to_the_audit() -> None:
+    """**The guard was about to stop guarding.** On this FastAPI, `include_router` no longer flattens
+    child routes into `app.routes` — it appends one opaque object and resolves children at match
+    time. The audit filtered `app.routes` for `APIRoute`, so an included router contributed *nothing*
+    and every enumerating test below would have passed while saying nothing at all.
+
+    It stayed hidden because `app/main.py` declares its routes with `@app.get`, which still produces
+    real `APIRoute` entries, so the guard worked right up until the first router was wired — which is
+    exactly when the API starts being worth guarding.
+    """
+    app = create_app(_settings())
+    router = APIRouter()
+
+    @router.get("/projects/{project_id}/included")
+    async def included(
+        principal: Annotated[Principal, Depends(require_project_access)],
+    ) -> dict[str, str]:  # pragma: no cover - never called
+        return {"id": principal.id}
+
+    app.include_router(router, prefix="/api/v1")
+
+    paths = [mounted.path for mounted in _mounted_routes(app)]
+    assert (
+        "/api/v1/projects/{project_id}/included" in paths
+    ), "the audit cannot see routes added through include_router, so it is auditing an empty set"
+
+
+def test_an_unguarded_route_behind_include_router_is_caught() -> None:
+    """Visibility is not the point on its own — being *caught* is. This is the failure the whole file
+    exists to prevent, arriving by the route the old enumeration could not see."""
+    app = create_app(_settings())
+    router = APIRouter()
+
+    @router.get("/projects/{project_id}/forgotten")
+    async def forgotten(project_id: str) -> dict[str, str]:  # pragma: no cover - never called
+        return {"project": project_id}
+
+    app.include_router(router, prefix="/api/v1")
+
+    unguarded = [
+        mounted.path
+        for mounted in _mounted_routes(app)
+        if mounted.path not in UNSCOPED_ROUTES and not _guarded(mounted)
+    ]
+    assert "/api/v1/projects/{project_id}/forgotten" in unguarded
+
+
+def test_authorisation_applied_at_include_time_counts_as_guarded() -> None:
+    """`include_router(dependencies=[...])` is a legitimate way to guard a whole router, and those
+    dependencies do **not** appear in the child route's own dependant — I checked. Missing them would
+    report a properly guarded router as wide open, and a guard that cries wolf is one somebody
+    deletes rather than fixes.
+    """
+    app = create_app(_settings())
+    router = APIRouter()
+
+    @router.get("/projects/{project_id}/guarded-by-the-router")
+    async def guarded_by_router(project_id: str) -> dict[str, str]:  # pragma: no cover
+        return {"project": project_id}
+
+    app.include_router(router, prefix="/api/v1", dependencies=[Depends(require_project_access)])
+
+    mounted = next(m for m in _mounted_routes(app) if m.path.endswith("/guarded-by-the-router"))
+    assert _guarded(mounted)
+    assert _project_scoped(mounted)
+
+
+def test_a_router_nested_inside_another_router_is_still_reached() -> None:
+    """Routers include routers. One level of recursion would have been the same bug one layer down."""
+    app = create_app(_settings())
+    inner, outer = APIRouter(), APIRouter()
+
+    @inner.get("/projects/{project_id}/deep-include")
+    async def deep(project_id: str) -> dict[str, str]:  # pragma: no cover - never called
+        return {"project": project_id}
+
+    outer.include_router(inner, prefix="/inner")
+    app.include_router(outer, prefix="/api/v1")
+
+    paths = [mounted.path for mounted in _mounted_routes(app)]
+    assert "/api/v1/inner/projects/{project_id}/deep-include" in paths
