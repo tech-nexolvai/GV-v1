@@ -65,6 +65,12 @@ from app.models.runs import (
     TaskRun,
     WorkflowRun,
 )
+from app.models.verdicts import (
+    CheckRun,
+    Finding,
+    FindingEvidence,
+    VerdictInput,
+)
 
 __all__ = [
     "Alias",
@@ -72,6 +78,7 @@ __all__ = [
     "ApprovedMatch",
     "CanonicalObservation",
     "CaseResult",
+    "CheckRun",
     "Document",
     "DocumentKind",
     "DocumentVersion",
@@ -84,6 +91,8 @@ __all__ = [
     "EvidenceCorroborationLane",
     "EvidenceSupportingCandidate",
     "ExtractionRun",
+    "Finding",
+    "FindingEvidence",
     "GoldCase",
     "GoldSet",
     "ItemIdentifier",
@@ -105,6 +114,7 @@ __all__ = [
     "RuleSnapshot",
     "SourceArtifact",
     "TaskRun",
+    "VerdictInput",
     "WorkflowRun",
     "duplicate_identifiers",
 ]
