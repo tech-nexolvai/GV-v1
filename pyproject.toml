@@ -21,7 +21,10 @@ dependencies = ["pydantic>=2.10", "shapely>=2"]
 # NO AGPL — never add PyMuPDF or Ultralytics YOLO. Enforced by tests/test_licences.py,
 # which fails the build rather than trusting this comment.
 [project.optional-dependencies]
-dev = ["pytest", "ruff", "black", "mypy"]
+# `httpx` is here rather than in `platform` because it is only the ASGI test client —
+# starlette imports it from `starlette.testclient` and nothing in the running service
+# needs it. BSD-3-Clause.
+dev = ["pytest", "ruff", "black", "mypy", "httpx"]
 
 # Phase 1-2 — extraction (all MIT / Apache / MPL)
 extraction = [
@@ -37,6 +40,10 @@ rules = ["pyyaml"]
 # Phase 6 — control plane and durable platform
 platform = [
     "fastapi",
+    # C2.1 (#203): typed settings validated at startup, and the ASGI server.
+    # pydantic-settings MIT · uvicorn BSD-3-Clause · starlette BSD-3-Clause (via fastapi).
+    "pydantic-settings",
+    "uvicorn",
     "sqlalchemy>=2",
     "alembic",
     # LGPL-2.0-or-later with the PostgreSQL linking exception; not AGPL.
