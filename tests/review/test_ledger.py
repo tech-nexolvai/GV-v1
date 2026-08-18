@@ -16,6 +16,14 @@ The negative tests assert the *name* of the constraint PostgreSQL rejected on. A
 violates more than one thing, and `pytest.raises(IntegrityError)` accepts whichever fired first —
 two tests in `tests/db/test_review_models.py` passed for the wrong reason until the name was
 checked, one of them rejected by a unique index rather than the foreign key it claimed to exercise.
+
+**The reading being corrected is built as one that genuinely passed the evidence gate**, with two
+independent extractors agreeing. Not decoration: `check_canonical_observation_provenance()` refuses
+a `CORROBORATED` observation that cannot show two supporting candidates, and the first version of
+this file was rejected on CI for asserting the status without the evidence behind it. Every column
+name in that fixture was correct — the *combination* was not, which is the part no amount of
+reading `app/models/` would have caught. `test_the_reading_being_corrected_really_passed_the_
+evidence_gate` pins it so a future failure cannot be made to go away by weakening it.
 """
 
 from __future__ import annotations
@@ -42,7 +50,11 @@ from app.models import (
     Document,
     DocumentKind,
     DocumentVersion,
+    EvidenceCandidateRole,
+    EvidenceSupportingCandidate,
+    ExtractionRun,
     Finding,
+    ObservationCandidate,
     Package,
     PackageRevision,
     PackageState,
@@ -54,6 +66,8 @@ from app.models import (
     RuleDefinition,
     RuleSnapshot,
     SourceArtifact,
+    TaskRun,
+    WorkflowRun,
 )
 from app.review import ledger
 from evidence.canonical import Authority
@@ -97,6 +111,117 @@ def _upgrade(engine: Engine) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _corroborated_observation(
+    session: Session,
+    unique: str,
+    *,
+    package_revision_id: UUID,
+    document_version_id: UUID,
+    page_id: UUID,
+) -> CanonicalObservation:
+    """A reading that genuinely passed the evidence gate, built the way one actually gets built.
+
+    `check_canonical_observation_provenance()` in `0006_evidence_plane.py` is the evidence gate
+    expressed in the database, and it refuses a `CORROBORATED` row that cannot show its work: it
+    needs two supporting candidates and no conflicting one, or one supporting candidate plus a
+    `DUAL_UNIT` lane. The first version of this fixture set `status=CORROBORATED` on an observation
+    with no candidates at all and was rejected on CI — correctly. A status column is a claim; the
+    linked candidates are the evidence for it, and the trigger is what keeps the two honest.
+
+    So this builds two genuinely independent routes: two extractors, in two task runs, each
+    reporting the same measurement. Reaching the same number twice by two different means is what
+    "corroborated" means. Filling in a second row from the same extraction run would satisfy the
+    count while being one route recorded twice, which is the thing the gate exists to refuse.
+
+    The trigger is `DEFERRABLE INITIALLY DEFERRED`, so it runs at `COMMIT` rather than at `flush()`.
+    That is why a broken fixture surfaced in the tests that commit and not in the ones that expect a
+    flush to fail — worth knowing, because it means a fixture can look fine right up to the end of
+    the transaction.
+    """
+    workflow = WorkflowRun(package_revision_id=package_revision_id, engine_run_id=f"run-{unique}")
+    session.add(workflow)
+    session.flush()
+
+    value = Fraction(1, 3)
+    candidate_ids: list[UUID] = []
+    for extractor in ("pdfplumber", "ocr"):
+        task = TaskRun(
+            workflow_run_id=workflow.id,
+            idempotency_key=f"extract-{extractor}-{unique}",
+            task_type="extract_page",
+            attempt=1,
+            outcome="ok",
+        )
+        session.add(task)
+        session.flush()
+
+        run = ExtractionRun(
+            task_run_id=task.id,
+            extractor=extractor,
+            extractor_version="1.0",
+            config_hash="config-v1",
+        )
+        session.add(run)
+        session.flush()
+
+        candidate = ObservationCandidate(
+            document_version_id=document_version_id,
+            page_id=page_id,
+            extraction_run_id=run.id,
+            # Both extractors read the same dimension off the same page. That they agree is the
+            # whole of the corroboration; if they disagreed the observation would be CONFLICTING
+            # and a reviewer would be looking at it for a different reason.
+            raw_text='1/3"',
+            value_numerator=value.numerator,
+            value_denominator=value.denominator,
+            unit=Unit.INCH,
+            unit_guess=Unit.INCH,
+            semantic_guess=SemanticType.CT001,
+            polygon=[[10, 10], [20, 10], [20, 20]],
+            coordinate_space="image",
+            confidence=None,
+            ambiguity_flags=[],
+        )
+        session.add(candidate)
+        session.flush()
+        candidate_ids.append(candidate.id)
+
+    observation = CanonicalObservation(
+        document_version_id=document_version_id,
+        page_id=page_id,
+        document_role=DocumentRole.SHOP,
+        polygon=[["0.1", "0.1"], ["0.2", "0.1"], ["0.2", "0.2"]],
+        coordinate_space="stored",
+        semantic_type=SemanticType.CT001,
+        value_numerator=value.numerator,
+        value_denominator=value.denominator,
+        unit=Unit.INCH,
+        status=EvidenceStatus.CORROBORATED,
+        authority=Authority.AUTHORITATIVE,
+        evidence_crop_uri=None,
+    )
+    session.add(observation)
+    session.flush()
+
+    primary, corroborating = candidate_ids
+    session.add_all(
+        (
+            EvidenceSupportingCandidate(
+                canonical_observation_id=observation.id,
+                candidate_id=primary,
+                role=EvidenceCandidateRole.PRIMARY,
+            ),
+            EvidenceSupportingCandidate(
+                canonical_observation_id=observation.id,
+                candidate_id=corroborating,
+                role=EvidenceCandidateRole.CORROBORATING,
+            ),
+        )
+    )
+    session.flush()
+    return observation
+
+
 @dataclass(frozen=True, slots=True)
 class Scenario:
     """Everything one correction needs to exist, so a query has something real to join through."""
@@ -117,11 +242,15 @@ def _scenario(
     check_type: str = "internal",
     vendor: str | None = None,
 ) -> Scenario:
-    """Build the whole chain with real column names, in dependency order.
+    """Build the whole chain, in dependency order: a package from a vendor, a rule, a check run, a
+    finding, a reading that passed the evidence gate, and a reviewer sitting down with it.
 
-    Every field here is spelled as `app/models/` spells it. Inventing a plausible field name is how
-    several CI rounds were lost on earlier stories in this plane: it fails only on the runner, where
-    PostgreSQL is actually available.
+    Every field is spelled as `app/models/` spells it, because inventing a plausible field name is
+    how earlier stories in this plane lost CI rounds. That is necessary and it is not sufficient:
+    the first version of this fixture used only real column names and still failed, because a
+    `CORROBORATED` observation with no supporting candidates is a row whose columns are all valid
+    and whose *combination* is not. Model introspection cannot tell you that — the rule lives in a
+    trigger. `_corroborated_observation` is where it is satisfied.
     """
     unique = uuid4().hex[:8]
     project = Project(name=f"GV Ledger Test {unique}")
@@ -166,23 +295,13 @@ def _scenario(
     session.add(page)
     session.flush()
 
-    value = Fraction(1, 3)
-    observation = CanonicalObservation(
+    observation = _corroborated_observation(
+        session,
+        unique,
+        package_revision_id=revision.id,
         document_version_id=version.id,
         page_id=page.id,
-        document_role=DocumentRole.SHOP,
-        polygon=[["0.1", "0.1"], ["0.2", "0.1"], ["0.2", "0.2"]],
-        coordinate_space="stored",
-        semantic_type=SemanticType.CT001,
-        value_numerator=value.numerator,
-        value_denominator=value.denominator,
-        unit=Unit.INCH,
-        status=EvidenceStatus.CORROBORATED,
-        authority=Authority.AUTHORITATIVE,
-        evidence_crop_uri=None,
     )
-    session.add(observation)
-    session.flush()
 
     authored_rule_id = rule_id or f"CT-{unique}"
     definition = RuleDefinition(rule_id=authored_rule_id)
@@ -314,6 +433,54 @@ def test_the_ledger_module_does_not_import_the_deciding_packages_either() -> Non
     """
     imported = _imports_in(REPO_ROOT / "app" / "review" / "ledger.py")
     assert not {"verdict", "rules", "retrieval", "extraction"} & imported
+
+
+# ---------------------------------------------------------------------------
+# The fixture itself has to be honest
+# ---------------------------------------------------------------------------
+
+
+def test_the_reading_being_corrected_really_passed_the_evidence_gate(
+    postgres_engine: Engine,
+) -> None:
+    """The fixture's own guard, and the reason it is a test rather than a comment.
+
+    A correction is a reviewer overruling a reading that already qualified, entered a verdict and
+    produced a finding. If `_corroborated_observation` were ever quietly reduced to one candidate to
+    make some future failure go away, every test in this file would still pass while exercising a
+    reading no evidence gate would have admitted — and the ledger would be measuring corrections to
+    something the system never actually relied on.
+
+    So the two independent routes are asserted here, in the same terms
+    `check_canonical_observation_provenance()` uses: two supporting candidates, no conflicting one,
+    and each from a different extraction run.
+    """
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        observation_id = _scenario(session).observation_id
+
+    with unit_of_work(factory) as session:
+        observation = session.get(CanonicalObservation, observation_id)
+        assert observation is not None
+        assert observation.status == EvidenceStatus.CORROBORATED.value
+
+        links = session.scalars(
+            select(EvidenceSupportingCandidate).where(
+                EvidenceSupportingCandidate.canonical_observation_id == observation_id
+            )
+        ).all()
+        assert {link.role for link in links} == {
+            EvidenceCandidateRole.PRIMARY.value,
+            EvidenceCandidateRole.CORROBORATING.value,
+        }
+
+        runs = session.scalars(
+            select(ObservationCandidate.extraction_run_id).where(
+                ObservationCandidate.id.in_([link.candidate_id for link in links])
+            )
+        ).all()
+        assert len(set(runs)) == 2, "two candidates from one extraction run is one route, twice"
 
 
 # ---------------------------------------------------------------------------
