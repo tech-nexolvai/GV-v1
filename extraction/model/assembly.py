@@ -16,6 +16,15 @@ refusing rather than guessing.
 smaller assembly, it is the same assembly with a cabinet missing, and summing it produces a PASS-shaped
 number that is wrong by 600 mm.
 
+**No run at all is a refusal too.** A countertop with nothing of cabinet or filler type beneath it
+returns `CannotResolve`, not an empty `Assembly`. The first version of this module made it an empty
+`Assembly` on the reasoning that "we found nothing" and "we found something that does not add up" send
+a reviewer to different places — which is true, and is now carried by the wording of two different
+refusals instead. What made it wrong is that the empty case took an early return past the end-reach
+check, so it was the one `Assembly` that did not cover its countertop, and a caller trusting the type
+would have summed it to zero believing the run complete. A countertop with every cabinet missing is
+the largest version of a missing member, not an exemption from it.
+
 **Ordered left to right, because the order is load-bearing.** Filler distribution (A6.4) is positional
 — which filler is the left one and which the right one changes what a rule expects. A set would lose
 that, so the run is a tuple ordered along the page and every member carries its index.
@@ -198,16 +207,23 @@ class AssemblyMember:
 class Assembly:
     """A countertop and the complete run of cabinets and fillers beneath it.
 
-    **Complete** is the whole point. This type is only ever built when the run reaches both ends of
-    the countertop with no gap and no overlap, so a rule may sum it without checking anything first.
-    Everything short of that is a `CannotResolve`.
+    **Complete** is the whole point: `resolve_assembly` returns this type only when the run reaches
+    both ends of the countertop with no gap and no overlap. Everything short of that — including a
+    countertop with nothing read beneath it at all — is a `CannotResolve`.
 
-    An empty run is a real answer and not a refusal: it says nothing of cabinet or filler type was
-    read under this countertop, which on a drawing that has not been fully extracted is simply true.
-    It is distinguishable from a refusal because the two mean different things to a reviewer — "we
-    found nothing" sends them to the extraction, "we found something that does not add up" sends them
-    to the drawing. Downstream an empty run sums to zero, which fails a width check loudly rather
-    than passing it quietly.
+    **That guarantee belongs to the resolver, not to this type, and the difference matters.**
+    Coverage is a question about tolerance — how far the run may fall short before something is
+    missing — and this type holds no tolerance and has no business holding one. So `__post_init__`
+    checks only what it can check without one: the ordering, that no item appears twice, that no
+    member came from another view, and that every member has a recorded signal. An `Assembly` built
+    by hand is therefore only as good as whoever built it. A rule may sum what `resolve_assembly`
+    returns without checking coverage first; it may not assume that of any `Assembly` that turns up
+    from somewhere else.
+
+    The earlier version of this docstring claimed the type itself enforced coverage, which was
+    false in exactly one case — an empty run took an early return that skipped the end-reach check —
+    and that case is now a refusal. The claim is written down this carefully because a type that
+    over-promises is worse than one that promises nothing: a caller stops checking.
     """
 
     countertop: DrawingItem
@@ -327,7 +343,24 @@ def resolve_assembly(
         )
 
     if not candidates:
-        return Assembly(countertop=countertop, run=(), signals={})
+        # A refusal, not an empty `Assembly`. This was the one path that reached `Assembly` without
+        # passing the end-reach check below, which made the type's central claim false: a caller
+        # told a run may be summed without checking coverage would have summed nothing to zero
+        # believing it was complete. A countertop whose cabinets were all missed is the largest
+        # possible version of a missing member, not an exemption from it (§4.2).
+        #
+        # The distinction worth keeping is kept in the wording and in the empty candidate list:
+        # "nothing was found" sends a reviewer to the extraction, "what was found does not add up"
+        # sends them to the drawing. That is a difference between two refusals, which is safe,
+        # rather than a difference between a refusal and a summable answer, which was not.
+        return CannotResolve(
+            "nothing of cabinet or filler type was read beneath this countertop, so there is no "
+            "run to check — most likely the cabinets have not been extracted from this view yet. "
+            "This is not an empty assembly a rule may sum: a countertop with every cabinet missing "
+            "is the largest possible version of a missing member, not a special case exempt from "
+            "it.",
+            (),
+        )
 
     ordered = sorted(candidates, key=lambda pair: (pair[1][0], pair[1][1]))
     members = [item for item, _ in ordered]

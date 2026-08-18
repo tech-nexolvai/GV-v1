@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 from decimal import Decimal
+from itertools import pairwise
 from uuid import UUID, uuid4
 
 import pytest
@@ -81,6 +82,16 @@ def _countertop(x0: str = "0.10", x1: str = "0.40", **kwargs: object) -> Drawing
 
 def _ctx(*items: DrawingItem) -> DrawingContext:
     return DrawingContext(document_version_id=DOCUMENT, items=items)
+
+
+def _span(item: DrawingItem) -> tuple[Decimal, Decimal]:
+    """An item's extent across the page, computed here rather than imported.
+
+    The coverage guard below would be worth nothing if it measured the run with the same helper the
+    resolver uses to build it — a bug in that helper would agree with itself.
+    """
+    values = [point.x for point in item.extent.points]
+    return min(values), max(values)
 
 
 def _three_cabinets() -> tuple[DrawingItem, DrawingItem, DrawingItem]:
@@ -371,21 +382,103 @@ def test_the_refusal_is_the_marker_for_human_confirmation() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Nothing found is not the same as cannot tell
+# Nothing found is a refusal too — and the claim the type makes about itself
 # ---------------------------------------------------------------------------
 
 
-def test_a_countertop_with_no_cabinets_returns_an_empty_run_not_a_refusal() -> None:
-    """Two different facts. "We found nothing" sends a reviewer to the extraction; "we found
-    something that does not add up" sends them to the drawing. An empty run also sums to zero,
-    which fails a width check loudly rather than passing it quietly."""
+def test_a_countertop_with_nothing_beneath_it_refuses_rather_than_returning_an_empty_run() -> None:
+    """An earlier version returned an empty `Assembly` here, on the reasoning that "we found
+    nothing" and "we found something that does not add up" send a reviewer to different places.
+    That reasoning is right and is kept — in the wording of two different *refusals*.
+
+    What made the empty `Assembly` wrong is that it was the one `Assembly` that did not cover its
+    countertop, so the type's promise ("a rule may sum what the resolver returns") was false in
+    exactly that case, and a caller who believed it would sum nothing to zero. A countertop with
+    every cabinet missing is the largest possible version of a missing member.
+    """
     top = _countertop()
 
     result = resolve_assembly(top, _ctx(top), edge_tolerance=TOLERANCE)
 
-    assert isinstance(result, Assembly)
-    assert result.run == ()
-    assert dict(result.signals) == {}
+    assert isinstance(result, CannotResolve)
+    assert result.candidates == (), "nothing was found, and the empty candidate list says so"
+
+
+def test_nothing_found_reads_differently_from_a_run_that_does_not_add_up() -> None:
+    """The distinction the empty-`Assembly` case existed to carry, kept where it is safe. Both are
+    refusals, so neither can be summed, but a reviewer can still tell which problem they have."""
+    top = _countertop("0.10", "0.40")
+
+    nothing = resolve_assembly(top, _ctx(top), edge_tolerance=TOLERANCE)
+    short = resolve_assembly(top, _ctx(top, _item("0.10", "0.20")), edge_tolerance=TOLERANCE)
+
+    assert isinstance(nothing, CannotResolve)
+    assert isinstance(short, CannotResolve)
+    assert "not been extracted" in nothing.reason
+    assert nothing.reason != short.reason
+    assert nothing.candidates == () and short.candidates != ()
+
+
+def _coverage_scenarios() -> list[tuple[str, DrawingItem, DrawingContext]]:
+    """Every shape of drawing this module has an opinion about, for the guard below."""
+    top = _countertop("0.10", "0.40")
+    left, middle, right = _three_cabinets()
+    tall = _item("0.10", "0.20", COUNTERTOP, y0="0.10", y1="0.80")
+    return [
+        ("nothing beneath it", top, _ctx(top)),
+        ("a complete run", top, _ctx(top, left, middle, right)),
+        ("a member missing on the right", top, _ctx(top, left, middle)),
+        ("a member missing on the left", top, _ctx(top, middle, right)),
+        ("a gap in the middle", top, _ctx(top, left, right)),
+        ("overlapping members", top, _ctx(top, _item("0.10", "0.30"), _item("0.20", "0.40"))),
+        (
+            "a member from another view",
+            top,
+            _ctx(top, left, middle, right, _item("0.15", "0.25", tag="E")),
+        ),
+        (
+            "only items of unknown type",
+            top,
+            _ctx(top, _item("0.10", "0.40", SemanticType.MATERIAL)),
+        ),
+        ("a countertop taller than it is wide", tall, _ctx(tall, _item("0.10", "0.20"))),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("description", "countertop", "context"),
+    _coverage_scenarios(),
+    ids=lambda v: v if isinstance(v, str) else "",
+)
+def test_every_assembly_the_resolver_returns_covers_its_countertop_end_to_end(
+    description: str, countertop: DrawingItem, context: DrawingContext
+) -> None:
+    """**The claim itself, not one behaviour of it.**
+
+    `Assembly`'s docstring tells callers a rule may sum what `resolve_assembly` returns without
+    checking coverage first. `__post_init__` cannot enforce that — coverage is a question about
+    tolerance and the type holds none — so the guarantee lives entirely in the resolver, and this is
+    what holds it there. It walks every shape of drawing the module has an opinion about and asserts
+    that anything coming back as an `Assembly` genuinely reaches both ends of its countertop.
+
+    The empty-run defect is exactly what this would have caught: an early return that skipped the
+    end-reach check. Any future shortcut past it fails here rather than being found from a wrong
+    finding on a real drawing.
+    """
+    result = resolve_assembly(countertop, context, edge_tolerance=TOLERANCE)
+    if not isinstance(result, Assembly):
+        return
+
+    assert result.run, f"{description}: an empty run covers nothing and must not be an Assembly"
+
+    extents = [_span(member.item) for member in result.run]
+    span = _span(countertop)
+    assert abs(extents[0][0] - span[0]) <= TOLERANCE, f"{description}: the run misses the left end"
+    assert (
+        abs(extents[-1][1] - span[1]) <= TOLERANCE
+    ), f"{description}: the run misses the right end"
+    for earlier, later in pairwise(extents):
+        assert abs(later[0] - earlier[1]) <= TOLERANCE, f"{description}: gap or overlap in the run"
 
 
 # ---------------------------------------------------------------------------
