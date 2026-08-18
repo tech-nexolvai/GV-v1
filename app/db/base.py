@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, MetaData, Uuid, event
+from sqlalchemy import DateTime, MetaData, Table, Uuid, event
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
@@ -31,7 +31,34 @@ class Base(DeclarativeBase):
 
 
 class Immutable:
-    """Marker mixin for tables whose UPDATE and DELETE rights C1.12 will revoke."""
+    """Marker mixin for tables that may only ever be inserted into.
+
+    A correction is a new row. There is no escape hatch, and that is the point: the record of what
+    the system decided and what a reviewer did is the thing somebody would most want to tidy after
+    the fact, and a table that can be tidied cannot be evidence of anything.
+
+    Until `#202` this marker was enforced by nothing — an `UPDATE` against any of these tables
+    succeeded. `immutable_table_names()` is what the migration and its test both read, so the list
+    cannot be maintained in two places and drift.
+    """
+
+
+def immutable_table_names() -> tuple[str, ...]:
+    """Every table whose mapped class carries `Immutable`, derived rather than listed.
+
+    Derived, because a hand-maintained list is one somebody forgets to add to — and the table they
+    forget is the one that then quietly becomes editable. `tests/db/test_append_only.py` asserts the
+    migration's literal list still equals this.
+    """
+    names: list[str] = []
+    for mapper in Base.registry.mappers:
+        table = mapper.local_table
+        # `local_table` is typed `FromClause`, which a subquery or a join also satisfies and which
+        # has no `.name`. Every mapper here maps a real table; narrowing says so rather than
+        # asserting it in a comment.
+        if issubclass(mapper.class_, Immutable) and isinstance(table, Table):
+            names.append(table.name)
+    return tuple(sorted(names))
 
 
 class UTCDateTime(TypeDecorator[datetime]):
