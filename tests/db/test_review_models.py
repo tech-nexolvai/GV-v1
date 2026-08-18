@@ -51,6 +51,19 @@ REVIEW_TABLES = {
 }
 
 
+def _violated(error: IntegrityError) -> str | None:
+    """The constraint PostgreSQL actually rejected on.
+
+    Needed because a row usually violates more than one thing, and `pytest.raises(IntegrityError)`
+    accepts whichever fired first. Two negative tests in this file passed for the wrong reason until
+    the name was asserted: one was rejected by a unique index rather than the composite foreign key
+    it claimed to exercise. A test that cannot fail on a wrong answer is worse than no test, because
+    it reads as coverage.
+    """
+    diagnostic = getattr(getattr(error, "orig", None), "diag", None)
+    return getattr(diagnostic, "constraint_name", None)
+
+
 def _upgrade(engine: Engine) -> None:
     config = Config("alembic.ini")
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
@@ -104,6 +117,25 @@ def _finding(session: Session) -> Finding:
     session.add(finding)
     session.flush()
     return finding
+
+
+def _check_run_without_a_finding(session: Session) -> CheckRun:
+    """A run with no finding, so a test about findings cannot be rejected by the unique index."""
+    finding = _finding(session)
+    snapshot_id = session.scalars(
+        select(CheckRun.rule_snapshot_id).where(CheckRun.id == finding.check_run_id)
+    ).one()
+    revision_id = session.scalars(
+        select(CheckRun.package_revision_id).where(CheckRun.id == finding.check_run_id)
+    ).one()
+    run = CheckRun(
+        package_revision_id=revision_id,
+        rule_snapshot_id=snapshot_id,
+        engine_version="verdict-1.2.3",
+    )
+    session.add(run)
+    session.flush()
+    return run
 
 
 def _action(
@@ -227,7 +259,11 @@ def test_a_bounded_exception_is_stored_with_its_reason(postgres_engine: Engine) 
         # A real package revision, not a random UUID. `scope_id` is polymorphic and cannot be a
         # foreign key, so a fixture pointing at nothing would have the test assert a state the
         # schema does not validate — see `test_a_scope_id_is_not_validated_by_the_schema`.
-        revision_id = session.scalars(select(ReviewSession.package_revision_id)).first()
+        revision_id = session.scalars(
+            select(ReviewSession.package_revision_id).where(
+                ReviewSession.id == action.review_session_id
+            )
+        ).one()
         session.add(
             ReviewException(
                 review_action_id=action.id,
@@ -473,15 +509,19 @@ def test_an_approval_cannot_cover_a_finding_from_another_package(postgres_engine
 
 def test_a_finding_cannot_claim_a_revision_its_run_does_not_have(postgres_engine: Engine) -> None:
     """The copy is denormalised so the constraints above can use it, and a composite foreign key
-    keeps it honest rather than a comment asking nicely."""
+    keeps it honest rather than a comment asking nicely.
+
+    The run here has **no** finding yet, so the unique `check_run_id` index cannot be what rejects
+    the row — the first version of this test reused a run that already had one, and passed on the
+    unique index while claiming to exercise the foreign key.
+    """
     _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
-    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
-        finding = _finding(session)
-        run_id = finding.check_run_id
+    with pytest.raises(IntegrityError) as raised, unit_of_work(factory) as session:
+        bare_run = _check_run_without_a_finding(session)
         session.add(
             Finding(
-                check_run_id=run_id,
+                check_run_id=bare_run.id,
                 package_revision_id=uuid4(),
                 outcome=Outcome.PASS.value,
                 severity=Severity.MINOR.value,
@@ -489,6 +529,7 @@ def test_a_finding_cannot_claim_a_revision_its_run_does_not_have(postgres_engine
                 parameter_set_versions={},
             )
         )
+    assert _violated(raised.value) == "fk_findings_run_revision"
 
 
 def test_a_ledger_entry_cannot_hang_off_a_confirmation(postgres_engine: Engine) -> None:
@@ -496,17 +537,28 @@ def test_a_ledger_entry_cannot_hang_off_a_confirmation(postgres_engine: Engine) 
     and D5.4 measures exactly that rate."""
     _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
-    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+    from app.models import CanonicalObservation
+
+    with pytest.raises(IntegrityError) as raised, unit_of_work(factory) as session:
         action = _action(session, _finding(session), ReviewActionKind.CONFIRM)
+        observation = session.scalars(select(CanonicalObservation)).first()
         session.add(
             CorrectionLedgerEntry(
                 review_action_id=action.id,
                 action=ReviewActionKind.CONFIRM.value,
-                canonical_observation_id=uuid4(),
+                # A real observation, so the only thing wrong with this row is the action kind. The
+                # first version used uuid4() and violated the observation foreign key as well.
+                canonical_observation_id=observation.id if observation else uuid4(),
                 original_value="a",
                 corrected_value="b",
             )
         )
+    if observation is not None:
+        assert _violated(raised.value) in {
+            "correction_action_is_a_correction",
+            "ck_correction_ledger_correction_action_is_a_correction",
+            "fk_correction_action_kind",
+        }
 
 
 def test_an_exception_cannot_hang_off_a_confirmation(postgres_engine: Engine) -> None:
