@@ -318,3 +318,26 @@ def test_the_vocabulary_imports_nothing_from_the_project() -> None:
     assert (
         not offenders
     ), f"vocabulary/ must import nothing from the project, but reaches {offenders}"
+
+
+def test_nothing_in_rules_reads_the_correction_ledger() -> None:
+    """`AGENTS.md` §2.6 — a correction is a reviewer fixing one drawing, not a rule change.
+
+    #200's acceptance asks for this as an import guard, and it is the one boundary in the system that
+    is about *accumulation*: nothing stops a person reading the ledger and authoring a rule from what
+    they see, and nothing should. What must not happen is code in `rules/` reading corrections
+    directly, because then the rulebook starts changing without anybody publishing a version of it.
+
+    Asserted by name rather than by package: the ledger lives in `app/models/review.py`, and `rules/`
+    already cannot import `app` at all — this catches the day somebody moves it somewhere `rules/`
+    can reach.
+    """
+    for package in ("rules", "verdict"):
+        for path in _py_files(package):
+            text = path.read_text(encoding="utf-8")
+            assert "correction_ledger" not in text and "CorrectionLedgerEntry" not in text, (
+                f"{path.relative_to(REPO_ROOT)} reads the correction ledger. A correction is a "
+                "reviewer fixing one drawing; a rule is a published decision. Corrections becoming "
+                "rules by accumulation is how a system quietly starts deciding what it was told to "
+                "check."
+            )
