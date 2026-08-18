@@ -362,6 +362,23 @@ def main() -> int:
     # `requires: Q5` sailed through — Q5 being an open question that changes the calculation. The
     # whole point of docs/CLIENT_FACTS.md is that the status field stops being the last word, so it
     # has to be consulted before readiness is granted, not after it is denied.
+    # A `deferred` story whose dependencies have all landed is not blocked — it is stale. The
+    # enforcement added alongside this only ever refuses; nothing flipped a story back when its
+    # inputs arrived, so `deferred` rotted and #181 and #199 sat unbuildable after their
+    # dependencies closed. Say so, rather than repeating a STOP that is no longer true.
+    if status == "deferred":
+        numeric = [str(r).lstrip("#") for r in requires if str(r).lstrip("#").isdigit()]
+        if numeric and not open_issue_dependencies(numeric):
+            sys.stderr.write(
+                f"STALE — #{args.issue} says deferred, but every issue it waits on has landed\n"
+                f"{'=' * 62}\n"
+                f"  requires: {', '.join('#' + n for n in numeric)} — all closed\n\n"
+                "Set `status: ready` in the contract. This is not a judgement call: the field is\n"
+                "maintained by hand, and nothing recomputes it when a dependency merges, so a story\n"
+                "stays blocked until somebody notices.\n"
+            )
+            return BLOCKED
+
     still_open = open_issue_dependencies(requires)
     if still_open:
         sys.stderr.write(
