@@ -318,3 +318,44 @@ def test_the_vocabulary_imports_nothing_from_the_project() -> None:
     assert (
         not offenders
     ), f"vocabulary/ must import nothing from the project, but reaches {offenders}"
+
+
+def test_nothing_in_rules_reads_the_correction_ledger() -> None:
+    """`AGENTS.md` §2.6 — a correction is a reviewer fixing one drawing, not a rule change.
+
+    #200's acceptance asks for this as an import guard, and it is the one boundary in the system that
+    is about *accumulation*: nothing stops a person reading the ledger and authoring a rule from what
+    they see, and nothing should. What must not happen is code in `rules/` reading corrections
+    directly, because then the rulebook starts changing without anybody publishing a version of it.
+
+    Checked two ways, because neither alone is enough.
+
+    The **import edge** is the precise test: `rules/` and `verdict/` must not reach `app`, which is
+    where the ledger lives. That is what a reviewer means by "does not read the ledger", and it
+    cannot be fooled by aliasing.
+
+    The **name** is checked as well, and deliberately: an import guard sees nothing in a raw SQL
+    string. `SELECT * FROM correction_ledger` in a `rules/` module reads the ledger just as surely
+    as an import does, and imports nothing at all.
+    """
+    for package in ("rules", "verdict"):
+        offenders = [
+            f"{path.relative_to(REPO_ROOT)} imports {module}"
+            for path in _py_files(package)
+            for module in sorted(_imports_in(path))
+            if module == "app"
+        ]
+        assert not offenders, "the correction ledger is reachable by import:\n  " + "\n  ".join(
+            offenders
+        )
+
+        named = [
+            path.relative_to(REPO_ROOT)
+            for path in _py_files(package)
+            if "correction_ledger" in path.read_text(encoding="utf-8")
+        ]
+        assert not named, (
+            f"{named} names the correction ledger. A correction is a reviewer fixing one drawing; a "
+            "rule is a published decision. Corrections becoming rules by accumulation is how a "
+            "system quietly starts deciding what it was told to check."
+        )

@@ -32,7 +32,14 @@ from __future__ import annotations
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -83,6 +90,8 @@ class CheckRun(Base, TimestampedUUID):
 
     __table_args__ = (
         CheckConstraint("engine_version <> ''", name="check_run_engine_version_present"),
+        # Lets a child carry the revision and have the database prove it is the run's own.
+        UniqueConstraint("id", "package_revision_id", name="uq_check_runs_id_revision"),
         Index("ix_check_runs_revision_snapshot", "package_revision_id", "rule_snapshot_id"),
     )
 
@@ -151,10 +160,18 @@ class Finding(Base, TimestampedUUID, Immutable):
 
     __tablename__ = "findings"
 
-    check_run_id: Mapped[UUID] = mapped_column(
-        ForeignKey("check_runs.id", ondelete="RESTRICT"), unique=True, index=True
-    )
+    check_run_id: Mapped[UUID] = mapped_column(unique=True, index=True)
     """One finding per run. Two would leave "what did this check decide?" with two answers."""
+
+    package_revision_id: Mapped[UUID] = mapped_column(index=True)
+    """Which revision this finding is about.
+
+    Denormalised from the check run, and the composite foreign key below makes the copy honest — the
+    database refuses a finding claiming a revision its own run does not have. It is here so that a
+    review action or an approval can be tied to the same revision by a foreign key rather than by a
+    convention: without it, a session reviewing package A could carry an action on a finding from
+    package B, and the record would misstate what was reviewed.
+    """
 
     outcome: Mapped[str] = mapped_column(String(32), index=True)
     severity: Mapped[str] = mapped_column(String(16))
@@ -167,6 +184,13 @@ class Finding(Base, TimestampedUUID, Immutable):
     without any drawing changing, and a finding that did not record them cannot be attributed."""
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["check_run_id", "package_revision_id"],
+            ["check_runs.id", "check_runs.package_revision_id"],
+            name="fk_findings_run_revision",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("id", "package_revision_id", name="uq_findings_id_revision"),
         CheckConstraint(f"outcome IN ({OUTCOME_VALUES})", name="finding_outcome"),
         CheckConstraint(f"severity IN ({SEVERITY_VALUES})", name="finding_severity"),
         Index("ix_findings_outcome_severity", "outcome", "severity"),

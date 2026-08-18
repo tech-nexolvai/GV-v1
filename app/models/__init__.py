@@ -53,6 +53,16 @@ from app.models.matching import (
     MatchReviewEvent,
 )
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
+from app.models.review import (
+    Approval,
+    ApprovedFinding,
+    CorrectionLedgerEntry,
+    ExceptionScope,
+    ReviewAction,
+    ReviewActionKind,
+    ReviewException,
+    ReviewSession,
+)
 from app.models.rules import (
     RuleApplicabilityScope,
     RuleDefinition,
@@ -74,11 +84,14 @@ from app.models.verdicts import (
 
 __all__ = [
     "Alias",
+    "Approval",
     "ApprovalSource",
+    "ApprovedFinding",
     "ApprovedMatch",
     "CanonicalObservation",
     "CaseResult",
     "CheckRun",
+    "CorrectionLedgerEntry",
     "Document",
     "DocumentKind",
     "DocumentVersion",
@@ -90,6 +103,7 @@ __all__ = [
     "EvidenceCandidateRole",
     "EvidenceCorroborationLane",
     "EvidenceSupportingCandidate",
+    "ExceptionScope",
     "ExtractionRun",
     "Finding",
     "FindingEvidence",
@@ -109,6 +123,10 @@ __all__ = [
     "Page",
     "PageType",
     "Project",
+    "ReviewAction",
+    "ReviewActionKind",
+    "ReviewException",
+    "ReviewSession",
     "RuleApplicabilityScope",
     "RuleDefinition",
     "RuleSnapshot",
