@@ -67,6 +67,8 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_check_runs"),
+        # Lets a child carry the revision and have the database prove it is this run's own.
+        sa.UniqueConstraint("id", "package_revision_id", name="uq_check_runs_id_revision"),
     )
     op.create_index("ix_check_runs_package_revision_id", "check_runs", ["package_revision_id"])
     op.create_index(
@@ -114,6 +116,7 @@ def upgrade() -> None:
         "findings",
         *_identity_columns(),
         sa.Column("check_run_id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("package_revision_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("outcome", sa.String(length=32), nullable=False),
         sa.Column("severity", sa.String(length=16), nullable=False),
         sa.Column("trace", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
@@ -122,17 +125,20 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(f"outcome IN ({_OUTCOMES})", name="finding_outcome"),
         sa.CheckConstraint(f"severity IN ({_SEVERITIES})", name="finding_severity"),
+        # Composite, so a finding cannot claim a revision its own run does not have.
         sa.ForeignKeyConstraint(
-            ["check_run_id"],
-            ["check_runs.id"],
-            name="fk_findings_check_run_id_check_runs",
+            ["check_run_id", "package_revision_id"],
+            ["check_runs.id", "check_runs.package_revision_id"],
+            name="fk_findings_run_revision",
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_findings"),
+        sa.UniqueConstraint("id", "package_revision_id", name="uq_findings_id_revision"),
     )
     op.create_index("ix_findings_check_run_id", "findings", ["check_run_id"], unique=True)
     op.create_index("ix_findings_outcome", "findings", ["outcome"])
     op.create_index("ix_findings_outcome_severity", "findings", ["outcome", "severity"])
+    op.create_index("ix_findings_package_revision_id", "findings", ["package_revision_id"])
 
     op.create_table(
         "finding_evidence",

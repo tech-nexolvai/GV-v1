@@ -95,6 +95,7 @@ def _finding(session: Session) -> Finding:
     session.flush()
     finding = Finding(
         check_run_id=run.id,
+        package_revision_id=revision.id,
         outcome=Outcome.FAIL.value,
         severity=Severity.CRITICAL.value,
         trace={},
@@ -115,7 +116,11 @@ def _action(
     session.add(review)
     session.flush()
     action = ReviewAction(
-        review_session_id=review.id, finding_id=finding.id, action=kind.value, actor="anant"
+        review_session_id=review.id,
+        finding_id=finding.id,
+        package_revision_id=revision_id,
+        action=kind.value,
+        actor="anant",
     )
     session.add(action)
     session.flush()
@@ -184,6 +189,7 @@ def test_an_exception_without_an_expiry_cannot_be_written(postgres_engine: Engin
         session.add(
             ReviewException(
                 review_action_id=action.id,
+                action=ReviewActionKind.EXCEPT.value,
                 scope=ExceptionScope.FINDING.value,
                 scope_id=uuid4(),
                 reason="site condition accepted by the client",
@@ -201,6 +207,7 @@ def test_an_exception_that_expires_before_it_was_made_is_refused(postgres_engine
         session.add(
             ReviewException(
                 review_action_id=action.id,
+                action=ReviewActionKind.EXCEPT.value,
                 scope=ExceptionScope.FINDING.value,
                 scope_id=uuid4(),
                 reason="backdated",
@@ -217,11 +224,16 @@ def test_a_bounded_exception_is_stored_with_its_reason(postgres_engine: Engine) 
     factory = session_factory(postgres_engine)
     with unit_of_work(factory) as session:
         action = _action(session, _finding(session), ReviewActionKind.EXCEPT)
+        # A real package revision, not a random UUID. `scope_id` is polymorphic and cannot be a
+        # foreign key, so a fixture pointing at nothing would have the test assert a state the
+        # schema does not validate — see `test_a_scope_id_is_not_validated_by_the_schema`.
+        revision_id = session.scalars(select(ReviewSession.package_revision_id)).first()
         session.add(
             ReviewException(
                 review_action_id=action.id,
+                action=ReviewActionKind.EXCEPT.value,
                 scope=ExceptionScope.PACKAGE.value,
-                scope_id=uuid4(),
+                scope_id=revision_id,
                 reason="client accepted the 3mm overhang on this run",
                 approved_by="anant",
                 expires_at=datetime.now(UTC) + timedelta(days=30),
@@ -248,6 +260,7 @@ def test_a_correction_keeps_the_original_beside_the_change(postgres_engine: Engi
         session.add(
             CorrectionLedgerEntry(
                 review_action_id=action.id,
+                action=ReviewActionKind.CORRECT.value,
                 canonical_observation_id=observation.id,
                 original_value="1219 mm",
                 corrected_value="1216 mm",
@@ -268,6 +281,7 @@ def test_a_correction_that_changes_nothing_is_refused(postgres_engine: Engine) -
         session.add(
             CorrectionLedgerEntry(
                 review_action_id=action.id,
+                action=ReviewActionKind.CORRECT.value,
                 canonical_observation_id=uuid4(),
                 original_value="1219 mm",
                 corrected_value="1219 mm",
@@ -290,6 +304,7 @@ def test_an_action_must_be_one_of_the_four_verbs(postgres_engine: Engine) -> Non
             ReviewAction(
                 review_session_id=review.id,
                 finding_id=finding.id,
+                package_revision_id=revision_id,
                 action="edit",
                 actor="anant",
             )
@@ -312,6 +327,7 @@ def test_an_action_must_name_who_did_it(postgres_engine: Engine) -> None:
             ReviewAction(
                 review_session_id=review.id,
                 finding_id=finding.id,
+                package_revision_id=revision_id,
                 action=ReviewActionKind.CONFIRM.value,
                 actor="",
             )
@@ -329,7 +345,13 @@ def test_an_approval_records_exactly_which_findings_were_in_force(postgres_engin
         approval = Approval(package_revision_id=revision_id, approved_by="anant")
         session.add(approval)
         session.flush()
-        session.add(ApprovedFinding(approval_id=approval.id, finding_id=finding.id))
+        session.add(
+            ApprovedFinding(
+                approval_id=approval.id,
+                finding_id=finding.id,
+                package_revision_id=revision_id,
+            )
+        )
     with unit_of_work(factory) as session:
         link = session.scalars(select(ApprovedFinding)).one()
         assert link.finding_id == session.scalars(select(Finding)).one().id
@@ -347,7 +369,11 @@ def test_an_approval_cannot_name_a_finding_that_does_not_exist(postgres_engine: 
         approval = Approval(package_revision_id=revision_id, approved_by="anant")
         session.add(approval)
         session.flush()
-        session.add(ApprovedFinding(approval_id=approval.id, finding_id=uuid4()))
+        session.add(
+            ApprovedFinding(
+                approval_id=approval.id, finding_id=uuid4(), package_revision_id=revision_id
+            )
+        )
 
 
 def test_one_correction_per_action(postgres_engine: Engine) -> None:
@@ -364,6 +390,7 @@ def test_one_correction_per_action(postgres_engine: Engine) -> None:
         session.add(
             CorrectionLedgerEntry(
                 review_action_id=action.id,
+                action=ReviewActionKind.CORRECT.value,
                 canonical_observation_id=observation.id,
                 original_value="a",
                 corrected_value="b",
@@ -374,6 +401,7 @@ def test_one_correction_per_action(postgres_engine: Engine) -> None:
         session.add(
             CorrectionLedgerEntry(
                 review_action_id=entry.review_action_id,
+                action=ReviewActionKind.CORRECT.value,
                 canonical_observation_id=entry.canonical_observation_id,
                 original_value="a",
                 corrected_value="c",
@@ -389,3 +417,124 @@ def test_a_finding_cannot_be_deleted_while_a_reviewer_acted_on_it(postgres_engin
         _action(session, _finding(session), ReviewActionKind.CONFIRM)
     with pytest.raises(IntegrityError), unit_of_work(factory) as session:
         session.delete(session.scalars(select(Finding)).one())
+
+
+# ---------------------------------------------------------------------------
+# Cross-record integrity — found by review on #334
+# ---------------------------------------------------------------------------
+
+
+def test_a_session_cannot_act_on_a_finding_from_another_package(postgres_engine: Engine) -> None:
+    """A review of package A carrying an action on a finding from package B would misstate what was
+    reviewed — and an approval built from it would misstate what was signed off. Two composite
+    foreign keys resolve the revision against the session and against the finding."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        mine = _finding(session)
+        other = _finding(session)  # a different project, package and revision
+        my_revision = session.scalars(
+            select(CheckRun.package_revision_id).where(CheckRun.id == mine.check_run_id)
+        ).one()
+        review = ReviewSession(package_revision_id=my_revision, reviewer="anant")
+        session.add(review)
+        session.flush()
+        session.add(
+            ReviewAction(
+                review_session_id=review.id,
+                finding_id=other.id,
+                package_revision_id=my_revision,
+                action=ReviewActionKind.CONFIRM.value,
+                actor="anant",
+            )
+        )
+
+
+def test_an_approval_cannot_cover_a_finding_from_another_package(postgres_engine: Engine) -> None:
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        mine = _finding(session)
+        other = _finding(session)
+        my_revision = session.scalars(
+            select(CheckRun.package_revision_id).where(CheckRun.id == mine.check_run_id)
+        ).one()
+        approval = Approval(package_revision_id=my_revision, approved_by="anant")
+        session.add(approval)
+        session.flush()
+        session.add(
+            ApprovedFinding(
+                approval_id=approval.id,
+                finding_id=other.id,
+                package_revision_id=my_revision,
+            )
+        )
+
+
+def test_a_finding_cannot_claim_a_revision_its_run_does_not_have(postgres_engine: Engine) -> None:
+    """The copy is denormalised so the constraints above can use it, and a composite foreign key
+    keeps it honest rather than a comment asking nicely."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        finding = _finding(session)
+        run_id = finding.check_run_id
+        session.add(
+            Finding(
+                check_run_id=run_id,
+                package_revision_id=uuid4(),
+                outcome=Outcome.PASS.value,
+                severity=Severity.MINOR.value,
+                trace={},
+                parameter_set_versions={},
+            )
+        )
+
+
+def test_a_ledger_entry_cannot_hang_off_a_confirmation(postgres_engine: Engine) -> None:
+    """A correction record attached to a `confirm` would count an event that was not a correction,
+    and D5.4 measures exactly that rate."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        action = _action(session, _finding(session), ReviewActionKind.CONFIRM)
+        session.add(
+            CorrectionLedgerEntry(
+                review_action_id=action.id,
+                action=ReviewActionKind.CONFIRM.value,
+                canonical_observation_id=uuid4(),
+                original_value="a",
+                corrected_value="b",
+            )
+        )
+
+
+def test_an_exception_cannot_hang_off_a_confirmation(postgres_engine: Engine) -> None:
+    """That would be a check switched off by a record saying the reviewer agreed with it."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        action = _action(session, _finding(session), ReviewActionKind.CONFIRM)
+        session.add(
+            ReviewException(
+                review_action_id=action.id,
+                action=ReviewActionKind.CONFIRM.value,
+                scope=ExceptionScope.FINDING.value,
+                scope_id=uuid4(),
+                reason="agreed",
+                approved_by="anant",
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+        )
+
+
+def test_a_scope_id_is_not_validated_by_the_schema() -> None:
+    """Stated rather than assumed. `scope` selects one of three tables, so `scope_id` cannot be a
+    foreign key — a column cannot reference three parents. The database therefore accepts an id
+    pointing at nothing, and validating it needs application code or a trigger (`C1.12`).
+
+    Asserted so that nobody reads the composite keys above and concludes every reference in this
+    plane is enforced. This one is not.
+    """
+    scope_id = Base.metadata.tables["review_exceptions"].columns["scope_id"]
+    assert scope_id.foreign_keys == set(), "if this gains a foreign key, delete this test"

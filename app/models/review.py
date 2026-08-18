@@ -27,7 +27,14 @@ from datetime import datetime
 from enum import Enum, StrEnum
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime
@@ -84,7 +91,10 @@ class ReviewSession(Base, TimestampedUUID):
     reviewer: Mapped[str] = mapped_column(String(200), index=True)
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=None)
 
-    __table_args__ = (CheckConstraint("reviewer <> ''", name="review_session_reviewer_present"),)
+    __table_args__ = (
+        CheckConstraint("reviewer <> ''", name="review_session_reviewer_present"),
+        UniqueConstraint("id", "package_revision_id", name="uq_review_sessions_id_revision"),
+    )
 
 
 class ReviewAction(Base, TimestampedUUID, Immutable):
@@ -96,12 +106,17 @@ class ReviewAction(Base, TimestampedUUID, Immutable):
 
     __tablename__ = "review_actions"
 
-    review_session_id: Mapped[UUID] = mapped_column(
-        ForeignKey("review_sessions.id", ondelete="RESTRICT"), index=True
-    )
-    finding_id: Mapped[UUID] = mapped_column(
-        ForeignKey("findings.id", ondelete="RESTRICT"), index=True
-    )
+    review_session_id: Mapped[UUID] = mapped_column(index=True)
+    finding_id: Mapped[UUID] = mapped_column(index=True)
+
+    package_revision_id: Mapped[UUID] = mapped_column(index=True)
+    """The revision both sides must agree on.
+
+    Two composite foreign keys below resolve it against the session *and* against the finding, so a
+    session reviewing package A cannot carry an action on a finding from package B. Without this the
+    row would be accepted and would misstate what was reviewed — and an approval built from it would
+    misstate what was signed off.
+    """
     action: Mapped[str] = mapped_column(String(32), index=True)
     actor: Mapped[str] = mapped_column(String(200))
     """Who, by name. The session has a reviewer, and this repeats it because a session may be picked
@@ -110,6 +125,20 @@ class ReviewAction(Base, TimestampedUUID, Immutable):
     note: Mapped[str | None] = mapped_column(String(1000), default=None)
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["review_session_id", "package_revision_id"],
+            ["review_sessions.id", "review_sessions.package_revision_id"],
+            name="fk_review_actions_session_revision",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finding_id", "package_revision_id"],
+            ["findings.id", "findings.package_revision_id"],
+            name="fk_review_actions_finding_revision",
+            ondelete="RESTRICT",
+        ),
+        # Lets the ledger and the exception table bind to the *kind* of action, below.
+        UniqueConstraint("id", "action", name="uq_review_actions_id_action"),
         CheckConstraint(f"action IN ({ACTION_VALUES})", name="review_action_kind"),
         CheckConstraint("actor <> ''", name="review_action_actor_present"),
         Index("ix_review_actions_finding_action", "finding_id", "action"),
@@ -130,10 +159,17 @@ class CorrectionLedgerEntry(Base, TimestampedUUID, Immutable):
 
     __tablename__ = "correction_ledger"
 
-    review_action_id: Mapped[UUID] = mapped_column(
-        ForeignKey("review_actions.id", ondelete="RESTRICT"), unique=True, index=True
-    )
+    review_action_id: Mapped[UUID] = mapped_column(unique=True, index=True)
     """One correction per action. Two would leave "what did the reviewer change?" with two answers."""
+
+    action: Mapped[str] = mapped_column(String(32), default=ReviewActionKind.CORRECT.value)
+    """Always `correct`, and the database enforces it.
+
+    A composite foreign key resolves `(review_action_id, action)` against `review_actions`, so this
+    copy cannot disagree with the action it names — and the CHECK pins it to `correct`. Without both,
+    a ledger entry could hang off a `confirm` or a `dismiss`, and the correction rate would count
+    events that were not corrections.
+    """
 
     canonical_observation_id: Mapped[UUID] = mapped_column(
         ForeignKey(
@@ -157,6 +193,13 @@ class CorrectionLedgerEntry(Base, TimestampedUUID, Immutable):
         CheckConstraint(
             "original_value <> corrected_value", name="correction_actually_changes_something"
         ),
+        ForeignKeyConstraint(
+            ["review_action_id", "action"],
+            ["review_actions.id", "review_actions.action"],
+            name="fk_correction_action_kind",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("action = 'correct'", name="correction_action_is_a_correction"),
     )
 
 
@@ -177,7 +220,10 @@ class Approval(Base, TimestampedUUID, Immutable):
     on this row would be the client-supplied value the acceptance forbids, with nothing checking
     that any of them exist."""
 
-    __table_args__ = (CheckConstraint("approved_by <> ''", name="approval_approved_by_present"),)
+    __table_args__ = (
+        CheckConstraint("approved_by <> ''", name="approval_approved_by_present"),
+        UniqueConstraint("id", "package_revision_id", name="uq_approvals_id_revision"),
+    )
 
 
 class ReviewException(Base, TimestampedUUID, Immutable):
@@ -194,9 +240,11 @@ class ReviewException(Base, TimestampedUUID, Immutable):
 
     __tablename__ = "review_exceptions"
 
-    review_action_id: Mapped[UUID] = mapped_column(
-        ForeignKey("review_actions.id", ondelete="RESTRICT"), unique=True, index=True
-    )
+    review_action_id: Mapped[UUID] = mapped_column(unique=True, index=True)
+    action: Mapped[str] = mapped_column(String(32), default=ReviewActionKind.EXCEPT.value)
+    """Always `except`, enforced the same way the ledger's is. An exception hanging off a `confirm`
+    would be a check switched off by a record that says the reviewer agreed with it."""
+
     scope: Mapped[str] = mapped_column(String(32), index=True)
     scope_id: Mapped[UUID] = mapped_column()
     """Which finding, item or package. Not a foreign key, because the three scopes point at three
@@ -217,6 +265,13 @@ class ReviewException(Base, TimestampedUUID, Immutable):
         # Not "in the future" — a clock comparison in a CHECK is not immutable and PostgreSQL
         # refuses it. Expiry before creation is still nonsense and can be caught.
         CheckConstraint("expires_at > created_at", name="review_exception_expires_after_creation"),
+        ForeignKeyConstraint(
+            ["review_action_id", "action"],
+            ["review_actions.id", "review_actions.action"],
+            name="fk_exception_action_kind",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("action = 'except'", name="review_exception_action_is_an_exception"),
         Index("ix_review_exceptions_scope_expiry", "scope", "expires_at"),
     )
 
@@ -232,13 +287,24 @@ class ApprovedFinding(Base, TimestampedUUID, Immutable):
 
     __tablename__ = "approved_findings"
 
-    approval_id: Mapped[UUID] = mapped_column(
-        ForeignKey("approvals.id", ondelete="RESTRICT"), index=True
-    )
-    finding_id: Mapped[UUID] = mapped_column(
-        ForeignKey("findings.id", ondelete="RESTRICT"), index=True
-    )
+    approval_id: Mapped[UUID] = mapped_column(index=True)
+    finding_id: Mapped[UUID] = mapped_column(index=True)
+    package_revision_id: Mapped[UUID] = mapped_column(index=True)
+    """Resolved against both sides, so an approval for package A cannot list a finding from package
+    B. An approval that misstates what it covered is worse than no approval: somebody signed it."""
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["approval_id", "package_revision_id"],
+            ["approvals.id", "approvals.package_revision_id"],
+            name="fk_approved_findings_approval_revision",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finding_id", "package_revision_id"],
+            ["findings.id", "findings.package_revision_id"],
+            name="fk_approved_findings_finding_revision",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint("approval_id", "finding_id", name="uq_approved_findings_link"),
     )

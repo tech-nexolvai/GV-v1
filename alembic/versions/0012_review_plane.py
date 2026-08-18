@@ -57,6 +57,7 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_review_sessions"),
+        sa.UniqueConstraint("id", "package_revision_id", name="uq_review_sessions_id_revision"),
     )
     op.create_index(
         "ix_review_sessions_package_revision_id", "review_sessions", ["package_revision_id"]
@@ -68,34 +69,43 @@ def upgrade() -> None:
         *_identity_columns(),
         sa.Column("review_session_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("finding_id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("package_revision_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("action", sa.String(length=32), nullable=False),
         sa.Column("actor", sa.String(length=200), nullable=False),
         sa.Column("note", sa.String(length=1000), nullable=True),
         sa.CheckConstraint(f"action IN ({_ACTIONS})", name="review_action_kind"),
         sa.CheckConstraint("actor <> ''", name="review_action_actor_present"),
+        # Both sides resolved against the same revision: a session reviewing package A cannot
+        # carry an action on a finding from package B.
         sa.ForeignKeyConstraint(
-            ["review_session_id"],
-            ["review_sessions.id"],
-            name="fk_review_actions_review_session_id_review_sessions",
+            ["review_session_id", "package_revision_id"],
+            ["review_sessions.id", "review_sessions.package_revision_id"],
+            name="fk_review_actions_session_revision",
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
-            ["finding_id"],
-            ["findings.id"],
-            name="fk_review_actions_finding_id_findings",
+            ["finding_id", "package_revision_id"],
+            ["findings.id", "findings.package_revision_id"],
+            name="fk_review_actions_finding_revision",
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_review_actions"),
+        # Lets the ledger and the exception table bind to the *kind* of action.
+        sa.UniqueConstraint("id", "action", name="uq_review_actions_id_action"),
     )
     op.create_index("ix_review_actions_action", "review_actions", ["action"])
     op.create_index("ix_review_actions_finding_action", "review_actions", ["finding_id", "action"])
     op.create_index("ix_review_actions_finding_id", "review_actions", ["finding_id"])
+    op.create_index(
+        "ix_review_actions_package_revision_id", "review_actions", ["package_revision_id"]
+    )
     op.create_index("ix_review_actions_review_session_id", "review_actions", ["review_session_id"])
 
     op.create_table(
         "correction_ledger",
         *_identity_columns(),
         sa.Column("review_action_id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("action", sa.String(length=32), nullable=False),
         sa.Column("canonical_observation_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("original_value", sa.String(length=500), nullable=False),
         sa.Column("corrected_value", sa.String(length=500), nullable=False),
@@ -104,12 +114,16 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "original_value <> corrected_value", name="correction_actually_changes_something"
         ),
+        # A ledger entry may only hang off a `correct` action. Without this it could attach to a
+        # `confirm` or a `dismiss`, and the correction rate would count events that were not
+        # corrections.
         sa.ForeignKeyConstraint(
-            ["review_action_id"],
-            ["review_actions.id"],
-            name="fk_correction_ledger_review_action_id_review_actions",
+            ["review_action_id", "action"],
+            ["review_actions.id", "review_actions.action"],
+            name="fk_correction_action_kind",
             ondelete="RESTRICT",
         ),
+        sa.CheckConstraint("action = 'correct'", name="correction_action_is_a_correction"),
         sa.ForeignKeyConstraint(
             ["canonical_observation_id"],
             ["canonical_observations.id"],
@@ -143,6 +157,7 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_approvals"),
+        sa.UniqueConstraint("id", "package_revision_id", name="uq_approvals_id_revision"),
     )
     op.create_index("ix_approvals_package_revision_id", "approvals", ["package_revision_id"])
 
@@ -151,16 +166,19 @@ def upgrade() -> None:
         *_identity_columns(),
         sa.Column("approval_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("finding_id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("package_revision_id", sa.Uuid(as_uuid=True), nullable=False),
+        # An approval for package A cannot list a finding from package B. An approval that misstates
+        # what it covered is worse than no approval: somebody signed it.
         sa.ForeignKeyConstraint(
-            ["approval_id"],
-            ["approvals.id"],
-            name="fk_approved_findings_approval_id_approvals",
+            ["approval_id", "package_revision_id"],
+            ["approvals.id", "approvals.package_revision_id"],
+            name="fk_approved_findings_approval_revision",
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
-            ["finding_id"],
-            ["findings.id"],
-            name="fk_approved_findings_finding_id_findings",
+            ["finding_id", "package_revision_id"],
+            ["findings.id", "findings.package_revision_id"],
+            name="fk_approved_findings_finding_revision",
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_approved_findings"),
@@ -168,11 +186,15 @@ def upgrade() -> None:
     )
     op.create_index("ix_approved_findings_approval_id", "approved_findings", ["approval_id"])
     op.create_index("ix_approved_findings_finding_id", "approved_findings", ["finding_id"])
+    op.create_index(
+        "ix_approved_findings_package_revision_id", "approved_findings", ["package_revision_id"]
+    )
 
     op.create_table(
         "review_exceptions",
         *_identity_columns(),
         sa.Column("review_action_id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("action", sa.String(length=32), nullable=False),
         sa.Column("scope", sa.String(length=32), nullable=False),
         sa.Column("scope_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("reason", sa.String(length=1000), nullable=False),
@@ -185,12 +207,15 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "expires_at > created_at", name="review_exception_expires_after_creation"
         ),
+        # An exception hanging off a `confirm` would be a check switched off by a record saying the
+        # reviewer agreed with it.
         sa.ForeignKeyConstraint(
-            ["review_action_id"],
-            ["review_actions.id"],
-            name="fk_review_exceptions_review_action_id_review_actions",
+            ["review_action_id", "action"],
+            ["review_actions.id", "review_actions.action"],
+            name="fk_exception_action_kind",
             ondelete="RESTRICT",
         ),
+        sa.CheckConstraint("action = 'except'", name="review_exception_action_is_an_exception"),
         sa.PrimaryKeyConstraint("id", name="pk_review_exceptions"),
     )
     op.create_index(

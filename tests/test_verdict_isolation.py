@@ -328,16 +328,34 @@ def test_nothing_in_rules_reads_the_correction_ledger() -> None:
     they see, and nothing should. What must not happen is code in `rules/` reading corrections
     directly, because then the rulebook starts changing without anybody publishing a version of it.
 
-    Asserted by name rather than by package: the ledger lives in `app/models/review.py`, and `rules/`
-    already cannot import `app` at all — this catches the day somebody moves it somewhere `rules/`
-    can reach.
+    Checked two ways, because neither alone is enough.
+
+    The **import edge** is the precise test: `rules/` and `verdict/` must not reach `app`, which is
+    where the ledger lives. That is what a reviewer means by "does not read the ledger", and it
+    cannot be fooled by aliasing.
+
+    The **name** is checked as well, and deliberately: an import guard sees nothing in a raw SQL
+    string. `SELECT * FROM correction_ledger` in a `rules/` module reads the ledger just as surely
+    as an import does, and imports nothing at all.
     """
     for package in ("rules", "verdict"):
-        for path in _py_files(package):
-            text = path.read_text(encoding="utf-8")
-            assert "correction_ledger" not in text and "CorrectionLedgerEntry" not in text, (
-                f"{path.relative_to(REPO_ROOT)} reads the correction ledger. A correction is a "
-                "reviewer fixing one drawing; a rule is a published decision. Corrections becoming "
-                "rules by accumulation is how a system quietly starts deciding what it was told to "
-                "check."
-            )
+        offenders = [
+            f"{path.relative_to(REPO_ROOT)} imports {module}"
+            for path in _py_files(package)
+            for module in sorted(_imports_in(path))
+            if module == "app"
+        ]
+        assert not offenders, "the correction ledger is reachable by import:\n  " + "\n  ".join(
+            offenders
+        )
+
+        named = [
+            path.relative_to(REPO_ROOT)
+            for path in _py_files(package)
+            if "correction_ledger" in path.read_text(encoding="utf-8")
+        ]
+        assert not named, (
+            f"{named} names the correction ledger. A correction is a reviewer fixing one drawing; a "
+            "rule is a published decision. Corrections becoming rules by accumulation is how a "
+            "system quietly starts deciding what it was told to check."
+        )
