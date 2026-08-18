@@ -73,7 +73,21 @@ async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
 
 
 async def _http_error(request: Request, exc: Exception) -> JSONResponse:
+    """A raised `HTTPException`, with its detail forwarded only when the status says it is for the
+    caller.
+
+    A 4xx detail is written by us to tell a client what they got wrong — "no such package" — and is
+    safe. A 5xx detail is written for us: it may name a host, a table or a driver error, and
+    forwarding it hands an internal detail to whoever asked. The first version forwarded both.
+    """
     assert isinstance(exc, StarletteHTTPException)
+    if exc.status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
+        return _envelope(
+            request,
+            "internal_error",
+            "Something went wrong on our side. Quote the request id when reporting it.",
+            exc.status_code,
+        )
     return _envelope(request, "http_error", str(exc.detail), exc.status_code)
 
 

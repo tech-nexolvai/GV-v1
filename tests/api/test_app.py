@@ -203,7 +203,9 @@ def test_readiness_refuses_when_the_database_is_unreachable() -> None:
     with TestClient(create_app(unreachable), raise_server_exceptions=False) as probe:
         response = probe.get("/ready")
     assert response.status_code == 503
-    assert response.json()["status"] == "not ready"
+    # The shared envelope, not a bespoke body — see
+    # `test_readiness_failures_use_the_shared_error_envelope`.
+    assert ErrorEnvelope.model_validate(response.json()).error == "not_ready"
 
 
 def test_readiness_and_health_are_separate_endpoints() -> None:
@@ -213,3 +215,103 @@ def test_readiness_and_health_are_separate_endpoints() -> None:
     app = create_app(_settings())
     paths = {route.path for route in app.routes if hasattr(route, "path")}
     assert {"/health", "/ready"} <= paths
+
+
+# ---------------------------------------------------------------------------
+# Readiness means at head, not merely migrated (found by review on #336)
+# ---------------------------------------------------------------------------
+
+
+def test_readiness_failures_use_the_shared_error_envelope() -> None:
+    """ "One error shape, for every failure" is the headline claim of this module, and the first
+    version of `/ready` answered with a bespoke body — so a client handling errors through
+    `ErrorEnvelope` could not parse a not-ready response."""
+    unreachable = _settings(database_url="postgresql+psycopg://nobody@127.0.0.1:1/nothing")
+    with TestClient(create_app(unreachable), raise_server_exceptions=False) as probe:
+        response = probe.get("/ready")
+    assert response.status_code == 503
+    body = ErrorEnvelope.model_validate(response.json())
+    assert body.error == "not_ready"
+    assert body.request_id
+
+
+def test_a_schema_behind_head_is_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The failure this endpoint exists for, and the one the first version missed.
+
+    It asked only whether `alembic_version` was non-empty, so a database three migrations behind
+    answered `200 ready` — a process serving requests against an outdated schema, which is not
+    degraded but wrong, reported as healthy.
+    """
+    from app import main
+
+    monkeypatch.setattr(
+        main,
+        "_readiness_problems",
+        lambda url: ["the schema is at 0007_x but the code expects head"],
+    )
+    with TestClient(create_app(_settings()), raise_server_exceptions=False) as probe:
+        response = probe.get("/ready")
+    assert response.status_code == 503
+    assert "0007_x" in ErrorEnvelope.model_validate(response.json()).message
+
+
+def test_readiness_at_head_reports_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check has to be able to say yes, or the refusals above prove nothing."""
+    from app import main
+
+    monkeypatch.setattr(main, "_readiness_problems", lambda url: [])
+    with TestClient(create_app(_settings()), raise_server_exceptions=False) as probe:
+        response = probe.get("/ready")
+    assert response.status_code == 200 and response.json()["status"] == "ready"
+
+
+def test_the_expected_head_is_read_from_the_migrations_not_hardcoded() -> None:
+    """A hardcoded revision would be correct until the next migration and wrong silently after."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+    assert head, "alembic must report a head revision for the readiness check to compare against"
+
+
+# ---------------------------------------------------------------------------
+# A 5xx detail is written for us, not for the caller
+# ---------------------------------------------------------------------------
+
+
+def test_a_server_side_http_detail_is_not_forwarded(client: TestClient) -> None:
+    """A 4xx detail tells a client what they got wrong and is safe. A 5xx detail may name a host, a
+    table or a driver error — the first version forwarded both."""
+    app = client.app
+
+    @app.get("/upstream-broke")
+    async def upstream_broke() -> None:  # pragma: no cover - exercised via HTTP
+        raise HTTPException(status_code=502, detail="postgres at 10.83.0.2 refused the connection")
+
+    response = client.get("/upstream-broke")
+    assert response.status_code == 502
+    assert "10.83.0.2" not in response.text and "postgres" not in response.text
+    assert ErrorEnvelope.model_validate(response.json()).error == "internal_error"
+
+
+def test_a_client_side_http_detail_is_still_forwarded(client: TestClient) -> None:
+    """Otherwise every 404 becomes "something went wrong", which is useless to the caller."""
+    app = client.app
+
+    @app.get("/nope")
+    async def nope() -> None:  # pragma: no cover - exercised via HTTP
+        raise HTTPException(status_code=404, detail="no such package revision")
+
+    response = client.get("/nope")
+    assert ErrorEnvelope.model_validate(response.json()).message == "no such package revision"
+
+
+def test_the_readiness_check_does_not_block_the_event_loop() -> None:
+    """`create_engine` and a synchronous session would stall the loop, making every other request slow
+    while the probe reports on health. The work runs in a worker thread."""
+    import inspect
+
+    from app import main
+
+    source = inspect.getsource(main)
+    assert "run_in_threadpool(_readiness_problems" in source

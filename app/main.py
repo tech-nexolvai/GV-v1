@@ -24,9 +24,10 @@ from uuid import uuid4
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings
-from app.errors import REQUEST_ID_STATE, install_error_handlers
+from app.errors import REQUEST_ID_STATE, _envelope, install_error_handlers
 
 #: The six API groups that will hang off this app: packages, documents, findings, review, rules and
 #: operations. None exist yet; the skeleton is what they attach to.
@@ -75,41 +76,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/ready", tags=["operations"])
     async def ready(request: Request) -> JSONResponse:
-        """The process can do work: the database answers and the schema is current.
+        """The process can do work: the database answers and the schema is **at head**.
 
         Returns 503 rather than raising, because a readiness probe that 500s is indistinguishable from
         a crashed process, and the two call for different responses from an orchestrator.
 
-        The migration check is the part that matters. A process serving requests against a schema three
-        migrations behind is not degraded, it is wrong — and nothing else in the system would report
-        it.
+        The migration check is the part that matters, and the first version did not do what this
+        docstring claimed. It asked only whether `alembic_version` was non-empty, so a database three
+        migrations behind answered `200 ready` — exactly the failure the endpoint exists to catch. It
+        now compares the applied revision against the head revision in `alembic/versions`.
+
+        The work runs in a worker thread: `create_engine` and a synchronous session block the event
+        loop, and a readiness probe that stalls it makes every other request slow while reporting on
+        health.
         """
-        from sqlalchemy import create_engine
-
-        from app.db.session import session_factory
-
-        problems: list[str] = []
-        try:
-            engine = create_engine(resolved.database_url)
-            with session_factory(engine)() as session:
-                session.execute(text("SELECT 1"))
-                current = session.execute(
-                    text("SELECT version_num FROM alembic_version")
-                ).scalar_one_or_none()
-            if current is None:
-                problems.append("no migration has been applied")
-        except Exception:  # noqa: BLE001 - the reason is deliberately not surfaced to the caller
-            problems.append("the database did not answer")
-
+        problems = await run_in_threadpool(_readiness_problems, resolved.database_url)
         if problems:
-            return JSONResponse(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                content={
-                    "status": "not ready",
-                    "problems": problems,
-                    "request_id": getattr(request.state, REQUEST_ID_STATE, "unknown"),
-                },
+            # The same envelope as every other failure. "One error shape" would be a claim this
+            # endpoint quietly broke, and a client handling errors through ErrorEnvelope could not
+            # parse a bespoke body.
+            return _envelope(
+                request, "not_ready", "; ".join(problems), status.HTTP_503_SERVICE_UNAVAILABLE
             )
         return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ready"})
 
     return app
+
+
+def _readiness_problems(database_url: str) -> list[str]:
+    """Everything wrong with the database right now, in plain English. Synchronous by design.
+
+    Returns a list rather than raising on the first, because an operator reading a probe wants both
+    problems at once rather than one per restart.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import create_engine
+
+    from app.db.session import session_factory
+
+    try:
+        engine = create_engine(database_url)
+        with session_factory(engine)() as session:
+            session.execute(text("SELECT 1"))
+            applied = session.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - the reason is deliberately not surfaced to the caller
+        return ["the database did not answer"]
+
+    expected = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+    if applied is None:
+        return ["no migration has been applied"]
+    if applied != expected:
+        problem = (
+            f"the schema is at {applied} but the code expects {expected}. A process serving "
+            "requests against an outdated schema is not degraded, it is wrong."
+        )
+        return [problem]
+    return []
