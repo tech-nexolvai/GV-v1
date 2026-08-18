@@ -20,11 +20,34 @@ this cabinet" from "spans the run" is empirical, `data/drawings/` is empty, and 
 be today's guess shipped as ground truth. It is a required keyword argument so that no call site can
 acquire one by accident.
 
+**The tolerance is in stored units, which are not a distance.** Stored coordinates are normalised
+`0..1` against the crop box, so `Decimal("0.001")` is about a third of a millimetre across an A4
+sheet and nearly a millimetre across a 24×36 one — and, on any page that is not square, a different
+distance along x than along y. A caller holding a physical tolerance has to convert it per page and
+per axis, and the conversion belongs with `PageTransform` in the layer that already owns the
+PDF→stored step. Passing one fixed number for a whole package is the trap; it will be tighter than
+intended on small sheets and looser on large ones, and both directions produce wrong answers rather
+than obvious ones.
+
 **What this deliberately does not do.** Dimension lines sit *offset* from what they measure, and how
 far is a per-vendor empirical fact. Nothing here filters candidates by how near the line is to them
 across the axis — so a dimension over one row of cabinets can match an identically-sized row
 elsewhere on the sheet. That is B10.5's lane-4 problem. Inventing a proximity constant now would
 hide the gap rather than close it.
+
+**A skewed line resolves rather than refusing, and nothing upstream promises otherwise.** Only an
+*exact* tie between horizontal and vertical extent has no dominant axis; a line at 30° picks the
+axis it leans towards and carries on. That is safe if dimension lines arrive near-axis-aligned —
+and no design says they do. #179 (B10.2), which produces them, says nothing about axis, and #178
+(B10.1) deskews the **page** and records the rotation, which is a different guarantee: a perfectly
+deskewed sheet can still carry a genuinely diagonal dimension. So a skewed line currently
+mis-resolves silently instead of refusing, which is this module's own failure mode.
+
+The margin separating "axis-aligned enough to project onto one axis" from "diagonal, refuse" is the
+third empirical number in this file's neighbourhood, alongside the endpoint tolerance and the
+lane-4 proximity gap. It is not a threshold anyone can pick from an empty `data/drawings/`, so it is
+written down here rather than guessed. When the drawings arrive it becomes a stated parameter like
+`endpoint_tolerance`, not an inline constant.
 
 **Why the input is not #179's `DimensionLine`.** That type belongs to B10.2, and its endpoints are
 `PdfPoint` — exact, vector-sourced, deliberately not re-derived through pixels. Containment cannot
