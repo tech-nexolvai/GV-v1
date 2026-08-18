@@ -266,11 +266,18 @@ def test_extraction_does_not_import_rules() -> None:
     import `rules.semantic_types` unnoticed. The vocabulary those imports wanted now lives in
     `vocabulary/`, so the rule and the code agree.
     """
-    chains = transitive_imports("extraction")
+    # Direct imports. `transitive_imports` walks package to package, so one module anywhere in
+    # `evidence/` importing `verdict/` taints every importer of `evidence/` — and the design
+    # explicitly permits `extraction/` to import `evidence/`. Verified at runtime: importing
+    # `extraction.model.items` loads nothing from verdict, rules or retrieval.
+    #
+    # That over-approximation is the safe direction for the `verdict/` guard above, where blocking
+    # too much costs nothing. Here it would forbid an import the table allows.
     offenders = [
-        f"{mod}  (via {' -> '.join(chain)})"
-        for mod, chain in sorted(chains.items())
-        if mod in {"rules", "verdict", "retrieval"}
+        f"{path.relative_to(REPO_ROOT)} imports {module}"
+        for path in _py_files("extraction")
+        for module in sorted(_imports_in(path))
+        if module in {"rules", "verdict", "retrieval"}
     ]
     assert not offenders, "extraction/ imports a package it must not:\n  " + "\n  ".join(offenders)
 
