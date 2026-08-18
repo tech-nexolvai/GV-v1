@@ -46,6 +46,12 @@ from app.models.evidence import (
     EvidenceSupportingCandidate,
     ObservationCandidate,
 )
+from app.models.matching import (
+    ApprovalSource,
+    ApprovedMatch,
+    MatchCandidate,
+    MatchReviewEvent,
+)
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
 from app.models.rules import (
     RuleApplicabilityScope,
@@ -62,6 +68,8 @@ from app.models.runs import (
 
 __all__ = [
     "Alias",
+    "ApprovalSource",
+    "ApprovedMatch",
     "CanonicalObservation",
     "CaseResult",
     "Document",
@@ -79,6 +87,8 @@ __all__ = [
     "GoldCase",
     "GoldSet",
     "ItemIdentifier",
+    "MatchCandidate",
+    "MatchReviewEvent",
     "MetricResult",
     "ModelInvocation",
     "ModelInvocationOutcome",
