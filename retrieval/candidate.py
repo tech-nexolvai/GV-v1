@@ -12,21 +12,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from enum import StrEnum, auto
 from uuid import UUID
 
+from vocabulary.lanes import Lane
 
-class Lane(StrEnum):
-    """The retrieval route that proposed a possible correspondence."""
-
-    EXACT = auto()
-    ALIAS = auto()
-    METADATA = auto()
-    GEOMETRY = auto()
-    TRIGRAM = auto()
-    LEXICAL = auto()
-    DENSE = auto()
-    FUSION = auto()
+#: ``Lane`` is re-exported, not redefined. It moved to ``vocabulary/`` because
+#: ``app/models/matching.py`` needs the name to build a ``CHECK`` constraint, and importing it from
+#: here put every module that reaches ``app.models`` — all of ``app/api/`` included — one hop from this
+#: package, which ``DESIGN_PLATFORM.md`` §2 forbids. ``retrieval.candidate.Lane`` keeps working
+#: unchanged, and there is one definition rather than two that happen to agree. ``PageType`` moved the
+#: same way, for the same reason.
+__all__ = ["Lane", "MatchCandidate"]
 
 
 @dataclass(frozen=True, slots=True)

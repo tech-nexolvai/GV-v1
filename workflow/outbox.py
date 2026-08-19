@@ -132,7 +132,7 @@ def _reject_inexact_numbers(value: object, path: str) -> None:
             _reject_inexact_numbers(item, f"{path}[{index}]")
 
 
-def enqueue(session: Session, *, workflow: str, payload: Mapping[str, object]) -> None:
+def enqueue(session: Session, *, workflow: str, payload: Mapping[str, object]) -> UUID:
     """Record the intent to start a workflow, in the caller's transaction. Starts nothing.
 
     Call this beside the business write, inside the same `unit_of_work`. Do not commit here, do not
@@ -142,14 +142,22 @@ def enqueue(session: Session, *, workflow: str, payload: Mapping[str, object]) -
     It deliberately does not flush. A flush would put the row in front of the database early for no
     benefit; the caller's commit is the only moment that matters, and it is the moment the row and
     the business change become durable together.
+
+    Returns the entry's id, so a caller can hand it back as a handle to the work it just accepted
+    (#208, C2.6). This needs no flush of its own: `app/db/base.py` assigns identity in `__init__`
+    rather than at INSERT, precisely so an id is available before the row reaches the database.
+
+    **The id names the enqueued work, not a workflow run.** Nothing has started yet, and the run id
+    does not exist until a dispatcher hands the row to the engine after commit. A caller returning
+    this to a client must not call it a run id — see `app/api/background.py`.
     """
 
     if not workflow.strip():
         raise ValueError("workflow must be a non-empty name")
     _reject_inexact_numbers(payload, "payload")
-    session.add(
-        OutboxEntry(workflow=workflow, payload=dict(payload), dispatched_at=None, attempts=0)
-    )
+    entry = OutboxEntry(workflow=workflow, payload=dict(payload), dispatched_at=None, attempts=0)
+    session.add(entry)
+    return entry.id
 
 
 def dispatch_committed(
