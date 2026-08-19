@@ -14,6 +14,17 @@ the agent — decides whether work may start. Exit code is the contract:
 
 `--comment` posts the stop reason to the issue so the block is visible and chaseable.
 
+The execution-state flags track the three points a piece of work passes through:
+
+    --start   claimed: state:in-progress, assigned to you (only on a READY issue)
+    --review  PR opened: state:in-review
+    --done    merged and closed: no state label at all
+
+`--done` exists because the first two on their own leave every finished issue claiming to be
+in progress for ever. The `state:` label answers "is this being worked?", so the honest
+answer for something closed is no label rather than a "done" one — which is why there is no
+`state:done` in the label set.
+
 No third-party dependencies: standard library plus the `gh` CLI.
 """
 
@@ -178,6 +189,46 @@ def post_comment(number: int, text: str) -> None:
         sys.stderr.write(f"Posted a comment on #{number}.\n")
 
 
+def finish(number: int, issue: dict) -> int:
+    """Clear the execution state of a finished issue — the last step of the workflow.
+
+    Without this step the first two are a one-way trip: `--start` and `--review` set a label and
+    nothing ever takes it off, so every issue the project has ever completed goes on claiming to be
+    active work. The labels that are meant to answer "what is being worked on right now?" then answer
+    it wrongly, and the more work gets done the wronger they get.
+
+    There is no `state:done`, deliberately. The label answers "is this being worked?" and for a closed
+    issue the answer is no, so the honest representation is the absence of one. Whether the work
+    finished is already recorded, by the issue being closed and by the PR that closed it.
+
+    **Refuses on an open issue.** Clearing the state of live work would make it look unclaimed, which
+    is the same failure as the drift pointing the other way — and harder to spot, because an unclaimed
+    issue looks perfectly normal while a stale one at least looks odd. So this reports and exits
+    rather than doing as it is told.
+
+    The assignee is left alone: it records who did the work, which stays true after the merge.
+    """
+    if issue.get("state") != "closed":
+        sys.stderr.write(
+            f"REFUSED  #{number} is still open, so it is not finished.\n\n"
+            "`--done` clears the execution state, and doing that to live work would make it look\n"
+            "unclaimed — nobody would notice, because an unclaimed issue looks normal. Close the\n"
+            "issue first (merging a PR that says 'Closes #N' does it), then run this again.\n"
+        )
+        return BLOCKED
+
+    stale = [l["name"] for l in issue.get("labels", []) if l["name"].startswith("state:")]
+    if not stale:
+        print(f"#{number} carries no execution state already. Nothing to clear.")
+        return READY
+
+    set_state(number, None, False)
+    print(
+        f"Cleared {', '.join(sorted(stale))} from #{number}. It is closed, so it is not in flight."
+    )
+    return READY
+
+
 def set_state(number: int, state: str | None, assign_self: bool) -> None:
     """Execution state, kept separate from readiness. Readiness answers 'may work start?';
     execution state answers 'is it being worked?'. Conflating them hides both."""
@@ -303,12 +354,25 @@ def main() -> int:
         help="mark in-progress and assign to yourself (only if READY)",
     )
     ap.add_argument("--review", action="store_true", help="mark as in-review (PR opened)")
+    ap.add_argument(
+        "--done",
+        action="store_true",
+        help="merged and closed: clear the state label (only if the issue is closed)",
+    )
     args = ap.parse_args()
 
     iss = gh_json(f"repos/{REPO}/issues/{args.issue}")
     if "pull_request" in iss:
         sys.stderr.write(f"#{args.issue} is a pull request, not an issue.\n")
         return MALFORMED
+
+    # Before the contract is parsed, and deliberately. The other state flags apply at the end of the
+    # READY path, so they need a well-formed contract and a ready status — neither of which has
+    # anything to say about work that has already landed. Requiring them would mean an issue whose
+    # contract was edited after the merge could never be tidied up, and the drift this step exists to
+    # clear would be permanent for exactly the issues most likely to have it.
+    if args.done:
+        return finish(args.issue, iss)
 
     title = iss["title"]
     body = iss.get("body") or ""
@@ -562,8 +626,10 @@ def main() -> int:
     print()
     if args.start:
         set_state(args.issue, "in-progress", True)
+        print("NEXT: --review when the PR is open, then --done once it is merged and closed.")
     elif args.review:
         set_state(args.issue, "in-review", False)
+        print("NEXT: --done once the PR is merged and the issue is closed.")
     else:
         print(
             "NEXT: re-run with --start to claim it "
