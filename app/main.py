@@ -13,7 +13,13 @@ way nothing reports.
 **Request ids are accepted, not only generated.** A reviewer's report, our logs and the caller's trace
 should all say the same id. If the caller supplied one we keep it; otherwise we make one.
 
-Source: `docs/DESIGN_PLATFORM.md` §4.1 · Verification: `tests/api/test_app.py`
+**The factory refuses to build an unsafe API.** Once the routes are declared, `assert_no_verdict_fields`
+walks all of them and raises if any would accept a PASS/FAIL, a tolerance or a measurement from its
+caller (#207, C2.5). A startup failure is the right shape for this: the alternative is a process that
+serves such a route and produces findings nobody can tell apart from computed ones.
+
+Source: `docs/DESIGN_PLATFORM.md` §4.1, §4.2 · Verification: `tests/api/test_app.py`,
+`tests/api/test_no_client_verdict.py`
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
+from app.api.guards import assert_no_verdict_fields
 from app.config import Settings
 from app.errors import REQUEST_ID_STATE, _envelope, install_error_handlers
 
@@ -109,6 +116,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request, "not_ready", "; ".join(problems), status.HTTP_503_SERVICE_UNAVAILABLE
             )
         return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ready"})
+
+    # Last, once every route is declared — the audit walks what the app will actually serve, and a
+    # route added after the check would never be seen by it. Raises rather than warns: a process that
+    # boots with a route accepting a client-supplied PASS/FAIL serves it, and the findings it produces
+    # are indistinguishable from ones the engine computed. `app/api/guards.py` explains the rule.
+    assert_no_verdict_fields(app)
 
     return app
 
