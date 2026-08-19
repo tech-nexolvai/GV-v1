@@ -1,0 +1,204 @@
+/* ── Evidence Panel ───────────────────────────────────────── */
+.evidence-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  width: 100%;
+}
+
+.evidence-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.evidence-panel__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.evidence-panel__check-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--bg-input);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.evidence-panel__name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+}
+
+.evidence-panel__body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── No evidence ──────────────────────────────────────────── */
+.evidence-panel__no-evidence {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-8);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.evidence-panel__no-evidence-icon {
+  opacity: 0.3;
+}
+
+.evidence-panel__no-evidence-sub {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+/* ── PDF Pane ─────────────────────────────────────────────── */
+.pdf-pane {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.pdf-pane:last-child { border-bottom: none; }
+
+.pdf-pane__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.pdf-pane__label-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pdf-pane__role-tag {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  font-weight: var(--weight-semi);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  letter-spacing: 0.04em;
+}
+
+.pdf-pane__role-tag--arch {
+  background: rgba(79, 110, 247, 0.12);
+  color: #7a9bff;
+  border: 1px solid rgba(79, 110, 247, 0.2);
+}
+
+.pdf-pane__role-tag--shop {
+  background: rgba(168, 85, 247, 0.12);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.2);
+}
+
+.pdf-pane__label {
+  font-size: var(--text-sm);
+  color: var(--text-body);
+  font-weight: var(--weight-medium);
+}
+
+.pdf-pane__page {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+/* ── Canvas ───────────────────────────────────────────────── */
+.pdf-pane__canvas {
+  position: relative;
+  background: var(--pdf-bg);
+  background-image: 
+    linear-gradient(rgba(26, 22, 21, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(26, 22, 21, 0.02) 1px, transparent 1px);
+  background-size: 16px 16px;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  margin: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.pdf-pane__placeholder {
+  width: 100%;
+}
+
+.pdf-pane__svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Evidence highlight overlay */
+.pdf-pane__overlay {
+  position: absolute;
+  border: 1.5px solid;
+  border-radius: 2px;
+  pointer-events: none;
+  animation: fadeIn var(--duration-base) var(--ease-out) both;
+}
+
+/* ── Meta ─────────────────────────────────────────────────── */
+.pdf-pane__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-base);
+}
+
+.pdf-pane__raw-text {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pdf-pane__meta-label {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.pdf-pane__raw-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.pdf-pane__extractor {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}

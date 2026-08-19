@@ -1,0 +1,497 @@
+/* ============================================================
+   GV COMPONENT STYLES
+   Reusable component CSS — imported per-component or globally
+   ============================================================ */
+
+/* ── GV Brand Bar (the crimson underline motif from the website) ── */
+.gv-bar {
+  width: 32px;
+  height: 2px;
+  background: var(--gv-crimson);
+  border-radius: 1px;
+  margin: var(--space-2) 0 var(--space-4);
+  flex-shrink: 0;
+}
+
+.gv-bar--wide  { width: 48px; }
+.gv-bar--full  { width: 100%; }
+.gv-bar--dim   { background: var(--gv-crimson-dim); border: 1px solid var(--gv-crimson); }
+
+/* ── Divider ────────────────────────────────────────────────────── */
+.divider {
+  height: 1px;
+  background: var(--border-subtle);
+  border: none;
+  margin: 0;
+}
+
+.divider--strong { background: var(--border-default); }
+
+/* ── Status Badge ────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wide);
+  white-space: nowrap;
+  border: 1px solid transparent;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.badge--pass {
+  color: var(--status-pass);
+  background: var(--status-pass-bg);
+  border-color: var(--status-pass-border);
+}
+.badge--fail {
+  color: var(--status-fail);
+  background: var(--status-fail-bg);
+  border-color: var(--status-fail-border);
+}
+.badge--review {
+  color: var(--status-review);
+  background: var(--status-review-bg);
+  border-color: var(--status-review-border);
+}
+.badge--missing {
+  color: var(--status-missing);
+  background: var(--status-missing-bg);
+  border-color: var(--status-missing-border);
+}
+.badge--none {
+  color: var(--status-none);
+  background: var(--status-none-bg);
+  border-color: var(--status-none-border);
+}
+.badge--processing {
+  color: var(--gv-crimson);
+  background: var(--gv-crimson-dim);
+  border-color: rgba(186, 12, 47, 0.3);
+  animation: pulseGlow 1.8s ease-in-out infinite;
+}
+
+/* ── Button ──────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.01em;
+  transition: all var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid transparent;
+  user-select: none;
+}
+
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+
+/* Primary — crimson */
+.btn--primary {
+  background: var(--gv-crimson);
+  color: #fff;
+  border-color: var(--gv-crimson);
+}
+.btn--primary:hover {
+  background: var(--gv-crimson-hover);
+  border-color: var(--gv-crimson-hover);
+  box-shadow: var(--shadow-brand);
+}
+
+/* Ghost */
+.btn--ghost {
+  background: transparent;
+  color: var(--text-body);
+  border-color: var(--border-default);
+}
+.btn--ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+/* Subtle */
+.btn--subtle {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+}
+.btn--subtle:hover {
+  background: var(--bg-hover);
+  color: var(--text-body);
+}
+
+/* Danger */
+.btn--danger {
+  background: transparent;
+  color: var(--status-fail);
+  border-color: var(--status-fail-border);
+}
+.btn--danger:hover {
+  background: var(--status-fail-bg);
+}
+
+/* Action — blue, for non-destructive primary CTAs (Sign Off, Submit, New Package) */
+.btn--action {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+.btn--action:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+  box-shadow: var(--shadow-primary);
+}
+.btn--action:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-primary-dim);
+}
+.btn--action:active { transform: translateY(1px); }
+.btn--action:disabled {
+  background: var(--bg-active);
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* Reviewer — visible ghost chrome for Confirm/Correct/Exception/Dismiss */
+.btn--reviewer {
+  background: transparent;
+  color: var(--text-body);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 3px var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  transition: all var(--duration-fast) var(--ease-out);
+}
+.btn--reviewer:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.btn--reviewer:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-primary-dim);
+  border-color: var(--color-primary-border);
+}
+.btn--reviewer:active { background: var(--bg-active); }
+.btn--reviewer:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn--reviewer--dismiss { color: var(--status-missing); }
+.btn--reviewer--dismiss:hover { border-color: var(--status-missing-border); }
+
+/* Sizes */
+.btn--sm { padding: var(--space-1) var(--space-3); font-size: var(--text-xs); }
+.btn--lg { padding: var(--space-3) var(--space-6); font-size: var(--text-md); }
+
+/* Icon only */
+.btn--icon {
+  padding: var(--space-2);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+}
+.btn--icon.btn--sm { width: 26px; height: 26px; padding: var(--space-1); }
+
+/* ── Input ───────────────────────────────────────────────────────── */
+.input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-out),
+              box-shadow   var(--duration-fast) var(--ease-out);
+}
+
+.input::placeholder { color: var(--text-muted); }
+
+.input:focus {
+  border-color: var(--gv-crimson);
+  box-shadow: 0 0 0 3px var(--gv-crimson-dim);
+}
+
+/* ── Card ────────────────────────────────────────────────────────── */
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  transition: border-color var(--duration-base) var(--ease-out);
+}
+
+.card:hover { border-color: var(--border-default); }
+
+.card--interactive {
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out),
+              transform var(--duration-fast) var(--ease-out);
+}
+.card--interactive:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+.card--interactive:active {
+  transform: scale(0.995);
+}
+
+/* ── Skeleton shimmer ───────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-elevated) 0%,
+    var(--bg-hover) 50%,
+    var(--bg-elevated) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Tooltip ────────────────────────────────────────────────────── */
+[data-tooltip] {
+  position: relative;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-family: var(--font-sans);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  border: 1px solid var(--border-default);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out),
+              transform var(--duration-fast) var(--ease-out);
+  z-index: 100;
+}
+[data-tooltip]:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ============================================================
+   NEW PACKAGE MODAL & PIPELINE SIMULATION STYLES
+   ============================================================ */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-overlay);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn var(--duration-base) var(--ease-out) both;
+}
+
+.modal {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-width: 520px;
+  overflow: hidden;
+  animation: slideUp var(--duration-base) var(--ease-out) both;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal__header {
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal__title {
+  font-family: var(--font-heading);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semi);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+  color: var(--text-primary);
+}
+
+.modal__body {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  overflow-y: auto;
+  max-height: 70vh;
+}
+
+.modal__footer {
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  background: var(--bg-elevated);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.form-group__label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+  font-weight: var(--weight-semi);
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.upload-zone-wrapper {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.upload-zone {
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-5) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: center;
+  background: var(--bg-elevated);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.upload-zone:hover {
+  border-color: var(--gv-crimson);
+  background: var(--bg-hover);
+}
+
+.upload-zone--has-file {
+  border-style: solid;
+  border-color: var(--status-pass);
+  background: rgba(46, 117, 89, 0.03);
+}
+
+.upload-zone__title {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+}
+
+.upload-zone__filename {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--status-pass);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.upload-zone__desc {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* Pipeline simulator overlay styles */
+.pipeline-overlay {
+  padding: var(--space-8) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.pipeline-loader {
+  color: var(--gv-crimson);
+  animation: spin 1.5s linear infinite;
+}
+
+.pipeline-steps {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.pipeline-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.pipeline-step--active {
+  color: var(--text-primary);
+  border-color: var(--border-default);
+  background: var(--bg-hover);
+}
+
+.pipeline-step--completed {
+  color: var(--status-pass);
+  border-color: rgba(46, 117, 89, 0.2);
+  background: rgba(46, 117, 89, 0.02);
+}
+
+.pipeline-step__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.pipeline-step__label {
+  flex: 1;
+}
+
+.pipeline-step__meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.pipeline-step--completed .pipeline-step__meta {
+  color: var(--status-pass);
+}
