@@ -1,20 +1,30 @@
 """The contract for recording every model call, from issue #251.
 
-Three things are proved here that a happy-path test would not.
+Covers both halves of the story: `extraction/models/invocations.py`, which owns what must be recorded
+and validates it, and `app/runs/invocations.py`, which stores it and reads it back. They are tested
+together from here because they are one behaviour split across an architectural boundary, and issue
+#251 names this file as the verification for it. A test file may import both; the production code may
+not, and `test_extraction_models_cannot_reach_the_rules_package` is why.
+
+Four things are proved here that a happy-path test would not.
 
 **The failure paths are the subject, not an afterthought.** Every outcome in the closed set is
 recorded end to end, because the record exists to explain money spent going nowhere as much as money
 spent well.
 
 **The integer guard is shown to be load-bearing.** `test_the_column_alone_would_round_a_float_cost`
-inserts a fractional cost past `record` and demonstrates PostgreSQL storing a different number
-without complaint. Without that test, the guard in `record` looks like a redundant re-check of a
-database constraint, and the next person to tidy it away would have no way to know it is the only
-thing there.
+writes a fractional cost straight to the ORM and demonstrates PostgreSQL storing a different number
+without complaint. Without that test, the guard in `InvocationRecord` looks like a redundant re-check
+of a database constraint, and the next person to tidy it away would have no way to know it is the
+only thing there.
 
 **Negative tests fail for the named reason.** Each one asserts on the constraint PostgreSQL actually
 rejected, read from the driver's diagnostics, so a row rejected by some other rule cannot be
 mistaken for the rule under test.
+
+**The import boundary is asserted transitively.** `docs/DESIGN_AI.md` §2 forbids `extraction/models/`
+from reaching `rules/`, and it measures that by reachability rather than by direct imports. A direct
+check would have passed the first version of this module, which reached `rules/` in two hops.
 
 The schema is built by running the real migrations rather than `Base.metadata.create_all`. Model
 introspection cannot see triggers, and `alembic/versions/0013_append_only.py` installs one on this
@@ -24,11 +34,13 @@ rules CI does.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 from fractions import Fraction
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -59,17 +71,19 @@ from app.models import (
     TaskRun,
     WorkflowRun,
 )
-from extraction.models.invocations import (
+from app.runs.invocations import (
     candidate_id_for,
     crop_for,
     invocations_for_candidate,
     record,
 )
+from extraction.models.invocations import InvocationRecord
 from units.measurement import Unit
 from vocabulary.semantic_types import SemanticType
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCUMENT_HASH = "a" * 64
 PAGE_HASH = "b" * 64
 CROP_BYTES = b"the crop the model was shown"
@@ -219,9 +233,9 @@ def _persist_crop(
     return artifact
 
 
-def _record(session: Session, context: Context, **changes: object) -> ModelInvocation:
+def _built(extraction_run_id: UUID, **changes: object) -> InvocationRecord:
     values: dict[str, object] = {
-        "extraction_run_id": context.extraction_run_id,
+        "extraction_run_id": extraction_run_id,
         "model_id": "nova-2-lite-2026-05-14",
         "prompt_id": "dimension-reader-v3",
         "template_id": "crop-dimension-v2",
@@ -233,7 +247,117 @@ def _record(session: Session, context: Context, **changes: object) -> ModelInvoc
         "outcome": ModelInvocationOutcome.OK,
     }
     values.update(changes)
-    return record(session, **values)  # type: ignore[arg-type]
+    return InvocationRecord(**values)  # type: ignore[arg-type]
+
+
+def _record(session: Session, context: Context, **changes: object) -> ModelInvocation:
+    return record(session, _built(context.extraction_run_id, **changes))
+
+
+# ---------------------------------------------------------------------------
+# The import boundary the design sets, measured the way the design measures it
+# ---------------------------------------------------------------------------
+
+
+def _project_imports(path: Path, packages: set[str]) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            found.add(node.module)
+    return {name for name in found if name.split(".")[0] in packages}
+
+
+def _reachable_from(module: str, packages: set[str]) -> dict[str, list[str]]:
+    """Every project module reachable from `module`, with the chain that reached it."""
+
+    chains: dict[str, list[str]] = {}
+    seen = {module}
+    queue: list[tuple[str, list[str]]] = [(module, [module])]
+    while queue:
+        current, chain = queue.pop()
+        target = REPO_ROOT / current.replace(".", "/")
+        files = sorted(target.rglob("*.py")) if target.is_dir() else [target.with_suffix(".py")]
+        for file in files:
+            if not file.exists():
+                continue
+            for imported in _project_imports(file, packages):
+                chains.setdefault(imported, [*chain, imported])
+                if imported not in seen:
+                    seen.add(imported)
+                    queue.append((imported, [*chain, imported]))
+    return chains
+
+
+#: Every top-level package in this repo, so the walk knows what to step into.
+PROJECT_PACKAGES = {
+    "app",
+    "eval",
+    "evidence",
+    "extraction",
+    "reports",
+    "retrieval",
+    "rules",
+    "units",
+    "verdict",
+    "vocabulary",
+    "workflow",
+}
+
+
+@pytest.mark.parametrize("forbidden", ["rules", "app"])
+def test_extraction_models_cannot_reach_a_package_it_is_not_permitted(forbidden: str) -> None:
+    """Input: the import closure. Outcome: no route out. Why: reachability is the design's standard.
+
+    `docs/DESIGN_AI.md` §2 permits `extraction/models/` to import `evidence/` and `storage/`, and
+    forbids `rules/` and `verdict/`. `app/` is not in the permitted column either. The section is
+    explicit that the test is reachability rather than direct imports: *"the prohibited capabilities
+    are absent from the agent's reachable surface, not refused at call time."*
+
+    The first version of this story imported `app.models` for the ORM class, which reached `rules/`
+    in two hops via `app.models.evidence -> rules.semantic_types`.
+    `tests/test_verdict_isolation.py` did not catch it, because for `extraction/` it checks direct
+    imports only — a real gap in that guard, noted on PR #352 and left for its own story rather than
+    widened from here. This test closes the hole for this package.
+
+    **`app/` is asserted as well as `rules/`, and that matters.** Asserting only `rules/` would let
+    the violation back in a shape that happens not to reach it today: `app.models.runs` on its own
+    imports nothing from `rules/`, so an `app` import would pass a rules-only check and leave the
+    breach one new import away from being real again. `app/` is the rule the design actually states,
+    and it is verified safe to assert — neither `evidence/` nor `storage/`, the two packages this one
+    may import, reaches `app/`.
+
+    **`verdict/` is deliberately not asserted, and that is not an oversight.** `DESIGN_EXTRACTION.md`
+    §10 has `evidence/` import the contract types from `verdict/operands.py` on purpose, and
+    `extraction/models/` is permitted to import `evidence/`. So `verdict` is transitively reachable
+    on a sanctioned path regardless of what this module does, and asserting it unreachable would be
+    asserting a rule the design contradicts. `rules/` and `app/` have no such sanctioned route.
+    """
+
+    chains = _reachable_from("extraction.models", PROJECT_PACKAGES)
+    offenders = [
+        " -> ".join(chain)
+        for module, chain in sorted(chains.items())
+        if module.split(".")[0] == forbidden
+    ]
+    assert not offenders, f"extraction/models/ can reach {forbidden}/:\n  " + "\n  ".join(offenders)
+
+
+def test_the_guard_above_would_notice_a_two_hop_route() -> None:
+    """Input: this repo's real closure. Outcome: it walks past hop one. Why: prove it transits.
+
+    A reachability test that silently only looked one hop deep would pass exactly as happily as a
+    correct one. `app/runs/invocations.py` imports `extraction.models.invocations`, which imports
+    nothing from the project — so `app.runs` reaching `rules/` at all can only be a multi-hop result,
+    and finding it proves the walk does not stop at the first level.
+    """
+
+    chains = _reachable_from("app.runs", PROJECT_PACKAGES)
+    routes = [chain for module, chain in chains.items() if module.split(".")[0] == "rules"]
+    assert routes, "expected app/runs/ to reach rules/ transitively; the walk found nothing"
+    assert all(len(chain) > 2 for chain in routes), f"no multi-hop route was walked: {routes}"
 
 
 # ---------------------------------------------------------------------------
@@ -262,13 +386,13 @@ def test_no_invocation_column_uses_binary_floating_point() -> None:
 def test_a_cost_or_count_that_is_not_a_plain_int_is_refused(field: str, value: object) -> None:
     """Input: a float, Decimal or bool. Outcome: TypeError naming it. Why: no rounding, silent.
 
-    No session and no database: the check runs before anything is built or added, which is the
-    property being asserted. If it ever stopped running first, `None` would raise `AttributeError`
-    on `session.add` and this test would fail rather than quietly pass for the wrong reason.
+    No session and no database, because the check is not part of persistence. Refusing at
+    construction is what makes it unskippable: `record` takes an `InvocationRecord`, and there is no
+    such object holding a cost that was never an exact integer.
     """
 
     with pytest.raises(TypeError, match=field):
-        _record(None, Context(uuid4(), uuid4(), uuid4()), **{field: value})  # type: ignore[arg-type]
+        _built(uuid4(), **{field: value})
 
 
 def test_the_column_alone_would_round_a_float_cost(postgres_engine: Engine) -> None:
