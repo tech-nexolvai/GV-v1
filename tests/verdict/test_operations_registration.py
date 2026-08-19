@@ -97,3 +97,46 @@ def test_the_package_exposes_what_the_api_layer_needs(attribute: str) -> None:
     from verdict import operations
 
     assert callable(getattr(operations, attribute))
+
+
+def test_a_fully_conflicting_pre_registration_is_refused() -> None:
+    """**The hole the first version left open.**
+
+    `register_all()` skipped a module when every name it declares was already registered. It compared
+    *names*, so a caller that had registered all of them as something else — different version,
+    different function — was quietly agreed with, and the engine went on resolving implementations
+    nobody in this package chose. Skipping is safe only when what is registered *is* what is declared.
+    """
+    from verdict.registry import OperationSpec, RuleAuthoringError
+
+    register_all()
+    assert declared_specs(), "nothing is declared, so this test would prove nothing"
+
+    hijacked = {
+        spec.name: OperationSpec(
+            spec.name,
+            "99.0.0",  # same name, different everything
+            spec.operands,
+            lambda **_: None,  # pragma: no cover - never invoked
+            spec.kind,
+        )
+        for spec in declared_specs()
+    }
+    original = dict(REGISTRY)
+    REGISTRY.clear()
+    REGISTRY.update(hijacked)
+    try:
+        with pytest.raises(RuleAuthoringError, match="already registered as something else"):
+            register_all()
+    finally:
+        REGISTRY.clear()
+        REGISTRY.update(original)
+
+
+def test_an_identical_pre_registration_is_still_skipped() -> None:
+    """The other half. If the conflict check were too eager, calling twice would raise, and the order
+    two callers happen to run in would decide whether the app starts."""
+    register_all()
+    before = dict(REGISTRY)
+    register_all()
+    assert dict(REGISTRY) == before

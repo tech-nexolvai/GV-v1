@@ -195,6 +195,7 @@ class PublicationRequest(BaseModel):
 
     snapshot_id: str = Field(
         min_length=1,
+        pattern=r"^sha256:[0-9a-f]{64}$",
         description=(
             "The content hash of the proposal being approved — the `sha256:<hex>` it would publish "
             "as. Not a proposal id: the hash changes the moment the proposed rule does, so an "

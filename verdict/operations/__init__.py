@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from verdict.operations import aggregate, alignment, pairwise, scalar
-from verdict.registry import REGISTRY, OperationSpec
+from verdict.registry import REGISTRY, OperationSpec, RuleAuthoringError
 
 #: Every module of operations, with the specs it declares and the installer that registers them.
 #:
@@ -58,8 +58,14 @@ def register_all() -> None:
 
     `verdict.registry.register()` refuses **every** re-registration, including an identical one. That
     strictness is deliberate — it makes a spec quietly replaced by another of the same name
-    impossible — and it is not weakened here. Instead a module's installer is skipped when everything
-    it declares is already present, so a second call does nothing.
+    impossible — and it is not weakened here. A module's installer is skipped only when what is
+    already registered under its names **is what this module declares**, so a second call does
+    nothing and a disagreement still raises.
+
+    The first version compared names alone, which was a hole in exactly the protection this paragraph
+    claims to preserve: a caller who had registered all of a module's names as something else would
+    have `register_all()` quietly agree, and the engine would run implementations nobody here chose.
+    Names are what `register()` guards; identity is what matters.
 
     A *partially* installed module is not skipped: its installer runs and `register()` raises. That
     is the case worth failing on, because it means two callers disagree about what is registered and
@@ -68,11 +74,19 @@ def register_all() -> None:
     The installers are called rather than the specs registered directly here, so that
     `declared_specs()` and the registry remain two independent readings that a test can compare.
     """
-    for _, specs, installer in _MODULES:
-        declared = {spec.name for spec in specs}
-        if declared and declared <= set(REGISTRY):
+    for module_name, specs, installer in _MODULES:
+        already = [spec for spec in specs if spec.name in REGISTRY]
+        if not specs or len(already) != len(specs):
+            installer()
             continue
-        installer()
+
+        conflicting = sorted(spec.name for spec in already if REGISTRY[spec.name] != spec)
+        if conflicting:
+            raise RuleAuthoringError(
+                f"operations from {module_name!r} are already registered as something else: "
+                f"{conflicting}. Two callers disagree about what these names mean, and skipping "
+                "would leave the engine resolving whichever registered first."
+            )
 
 
 def installed_names() -> frozenset[str]:

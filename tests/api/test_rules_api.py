@@ -120,13 +120,16 @@ def test_the_operations_list_carries_a_signature_not_an_implementation() -> None
 def test_listing_operations_requires_a_role() -> None:
     """The registry is not secret, but it is not public either — an unauthenticated caller learns
     nothing about what this system checks."""
-    app = create_app(_settings())
-    assert TestClient(app, raise_server_exceptions=False).get("/api/v1/operations").status_code in (
-        401,
-        403,
-        404,
-        500,
-    )
+    status = _client().get("/api/v1/operations").status_code
+
+    # An *authenticated* caller holding no roles. Sending no credentials at all raises
+    # `AuthenticationNotConfigured` by design — authentication is not wired yet — so that path tests
+    # the missing configuration, not the authorisation.
+    #
+    # And only statuses that mean "refused". 500 was in this list and should not have been: a broken
+    # dependency or a crashing endpoint would satisfy a test whose whole job is to prove the route
+    # refuses. An internal error is not a denial, it is an unknown, and this test found exactly that.
+    assert status in (401, 403, 404), f"expected a refusal, got {status}"
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +142,7 @@ def test_publishing_without_the_rule_admin_role_is_refused() -> None:
     every future check means, and the two are deliberately different rights."""
     response = _client(Role.REVIEWER).post(
         "/api/v1/rules/cab_arch_vs_shop_001/publish",
-        json={"snapshot_id": "0" * 64, "target": "production"},
+        json={"snapshot_id": "sha256:" + "0" * 64, "target": "production"},
     )
     assert response.status_code == 404, "a 403 would confirm the rule exists"
 
@@ -152,11 +155,24 @@ def test_an_admin_cannot_publish_by_virtue_of_being_an_admin() -> None:
     never defined, which is the sort of quiet widening that makes an approval gate decorative. It
     refuses instead, and the mismatch is the admin's to resolve.
     """
-    response = _client(Role.ADMIN).post(
-        "/api/v1/rules/cab_arch_vs_shop_001/publish",
-        json={"snapshot_id": "0" * 64, "target": "production"},
+    from app.api.rules import get_rulebook
+
+    # The rulebook is a *dependency*, so it resolves before the body runs. Without this override the
+    # request fails with `RulebookNotConfigured` and never reaches the role mapping at all — which is
+    # what the first version of this test was actually asserting, under `!= 200`. A 500 satisfied it,
+    # so an endpoint that crashed on every publish would have passed while proving nothing.
+    app = create_app(_settings())
+    app.dependency_overrides[authenticate] = lambda: Principal(
+        id="anant", roles=frozenset({Role.ADMIN}), projects=frozenset({uuid4()})
     )
-    assert response.status_code != 200
+    app.dependency_overrides[get_rulebook] = lambda: object()
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/rules/cab_arch_vs_shop_001/publish",
+        json={"snapshot_id": "sha256:" + "0" * 64, "target": "production"},
+    )
+
+    assert response.status_code == 403, f"expected a refusal, got {response.status_code}"
+    assert "rule-administrator" in response.text
 
 
 def test_the_publish_endpoint_actually_calls_d6() -> None:
@@ -203,7 +219,14 @@ def test_the_publish_endpoint_actually_calls_d6() -> None:
 
 
 def _hash_of(canonical_json: str) -> str:
-    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+    """The identifier as `rules/snapshot.py` computes it: algorithm-prefixed, full length.
+
+    The prefix is not decoration. A bare hex string does not say what produced it, so a future change
+    of algorithm would leave two indistinguishable populations of identifier. The first version of
+    this helper dropped it and would have compared a prefixed id against a raw digest — and the test
+    skips without a configured rulebook, so it never ran to say so.
+    """
+    return "sha256:" + hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
 def test_a_snapshot_hash_verifies_against_its_canonical_json() -> None:
@@ -265,3 +288,44 @@ def _any_rule_id(store: Any) -> str | None:
         listed = list(rules())
         return str(listed[0]) if listed else None
     return None
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["0" * 64, "sha256:not-hex", "sha256:" + "0" * 63, "sha256:" + "A" * 64, "x"],
+)
+def test_a_malformed_snapshot_id_is_refused(bad: str) -> None:
+    """One wire format, validated rather than described.
+
+    The field documented `sha256:<hex>` and accepted any non-empty string, so a raw digest, a
+    truncated one or an uppercase one all reached the rulebook lookup and came back as "not found" —
+    a wrong shape reported as a missing thing, which sends the caller looking for the wrong problem.
+    """
+    from app.api.rules import get_rulebook
+
+    app = create_app(_settings())
+    app.dependency_overrides[authenticate] = lambda: Principal(
+        id="anant", roles=frozenset({Role.RULE_ADMIN}), projects=frozenset({uuid4()})
+    )
+    app.dependency_overrides[get_rulebook] = lambda: object()
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/rules/cab_arch_vs_shop_001/publish",
+        json={"snapshot_id": bad, "target": "production"},
+    )
+    assert response.status_code == 422, f"{bad!r} was accepted as a snapshot id"
+
+
+def test_a_well_formed_snapshot_id_gets_past_validation() -> None:
+    """Otherwise the test above passes because everything is refused, which proves nothing."""
+    from app.api.rules import get_rulebook
+
+    app = create_app(_settings())
+    app.dependency_overrides[authenticate] = lambda: Principal(
+        id="anant", roles=frozenset({Role.RULE_ADMIN}), projects=frozenset({uuid4()})
+    )
+    app.dependency_overrides[get_rulebook] = lambda: object()
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/rules/cab_arch_vs_shop_001/publish",
+        json={"snapshot_id": "sha256:" + "0" * 64, "target": "production"},
+    )
+    assert response.status_code != 422
