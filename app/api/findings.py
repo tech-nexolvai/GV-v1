@@ -30,8 +30,8 @@ that the caller may see this project, and the `WHERE` clause establishes that th
 project's. A package that is not in this project is `404`, exactly as a project the caller does not
 belong to is: `403` would confirm it exists, which is what the boundary is for.
 
-**This router is not wired yet.** `app/main.py` includes it under `API_PREFIX` in a separate pass, so
-that several stories adding route groups in parallel do not all edit the factory.
+`app/main.py` includes this router under `API_PREFIX`, alongside the packages and documents routers
+added by #205.
 
 Source: backend proposal §10.2 Findings · Design: `docs/DESIGN_PRODUCT.md` §3.1 ·
 Verification: `tests/api/test_findings_query.py`
@@ -42,19 +42,18 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import ColumnElement, Integer, Select, and_, case, or_, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
+from app.api.dependencies import get_session
 from app.auth import Principal, require_project_access
-from app.db.session import engine_from_settings, session_factory
 from app.models import (
     CheckRun,
     Finding,
@@ -84,39 +83,10 @@ DEFAULT_PAGE_SIZE = 50
 NOT_FOUND_DETAIL = "Not found"
 
 
-# ---------------------------------------------------------------------------
-# The database session
-# ---------------------------------------------------------------------------
-
-_engine_lock = threading.Lock()
-_ENGINE_STATE = "_gv_read_engine"
-
-
-def get_session(request: Request) -> Iterator[Session]:
-    """A session for the life of one request, built from the settings the factory validated.
-
-    The engine is cached on the application rather than rebuilt per request: an engine owns a
-    connection pool, and making a new one per request means a new pool per request, which exhausts
-    PostgreSQL's connection limit under any real load.
-
-    A deployment or a test replaces this with `dependency_overrides`. It reads settings off the app
-    rather than the environment because `app/config.py` is explicit that a setting is validated once,
-    at startup — an `os.environ.get` here would be a second, unvalidated source of the same value.
-    """
-    engine = getattr(request.app.state, _ENGINE_STATE, None)
-    if engine is None:
-        # Locked because sync dependencies run in a threadpool: two simultaneous first requests
-        # would otherwise each build a pool, and one of them would be leaked with nothing closing it.
-        with _engine_lock:
-            engine = getattr(request.app.state, _ENGINE_STATE, None)
-            if engine is None:
-                engine = engine_from_settings(request.app.state.settings)
-                setattr(request.app.state, _ENGINE_STATE, engine)
-    session = session_factory(engine)()
-    try:
-        yield session
-    finally:
-        session.close()
+#: The request-scoped session. Defined in `app/api/dependencies.py` since #205, because the packages
+#: and documents routers need the same one — re-exported here so `findings.get_session` keeps naming
+#: it, which is what `dependency_overrides` in the existing tests is keyed on.
+__all__ = ["get_session", "router"]
 
 
 # ---------------------------------------------------------------------------
