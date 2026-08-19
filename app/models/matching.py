@@ -37,7 +37,13 @@ from sqlalchemy import CheckConstraint, ForeignKey, Index, Numeric, String, Uniq
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime
-from retrieval.candidate import Lane
+from vocabulary.lanes import Lane
+
+#: Imported from ``vocabulary/`` rather than from ``retrieval.candidate``, which is where it used to
+#: come from. ``DESIGN_PLATFORM.md`` §2 says ``app/models/`` must never import ``retrieval/``, and it
+#: did — which put every module reaching ``app.models``, including the whole of ``app/api/``, one hop
+#: from the retrieval package. Naming a lane needs no retrieval code, so the name lives where names
+#: live. Same enum, same values, same SQL. See ``tests/api/test_no_heavy_work.py``.
 
 
 def _sql_values(enum_type: type[Enum]) -> str:
