@@ -1,14 +1,18 @@
-"""Database contract for execution records in issue #194."""
+"""Database contract for execution records in issue #194, and the outcome set they may record (#313)."""
 
 from __future__ import annotations
 
+import re
 from uuid import UUID
 
 import pytest
-from sqlalchemy import Engine, func, select
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from sqlalchemy import Engine, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from alembic import command
 from app.db.base import Base, Immutable
 from app.db.session import session_factory, unit_of_work
 from app.models import (
@@ -224,3 +228,165 @@ def test_invalid_invocation_accounting_is_rejected(
         extraction = _persist_run_chain(session)
         session.add(_invocation(extraction.id, **changes))
         session.flush()
+
+
+def test_a_failed_model_call_retains_complete_cost_and_identity(
+    postgres_engine: Engine,
+) -> None:
+    """Input: failed paid call. Outcome: full row. Why: a failure still cost money (#313).
+
+    The gap this issue closed. `failed` was not in the enum or the constraint, so a call that came
+    back with no answer and was neither a timeout nor a refusal could not be stored at all — the
+    insert was rejected and the record of a paid attempt was lost. `E2.3` (#251) says every call is
+    recorded; `F5.3` (#266) bills from these rows, and the input tokens were spent before it failed.
+    """
+
+    Base.metadata.create_all(postgres_engine)
+    factory = session_factory(postgres_engine)
+    invocation_id: UUID
+    with unit_of_work(factory) as session:
+        extraction = _persist_run_chain(session)
+        invocation = _invocation(
+            extraction.id,
+            outcome=ModelInvocationOutcome.FAILED,
+            input_tokens=512,
+            output_tokens=0,
+            cost_micros=118,
+            latency_ms=2400,
+        )
+        invocation_id = invocation.id
+        session.add(invocation)
+    with unit_of_work(factory) as session:
+        restored = session.get(ModelInvocation, invocation_id)
+        assert restored is not None
+        assert restored.outcome == ModelInvocationOutcome.FAILED
+        # Provenance, in full. A failed call is only worth keeping if it can be attributed.
+        assert restored.model_id == "gpt-5-mini-2026-08-01"
+        assert restored.prompt_id == "dimension-reader-v3"
+        assert restored.template_id == "crop-dimension-v2"
+        # Accounting, in full. Output tokens are legitimately zero; the input tokens are not.
+        assert restored.input_tokens == 512
+        assert restored.output_tokens == 0
+        assert restored.cost_micros == 118
+        assert restored.latency_ms == 2400
+
+
+# ---------------------------------------------------------------------------
+# The enum and the constraint cannot drift again (#313)
+# ---------------------------------------------------------------------------
+#
+# Why neither existing guard caught `failed` being missing, which is what these two are shaped around:
+#
+#   * Every test above calls `Base.metadata.create_all`, building the tables from the **ORM metadata**.
+#     The ORM's check constraint is generated from `ModelInvocationOutcome` itself, so the enum and the
+#     thing under test are one source. Add a member and they all still pass, migration or no migration.
+#   * `tests/app/test_migrations_roundtrip.py` uses Alembic's `compare_metadata`, which does not compare
+#     check constraints at all. A constraint disagreeing with the models yields an empty diff.
+#
+# So a drift test must read what the *migrations* install. One below reads the migration chain and needs
+# no database; the other reads a migrated database and is authoritative.
+
+
+def _outcomes_from_the_migrations() -> tuple[str, frozenset[str]]:
+    """The outcome values the newest migration to define them installs, and which revision that is.
+
+    Walks the revision chain newest-first, so it keeps working when a later migration widens the set
+    again — it finds that one rather than this story's. The convention it relies on is that a migration
+    touching this constraint names its values in a module-level `MODEL_OUTCOMES`, which `0005` and
+    `0015` both do; the failure message says so, because a migration that inlined the string instead
+    would make this test fail rather than quietly pass.
+    """
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    for revision in script.walk_revisions():
+        values = getattr(revision.module, "MODEL_OUTCOMES", None)
+        if values is not None:
+            return revision.revision, frozenset(
+                value.strip().strip("'") for value in values.split(",")
+            )
+    raise AssertionError(
+        "no migration defines MODEL_OUTCOMES. A migration that changes the "
+        "model_invocation_outcome constraint must name its values in a module-level MODEL_OUTCOMES "
+        "constant, so this test can compare them against the enum."
+    )
+
+
+def test_the_enum_and_the_migrated_constraint_list_the_same_outcomes() -> None:
+    """Input: enum and newest migration. Outcome: identical sets. Why: they drifted, silently.
+
+    **The scope item, and the one that runs without a database.** `failed` was in neither for as long
+    as it was missing, and nothing failed — the enum agreed with the ORM, the ORM agreed with itself,
+    and the migration was never consulted. Adding a member without a migration now fails here.
+    """
+    revision, migrated = _outcomes_from_the_migrations()
+    declared = frozenset(outcome.value for outcome in ModelInvocationOutcome)
+
+    assert declared == migrated, (
+        f"ModelInvocationOutcome and migration {revision} disagree.\n"
+        f"  only in the enum:      {sorted(declared - migrated)}\n"
+        f"  only in the migration: {sorted(migrated - declared)}\n\n"
+        "A member added to the enum needs a new migration widening the CHECK constraint, or the "
+        "database will reject every row using it. Never edit a shipped migration — add one."
+    )
+
+
+def test_failed_is_among_them() -> None:
+    """Input: the agreed set. Outcome: contains `failed`. Why: the two agreeing on four is not the fix.
+
+    Without this, deleting `FAILED` from the enum *and* from the migration would leave the test above
+    perfectly green while restoring the exact bug (#313) — two things agreeing is not the same as two
+    things being right.
+    """
+    _, migrated = _outcomes_from_the_migrations()
+
+    assert ModelInvocationOutcome.FAILED.value == "failed"
+    assert "failed" in migrated
+
+
+def test_the_database_really_enforces_the_declared_outcomes(postgres_engine: Engine) -> None:
+    """Input: a migrated database. Outcome: constraint matches the enum. Why: this is the real check.
+
+    The authoritative version, and the only one that inspects what a deployed database actually
+    enforces. Built with `alembic upgrade head` rather than `create_all` — deliberately, because
+    `create_all` builds from the ORM metadata and would compare the enum with itself, which is how
+    this went unnoticed. The constraint is read back with `pg_get_constraintdef`, so what is asserted
+    is what PostgreSQL will apply to an insert.
+    """
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+    command.upgrade(config, "head")
+
+    with postgres_engine.connect() as connection:
+        definition = connection.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = :name AND conrelid = 'model_invocations'::regclass"
+            ),
+            {"name": "model_invocation_outcome"},
+        ).scalar_one()
+
+    enforced = frozenset(re.findall(r"'([a-z_]+)'", definition))
+    declared = frozenset(outcome.value for outcome in ModelInvocationOutcome)
+
+    assert enforced == declared, (
+        f"the database enforces {sorted(enforced)} but the enum declares {sorted(declared)}.\n"
+        f"constraint: {definition}\n\n"
+        "A value the enum offers and the database refuses is an insert that fails in production and "
+        "nowhere else."
+    )
+
+
+def test_a_failed_row_survives_the_migration_that_permits_it(postgres_engine: Engine) -> None:
+    """Input: migrated schema, failed row. Outcome: accepted. Why: prove the migration, not the ORM.
+
+    Every other persistence test here builds its tables with `create_all`, so all of them would pass
+    with migration `0015` deleted. This one inserts through the migrated schema, which is the schema a
+    deployment actually has.
+    """
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+    command.upgrade(config, "head")
+
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        extraction = _persist_run_chain(session)
+        session.add(_invocation(extraction.id, outcome=ModelInvocationOutcome.FAILED))

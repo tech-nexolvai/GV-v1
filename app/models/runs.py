@@ -20,14 +20,33 @@ from app.db.base import Base, Immutable, TimestampedUUID
 
 
 class ModelInvocationOutcome(StrEnum):
-    """Closed outcomes retained for every attempted model call."""
+    """Closed outcomes retained for every attempted model call.
+
+    `FAILED` is the catch-all for a call that did not come back with an answer and was neither a
+    timeout nor a refusal — a transport error, a malformed response, a provider 500. Without it such a
+    call could not be stored at all: the `CHECK` constraint rejected the insert, so the record of a
+    paid attempt was simply lost (#313). Two shipped stories rely on it existing — `E2.3` (#251) says
+    every call is recorded including failures, and `F5.3` (#266) attributes spend from these rows,
+    where a missing failure understates the bill in the direction that flatters us.
+
+    Adding a member here is only half the change. The database enforces this set through a `CHECK`
+    constraint installed by a **migration**, and the migration hardcodes its values — so a new member
+    needs a new migration too. `tests/db/test_run_models.py` compares the two and fails if they
+    disagree, because that is exactly how `failed` came to be missing for as long as it was.
+    """
 
     OK = "ok"
     REJECTED = "rejected"
     TIMEOUT = "timeout"
     REFUSED = "refused"
+    FAILED = "failed"
 
 
+#: The enum rendered as SQL literals, for the ORM's own `CHECK` constraint below.
+#:
+#: This is generated from the enum, so the two can never disagree — which is why the drift that
+#: mattered was never here. It was between the enum and the migration, and only a test that reads what
+#: the migrations install can see it.
 MODEL_INVOCATION_OUTCOMES = ", ".join(f"'{outcome.value}'" for outcome in ModelInvocationOutcome)
 
 
