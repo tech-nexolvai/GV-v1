@@ -52,6 +52,7 @@ from app.models.matching import (
     MatchCandidate,
     MatchReviewEvent,
 )
+from app.models.outbox import OutboxEntry
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
 from app.models.review import (
     Approval,
@@ -116,6 +117,7 @@ __all__ = [
     "ModelInvocation",
     "ModelInvocationOutcome",
     "ObservationCandidate",
+    "OutboxEntry",
     "Package",
     "PackageRevision",
     "PackageState",
