@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
+
+#: PostgreSQL's SQLSTATE for a unique violation.
+UNIQUE_VIOLATION = "23505"
 
 
 class DatabaseSettings(Protocol):
@@ -53,6 +57,35 @@ def session_factory(engine: Engine) -> sessionmaker[Session]:
     """Create the project's session factory without opening a session."""
 
     return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def is_unique_violation(error: IntegrityError, *constraints: str) -> bool:
+    """Whether this integrity error is a unique violation on one of the named constraints.
+
+    Two things have to hold: the SQLSTATE says unique violation, and the constraint the *database*
+    named is one the caller expects. If the driver cannot name the constraint, the answer is no.
+    Guessing would let some unrelated unique constraint be reported as "already done", and that is the
+    failure that loses a write rather than the one that logs an error.
+
+    Constraints are matched as substrings of the reported name, so a caller can name the column
+    (``document_id``) rather than the installed constraint name. That keeps working if a table is ever
+    rebuilt under PostgreSQL's own default name, while still being specific.
+
+    ``workflow/idempotency.py`` has its own copy of this check for ``task_runs``, written before this
+    one. It is deliberately not changed to import this: ``docs/DESIGN_PLATFORM.md`` §2 lets
+    ``app/api/`` reach ``workflow/`` for ``enqueue`` only, so the helper had to live on this side of
+    that boundary. Consolidating the two is a tidy-up, not a fix.
+    """
+
+    original = getattr(error, "orig", None)
+    diagnostic = getattr(original, "diag", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(diagnostic, "sqlstate", None)
+    if sqlstate != UNIQUE_VIOLATION:
+        return False
+    name = getattr(diagnostic, "constraint_name", None)
+    if not isinstance(name, str):
+        return False
+    return any(constraint in name for constraint in constraints)
 
 
 @contextmanager
