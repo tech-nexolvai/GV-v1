@@ -8,7 +8,7 @@ from uuid import UUID
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import Engine, func, select, text
+from sqlalchemy import CheckConstraint, Engine, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -350,10 +350,28 @@ def test_the_database_really_enforces_the_declared_outcomes(postgres_engine: Eng
     `create_all` builds from the ORM metadata and would compare the enum with itself, which is how
     this went unnoticed. The constraint is read back with `pg_get_constraintdef`, so what is asserted
     is what PostgreSQL will apply to an insert.
+
+    **The name comes from the ORM, the values come from the database.** Two things I got wrong first
+    time, both only visible against a real PostgreSQL:
+
+    `app/db/base.py` sets a naming convention (`ck_%(table_name)s_%(constraint_name)s`), so the stored
+    name is `ck_model_invocations_model_invocation_outcome`, not the `model_invocation_outcome` written
+    in the model and the migration. Asking the ORM for the name rather than hardcoding either spelling
+    keeps this working if the convention changes — and the name is not what is under test anyway.
+
+    And PostgreSQL does not store `outcome IN (...)` as written: it rewrites it to
+    `outcome = ANY (ARRAY[...])`. Matching on `" IN "` therefore found nothing at all, which is worth
+    knowing before writing any test that reads a check constraint back.
     """
     config = Config("alembic.ini")
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
+
+    constraint = next(
+        candidate
+        for candidate in ModelInvocation.__table__.constraints
+        if isinstance(candidate, CheckConstraint) and "outcome IN" in str(candidate.sqltext)
+    )
 
     with postgres_engine.connect() as connection:
         definition = connection.execute(
@@ -361,9 +379,12 @@ def test_the_database_really_enforces_the_declared_outcomes(postgres_engine: Eng
                 "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
                 "WHERE conname = :name AND conrelid = 'model_invocations'::regclass"
             ),
-            {"name": "model_invocation_outcome"},
+            {"name": constraint.name},
         ).scalar_one()
 
+    # The values survive the rewrite as quoted literals — `'ok'::character varying` and so on — so the
+    # quoted lowercase tokens are exactly the permitted set, and nothing else in this definition is
+    # quoted.
     enforced = frozenset(re.findall(r"'([a-z_]+)'", definition))
     declared = frozenset(outcome.value for outcome in ModelInvocationOutcome)
 
