@@ -29,8 +29,8 @@ from starlette.concurrency import run_in_threadpool
 from app.config import Settings
 from app.errors import REQUEST_ID_STATE, _envelope, install_error_handlers
 
-#: The six API groups that will hang off this app: packages, documents, findings, review, rules and
-#: operations. Packages, documents and findings are wired; review and rules attach the same way.
+#: The six API groups that hang off this app: packages, documents, findings, review, rules and
+#: operations. All but review are wired; review attaches the same way.
 API_PREFIX = "/api/v1"
 
 
@@ -56,11 +56,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # a module-level import would make `app.main` drag the database into anything that merely wants
     # `create_app` — including the isolation tests, whose whole job is to prove what does not import
     # what.
-    from app.api import documents, findings, packages
+    from app.api import documents, findings, operations, packages, rules
 
     app.include_router(packages.router, prefix=API_PREFIX)
     app.include_router(documents.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
+    app.include_router(rules.router, prefix=API_PREFIX)
+    app.include_router(operations.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def _request_id(
