@@ -150,7 +150,7 @@ Ultralytics YOLO — the two most tempting libraries in this domain — are both
 ## R10 — Corrections silently become rules
 
 **Control (§16):** Append-only ledger, human proposal gate and full regression.
-**Status:** PLANNED
+**Status:** PARTIAL
 **Refs:** module:app/review/ledger.py, module:app/review/proposal.py, module:rules/governance/regression.py
 **Owner:** #233, #235, #238
 **Effectiveness claim:** no automated path exists from the correction ledger to a rule change, and
@@ -164,13 +164,17 @@ a human to raise the change.
 ENFORCED: 3 — R1 (numerically plausible extraction), R6 (rule injection), R9 (licensing). All three
 are properties of the deterministic core, which is the part that is built.
 
-PARTIAL: 5 — R2, R3, R5, R7, R8. **R5 (false PASS) is the one to look at** — the metric and the
+PARTIAL: 6 — R2, R3, R5, R7, R8, R10. **R5 (false PASS) is the one to look at** — the metric and the
 release gates both exist, and there is no gold set to run them against, so the project's primary
 safety metric currently reports NOT MEASURED for every check. That is not a bug in the metric; it is
 `#274` and `#188` waiting on the client. **R7 (retrieval contamination)** was read as enforced until
-`#257`: its control is about a running process, and only the import graph proved it.
+`#257`: its control is about a running process, and only the import graph proved it. **R10
+(corrections silently become rules)** moved here from PLANNED when `#233` landed the append-only
+ledger; the other two thirds of its control — the human proposal gate and the full regression — do
+not exist yet, so an accumulation of corrections is recorded but nothing yet stands between that
+record and a rule change.
 
-PLANNED: 2 — R4 (agent loops or cost runaway), R10 (corrections silently become rules).
+PLANNED: 1 — R4 (agent loops or cost runaway).
 
 The counts above are checked against the table by `tests/test_risk_controls.py`. They were wrong
 before that check existed — this paragraph still called retrieval contamination enforced after `#257`
