@@ -628,3 +628,23 @@ def test_a_router_nested_inside_another_router_is_still_reached() -> None:
 
     paths = [mounted.path for mounted in _mounted_routes(app)]
     assert "/api/v1/inner/projects/{project_id}/deep-include" in paths
+
+
+def test_the_wired_api_is_audited_not_merely_present() -> None:
+    """The first real router, asserted through the enumeration rather than by eye.
+
+    This is the test that would have been impossible to write honestly before the include_router fix:
+    the route below is reached through `include_router`, so the previous audit could not see it at
+    all and would have reported an app with zero project routes. It now appears under the path it is
+    actually served on, prefix and all, and is required to carry the project boundary.
+    """
+    app = create_app(_settings())
+    project_routes = [m for m in _mounted_routes(app) if "{project_id}" in m.path]
+
+    assert project_routes, "the findings router is wired, so the audit must see project routes"
+    assert all(_project_scoped(m) for m in project_routes), [
+        m.path for m in project_routes if not _project_scoped(m)
+    ]
+    assert any(
+        m.path.startswith("/api/v1/") for m in project_routes
+    ), "a route audited without its prefix is audited under a path nobody serves"
