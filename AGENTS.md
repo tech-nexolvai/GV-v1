@@ -36,8 +36,15 @@ A guessed tolerance does not cause an obvious bug. It produces a confident, plau
 that a reviewer may sign off and a factory may build. The rule in §1 binds contributors exactly as it
 binds the code: **missing input → abstain, never invent.**
 
-Claim a ready issue with `--start` (sets `state:in-progress` and assigns it to you). Readiness
+Claim a ready issue with `--start` (sets `state:in-progress` and assigns it to you), mark it
+`--review` when the PR is open, and `--done` once the PR is merged and the issue closed. Readiness
 (`status:`) and execution state (`state:`) are tracked separately and deliberately.
+
+**`--done` is the step that is easiest to skip and the only one that cleans up.** Closing an issue
+does not remove its `state:` label and nothing else will, so a missed `--done` leaves the issue
+claiming to be in progress for ever — 49 had accumulated before the step existed. There is no
+`state:done`: the label answers *"is this being worked?"*, so for finished work the honest answer
+is no label at all. It refuses on an open issue, and leaves `status:` and the assignee alone.
 
 **If you are the admin, not the dev**, add `--role admin`. A decision or client question then becomes
 workable rather than refused, and the gate prints a decision brief. Your agent may **draft** the ADR in
