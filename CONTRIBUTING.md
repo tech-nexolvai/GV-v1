@@ -74,9 +74,19 @@ Two different questions, tracked separately — conflating them hides both.
 ```bash
 python scripts/issue_gate.py 40 --start    # claims it: state:in-progress + assigns to you
 python scripts/issue_gate.py 40 --review   # PR opened: state:in-review
+python scripts/issue_gate.py 40 --done     # merged and closed: no state label at all
 ```
 
 `--start` only works on a READY issue — you cannot claim something blocked.
+
+**Run `--done` after the merge.** It is the step that keeps these labels worth reading: without it
+the other two are a one-way trip, and every issue the project has finished goes on claiming to be
+active work. There is no `state:done` on purpose — the label answers "is this being worked?", and for
+something closed the answer is no label rather than a different one. That the work finished is already
+recorded, by the closed issue and the PR that closed it.
+
+`--done` refuses on an open issue, because clearing the state of live work would make it look
+unclaimed — and an unclaimed issue looks normal, so nobody would notice.
 
 ---
 
