@@ -117,13 +117,19 @@ def test_the_no_file_bytes_guard_actually_catches_one() -> None:
     An enumeration asserting an empty list looks identical whether it is working or looking in the
     wrong place — which is exactly how the authorisation audit in this same directory came to be
     auditing an empty set for a whole afternoon.
+
+    The probe is a bare `bytes` body rather than an `UploadFile`. `UploadFile` is the more obvious
+    offender, but registering one makes FastAPI demand `python-multipart`, which CI does not install —
+    so the first version of this test passed locally and failed on CI. Adding that dependency purely
+    to prove the API never accepts uploads would have been an odd way round. `bytes` needs nothing,
+    travels the same enumeration, and is just as forbidden.
     """
     app = create_app(_settings())
 
     @app.post("/projects/{project_id}/sneaky-upload")
     async def sneaky(
         project_id: str,
-        upload: UploadFile,
+        body: bytes,
     ) -> dict[str, str]:  # pragma: no cover - never called
         return {"project": project_id}
 
@@ -131,6 +137,26 @@ def test_the_no_file_bytes_guard_actually_catches_one() -> None:
         path for path, _, annotation in _request_annotations(app) if _mentions_bytes(annotation)
     ]
     assert "/projects/{project_id}/sneaky-upload" in offenders
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [UploadFile, "UploadFile | None", "list[UploadFile]", bytes, "Annotated[bytes, Body()]"],
+)
+def test_every_shape_of_file_body_is_recognised(annotation: Any) -> None:
+    """The detector, apart from the route table.
+
+    `UploadFile` cannot be registered on a route here without `python-multipart`, but it is the shape
+    somebody is most likely to reach for — so it is checked directly instead of not at all. The others
+    are the spellings that would slip past a check comparing against one exact type.
+    """
+    assert _mentions_bytes(annotation)
+
+
+def test_an_ordinary_annotation_is_not_mistaken_for_a_file_body() -> None:
+    """A detector that says yes to everything would make the guard above unfailable and meaningless."""
+    for harmless in (str, int, "UUID", "PackageCreate", "Annotated[Session, Depends(get_session)]"):
+        assert not _mentions_bytes(harmless), harmless
 
 
 # ---------------------------------------------------------------------------
