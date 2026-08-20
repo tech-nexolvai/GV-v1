@@ -10,6 +10,15 @@
 > status line was written by the agent on that instruction — the decision is the admin's, the
 > keystrokes are not.
 
+> **Corrected before acceptance, 2026-08-21.** The first draft claimed *"a revision cannot include a
+> version from another package"* and would not have delivered it. Prototyped against PostgreSQL
+> before writing any of the implementation: with a plain foreign key on `package_revision_id`, a
+> revision of package 1 **successfully** included a document belonging to package 2, because every
+> value in the row was individually truthful and nothing tied the link's `package_id` to the
+> *revision's* package. The `ApprovedFinding` pattern had been applied to the document side only.
+> The decision is unchanged; the constraint that enforces it is corrected below, and `package_revisions`
+> gains `UNIQUE (id, package_id)` so the composite key exists to point at.
+
 ## Context
 
 `Document` states one thing and is modelled as another. Its own docstring:
@@ -76,10 +85,13 @@ class Document(Base, TimestampedUUID):
 class PackageRevisionDocument(Base, TimestampedUUID, Immutable):
     """Which document versions one revision is composed of."""
     package_revision_id: Mapped[UUID]
-    package_id: Mapped[UUID]
+    package_id: Mapped[UUID]        # resolved against the revision AND the document
     document_id: Mapped[UUID]
     document_version_id: Mapped[UUID]
 ```
+
+`package_revisions` gains `UNIQUE (id, package_id)` and `documents` gains `UNIQUE (id, package_id)`, so
+the composite keys the link points at exist.
 
 Three properties are load-bearing, and each is a constraint rather than a convention:
 
@@ -90,7 +102,20 @@ meant.
 
 **A revision cannot include a version from another package.** Composite foreign keys resolving both
 sides, following `ApprovedFinding` in `app/models/review.py` — which exists for the same reason, so an
-approval cannot list a finding from a different package.
+approval cannot list a finding from a different package. The link carries `package_id` and points it at
+**both** ends:
+
+```
+FOREIGN KEY (package_revision_id, package_id) REFERENCES package_revisions(id, package_id)
+FOREIGN KEY (document_id, package_id)         REFERENCES documents(id, package_id)
+FOREIGN KEY (document_version_id, document_id) REFERENCES document_versions(id, document_id)
+```
+
+Both of the first two matter, and the reason is worth keeping: resolving only the document side lets a
+row through in which every value is individually true — this document really does belong to that
+package — while the combination is a lie, because the revision belongs to a different one. Proven that
+way round before it was built, not reasoned about. `package_revisions` therefore needs
+`UNIQUE (id, package_id)`, exactly as `findings` carries `uq_findings_id_revision` for the same purpose.
 
 **The membership record is append-only.** `PackageRevisionDocument` carries `Immutable`. What a
 revision was composed of is precisely the record somebody would want to adjust after a dispute, and
