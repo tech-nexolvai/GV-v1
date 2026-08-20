@@ -67,7 +67,7 @@ def _page(session: Session, *, index: int = 0) -> Page:
     artifact = SourceArtifact(
         storage_key=f"originals/{project.id}/d.pdf", sha256=HASH, size=1, backend_version_id=None
     )
-    document = Document(package_revision_id=revision.id, kind=DocumentKind.SHOP)
+    document = Document(package_id=revision.package_id, kind=DocumentKind.SHOP)
     session.add_all((artifact, document))
     session.flush()
     version = DocumentVersion(

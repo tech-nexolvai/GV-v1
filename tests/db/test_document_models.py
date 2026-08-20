@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import Engine, delete, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from alembic.config import Config
+from sqlalchemy import Engine, delete, func, select, update
+from sqlalchemy.exc import DatabaseError, IntegrityError
+from sqlalchemy.orm import Session, sessionmaker
 
+from alembic import command
 from app.db.base import Base, Immutable
 from app.db.session import session_factory, unit_of_work
 from app.models import (
@@ -20,6 +24,7 @@ from app.models import (
     GoldSet,
     Package,
     PackageRevision,
+    PackageRevisionDocument,
     PackageState,
     Page,
     PageType,
@@ -107,7 +112,7 @@ def _persist_version(
 ) -> DocumentVersion:
     revision = _persist_package_revision(session)
     document = Document(
-        package_revision_id=revision.id,
+        package_id=revision.package_id,
         kind=DocumentKind.SHOP,
     )
     artifact = SourceArtifact(
@@ -220,7 +225,7 @@ def test_version_hash_must_match_the_source_artifact(postgres_engine: Engine) ->
     factory = session_factory(postgres_engine)
     with pytest.raises(IntegrityError), unit_of_work(factory) as session:
         revision = _persist_package_revision(session)
-        document = Document(package_revision_id=revision.id, kind=DocumentKind.ARCHITECTURAL)
+        document = Document(package_id=revision.package_id, kind=DocumentKind.ARCHITECTURAL)
         artifact = SourceArtifact(
             storage_key="originals/project/architectural.pdf",
             sha256=HASH_A,
@@ -322,3 +327,301 @@ def test_referenced_document_version_cannot_be_deleted(postgres_engine: Engine) 
         session.add(_page(version.id))
     with pytest.raises(IntegrityError), unit_of_work(factory) as session:
         session.execute(delete(DocumentVersion).where(DocumentVersion.id == version_id))
+
+
+# ---------------------------------------------------------------------------
+# A document belongs to the package; a revision names what it includes (#366, ADR-0018)
+# ---------------------------------------------------------------------------
+#
+# The properties the ADR claims, each asserted against a migrated database rather than against the
+# ORM metadata. `create_all` builds from the models, so it would compare the models with themselves —
+# the lesson #313 cost a CI round-trip to learn.
+
+
+@pytest.fixture
+def migrated(postgres_engine: Engine) -> sessionmaker[Session]:
+    """A session factory against a database migrated to head."""
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+    command.upgrade(config, "head")
+    return session_factory(postgres_engine)
+
+
+def _package(session: Session, name: str = "GV Identity Test") -> Package:
+    project = Project(name=f"{name} {uuid4().hex[:8]}")
+    session.add(project)
+    session.flush()
+    package = Package(project_id=project.id, vendor=None)
+    session.add(package)
+    session.flush()
+    return package
+
+
+def _revision(
+    session: Session, package: Package, number: int, state: PackageState
+) -> PackageRevision:
+    revision = PackageRevision(package_id=package.id, revision_number=number, state=state)
+    session.add(revision)
+    session.flush()
+    return revision
+
+
+def _version(session: Session, document: Document, digest: str) -> DocumentVersion:
+    artifact = SourceArtifact(
+        storage_key=f"originals/{uuid4().hex}.pdf",
+        sha256=digest,
+        size=2048,
+        backend_version_id=None,
+    )
+    session.add(artifact)
+    session.flush()
+    version = DocumentVersion(
+        document_id=document.id, source_artifact_id=artifact.id, sha256=digest, page_count=3
+    )
+    session.add(version)
+    session.flush()
+    return version
+
+
+def _include(
+    session: Session, revision: PackageRevision, document: Document, version: DocumentVersion
+) -> PackageRevisionDocument:
+    membership = PackageRevisionDocument(
+        package_revision_id=revision.id,
+        package_id=document.package_id,
+        document_id=document.id,
+        document_version_id=version.id,
+    )
+    session.add(membership)
+    session.flush()
+    return membership
+
+
+def test_one_drawing_is_one_document_across_two_revisions(
+    migrated: sessionmaker[Session],
+) -> None:
+    """Input: two revisions including the same version. Outcome: both. Why: this was impossible.
+
+    **The property #211 was blocked on.** `uq_document_versions_source_artifact_id` refuses a second
+    version over the same bytes, so before ADR-0018 a superseding revision could not include a sheet
+    that had not changed — and a revision holding only the changed sheet runs its checks against a
+    partial drawing set, where the absent drawings produce no failures.
+    """
+    with unit_of_work(migrated) as session:
+        package = _package(session)
+        first = _revision(session, package, 1, PackageState.CREATED)
+        second = _revision(session, package, 2, PackageState.CREATED)
+        document = Document(package_id=package.id, kind=DocumentKind.SHOP)
+        session.add(document)
+        session.flush()
+        version = _version(session, document, HASH_A)
+
+        _include(session, first, document, version)
+        _include(session, second, document, version)
+
+        shared = session.scalars(
+            select(PackageRevisionDocument.package_revision_id).where(
+                PackageRevisionDocument.document_version_id == version.id
+            )
+        ).all()
+        assert set(shared) == {first.id, second.id}
+
+
+def test_the_same_bytes_are_stored_once_however_many_revisions_include_them(
+    migrated: sessionmaker[Session],
+) -> None:
+    """The acceptance criterion. Carrying a drawing forward costs one link row and no bytes."""
+    with unit_of_work(migrated) as session:
+        package = _package(session)
+        first = _revision(session, package, 1, PackageState.CREATED)
+        second = _revision(session, package, 2, PackageState.CREATED)
+        document = Document(package_id=package.id, kind=DocumentKind.SHOP)
+        session.add(document)
+        session.flush()
+        version = _version(session, document, HASH_A)
+        _include(session, first, document, version)
+        _include(session, second, document, version)
+
+        artifacts = session.scalar(select(func.count()).select_from(SourceArtifact))
+        versions = session.scalar(select(func.count()).select_from(DocumentVersion))
+        assert (artifacts, versions) == (1, 1), "two revisions, one artifact, one version"
+
+
+def test_a_revision_cannot_include_two_versions_of_one_drawing(
+    migrated: sessionmaker[Session],
+) -> None:
+    """Otherwise a revision holds v1 and v2 of the same sheet, its checks run against both, and no
+    reader can say which version a finding meant."""
+    with pytest.raises(IntegrityError), unit_of_work(migrated) as session:
+        package = _package(session)
+        revision = _revision(session, package, 1, PackageState.CREATED)
+        document = Document(package_id=package.id, kind=DocumentKind.SHOP)
+        session.add(document)
+        session.flush()
+        _include(session, revision, document, _version(session, document, HASH_A))
+        _include(session, revision, document, _version(session, document, HASH_B))
+
+
+def test_a_revision_cannot_include_another_packages_drawing(
+    migrated: sessionmaker[Session],
+) -> None:
+    """**The hole the prototype found while ADR-0018 was still in draft.**
+
+    Every value in the refused row is individually true: the document really does belong to the other
+    package, and the revision really does exist. The *combination* is the lie, and resolving only the
+    document side let it through. Naming the same `package_id` in the revision's key too is what
+    refuses it.
+    """
+    with pytest.raises(IntegrityError), unit_of_work(migrated) as session:
+        mine = _package(session, "mine")
+        theirs = _package(session, "theirs")
+        revision = _revision(session, mine, 1, PackageState.CREATED)
+        document = Document(package_id=theirs.id, kind=DocumentKind.SHOP)
+        session.add(document)
+        session.flush()
+        version = _version(session, document, HASH_A)
+        session.add(
+            PackageRevisionDocument(
+                package_revision_id=revision.id,
+                package_id=theirs.id,
+                document_id=document.id,
+                document_version_id=version.id,
+            )
+        )
+        session.flush()
+
+
+def test_a_prior_revision_still_resolves_to_the_bytes_it_was_reviewed_against(
+    migrated: sessionmaker[Session],
+) -> None:
+    """**The property that makes a six-month-old review defensible**, and the one that must not weaken.
+
+    Revision 2 includes a newer version of the same drawing. Revision 1 must still resolve to the
+    version — and therefore the artifact, and therefore the bytes — that it was checked against.
+    """
+    with unit_of_work(migrated) as session:
+        package = _package(session)
+        first = _revision(session, package, 1, PackageState.CREATED)
+        second = _revision(session, package, 2, PackageState.CREATED)
+        document = Document(package_id=package.id, kind=DocumentKind.SHOP)
+        session.add(document)
+        session.flush()
+        old_version = _version(session, document, HASH_A)
+        new_version = _version(session, document, HASH_B)
+        _include(session, first, document, old_version)
+        _include(session, second, document, new_version)
+
+        def version_for(revision_id: UUID) -> UUID | None:
+            return session.scalar(
+                select(PackageRevisionDocument.document_version_id).where(
+                    PackageRevisionDocument.package_revision_id == revision_id
+                )
+            )
+
+        assert version_for(first.id) == old_version.id, "March's answer changed"
+        assert version_for(second.id) == new_version.id
+
+
+def test_the_set_may_change_while_the_revision_is_being_assembled(
+    migrated: sessionmaker[Session],
+) -> None:
+    """Drawings arrive one at a time, and a mis-uploaded sheet re-uploaded a minute later is ordinary
+    use rather than tampering. Anant's call: mutable while assembling, frozen once read."""
+    for state in (PackageState.CREATED, PackageState.UPLOADING, PackageState.UPLOADED):
+        with unit_of_work(migrated) as session:
+            package = _package(session, f"assembling {state.value}")
+            revision = _revision(session, package, 1, state)
+            document = Document(package_id=package.id, kind=DocumentKind.SHOP)
+            session.add(document)
+            session.flush()
+            membership = _include(session, revision, document, _version(session, document, HASH_A))
+            replacement = _version(session, document, HASH_B)
+
+            membership.document_version_id = replacement.id
+            session.flush()
+
+            assert (
+                session.scalar(
+                    select(PackageRevisionDocument.document_version_id).where(
+                        PackageRevisionDocument.id == membership.id
+                    )
+                )
+                == replacement.id
+            ), state.value
+
+
+def test_the_set_is_frozen_once_something_has_read_it(migrated: sessionmaker[Session]) -> None:
+    """**From `INGESTING` onward the set is evidence.** A set that can change after it has been read is
+    a set nobody can be held to — *"that drawing wasn't in the set we reviewed"* must not be a row
+    anybody can edit. Changing it means superseding the revision (#211).
+    """
+    for state in (PackageState.INGESTING, PackageState.RUNNING_CHECKS, PackageState.APPROVED):
+        with pytest.raises(DatabaseError), unit_of_work(migrated) as session:
+            package = _package(session, f"frozen {state.value}")
+            revision = _revision(session, package, 1, PackageState.CREATED)
+            document = Document(package_id=package.id, kind=DocumentKind.SHOP)
+            session.add(document)
+            session.flush()
+            membership = _include(session, revision, document, _version(session, document, HASH_A))
+            replacement = _version(session, document, HASH_B)
+
+            # Moved on, so the set is now evidence rather than a work in progress.
+            session.execute(
+                update(PackageRevision)
+                .where(PackageRevision.id == revision.id)
+                .values(state=state.value)
+            )
+            session.flush()
+
+            membership.document_version_id = replacement.id
+            session.flush()
+
+
+def test_a_frozen_set_cannot_have_a_member_removed(migrated: sessionmaker[Session]) -> None:
+    """Deleting is the other way to change what a revision was reviewed against."""
+    with pytest.raises(DatabaseError), unit_of_work(migrated) as session:
+        package = _package(session, "frozen delete")
+        revision = _revision(session, package, 1, PackageState.CREATED)
+        document = Document(package_id=package.id, kind=DocumentKind.SHOP)
+        session.add(document)
+        session.flush()
+        membership = _include(session, revision, document, _version(session, document, HASH_A))
+        session.execute(
+            update(PackageRevision)
+            .where(PackageRevision.id == revision.id)
+            .values(state=PackageState.AWAITING_REVIEW.value)
+        )
+        session.flush()
+        session.delete(membership)
+        session.flush()
+
+
+def test_the_migration_and_the_lifecycle_agree_on_the_assembly_states() -> None:
+    """Input: both lists. Outcome: identical. Why: they are two copies of one rule.
+
+    The trigger in `0017` hardcodes the assembly states, because a migration describes one fixed
+    historical state and must not import live code. `ASSEMBLY_STATES` in `app/lifecycle/states.py` is
+    the source. #313 was exactly this shape — an enum and a migration's literal drifting apart with
+    nothing comparing them — so it gets the same guard.
+    """
+    from app.lifecycle.states import ASSEMBLY_STATES
+
+    source = Path("alembic/versions/0017_document_per_package.py").read_text(encoding="utf-8")
+    trigger = re.search(r"revision_state NOT IN \(([^)]*)\)", source)
+    assert trigger is not None, "the freeze trigger no longer names its states inline"
+    in_migration = frozenset(value.strip().strip("'") for value in trigger.group(1).split(","))
+    declared = frozenset(state.value for state in ASSEMBLY_STATES)
+
+    assert in_migration == declared, (
+        f"0017's trigger allows {sorted(in_migration)} but ASSEMBLY_STATES declares "
+        f"{sorted(declared)}. A state added to one and not the other either freezes a revision that "
+        "is still being assembled, or leaves a reviewed set editable."
+    )
+
+
+def test_a_document_names_its_package_not_a_revision() -> None:
+    """The docstring and the schema agree now, which is the acceptance criterion."""
+    columns = set(Document.__table__.columns.keys())
+    assert "package_id" in columns
+    assert "package_revision_id" not in columns
+    assert "across every revision" in (Document.__doc__ or "")

@@ -11,6 +11,7 @@ from app.lifecycle.events import (
     render_history,
 )
 from app.lifecycle.states import (
+    ASSEMBLY_STATES,
     ENTRY_CONDITIONS,
     FAILURE_STATES,
     PROCESSING_STATES,
@@ -29,6 +30,7 @@ from app.lifecycle.states import (
 )
 
 __all__ = [
+    "ASSEMBLY_STATES",
     "ENTRY_CONDITIONS",
     "FAILURE_STATES",
     "PROCESSING_STATES",

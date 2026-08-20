@@ -140,7 +140,7 @@ def _persist_context(session: Session) -> tuple[UUID, UUID, UUID]:
     session.flush()
     session.add(revision)
     session.flush()
-    document = Document(package_revision_id=revision.id, kind=DocumentKind.SHOP)
+    document = Document(package_id=revision.package_id, kind=DocumentKind.SHOP)
     session.add_all((artifact, document))
     session.flush()
     version = DocumentVersion(
