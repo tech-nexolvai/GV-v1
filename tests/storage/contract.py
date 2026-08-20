@@ -68,6 +68,115 @@ class ArtifactStoreContract:
         with store.get("originals/drawing.pdf") as preserved:
             assert preserved.read() == b"revision A"
 
+    # -----------------------------------------------------------------------
+    # One key may not be a path prefix of another (#314)
+    # -----------------------------------------------------------------------
+    #
+    # **These are in the shared suite deliberately, and that makes them a contract rather than a
+    # local-store detail.** On a filesystem the two orders collide naturally — one stores a file where
+    # the other needs a directory — and before #314 one of them leaked `FileExistsError` while the
+    # other was reported in the words of a byte conflict. S3 has no directories, so neither order fails
+    # there on its own: `C5.4` will have to refuse these deliberately to pass. That is the point. The
+    # alternative — testing this only in `test_local_store.py` — would let the two backends disagree
+    # about which keys are storable, on exactly the case this issue exists to stop diverging.
+
+    @pytest.mark.parametrize(
+        ("stored", "attempted"),
+        [("a", "a/b"), ("prefix", "prefix/nested/object.bin")],
+        ids=["one-level", "several-levels"],
+    )
+    def test_a_key_beneath_an_existing_key_is_refused(
+        self, store_factory: StoreFactory, stored: str, attempted: str
+    ) -> None:
+        """Input: key nested under a stored key. Outcome: conflict. Why: neither can be stored."""
+
+        store = store_factory()
+        store.put(stored, BytesIO(b"first"), content_type="application/octet-stream")
+
+        with pytest.raises(ArtifactConflict, match="prefix of another"):
+            store.put(attempted, BytesIO(b"second"), content_type="application/octet-stream")
+
+        # The refusal leaves the stored artifact exactly as it was. A half-applied collision that
+        # damaged the existing key would be worse than the crash this replaced.
+        assert store.exists(stored)
+        with store.get(stored) as preserved:
+            assert preserved.read() == b"first"
+        assert not store.exists(attempted)
+
+    @pytest.mark.parametrize(
+        ("stored", "attempted"),
+        [("a/b", "a"), ("prefix/nested/object.bin", "prefix/nested")],
+        ids=["one-level", "several-levels"],
+    )
+    def test_a_key_above_an_existing_key_is_refused(
+        self, store_factory: StoreFactory, stored: str, attempted: str
+    ) -> None:
+        """Input: key that is a prefix of a stored key. Outcome: conflict. Why: same collision, reversed.
+
+        The order the original bug report called "correct". It did raise `ArtifactConflict`, but only
+        because a directory's `st_size` differs from the staged file's — with a payload of exactly that
+        size it reached `open("rb")` on a directory and raised `IsADirectoryError` instead.
+        """
+
+        store = store_factory()
+        store.put(stored, BytesIO(b"first"), content_type="application/octet-stream")
+
+        with pytest.raises(ArtifactConflict, match="prefix of another"):
+            store.put(attempted, BytesIO(b"second"), content_type="application/octet-stream")
+
+        assert store.exists(stored)
+        with store.get(stored) as preserved:
+            assert preserved.read() == b"first"
+        assert not store.exists(attempted)
+
+    def test_a_collision_is_reported_differently_from_a_byte_conflict(
+        self, store_factory: StoreFactory
+    ) -> None:
+        """Input: both refusals. Outcome: distinct messages. Why: they call for different fixes.
+
+        **The scope item that is easy to satisfy by accident and easy to lose.** A prefix collision
+        means "choose a different key"; a byte conflict means "you are trying to change stored
+        evidence". Before #314 the second order produced the byte-conflict wording for a collision,
+        which sends whoever reads it looking for a bytes problem that never happened. Asserting each
+        message does *not* match the other's pattern is what keeps them from converging again.
+        """
+
+        store = store_factory()
+        store.put("shared", BytesIO(b"first"), content_type="application/octet-stream")
+        store.put("other", BytesIO(b"A"), content_type="application/octet-stream")
+
+        with pytest.raises(ArtifactConflict) as collision:
+            store.put("shared/below", BytesIO(b"second"), content_type="application/octet-stream")
+        with pytest.raises(ArtifactConflict) as byte_conflict:
+            store.put("other", BytesIO(b"B"), content_type="application/octet-stream")
+
+        collision_message = str(collision.value)
+        byte_message = str(byte_conflict.value)
+
+        assert "prefix of another" in collision_message
+        assert "different bytes" in byte_message
+        assert "different bytes" not in collision_message, "a collision is not a bytes problem"
+        assert "prefix of another" not in byte_message
+
+    def test_a_refused_collision_names_the_key_it_collides_with(
+        self, store_factory: StoreFactory
+    ) -> None:
+        """Input: colliding put. Outcome: both keys named. Why: a refusal has to be actionable.
+
+        Naming only the rejected key would leave the caller to work out which stored object is in the
+        way, and on a store with thousands of keys that is a search rather than a fix.
+        """
+
+        store = store_factory()
+        store.put("packages/p-1", BytesIO(b"first"), content_type="application/octet-stream")
+
+        with pytest.raises(ArtifactConflict) as refusal:
+            store.put("packages/p-1/source.pdf", BytesIO(b"second"), content_type="application/pdf")
+
+        message = str(refusal.value)
+        assert "packages/p-1/source.pdf" in message
+        assert "packages/p-1'" in message, message
+
     def test_uri_is_stable_across_store_restart(self, store_factory: StoreFactory) -> None:
         """Input: same root after restart. Outcome: same URI and bytes. Why: findings stay resolvable."""
 

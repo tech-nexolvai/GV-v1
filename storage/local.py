@@ -117,7 +117,88 @@ class LocalStore:
         return True
 
     @staticmethod
+    def _mkdir_or_conflict(directory: Path, key: str) -> None:
+        """Create a parent directory, reporting a collision as the documented refusal.
+
+        `mkdir` is where a prefix collision actually bites: it raises `FileExistsError` when asked to
+        create a directory over a stored artifact. `_refuse_prefix_collision` catches that case with a
+        better message before we get here, so reaching this branch means another writer stored the
+        colliding key in between. Either way the caller gets `ArtifactConflict`, which is what
+        `docs/DESIGN_PLATFORM.md` §7 says they may handle.
+        """
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except FileExistsError as error:
+            raise ArtifactConflict(
+                f"artifact key {key!r} collides with an artifact stored at {str(error.filename)!r}: "
+                "one key cannot be a path prefix of another"
+            ) from error
+
+    def _key_beneath(self, directory: Path) -> str | None:
+        """One stored key under `directory`, for a message that says what the collision is with.
+
+        Staging files are skipped: they are transient, and naming one would send a reader looking for
+        a key that no longer exists by the time they read the message.
+        """
+        for path in sorted(directory.rglob("*")):
+            if path.is_file() and not path.name.startswith(".gv-"):
+                return PurePosixPath(path.relative_to(self._root)).as_posix()
+        return None
+
+    def _refuse_prefix_collision(self, key: str, target: Path) -> None:
+        """Refuse a key that is a path prefix of a stored key, or has one as a prefix.
+
+        **Hierarchical keys make this reachable through the public API, in both directions.** `put("a")`
+        stores a *file* at `<root>/a`, so a later `put("a/b")` asks the filesystem to treat that file
+        as a directory; `put("a/b")` creates a *directory* at `<root>/a`, so a later `put("a")` asks it
+        to treat a directory as a file. Neither is an overwrite and neither can be stored, so both are
+        `ArtifactConflict` — the refusal `docs/DESIGN_PLATFORM.md` §7 promises.
+
+        Before this existed, the first order leaked `FileExistsError` out of `mkdir`, and the second
+        fell through to the byte comparison and was reported as *"already stores different bytes"* —
+        true of nothing that had happened, and a reader would go looking for a bytes problem. Worse,
+        that path only appeared to work: `_same_bytes` returned `False` early because a directory's
+        `st_size` differs from the staged file's, and with a payload of exactly that size it reached
+        `open("rb")` on a directory and raised `IsADirectoryError`.
+
+        The message names both keys and says *collides*, deliberately nothing like the wording for a
+        byte conflict. The two call for different fixes — one means "choose a different key", the other
+        means "you are trying to change stored evidence" — so a caller reading either must not be able
+        to mistake it for the other.
+
+        This is a check, not a lock: a colliding key can be created between here and the `mkdir` that
+        follows. `put` therefore also converts a `FileExistsError` from either `mkdir` into this same
+        conflict, so the race surfaces as the documented exception rather than as a traceback.
+        """
+        parts = PurePosixPath(key).parts
+        for depth in range(1, len(parts)):
+            ancestor = self._root.joinpath(*parts[:depth])
+            if ancestor.is_file():
+                stored = "/".join(parts[:depth])
+                raise ArtifactConflict(
+                    f"artifact key {key!r} collides with artifact key {stored!r}, which is already "
+                    "stored: one key cannot be a path prefix of another"
+                )
+
+        if target.is_dir():
+            beneath = self._key_beneath(target)
+            collides_with = (
+                f"artifact key {beneath!r}, which is already stored"
+                if beneath is not None
+                else "keys already stored beneath it"
+            )
+            raise ArtifactConflict(
+                f"artifact key {key!r} collides with {collides_with}: one key cannot be a path "
+                "prefix of another"
+            )
+
+    @staticmethod
     def _same_bytes(left: Path, right: Path) -> bool:
+        # Not assumed to be regular files. A directory reaching here — a raced prefix collision — used
+        # to get as far as `open("rb")` and raise `IsADirectoryError` out of `put`. Anything that is
+        # not a file does not hold these bytes, which is what this function was asked.
+        if not left.is_file() or not right.is_file():
+            return False
         if left.stat().st_size != right.stat().st_size:
             return False
         with left.open("rb") as existing, right.open("rb") as staged:
@@ -139,15 +220,24 @@ class LocalStore:
 
         target = self._path(key)
         integrity = self._integrity_path(key)
+
+        # Before anything is staged. A key that cannot be stored should leave no temporary file and no
+        # integrity record behind, and this is the only point at which that is free.
+        self._refuse_prefix_collision(key, target)
+
         descriptor: int | None = None
         integrity_descriptor: int | None = None
         temporary: Path | None = None
         integrity_temporary: Path | None = None
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
+            self._mkdir_or_conflict(target.parent, key)
             descriptor, temporary_name = tempfile.mkstemp(prefix=".gv-stage-", dir=target.parent)
             temporary = Path(temporary_name)
-            integrity.parent.mkdir(parents=True, exist_ok=True)
+            # The integrity record has its own tree, and it collides in the same way: after `put("a")`
+            # the record is a *file* at `<root>/.gv-integrity/a.sha256`, but `put("a/b")` needs
+            # `<root>/.gv-integrity/a` to be a directory. Guarding only the target above would have
+            # moved the leaked FileExistsError four lines down rather than removing it.
+            self._mkdir_or_conflict(integrity.parent, key)
             integrity_descriptor, integrity_name = tempfile.mkstemp(
                 prefix=".gv-integrity-stage-", dir=integrity.parent
             )
@@ -172,8 +262,13 @@ class LocalStore:
                 record.flush()
                 os.fsync(record.fileno())
 
-            if target.exists() and not self._same_bytes(target, temporary):
-                raise ArtifactConflict(f"artifact key {key!r} already stores different bytes")
+            if target.exists():
+                # Re-checked: a directory here means another writer stored a key beneath this one
+                # since the check above. It is a collision, and calling it a byte mismatch would send
+                # whoever reads the message looking for a bytes problem that never happened.
+                self._refuse_prefix_collision(key, target)
+                if not self._same_bytes(target, temporary):
+                    raise ArtifactConflict(f"artifact key {key!r} already stores different bytes")
 
             if integrity.exists():
                 recorded = self._read_digest(integrity, key)
@@ -189,6 +284,9 @@ class LocalStore:
                     )
 
             if target.exists():
+                # The same re-check as above, and for the same reason: this is the last point before
+                # publishing, so a collision that appeared while we were hashing lands here.
+                self._refuse_prefix_collision(key, target)
                 if not self._same_bytes(target, temporary):
                     raise ArtifactConflict(f"artifact key {key!r} already stores different bytes")
             elif not self._publish(temporary, target) and not self._same_bytes(target, temporary):
