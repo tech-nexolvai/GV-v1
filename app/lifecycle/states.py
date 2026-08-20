@@ -52,6 +52,7 @@ from uuid import UUID
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from app.lifecycle.events import history, record
 from app.models import PackageRevision, PackageState, PackageStateEvent
 
 __all__ = [
@@ -73,9 +74,9 @@ __all__ = [
     "transition",
 ]
 
-#: The first state of every revision, and the first event's sequence number.
+#: The first state of every revision. How its history is numbered belongs to
+#: `app/lifecycle/events.py`, which allocates the sequence under a row lock (#210).
 INITIAL_STATE = PackageState.CREATED
-FIRST_SEQUENCE = 1
 
 #: The states where the system is doing work of its own and can therefore fail.
 #:
@@ -347,21 +348,6 @@ def _current_state(session: Session, package_revision_id: UUID) -> PackageState:
     return PackageState(stored)
 
 
-def _next_sequence(session: Session, package_revision_id: UUID) -> int:
-    """One past the highest sequence recorded for this revision.
-
-    `package_state_events` carries a unique constraint on `(package_revision_id, sequence)`, so two
-    concurrent transitions cannot both take a number — the loser fails on the constraint rather than
-    silently interleaving. That is the intended outcome: a package's history has one order.
-    """
-    highest = session.execute(
-        select(func.max(PackageStateEvent.sequence)).where(
-            PackageStateEvent.package_revision_id == package_revision_id
-        )
-    ).scalar_one_or_none()
-    return FIRST_SEQUENCE if highest is None else int(highest) + 1
-
-
 def begin(
     session: Session,
     package_revision_id: UUID,
@@ -384,22 +370,20 @@ def begin(
             f"package revision {package_revision_id} is already in {state.value}, so its history "
             "cannot be opened. `begin` is for a revision's first event; use `transition` to move it."
         )
-    if _next_sequence(session, package_revision_id) != FIRST_SEQUENCE:
+    if history(session, package_revision_id):
         raise IllegalTransition(
             f"package revision {package_revision_id} already has a recorded history, so opening it "
             "again would give it two beginnings."
         )
 
-    event = PackageStateEvent(
+    return record(
+        session,
         package_revision_id=package_revision_id,
-        sequence=FIRST_SEQUENCE,
         from_state=None,
-        to_state=INITIAL_STATE.value,
+        to_state=INITIAL_STATE,
         actor=actor,
         reason=reason,
     )
-    session.add(event)
-    return event
 
 
 def transition(
@@ -409,6 +393,7 @@ def transition(
     *,
     actor: str,
     reason: str | None = None,
+    workflow_run_id: UUID | None = None,
 ) -> PackageStateEvent:
     """Move a package revision to `to`, or raise. The only way a state changes.
 
@@ -450,15 +435,15 @@ def transition(
                 f"{condition.name} is not satisfied — {condition.describe}."
             )
 
-    event = PackageStateEvent(
+    event = record(
+        session,
         package_revision_id=package_revision_id,
-        sequence=_next_sequence(session, package_revision_id),
-        from_state=current.value,
-        to_state=to.value,
+        from_state=current,
+        to_state=to,
         actor=actor,
         reason=reason,
+        workflow_run_id=workflow_run_id,
     )
-    session.add(event)
     # The event is the record and the column is the shortcut for reading it. Both, in one transaction,
     # so a query on the column can never disagree with the history that produced it.
     session.execute(

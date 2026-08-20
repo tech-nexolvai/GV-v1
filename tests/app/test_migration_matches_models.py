@@ -31,11 +31,27 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MIGRATIONS = sorted((REPO_ROOT / "alembic" / "versions").glob("*.py"))
 
 
-def _create_table_calls(path: Path) -> dict[str, ast.Call]:
+def _upgrade_body(path: Path) -> list[ast.AST]:
+    """Only what `upgrade()` does.
+
+    `downgrade()` describes the reverse of the schema, so counting it cancels out everything
+    `upgrade()` declares — which is exactly what happened when the column comparison below first
+    learned to read `add_column`: `upgrade` added `workflow_run_id`, `downgrade` dropped it, and the
+    two netted to nothing while the model plainly had the column.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        node
+        for definition in tree.body
+        if isinstance(definition, ast.FunctionDef) and definition.name == "upgrade"
+        for node in ast.walk(definition)
+    ]
+
+
+def _create_table_calls(path: Path) -> dict[str, ast.Call]:
     return {
         node.args[0].value: node
-        for node in ast.walk(tree)
+        for node in _upgrade_body(path)
         if isinstance(node, ast.Call)
         and getattr(node.func, "attr", "") == "create_table"
         and node.args
@@ -71,6 +87,42 @@ def _columns(call: ast.Call) -> set[str]:
     }
 
 
+def _column_changes(table: str) -> tuple[set[str], set[str]]:
+    """Columns added and dropped by `op.add_column` / `op.drop_column`, across every migration.
+
+    **A table is not only what created it.** The comparison below used to read the `create_table` call
+    alone, which silently assumed no table is ever altered afterwards — true until the first
+    `add_column`, and then it reports a correct migration and a correct model as disagreeing. #210's
+    `workflow_run_id` was the first, and exempting the table would have traded a real check for a
+    growing list.
+
+    Read as text, like everything else here, so a migration name hidden behind a module constant is
+    invisible to it. That is a limitation worth stating rather than working around: a migration is one
+    fixed historical state and spelling it out is no hardship.
+    """
+    added: set[str] = set()
+    dropped: set[str] = set()
+    for path in MIGRATIONS:
+        for node in _upgrade_body(path):
+            if not isinstance(node, ast.Call) or len(node.args) < 2:
+                continue
+            operation = getattr(node.func, "attr", "")
+            named = node.args[0]
+            if not isinstance(named, ast.Constant) or named.value != table:
+                continue
+            if operation == "add_column":
+                column = node.args[1]
+                if (
+                    isinstance(column, ast.Call)
+                    and column.args
+                    and isinstance(column.args[0], ast.Constant)
+                ):
+                    added.add(column.args[0].value)
+            elif operation == "drop_column" and isinstance(node.args[1], ast.Constant):
+                dropped.add(node.args[1].value)
+    return added, dropped
+
+
 ALL_TABLES = [
     (path, table)
     for path in MIGRATIONS
@@ -81,11 +133,17 @@ ALL_TABLES = [
 
 @pytest.mark.parametrize(("path", "table"), ALL_TABLES, ids=lambda v: getattr(v, "name", str(v)))
 def test_the_migration_declares_the_columns_the_model_has(path: Path, table: str) -> None:
-    """A column in one and not the other is a NOT NULL nobody writes, or a field nobody stores."""
-    declared = _columns(_create_table_calls(path)[table])
+    """A column in one and not the other is a NOT NULL nobody writes, or a field nobody stores.
+
+    The migrations are compared as a *chain*: what `create_table` declared, plus what later migrations
+    added, minus what they dropped. Comparing the creating migration alone would fail every table any
+    later migration touches.
+    """
+    added, dropped = _column_changes(table)
+    declared = (_columns(_create_table_calls(path)[table]) | added) - dropped
     expected = set(Base.metadata.tables[table].columns.keys())
     assert declared == expected, (
-        f"{path.name}/{table}: only in the migration {sorted(declared - expected)}, "
+        f"{path.name}/{table}: only in the migrations {sorted(declared - expected)}, "
         f"only in the model {sorted(expected - declared)}"
     )
 
