@@ -104,6 +104,20 @@ class PackageStateEvent(Base, TimestampedUUID, Immutable):
     actor: Mapped[str] = mapped_column(String(200))
     reason: Mapped[str | None] = mapped_column(String(1000), default=None)
 
+    workflow_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="RESTRICT"), default=None, index=True
+    )
+    """The workflow run that caused this transition, where one did (#210, C3.2).
+
+    Nullable, and the null carries meaning: nothing ran. A reviewer approving a package and a revision's
+    genesis event are both real transitions with no workflow behind them, so a non-nullable column would
+    have to be filled with something untrue.
+
+    A foreign key rather than an id in the `reason` text, because the question this table exists to
+    answer — *"what happened to this package, and when?"* — is asked in a dispute, and an id inside
+    prose cannot be joined, constrained, or found reliably.
+    """
+
     __table_args__ = (
         CheckConstraint(
             f"from_state IS NULL OR from_state IN ({PACKAGE_STATE_VALUES})",
@@ -113,5 +127,8 @@ class PackageStateEvent(Base, TimestampedUUID, Immutable):
             f"to_state IN ({PACKAGE_STATE_VALUES})",
             name="package_event_to_state",
         ),
+        # An event that names nobody is an event nobody can be asked about. `NOT NULL` alone permitted
+        # `actor = ''`, which satisfies the schema and names no one (#210).
+        CheckConstraint("actor <> ''", name="package_event_actor"),
         UniqueConstraint("package_revision_id", "sequence"),
     )
