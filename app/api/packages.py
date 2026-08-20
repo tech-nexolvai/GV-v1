@@ -13,10 +13,11 @@ exist, because a `403` would confirm it exists and confirming it is what the bou
 
 **Creating a package creates its first revision.** A `Document` hangs off a `package_revisions` row,
 not off the package, so a package with no revision is a package nothing can be uploaded to. The
-revision is created in `CREATED` and this module never moves it: the transition table and the only
-function allowed to change state belong to #209 (C3.1). The one state event written here is the
-revision's birth — `from_state` null, `to_state` CREATED — which is the single event no transition
-function can produce, because there is no prior state to come from.
+revision starts in `CREATED` and this module never moves it: the transition table and the only
+function allowed to change state live in `app/lifecycle/states.py` (#209, C3.1). Its history is opened
+by calling `begin` rather than by writing the birth event here — that module is the only place a
+package's state or state history is written, and `tests/lifecycle/test_states.py` walks the tree to
+keep it that way.
 
 **Paging is keyset, not offset.** `OFFSET 20` skips the first twenty rows *of the query running now*,
 so a package created between two requests shifts every later row down by one and the row that moved
@@ -42,7 +43,8 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
-from app.models import Package, PackageRevision, PackageState, PackageStateEvent, Project
+from app.lifecycle import begin
+from app.models import Package, PackageRevision, PackageState, Project
 from app.schemas.packages import PackageCreate, PackageOut, PackagePage
 
 router = APIRouter(tags=["packages"])
@@ -54,11 +56,11 @@ DEFAULT_PAGE_SIZE = 50
 #: explained itself would give back exactly what the 404 was chosen to hide.
 NOT_FOUND_DETAIL = "Not found"
 
-#: The revision number a package starts at, and the sequence number of its first state event. Both are
-#: 1 rather than 0: a reviewer reads "revision 1", and `docs/DESIGN_EXTRACTION.md` §3.1's convention is
-#: that anything a person sees counts from one.
+#: The revision number a package starts at. 1 rather than 0: a reviewer reads "revision 1", and
+#: `docs/DESIGN_EXTRACTION.md` §3.1's convention is that anything a person sees counts from one. The
+#: first state event's sequence number used to live here too; it belongs to `app/lifecycle/states.py`
+#: now, along with everything else that knows how a package's history is numbered.
 FIRST_REVISION = 1
-FIRST_EVENT_SEQUENCE = 1
 
 ORDERING_DESCRIPTION = (
     "Newest first, then by id descending. The id is what makes the order total: two packages created "
@@ -197,16 +199,14 @@ def create_package(
         package_id=package.id, revision_number=FIRST_REVISION, state=PackageState.CREATED
     )
     session.add(revision)
-    session.add(
-        PackageStateEvent(
-            package_revision_id=revision.id,
-            sequence=FIRST_EVENT_SEQUENCE,
-            from_state=None,
-            to_state=PackageState.CREATED,
-            actor=principal.id,
-            reason="package created",
-        )
-    )
+    # Flushed so the revision exists for `begin` to read. It checks the revision's current state and
+    # that it has no history yet, which it cannot do for a row still only in the session.
+    session.flush()
+    # Opened through `app/lifecycle/` rather than by writing the event here (#209, C3.1). That module
+    # is the only place a package's state or state history is written, and
+    # `tests/lifecycle/test_states.py` enumerates the tree to keep it that way — so this endpoint no
+    # longer needs to know the first sequence number or the initial state.
+    begin(session, revision.id, actor=principal.id)
     try:
         session.commit()
     except Exception:
