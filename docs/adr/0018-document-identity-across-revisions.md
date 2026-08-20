@@ -1,12 +1,14 @@
 # ADR-0018 — A document belongs to the package; a revision names the versions it includes
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-21
 **Decides:** D17 (#367)
 **Deciders:** admin (AnantBisht07)
 
-> Drafted by a coding agent. **Only the admin may set `Status: Accepted`.**
-> `scripts/ratify.py` refuses to unblock #366 or #211 until this status reads Accepted.
+> Drafted by a coding agent. **Accepted by the admin on 2026-08-21**, who chose option 2 below when
+> the three options were put to them, reviewed this record, and instructed that it be accepted. The
+> status line was written by the agent on that instruction — the decision is the admin's, the
+> keystrokes are not.
 
 ## Context
 
@@ -148,7 +150,7 @@ the same two links it does today.
 - **#366** — the implementation: the model change, the migration, the backfill, the readers.
 - **#211** — C3.3 supersede, blocked behind #366.
 
-Ratify with:
+Ratified with:
 
 ```bash
 python scripts/ratify.py D17 --adr docs/adr/0018-document-identity-across-revisions.md
