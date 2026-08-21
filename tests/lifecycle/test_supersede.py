@@ -596,16 +596,53 @@ def _deletes_a_revision() -> list[str]:
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
-                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-                if name == "delete" and any(
-                    getattr(argument, "id", None) == "PackageRevision" for argument in node.args
-                ):
-                    offenders.append(f"{relative}:{node.lineno} deletes a PackageRevision")
-                if name == "delete" and any(
-                    getattr(argument, "attr", None) == "PackageRevision" for argument in node.args
-                ):
+                if (getattr(node.func, "id", None) or getattr(node.func, "attr", None)) != "delete":
+                    continue
+                # Three shapes, because there are three ways to write it and the first version of this
+                # guard caught only one. CodeRabbit pointed out that it missed
+                # `PackageRevision.__table__.delete()` — which takes no arguments at all, and is the
+                # form used further down *this file*. A guard blind to the form its own tests use is a
+                # guard that reports all clear for the case most likely to occur.
+                named = {
+                    getattr(argument, "id", None) or getattr(argument, "attr", None)
+                    for argument in node.args
+                }
+                receiver = ast.unparse(node.func)
+                if "PackageRevision" in named or receiver.startswith("PackageRevision"):
                     offenders.append(f"{relative}:{node.lineno} deletes a PackageRevision")
     return offenders
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def go(session, revision):\n    session.delete(PackageRevision)\n",
+        "def go(session, revision):\n    session.execute(PackageRevision.__table__.delete())\n",
+        "def go(session, revision):\n    session.execute(delete(PackageRevision))\n",
+    ],
+    ids=["orm-delete", "table-delete", "delete-statement"],
+)
+def test_the_guard_catches_every_way_of_writing_it(source: str, tmp_path: Path) -> None:
+    """All three forms, because the first version of this guard caught one of them.
+
+    The `__table__.delete()` form takes no arguments, so a walk that only inspected arguments could
+    not see it — and that is the form used later in this very file. Run against a throwaway tree
+    rather than by planting a file under `app/`, which would leave the repository failing its own
+    guard if this test died first.
+    """
+    package = tmp_path / "app" / "somewhere"
+    package.mkdir(parents=True)
+    (package / "deleter.py").write_text(source, encoding="utf-8")
+
+    global REPO_ROOT
+    original = REPO_ROOT
+    try:
+        REPO_ROOT = tmp_path
+        offenders = _deletes_a_revision()
+    finally:
+        REPO_ROOT = original
+
+    assert offenders, f"the guard missed: {source!r}"
 
 
 def test_no_module_deletes_a_package_revision() -> None:
