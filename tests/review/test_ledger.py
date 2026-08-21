@@ -272,7 +272,7 @@ def _scenario(
         size=100,
         backend_version_id=None,
     )
-    document = Document(package_revision_id=revision.id, kind=DocumentKind.SHOP)
+    document = Document(package_id=revision.package_id, kind=DocumentKind.SHOP)
     session.add_all((artifact, document))
     session.flush()
 

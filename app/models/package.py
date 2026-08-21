@@ -87,6 +87,11 @@ class PackageRevision(Base, TimestampedUUID):
             name="package_revision_state",
         ),
         UniqueConstraint("package_id", "revision_number"),
+        # So `package_revision_documents` can resolve a revision *and* its package in one key
+        # (ADR-0018). Without this the membership row could name a revision of one package and a
+        # document of another, with every individual value true — proven against PostgreSQL before the
+        # ADR was accepted, which is why the constraint is here rather than assumed.
+        UniqueConstraint("id", "package_id", name="uq_package_revisions_id_package"),
     )
 
 

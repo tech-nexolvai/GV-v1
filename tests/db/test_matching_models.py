@@ -69,7 +69,7 @@ def _two_items(session: Session) -> tuple[DrawingItem, DrawingItem]:
     artifact = SourceArtifact(
         storage_key=f"originals/{project.id}/m.pdf", sha256=HASH, size=1, backend_version_id=None
     )
-    document = Document(package_revision_id=revision.id, kind=DocumentKind.SHOP)
+    document = Document(package_id=revision.package_id, kind=DocumentKind.SHOP)
     session.add_all((artifact, document))
     session.flush()
     version = DocumentVersion(

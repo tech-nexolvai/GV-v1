@@ -252,7 +252,7 @@ def _gold_case(session: Session, gold_set: GoldSet) -> GoldCase:
         size=100,
         backend_version_id=None,
     )
-    document = Document(package_revision_id=revision.id, kind=DocumentKind.SHOP)
+    document = Document(package_id=revision.package_id, kind=DocumentKind.SHOP)
     version = DocumentVersion(
         document_id=document.id,
         source_artifact_id=artifact.id,

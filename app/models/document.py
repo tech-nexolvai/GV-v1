@@ -38,6 +38,7 @@ __all__ = [
     "Document",
     "DocumentKind",
     "DocumentVersion",
+    "PackageRevisionDocument",
     "Page",
     "PageType",
     "SourceArtifact",
@@ -77,16 +78,32 @@ class SourceArtifact(Base, TimestampedUUID, Immutable):
 
 
 class Document(Base, TimestampedUUID):
-    """Logical document identity shared by all uploads of that document."""
+    """Logical document identity shared by all uploads of that document — across every revision.
+
+    **The docstring used to be a claim the schema contradicted.** This row carried
+    `package_revision_id`, so a drawing belonged to exactly one revision, and "identity shared by all
+    uploads" could not be true of it. Nothing needed a drawing to exist in two revisions until
+    supersede (#211), and then it did: a revision holding only the changed sheet runs its checks
+    against a partial drawing set, and the drawings that were absent produce no failures — which reads
+    as no problems (`AGENTS.md` §2.2). ADR-0018 moved identity here, to the package.
+
+    Which revisions include which version of this document is recorded by `PackageRevisionDocument`,
+    not by this row. That is what lets a superseding revision share a drawing with its predecessor
+    without copying anything: one more link row, the same bytes, no second artifact.
+    """
 
     __tablename__ = "documents"
 
-    package_revision_id: Mapped[UUID] = mapped_column(
-        ForeignKey("package_revisions.id", ondelete="RESTRICT")
-    )
+    package_id: Mapped[UUID] = mapped_column(ForeignKey("packages.id", ondelete="RESTRICT"))
     kind: Mapped[str] = mapped_column(String(32))
 
-    __table_args__ = (CheckConstraint(f"kind IN ({DOCUMENT_KIND_VALUES})", name="document_kind"),)
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({DOCUMENT_KIND_VALUES})", name="document_kind"),
+        # So `package_revision_documents` can resolve a document *and* its package in one key. See
+        # `PackageRevisionDocument`: resolving one side alone lets a row through whose every value is
+        # true and whose combination is not.
+        UniqueConstraint("id", "package_id", name="uq_documents_id_package"),
+    )
 
 
 class DocumentVersion(Base, TimestampedUUID, Immutable):
@@ -108,7 +125,85 @@ class DocumentVersion(Base, TimestampedUUID, Immutable):
         CheckConstraint(f"sha256 ~ '{SHA256_PATTERN}'", name="document_version_sha256"),
         CheckConstraint("page_count >= 0", name="document_version_page_count"),
         UniqueConstraint("document_id", "sha256"),
+        # Kept, and ADR-0018 gives it the rationale it never had. Under the membership model a drawing
+        # is carried into a later revision by one link row and no new version, so this never obstructs
+        # — and it now means something: a set of bytes is registered as a document version exactly
+        # once. Dropping it (the option not taken) would have permitted two versions of identical bytes
+        # with nothing recording which of them a finding meant.
         UniqueConstraint("source_artifact_id"),
+        # So a membership row can resolve a version *and* the document it belongs to in one key.
+        UniqueConstraint("id", "document_id", name="uq_document_versions_id_document"),
+    )
+
+
+class PackageRevisionDocument(Base, TimestampedUUID):
+    """Which document versions one package revision is composed of (ADR-0018, #366).
+
+    An association table rather than a column on either side, for the reason `ApprovedFinding` is one:
+    a revision's contents are a *set*, each member a foreign key to a server-side row. Before this,
+    membership was implied by `Document.package_revision_id` — which meant a drawing could belong to
+    only one revision, and a superseding revision could not include a sheet that had not changed.
+
+    **Not `Immutable`, and the reason is a decision rather than an oversight.** A revision is *assembled*
+    before it is worked: drawings arrive one at a time, and a mis-uploaded sheet re-uploaded a minute
+    later is ordinary use, not tampering. So while the revision is in `CREATED`, `UPLOADING` or
+    `UPLOADED`, its set may change. From `INGESTING` onward it is frozen, because from that point
+    something has read it — and *"that drawing wasn't in the set we reviewed"* must not be a row anybody
+    can edit afterwards (`AGENTS.md` §2.7). Changing a frozen set means superseding the revision, which
+    is #211.
+
+    A blanket `Immutable` would have been simpler and wrong in the other direction: correcting a typo
+    before anything had run would have required a whole new package revision. The freeze is therefore a
+    trigger that reads the revision's state — `gv_reject_frozen_revision_documents` in `0017` — rather
+    than the marker that refuses every write. `ASSEMBLY_STATES` in `app/lifecycle/states.py` is the one
+    place that list lives; a test asserts the migration's literal copy still matches it.
+    """
+
+    __tablename__ = "package_revision_documents"
+
+    package_revision_id: Mapped[UUID] = mapped_column(index=True)
+    package_id: Mapped[UUID] = mapped_column(index=True)
+    """Resolved against **both** the revision and the document below.
+
+    This column is the whole reason the constraints work, and it was nearly wrong. Resolving only the
+    document side — checking that this document belongs to this package — admits a row in which every
+    value is individually true and the combination is a lie: the document really does belong to
+    package 2, and the revision really does belong to package 1. Prototyped against PostgreSQL while
+    ADR-0018 was still in draft, and that insert succeeded. Naming the same `package_id` in the
+    revision's key too is what refuses it.
+    """
+
+    document_id: Mapped[UUID] = mapped_column(index=True)
+    document_version_id: Mapped[UUID] = mapped_column(index=True)
+    """The exact version this revision includes. A finding cites a version, so this is what ties a
+    revision's checks to the bytes they were run against."""
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["package_revision_id", "package_id"],
+            ["package_revisions.id", "package_revisions.package_id"],
+            name="fk_revision_documents_revision_package",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["document_id", "package_id"],
+            ["documents.id", "documents.package_id"],
+            name="fk_revision_documents_document_package",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["document_version_id", "document_id"],
+            ["document_versions.id", "document_versions.document_id"],
+            name="fk_revision_documents_version_document",
+            ondelete="RESTRICT",
+        ),
+        # At most one version of any drawing per revision. Without it a revision holds v1 and v2 of the
+        # same sheet, its checks run against both, and no reader can say which version a finding meant.
+        UniqueConstraint(
+            "package_revision_id",
+            "document_id",
+            name="uq_revision_documents_one_version_per_document",
+        ),
     )
 
 
