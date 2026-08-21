@@ -11,9 +11,11 @@ import './ReviewPage.css';
 interface ReviewPageProps {
   sessionId: string;
   onEvidenceChange: (panel: React.ReactNode) => void;
+  initialMessage?: string;
+  onMessageConsumed?: () => void;
 }
 
-export function ReviewPage({ sessionId, onEvidenceChange }: ReviewPageProps) {
+export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMessageConsumed }: ReviewPageProps) {
   // Find current session
   const initialSession = MOCK_SESSIONS.find(s => s.id === sessionId) || MOCK_SESSIONS[0];
 
@@ -33,6 +35,15 @@ export function ReviewPage({ sessionId, onEvidenceChange }: ReviewPageProps) {
     }, 600);
     return () => clearTimeout(timer);
   }, [sessionId]);
+
+  // Auto-send the initial message from WelcomePage when loaded
+  useEffect(() => {
+    if (!isLoading && initialMessage) {
+      handleSend(initialMessage);
+      onMessageConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, initialMessage]);
 
   if (isLoading) {
     return <ReviewSkeleton />;

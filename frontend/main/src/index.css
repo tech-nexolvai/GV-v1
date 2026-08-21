@@ -173,3 +173,65 @@ ul, ol { list-style: none; }
 .animate-slide-up   { animation: slideUp var(--duration-slow) var(--ease-out) both; }
 .animate-slide-in-r { animation: slideInRight var(--duration-panel) var(--ease-out) both; }
 .animate-slide-in-l { animation: slideInLeft var(--duration-panel) var(--ease-out) both; }
+
+/* ============================================================
+   RESPONSIVE 12-COLUMN GRID SYSTEM (Per SKILL.md specification)
+   ============================================================ */
+
+:root {
+  --grid-columns: 12;
+  --grid-gutter: var(--space-6);   /* 24px */
+  --grid-margin: var(--space-6);   /* 24px */
+}
+
+@media (max-width: 1023px) {
+  :root {
+    --grid-columns: 8;
+    --grid-gutter: var(--space-6); /* 24px */
+    --grid-margin: var(--space-6); /* 24px */
+  }
+}
+
+@media (max-width: 767px) {
+  :root {
+    --grid-columns: 4;
+    --grid-gutter: var(--space-4); /* 16px */
+    --grid-margin: var(--space-4); /* 16px */
+  }
+}
+
+.grid-system {
+  display: grid;
+  grid-template-columns: repeat(var(--grid-columns), minmax(0, 1fr));
+  gap: var(--grid-gutter);
+  padding-left: var(--grid-margin);
+  padding-right: var(--grid-margin);
+  width: 100%;
+}
+
+/* Desktop spans (1 to 12) */
+.col-span-1  { grid-column: span 1 / span 1; }
+.col-span-2  { grid-column: span 2 / span 2; }
+.col-span-3  { grid-column: span 3 / span 3; }
+.col-span-4  { grid-column: span 4 / span 4; }
+.col-span-5  { grid-column: span 5 / span 5; }
+.col-span-6  { grid-column: span 6 / span 6; }
+.col-span-7  { grid-column: span 7 / span 7; }
+.col-span-8  { grid-column: span 8 / span 8; }
+.col-span-9  { grid-column: span 9 / span 9; }
+.col-span-10 { grid-column: span 10 / span 10; }
+.col-span-11 { grid-column: span 11 / span 11; }
+.col-span-12 { grid-column: span 12 / span 12; }
+
+/* Tablet spans (≤1023px) */
+@media (max-width: 1023px) {
+  .col-tab-full { grid-column: span 8 / span 8; }
+  .col-tab-half { grid-column: span 4 / span 4; }
+}
+
+/* Mobile spans (≤767px) */
+@media (max-width: 767px) {
+  .col-mob-full { grid-column: span 4 / span 4; }
+  .col-mob-half { grid-column: span 2 / span 2; }
+}
+

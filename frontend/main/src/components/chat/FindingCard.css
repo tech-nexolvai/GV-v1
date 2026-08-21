@@ -6,7 +6,7 @@
   transition: background var(--duration-base) var(--ease-out),
               box-shadow var(--duration-base) var(--ease-out),
               border-color var(--duration-base) var(--ease-out);
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-2);
   border-radius: var(--radius-md);
   position: relative;
 }
@@ -43,7 +43,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
+  padding: 5px var(--space-3);
   width: 100%;
   text-align: left;
   cursor: pointer;
@@ -113,7 +113,7 @@
 .finding-card__body {
   background: var(--bg-surface);
   border-top: 1px solid var(--border-subtle);
-  padding: var(--space-4);
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -129,7 +129,7 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-3);
 }
 
 .finding-card__value-item { display: flex; flex-direction: column; gap: 2px; }

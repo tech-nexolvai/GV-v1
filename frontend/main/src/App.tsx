@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { AppShell } from './components/shell/AppShell';
 import { ReviewPage } from './pages/ReviewPage';
 import { PackagesPage } from './pages/PackagesPage';
+import { WelcomePage } from './pages/WelcomePage';
 import { RulebookPage } from './pages/RulebookPage';
 import { UsagePage } from './pages/UsagePage';
 import { MOCK_SESSIONS, MOCK_PACKAGES_LIST } from './data/mock';
@@ -19,8 +20,9 @@ const SIMULATION_STEPS = [
 
 export default function App() {
   const [activePage, setActivePage] = useState<string>('review');
-  const [activeSession, setActiveSession] = useState<string>(MOCK_SESSIONS[0].id);
+  const [activeSession, setActiveSession] = useState<string>('');
   const [evidencePanel, setEvidencePanel] = useState<React.ReactNode>(null);
+  const [pendingMessage, setPendingMessage] = useState<string>('');
 
   const [designStyle, setDesignStyle] = useState<'stone' | 'ide'>(() => {
     const saved = localStorage.getItem('gv-design-style');
@@ -62,6 +64,17 @@ export default function App() {
     setActiveSession(session.id);
     setActivePage('review');
     setEvidencePanel(null);
+  }
+
+  /** Called from WelcomePage — picks a session then queues the message */
+  function handleWelcomeStart(sessionId: string) {
+    setActiveSession(sessionId);
+    setActivePage('review');
+    setEvidencePanel(null);
+  }
+
+  function handleWelcomeSend(text: string) {
+    setPendingMessage(text);
   }
 
   function triggerSubmitPipeline() {
@@ -199,15 +212,24 @@ export default function App() {
       designStyle={designStyle}
       onStyleChange={setDesignStyle}
     >
-      {activePage === 'review' && (
+      {activePage === 'review' && !activeSession && (
+        <WelcomePage
+          onStartSession={handleWelcomeStart}
+          onSend={handleWelcomeSend}
+        />
+      )}
+
+      {activePage === 'review' && activeSession && (
         <ReviewPage
           key={activeSession}
           sessionId={activeSession}
           onEvidenceChange={setEvidencePanel}
+          initialMessage={pendingMessage}
+          onMessageConsumed={() => setPendingMessage('')}
         />
       )}
 
-      {activePage === 'packages' && (
+      {activePage === 'documents' && (
         <PackagesPage
           onOpenReview={handleOpenReview}
           onNewPackage={() => setIsModalOpen(true)}
@@ -224,7 +246,7 @@ export default function App() {
           <div className="modal">
             <div className="modal__header">
               <span className="modal__title">
-                {isSimulating ? 'Processing Ingestion Pipeline' : 'Submit New Package'}
+                {isSimulating ? 'Processing Ingestion Pipeline' : 'Submit New Document'}
               </span>
               {!isSimulating && (
                 <button

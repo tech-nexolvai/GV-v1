@@ -1,12 +1,8 @@
 .rulebook-page {
   display: flex;
-  height: calc(100% - 2 * var(--space-6));
+  height: 100%;
   overflow: hidden;
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
-  margin: var(--space-6);
 }
 
 /* ── Left sidebar ─────────────────────────────────────────── */

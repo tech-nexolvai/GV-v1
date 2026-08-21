@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Menu, Bell, Sun, Moon } from 'lucide-react';
+import { PanelLeft, Bell, Sun, Moon } from 'lucide-react';
 import './Topbar.css';
 
 interface TopbarProps {
@@ -39,7 +39,7 @@ export function Topbar({
           aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           data-tooltip={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
-          <Menu size={16} />
+          <PanelLeft size={16} />
         </button>
 
         {/* GV Logo + wordmark */}
@@ -52,8 +52,10 @@ export function Topbar({
             <span className="topbar__product">Review Platform</span>
           </div>
         </div>
+      </div>
 
-        {/* Layout selection dropdown switcher */}
+      <div className="topbar__right">
+        {/* Layout selection — workspace preference, lives near user/settings */}
         <select
           className="topbar__style-select"
           value={designStyle}
@@ -64,9 +66,7 @@ export function Topbar({
           <option value="stone">Standard Split</option>
           <option value="ide">IDE Assistant</option>
         </select>
-      </div>
 
-      <div className="topbar__right">
         <button
           className="btn btn--subtle btn--icon"
           onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}
@@ -83,11 +83,6 @@ export function Topbar({
         >
           <Bell size={15} />
         </button>
-
-        <div className="topbar__user" aria-label="User menu">
-          <div className="topbar__avatar" aria-hidden="true">R</div>
-          <span className="topbar__username">Raj Gupta</span>
-        </div>
       </div>
     </header>
   );

@@ -21,7 +21,6 @@
 }
 
 .topbar__style-select {
-  margin-left: var(--space-4);
   font-size: var(--text-xs);
   background: var(--bg-elevated);
   border: 1px solid var(--border-default);
