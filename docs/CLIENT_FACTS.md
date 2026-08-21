@@ -321,6 +321,7 @@ problem is gone. Field-smaller (Q8), the filler bounds (Q21: MIN 1" / MAX 2"), a
 (Q14: back-only + island in scope) all landed too. Real drawings are promised "today or tomorrow"
 (still #274, not yet in hand). **The V1 verdict model is therefore: exact inch-fraction equality
 (Fraction), flag every mismatch, reviewer finalises** — a deliberately review-heavy, false-PASS-safe
-posture, not tolerance bands; ADR-0011's UNCONFIRMED-tolerance path is simply not exercised in V1.
+posture, not tolerance bands. Neither ADR-0011's cross-unit allowance nor the `TOLERANCE_UNCONFIRMED`
+sentinel is exercised in V1 (rationale in `docs/decisions/V1_VERDICT_MODEL.md`).
 Two small residuals remain: the **back-offset global minimum** (Q6 — Raj checking the vendor) and the
 checklist typos (Q15–Q19 — our separate list). A clarification meeting was offered.
