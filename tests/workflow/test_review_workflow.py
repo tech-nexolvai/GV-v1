@@ -45,6 +45,7 @@ from workflow.review import (
     NoStages,
     PackageReviewInput,
     PageResult,
+    _record_failure,
     join_pages,
     register,
     run_all,
@@ -861,19 +862,23 @@ def test_the_page_join_refuses_anything_that_is_not_a_page(factory: sessionmaker
     )
 
 
-def test_a_failure_that_cannot_be_recorded_still_reports_itself(
+def test_a_first_stage_failure_is_recorded_even_though_the_move_rolled_back(
     factory: sessionmaker[Session],
 ) -> None:
-    """**A pre-existing hole from #215, found while fixing the one above.**
+    """**The gap Anant's ruling was meant to close, closed.**
 
-    A package only reaches a failure state from a *processing* state. So when the very first stage fails,
-    the revision is still `UPLOADED`, `enter_failure` raises `IllegalTransition`, and that used to be the
-    only exception the caller ever saw — the `ValueError` that actually stopped the package vanished.
+    `run_stage` now moves the package into the stage's state before doing the work — but that move shares
+    the transaction with the work, so a failure rolls it back. Measured: after a failing `ingest` the
+    revision reads `UPLOADED` again, and `UPLOADED` has no edge to a failure state. The reorder alone left
+    a first-stage failure with nowhere to go.
 
-    Now the recording problem is attached as a note and the original propagates. This does not fix the
-    underlying gap, which is a lifecycle design question raised on the PR: a package failing in its first
-    stage still ends up with no failure state.
+    `_record_failure` now re-states the stage's state inside the recording transaction and fails from
+    there. The attempt really did happen in `INGESTING`; the rollback erased the record of it, not the
+    fact. So a package that dies in ingestion says so, instead of sitting in an assembly state with no
+    explanation.
     """
+    from hatchet_sdk.exceptions import NonRetryableException
+
     with unit_of_work(factory) as session:
         revision_id, run_id = _revision_and_run(session)
 
@@ -885,16 +890,43 @@ def test_a_failure_that_cannot_be_recorded_still_reports_itself(
     assert callable(function)
     payload = PackageReviewInput(package_revision_id=revision_id, workflow_run_id=run_id)
 
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(NonRetryableException) as caught:
         function(payload, None)
 
-    # The real error, not the state machine's complaint about recording it.
-    assert "the rulebook is missing" in str(caught.value)
-    notes = getattr(caught.value, "__notes__", [])
+    assert "the rulebook is missing" in str(caught.value), "the real error still reaches the caller"
+    assert not getattr(
+        caught.value, "__notes__", []
+    ), "nothing to note — the failure was recordable"
+
+    with unit_of_work(factory) as session:
+        reached = [str(event.to_state) for event in history(session, revision_id)]
+    assert PackageState.INGESTING.value in reached, "the attempt is recorded as having happened"
+    assert reached[-1] == PackageState.FAILED_PERMANENT.value
+
+
+def test_a_failure_that_truly_cannot_be_recorded_still_reports_itself(
+    factory: sessionmaker[Session],
+) -> None:
+    """The defence that stays, for what the walk above cannot rescue.
+
+    Recording can still fail — an unknown revision, a database problem — and when it does, the exception it
+    raises must not replace the one it was reporting. That is what used to happen: the caller saw a
+    state-machine complaint and no sign of the error that actually stopped the package.
+    """
+    error = ValueError("the rulebook is missing")
+    _record_failure(
+        factory,
+        uuid4(),  # no such revision, so recording cannot succeed
+        actor="the ingest worker",
+        error=error,
+        stage_state=PackageState.INGESTING,
+    )
+
+    notes = getattr(error, "__notes__", [])
     assert any(
         "could not be recorded" in note for note in notes
-    ), "the caller should be told that the failure state was not written, not left to guess"
-    assert any("IllegalTransition" in note for note in notes)
+    ), "the caller should be told the failure state was not written, not left to guess"
+    assert "the rulebook is missing" in str(error), "and the original error is untouched"
 
 
 def test_the_default_stages_say_they_did_nothing(factory: sessionmaker[Session]) -> None:

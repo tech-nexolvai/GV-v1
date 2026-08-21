@@ -41,8 +41,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.session import unit_of_work
 from app.lifecycle.side_states import FailureClass, classify, enter_failure
-from app.lifecycle.states import transition
-from app.models import PackageState
+from app.lifecycle.states import ASSEMBLY_STATES, TRANSITIONS, transition
+from app.models import PackageRevision, PackageState
 from workflow.idempotency import CLAIMED, claim, stage_idempotency_key
 
 if (
@@ -382,6 +382,7 @@ def run_all(
                 package_revision_id,
                 actor=f"the {stage.replace('_', ' ')} worker",
                 error=error,
+                stage_state=state,
             )
             raise
     return tuple(outcomes)
@@ -393,6 +394,7 @@ def _record_failure(
     *,
     actor: str,
     error: BaseException,
+    stage_state: PackageState,
 ) -> None:
     """Record a stage failure, and never let the recording hide what failed.
 
@@ -417,6 +419,30 @@ def _record_failure(
     """
     try:
         with unit_of_work(factory) as session:
+            # **Walk into the stage's state first when the rollback left us behind it.**
+            #
+            # `run_stage` moves the package into the stage's state before doing the work, but that move
+            # shares the transaction with the work — so a failure rolls it back, and a first-stage failure
+            # leaves the revision sitting in `UPLOADED`, which has no edge to a failure state. Measured,
+            # not assumed: the state in the database after the rollback is `UPLOADED`.
+            #
+            # The attempt did happen in the stage's state; the rollback erased the record of it, not the
+            # fact. So the recording transaction re-states it and then fails from there, which is both
+            # legal and true — and it is why a package that dies in ingestion now says so instead of
+            # sitting in an assembly state with no explanation.
+            revision = session.get(PackageRevision, package_revision_id)
+            if (
+                revision is not None
+                and PackageState(revision.state) in ASSEMBLY_STATES
+                and stage_state in TRANSITIONS[PackageState(revision.state)]
+            ):
+                transition(
+                    session,
+                    package_revision_id,
+                    stage_state,
+                    actor=actor,
+                    reason="re-stated so the failure has somewhere legal to go",
+                )
             enter_failure(session, package_revision_id, actor=actor, error=error)
     except Exception as write_failed:  # noqa: BLE001 - the original error must outlive this one
         error.add_note(
@@ -491,7 +517,13 @@ def register(
                 #
                 # Recorded through `_record_failure`, which is careful not to let a refused transition
                 # replace the error it was reporting.
-                _record_failure(factory, payload.package_revision_id, actor=actor, error=error)
+                _record_failure(
+                    factory,
+                    payload.package_revision_id,
+                    actor=actor,
+                    error=error,
+                    stage_state=_state,
+                )
                 if classify(error) is FailureClass.PERMANENT:
                     # Imported here for the same reason the client is: `hatchet_sdk` pulls in gRPC, and
                     # this module is imported by tests that never start an engine.
