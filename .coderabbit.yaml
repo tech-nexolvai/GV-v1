@@ -11,11 +11,12 @@
 
 language: en-GB
 
-# `tone_instructions` is capped at 250 characters. It silently exceeded that, and the cost was not a
-# missing sentence: CodeRabbit refused the whole file and reviewed on defaults instead — profile CHILL,
-# no path instructions at all. Every review before 2026-08-21 therefore ran without the verdict/, units/
-# and evidence/ rules below. Keep this field short; the project-wide framing lives in the `**` path
-# instruction, which has room for it.
+# `tone_instructions` is capped at 250 characters. This file was added on 2026-08-13 (4c37420) with 431,
+# and the cost was not a truncated sentence: CodeRabbit refused the whole file and reviewed on defaults
+# instead — profile CHILL, no path instructions at all. So from 2026-08-13 until this fix on 2026-08-21,
+# the instructions below for verdict/, units/, rules/ and evidence/ never applied to a single review.
+# The field has been over the cap since the day it was written, so this config had never once been in
+# force. Keep it short; the project-wide framing lives in the `**` path instruction, which has room.
 tone_instructions: >-
   Be direct and specific. Prioritise correctness and safety over style. A wrong FAIL costs review
   time; a wrong PASS can be manufactured. Do not comment on formatting, which ruff and black

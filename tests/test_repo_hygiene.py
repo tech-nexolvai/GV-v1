@@ -93,11 +93,12 @@ CODERABBIT_TONE_LIMIT = 250
 def test_the_coderabbit_config_is_actually_used() -> None:
     """The reviewer config must parse and fit its schema, or it is silently thrown away.
 
-    This is a regression test for a real and quiet failure. `tone_instructions` had grown to 431
-    characters against a 250-character cap, so CodeRabbit rejected **the whole file** and reviewed on
-    defaults — profile CHILL, and none of the `path_instructions` for `verdict/`, `units/`, `rules/` or
-    `evidence/` in force. Every review for weeks ran without the safety rules the file exists to state,
-    and nothing failed: the only sign was one collapsed warning inside a PR comment.
+    This is a regression test for a real and quiet failure. `.coderabbit.yaml` was added on 2026-08-13
+    (`4c37420`) with a 431-character `tone_instructions` against a 250-character cap, so CodeRabbit
+    rejected **the whole file** and reviewed on defaults — profile CHILL, and none of the
+    `path_instructions` for `verdict/`, `units/`, `rules/` or `evidence/` in force. Because it was over
+    the cap from the day it was written, this config had never once applied to a review before it was
+    fixed on 2026-08-21. Nothing failed: the only sign was one collapsed warning inside a PR comment.
 
     That is the worst shape a problem can have here — a safety control that is configured, believed to be
     working, and not running. So it is asserted, cheaply, with no network.
@@ -111,6 +112,10 @@ def test_the_coderabbit_config_is_actually_used() -> None:
     assert isinstance(config, dict), ".coderabbit.yaml did not parse into a mapping"
 
     tone = config.get("tone_instructions", "")
+    # The type check is not pedantry: `len()` also succeeds on a list, so `tone_instructions: []` would
+    # have satisfied a length-only assertion while being a schema violation of exactly the kind that
+    # discards the file.
+    assert isinstance(tone, str), f"tone_instructions must be a string, got {type(tone).__name__}"
     assert len(tone) <= CODERABBIT_TONE_LIMIT, (
         f"tone_instructions is {len(tone)} characters, over the {CODERABBIT_TONE_LIMIT} the schema "
         "allows. CodeRabbit does not truncate it — it discards the entire config and reviews on "
@@ -118,6 +123,19 @@ def test_the_coderabbit_config_is_actually_used() -> None:
     )
 
     # The path rules are the substance of the file; losing them is what the cap above actually cost.
-    covered = {entry["path"] for entry in config["reviews"]["path_instructions"]}
-    for zone in ("verdict/**", "units/**", "rules/**", "evidence/**"):
-        assert zone in covered, f"{zone} has no review instructions"
+    entries = {
+        entry["path"]: entry.get("instructions") for entry in config["reviews"]["path_instructions"]
+    }
+    for zone in ("**", "verdict/**", "units/**", "rules/**", "evidence/**"):
+        assert zone in entries, f"{zone} has no review instructions"
+        body = entries[zone]
+        # A present-but-empty entry reads as coverage and reviews nothing, which is the failure this
+        # whole test exists to catch, one level down.
+        assert isinstance(body, str) and body.strip(), f"{zone} has an empty instructions block"
+
+    # `**` carries the project-wide safety framing that used to live in `tone_instructions`. Asserted by
+    # concept rather than by exact prose, so the wording can be improved but not quietly dropped.
+    assert "false-PASS" in entries["**"], (
+        "the project-wide instruction no longer mentions the false-PASS rate, which is the one thing "
+        "every review of this repository is supposed to be looking for"
+    )
