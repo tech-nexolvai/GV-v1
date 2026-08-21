@@ -54,17 +54,19 @@ source:  Countertop_Checks_Updated.xlsx CT-1 diagram (image1.png) labels the sla
          do not conflate it with the countertop's 1"-per-end field cut.
 
 ## Q2 — Tolerance values per check and per wall configuration
-status:  OPEN
+status:  ANSWERED
 blocks:  value
 issue:   #10
-answer:  —
-source:  No tolerance figure appears in any Raj-authored file (cells or the 10 embedded
-         diagrams). The ±1/8" figure circulating in our docs came from
-         Countertop_Checks_SAMPLE_Nexolv.xlsx, which WE authored, labelled
-         "PLACEHOLDER — please confirm". Not Raj's number. Re-asked in the email; Raj did not
-         answer section 2 (no "Please see my response" marker on it). His severity answer (3.5)
-         "flag any deviation" is in tension with a tolerance band and is NOT a band — re-asked
-         reframed. Still the main blocker: nothing can pass or fail until this lands.
+answer:  EXACT MATCH for V1 — no tolerance band. Compared on inches (see Q12); any dimension that
+         does not match exactly is flagged, and the reviewer clears false flags on screen and
+         finalizes. A graded/per-check tolerance is deferred past iteration 1.
+source:  Raj 2nd email reply: "Lets go for exact match in the first iteration of our product and let
+         the reviewer make the decision on the flagged dimensions. He/she can remove the false flags
+         on the screen and finalize the document." He explained why a single band is hard — the
+         tightest millwork goes is ~1/16", but even that fails client QC at some locations (a
+         countertop flush with the cabinet, no wall on that side) — hence exact-match-plus-reviewer
+         rather than a number. (The earlier ±1/8" was our placeholder.) V1 rules use exact equality,
+         not within_tolerance; the reviewer is the tolerance.
 
 ## Q3 — Does cabinet width include the run's end panel (the 51 mm / 2" piece)?
 status:  ANSWERED
@@ -81,23 +83,26 @@ source:  Raj email reply (3.2): "Filler piece is not part of the cabinet. This i
 status:  OPEN
 blocks:  value
 issue:   #12
-answer:  — (Raj declined the split; interim posture below)
+answer:  — (no per-check severity; V1 flags all and the reviewer decides)
 source:  Raj email reply (3.5): "Difficult to categorize between production blockers vs flagged for
          review. I think any dimension, cabinet type, sink type deviations should be highlighted."
-         So the interim rule is flag-all-deviations; the per-check CRITICAL vs advisory split we
-         asked for is explicitly not provided — so critical_false_pass_rate still has no CRITICAL
-         rule to measure. Ships provisional (blocks: value).
+         The 2nd reply's exact-match decision (Q2) makes this moot for V1 — every mismatch flags and
+         the reviewer clears false flags, so no per-check critical/advisory split is needed to ship.
+         Still OPEN because critical_false_pass_rate needs a CRITICAL designation to be measurable;
+         that is deferred, not required for V1.
 
 ## Q5 — Sink front offset: "4" minimum" or "= 4""?
 status:  ANSWERED
 blocks:  formula
 issue:   #13
-answer:  A configurable global default of 4" — a target value the offset is checked against, not a
-         hard minimum. The tolerance band around it is Q2 (still open).
+answer:  A configurable global default of 4", checked by EXACT equality now that Q2 is settled
+         (exact-match for V1). Not a hard minimum. The BACK offset is a different animal — it is
+         calculated, not a global constant (see Q6).
 source:  Raj email reply (3.3): "Typical value is 4". Vary rarely is changes. Keep a global
-         variable as 4" that can be changed if required under special circumstances." The
-         min-vs-exact contradiction resolves to one project-overridable target (4"). Raj did not
-         address the back offset (2.375") — assume the same pattern but confirm before relying.
+         variable as 4" that can be changed if required under special circumstances." Q2's 2nd-reply
+         exact-match decision fixes the operator — check the offset equals the configured 4" exactly.
+         Raj's 2nd reply also resolved the back offset: a derived remainder with a pending global
+         minimum, not the 2.375" we had assumed (Q6).
 
 ## Q6 — CT009 vs CT010: which is read off the drawing, which is derived?
 status:  ANSWERED
@@ -105,10 +110,15 @@ blocks:  formula
 issue:   #14
 answer:  CT010 (countertop depth) is primary — set from cabinet depth + overhang. The offset sum
          CT007+CT008+CT009 is checked against it; if it EXCEEDS CT010 the program flags (sink hole
-         too big → reviewer changes the sink). CT009 is the constrained value, CT010 the read one.
-source:  Raj email reply (3.6): "Countertop depth is decided based on the depth of the cabinet and
-         countertop overhang. CT010 Should be equal to CT007 + CT008 + CT009. If the value exceeds,
-         then the program should throw a flag." Breaks the earlier circular definition.
+         too big → reviewer changes the sink). CT009 (back offset) is the constrained REMAINDER —
+         whatever is left after front offset + sink depth — and carries a global MINIMUM (below it
+         the faucet hole will not fit). That minimum value is still pending (Raj checking the vendor).
+source:  Raj email reply (3.6): "CT010 Should be equal to CT007 + CT008 + CT009. If the value
+         exceeds, then the program should throw a flag." 2nd reply (follow-up 1): "after the front
+         offset and depth of the sink taken care of, whatever left will become the back offset… never
+         put backoffset as global offset, because it is a calculated value… I will give a global
+         minimum for that variable after checking with the vendor." So back offset is NOT the fixed
+         2.375" we assumed — it is derived, with a pending global-minimum guard.
 
 ## Q7 — Will GV supply manufacturer sink cut sheets per project?
 status:  ANSWERED
@@ -123,15 +133,18 @@ source:  Raj email reply (3.4): "For every project, sink dimensions changes. Sho
          set." For V1 the manual-input path is the safe MVP (no extraction risk).
 
 ## Q8 — Field dimension smaller than design (Condition 1 only covers larger)
-status:  OPEN
+status:  ANSWERED
 blocks:  formula
 issue:   #15
-answer:  —
-source:  Cabinet_Checks Sheet1 defines only "Condition : 1" (H17-H21): "if
-         F_Wall_2_Wall_Dim > A_Wall_2_Wall_Dim then … Filler_Width_Right + Filler_Width_Left".
-         No condition for field < design exists in any cell or diagram. Raj email reply (3.1) walks
-         the field-LARGER case only (88" design, 90" site, extra distributed to fillers then
-         cabinets); the field-SMALLER case is still unaddressed.
+answer:  Same distribution logic as larger, but subtract: shrink the fillers first (down to the
+         MINIMUM filler width, 1"), and if the difference still cannot be absorbed, reduce cabinet
+         widths (site narrower than the arch drawing). Symmetric with Q21.
+source:  Raj 2nd email reply (follow-up 3): "Same logic applies. First the difference should be
+         adjusted with the fillers based on max and minimum fillers allowed. Keep minimum filler
+         width as 1" and create a mutable variable which can be adjusted later. If the difference
+         cannot be squeezed, then the cabinet widths has to be reduced because the width of the site
+         is less than the architectural drawing." Raj offered to add an illustration if the flow is
+         unclear.
 
 ## Q9 — How are non-adjustable cabinets identified on a drawing?
 status:  ANSWERED
@@ -166,16 +179,18 @@ source:  "864 [34]" appears only as the cabinet HEIGHT in Cabinet_Checks B-Front
          the height matching 34" may be coincidental.
 
 ## Q12 — When mm and bracketed inches disagree, which governs?
-status:  OPEN
+status:  ANSWERED
 blocks:  formula
 issue:   #15
-answer:  —
-source:  All shop-drawing dimensions are dual and the inches are rounded, so they disagree:
-         Cabinet_Checks image1.png "533 [21]" (533 mm = 20.98", shown as 21"),
-         "6012 [236 3/4]", "984 [38 3/4]". Raj never states which unit is authoritative
-         (mm-canonical is OUR internal choice, not his). Re-asked in the email; Raj's reply did not
-         answer it. Weak signal only: every number in his reply is in inches (88", 90", 4"), never
-         mm. ADR-0001 keeps us safe meanwhile (arithmetic in the authored unit; mixed units abstain).
+answer:  INCHES govern; ignore mm for the verdict. mm on GV drawings is only the vendor's machine
+         reference. The check is inch-vs-inch; if the inches match, it passes.
+source:  Raj 2nd email reply: "Ignore the metric dimensions, U.S construction works on I-P system,
+         so we consider only feet and inches. The mm's shown on the drawing is for the vendors
+         reference because their machines work better with mm's. As long as inches match, then we
+         should be good." This dissolves the mm/inch conversion-noise problem ADR-0001 addressed —
+         we never compare across units; mm may still corroborate that an inch was READ correctly
+         (our call), but it is not a verdict operand. Pairs with Q2 exact-match — exact equality on
+         inch fractions via Fraction (ADR-0001).
 
 ## Q13 — Two countertop-depth formulas: both? cross-check?
 status:  ANSWERED
@@ -189,13 +204,16 @@ source:  Raj email reply (3.6): "CT010 Should be equal to CT007 + CT008 + CT009.
          depth expressions reconcile.
 
 ## Q14 — Are non-three-wall layouts (island / two-wall / back-only) in V1 scope?
-status:  OPEN
+status:  ANSWERED
 blocks:  nothing
 issue:   #15
-answer:  — (only the 3-wall case is documented)
-source:  Every rule context cell reads "Countertop with walls on left, right and back side"
-         (D5/I5/N5/S5/X5); the layout image is titled "1 Vanity with a wall on 3 sides"
-         (image6.png). No island/two-wall/back-only rule or scope statement exists.
+answer:  Yes — back-wall-only and island are in scope; Raj is supplying drawings for both. Two-wall
+         was not mentioned. (Ties to Q20: the layout set is being finalized, which gates final tags.)
+source:  Raj 2nd email reply: "We had drawings only with the walls on all three sides, I had to
+         request our millwork manager to get the drawings with wall at the back only and also for
+         island. We should be able to give them today or tomorrow." Supplying drawings for a layout
+         is confirmation it is in scope. The 3-wall geometric refusal logic already built (#181) is
+         layout-agnostic; the empirical numbers per layout still come from the drawings.
 
 ## Q15 — S19 "interior depth" should be width
 status:  OPEN
@@ -262,13 +280,15 @@ status:  ANSWERED
 blocks:  formula
 issue:   #15
 answer:  Calculate. When the site differs from the design (e.g. 88" design, 90" site) the program
-         distributes the extra — add to the fillers first (keeping cabinet sizes); check each
-         adjusted filler does not exceed a MAXIMUM filler width; if it does, the reviewer chooses
-         via UI which cabinet to adjust (some must not move).
-source:  Raj email reply (3.1), full 3-step procedure. Materially larger than a pass/fail checker —
-         an interactive filler-then-cabinet distribution with reviewer choice. Residual open value:
-         the maximum-filler-width default is "the designer's choice" with no number given, and is
-         needed before the demo can run this path.
+         distributes the difference — adjust the fillers first (keeping cabinet sizes) within the
+         filler bounds MIN 1" .. MAX 2"; if a filler would fall outside that, the reviewer chooses
+         via UI which cabinet to adjust (some must not move). Works both directions (Q8).
+source:  Raj email reply (3.1), full 3-step procedure, plus the 2nd reply follow-ups giving the
+         numbers: max filler width "please use 2". It is not too big or too small"; min filler width
+         "Keep minimum filler width as 1" and create a mutable variable which can be adjusted later".
+         The earlier residual is resolved — MIN 1", MAX 2", both mutable/project-tunable defaults.
+         Materially larger than a pass/fail checker: an interactive filler-then-cabinet distribution
+         with reviewer choice.
 
 <!-- CLIENT FACTS END -->
 
@@ -293,3 +313,15 @@ Q13 are now ANSWERED from Raj directly, and Q21 records a real scope expansion �
 question (Q12) and the real drawings / gold-set were not answered, so nothing yet moves off "Needs
 Review". Q3.9 also confirms the `CT0xx` vocabulary is **not final** (final tags follow the layouts),
 which reinforces keeping `rules/semantic_types.py` provisional — ADR-0017's aliases stay soft.
+
+**2nd reply (2026-08-16) — the two blockers ARE now resolved for V1.** Tolerance (Q2): **exact match**
+for iteration 1, reviewer clears false flags — so rules use exact equality, not `within_tolerance`,
+and no client number is pending. mm-vs-inch (Q12): **inches govern, mm ignored** — the conversion-noise
+problem is gone. Field-smaller (Q8), the filler bounds (Q21: MIN 1" / MAX 2"), and the layout scope
+(Q14: back-only + island in scope) all landed too. Real drawings are promised "today or tomorrow"
+(still #274, not yet in hand). **The V1 verdict model is therefore: exact inch-fraction equality
+(Fraction), flag every mismatch, reviewer finalises** — a deliberately review-heavy, false-PASS-safe
+posture, not tolerance bands. Neither ADR-0011's cross-unit allowance nor the `TOLERANCE_UNCONFIRMED`
+sentinel is exercised in V1 (rationale in `docs/decisions/V1_VERDICT_MODEL.md`).
+Two small residuals remain: the **back-offset global minimum** (Q6 — Raj checking the vendor) and the
+checklist typos (Q15–Q19 — our separate list). A clarification meeting was offered.
