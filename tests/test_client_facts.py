@@ -119,8 +119,11 @@ def test_an_answered_question_stops_nothing_whatever_it_blocks() -> None:
 
 def test_the_gate_line_says_which_kind_of_blocked() -> None:
     assert "changes the formula" in _synthetic(Status.OPEN, Blocks.FORMULA).gate_line()
-    assert "PROVISIONAL" in FACTS["Q2"].gate_line()
-    assert "ANSWERED" in FACTS["Q1"].gate_line()
+    # Synthetic, not `FACTS["Q2"]`. Q2 was the standing example of an open value question until Raj
+    # answered it, and this line then failed for a reason that had nothing to do with the code —
+    # exactly what `_synthetic` exists to prevent, one assertion below where it says so.
+    assert "PROVISIONAL" in _synthetic(Status.OPEN, Blocks.VALUE).gate_line()
+    assert "ANSWERED" in _synthetic(Status.ANSWERED, Blocks.VALUE).gate_line()
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +206,22 @@ def test_a_blocks_nothing_question_is_neither() -> None:
 
 
 def test_only_an_open_value_question_is_provisional() -> None:
-    _, provisional = _verdict(["Q2 (#10)"])
+    """Resolved through the real file, so it needs a real open value question — but *whichever* one
+    that is, not a named one. Naming Q2 here meant Raj answering it broke the test, which is the
+    system working reported as a failure.
+    """
+    open_value = next(
+        (
+            fact
+            for fact in FACTS.values()
+            if fact.status is Status.OPEN and fact.blocks is Blocks.VALUE
+        ),
+        None,
+    )
+    if open_value is None:
+        pytest.skip("no open value question remains — nothing to be provisional about")
+
+    _, provisional = _verdict([open_value.ref])
     assert provisional and "PROVISIONAL" in provisional[0]
 
 
