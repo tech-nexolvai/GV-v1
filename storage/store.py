@@ -15,6 +15,9 @@ from typing import BinaryIO, Final, Protocol, runtime_checkable
 #: (#254) adds a sibling constant rather than a second spelling of this one — the purpose is compared
 #: exactly, so ``"upload"`` and ``"uploads"`` would be two incompatible vocabularies.
 UPLOAD_PURPOSE: Final = "upload"
+#: The only operation an evidence URL permits. Kept beside ``UPLOAD_PURPOSE`` so signing and
+#: verification cannot drift onto two spellings for the same capability.
+DOWNLOAD_PURPOSE: Final = "download"
 
 
 @dataclass(frozen=True, slots=True)
