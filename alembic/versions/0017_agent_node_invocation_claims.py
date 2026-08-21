@@ -1,6 +1,6 @@
 """Add interrupt-safe agent node claims and direct candidate attribution.
 
-Revision ID: 0017_agent_node_invocation_claims
+Revision ID: 0017_agent_checkpoints
 Revises: 0016_state_event_workflow_run
 
 The claim is deliberately a separate mutable row. ``model_invocations`` and
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0017_agent_node_invocation_claims"
+revision: str = "0017_agent_checkpoints"
 down_revision: str | None = "0016_state_event_workflow_run"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
