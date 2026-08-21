@@ -32,16 +32,21 @@ from sqlalchemy.orm import Session, sessionmaker
 from workflow.review import WORKFLOW_NAME, Stages, register
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only for the annotation
+    # Annotations only, so the gRPC stack still stays out of the runtime import. Both names come from the
+    # package root — `hatchet_sdk.Worker` is exported, and `Hatchet.worker` is annotated as returning it,
+    # so this is the SDK's own name for the thing rather than a private path that could move.
+    from hatchet_sdk import Hatchet, Worker
+
     from app.config import Settings
 
-__all__ = ["WORKER_NAME", "build_worker", "hatchet_client"]
+__all__ = ["WORKER_NAME", "build_worker", "hatchet_client", "workflow_name"]
 
 #: The worker's name as it registers with the engine. One name, so two workers on one box are visibly
 #: two workers rather than one that mysteriously has twice the capacity.
 WORKER_NAME: Final = "gv-package-review"
 
 
-def hatchet_client(settings: Settings) -> object:
+def hatchet_client(settings: Settings) -> Hatchet:
     """A Hatchet client built from validated settings.
 
     Imported inside the function rather than at module scope. `hatchet_sdk` pulls in a gRPC stack, and
@@ -66,7 +71,7 @@ def build_worker(
     *,
     factory: sessionmaker[Session],
     stages: Stages | None = None,
-) -> object:
+) -> Worker:
     """A worker with the package review workflow registered on it.
 
     Returns the worker without starting it, so a caller decides when to block — and so a test can build
@@ -84,7 +89,7 @@ def build_worker(
         stages=stages,
         max_concurrent_packages=settings.max_concurrent_packages,
     )
-    return hatchet.worker(  # type: ignore[attr-defined]
+    return hatchet.worker(
         WORKER_NAME,
         slots=settings.max_concurrent_page_tasks,
         workflows=[workflow],

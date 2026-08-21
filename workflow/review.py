@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -44,6 +44,13 @@ from app.lifecycle.side_states import enter_failure
 from app.lifecycle.states import transition
 from app.models import PackageState
 from workflow.idempotency import CLAIMED, claim, stage_idempotency_key
+
+if (
+    TYPE_CHECKING
+):  # pragma: no cover - annotations only; the gRPC stack stays out of the runtime import
+    from hatchet_sdk import Hatchet
+    from hatchet_sdk.runnables.task import Task
+    from hatchet_sdk.runnables.workflow import Workflow
 
 __all__ = [
     "ENGINE_VERSION",
@@ -56,6 +63,7 @@ __all__ = [
     "Stages",
     "join_pages",
     "register",
+    "run_all",
     "run_stage",
     "stage_order",
 ]
@@ -346,12 +354,12 @@ def run_all(
 
 
 def register(
-    hatchet: object,
+    hatchet: Hatchet,
     *,
     factory: sessionmaker[Session],
     stages: Stages | None = None,
     max_concurrent_packages: int,
-) -> object:
+) -> Workflow[PackageReviewInput]:
     """Build the `process_package_revision` graph on a Hatchet client.
 
     Takes the client rather than making one, because `Hatchet()` refuses to construct without a token —
@@ -369,13 +377,13 @@ def register(
     """
     resolved = stages if stages is not None else NoStages()
 
-    workflow = hatchet.workflow(  # type: ignore[attr-defined]
+    workflow: Workflow[PackageReviewInput] = hatchet.workflow(
         name=WORKFLOW_NAME,
         input_validator=PackageReviewInput,
         concurrency=max_concurrent_packages,
     )
 
-    previous: object | None = None
+    previous: Task[PackageReviewInput, Any] | None = None
     for stage, state in STAGES:
 
         def step(
