@@ -50,17 +50,26 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Annotated, Any, Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import Select, and_, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
 from app.auth import Action, Principal, require_action, require_project_access
+from app.db.base import utc_now
 from app.db.session import is_unique_violation
-from app.models import Document, DocumentVersion, Package, PackageRevision, SourceArtifact
+from app.models import (
+    Document,
+    DocumentVersion,
+    Package,
+    PackageRevision,
+    PackageRevisionDocument,
+    SourceArtifact,
+)
 from app.schemas.packages import (
     DocumentRegistration,
     DocumentVersionOut,
@@ -162,10 +171,12 @@ def _document(session: Session, project_id: UUID, document_id: UUID) -> Document
     differently is the 403-shaped leak `docs/DESIGN_PLATFORM.md` §4.3 names.
     """
 
+    # One join fewer than before ADR-0018: a document names its package directly, so the revision is
+    # no longer in the path between them. Which revisions *include* a version of it is
+    # `package_revision_documents`, and it is not what identifies the document.
     document = session.scalar(
         select(Document)
-        .join(PackageRevision, PackageRevision.id == Document.package_revision_id)
-        .join(Package, Package.id == PackageRevision.package_id)
+        .join(Package, Package.id == Document.package_id)
         .where(Document.id == document_id, Package.project_id == project_id)
     )
     if document is None:
@@ -252,8 +263,12 @@ def register_document(
     """
     del principal
 
-    revision = _package_revision(session, project_id, package_id)
-    document = Document(package_revision_id=revision.id, kind=body.kind)
+    # Still resolved, and still a 404 if it is not this project's: registering a document against a
+    # package with no revision would create an identity nothing can ever be uploaded into.
+    _package_revision(session, project_id, package_id)
+    # Package-scoped since ADR-0018. A document is one drawing for the life of the package; which
+    # revisions include which version of it is recorded when a version is confirmed, below.
+    document = Document(package_id=package_id, kind=body.kind)
     # The id is assigned at construction (`app/db/base.py` assigns it on `init`, not at INSERT), so the
     # key and the ticket can be built before anything is committed.
     ticket = _ticket(store, document.id, body.sha256)
@@ -385,13 +400,46 @@ def confirm_upload(
         # version is in front of the database, the outbox row is not yet written, and a failure here
         # must leave neither. It also brings a unique violation forward to where it can be recognised.
         session.flush()
+
+        # The version joins the package's current revision (ADR-0018). Before that record, the
+        # document itself named a revision and this step did not exist; now membership is explicit,
+        # which is what lets a later revision include this same version without copying it.
+        #
+        # Resolved here rather than at registration because the current revision is a fact about *now*:
+        # a document registered against revision 1 and confirmed after a supersede belongs in the
+        # revision being assembled, not the one that has closed.
+        revision = _package_revision(session, project_id, document.package_id)
+        # Upserted, not inserted. A revision holds one version of any drawing
+        # (`uq_revision_documents_one_version_per_document`), so re-uploading corrected bytes while the
+        # revision is still being assembled *replaces* which version it includes rather than adding a
+        # second. The database refuses this once the revision has left assembly — see
+        # `gv_reject_frozen_revision_documents` in `0017` — which is the case handled below.
+        membership = pg_insert(PackageRevisionDocument).values(
+            id=uuid4(),
+            created_at=utc_now(),
+            package_revision_id=revision.id,
+            package_id=document.package_id,
+            document_id=document.id,
+            document_version_id=version.id,
+        )
+        session.execute(
+            membership.on_conflict_do_update(
+                constraint="uq_revision_documents_one_version_per_document",
+                set_={"document_version_id": version.id},
+            )
+        )
+        # Flushed here rather than at commit so a frozen revision is refused before the outbox row is
+        # written — the caller gets a conflict they can act on instead of an opaque failure after the
+        # ingestion request had already been recorded.
+        session.flush()
+
         enqueue(
             session,
             workflow=INGEST_WORKFLOW,
             payload={
                 "document_version_id": str(version.id),
                 "document_id": str(document.id),
-                "package_revision_id": str(document.package_revision_id),
+                "package_revision_id": str(revision.id),
                 "project_id": str(project_id),
                 "storage_key": key,
                 "sha256": digest,

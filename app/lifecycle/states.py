@@ -56,6 +56,7 @@ from app.lifecycle.events import history, record
 from app.models import PackageRevision, PackageState, PackageStateEvent
 
 __all__ = [
+    "ASSEMBLY_STATES",
     "ENTRY_CONDITIONS",
     "FAILURE_STATES",
     "MAIN_LINE",
@@ -111,6 +112,20 @@ RESUMABLE_STATES: frozenset[PackageState] = frozenset(
 #: cancelled one is a decision somebody took; reopening either would rewrite what was already reported.
 TERMINAL_STATES: frozenset[PackageState] = frozenset(
     {PackageState.SUPERSEDED, PackageState.CANCELLED}
+)
+
+#: The states in which a revision is still being *assembled* — drawings arriving, nothing yet reading
+#: them. Its document set may change while it is in one of these and is frozen afterwards (ADR-0018).
+#:
+#: The boundary is `INGESTING`: that is the first state in which something has read the set, and a set
+#: that can change after it has been read is a set nobody can be held to. Before it, a mis-uploaded
+#: sheet re-uploaded a minute later is ordinary use.
+#:
+#: `alembic/versions/0017_document_per_package.py` carries a literal copy — a migration describes one
+#: fixed state and cannot import live code — and `tests/db/test_document_models.py` asserts the two
+#: still agree, the same guard #313 needed for the outcome enum.
+ASSEMBLY_STATES: frozenset[PackageState] = frozenset(
+    {PackageState.CREATED, PackageState.UPLOADING, PackageState.UPLOADED}
 )
 
 #: A reviewer's decision. Not terminal — a later revision still supersedes it — but finished: the only
