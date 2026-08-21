@@ -121,6 +121,8 @@ class InvocationRecord:
     cost_micros: int
     latency_ms: int
     outcome: str
+    node_invocation_key: str | None = None
+    candidate_id: UUID | None = None
 
     def __post_init__(self) -> None:
         """Refuse a count or a cost that is not exactly an integer, before it can be stored."""
@@ -129,3 +131,8 @@ class InvocationRecord:
         _exact_count("output_tokens", self.output_tokens)
         _exact_count("cost_micros", self.cost_micros)
         _exact_count("latency_ms", self.latency_ms)
+        if self.node_invocation_key is not None and (
+            not self.node_invocation_key.startswith("sha256:")
+            or len(self.node_invocation_key) != 71
+        ):
+            raise ValueError("node_invocation_key must be a sha256-prefixed digest or None")
