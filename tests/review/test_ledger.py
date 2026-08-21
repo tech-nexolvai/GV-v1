@@ -35,7 +35,6 @@ from fractions import Fraction
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
@@ -72,6 +71,7 @@ from app.models import (
 from app.review import ledger
 from evidence.canonical import Authority
 from rules.semantic_types import DocumentRole, SemanticType
+from tests.app.postgres_fixture import alembic_config
 from tests.test_verdict_isolation import REPO_ROOT, _imports_in, _py_files, transitive_imports
 from units.measurement import Unit
 from verdict.operands import EvidenceStatus
@@ -101,7 +101,7 @@ def _violated(error: IntegrityError) -> str | None:
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

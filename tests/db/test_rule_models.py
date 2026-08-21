@@ -21,7 +21,6 @@ import hashlib
 from uuid import uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -31,6 +30,7 @@ from app.db.base import Base, Immutable
 from app.db.session import session_factory, unit_of_work
 from app.models import RuleApplicabilityScope, RuleDefinition, RuleSnapshot
 from rules.schema import RESERVED_DISCRIMINATORS
+from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -42,7 +42,7 @@ CANONICAL = '{"id":"CT-WIDTH-001","product_type":"countertop","version":"1.0.0"}
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

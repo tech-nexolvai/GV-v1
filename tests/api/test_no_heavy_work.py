@@ -36,7 +36,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -59,6 +58,7 @@ from app.config import Settings
 from app.db.session import session_factory
 from app.main import API_PREFIX, create_app
 from app.models import OutboxEntry
+from tests.app.postgres_fixture import alembic_config
 from vocabulary.lanes import Lane
 from workflow.outbox import enqueue
 
@@ -663,7 +663,7 @@ def test_the_filter_pins_the_row_as_well_as_the_project() -> None:
 @pytest.fixture
 def factory(postgres_engine: Engine) -> sessionmaker[Session]:
     """A session factory against a database migrated to head."""
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
     return session_factory(postgres_engine)

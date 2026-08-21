@@ -43,7 +43,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, func, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -58,6 +57,7 @@ from app.models import (
     TaskRun,
     WorkflowRun,
 )
+from tests.app.postgres_fixture import alembic_config
 from workflow.idempotency import (
     CLAIMED,
     Claim,
@@ -327,7 +327,7 @@ def test_exact_numbers_are_accepted() -> None:
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

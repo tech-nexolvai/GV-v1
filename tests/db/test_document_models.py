@@ -8,7 +8,6 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, delete, func, select, update
 from sqlalchemy.exc import DatabaseError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -31,6 +30,7 @@ from app.models import (
     Project,
     SourceArtifact,
 )
+from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -341,7 +341,7 @@ def test_referenced_document_version_cannot_be_deleted(postgres_engine: Engine) 
 @pytest.fixture
 def migrated(postgres_engine: Engine) -> sessionmaker[Session]:
     """A session factory against a database migrated to head."""
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
     return session_factory(postgres_engine)

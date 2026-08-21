@@ -21,13 +21,12 @@ Source: backend proposal §9.1–§9.4 · Design: `docs/DESIGN_PLATFORM.md` §6 
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from itertools import pairwise
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -37,6 +36,7 @@ from app.db.session import session_factory, unit_of_work
 from app.lifecycle.events import history
 from app.lifecycle.states import begin
 from app.models import Package, PackageRevision, PackageState, Project, TaskRun, WorkflowRun
+from tests.app.postgres_fixture import alembic_config
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import (
     ENGINE_VERSION,
@@ -45,6 +45,7 @@ from workflow.review import (
     NoStages,
     PackageReviewInput,
     PageResult,
+    _record_failure,
     join_pages,
     register,
     run_all,
@@ -62,7 +63,7 @@ DATABASE_URL = "postgresql+psycopg://gv:gv@localhost:5433/gv"
 def factory(postgres_engine: Engine) -> sessionmaker[Session]:
     # Resolved from REPO_ROOT, not the working directory: `Config("alembic.ini")` only finds the file
     # when pytest happens to be run from the repository root. Several older test modules still do that.
-    config = Config(str(REPO_ROOT / "alembic.ini"))
+    config = alembic_config()
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
     return session_factory(postgres_engine)
@@ -609,6 +610,7 @@ class RecordingClient:
     def __init__(self) -> None:
         self.workflow_kwargs: dict[str, object] = {}
         self.tasks: list[dict[str, object]] = []
+        self.functions: dict[str, object] = {}
 
     def workflow(self, **kwargs: object) -> RecordingClient:
         self.workflow_kwargs = kwargs
@@ -618,6 +620,9 @@ class RecordingClient:
         self.tasks.append(kwargs)
 
         def decorate(fn: object) -> object:
+            # Kept, so a test can call the registered function and see what the engine would see. The
+            # bodies of these tasks are the one part of the story no other test reaches.
+            self.functions[str(kwargs.get("name"))] = fn
             return fn
 
         return decorate
@@ -646,12 +651,316 @@ def test_registering_the_graph_passes_the_arguments_the_sdk_expects(
 
     # Six stages, in pipeline order, each depending on the one before it and the first on nothing.
     assert [task["name"] for task in client.tasks] == list(stage_order())
+
+    # **Every stage carries its retry budget to the engine.** Hatchet is what retries — `run_all` neither
+    # sleeps nor re-runs a stage — so a stage registered without these settings gets the SDK's defaults,
+    # which are zero retries. That is a policy stated in `workflow/retry.py` and not applied anywhere,
+    # which is the shape of failure this repository keeps finding.
+    from workflow.retry import engine_retry_settings
+
+    for task in client.tasks:
+        expected = engine_retry_settings(str(task["name"]))
+        for setting, value in expected._asdict().items():
+            # Presence asserted before equality, so a stage registered with no budget at all reports that
+            # rather than dying on a KeyError that names nothing.
+            assert setting in task, (
+                f"{task['name']} was registered without {setting}, so it falls back to the SDK default "
+                "and the policy in workflow/retry.py applies to nothing"
+            )
+            assert task[setting] == value, f"{task['name']} lost {setting}"
+        assert task["retries"] == 2, "three attempts is two retries"
+        assert task["backoff_factor"] == 2.0, "the base delay reaches the engine as its factor"
     assert client.tasks[0]["parents"] is None, "the first stage waits for nothing"
     for task in client.tasks[1:]:
         parents = task["parents"]
         assert (
             isinstance(parents, list) and len(parents) == 1
         ), "each later stage depends on exactly its predecessor, which is what makes the walk a line"
+
+
+class Boom:
+    """Stages that fail on demand. Every method spelled out, and that is the point.
+
+    The first version used `__getattr__` to answer for all six, which meant mypy could not check any of
+    them — and that is exactly how a `dict` came to be returned where `extract_pages` must return a
+    sequence of `PageResult`, reporting a page that was never read. Written out, the protocol is checked
+    and the instance needs no `type: ignore` to be accepted.
+    """
+
+    def __init__(self, error: Exception, *, at: str = "ingest") -> None:
+        self.error = error
+        self.at = at
+        self.calls: list[str] = []
+
+    def _run(self, name: str) -> dict[str, object]:
+        self.calls.append(name)
+        if name == self.at:
+            raise self.error
+        return {"ran": name}
+
+    def ingest(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+        del session, package_revision_id
+        return self._run("ingest")
+
+    def extract_pages(self, session: Session, package_revision_id: UUID) -> Sequence[PageResult]:
+        del session, package_revision_id
+        self._run("extract_pages")
+        return ()
+
+    def match(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+        del session, package_revision_id
+        return self._run("match")
+
+    def validate_evidence(
+        self, session: Session, package_revision_id: UUID
+    ) -> Mapping[str, object]:
+        del session, package_revision_id
+        return self._run("validate_evidence")
+
+    def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+        del session, package_revision_id
+        return self._run("run_checks")
+
+    def generate_outputs(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+        del session, package_revision_id
+        return self._run("generate_outputs")
+
+
+def test_a_stage_runs_inside_its_own_state(factory: sessionmaker[Session]) -> None:
+    """**The frozen-set boundary, which is why the transition moved to the front of `run_stage`.**
+
+    `app/lifecycle/states.py` puts `UPLOADED` in `ASSEMBLY_STATES`, where a revision's document set may
+    still change, and names the boundary: "`INGESTING` is the first state in which something has read the
+    set, and a set that can change after it has been read is a set nobody can be held to" (ADR-0018).
+
+    Under the original work-then-move order, `ingest` read the set while the package still said `UPLOADED`
+    — before the set was frozen. This asserts the fix from inside the stage itself: when the work runs, the
+    package is already in the stage's state.
+    """
+    seen: dict[str, str] = {}
+
+    class Watching:
+        """Records the state each stage sees. Spelled out so the protocol is actually checked."""
+
+        def _see(self, session: Session, package_revision_id: UUID, name: str) -> None:
+            revision = session.get(PackageRevision, package_revision_id)
+            assert revision is not None
+            seen[name] = str(revision.state)
+
+        def ingest(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+            self._see(session, package_revision_id, "ingest")
+            return {}
+
+        def extract_pages(
+            self, session: Session, package_revision_id: UUID
+        ) -> Sequence[PageResult]:
+            self._see(session, package_revision_id, "extract_pages")
+            return ()
+
+        def match(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+            self._see(session, package_revision_id, "match")
+            return {}
+
+        def validate_evidence(
+            self, session: Session, package_revision_id: UUID
+        ) -> Mapping[str, object]:
+            self._see(session, package_revision_id, "validate_evidence")
+            return {}
+
+        def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+            self._see(session, package_revision_id, "run_checks")
+            return {}
+
+        def generate_outputs(
+            self, session: Session, package_revision_id: UUID
+        ) -> Mapping[str, object]:
+            self._see(session, package_revision_id, "generate_outputs")
+            return {}
+
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _revision_and_run(session)
+
+    run_all(
+        factory,
+        package_revision_id=revision_id,
+        workflow_run_id=run_id,
+        stages=Watching(),
+    )
+
+    for stage, state in STAGES:
+        assert seen[stage] == state.value, (
+            f"{stage} ran while the package said {seen[stage]}, not {state.value}. Work must happen "
+            "inside its own state, or INGESTING does not mean the document set has been read."
+        )
+    assert seen["ingest"] != PackageState.UPLOADED.value, "ingest must not read an unfrozen set"
+
+
+def test_a_permanent_failure_is_not_handed_back_for_retry(
+    factory: sessionmaker[Session],
+) -> None:
+    """**A bug this PR introduced, then fixed.**
+
+    Giving the engine a retry budget without this check made things worse than the zero-retry default it
+    replaced: Hatchet retries any exception, so a `ValueError` — which #212 classifies as PERMANENT — would
+    have been re-run twice with backoff. `workflow/retry.py`'s `should_retry` says never to retry a
+    permanent failure, and the task body is not `run_all`, so nothing was consulting it.
+
+    The task now raises `NonRetryableException`, which is how the engine is told not to try again.
+    """
+    from hatchet_sdk.exceptions import NonRetryableException
+
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _revision_and_run(session)
+
+    stages = Boom(ValueError("the rulebook is missing"), at="run_checks")
+    client = RecordingClient()
+    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]  # the client is a stub, not the stages
+
+    payload = PackageReviewInput(package_revision_id=revision_id, workflow_run_id=run_id)
+    # Walk the earlier stages so the package is processing when the failing one runs.
+    for stage in stage_order():
+        function = client.functions[stage]
+        assert callable(function)
+        if stage != "run_checks":
+            function(payload, None)
+            continue
+        with pytest.raises(NonRetryableException):
+            function(payload, None)
+        break
+
+    assert stages.calls.count("run_checks") == 1, "it must not be retried in-process either"
+
+    with unit_of_work(factory) as session:
+        reached = [event.to_state for event in history(session, revision_id)]
+    assert PackageState.FAILED_PERMANENT.value in [str(state) for state in reached]
+
+
+def test_a_retryable_failure_is_handed_back_for_retry(factory: sessionmaker[Session]) -> None:
+    """The other branch, which had no test at all.
+
+    Both failure tests drove a `ValueError`, and #212 classes that PERMANENT — so the bare `raise` that
+    lets a *retryable* failure reach the engine was never executed. That branch is the whole point of
+    giving Hatchet a retry budget: without it the budget applies to nothing reachable.
+
+    `TimeoutError` is RETRYABLE in `app/lifecycle/side_states.py`. What must happen is the opposite of the
+    permanent case — the original exception escapes so the engine sees a normal failure and retries it, and
+    `NonRetryableException` is not raised.
+    """
+    from hatchet_sdk.exceptions import NonRetryableException
+
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _revision_and_run(session)
+
+    stages = Boom(TimeoutError("the renderer stopped answering"), at="run_checks")
+    client = RecordingClient()
+    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]  # the client is a stub, not the stages
+
+    payload = PackageReviewInput(package_revision_id=revision_id, workflow_run_id=run_id)
+    for stage in stage_order():
+        function = client.functions[stage]
+        assert callable(function)
+        if stage != "run_checks":
+            function(payload, None)
+            continue
+        with pytest.raises(TimeoutError) as caught:
+            function(payload, None)
+        break
+
+    assert not isinstance(
+        caught.value, NonRetryableException
+    ), "a transient failure must reach the engine as an ordinary exception, or the retry budget is unused"
+    with unit_of_work(factory) as session:
+        reached = [str(event.to_state) for event in history(session, revision_id)]
+    assert PackageState.FAILED_RETRYABLE.value in reached
+    assert PackageState.FAILED_PERMANENT.value not in reached
+
+
+def test_the_page_join_refuses_anything_that_is_not_a_page(factory: sessionmaker[Session]) -> None:
+    """A wrong return type from `extract_pages` must fail, not become a page count.
+
+    This is the bug a review found in this file's own stub, and the reason it is worth fixing in
+    `join_pages` rather than only in the stub: iterating a mapping yields keys, a string has an `.index`
+    attribute that is hashable, and a single key is never compared — so `{"ran": "x"}` produced
+    `{"pages": 1}` for zero pages read. Every real `extract_pages` is still unbuilt, so this is exactly
+    when a wrong shape gets written.
+    """
+    del factory
+    with pytest.raises(TypeError, match="never read"):
+        join_pages({"ran": "extract_pages"})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="PageResult"):
+        join_pages([{"index": 0}])  # type: ignore[list-item]
+    # The right shape still works.
+    assert join_pages((PageResult(index=1, payload={}), PageResult(index=0, payload={}))) == (
+        PageResult(index=0, payload={}),
+        PageResult(index=1, payload={}),
+    )
+
+
+def test_a_first_stage_failure_is_recorded_even_though_the_move_rolled_back(
+    factory: sessionmaker[Session],
+) -> None:
+    """**The gap Anant's ruling was meant to close, closed.**
+
+    `run_stage` now moves the package into the stage's state before doing the work — but that move shares
+    the transaction with the work, so a failure rolls it back. Measured: after a failing `ingest` the
+    revision reads `UPLOADED` again, and `UPLOADED` has no edge to a failure state. The reorder alone left
+    a first-stage failure with nowhere to go.
+
+    `_record_failure` now re-states the stage's state inside the recording transaction and fails from
+    there. The attempt really did happen in `INGESTING`; the rollback erased the record of it, not the
+    fact. So a package that dies in ingestion says so, instead of sitting in an assembly state with no
+    explanation.
+    """
+    from hatchet_sdk.exceptions import NonRetryableException
+
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _revision_and_run(session)
+
+    stages = Boom(ValueError("the rulebook is missing"), at="ingest")
+    client = RecordingClient()
+    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]  # the client is a stub, not the stages
+
+    function = client.functions["ingest"]
+    assert callable(function)
+    payload = PackageReviewInput(package_revision_id=revision_id, workflow_run_id=run_id)
+
+    with pytest.raises(NonRetryableException) as caught:
+        function(payload, None)
+
+    assert "the rulebook is missing" in str(caught.value), "the real error still reaches the caller"
+    assert not getattr(
+        caught.value, "__notes__", []
+    ), "nothing to note — the failure was recordable"
+
+    with unit_of_work(factory) as session:
+        reached = [str(event.to_state) for event in history(session, revision_id)]
+    assert PackageState.INGESTING.value in reached, "the attempt is recorded as having happened"
+    assert reached[-1] == PackageState.FAILED_PERMANENT.value
+
+
+def test_a_failure_that_truly_cannot_be_recorded_still_reports_itself(
+    factory: sessionmaker[Session],
+) -> None:
+    """The defence that stays, for what the walk above cannot rescue.
+
+    Recording can still fail — an unknown revision, a database problem — and when it does, the exception it
+    raises must not replace the one it was reporting. That is what used to happen: the caller saw a
+    state-machine complaint and no sign of the error that actually stopped the package.
+    """
+    error = ValueError("the rulebook is missing")
+    _record_failure(
+        factory,
+        uuid4(),  # no such revision, so recording cannot succeed
+        actor="the ingest worker",
+        error=error,
+        stage_state=PackageState.INGESTING,
+    )
+
+    notes = getattr(error, "__notes__", [])
+    assert any(
+        "could not be recorded" in note for note in notes
+    ), "the caller should be told the failure state was not written, not left to guess"
+    assert "the rulebook is missing" in str(error), "and the original error is untouched"
 
 
 def test_the_default_stages_say_they_did_nothing(factory: sessionmaker[Session]) -> None:

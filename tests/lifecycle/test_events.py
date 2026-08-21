@@ -22,7 +22,6 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, delete, select, text, update
 from sqlalchemy.exc import DatabaseError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -47,6 +46,7 @@ from app.models import (
     TaskRun,
     WorkflowRun,
 )
+from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -61,7 +61,7 @@ def factory(postgres_engine: Engine) -> sessionmaker[Session]:
     `0016`, and #313 was a lesson in what `create_all` cannot see — it builds from the ORM metadata, so
     it would prove the model and never the migration.
     """
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
     return session_factory(postgres_engine)

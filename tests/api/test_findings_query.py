@@ -26,7 +26,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from fastapi import FastAPI, HTTPException
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -55,6 +54,7 @@ from app.schemas.findings import (
     SEVERITY_ORDER,
     validate_sort_orders,
 )
+from tests.app.postgres_fixture import alembic_config
 from verdict.outcomes import ABSTAINING_OUTCOMES, Outcome, Severity
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -284,7 +284,7 @@ def test_the_submitted_filter_values_are_not_echoed_back() -> None:
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

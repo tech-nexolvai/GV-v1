@@ -4,11 +4,32 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def alembic_config() -> Config:
+    """The migration config, found from this file rather than from the working directory.
+
+    `Config("alembic.ini")` resolves against the current directory, so twenty-four test modules only
+    passed when pytest happened to be started from the repository root. Run from anywhere else they failed
+    with `No \'script_location\' key found in configuration` — a message that points at the config file
+    rather than at the caller, which is why it survived so long.
+
+    Pointing at the absolute path is enough on its own: `alembic.ini` sets `script_location = %(here)s/alembic`,
+    so `%(here)s` resolves from the file, not the caller. Verified rather than assumed.
+
+    One helper rather than the same two lines in every module, so the next test that needs a migrated
+    database cannot reintroduce the working-directory assumption by copying its neighbour.
+    """
+    return Config(str(REPO_ROOT / "alembic.ini"))
 
 
 @pytest.fixture

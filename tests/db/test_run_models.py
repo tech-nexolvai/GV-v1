@@ -6,7 +6,6 @@ import re
 from uuid import UUID
 
 import pytest
-from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import CheckConstraint, Engine, func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -26,6 +25,7 @@ from app.models import (
     TaskRun,
     WorkflowRun,
 )
+from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -296,7 +296,7 @@ def _outcomes_from_the_migrations() -> tuple[str, frozenset[str]]:
     `0015` both do; the failure message says so, because a migration that inlined the string instead
     would make this test fail rather than quietly pass.
     """
-    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    script = ScriptDirectory.from_config(alembic_config())
     for revision in script.walk_revisions():
         values = getattr(revision.module, "MODEL_OUTCOMES", None)
         if values is not None:
@@ -363,7 +363,7 @@ def test_the_database_really_enforces_the_declared_outcomes(postgres_engine: Eng
     `outcome = ANY (ARRAY[...])`. Matching on `" IN "` therefore found nothing at all, which is worth
     knowing before writing any test that reads a check constraint back.
     """
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 
@@ -403,7 +403,7 @@ def test_a_failed_row_survives_the_migration_that_permits_it(postgres_engine: En
     with migration `0015` deleted. This one inserts through the migrated schema, which is the schema a
     deployment actually has.
     """
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

@@ -40,9 +40,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.session import unit_of_work
-from app.lifecycle.side_states import enter_failure
-from app.lifecycle.states import transition
-from app.models import PackageState
+from app.lifecycle.side_states import FailureClass, classify, enter_failure
+from app.lifecycle.states import ASSEMBLY_STATES, TRANSITIONS, transition
+from app.models import PackageRevision, PackageState
 from workflow.idempotency import CLAIMED, claim, stage_idempotency_key
 
 if (
@@ -222,6 +222,20 @@ def join_pages(results: Sequence[PageResult]) -> tuple[PageResult, ...]:
     """
     seen: dict[int, PageResult] = {}
     for result in results:
+        # **Refuse the wrong shape rather than count it.** Found by a review of this file's own test stub,
+        # which returned a `Mapping` here because the generic stub covered every stage. Nothing failed:
+        # iterating a mapping yields its keys, `"ran".index` is a bound method, that is hashable, and one
+        # key never gets compared — so the stage reported `{"pages": 1}` for zero pages extracted. A second
+        # key would have raised `TypeError` from `sorted` instead, in a test about something else entirely.
+        #
+        # Every real `extract_pages` is still unbuilt, so this is the window where a wrong return type gets
+        # written and silently reports phantom pages. AGENTS.md §2.2: silence must never read as completion.
+        if not isinstance(result, PageResult):
+            raise TypeError(
+                "extract_pages must return PageResult objects; got "
+                f"{type(result).__name__}. A mapping or a string here does not fail on its own — it "
+                "reports pages that were never read."
+            )
         if result.index in seen:
             raise ValueError(
                 f"page {result.index} was returned twice by the extraction fan-out. Two results for "
@@ -242,16 +256,42 @@ def run_stage(
     stages: Stages,
     engine_version: str = ENGINE_VERSION,
 ) -> StageOutcome:
-    """Claim the stage, run it if it has not run, and move the package. Commits nothing.
+    """Claim the stage, move the package into the stage's state, then do the work. Commits nothing.
 
-    In that order, and the order is the durability. The claim goes in first so a re-delivered stage
-    recognises itself and returns without repeating the work — `already_done` on the outcome. Only then
-    does the work run, and only then does the package move, so a package that says `MATCHING` has
-    actually matched.
+    **The move comes before the work, and that ordering is a correctness requirement rather than a
+    preference.** `UPLOADED` is an assembly state: `app/lifecycle/states.py` says a revision's document set
+    *may still change* while it is in one, and names the boundary explicitly — "`INGESTING` is the first
+    state in which something has read the set, and a set that can change after it has been read is a set
+    nobody can be held to" (ADR-0018). Working first and moving afterwards meant `ingest` read the document
+    set while the package still said `UPLOADED`, which is to say before the set was frozen. Moving first is
+    what makes `INGESTING` mean what the machine says it means.
 
-    The caller owns the transaction, as everywhere else in this codebase: the claim, whatever the stage
-    wrote, and the state change land together or not at all. A claim that committed on its own would
-    block the retry that should redo the work it never finished.
+    This retires the property the first version of this function documented — that a package saying
+    `MATCHING` has finished matching. That property was already in tension with the machine, which defines
+    `PROCESSING_STATES` as "the states where the system is doing work of its own and can therefore fail":
+    in progress, not completed. And nothing reads completion from the state column anyway — `_checks_have_run`
+    counts `CheckRun` rows and `_resumes_where_it_failed` reads the event log, because the machine's stated
+    stance is to read "from the event log rather than from the caller's good intentions".
+
+    **So no caller may read a processing state as "that stage finished."** Completion comes from the
+    stage's own output rows, or from the transition event into the *next* state.
+
+    Being exact about what a crash leaves behind, because the obvious description is wrong. The move and
+    the work share this transaction, so a crash rolls back **both**: the package is left in the state
+    before this stage, with its claim released, and a re-delivery redoes the stage from the start. It does
+    *not* sit in the processing state waiting for a supervisor — that would need the move to commit on its
+    own, which is a separate change to this function's contract and not one made here.
+
+    A *handled* failure is different and does get recorded: `_record_failure` re-states this stage's state
+    in its own transaction and enters the failure state from there. What is still not recorded anywhere is
+    a killed process — no exception runs, so nothing writes. That is what a supervisor sweep would be for.
+
+    The claim still goes first, so a re-delivered stage recognises itself and returns without repeating the
+    work or moving the package — `already_done` on the outcome.
+
+    The caller owns the transaction, as everywhere else in this codebase: the claim, the state change and
+    whatever the stage wrote land together or not at all. A claim that committed on its own would block the
+    retry that should redo the work it never finished.
 
     Raises:
         UnknownRevision / IllegalTransition: from `transition`, unchanged.
@@ -279,6 +319,17 @@ def run_stage(
             payload={"claimed_by": str(taken.task_run.workflow_run_id)},
         )
 
+    # **Before the work, not after.** See the docstring: the stage must run inside its own state, because
+    # `INGESTING` is the point at which the document set counts as read and therefore frozen.
+    transition(
+        session,
+        package_revision_id,
+        state,
+        actor=f"the {stage.replace('_', ' ')} worker",
+        reason=None,
+        workflow_run_id=workflow_run_id,
+    )
+
     # Dispatched by name rather than by a six-branch conditional, so `STAGES` stays the single list.
     # `getattr` returns `Any`, which is why the two branches below need no casts.
     runner = getattr(stages, stage)
@@ -290,14 +341,6 @@ def run_stage(
     else:
         payload = produced
 
-    transition(
-        session,
-        package_revision_id,
-        state,
-        actor=f"the {stage.replace('_', ' ')} worker",
-        reason=None,
-        workflow_run_id=workflow_run_id,
-    )
     return StageOutcome(
         stage=stage,
         state=state,
@@ -342,15 +385,77 @@ def run_all(
                     )
                 )
         except Exception as error:
-            with unit_of_work(factory) as session:
-                enter_failure(
-                    session,
-                    package_revision_id,
-                    actor=f"the {stage.replace('_', ' ')} worker",
-                    error=error,
-                )
+            _record_failure(
+                factory,
+                package_revision_id,
+                actor=f"the {stage.replace('_', ' ')} worker",
+                error=error,
+                stage_state=state,
+            )
             raise
     return tuple(outcomes)
+
+
+def _record_failure(
+    factory: sessionmaker[Session],
+    package_revision_id: UUID,
+    *,
+    actor: str,
+    error: BaseException,
+    stage_state: PackageState,
+) -> None:
+    """Record a stage failure, and never let the recording hide what failed.
+
+    **Recording can itself be refused, and that used to lose the real error.** A package only reaches a
+    failure state from a *processing* state, so a first-stage failure — where the revision is still
+    `UPLOADED` — makes `enter_failure` raise `IllegalTransition`, and that exception replaced the one it
+    was trying to report. Proved against the database before writing this:
+
+        IllegalTransition: a package revision in UPLOADED may not move to FAILED_PERMANENT.
+
+    The caller saw a state-machine complaint and no sign of the `ValueError` that had actually stopped the
+    package. So a recording problem is attached to the original as a note, and the original is what
+    propagates: both visible, neither swallowed.
+
+    This does **not** close the underlying gap. A package that fails during its first stage still ends up
+    with no failure state, because the table has nowhere for it to go from `UPLOADED`. That is a lifecycle
+    design question — whether `run_stage` should move the package into the stage's state before doing the
+    work, or whether `UPLOADED` should be allowed to fail — and it is raised rather than decided here.
+
+    A separate transaction from the failed one on purpose: that one has rolled back, so a reason written
+    inside it would be discarded along with the work it describes.
+    """
+    try:
+        with unit_of_work(factory) as session:
+            # **Walk into the stage's state first when the rollback left us behind it.**
+            #
+            # `run_stage` moves the package into the stage's state before doing the work, but that move
+            # shares the transaction with the work — so a failure rolls it back, and a first-stage failure
+            # leaves the revision sitting in `UPLOADED`, which has no edge to a failure state. Measured,
+            # not assumed: the state in the database after the rollback is `UPLOADED`.
+            #
+            # The attempt did happen in the stage's state; the rollback erased the record of it, not the
+            # fact. So the recording transaction re-states it and then fails from there, which is both
+            # legal and true — and it is why a package that dies in ingestion now says so instead of
+            # sitting in an assembly state with no explanation.
+            revision = session.get(PackageRevision, package_revision_id)
+            if (
+                revision is not None
+                and PackageState(revision.state) in ASSEMBLY_STATES
+                and stage_state in TRANSITIONS[PackageState(revision.state)]
+            ):
+                transition(
+                    session,
+                    package_revision_id,
+                    stage_state,
+                    actor=actor,
+                    reason="re-stated so the failure has somewhere legal to go",
+                )
+            enter_failure(session, package_revision_id, actor=actor, error=error)
+    except Exception as write_failed:  # noqa: BLE001 - the original error must outlive this one
+        error.add_note(
+            f"the failure could not be recorded: {type(write_failed).__name__}: {write_failed}"
+        )
 
 
 def register(
@@ -375,6 +480,12 @@ def register(
     depends on the box and the wrong one is an out-of-memory kill on a shared 8 GB VM. See
     `app/config.py` for where the value comes from and why it starts at 1.
     """
+    # Imported here, not at module scope: `workflow/retry.py` imports `stage_order` from this module, so a
+    # top-level import would close a cycle. `register` runs once when a worker is built, so the cost is
+    # nothing and the direction of the dependency stays readable — the graph asks the policy, never the
+    # other way round.
+    from workflow.retry import engine_retry_settings
+
     resolved = stages if stages is not None else NoStages()
 
     workflow: Workflow[PackageReviewInput] = hatchet.workflow(
@@ -394,15 +505,47 @@ def register(
             _state: PackageState = state,
         ) -> dict[str, object]:
             del ctx
-            with unit_of_work(factory) as session:
-                outcome = run_stage(
-                    session,
-                    stage=_stage,
-                    state=_state,
-                    package_revision_id=payload.package_revision_id,
-                    workflow_run_id=payload.workflow_run_id,
-                    stages=resolved,
+            actor = f"the {_stage.replace('_', ' ')} worker"
+            try:
+                with unit_of_work(factory) as session:
+                    outcome = run_stage(
+                        session,
+                        stage=_stage,
+                        state=_state,
+                        package_revision_id=payload.package_revision_id,
+                        workflow_run_id=payload.workflow_run_id,
+                        stages=resolved,
+                    )
+            except Exception as error:
+                # **A permanent failure must not be retried, and the engine cannot know that.** This task
+                # is not `run_all` — it is the engine calling `run_stage` directly — so without this the
+                # retry budget above would happily re-run a `ValueError` twice. `workflow/retry.py`'s
+                # `should_retry` says never to do that, and giving the engine a budget while leaving this
+                # out made the behaviour worse than the zero-retry default it replaced.
+                #
+                # Recorded through `_record_failure`, which is careful not to let a refused transition
+                # replace the error it was reporting.
+                _record_failure(
+                    factory,
+                    payload.package_revision_id,
+                    actor=actor,
+                    error=error,
+                    stage_state=_state,
                 )
+                if classify(error) is FailureClass.PERMANENT:
+                    # Imported here for the same reason the client is: `hatchet_sdk` pulls in gRPC, and
+                    # this module is imported by tests that never start an engine.
+                    from hatchet_sdk.exceptions import NonRetryableException
+
+                    permanent = NonRetryableException(str(error))
+                    # Notes travel with the exception that actually escapes, not the one it replaces.
+                    # `_record_failure` attaches "the failure could not be recorded" to the original, and
+                    # a caller reading this task sees only what is raised here — my own test caught that,
+                    # by asserting on the notes of whatever came out.
+                    for note in getattr(error, "__notes__", []):
+                        permanent.add_note(note)
+                    raise permanent from error
+                raise
             return {
                 "stage": outcome.stage,
                 "state": outcome.state.value,
@@ -410,7 +553,18 @@ def register(
             }
 
         step.__name__ = stage
-        decorate = workflow.task(name=stage, parents=[previous] if previous else None)
+        # **The retry budget goes to the engine, because the engine is what retries.** `run_all` neither
+        # sleeps nor re-runs a stage, so before this the policy in `workflow/retry.py` had no caller and
+        # described behaviour nothing implemented. See `engine_retry_settings` for the mapping and for the
+        # one place it is fragile. The budget only applies to failures `step` lets through as retryable.
+        budget = engine_retry_settings(stage)
+        decorate = workflow.task(
+            name=stage,
+            parents=[previous] if previous else None,
+            retries=budget.retries,
+            backoff_factor=budget.backoff_factor,
+            backoff_max_seconds=budget.backoff_max_seconds,
+        )
         previous = decorate(step)
 
     return workflow

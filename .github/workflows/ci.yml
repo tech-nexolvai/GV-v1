@@ -206,8 +206,8 @@ jobs:
   # it is kept away from the pull-request path where a network blip would look
   # like a broken change.
   # ---------------------------------------------------------------------------
-  schema-drift:
-    name: coderabbit schema drift (weekly)
+  weekly:
+    name: weekly checks (config schema, dependencies)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -229,10 +229,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The full extra set, because the licence check below is only as good as what is installed —
+      # `.[dev]` alone would declare the tree AGPL-clean while never seeing the AI or platform packages.
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[ai,dev,rules,platform,reports]"
 
       # `.coderabbit.yaml` is validated on every PR against a vendored copy of CodeRabbit's schema.
       # This asks the question the vendored copy cannot: does the config still satisfy what CodeRabbit
@@ -246,3 +248,16 @@ jobs:
           GV_CHECK_CODERABBIT_SCHEMA: "1"
         run: |
           pytest tests/test_repo_hygiene.py -q -k published_schema
+
+      # The other thing a pull request cannot see. Nothing in this project is pinned — no lock file, and
+      # every dependency is a floor (`pydantic>=2.10`, `shapely>=2`), so the set that gets installed on a
+      # clean machine changes without any commit here. A PR run tells you the versions resolved *today*
+      # were fine; it cannot tell you tomorrow's resolution still is.
+      #
+      # Two failures matter and both are silent otherwise: a new release that no longer resolves together,
+      # and a dependency that changes licence. AGENTS.md §2.8 forbids AGPL, and the licence gate only ever
+      # sees whatever happens to be installed.
+      - name: Dependencies still resolve, and are still licence-clean
+        run: |
+          pip check
+          pytest tests/test_licences.py -q

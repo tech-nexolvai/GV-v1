@@ -13,7 +13,6 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -40,6 +39,7 @@ from app.models import (
 )
 from app.models.matching import DETERMINISTIC_LANES
 from retrieval.candidate import Lane
+from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -49,7 +49,7 @@ BOX = {"space": "pdf_points", "polygon": [0, 0, 100, 100]}
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 
