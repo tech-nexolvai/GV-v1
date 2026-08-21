@@ -100,13 +100,18 @@ CODERABBIT_SCHEMA = REPO_ROOT / "tests" / "fixtures" / "coderabbit_schema_v2.jso
 
 
 def _keys_the_schema_does_not_define(config: object, schema: object, path: str = "") -> list[str]:
-    """Every key in `config` that `schema` has no property for, at any depth.
+    """Keys that sit under a plain `properties` node the schema does not define.
 
-    Deliberately conservative: it only reports a key when the schema node it sits under actually declares
-    `properties`, and it stays quiet where the node allows extra keys on purpose or where the shape cannot
-    be resolved from properties alone (`anyOf`, `$ref` and friends). A false positive here would fail CI
-    on a valid config, which would teach people to disable the check — so a missed typo is the better
-    error to make, and the schema still catches everything under the root.
+    **Not "at any depth" — I wrote that first and it overstates what this does.** This is a stricter
+    project policy layered on top of the schema, and it reaches exactly one kind of node: a mapping whose
+    schema declares `properties` and does not set `additionalProperties`. It walks past nothing else. In
+    particular it does not resolve `anyOf`, `oneOf` or `$ref`, so a key nested inside one of those is not
+    checked, and it stays silent wherever extra keys are deliberately allowed.
+
+    Conservative on purpose. A false positive would fail CI on a valid config, and a check people learn to
+    disable is worth less than one that misses a case — the schema itself still rejects anything unknown
+    at the root. What this adds is the nested typo the schema waves through: `reviews.profil`,
+    `reviews.auto_review.enabld`, `reviews.tools.ruf`.
     """
     if not isinstance(config, dict) or not isinstance(schema, dict):
         return []
@@ -132,6 +137,40 @@ def _keys_the_schema_does_not_define(config: object, schema: object, path: str =
                     _keys_the_schema_does_not_define(element, items, f"{where}[{index}]")
                 )
     return unknown
+
+
+def test_the_unknown_key_check_finds_what_it_claims_and_nothing_more() -> None:
+    """The helper's documented limits, asserted rather than described.
+
+    Its docstring makes five claims about where it looks and where it does not. I had already written one
+    wrong version of that docstring ("at any depth"), so the claims are pinned here — a future edit that
+    widens or narrows the walk has to change a test that says what the behaviour is.
+    """
+    # A plain `properties` node with no `additionalProperties`: the case this exists for.
+    assert _keys_the_schema_does_not_define(
+        {"a": {"typo": 1}}, {"properties": {"a": {"properties": {"real": {}}}}}
+    ) == ["a.typo"]
+
+    # Inside a list, which is how `path_instructions` is shaped.
+    assert _keys_the_schema_does_not_define(
+        {"a": [{"typo": 1}]}, {"properties": {"a": {"items": {"properties": {"real": {}}}}}}
+    ) == ["a[0].typo"]
+
+    # Silent where extra keys are deliberately allowed.
+    assert not _keys_the_schema_does_not_define(
+        {"a": {"anything": 1}},
+        {"properties": {"a": {"properties": {}, "additionalProperties": True}}},
+    )
+
+    # Silent behind `anyOf` and `$ref`, which it does not resolve. A real limitation, stated in the
+    # docstring and asserted here so it stays a known limitation rather than becoming a surprise.
+    assert not _keys_the_schema_does_not_define(
+        {"a": {"typo": 1}}, {"properties": {"a": {"anyOf": [{"properties": {"real": {}}}]}}}
+    )
+    assert not _keys_the_schema_does_not_define(
+        {"a": {"typo": 1}},
+        {"properties": {"a": {"$ref": "#/$defs/x"}}, "$defs": {"x": {"properties": {"real": {}}}}},
+    )
 
 
 def test_the_coderabbit_config_is_actually_used() -> None:
