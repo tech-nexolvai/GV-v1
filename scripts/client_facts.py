@@ -10,9 +10,17 @@ The important field is `blocks`:
 - `formula` — the answer changes what gets computed. A rule authored now would compute the wrong
   quantity and pass confidently. The story is blocked, and no argument makes it otherwise.
 - `value` — the answer supplies a number. The rule can be authored with `TOLERANCE_UNCONFIRMED`,
-  which returns REVIEW REQUIRED for everything and cannot reach production (ADR-0011). The story is
-  workable and ships provisional.
+  which returns REVIEW REQUIRED for everything and cannot reach production (enforced by
+  `rules/publication.py`; see the citation note below). The story is workable and ships provisional.
 - `nothing` — informational.
+
+**Citation corrected 2026-08-22.** The unconfirmed-tolerance rule was attributed here, in
+`docs/DESIGN_PRODUCT.md` and in `docs/CLIENT_FACTS.md` to ADR-0011. It is not ADR-0011: that ADR is
+"a declared cross-unit allowance, distinct from tolerance", and its Options section rejects reusing
+`Tolerance` *because* that type carries the `UNCONFIRMED` sentinel — so it is close to the opposite
+claim. No ADR decides this rule; it lives in `rules/schema.py` and is enforced by
+`rules/publication.py`. Whether it deserves its own ADR is an open question, not something to invent
+a number for.
 
 Kept dependency-free on purpose. Every guard in this project that needed an optional package has, at
 some point, failed to run because of it.

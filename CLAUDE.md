@@ -19,7 +19,12 @@ model/retrieval/memory/internet access and uses no `eval`. Primary metric = crit
   and a gold-set run that does not regress critical false-PASS. Run: `pytest` (and the `eval/` harness).
 - **Respect the trust boundaries.** Never import extraction/retrieval/network code into `verdict/`.
   Never let retrieval output become a verdict operand.
-- **Exact numbers only** in the verdict path: `Fraction`/`Decimal`, canonical mm; unknown unit → REVIEW.
+- **Exact numbers only** in the verdict path: `Fraction`/`Decimal`; unknown unit → REVIEW.
+  **Inches are authoritative** — Raj's Q12: mm on GV drawings is the vendor's machine reference and is
+  never a verdict operand. mm may still corroborate that an inch was *read* correctly, which is one of
+  only two ways a single reader can qualify evidence, so it is not discarded — it just never decides.
+  Exact match (Q2) makes this stricter, not looser: with no tolerance band, a float's rounding *is*
+  the verdict. See `docs/decisions/V1_VERDICT_MODEL.md`.
 - **Explain in plain English** in commit messages, PRs, and any doc/UI copy. No jargon dumps; no
   over-promising; never claim 100% automation.
 - **No AGPL deps** (PyMuPDF, Ultralytics YOLO). Check licences before adding a dependency.
