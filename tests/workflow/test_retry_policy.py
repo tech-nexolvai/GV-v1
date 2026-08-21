@@ -17,7 +17,6 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -27,6 +26,7 @@ from app.lifecycle.events import history
 from app.lifecycle.side_states import FailureClass
 from app.lifecycle.states import MAIN_LINE, begin, transition
 from app.models import Package, PackageRevision, PackageState, Project, TaskRun, WorkflowRun
+from tests.app.postgres_fixture import alembic_config
 from verdict.operands import EvidenceStatus
 from workflow.retry import (
     FAILURE_POLICY,
@@ -38,8 +38,11 @@ from workflow.retry import (
     Situation,
     claim_pdf_repair,
     delay_for,
+    engine_delays,
+    engine_retry_settings,
     give_up,
     on_ocr_disagreement,
+    policy_delays,
     rule_for,
     should_retry,
     total_delay_bound,
@@ -54,7 +57,7 @@ RETRY_SOURCE = REPO_ROOT / "workflow" / "retry.py"
 
 @pytest.fixture
 def factory(postgres_engine: Engine) -> sessionmaker[Session]:
-    config = Config(str(REPO_ROOT / "alembic.ini"))
+    config = alembic_config()
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
     return session_factory(postgres_engine)
@@ -251,6 +254,44 @@ def test_the_total_wait_is_bounded_for_every_budget() -> None:
 def test_a_rule_with_no_delay_waits_no_time() -> None:
     """PDF repair never waits, because there is never a second attempt to wait for."""
     assert delay_for("pdf_repair", attempt=1) == 0.0
+
+
+def test_the_engine_gets_the_budget_the_policy_describes() -> None:
+    """The policy reaches Hatchet, because Hatchet is what retries.
+
+    Before this mapping existed, `should_retry` and `delay_for` had no caller at all: `run_all` neither
+    sleeps nor re-runs a stage, so retrying was already the engine's job and the engine had never been
+    told these numbers. The table read like a control while controlling nothing.
+    """
+    for stage in stage_order():
+        settings = engine_retry_settings(stage)
+        # Hatchet counts retries, we count attempts.
+        assert settings["retries"] == STAGE_RULE.max_attempts - 1 == 2
+        assert settings["backoff_max_seconds"] == int(STAGE_RULE.max_delay_s) == 120
+
+    assert engine_retry_settings("ocr")["retries"] == 1, "OCR's smaller budget survives the mapping"
+    assert engine_retry_settings("pdf_repair")["retries"] == 0, "one attempt means no retries"
+
+
+def test_the_engine_and_the_policy_compute_the_same_waits() -> None:
+    """**The trap this test exists for.**
+
+    `base_delay_s` is mapped onto Hatchet's `backoff_factor`, and those are not the same kind of number.
+    Hatchet's documented sequence for `backoffFactor: 2` is 2s, 4s, 8s — the first wait *is* the factor,
+    then it multiplies. `delay_for` computes `base * 2 ** (attempt - 1)`. At a base of 2 both give 2, 4, 8
+    and the mapping looks obviously correct. At a base of 3 the engine waits 3, 9, 27 while this module
+    documents 3, 6, 12.
+
+    So the agreement is an arithmetic accident of the chosen value, not a property of the mapping. If
+    somebody changes `base_delay_s`, this fails — which is the whole point, because the alternative is an
+    engine quietly waiting three times longer than the policy says it does.
+    """
+    for task_type in RETRY_POLICY:
+        assert engine_delays(task_type) == policy_delays(task_type), (
+            f"{task_type}: the engine would wait {engine_delays(task_type)} while this module's policy "
+            f"says {policy_delays(task_type)}. base_delay_s is a factor to Hatchet and a base here; they "
+            "only agree at 2."
+        )
 
 
 # ---------------------------------------------------------------------------

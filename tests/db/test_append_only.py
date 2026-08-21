@@ -15,7 +15,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
@@ -24,6 +23,7 @@ from alembic import command
 from app.db.base import Base, Immutable, immutable_table_names
 from app.db.session import session_factory, unit_of_work
 from app.models import Project, SourceArtifact
+from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -39,7 +39,7 @@ def _migration_tables() -> tuple[str, ...]:
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

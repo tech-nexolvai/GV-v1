@@ -20,7 +20,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
@@ -55,12 +54,13 @@ from app.review.session import (
     open_session,
     record_action,
 )
+from tests.app.postgres_fixture import alembic_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

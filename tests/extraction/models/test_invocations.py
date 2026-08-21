@@ -44,7 +44,6 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, Float
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -79,6 +78,7 @@ from app.runs.invocations import (
 )
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.invocations import InvocationRecord
+from tests.app.postgres_fixture import alembic_config
 from units.measurement import Unit
 from vocabulary.semantic_types import SemanticType
 
@@ -108,7 +108,7 @@ def _violated(error: IntegrityError) -> str | None:
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

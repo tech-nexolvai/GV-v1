@@ -30,7 +30,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from fastapi import FastAPI, UploadFile
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
@@ -45,6 +44,7 @@ from app.models.package import Package, PackageRevision, PackageState, Project
 from storage.local import LocalStore
 from storage.signing import CapabilityInvalid, sign_capability, verify_capability
 from storage.store import UPLOAD_PURPOSE, UploadTicket
+from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -279,7 +279,7 @@ def test_the_ticket_type_refuses_an_empty_key() -> None:
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

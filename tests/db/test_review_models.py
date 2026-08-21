@@ -14,7 +14,6 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, select
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session
@@ -37,6 +36,7 @@ from app.models import (
     RuleDefinition,
     RuleSnapshot,
 )
+from tests.app.postgres_fixture import alembic_config
 from verdict.outcomes import Outcome, Severity
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -65,7 +65,7 @@ def _violated(error: IntegrityError) -> str | None:
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

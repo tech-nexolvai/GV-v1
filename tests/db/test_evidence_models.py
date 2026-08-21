@@ -7,7 +7,6 @@ from fractions import Fraction
 from uuid import UUID
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, Float, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -38,6 +37,7 @@ from app.models import (
 )
 from evidence.canonical import Authority, CorroborationLane
 from rules.semantic_types import DocumentRole, SemanticType
+from tests.app.postgres_fixture import alembic_config
 from units.measurement import Unit
 from verdict.operands import EvidenceStatus
 
@@ -115,7 +115,7 @@ def test_artifact_hash_detects_changed_retrieved_content() -> None:
 
 
 def _upgrade(engine: Engine) -> None:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 

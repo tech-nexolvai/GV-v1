@@ -61,8 +61,11 @@ __all__ = [
     "Situation",
     "claim_pdf_repair",
     "delay_for",
+    "engine_delays",
+    "engine_retry_settings",
     "give_up",
     "on_ocr_disagreement",
+    "policy_delays",
     "rule_for",
     "should_retry",
     "total_delay_bound",
@@ -200,6 +203,61 @@ RETRY_POLICY: Final[Mapping[str, RetryRule]] = {
     "ocr": OCR_RULE,
     PDF_REPAIR_TASK_TYPE: PDF_REPAIR_RULE,
 }
+
+
+def engine_retry_settings(task_type: str) -> dict[str, object]:
+    """`RETRY_POLICY[task_type]` expressed as Hatchet task settings.
+
+    **Why this exists at all.** Without it the policy table was decorative: `run_all` never sleeps and
+    never re-runs a stage, so the retrying is the engine's job — and the engine knew nothing about these
+    numbers. A budget nobody enforces is worse than no budget, because it reads like a control.
+
+    The mapping, and the one place it is fragile:
+
+    - `max_attempts` → `retries`. Hatchet counts *re*-tries, we count attempts, hence the minus one.
+    - `max_delay_s` → `backoff_max_seconds`. Same meaning, integer seconds.
+    - `base_delay_s` → `backoff_factor`. **These are not the same kind of number, and they agree only by
+      arithmetic accident at 2.** Hatchet's documented sequence for `backoffFactor: 2` is 2s, 4s, 8s — the
+      first wait is the factor itself, then it multiplies by the factor. Our `delay_for` computes
+      `base * 2 ** (attempt - 1)`. At a base of 2 both give 2, 4, 8. At a base of 3 Hatchet gives 3, 9, 27
+      and we give 3, 6, 12.
+
+    So changing `base_delay_s` silently makes the engine's real behaviour differ from the policy this
+    module documents. `tests/workflow/test_retry_policy.py` compares the two sequences and fails if they
+    diverge, which turns that trap into a red test rather than a wrong wait nobody measures.
+    """
+    rule = rule_for(task_type)
+    return {
+        "retries": max(rule.max_attempts - 1, 0),
+        "backoff_factor": rule.base_delay_s,
+        "backoff_max_seconds": int(rule.max_delay_s),
+    }
+
+
+def engine_delays(task_type: str) -> tuple[float, ...]:
+    """The waits Hatchet will actually use, from its documented factor-then-multiply rule.
+
+    Here rather than in the test so the claim about the engine's behaviour sits next to the mapping that
+    depends on it, and so both are wrong together or right together.
+    """
+    rule = rule_for(task_type)
+    if rule.base_delay_s <= 0:
+        return ()
+    factor = rule.base_delay_s
+    return tuple(min(factor**attempt, rule.max_delay_s) for attempt in range(1, rule.max_attempts))
+
+
+def policy_delays(task_type: str) -> tuple[float, ...]:
+    """The same waits as this module's own policy computes them, at full jitter.
+
+    Compared against `engine_delays` by a test. Two functions rather than one because the point is that
+    they are two different formulas that happen to agree, not one formula used twice.
+    """
+    rule = rule_for(task_type)
+    return tuple(
+        delay_for(task_type, attempt=attempt, jitter_fraction=1.0)
+        for attempt in range(1, rule.max_attempts)
+    )
 
 
 def rule_for(task_type: str) -> RetryRule:

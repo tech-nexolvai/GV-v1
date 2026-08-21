@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.errors import ErrorEnvelope
 from app.main import create_app
+from tests.app.postgres_fixture import alembic_config
 
 DATABASE_URL = "postgresql+psycopg://gv:gv@localhost:5433/gv"
 
@@ -267,10 +268,9 @@ def test_readiness_at_head_reports_ready(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_the_expected_head_is_read_from_the_migrations_not_hardcoded() -> None:
     """A hardcoded revision would be correct until the next migration and wrong silently after."""
-    from alembic.config import Config
     from alembic.script import ScriptDirectory
 
-    head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+    head = ScriptDirectory.from_config(alembic_config()).get_current_head()
     assert head, "alembic must report a head revision for the readiness check to compare against"
 
 

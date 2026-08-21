@@ -27,7 +27,6 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -37,6 +36,7 @@ from app.db.session import session_factory, unit_of_work
 from app.lifecycle.events import history
 from app.lifecycle.states import begin
 from app.models import Package, PackageRevision, PackageState, Project, TaskRun, WorkflowRun
+from tests.app.postgres_fixture import alembic_config
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import (
     ENGINE_VERSION,
@@ -62,7 +62,7 @@ DATABASE_URL = "postgresql+psycopg://gv:gv@localhost:5433/gv"
 def factory(postgres_engine: Engine) -> sessionmaker[Session]:
     # Resolved from REPO_ROOT, not the working directory: `Config("alembic.ini")` only finds the file
     # when pytest happens to be run from the repository root. Several older test modules still do that.
-    config = Config(str(REPO_ROOT / "alembic.ini"))
+    config = alembic_config()
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
     return session_factory(postgres_engine)
@@ -646,6 +646,24 @@ def test_registering_the_graph_passes_the_arguments_the_sdk_expects(
 
     # Six stages, in pipeline order, each depending on the one before it and the first on nothing.
     assert [task["name"] for task in client.tasks] == list(stage_order())
+
+    # **Every stage carries its retry budget to the engine.** Hatchet is what retries — `run_all` neither
+    # sleeps nor re-runs a stage — so a stage registered without these settings gets the SDK's defaults,
+    # which are zero retries. That is a policy stated in `workflow/retry.py` and not applied anywhere,
+    # which is the shape of failure this repository keeps finding.
+    from workflow.retry import engine_retry_settings
+
+    for task in client.tasks:
+        expected = engine_retry_settings(str(task["name"]))
+        for setting, value in expected.items():
+            # Presence asserted before equality, so a stage registered with no budget at all reports that
+            # rather than dying on a KeyError that names nothing.
+            assert setting in task, (
+                f"{task['name']} was registered without {setting}, so it falls back to the SDK default "
+                "and the policy in workflow/retry.py applies to nothing"
+            )
+            assert task[setting] == value, f"{task['name']} lost {setting}"
+        assert task["retries"] == 2, "three attempts is two retries"
     assert client.tasks[0]["parents"] is None, "the first stage waits for nothing"
     for task in client.tasks[1:]:
         parents = task["parents"]

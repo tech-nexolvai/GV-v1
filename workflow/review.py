@@ -375,6 +375,12 @@ def register(
     depends on the box and the wrong one is an out-of-memory kill on a shared 8 GB VM. See
     `app/config.py` for where the value comes from and why it starts at 1.
     """
+    # Imported here, not at module scope: `workflow/retry.py` imports `stage_order` from this module, so a
+    # top-level import would close a cycle. `register` runs once when a worker is built, so the cost is
+    # nothing and the direction of the dependency stays readable — the graph asks the policy, never the
+    # other way round.
+    from workflow.retry import engine_retry_settings
+
     resolved = stages if stages is not None else NoStages()
 
     workflow: Workflow[PackageReviewInput] = hatchet.workflow(
@@ -410,7 +416,15 @@ def register(
             }
 
         step.__name__ = stage
-        decorate = workflow.task(name=stage, parents=[previous] if previous else None)
+        # **The retry budget goes to the engine, because the engine is what retries.** `run_all` neither
+        # sleeps nor re-runs a stage, so before this the policy in `workflow/retry.py` had no caller and
+        # described behaviour nothing implemented. See `engine_retry_settings` for the mapping and for the
+        # one place it is fragile.
+        decorate = workflow.task(
+            name=stage,
+            parents=[previous] if previous else None,
+            **engine_retry_settings(stage),  # type: ignore[arg-type]
+        )
         previous = decorate(step)
 
     return workflow

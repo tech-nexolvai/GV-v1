@@ -20,7 +20,6 @@ from __future__ import annotations
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import Engine, select
 from sqlalchemy.exc import DataError, IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
@@ -50,6 +49,7 @@ from app.lifecycle.states import (
 from app.models import Package, PackageRevision, PackageState, Project
 from storage.hashing import ArtifactCorrupt
 from storage.store import ArtifactConflict
+from tests.app.postgres_fixture import alembic_config
 from workflow.outbox import OutboxDispatchError
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -59,7 +59,7 @@ ACTOR = "the ingestion worker"
 
 @pytest.fixture
 def factory(postgres_engine: Engine) -> sessionmaker[Session]:
-    config = Config("alembic.ini")
+    config = alembic_config()
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
     return session_factory(postgres_engine)
