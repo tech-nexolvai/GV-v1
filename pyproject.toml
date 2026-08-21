@@ -24,7 +24,12 @@ dependencies = ["pydantic>=2.10", "shapely>=2"]
 # `httpx` is here rather than in `platform` because it is only the ASGI test client —
 # starlette imports it from `starlette.testclient` and nothing in the running service
 # needs it. BSD-3-Clause.
-dev = ["pytest", "ruff", "black", "mypy", "httpx"]
+# `jsonschema` (MIT) validates `.coderabbit.yaml` against CodeRabbit's published schema, vendored in
+# `tests/fixtures/`. It was already installed transitively via semgrep and mcp; declared here because a
+# test that depends on a tool's transitive dependency breaks the day that tool changes its mind.
+# `pyyaml` (MIT) for the same reason: five test modules import it while it was declared only under
+# `rules`. CI installs both extras so nothing was broken, but a `dev`-only checkout could not run them.
+dev = ["pytest", "ruff", "black", "mypy", "httpx", "jsonschema", "pyyaml"]
 
 # Phase 1-2 — extraction (all MIT / Apache / MPL)
 extraction = [

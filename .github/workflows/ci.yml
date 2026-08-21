@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, for the one check that needs the network: has CodeRabbit's published config schema moved
+  # under us? The offline check keeps passing against the vendored copy, so without this the copy can go
+  # stale indefinitely and an upstream constraint change would surface as a collapsed warning in a PR
+  # comment — the same signal that hid the original config defect for eight days.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 # A newer push to the same branch cancels the older run — keeps Actions minutes
 # down, which matters because this is a private repo billing against a quota.
@@ -17,6 +24,10 @@ permissions:
 jobs:
   quality:
     name: lint, types, tests
+    # Not on the weekly schedule. That cron exists for the one network check below, and this file
+    # already notes that Actions minutes bill against a private-repo quota — so the schedule buys the
+    # drift check, not a second full run of everything.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     services:
@@ -99,6 +110,7 @@ jobs:
   # ---------------------------------------------------------------------------
   guards:
     name: safety guards
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # The board drift check reads every open issue. Read-only, and scoped to this job rather than
@@ -187,3 +199,50 @@ jobs:
         run: |
           pytest tests/test_board_drift.py -q
           python scripts/check_board_drift.py
+
+  # ---------------------------------------------------------------------------
+  # Weekly only. Everything else in this workflow must pass or fail for reasons
+  # inside the repository; this one asks a question about the outside world, so
+  # it is kept away from the pull-request path where a network blip would look
+  # like a broken change.
+  # ---------------------------------------------------------------------------
+  schema-drift:
+    name: coderabbit schema drift (weekly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      # Pinned to commit SHAs and with the checkout credential dropped, both on zizmor's advice: an
+      # unpinned tag can be moved under us, and a persisted credential can leak through an artifact.
+      # This job needs neither — it reads the tree and talks to one public URL. The comments name the
+      # tags so the pins are still readable.
+      #
+      # NB: the older jobs above still use floating tags and keep the credential. That is a pre-existing
+      # pattern across this file, not something this job introduced, and changing how the jobs that push
+      # and read issues handle credentials deserves its own change rather than a drive-by here.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # `.coderabbit.yaml` is validated on every PR against a vendored copy of CodeRabbit's schema.
+      # This asks the question the vendored copy cannot: does the config still satisfy what CodeRabbit
+      # publishes *today*? If they tighten a constraint, the reviewer silently falls back to defaults —
+      # the exact failure this whole check exists to catch, and one that leaves no red anywhere.
+      #
+      # Deliberately not comparing the two schemas for equality: CodeRabbit edits descriptions often,
+      # and a check that goes red for upstream copywriting is one people learn to ignore.
+      - name: Config still satisfies the published schema
+        env:
+          GV_CHECK_CODERABBIT_SCHEMA: "1"
+        run: |
+          pytest tests/test_repo_hygiene.py -q -k published_schema

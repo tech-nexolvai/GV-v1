@@ -11,12 +11,16 @@
 
 language: en-GB
 
-tone_instructions: >
-  Be direct and specific. Prioritise correctness and safety over style. This project decides
-  whether manufactured cabinetry matches an approved design, and its primary safety metric is
-  the critical false-PASS rate: a wrong FAIL creates review work, a wrong PASS can be built.
-  Flag anything that could turn a missing, ambiguous or unqualified input into a PASS.
-  Do not comment on formatting — ruff and black already enforce it in CI.
+# `tone_instructions` is capped at 250 characters. This file was added on 2026-08-13 (4c37420) with 431,
+# and the cost was not a truncated sentence: CodeRabbit refused the whole file and reviewed on defaults
+# instead — profile CHILL, no path instructions at all. So from 2026-08-13 until this fix on 2026-08-21,
+# the instructions below for verdict/, units/, rules/ and evidence/ never applied to a single review.
+# The field has been over the cap since the day it was written, so this config had never once been in
+# force. Keep it short; the project-wide framing lives in the `**` path instruction, which has room.
+tone_instructions: >-
+  Be direct and specific. Prioritise correctness and safety over style. A wrong FAIL costs review
+  time; a wrong PASS can be manufactured. Do not comment on formatting, which ruff and black
+  already enforce in CI.
 
 reviews:
   profile: assertive
@@ -38,6 +42,18 @@ reviews:
     - "!.venv/**"
 
   path_instructions:
+    - path: "**"
+      instructions: >
+        This project decides whether manufactured cabinetry matches an approved design, and its
+        primary safety metric is the critical false-PASS rate: a wrong FAIL creates review work,
+        a wrong PASS can be built. Flag anything that could turn a missing, ambiguous or
+        unqualified input into a PASS — a default value, a fallback, a silent `except`, a
+        confidence threshold standing in for a decision.
+        Judge a docstring or comment as a claim, not as prose: if it states a property the code
+        does not have, say so. That failure mode has been more common in this repository than
+        wrong code, and it is worse, because the next reader trusts the sentence and stops
+        checking.
+
     - path: "verdict/**"
       instructions: >
         This is the isolated deterministic verdict engine and the crown jewel of the product.
