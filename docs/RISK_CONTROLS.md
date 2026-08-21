@@ -73,7 +73,7 @@ cannot acquire verdict authority.
 ## R4 — Agent loops or cost runaway
 
 **Control (§16):** Maximum steps, call budget and mandatory abstention.
-**Status:** PARTIAL
+**Status:** ENFORCED
 **Refs:** module:extraction/agent/graph.py, module:app/budget/ceiling.py, module:app/budget/overflow.py
 **Owner:** #244, #264, #265
 **Effectiveness claim:** exceeding any bound produces abstention rather than a partial answer, and
@@ -162,11 +162,11 @@ a human to raise the change.
 
 ## What this table says today
 
-ENFORCED: 4 — R1 (numerically plausible extraction), R3 (VLM hallucination), R6 (rule injection),
-R9 (licensing). R3 is enforced by crop-bounded context, strict payload validation and verdict
-isolation rather than by trusting model behaviour.
+ENFORCED: 5 — R1 (numerically plausible extraction), R3 (VLM hallucination), R4 (agent loops or cost
+runaway), R6 (rule injection), R9 (licensing). R3 is enforced by crop-bounded context, strict payload
+validation and verdict isolation rather than by trusting model behaviour.
 
-PARTIAL: 6 — R2, R4, R5, R7, R8, R10. **R5 (false PASS) is the one to look at** — the metric and the
+PARTIAL: 5 — R2, R5, R7, R8, R10. **R5 (false PASS) is the one to look at** — the metric and the
 release gates both exist, and there is no gold set to run them against, so the project's primary
 safety metric currently reports NOT MEASURED for every check. That is not a bug in the metric; it is
 `#274` and `#188` waiting on the client. **R7 (retrieval contamination)** was read as enforced until
