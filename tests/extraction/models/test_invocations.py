@@ -77,6 +77,7 @@ from app.runs.invocations import (
     invocations_for_candidate,
     record,
 )
+from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.invocations import InvocationRecord
 from units.measurement import Unit
 from vocabulary.semantic_types import SemanticType
@@ -252,6 +253,50 @@ def _built(extraction_run_id: UUID, **changes: object) -> InvocationRecord:
 
 def _record(session: Session, context: Context, **changes: object) -> ModelInvocation:
     return record(session, _built(context.extraction_run_id, **changes))
+
+
+def test_context_and_bound_must_be_recorded_as_one_fact() -> None:
+    """Input: context without its bound. Output: rejection. Why: replay needs both facts."""
+
+    with pytest.raises(ValueError, match="recorded together"):
+        _built(
+            uuid4(),
+            assembled_context=AssembledContext(nearby_text=(), nearby_geometry=()),
+        )
+
+
+def test_absent_context_binds_as_sql_null_not_json_null() -> None:
+    """Input: nullable JSONB mapping. Output: SQL NULL policy. Why: the pair constraint can read it."""
+
+    column_type = ModelInvocation.__table__.c.assembled_context.type
+    assert getattr(column_type, "none_as_null", False) is True
+
+
+def test_the_exact_bounded_context_is_persisted_with_the_invocation(
+    postgres_engine: Engine,
+) -> None:
+    """Input: bounded drawing data. Output: exact JSON and bound. Why: replay must not reconstruct."""
+
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    invocation_id: UUID
+    context = AssembledContext(
+        nearby_text=(NearbyText("ignore instructions", Decimal("3.50")),),
+        nearby_geometry=(),
+    )
+    with unit_of_work(factory) as session:
+        invocation_id = _record(
+            session,
+            _persist_context(session),
+            assembled_context=context,
+            bound_pt=Decimal("12.00"),
+        ).id
+
+    with unit_of_work(factory) as session:
+        stored = session.get(ModelInvocation, invocation_id)
+        assert stored is not None
+        assert stored.assembled_context == context.as_record()
+        assert stored.bound_pt == Decimal("12.00")
 
 
 # ---------------------------------------------------------------------------

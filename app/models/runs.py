@@ -10,10 +10,12 @@ Verification: ``tests/db/test_run_models.py``.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import StrEnum
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, String
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Numeric, String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, Immutable, TimestampedUUID
@@ -128,6 +130,10 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
     candidate_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("observation_candidates.id", ondelete="RESTRICT"), unique=True, default=None
     )
+    assembled_context: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), default=None
+    )
+    bound_pt: Mapped[Decimal | None] = mapped_column(Numeric(), default=None)
     input_tokens: Mapped[int]
     output_tokens: Mapped[int]
     cost_micros: Mapped[int]
@@ -141,6 +147,14 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
         CheckConstraint(
             "node_invocation_key IS NULL OR node_invocation_key ~ '^sha256:[0-9a-f]{64}$'",
             name="model_invocation_node_key",
+        ),
+        CheckConstraint(
+            "(assembled_context IS NULL) = (bound_pt IS NULL)",
+            name="model_invocation_context_pair",
+        ),
+        CheckConstraint(
+            "bound_pt IS NULL OR bound_pt >= 0",
+            name="model_invocation_context_bound",
         ),
         CheckConstraint("input_tokens >= 0", name="model_invocation_input_tokens"),
         CheckConstraint("output_tokens >= 0", name="model_invocation_output_tokens"),

@@ -62,12 +62,13 @@ finding which is internally consistent, fully traced and completely wrong.
 ## R3 — VLM hallucination
 
 **Control (§16):** Crop-bounded structured outputs; the VLM cannot create verdict authority.
-**Status:** PARTIAL
+**Status:** ENFORCED
 **Refs:** test:tests/test_verdict_isolation.py, module:extraction/models/validation.py, module:extraction/models/context.py, module:deploy/verdict_isolation/preflight.py
 **Owner:** #250, #252, #257
-**Effectiveness claim:** the isolation guard already makes model output unreachable from `verdict/`
-transitively, so a hallucinated value cannot reach a decision. What is missing is the input side —
-crop-bounded context and strict payload validation that rejects unknown fields.
+**Effectiveness claim:** model input is restricted to an immutable crop plus an explicitly bounded
+text-and-geometry neighbourhood, strict payload validation rejects unknown fields, and the isolation
+guard makes model output unreachable from `verdict/` transitively. A hallucinated value therefore
+cannot acquire verdict authority.
 
 ## R4 — Agent loops or cost runaway
 
@@ -161,10 +162,11 @@ a human to raise the change.
 
 ## What this table says today
 
-ENFORCED: 3 — R1 (numerically plausible extraction), R6 (rule injection), R9 (licensing). All three
-are properties of the deterministic core, which is the part that is built.
+ENFORCED: 4 — R1 (numerically plausible extraction), R3 (VLM hallucination), R6 (rule injection),
+R9 (licensing). R3 is enforced by crop-bounded context, strict payload validation and verdict
+isolation rather than by trusting model behaviour.
 
-PARTIAL: 7 — R2, R3, R4, R5, R7, R8, R10. **R5 (false PASS) is the one to look at** — the metric and the
+PARTIAL: 6 — R2, R4, R5, R7, R8, R10. **R5 (false PASS) is the one to look at** — the metric and the
 release gates both exist, and there is no gold set to run them against, so the project's primary
 safety metric currently reports NOT MEASURED for every check. That is not a bug in the metric; it is
 `#274` and `#188` waiting on the client. **R7 (retrieval contamination)** was read as enforced until

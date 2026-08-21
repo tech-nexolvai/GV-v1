@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 from time import monotonic_ns
 from typing import Any, Literal, Protocol, cast
 
 from evidence.candidate import ObservationCandidate
+from extraction.models.context import AssembledContext
 from extraction.models.validation import (
     CandidateContext,
     NovaToolPayload,
@@ -68,6 +70,8 @@ class NovaRequest:
     page: int
     crop: bytes
     image_format: Literal["jpeg", "png"]
+    context: AssembledContext
+    bound_pt: Decimal
 
     def __post_init__(self) -> None:
         if not isinstance(self.candidate_id, str) or not self.candidate_id.strip():
@@ -78,6 +82,12 @@ class NovaRequest:
             raise ValueError("crop must be non-empty bytes")
         if self.image_format not in {"jpeg", "png"}:
             raise ValueError("image_format must be 'jpeg' or 'png'")
+        if (
+            not isinstance(self.bound_pt, Decimal)
+            or not self.bound_pt.is_finite()
+            or self.bound_pt < 0
+        ):
+            raise ValueError("bound_pt must be a finite, non-negative Decimal")
 
 
 class NovaInvocationOutcome(StrEnum):
@@ -104,6 +114,8 @@ class NovaInvocation:
     output_tokens: int
     outcome: NovaInvocationOutcome
     request_id: str | None
+    context: AssembledContext
+    bound_pt: Decimal
 
 
 class InvocationRecorder(RejectionRecorder, Protocol):
@@ -294,6 +306,8 @@ class NovaAdapter:
                         output_tokens=output_tokens,
                         outcome=outcome,
                         request_id=_request_id(response),
+                        context=request.context,
+                        bound_pt=request.bound_pt,
                     )
                 )
         raise NovaRetryExhaustedError("Nova retry loop ended unexpectedly") from last_error
@@ -314,6 +328,7 @@ class NovaAdapter:
                             }
                         },
                         {"text": USER_PROMPT},
+                        {"text": request.context.as_data_text()},
                     ],
                 }
             ],
