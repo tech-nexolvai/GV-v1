@@ -22,7 +22,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, select
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import DataError, IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
@@ -142,7 +142,22 @@ def test_a_subclass_inherits_its_parents_class() -> None:
 
     assert classify(SlowerThanUsual()) is FailureClass.RETRYABLE
     assert classify(OperationalError("stmt", None, Exception())) is FailureClass.RETRYABLE
-    assert classify(DBAPIError("stmt", None, Exception())) is FailureClass.RETRYABLE
+
+
+@pytest.mark.parametrize(
+    "kind", [IntegrityError, DataError, ProgrammingError], ids=lambda k: k.__name__
+)
+def test_a_database_error_a_retry_cannot_fix_is_permanent(kind: type[Exception]) -> None:
+    """**Found by CodeRabbit on #378, and it was the bug the permanent default exists to prevent.**
+
+    All three inherit from `DBAPIError`, which was in the table as retryable — so a unique-constraint
+    violation, an invalid value and a malformed statement all classified as retryable and would have
+    retried for ever. One broad entry meant to be helpful undid the whole point of the default.
+
+    `DBAPIError` is deliberately not in the table now; these three are named instead.
+    """
+    error = kind("INSERT INTO packages VALUES (%(v)s)", {"v": "x"}, Exception("dup key"))
+    assert classify(error) is FailureClass.PERMANENT
 
 
 def test_classification_reads_no_message() -> None:

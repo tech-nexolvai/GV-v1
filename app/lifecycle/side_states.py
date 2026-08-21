@@ -37,7 +37,7 @@ from __future__ import annotations
 from enum import StrEnum
 from uuid import UUID
 
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import DataError, IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from app.lifecycle.states import transition
@@ -89,12 +89,20 @@ FAILURE_CLASSIFICATION: dict[type[BaseException], FailureClass] = {
     # Transient: the thing we asked was reasonable and the moment was wrong.
     TimeoutError: FailureClass.RETRYABLE,
     ConnectionError: FailureClass.RETRYABLE,
+    # Connection loss, deadlock, a server that went away. Not `DBAPIError`, its parent — see below.
     OperationalError: FailureClass.RETRYABLE,
     OutboxDispatchError: FailureClass.RETRYABLE,
-    # `DBAPIError` is the base of most driver failures and covers more than `OperationalError`; listed
-    # after it so the more specific entry is found first by the MRO walk.
-    DBAPIError: FailureClass.RETRYABLE,
     # Permanent: the input or the configuration is wrong, and time does not fix either.
+    #
+    # These three are named explicitly rather than left to the default, because they are the common
+    # database failures and a reader should see them decided here. They are also the reason `DBAPIError`
+    # is **not** in this table: all three inherit from it, so one broad entry classified every constraint
+    # violation, every invalid value and every malformed statement as retryable — a unique violation
+    # would have retried for ever. Found by CodeRabbit on #378, and it was the exact failure the
+    # permanent default exists to prevent, introduced by an entry meant to be helpful.
+    IntegrityError: FailureClass.PERMANENT,
+    DataError: FailureClass.PERMANENT,
+    ProgrammingError: FailureClass.PERMANENT,
     ArtifactCorrupt: FailureClass.PERMANENT,
     IntegrityRecordMissing: FailureClass.PERMANENT,
     ArtifactConflict: FailureClass.PERMANENT,
