@@ -99,6 +99,41 @@ CODERABBIT_SCHEMA_URL = "https://storage.googleapis.com/coderabbit_public_assets
 CODERABBIT_SCHEMA = REPO_ROOT / "tests" / "fixtures" / "coderabbit_schema_v2.json"
 
 
+def _keys_the_schema_does_not_define(config: object, schema: object, path: str = "") -> list[str]:
+    """Every key in `config` that `schema` has no property for, at any depth.
+
+    Deliberately conservative: it only reports a key when the schema node it sits under actually declares
+    `properties`, and it stays quiet where the node allows extra keys on purpose or where the shape cannot
+    be resolved from properties alone (`anyOf`, `$ref` and friends). A false positive here would fail CI
+    on a valid config, which would teach people to disable the check — so a missed typo is the better
+    error to make, and the schema still catches everything under the root.
+    """
+    if not isinstance(config, dict) or not isinstance(schema, dict):
+        return []
+
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    if schema.get("additionalProperties") not in (False, None):
+        return []
+
+    unknown: list[str] = []
+    for key, value in config.items():
+        where = f"{path}.{key}" if path else key
+        if key not in properties:
+            unknown.append(where)
+            continue
+        child = properties[key]
+        unknown.extend(_keys_the_schema_does_not_define(value, child, where))
+        if isinstance(value, list) and isinstance(child, dict):
+            items = child.get("items")
+            for index, element in enumerate(value):
+                unknown.extend(
+                    _keys_the_schema_does_not_define(element, items, f"{where}[{index}]")
+                )
+    return unknown
+
+
 def test_the_coderabbit_config_is_actually_used() -> None:
     """The reviewer config must parse and fit its schema, or it is silently thrown away.
 
@@ -123,11 +158,6 @@ def test_the_coderabbit_config_is_actually_used() -> None:
     # **Validate the whole contract, not the one field that happened to break.** The original defect was
     # a length; the next one will not be. A wrong type or a bad enum fails here instead of silently
     # downgrading every review to defaults.
-    #
-    # Being exact about the limits, because I first wrote "an unknown key" and that is only half true.
-    # The root has `additionalProperties: false`, so `languag:` is caught. `reviews` does not, so
-    # `reviews.profil:` validates cleanly and is then ignored — which is why the profile is asserted
-    # by name below rather than left to the schema.
     schema = json.loads(CODERABBIT_SCHEMA.read_text(encoding="utf-8"))
     errors = sorted(
         jsonschema.Draft202012Validator(schema).iter_errors(config),
@@ -139,6 +169,19 @@ def test_the_coderabbit_config_is_actually_used() -> None:
         + "\n  ".join(
             f"{'.'.join(map(str, error.path)) or '<root>'}: {error.message}" for error in errors
         )
+    )
+
+    # **A typo'd key is the failure the schema cannot catch, so it is caught here.**
+    #
+    # Only the root sets `additionalProperties: false`, so `languag:` is rejected — but `reviews` and
+    # `reviews.auto_review` do not, which means `reviews.profil:` and `reviews.auto_review.enabld:`
+    # validate cleanly and are then ignored. Both verified. A setting that is present, believed and inert
+    # is this whole file's original bug in miniature, so the recursive check below closes it everywhere
+    # rather than asserting the two fields I happened to think of.
+    unknown = sorted(_keys_the_schema_does_not_define(config, schema))
+    assert not unknown, (
+        "these keys are not in CodeRabbit's schema, so they are silently ignored — most likely a "
+        f"misspelling of a real setting: {unknown}"
     )
 
     # The limit that actually bit, named explicitly with a message that says what happens — a bare schema
