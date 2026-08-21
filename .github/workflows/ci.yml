@@ -51,7 +51,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,rules,platform,reports]"
+          pip install -e ".[ai,dev,rules,platform,reports]"
 
       # AGENTS.md section 2.8 forbids AGPL. Run it early and on its own so a licence
       # violation is unmistakable in the log rather than buried in the test summary.
@@ -140,7 +140,7 @@ jobs:
       - name: Install test tooling
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,rules,platform]"
+          pip install -e ".[ai,dev,rules,platform]"
 
       - name: Verdict isolation
         run: |
