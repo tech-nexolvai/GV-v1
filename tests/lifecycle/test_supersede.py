@@ -32,6 +32,7 @@ from app.lifecycle.supersede import (
     PACKAGE_WORKFLOW,
     NoNewVersions,
     NothingToSupersede,
+    TwoVersionsOfOneDocument,
     VersionFromAnotherPackage,
     revision_chain,
     supersede,
@@ -142,6 +143,19 @@ def _assembled_package(
     return package, revision, composition
 
 
+def _document(session: Session, document_id: UUID) -> Document:
+    """The document, or fail the test loudly.
+
+    `session.get` returns `Document | None`, and passing that straight into a helper typed `Document`
+    is an error `mypy` would report if it checked tests — CI runs it over `app/` and `workflow/` only,
+    so this went unnoticed until CodeRabbit read the diff. Resolved once here rather than asserted at
+    eleven call sites.
+    """
+    document = session.get(Document, document_id)
+    assert document is not None, f"no document {document_id}"
+    return document
+
+
 def _composition(session: Session, package_revision_id: UUID) -> dict[UUID, UUID]:
     rows = session.execute(
         select(
@@ -167,7 +181,7 @@ def test_the_new_revision_is_a_complete_package_not_a_diff(factory: sessionmaker
     with unit_of_work(factory) as session:
         package, _, before = _assembled_package(session, drawings=3)
         changed_document = next(iter(before))
-        reissued = _version(session, session.get(Document, changed_document), _digest("f"))
+        reissued = _version(session, _document(session, changed_document), _digest("f"))
 
         revision_two = supersede(
             session,
@@ -190,7 +204,7 @@ def test_carrying_a_drawing_forward_stores_no_bytes_twice(factory: sessionmaker[
     with unit_of_work(factory) as session:
         package, _, before = _assembled_package(session, drawings=2)
         changed = next(iter(before))
-        reissued = _version(session, session.get(Document, changed), _digest("f"))
+        reissued = _version(session, _document(session, changed), _digest("f"))
         artifacts_before = session.scalar(select(func.count()).select_from(SourceArtifact))
         versions_before = session.scalar(select(func.count()).select_from(DocumentVersion))
 
@@ -233,7 +247,7 @@ def test_the_prior_revisions_document_set_is_unchanged(factory: sessionmaker[Ses
     with unit_of_work(factory) as session:
         package, revision_one, before = _assembled_package(session, drawings=3)
         changed = next(iter(before))
-        reissued = _version(session, session.get(Document, changed), _digest("f"))
+        reissued = _version(session, _document(session, changed), _digest("f"))
 
         supersede(session, package_id=package.id, new_document_versions=[reissued.id], actor=ACTOR)
         session.flush()
@@ -248,7 +262,7 @@ def test_the_prior_revisions_history_gains_only_the_supersede(
     with unit_of_work(factory) as session:
         package, revision_one, before = _assembled_package(session, drawings=1)
         events_before = [(e.sequence, e.to_state) for e in history(session, revision_one.id)]
-        reissued = _version(session, session.get(Document, next(iter(before))), _digest("f"))
+        reissued = _version(session, _document(session, next(iter(before))), _digest("f"))
 
         supersede(session, package_id=package.id, new_document_versions=[reissued.id], actor=ACTOR)
         session.flush()
@@ -261,7 +275,7 @@ def test_the_prior_revisions_history_gains_only_the_supersede(
 def test_the_prior_revision_lands_in_superseded(factory: sessionmaker[Session]) -> None:
     with unit_of_work(factory) as session:
         package, revision_one, before = _assembled_package(session, drawings=1)
-        reissued = _version(session, session.get(Document, next(iter(before))), _digest("f"))
+        reissued = _version(session, _document(session, next(iter(before))), _digest("f"))
 
         supersede(session, package_id=package.id, new_document_versions=[reissued.id], actor=ACTOR)
         session.flush()
@@ -285,7 +299,7 @@ def test_a_superseded_revisions_documents_can_no_longer_be_changed(
     """
     with unit_of_work(factory) as session:
         package, revision_one, before = _assembled_package(session, drawings=1)
-        reissued = _version(session, session.get(Document, next(iter(before))), _digest("f"))
+        reissued = _version(session, _document(session, next(iter(before))), _digest("f"))
         supersede(session, package_id=package.id, new_document_versions=[reissued.id], actor=ACTOR)
         session.flush()
 
@@ -296,12 +310,15 @@ def test_a_superseded_revisions_documents_can_no_longer_be_changed(
         )
         assert membership is not None
         with pytest.raises(DatabaseError):
+            # No trailing flush: `session.execute` raises here, so anything after it is unreachable.
+            # And no `begin_nested` either — `unit_of_work` rolls back when its body raises rather than
+            # committing, so the aborted transaction is discarded rather than committed. (CodeRabbit
+            # suggested a savepoint on the assumption it commits; `app/db/session.py` shows it does not.)
             session.execute(
                 update(PackageRevisionDocument)
                 .where(PackageRevisionDocument.id == membership.id)
                 .values(document_version_id=reissued.id)
             )
-            session.flush()
 
 
 def test_a_superseded_revision_cannot_move_anywhere(factory: sessionmaker[Session]) -> None:
@@ -311,7 +328,7 @@ def test_a_superseded_revision_cannot_move_anywhere(factory: sessionmaker[Sessio
     assert TRANSITIONS[PackageState.SUPERSEDED] == frozenset()
     with unit_of_work(factory) as session:
         package, revision_one, before = _assembled_package(session, drawings=1)
-        reissued = _version(session, session.get(Document, next(iter(before))), _digest("f"))
+        reissued = _version(session, _document(session, next(iter(before))), _digest("f"))
         supersede(session, package_id=package.id, new_document_versions=[reissued.id], actor=ACTOR)
         session.flush()
         with pytest.raises(IllegalTransition):
@@ -326,7 +343,7 @@ def test_a_superseded_revision_cannot_move_anywhere(factory: sessionmaker[Sessio
 def test_the_new_revision_links_to_what_it_superseded(factory: sessionmaker[Session]) -> None:
     with unit_of_work(factory) as session:
         package, revision_one, before = _assembled_package(session, drawings=1)
-        reissued = _version(session, session.get(Document, next(iter(before))), _digest("f"))
+        reissued = _version(session, _document(session, next(iter(before))), _digest("f"))
         revision_two = supersede(
             session, package_id=package.id, new_document_versions=[reissued.id], actor=ACTOR
         )
@@ -343,7 +360,7 @@ def test_the_link_resolves_in_both_directions(factory: sessionmaker[Session]) ->
     nothing about *which* revision superseded which."""
     with unit_of_work(factory) as session:
         package, revision_one, before = _assembled_package(session, drawings=1)
-        reissued = _version(session, session.get(Document, next(iter(before))), _digest("f"))
+        reissued = _version(session, _document(session, next(iter(before))), _digest("f"))
         revision_two = supersede(
             session, package_id=package.id, new_document_versions=[reissued.id], actor=ACTOR
         )
@@ -361,7 +378,7 @@ def test_the_chain_is_ordered_by_revision_number(factory: sessionmaker[Session])
     written in the same microsecond have no order by timestamp."""
     with unit_of_work(factory) as session:
         package, _, before = _assembled_package(session, drawings=1)
-        document = session.get(Document, next(iter(before)))
+        document = _document(session, next(iter(before)))
         assert document is not None
 
         second = supersede(
@@ -395,7 +412,7 @@ def test_superseding_enqueues_exactly_one_workflow(factory: sessionmaker[Session
     gets reviewed, so it is the unit that gets processed."""
     with unit_of_work(factory) as session:
         package, _, before = _assembled_package(session, drawings=3)
-        reissued = _version(session, session.get(Document, next(iter(before))), _digest("f"))
+        reissued = _version(session, _document(session, next(iter(before))), _digest("f"))
 
         revision_two = supersede(
             session, package_id=package.id, new_document_versions=[reissued.id], actor=ACTOR
@@ -419,7 +436,7 @@ def test_the_payload_names_the_project_so_the_work_can_be_polled(
     enqueued without one is work nobody can ask about afterwards."""
     with unit_of_work(factory) as session:
         package, _, before = _assembled_package(session, drawings=1)
-        reissued = _version(session, session.get(Document, next(iter(before))), _digest("f"))
+        reissued = _version(session, _document(session, next(iter(before))), _digest("f"))
         supersede(session, package_id=package.id, new_document_versions=[reissued.id], actor=ACTOR)
         session.flush()
 
@@ -441,8 +458,7 @@ def test_nothing_is_committed(factory: sessionmaker[Session]) -> None:
 
     with factory() as session:
         document_id = next(iter(_composition(session, revision_chain(session, package_id)[0].id)))
-        document = session.get(Document, document_id)
-        assert document is not None
+        document = _document(session, document_id)
         reissued = _version(session, document, _digest("f"))
         supersede(session, package_id=package_id, new_document_versions=[reissued.id], actor=ACTOR)
         session.rollback()
@@ -487,6 +503,52 @@ def test_a_version_from_another_package_is_refused(factory: sessionmaker[Session
             supersede(session, package_id=mine.id, new_document_versions=[stranger], actor=ACTOR)
 
 
+def test_two_versions_of_one_drawing_is_refused(factory: sessionmaker[Session]) -> None:
+    """Input: one drawing offered twice. Outcome: refused. Why: picking silently is the worst answer.
+
+    **Found by CodeRabbit on #377, and it was a real bug.** `_documents_for` built a map keyed by
+    version and then inverted it to key by document; two versions of one document collapsed into one
+    entry, and which survived depended on the order the `IN` predicate returned rows — undefined. The
+    revision would then be composed of a version nobody asked for, with nothing reporting it. A revision
+    holds one version of any drawing, so there is no single right answer here and the caller has to say
+    which they meant.
+    """
+    with unit_of_work(factory) as session:
+        package, _, before = _assembled_package(session, drawings=1)
+        document = _document(session, next(iter(before)))
+        first = _version(session, document, _digest("f"))
+        second = _version(session, document, _digest("e"))
+
+        with pytest.raises(TwoVersionsOfOneDocument, match="more than one version"):
+            supersede(
+                session,
+                package_id=package.id,
+                new_document_versions=[first.id, second.id],
+                actor=ACTOR,
+            )
+
+
+def test_the_refusal_survives_the_row_order(factory: sessionmaker[Session]) -> None:
+    """Either order, same refusal. The bug's symptom was order-dependence, so the fix must not be."""
+    for reverse in (False, True):
+        with unit_of_work(factory) as session:
+            package, _, before = _assembled_package(session, drawings=1, name=f"order {reverse}")
+            document = _document(session, next(iter(before)))
+            offered = [
+                _version(session, document, _digest("f")).id,
+                _version(session, document, _digest("e")).id,
+            ]
+            if reverse:
+                offered.reverse()
+            with pytest.raises(TwoVersionsOfOneDocument):
+                supersede(
+                    session,
+                    package_id=package.id,
+                    new_document_versions=offered,
+                    actor=ACTOR,
+                )
+
+
 def test_a_package_with_no_revision_is_refused(factory: sessionmaker[Session]) -> None:
     """Reported as its own failure rather than as an illegal transition: there is no state to leave."""
     with unit_of_work(factory) as session, pytest.raises(NothingToSupersede):
@@ -498,7 +560,7 @@ def test_the_new_revisions_history_is_opened(factory: sessionmaker[Session]) -> 
     read as arriving from nowhere."""
     with unit_of_work(factory) as session:
         package, _, before = _assembled_package(session, drawings=1)
-        reissued = _version(session, session.get(Document, next(iter(before))), _digest("f"))
+        reissued = _version(session, _document(session, next(iter(before))), _digest("f"))
         revision_two = supersede(
             session, package_id=package.id, new_document_versions=[reissued.id], actor=ACTOR
         )
@@ -574,7 +636,7 @@ def test_the_database_refuses_deleting_a_revision_with_history(
             .where(PackageStateEvent.package_revision_id == revision_one.id)
         )
         with pytest.raises(DatabaseError):
+            # Unreachable flush removed, same reasoning as above.
             session.execute(
                 PackageRevision.__table__.delete().where(PackageRevision.id == revision_one.id)
             )
-            session.flush()

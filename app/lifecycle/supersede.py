@@ -54,6 +54,7 @@ __all__ = [
     "PACKAGE_WORKFLOW",
     "NoNewVersions",
     "NothingToSupersede",
+    "TwoVersionsOfOneDocument",
     "VersionFromAnotherPackage",
     "revision_chain",
     "supersede",
@@ -83,6 +84,16 @@ class NoNewVersions(Exception):
     Refused rather than performed. Superseding a revision because nothing changed would close a review
     that was still valid and start another that would reach the same conclusions, and the audit trail
     would show a revision nobody can explain the existence of.
+    """
+
+
+class TwoVersionsOfOneDocument(Exception):
+    """The same drawing was offered at two versions in one supersede.
+
+    Refused rather than resolved. A revision holds one version of any document, so one of the two
+    would have to be dropped — and picking silently means composing a revision the caller did not ask
+    for, with the survivor decided by the order the database happened to return rows in. Undefined,
+    and invisible: the wrong drawing would be reviewed and nothing would say so.
     """
 
 
@@ -157,7 +168,24 @@ def _documents_for(session: Session, version_ids: Sequence[UUID]) -> dict[UUID, 
     missing = [str(version_id) for version_id in version_ids if version_id not in found]
     if missing:
         raise NoNewVersions(f"no such document version(s): {', '.join(sorted(missing))}")
-    return {document_id: version_id for version_id, document_id in found.items()}
+
+    # Inverting `found` keys it by document, and two versions of one document would collapse into one
+    # entry — dropping whichever the `IN` predicate happened to return second, which is undefined.
+    # Found by CodeRabbit on #377, and it is the failure this project cares about most: a revision
+    # composed of a version nobody asked for, with nothing reporting it.
+    by_document: dict[UUID, UUID] = {}
+    duplicated: set[UUID] = set()
+    for version_id, document_id in found.items():
+        if document_id in by_document:
+            duplicated.add(document_id)
+        by_document[document_id] = version_id
+    if duplicated:
+        raise TwoVersionsOfOneDocument(
+            f"document(s) {', '.join(sorted(str(d) for d in duplicated))} were offered at more than "
+            "one version. A revision holds one version of any drawing, so this has no single answer — "
+            "offer the version the revision should include."
+        )
+    return by_document
 
 
 def supersede(
