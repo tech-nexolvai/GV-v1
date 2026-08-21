@@ -10,8 +10,35 @@
 .shell__body {
   display: flex;
   flex: 1;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   position: relative;
+  /* Smooth custom horizontal scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) var(--bg-surface);
+}
+
+.shell__body::-webkit-scrollbar {
+  height: 6px;
+}
+.shell__body::-webkit-scrollbar-track {
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
+}
+.shell__body::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+}
+.shell__body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Panel min-widths to prevent content squishing and enable smooth horizontal scrolling */
+.sidebar {
+  min-width: var(--sidebar-width);
+}
+[data-sidebar-collapsed="true"] .sidebar {
+  min-width: var(--sidebar-collapsed);
 }
 
 /* ── Main content ─────────────────────────────────────────── */
@@ -21,7 +48,7 @@
   display: flex;
   flex-direction: column;
   position: relative;
-  min-width: 0; /* prevent flex overflow */
+  min-width: 420px; /* prevent flex overflow and preserve structural readability */
   transition: margin-right var(--duration-panel) var(--ease-out);
 }
 
@@ -41,6 +68,7 @@
 
 .shell__evidence--open {
   width: var(--evidence-panel-width);
+  min-width: 360px;
   opacity: 1;
 }
 
@@ -49,6 +77,7 @@
    ============================================================ */
 [data-style="ide"] .sidebar {
   order: 1;
+  min-width: var(--sidebar-width);
 }
 
 [data-style="ide"] .shell__evidence {
@@ -57,6 +86,7 @@
   border-right: 1px solid var(--border-default);
   opacity: 1 !important;
   width: auto !important;
+  min-width: 480px !important;
   flex: 1.3 !important;
   pointer-events: auto !important;
 }
@@ -64,7 +94,9 @@
 [data-style="ide"] .shell__main {
   order: 3;
   flex: none !important;
-  width: 440px !important;
+  /* clamp: min 360px, prefer 35vw, max 480px — no overflow on 1280px screens */
+  width: clamp(360px, 35vw, 480px) !important;
+  min-width: 360px !important;
   border-left: 1px solid var(--border-default);
 }
 
@@ -72,4 +104,45 @@
 [data-sidebar-collapsed="true"] .shell__evidence--open {
   /* give more space when sidebar is narrow */
   width: calc(var(--evidence-panel-width) + 40px);
+}
+
+/* ============================================================
+   RESPONSIVE BREAKPOINTS
+   ============================================================ */
+
+/* Tablet (≤ 1024px): narrow the evidence panel to free up chat space */
+@media (max-width: 1024px) {
+  .shell__evidence--open {
+    width: 320px;
+  }
+  [data-sidebar-collapsed="true"] .shell__evidence--open {
+    width: 360px;
+  }
+}
+
+/* Mobile (≤ 768px): evidence panel becomes a full-width overlay */
+@media (max-width: 768px) {
+  .shell__evidence--open {
+    position: absolute;
+    right: 0;
+    top: 0;
+    height: 100%;
+    width: 100% !important;
+    z-index: 30;
+    border-left: none;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
+  }
+
+  /* IDE mode: stack vertically on mobile */
+  [data-style="ide"] .shell__main {
+    width: 100% !important;
+    order: 1;
+  }
+  [data-style="ide"] .shell__evidence {
+    order: 2;
+    width: 100% !important;
+    flex: none !important;
+    border-right: none;
+    border-top: 1px solid var(--border-default);
+  }
 }

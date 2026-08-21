@@ -20,15 +20,14 @@ export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) 
       {/* Page header */}
       <div className="packages-page__header">
         <div>
-          <div className="gv-bar" />
-          <h1 className="packages-page__title">Document Packages</h1>
+          <h1 className="packages-page__title">Documents</h1>
           <p className="packages-page__subtitle">
             Review submissions from vendors against the architectural set and rulebook.
           </p>
         </div>
         <button className="btn btn--action" onClick={onNewPackage}>
           <Plus size={14} />
-          New Package
+          New Document
         </button>
       </div>
 
@@ -37,7 +36,7 @@ export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) 
         <table className="packages-table">
           <thead>
             <tr>
-              <th>Package ID</th>
+              <th>Document ID</th>
               <th>Vendor</th>
               <th>Project</th>
               <th>Category</th>

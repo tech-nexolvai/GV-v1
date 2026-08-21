@@ -139,7 +139,7 @@
   background-image: 
     linear-gradient(rgba(26, 22, 21, 0.02) 1px, transparent 1px),
     linear-gradient(90deg, rgba(26, 22, 21, 0.02) 1px, transparent 1px);
-  background-size: 16px 16px;
+  background-size: 24px 24px;
   overflow: hidden;
   border: 1px solid var(--border-default);
   margin: var(--space-2) var(--space-4);

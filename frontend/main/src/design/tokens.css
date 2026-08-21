@@ -39,9 +39,9 @@
   --status-fail-bg:        rgba(220, 38, 38, 0.08);
   --status-fail-border:    rgba(220, 38, 38, 0.22);
 
-  --status-review:         #d97706;
-  --status-review-bg:      rgba(217, 119, 6, 0.08);
-  --status-review-border:  rgba(217, 119, 6, 0.22);
+  --status-review:         #a73a15;   /* Terracotta Rust — matches clay text and stone */
+  --status-review-bg:      rgba(167, 58, 21, 0.06);
+  --status-review-border:  rgba(167, 58, 21, 0.20);
 
   --status-missing:        #6b7280;
   --status-missing-bg:     rgba(107, 114, 128, 0.08);
@@ -53,7 +53,7 @@
 
   /* PDF evidence overlays */
   --evidence-fail:   rgba(220, 38, 38, 0.18);
-  --evidence-review: rgba(217, 119, 6, 0.18);
+  --evidence-review: rgba(167, 58, 21, 0.15);
   --evidence-pass:   rgba(22, 163, 74, 0.12);
 
   /* ── Typography ────────────────────────────────────────── */
@@ -108,7 +108,7 @@
   /* ── Layout ─────────────────────────────────────────────── */
   --sidebar-width:        264px;
   --sidebar-collapsed:    52px;
-  --evidence-panel-width: 420px;
+  --evidence-panel-width: 380px;
   --topbar-height:        52px;
 
   /* ── Transitions ─────────────────────────────────────────── */
@@ -206,4 +206,10 @@
   --pdf-lines:    #e0dad0;
   --pdf-text:     #6b6159;
   --pdf-footer:   #f2eee8;
+
+  /* Overrides to preserve original orange in dark mode */
+  --status-review:         #d97706;
+  --status-review-bg:      rgba(217, 119, 6, 0.08);
+  --status-review-border:  rgba(217, 119, 6, 0.22);
+  --evidence-review:       rgba(217, 119, 6, 0.18);
 }
