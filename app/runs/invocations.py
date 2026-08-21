@@ -109,6 +109,12 @@ def record(session: Session, invocation: InvocationRecord) -> ModelInvocation:
         crop_artifact_id=invocation.crop_artifact_id,
         node_invocation_key=invocation.node_invocation_key,
         candidate_id=invocation.candidate_id,
+        assembled_context=(
+            None
+            if invocation.assembled_context is None
+            else invocation.assembled_context.as_record()
+        ),
+        bound_pt=invocation.bound_pt,
         input_tokens=invocation.input_tokens,
         output_tokens=invocation.output_tokens,
         cost_micros=invocation.cost_micros,

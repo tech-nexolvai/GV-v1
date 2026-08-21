@@ -55,7 +55,10 @@ Design: `docs/DESIGN_AI.md` §4.5 · Verification: `tests/extraction/models/test
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from uuid import UUID
+
+from extraction.models.context import AssembledContext
 
 __all__ = ["InvocationRecord"]
 
@@ -123,6 +126,8 @@ class InvocationRecord:
     outcome: str
     node_invocation_key: str | None = None
     candidate_id: UUID | None = None
+    assembled_context: AssembledContext | None = None
+    bound_pt: Decimal | None = None
 
     def __post_init__(self) -> None:
         """Refuse a count or a cost that is not exactly an integer, before it can be stored."""
@@ -136,3 +141,11 @@ class InvocationRecord:
             or len(self.node_invocation_key) != 71
         ):
             raise ValueError("node_invocation_key must be a sha256-prefixed digest or None")
+        if (self.assembled_context is None) != (self.bound_pt is None):
+            raise ValueError("assembled_context and bound_pt must be recorded together")
+        if self.bound_pt is not None and (
+            not isinstance(self.bound_pt, Decimal)
+            or not self.bound_pt.is_finite()
+            or self.bound_pt < 0
+        ):
+            raise ValueError("bound_pt must be a finite, non-negative Decimal")
