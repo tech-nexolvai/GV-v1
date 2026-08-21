@@ -24,7 +24,11 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column(
         "model_invocations",
-        sa.Column("assembled_context", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column(
+            "assembled_context",
+            postgresql.JSONB(astext_type=sa.Text(), none_as_null=True),
+            nullable=True,
+        ),
     )
     op.add_column("model_invocations", sa.Column("bound_pt", sa.Numeric(), nullable=True))
     op.create_check_constraint(

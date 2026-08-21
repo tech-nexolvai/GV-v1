@@ -265,6 +265,13 @@ def test_context_and_bound_must_be_recorded_as_one_fact() -> None:
         )
 
 
+def test_absent_context_binds_as_sql_null_not_json_null() -> None:
+    """Input: nullable JSONB mapping. Output: SQL NULL policy. Why: the pair constraint can read it."""
+
+    column_type = ModelInvocation.__table__.c.assembled_context.type
+    assert getattr(column_type, "none_as_null", False) is True
+
+
 def test_the_exact_bounded_context_is_persisted_with_the_invocation(
     postgres_engine: Engine,
 ) -> None:

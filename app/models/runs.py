@@ -130,7 +130,9 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
     candidate_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("observation_candidates.id", ondelete="RESTRICT"), unique=True, default=None
     )
-    assembled_context: Mapped[dict[str, object] | None] = mapped_column(JSONB, default=None)
+    assembled_context: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), default=None
+    )
     bound_pt: Mapped[Decimal | None] = mapped_column(Numeric(), default=None)
     input_tokens: Mapped[int]
     output_tokens: Mapped[int]
