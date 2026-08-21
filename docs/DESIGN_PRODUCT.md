@@ -142,7 +142,7 @@ Three refusals, each of which is the point of a gate:
 - **A critical false-PASS regression blocks publication outright.** No override.
 - **Publication with no gold set available is refused**, rather than passing vacuously. A regression
   check that passes when there is nothing to check against reports a green gate for an unmeasured change.
-- **A rule with an unconfirmed tolerance cannot reach production** (ADR-0011). The `±1/8″` that
+- **A rule with an unconfirmed tolerance cannot reach production** (`rules/schema.py`'s `TOLERANCE_UNCONFIRMED`, enforced by `rules/publication.py`). The `±1/8″` that
   circulated for weeks was our own placeholder from a sample file; this gate stops the next one arriving
   in the same disguise.
 

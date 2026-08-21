@@ -24,7 +24,8 @@ it is our own placeholder.
   story.
 - **`value`** — the answer supplies only a *number*. The rule can be authored now with
   `TOLERANCE_UNCONFIRMED`, which returns REVIEW REQUIRED for every drawing and cannot reach
-  production (ADR-0011). The gate reports READY and says the story ships provisional.
+  production (enforced by `rules/publication.py`). The gate reports READY and says the story
+  ships provisional.
 - **`nothing`** — informational; no code depends on it.
 
 That distinction is enforced, not advisory: `tests/test_client_facts.py` fails the build if a story
