@@ -34,6 +34,41 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", min_length=1)
     request_id_header: str = Field(default="X-Request-ID", min_length=1)
 
+    hatchet_token: str = Field(default="", description="Hatchet client token")
+    """Empty by default, and the emptiness is caught where it matters. `workflow/hatchet_app.py` builds a
+    client only when a worker is started, and the SDK refuses a blank token there — so an API process,
+    which never starts a worker, does not need one. Requiring it here would make every API deployment
+    carry a credential it has no use for."""
+
+    hatchet_namespace: str = Field(default="", min_length=0)
+    """Namespace prefix for workflow names, so two environments can share one engine without one
+    picking up the other's packages."""
+
+    max_concurrent_packages: int = Field(default=1, ge=1)
+    """How many package revisions may be processed at once. **Defaults to 1 deliberately.**
+
+    One 8 GB VM shares memory between rendering, OCR and PostgreSQL, so a second package processing
+    alongside the first is a second package's worth of resident pages. At 1, peak memory is one
+    package's work plus the database, a second package queues rather than competing, and an
+    out-of-memory kill cannot be blamed on contention between packages.
+
+    It is a setting so it can be raised — but raising it should follow a measurement against real
+    drawings, not an assumption that the box has room."""
+
+    max_concurrent_page_tasks: int = Field(default=2, ge=1)
+    """How many tasks one worker runs at once. Defaults to 2: a little parallelism where the unit of
+    work is smaller than a whole package.
+
+    **What it bounds today, stated precisely, because the name is ahead of the code.** This becomes the
+    worker's slot count, and the only tasks registered so far are the six stages — which run in a line,
+    each waiting for the one before. So today it caps concurrent *stage* tasks across packages, and one
+    package on its own cannot use more than a single slot.
+
+    It is named for pages because pages are what it is *for*: B6.4 (#163) adds the task-per-page fan-out,
+    and that is when rendering and OCR become the resident cost this number is meant to hold down. Until
+    then the name describes the intent and this docstring describes the effect. Worth renaming if #163
+    moves further out — that is Anant's call, not a silent change."""
+
     @field_validator("database_url")
     @classmethod
     def _looks_like_postgres(cls, value: str) -> str:
