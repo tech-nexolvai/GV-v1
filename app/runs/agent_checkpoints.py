@@ -41,7 +41,7 @@ def claim(session: Session, *, node_invocation_key: str, extraction_run_id: UUID
     row = AgentNodeInvocationClaim(
         node_invocation_key=node_invocation_key,
         extraction_run_id=extraction_run_id,
-        state=AgentNodeInvocationState.IN_PROGRESS.value,
+        status=AgentNodeInvocationState.IN_PROGRESS.value,
         model_invocation_id=None,
         candidate_id=None,
     )
@@ -73,7 +73,7 @@ def complete(
 ) -> ModelInvocation:
     """Atomically persist a successful result and mark its reservation complete."""
 
-    if reserved.state != AgentNodeInvocationState.IN_PROGRESS.value:
+    if reserved.status != AgentNodeInvocationState.IN_PROGRESS.value:
         raise ValueError("only an in-progress claim can be completed")
     if invocation.extraction_run_id != reserved.extraction_run_id:
         raise ValueError("invocation and claim must belong to the same extraction run")
@@ -90,7 +90,7 @@ def complete(
             candidate_id=candidate.id,
         ),
     )
-    reserved.state = AgentNodeInvocationState.COMPLETED.value
+    reserved.status = AgentNodeInvocationState.COMPLETED.value
     reserved.model_invocation_id = stored.id
     reserved.candidate_id = candidate.id
     session.flush()
@@ -105,7 +105,7 @@ def fail(
 ) -> ModelInvocation:
     """Record a failed paid attempt and make every resume abstain."""
 
-    if reserved.state != AgentNodeInvocationState.IN_PROGRESS.value:
+    if reserved.status != AgentNodeInvocationState.IN_PROGRESS.value:
         raise ValueError("only an in-progress claim can fail")
     if invocation.extraction_run_id != reserved.extraction_run_id:
         raise ValueError("invocation and claim must belong to the same extraction run")
@@ -115,7 +115,7 @@ def fail(
         session,
         replace(invocation, node_invocation_key=reserved.node_invocation_key, candidate_id=None),
     )
-    reserved.state = AgentNodeInvocationState.FAILED.value
+    reserved.status = AgentNodeInvocationState.FAILED.value
     reserved.model_invocation_id = stored.id
     session.flush()
     return stored

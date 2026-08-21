@@ -55,7 +55,7 @@ def upgrade() -> None:
         "agent_node_invocation_claims",
         sa.Column("node_invocation_key", sa.String(71), nullable=False),
         sa.Column("extraction_run_id", sa.Uuid(), nullable=False),
-        sa.Column("state", sa.String(32), nullable=False),
+        sa.Column("status", sa.String(32), nullable=False),
         sa.Column("model_invocation_id", sa.Uuid(), nullable=True),
         sa.Column("candidate_id", sa.Uuid(), nullable=True),
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -76,14 +76,14 @@ def upgrade() -> None:
             name="agent_node_invocation_claim_key",
         ),
         sa.CheckConstraint(
-            "state IN ('in_progress', 'completed', 'failed')",
-            name="agent_node_invocation_claim_state",
+            "status IN ('in_progress', 'completed', 'failed')",
+            name="claim_status",
         ),
         sa.CheckConstraint(
-            "(state = 'in_progress' AND model_invocation_id IS NULL AND candidate_id IS NULL) OR "
-            "(state = 'completed' AND model_invocation_id IS NOT NULL AND candidate_id IS NOT NULL) OR "
-            "(state = 'failed' AND model_invocation_id IS NOT NULL AND candidate_id IS NULL)",
-            name="agent_node_invocation_claim_completion",
+            "(status = 'in_progress' AND model_invocation_id IS NULL AND candidate_id IS NULL) OR "
+            "(status = 'completed' AND model_invocation_id IS NOT NULL AND candidate_id IS NOT NULL) OR "
+            "(status = 'failed' AND model_invocation_id IS NOT NULL AND candidate_id IS NULL)",
+            name="claim_result_links",
         ),
     )
     op.create_index(

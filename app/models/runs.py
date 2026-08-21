@@ -163,7 +163,7 @@ class AgentNodeInvocationClaim(Base, TimestampedUUID):
     extraction_run_id: Mapped[UUID] = mapped_column(
         ForeignKey("extraction_runs.id", ondelete="RESTRICT"), index=True
     )
-    state: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32))
     model_invocation_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("model_invocations.id", ondelete="RESTRICT"), unique=True, default=None
     )
@@ -177,13 +177,13 @@ class AgentNodeInvocationClaim(Base, TimestampedUUID):
             name="agent_node_invocation_claim_key",
         ),
         CheckConstraint(
-            "state IN ('in_progress', 'completed', 'failed')",
-            name="agent_node_invocation_claim_state",
+            "status IN ('in_progress', 'completed', 'failed')",
+            name="claim_status",
         ),
         CheckConstraint(
-            "(state = 'in_progress' AND model_invocation_id IS NULL AND candidate_id IS NULL) OR "
-            "(state = 'completed' AND model_invocation_id IS NOT NULL AND candidate_id IS NOT NULL) OR "
-            "(state = 'failed' AND model_invocation_id IS NOT NULL AND candidate_id IS NULL)",
-            name="agent_node_invocation_claim_completion",
+            "(status = 'in_progress' AND model_invocation_id IS NULL AND candidate_id IS NULL) OR "
+            "(status = 'completed' AND model_invocation_id IS NOT NULL AND candidate_id IS NOT NULL) OR "
+            "(status = 'failed' AND model_invocation_id IS NOT NULL AND candidate_id IS NULL)",
+            name="claim_result_links",
         ),
     )

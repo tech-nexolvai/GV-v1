@@ -157,7 +157,7 @@ def test_schema_has_a_separate_claim_and_direct_candidate_link() -> None:
     claim = Base.metadata.tables["agent_node_invocation_claims"]
     invocation = Base.metadata.tables["model_invocations"]
 
-    assert {"node_invocation_key", "state", "model_invocation_id", "candidate_id"} <= set(
+    assert {"node_invocation_key", "status", "model_invocation_id", "candidate_id"} <= set(
         claim.columns.keys()
     )
     assert invocation.columns["node_invocation_key"].unique is True
