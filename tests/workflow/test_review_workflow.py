@@ -709,6 +709,57 @@ class Boom:
         return stage
 
 
+def test_a_stage_runs_inside_its_own_state(factory: sessionmaker[Session]) -> None:
+    """**The frozen-set boundary, which is why the transition moved to the front of `run_stage`.**
+
+    `app/lifecycle/states.py` puts `UPLOADED` in `ASSEMBLY_STATES`, where a revision's document set may
+    still change, and names the boundary: "`INGESTING` is the first state in which something has read the
+    set, and a set that can change after it has been read is a set nobody can be held to" (ADR-0018).
+
+    Under the original work-then-move order, `ingest` read the set while the package still said `UPLOADED`
+    — before the set was frozen. This asserts the fix from inside the stage itself: when the work runs, the
+    package is already in the stage's state.
+    """
+    seen: dict[str, str] = {}
+
+    class Watching:
+        """Records the package's state as each stage sees it."""
+
+        def __getattr__(self, name: str) -> object:
+            def stage(session: Session, package_revision_id: UUID) -> dict[str, object]:
+                revision = session.get(PackageRevision, package_revision_id)
+                assert revision is not None
+                seen[name] = str(revision.state)
+                return {"ran": name}
+
+            return stage
+
+        def extract_pages(
+            self, session: Session, package_revision_id: UUID
+        ) -> tuple[PageResult, ...]:
+            revision = session.get(PackageRevision, package_revision_id)
+            assert revision is not None
+            seen["extract_pages"] = str(revision.state)
+            return ()
+
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _revision_and_run(session)
+
+    run_all(
+        factory,
+        package_revision_id=revision_id,
+        workflow_run_id=run_id,
+        stages=Watching(),  # type: ignore[arg-type]
+    )
+
+    for stage, state in STAGES:
+        assert seen[stage] == state.value, (
+            f"{stage} ran while the package said {seen[stage]}, not {state.value}. Work must happen "
+            "inside its own state, or INGESTING does not mean the document set has been read."
+        )
+    assert seen["ingest"] != PackageState.UPLOADED.value, "ingest must not read an unfrozen set"
+
+
 def test_a_permanent_failure_is_not_handed_back_for_retry(
     factory: sessionmaker[Session],
 ) -> None:

@@ -256,16 +256,34 @@ def run_stage(
     stages: Stages,
     engine_version: str = ENGINE_VERSION,
 ) -> StageOutcome:
-    """Claim the stage, run it if it has not run, and move the package. Commits nothing.
+    """Claim the stage, move the package into the stage's state, then do the work. Commits nothing.
 
-    In that order, and the order is the durability. The claim goes in first so a re-delivered stage
-    recognises itself and returns without repeating the work — `already_done` on the outcome. Only then
-    does the work run, and only then does the package move, so a package that says `MATCHING` has
-    actually matched.
+    **The move comes before the work, and that ordering is a correctness requirement rather than a
+    preference.** `UPLOADED` is an assembly state: `app/lifecycle/states.py` says a revision's document set
+    *may still change* while it is in one, and names the boundary explicitly — "`INGESTING` is the first
+    state in which something has read the set, and a set that can change after it has been read is a set
+    nobody can be held to" (ADR-0018). Working first and moving afterwards meant `ingest` read the document
+    set while the package still said `UPLOADED`, which is to say before the set was frozen. Moving first is
+    what makes `INGESTING` mean what the machine says it means.
 
-    The caller owns the transaction, as everywhere else in this codebase: the claim, whatever the stage
-    wrote, and the state change land together or not at all. A claim that committed on its own would
-    block the retry that should redo the work it never finished.
+    This retires the property the first version of this function documented — that a package saying
+    `MATCHING` has finished matching. That property was already in tension with the machine, which defines
+    `PROCESSING_STATES` as "the states where the system is doing work of its own and can therefore fail":
+    in progress, not completed. And nothing reads completion from the state column anyway — `_checks_have_run`
+    counts `CheckRun` rows and `_resumes_where_it_failed` reads the event log, because the machine's stated
+    stance is to read "from the event log rather than from the caller's good intentions".
+
+    **So no caller may read a processing state as "that stage finished."** A crash immediately after
+    entering `EXTRACTING` leaves a package there having extracted nothing, which is fine — a timeout moves
+    it to `FAILED_RETRYABLE` and `_resumes_where_it_failed` sends it back to exactly that stage. Completion
+    comes from the stage's own output rows, or from the transition event into the *next* state.
+
+    The claim still goes first, so a re-delivered stage recognises itself and returns without repeating the
+    work or moving the package — `already_done` on the outcome.
+
+    The caller owns the transaction, as everywhere else in this codebase: the claim, the state change and
+    whatever the stage wrote land together or not at all. A claim that committed on its own would block the
+    retry that should redo the work it never finished.
 
     Raises:
         UnknownRevision / IllegalTransition: from `transition`, unchanged.
@@ -293,6 +311,17 @@ def run_stage(
             payload={"claimed_by": str(taken.task_run.workflow_run_id)},
         )
 
+    # **Before the work, not after.** See the docstring: the stage must run inside its own state, because
+    # `INGESTING` is the point at which the document set counts as read and therefore frozen.
+    transition(
+        session,
+        package_revision_id,
+        state,
+        actor=f"the {stage.replace('_', ' ')} worker",
+        reason=None,
+        workflow_run_id=workflow_run_id,
+    )
+
     # Dispatched by name rather than by a six-branch conditional, so `STAGES` stays the single list.
     # `getattr` returns `Any`, which is why the two branches below need no casts.
     runner = getattr(stages, stage)
@@ -304,14 +333,6 @@ def run_stage(
     else:
         payload = produced
 
-    transition(
-        session,
-        package_revision_id,
-        state,
-        actor=f"the {stage.replace('_', ' ')} worker",
-        reason=None,
-        workflow_run_id=workflow_run_id,
-    )
     return StageOutcome(
         stage=stage,
         state=state,
