@@ -21,7 +21,7 @@ Source: backend proposal §9.1–§9.4 · Design: `docs/DESIGN_PLATFORM.md` §6 
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from itertools import pairwise
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -679,35 +679,51 @@ def test_registering_the_graph_passes_the_arguments_the_sdk_expects(
 
 
 class Boom:
-    """Stages that fail on demand, so the task body's error handling can be exercised."""
+    """Stages that fail on demand. Every method spelled out, and that is the point.
+
+    The first version used `__getattr__` to answer for all six, which meant mypy could not check any of
+    them — and that is exactly how a `dict` came to be returned where `extract_pages` must return a
+    sequence of `PageResult`, reporting a page that was never read. Written out, the protocol is checked
+    and the instance needs no `type: ignore` to be accepted.
+    """
 
     def __init__(self, error: Exception, *, at: str = "ingest") -> None:
         self.error = error
         self.at = at
         self.calls: list[str] = []
 
-    def extract_pages(self, session: Session, package_revision_id: UUID) -> tuple[PageResult, ...]:
-        """Explicit, because this stage alone returns a sequence rather than a mapping.
-
-        The generic stub below answered for it too, and returned a dict. That did not fail — `join_pages`
-        counted a phantom page and the test carried on green. `join_pages` now refuses the wrong shape,
-        and this stub gives the right one.
-        """
-        del session, package_revision_id
-        self.calls.append("extract_pages")
-        if self.at == "extract_pages":
+    def _run(self, name: str) -> dict[str, object]:
+        self.calls.append(name)
+        if name == self.at:
             raise self.error
+        return {"ran": name}
+
+    def ingest(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+        del session, package_revision_id
+        return self._run("ingest")
+
+    def extract_pages(self, session: Session, package_revision_id: UUID) -> Sequence[PageResult]:
+        del session, package_revision_id
+        self._run("extract_pages")
         return ()
 
-    def __getattr__(self, name: str) -> object:
-        def stage(session: Session, package_revision_id: UUID) -> dict[str, object]:
-            del session, package_revision_id
-            self.calls.append(name)
-            if name == self.at:
-                raise self.error
-            return {"ran": name}
+    def match(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+        del session, package_revision_id
+        return self._run("match")
 
-        return stage
+    def validate_evidence(
+        self, session: Session, package_revision_id: UUID
+    ) -> Mapping[str, object]:
+        del session, package_revision_id
+        return self._run("validate_evidence")
+
+    def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+        del session, package_revision_id
+        return self._run("run_checks")
+
+    def generate_outputs(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+        del session, package_revision_id
+        return self._run("generate_outputs")
 
 
 def test_a_stage_runs_inside_its_own_state(factory: sessionmaker[Session]) -> None:
@@ -724,24 +740,42 @@ def test_a_stage_runs_inside_its_own_state(factory: sessionmaker[Session]) -> No
     seen: dict[str, str] = {}
 
     class Watching:
-        """Records the package's state as each stage sees it."""
+        """Records the state each stage sees. Spelled out so the protocol is actually checked."""
 
-        def __getattr__(self, name: str) -> object:
-            def stage(session: Session, package_revision_id: UUID) -> dict[str, object]:
-                revision = session.get(PackageRevision, package_revision_id)
-                assert revision is not None
-                seen[name] = str(revision.state)
-                return {"ran": name}
+        def _see(self, session: Session, package_revision_id: UUID, name: str) -> None:
+            revision = session.get(PackageRevision, package_revision_id)
+            assert revision is not None
+            seen[name] = str(revision.state)
 
-            return stage
+        def ingest(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+            self._see(session, package_revision_id, "ingest")
+            return {}
 
         def extract_pages(
             self, session: Session, package_revision_id: UUID
-        ) -> tuple[PageResult, ...]:
-            revision = session.get(PackageRevision, package_revision_id)
-            assert revision is not None
-            seen["extract_pages"] = str(revision.state)
+        ) -> Sequence[PageResult]:
+            self._see(session, package_revision_id, "extract_pages")
             return ()
+
+        def match(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+            self._see(session, package_revision_id, "match")
+            return {}
+
+        def validate_evidence(
+            self, session: Session, package_revision_id: UUID
+        ) -> Mapping[str, object]:
+            self._see(session, package_revision_id, "validate_evidence")
+            return {}
+
+        def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+            self._see(session, package_revision_id, "run_checks")
+            return {}
+
+        def generate_outputs(
+            self, session: Session, package_revision_id: UUID
+        ) -> Mapping[str, object]:
+            self._see(session, package_revision_id, "generate_outputs")
+            return {}
 
     with unit_of_work(factory) as session:
         revision_id, run_id = _revision_and_run(session)
@@ -750,7 +784,7 @@ def test_a_stage_runs_inside_its_own_state(factory: sessionmaker[Session]) -> No
         factory,
         package_revision_id=revision_id,
         workflow_run_id=run_id,
-        stages=Watching(),  # type: ignore[arg-type]
+        stages=Watching(),
     )
 
     for stage, state in STAGES:
@@ -780,7 +814,7 @@ def test_a_permanent_failure_is_not_handed_back_for_retry(
 
     stages = Boom(ValueError("the rulebook is missing"), at="run_checks")
     client = RecordingClient()
-    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]
+    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]  # the client is a stub, not the stages
 
     payload = PackageReviewInput(package_revision_id=revision_id, workflow_run_id=run_id)
     # Walk the earlier stages so the package is processing when the failing one runs.
@@ -819,7 +853,7 @@ def test_a_retryable_failure_is_handed_back_for_retry(factory: sessionmaker[Sess
 
     stages = Boom(TimeoutError("the renderer stopped answering"), at="run_checks")
     client = RecordingClient()
-    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]
+    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]  # the client is a stub, not the stages
 
     payload = PackageReviewInput(package_revision_id=revision_id, workflow_run_id=run_id)
     for stage in stage_order():
@@ -884,7 +918,7 @@ def test_a_first_stage_failure_is_recorded_even_though_the_move_rolled_back(
 
     stages = Boom(ValueError("the rulebook is missing"), at="ingest")
     client = RecordingClient()
-    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]
+    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]  # the client is a stub, not the stages
 
     function = client.functions["ingest"]
     assert callable(function)

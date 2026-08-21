@@ -273,10 +273,18 @@ def run_stage(
     counts `CheckRun` rows and `_resumes_where_it_failed` reads the event log, because the machine's stated
     stance is to read "from the event log rather than from the caller's good intentions".
 
-    **So no caller may read a processing state as "that stage finished."** A crash immediately after
-    entering `EXTRACTING` leaves a package there having extracted nothing, which is fine — a timeout moves
-    it to `FAILED_RETRYABLE` and `_resumes_where_it_failed` sends it back to exactly that stage. Completion
-    comes from the stage's own output rows, or from the transition event into the *next* state.
+    **So no caller may read a processing state as "that stage finished."** Completion comes from the
+    stage's own output rows, or from the transition event into the *next* state.
+
+    Being exact about what a crash leaves behind, because the obvious description is wrong. The move and
+    the work share this transaction, so a crash rolls back **both**: the package is left in the state
+    before this stage, with its claim released, and a re-delivery redoes the stage from the start. It does
+    *not* sit in the processing state waiting for a supervisor — that would need the move to commit on its
+    own, which is a separate change to this function's contract and not one made here.
+
+    A *handled* failure is different and does get recorded: `_record_failure` re-states this stage's state
+    in its own transaction and enters the failure state from there. What is still not recorded anywhere is
+    a killed process — no exception runs, so nothing writes. That is what a supervisor sweep would be for.
 
     The claim still goes first, so a re-delivered stage recognises itself and returns without repeating the
     work or moving the package — `already_done` on the outcome.
