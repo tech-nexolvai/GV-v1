@@ -45,13 +45,14 @@ from app.models import PackageStateEvent
 from evidence.candidate import ObservationCandidate
 from verdict.operands import EvidenceStatus
 from workflow.idempotency import CLAIMED, claim, stage_idempotency_key
-from workflow.review import ENGINE_VERSION, stage_order
+from workflow.review import stage_order
 
 __all__ = [
     "FAILURE_POLICY",
     "MAX_PDF_REPAIR_ATTEMPTS",
     "OCR_RULE",
     "PDF_REPAIR_RULE",
+    "REPAIR_CAP_VERSION",
     "RETRY_POLICY",
     "STAGE_RULE",
     "UNKNOWN_TASK_RULE",
@@ -174,6 +175,22 @@ UNKNOWN_TASK_RULE: Final = RetryRule(max_attempts=1, base_delay_s=0.0, max_delay
 #: The task type used when claiming a PDF repair, and the cap that goes with it.
 PDF_REPAIR_TASK_TYPE: Final = "pdf_repair"
 MAX_PDF_REPAIR_ATTEMPTS: Final = 1
+
+#: The key version for the repair cap, and it is **deliberately not `ENGINE_VERSION`**.
+#:
+#: A stage's key includes the engine version on purpose: new code is a different task rather than a cache
+#: hit, so the stage should run again (#215). Repair is the opposite, and putting the engine version in its
+#: key was a real defect — bumping `ENGINE_VERSION` produced a different key, `claim` succeeded, and the
+#: same file got repaired a second time. Verified before fixing: attempt 3 at engine 1.1.0 returned True
+#: where it had to return False.
+#:
+#: The cap has to be absolute because each repair rewrites the bytes every downstream fact was extracted
+#: from. "At most once per engine version" is not a cap on modifying a source document, it is a cap that
+#: resets whenever this file changes — which is exactly when nobody is thinking about it.
+#:
+#: A constant, so the value cannot drift. Changing it re-opens one repair per document for every document
+#: in the system, which is why it is not derived from anything.
+REPAIR_CAP_VERSION: Final = "absolute"
 
 #: task_type -> budget. The stage names come from `workflow/review.py` rather than being retyped, so a
 #: stage added there cannot quietly end up with no policy: it would land on `UNKNOWN_TASK_RULE`, get one
@@ -301,11 +318,14 @@ def claim_pdf_repair(
     Recorded either way: the claim leaves a `task_runs` row with `attempt` on it, which is what the issue
     means by the attempt being recorded, and it is visible to a reviewer asking whether the file was
     touched.
+
+    **Once means once, not once per engine version.** The key is versioned by `REPAIR_CAP_VERSION` rather
+    than `ENGINE_VERSION` — see that constant for the defect this fixes and how it was verified.
     """
     key = stage_idempotency_key(
         package_revision_id=package_revision_id,
         stage=f"{PDF_REPAIR_TASK_TYPE}:{document_id}",
-        engine_version=ENGINE_VERSION,
+        engine_version=REPAIR_CAP_VERSION,
     )
     taken = claim(
         session,

@@ -396,6 +396,61 @@ def test_the_repair_attempt_is_recorded(factory: sessionmaker[Session]) -> None:
     assert rows[0].attempt >= 1
 
 
+def test_an_engine_upgrade_does_not_re_open_the_repair(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**A regression test for a real defect, found in review of #216.**
+
+    The repair key first used `ENGINE_VERSION`. That is right for a stage — new code is a different task,
+    not a cache hit — and exactly wrong here: bumping the engine version produced a different key, the
+    claim succeeded, and the same file was repaired again. Confirmed against the database before fixing:
+
+        repair #1 at engine 1.0.0 : True
+        repair #2 at engine 1.0.0 : False
+        repair #3 at engine 1.1.0 : True   <- the leak
+
+    "At most once per engine version" is not a cap on modifying a source document; it is a cap that resets
+    whenever this code changes, which is precisely when nobody is thinking about it.
+    """
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _revision_and_run(session)
+        document_id = uuid4()
+        assert claim_pdf_repair(
+            session,
+            package_revision_id=revision_id,
+            document_id=document_id,
+            workflow_run_id=run_id,
+        )
+
+    # Somebody ships new engine code. The repair must still be spent.
+    monkeypatch.setattr("workflow.review.ENGINE_VERSION", "9.9.9", raising=False)
+    monkeypatch.setattr("workflow.retry.ENGINE_VERSION", "9.9.9", raising=False)
+
+    with unit_of_work(factory) as session:
+        again = claim_pdf_repair(
+            session,
+            package_revision_id=revision_id,
+            document_id=document_id,
+            workflow_run_id=run_id,
+        )
+    assert again is False, "an engine upgrade must not hand out a second repair of the same file"
+
+
+def test_the_repair_cap_does_not_depend_on_the_engine_version() -> None:
+    """The same property at the source, because the behaviour test above can only cover the versions it
+    thinks to try. `claim_pdf_repair` must not mention `ENGINE_VERSION` at all."""
+    function = _function_ast("claim_pdf_repair")
+    names = {
+        node.id if isinstance(node, ast.Name) else node.attr
+        for node in ast.walk(function)
+        if isinstance(node, (ast.Name, ast.Attribute))
+    }
+    assert (
+        "ENGINE_VERSION" not in names
+    ), "the repair cap must be absolute, so its key cannot be versioned by the engine"
+    assert "REPAIR_CAP_VERSION" in names
+
+
 def test_two_documents_each_get_their_own_single_repair(factory: sessionmaker[Session]) -> None:
     """The cap is per document, not per package. One broken file in a package of twenty must not spend
     the other nineteen files' only attempt."""
