@@ -11,16 +11,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal
 from enum import StrEnum
 from time import monotonic_ns
 from typing import Any, Literal, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
 from evidence.candidate import ObservationCandidate
-from evidence.coordinates import ImagePoint
-from units.measurement import Unit
+from extraction.models.validation import (
+    CandidateContext,
+    NovaToolPayload,
+    RejectionRecorder,
+    ValidationRejection,
+    validate_payload,
+)
 
 TOOL_NAME = "report_drawing_reading"
 SYSTEM_PROMPT = (
@@ -29,16 +31,6 @@ SYSTEM_PROMPT = (
     "judge compliance, select a rule, choose a tolerance, or return a verdict."
 )
 USER_PROMPT = "Read the dimension token and its image-space polygon from this crop."
-
-
-class NovaToolPayload(BaseModel):
-    """The complete payload accepted from Nova; unknown fields are rejected."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    reading: str = Field(min_length=1)
-    unit_guess: str | None
-    polygon: list[tuple[Decimal, Decimal]] = Field(min_length=3)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +106,7 @@ class NovaInvocation:
     request_id: str | None
 
 
-class InvocationRecorder(Protocol):
+class InvocationRecorder(RejectionRecorder, Protocol):
     """Persistence boundary supplied by the caller."""
 
     def record(self, invocation: NovaInvocation) -> None:
@@ -146,6 +138,10 @@ class NovaProtocolError(NovaAdapterError):
 
 class NovaPayloadRejectedError(NovaAdapterError):
     """The tool call did not satisfy the strict local payload contract."""
+
+    def __init__(self, rejection: ValidationRejection) -> None:
+        super().__init__(f"Nova tool payload was rejected: {rejection.reason}")
+        self.rejection = rejection
 
 
 class NovaRefusalError(NovaAdapterError):
@@ -258,8 +254,7 @@ class NovaAdapter:
             outcome = NovaInvocationOutcome.ERROR
             try:
                 response = self._client.converse(**self._request(request))
-                payload = self._payload(response)
-                candidate = self._candidate(request, payload)
+                candidate = self._candidate(response, request)
                 outcome = NovaInvocationOutcome.OK
                 return candidate
             except NovaRefusalError:
@@ -336,8 +331,7 @@ class NovaAdapter:
             },
         }
 
-    @staticmethod
-    def _payload(response: Mapping[str, Any]) -> NovaToolPayload:
+    def _candidate(self, response: Mapping[str, Any], request: NovaRequest) -> ObservationCandidate:
         stop_reason = response.get("stopReason")
         if stop_reason in {"content_filtered", "guardrail_intervened"}:
             raise NovaRefusalError(f"Bedrock stopped the request: {stop_reason}")
@@ -356,36 +350,15 @@ class NovaAdapter:
         tool_call = cast(Mapping[str, Any], tool_calls[0])
         if tool_call.get("name") != TOOL_NAME:
             raise NovaProtocolError(f"Bedrock called an unexpected tool: {tool_call.get('name')!r}")
-        try:
-            return NovaToolPayload.model_validate(tool_call.get("input"))
-        except ValidationError as error:
-            raise NovaPayloadRejectedError("Nova tool payload failed strict validation") from error
-
-    def _candidate(self, request: NovaRequest, payload: NovaToolPayload) -> ObservationCandidate:
-        try:
-            unit = Unit(payload.unit_guess) if payload.unit_guess is not None else None
-            points = tuple(ImagePoint(self._pixel(x), self._pixel(y)) for x, y in payload.polygon)
-        except (TypeError, ValueError) as error:
-            raise NovaPayloadRejectedError(
-                "Nova payload contains an unsupported unit or non-integral pixel coordinate"
-            ) from error
-        return ObservationCandidate(
-            candidate_id=request.candidate_id,
-            extractor="nova",
-            extractor_version=self._config.model_id,
-            raw_text=payload.reading,
-            parsed_value=None,
-            unit_guess=unit,
-            semantic_guess=None,
-            page=request.page,
-            polygon=points,
-            confidence=None,
-            ambiguity_flags=("nova_model_reading",),
+        outcome = validate_payload(
+            tool_call.get("input"),
+            context=CandidateContext(
+                candidate_id=request.candidate_id,
+                extractor_version=self._config.model_id,
+                page=request.page,
+            ),
+            recorder=self._recorder,
         )
-
-    @staticmethod
-    def _pixel(value: Decimal) -> int:
-        integral = value.to_integral_value()
-        if value != integral:
-            raise ValueError("image-space coordinates must be integral pixels")
-        return int(integral)
+        if isinstance(outcome, ValidationRejection):
+            raise NovaPayloadRejectedError(outcome)
+        return outcome

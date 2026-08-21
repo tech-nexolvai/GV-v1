@@ -23,6 +23,7 @@ from extraction.models.nova import (
     NovaServiceError,
     NovaTimeoutError,
 )
+from extraction.models.validation import ValidationRejection
 from units.measurement import Unit
 
 
@@ -31,9 +32,13 @@ class RecordingSink:
 
     def __init__(self) -> None:
         self.items: list[NovaInvocation] = []
+        self.rejections: list[ValidationRejection] = []
 
     def record(self, invocation: NovaInvocation) -> None:
         self.items.append(invocation)
+
+    def record_rejection(self, rejection: ValidationRejection) -> None:
+        self.rejections.append(rejection)
 
 
 class FakeBedrock:
