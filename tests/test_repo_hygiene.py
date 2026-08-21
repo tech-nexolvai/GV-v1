@@ -12,8 +12,13 @@ is exactly the mistake worth catching.
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 from pathlib import Path
+
+import jsonschema
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -84,10 +89,14 @@ def test_gitignore_covers_the_sensitive_paths() -> None:
         assert needed in text, f".gitignore no longer covers {needed!r}"
 
 
-#: `tone_instructions` in `.coderabbit.yaml`, from CodeRabbit's published schema
-#: (https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json). Hardcoded rather than
-#: fetched: a test that needs the network fails for reasons that have nothing to do with the repository.
-CODERABBIT_TONE_LIMIT = 250
+#: CodeRabbit's published config schema, vendored so the check is offline and deterministic. A test that
+#: fetched it would fail whenever the network did, for reasons having nothing to do with this repository —
+#: and a review-config check that goes red for unrelated reasons is one people learn to ignore.
+#:
+#: Refresh it from the URL below; `test_the_config_still_satisfies_the_published_schema` (opt-in, needs
+#: the network) is how you find out that it needs refreshing.
+CODERABBIT_SCHEMA_URL = "https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json"
+CODERABBIT_SCHEMA = REPO_ROOT / "tests" / "fixtures" / "coderabbit_schema_v2.json"
 
 
 def test_the_coderabbit_config_is_actually_used() -> None:
@@ -111,26 +120,44 @@ def test_the_coderabbit_config_is_actually_used() -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert isinstance(config, dict), ".coderabbit.yaml did not parse into a mapping"
 
-    tone = config.get("tone_instructions", "")
-    # The type check is not pedantry: `len()` also succeeds on a list, so `tone_instructions: []` would
-    # have satisfied a length-only assertion while being a schema violation of exactly the kind that
-    # discards the file.
-    assert isinstance(tone, str), f"tone_instructions must be a string, got {type(tone).__name__}"
-    assert len(tone) <= CODERABBIT_TONE_LIMIT, (
-        f"tone_instructions is {len(tone)} characters, over the {CODERABBIT_TONE_LIMIT} the schema "
-        "allows. CodeRabbit does not truncate it — it discards the entire config and reviews on "
-        "defaults. Move the detail into a path_instructions entry, which allows 20000."
+    # **Validate the whole contract, not the one field that happened to break.** The original defect was
+    # a length; the next one will not be. Checking against CodeRabbit's own schema means any violation it
+    # would reject — a wrong type, an unknown key, a bad enum — fails here instead of silently downgrading
+    # every review to defaults.
+    schema = json.loads(CODERABBIT_SCHEMA.read_text(encoding="utf-8"))
+    errors = sorted(
+        jsonschema.Draft202012Validator(schema).iter_errors(config),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, (
+        ".coderabbit.yaml violates CodeRabbit's schema, so the whole file is discarded and reviews run "
+        "on defaults:\n  "
+        + "\n  ".join(
+            f"{'.'.join(map(str, error.path)) or '<root>'}: {error.message}" for error in errors
+        )
     )
 
-    # The path rules are the substance of the file; losing them is what the cap above actually cost.
+    # The limit that actually bit, named explicitly with a message that says what happens — a bare schema
+    # error does not tell the reader that CodeRabbit discards the file rather than truncating the field.
+    # Read from the schema rather than hardcoded, so it cannot drift from the real constraint.
+    tone_limit = schema["properties"]["tone_instructions"]["maxLength"]
+    tone = config.get("tone_instructions", "")
+    assert isinstance(tone, str) and len(tone) <= tone_limit, (
+        f"tone_instructions is {len(tone)} characters, over the {tone_limit} the schema allows. "
+        "CodeRabbit does not truncate it — it discards the entire config and reviews on defaults. "
+        "Move the detail into a path_instructions entry, which allows "
+        f"{schema['properties']['reviews']['properties']['path_instructions']['items']['properties']['instructions']['maxLength']}."
+    )
+
+    # The path rules are the substance of the file; losing them is what the cap above actually cost. The
+    # schema cannot check this part, because an empty instruction block is valid YAML and valid schema —
+    # it just reviews nothing, while reading as coverage.
     entries = {
         entry["path"]: entry.get("instructions") for entry in config["reviews"]["path_instructions"]
     }
     for zone in ("**", "verdict/**", "units/**", "rules/**", "evidence/**"):
         assert zone in entries, f"{zone} has no review instructions"
         body = entries[zone]
-        # A present-but-empty entry reads as coverage and reviews nothing, which is the failure this
-        # whole test exists to catch, one level down.
         assert isinstance(body, str) and body.strip(), f"{zone} has an empty instructions block"
 
     # `**` carries the project-wide safety framing that used to live in `tone_instructions`. Asserted by
@@ -138,4 +165,62 @@ def test_the_coderabbit_config_is_actually_used() -> None:
     assert "false-PASS" in entries["**"], (
         "the project-wide instruction no longer mentions the false-PASS rate, which is the one thing "
         "every review of this repository is supposed to be looking for"
+    )
+
+
+#: Set this to check the vendored schema against the live one. Off by default, and via an env var rather
+#: than a pytest marker so it cannot be selected by accident.
+SCHEMA_DRIFT_ENV = "GV_CHECK_CODERABBIT_SCHEMA"
+
+
+@pytest.mark.skipif(
+    not os.environ.get(SCHEMA_DRIFT_ENV),
+    reason=f"set {SCHEMA_DRIFT_ENV}=1 to check the vendored schema against the published one",
+)
+def test_the_config_still_satisfies_the_published_schema() -> None:
+    """Is the config still valid against the *live* schema? Opt-in, because it needs the network.
+
+    **This deliberately does not compare the two schemas for equality.** I wrote that version first and it
+    failed immediately: CodeRabbit had reworded a `description` between two fetches minutes apart. An
+    equality check would go red every time they touch any prose, which tells us nothing — a reworded
+    description cannot invalidate our config. A check that cries wolf about upstream copywriting is one
+    people learn to ignore, and then it is worse than absent.
+
+    So this asks the question that matters: does `.coderabbit.yaml` still satisfy what CodeRabbit publishes
+    *today*, and have the two limits we actually depend on moved?
+    """
+    import urllib.request
+
+    import yaml
+
+    with urllib.request.urlopen(CODERABBIT_SCHEMA_URL, timeout=30) as response:
+        published = json.loads(response.read())
+
+    config = yaml.safe_load((REPO_ROOT / ".coderabbit.yaml").read_text(encoding="utf-8"))
+    errors = sorted(
+        jsonschema.Draft202012Validator(published).iter_errors(config),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, (
+        "the published schema has changed and .coderabbit.yaml no longer satisfies it, so CodeRabbit is "
+        "reviewing on defaults right now:\n  "
+        + "\n  ".join(
+            f"{'.'.join(map(str, error.path)) or '<root>'}: {error.message}" for error in errors
+        )
+    )
+
+    vendored = json.loads(CODERABBIT_SCHEMA.read_text(encoding="utf-8"))
+
+    def limits(schema: dict[str, object]) -> dict[str, object]:
+        props = schema["properties"]
+        assert isinstance(props, dict)
+        instructions = props["reviews"]["properties"]["path_instructions"]["items"]["properties"]
+        return {
+            "tone_instructions": props["tone_instructions"]["maxLength"],
+            "path_instructions": instructions["instructions"]["maxLength"],
+        }
+
+    assert limits(vendored) == limits(published), (
+        f"the limits moved upstream: vendored {limits(vendored)} vs published {limits(published)}. "
+        f"Refresh {CODERABBIT_SCHEMA.relative_to(REPO_ROOT)} from {CODERABBIT_SCHEMA_URL}."
     )
