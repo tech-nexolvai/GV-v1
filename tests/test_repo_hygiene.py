@@ -121,9 +121,13 @@ def test_the_coderabbit_config_is_actually_used() -> None:
     assert isinstance(config, dict), ".coderabbit.yaml did not parse into a mapping"
 
     # **Validate the whole contract, not the one field that happened to break.** The original defect was
-    # a length; the next one will not be. Checking against CodeRabbit's own schema means any violation it
-    # would reject — a wrong type, an unknown key, a bad enum — fails here instead of silently downgrading
-    # every review to defaults.
+    # a length; the next one will not be. A wrong type or a bad enum fails here instead of silently
+    # downgrading every review to defaults.
+    #
+    # Being exact about the limits, because I first wrote "an unknown key" and that is only half true.
+    # The root has `additionalProperties: false`, so `languag:` is caught. `reviews` does not, so
+    # `reviews.profil:` validates cleanly and is then ignored — which is why the profile is asserted
+    # by name below rather than left to the schema.
     schema = json.loads(CODERABBIT_SCHEMA.read_text(encoding="utf-8"))
     errors = sorted(
         jsonschema.Draft202012Validator(schema).iter_errors(config),
@@ -152,13 +156,49 @@ def test_the_coderabbit_config_is_actually_used() -> None:
     # The path rules are the substance of the file; losing them is what the cap above actually cost. The
     # schema cannot check this part, because an empty instruction block is valid YAML and valid schema —
     # it just reviews nothing, while reading as coverage.
-    entries = {
-        entry["path"]: entry.get("instructions") for entry in config["reviews"]["path_instructions"]
-    }
+    #
+    # Reached through `get` with stated assertions rather than by indexing. The schema has no `required`
+    # at its root, so a config with no `reviews:` section at all validates cleanly and then died here on
+    # `KeyError: 'reviews'` — an incidental exception that tells the reader nothing about what is wrong.
+    reviews = config.get("reviews")
+    assert isinstance(reviews, dict), (
+        "the config has no `reviews:` section, so none of the per-zone instructions exist. The schema "
+        "permits this, which is why it is asserted here."
+    )
+    raw_entries = reviews.get("path_instructions")
+    assert (
+        isinstance(raw_entries, list) and raw_entries
+    ), "`reviews.path_instructions` is missing or empty, so every zone reviews on defaults"
+    for index, entry in enumerate(raw_entries):
+        assert isinstance(entry, dict) and isinstance(
+            entry.get("path"), str
+        ), f"path_instructions[{index}] is not an entry with a path: {entry!r}"
+
+    # Duplicates are rejected before the mapping is built, because building it hides them: a dict
+    # comprehension keeps the last entry for a repeated path, so an empty `**` followed by a populated
+    # one satisfies every assertion below while the file itself stays ambiguous. Which of two entries
+    # CodeRabbit honours is not something this repository should be guessing about.
+    paths = [entry["path"] for entry in raw_entries]
+    duplicates = sorted({path for path in paths if paths.count(path) > 1})
+    assert (
+        not duplicates
+    ), f"path_instructions repeats {duplicates}, so which block applies is ambiguous"
+
+    entries = {entry["path"]: entry.get("instructions") for entry in raw_entries}
     for zone in ("**", "verdict/**", "units/**", "rules/**", "evidence/**"):
         assert zone in entries, f"{zone} has no review instructions"
         body = entries[zone]
         assert isinstance(body, str) and body.strip(), f"{zone} has an empty instructions block"
+
+    # The profile, asserted by name because the schema cannot help here: `reviews` allows unknown keys,
+    # so `profil: assertive` would validate and then be ignored, leaving every review on the `chill`
+    # default. That is this PR's own bug in miniature — a setting that is present, believed, and inert.
+    allowed = schema["properties"]["reviews"]["properties"]["profile"]["enum"]
+    profile = reviews.get("profile")
+    assert profile in allowed, (
+        f"reviews.profile is {profile!r}, not one of {allowed}. A misspelled key here is not an error, "
+        "it is a silent fall back to the default profile."
+    )
 
     # `**` carries the project-wide safety framing that used to live in `tone_instructions`. Asserted by
     # concept rather than by exact prose, so the wording can be improved but not quietly dropped.
