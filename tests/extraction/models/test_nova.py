@@ -167,6 +167,7 @@ def test_drawing_text_is_sent_as_data_and_never_changes_instructions() -> None:
     assert hostile in repr(submitted["messages"])
     assert sink.items[0].context is request.context
     assert sink.items[0].bound_pt == Decimal(8)
+    assert {attempt.text for attempt in sink.items[0].injection_attempts} == {hostile}
 
 
 @pytest.mark.parametrize("bound", [Decimal("NaN"), Decimal("Infinity"), Decimal("-0.1"), 1.0])
