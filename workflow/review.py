@@ -222,6 +222,20 @@ def join_pages(results: Sequence[PageResult]) -> tuple[PageResult, ...]:
     """
     seen: dict[int, PageResult] = {}
     for result in results:
+        # **Refuse the wrong shape rather than count it.** Found by a review of this file's own test stub,
+        # which returned a `Mapping` here because the generic stub covered every stage. Nothing failed:
+        # iterating a mapping yields its keys, `"ran".index` is a bound method, that is hashable, and one
+        # key never gets compared — so the stage reported `{"pages": 1}` for zero pages extracted. A second
+        # key would have raised `TypeError` from `sorted` instead, in a test about something else entirely.
+        #
+        # Every real `extract_pages` is still unbuilt, so this is the window where a wrong return type gets
+        # written and silently reports phantom pages. AGENTS.md §2.2: silence must never read as completion.
+        if not isinstance(result, PageResult):
+            raise TypeError(
+                "extract_pages must return PageResult objects; got "
+                f"{type(result).__name__}. A mapping or a string here does not fail on its own — it "
+                "reports pages that were never read."
+            )
         if result.index in seen:
             raise ValueError(
                 f"page {result.index} was returned twice by the extraction fan-out. Two results for "

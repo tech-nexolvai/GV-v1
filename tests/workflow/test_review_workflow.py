@@ -685,6 +685,19 @@ class Boom:
         self.at = at
         self.calls: list[str] = []
 
+    def extract_pages(self, session: Session, package_revision_id: UUID) -> tuple[PageResult, ...]:
+        """Explicit, because this stage alone returns a sequence rather than a mapping.
+
+        The generic stub below answered for it too, and returned a dict. That did not fail — `join_pages`
+        counted a phantom page and the test carried on green. `join_pages` now refuses the wrong shape,
+        and this stub gives the right one.
+        """
+        del session, package_revision_id
+        self.calls.append("extract_pages")
+        if self.at == "extract_pages":
+            raise self.error
+        return ()
+
     def __getattr__(self, name: str) -> object:
         def stage(session: Session, package_revision_id: UUID) -> dict[str, object]:
             del session, package_revision_id
@@ -734,6 +747,67 @@ def test_a_permanent_failure_is_not_handed_back_for_retry(
     with unit_of_work(factory) as session:
         reached = [event.to_state for event in history(session, revision_id)]
     assert PackageState.FAILED_PERMANENT.value in [str(state) for state in reached]
+
+
+def test_a_retryable_failure_is_handed_back_for_retry(factory: sessionmaker[Session]) -> None:
+    """The other branch, which had no test at all.
+
+    Both failure tests drove a `ValueError`, and #212 classes that PERMANENT — so the bare `raise` that
+    lets a *retryable* failure reach the engine was never executed. That branch is the whole point of
+    giving Hatchet a retry budget: without it the budget applies to nothing reachable.
+
+    `TimeoutError` is RETRYABLE in `app/lifecycle/side_states.py`. What must happen is the opposite of the
+    permanent case — the original exception escapes so the engine sees a normal failure and retries it, and
+    `NonRetryableException` is not raised.
+    """
+    from hatchet_sdk.exceptions import NonRetryableException
+
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _revision_and_run(session)
+
+    stages = Boom(TimeoutError("the renderer stopped answering"), at="run_checks")
+    client = RecordingClient()
+    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]
+
+    payload = PackageReviewInput(package_revision_id=revision_id, workflow_run_id=run_id)
+    for stage in stage_order():
+        function = client.functions[stage]
+        assert callable(function)
+        if stage != "run_checks":
+            function(payload, None)
+            continue
+        with pytest.raises(TimeoutError) as caught:
+            function(payload, None)
+        break
+
+    assert not isinstance(
+        caught.value, NonRetryableException
+    ), "a transient failure must reach the engine as an ordinary exception, or the retry budget is unused"
+    with unit_of_work(factory) as session:
+        reached = [str(event.to_state) for event in history(session, revision_id)]
+    assert PackageState.FAILED_RETRYABLE.value in reached
+    assert PackageState.FAILED_PERMANENT.value not in reached
+
+
+def test_the_page_join_refuses_anything_that_is_not_a_page(factory: sessionmaker[Session]) -> None:
+    """A wrong return type from `extract_pages` must fail, not become a page count.
+
+    This is the bug a review found in this file's own stub, and the reason it is worth fixing in
+    `join_pages` rather than only in the stub: iterating a mapping yields keys, a string has an `.index`
+    attribute that is hashable, and a single key is never compared — so `{"ran": "x"}` produced
+    `{"pages": 1}` for zero pages read. Every real `extract_pages` is still unbuilt, so this is exactly
+    when a wrong shape gets written.
+    """
+    del factory
+    with pytest.raises(TypeError, match="never read"):
+        join_pages({"ran": "extract_pages"})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="PageResult"):
+        join_pages([{"index": 0}])  # type: ignore[list-item]
+    # The right shape still works.
+    assert join_pages((PageResult(index=1, payload={}), PageResult(index=0, payload={}))) == (
+        PageResult(index=0, payload={}),
+        PageResult(index=1, payload={}),
+    )
 
 
 def test_a_failure_that_cannot_be_recorded_still_reports_itself(
