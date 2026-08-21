@@ -48,11 +48,18 @@ jobs:
       DATABASE_URL: postgresql+psycopg://gv_test:gv_test@localhost:5432/gv_test
 
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to a commit SHA, and the checkout credential is dropped. zizmor flags both: a floating tag
+      # can be moved under us by anyone who controls the upstream repository, and a persisted credential
+      # can leave the runner inside an artifact. Nothing in this workflow writes to git — the only git
+      # command is `git ls-files`, which needs no auth — and the one step that talks to the API gets its
+      # token from `GH_TOKEN` in the environment, not from the checkout. Verified before changing this.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # Python 3.12 is the declared target in AGENTS.md section 4. Test the floor
       # we promise, not whatever is newest.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
           cache: pip
@@ -120,7 +127,9 @@ jobs:
       issues: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # Cheap and useful today: proprietary client material must never be
       # committed. Full version lands with #38.
@@ -140,7 +149,7 @@ jobs:
       #
       # NB: a bare ' #' in a YAML scalar starts a comment before the shell sees the
       # line, which truncates the command. Use block scalars and avoid '#' in them.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
           cache: pip
@@ -217,10 +226,6 @@ jobs:
       # unpinned tag can be moved under us, and a persisted credential can leak through an artifact.
       # This job needs neither — it reads the tree and talks to one public URL. The comments name the
       # tags so the pins are still readable.
-      #
-      # NB: the older jobs above still use floating tags and keep the credential. That is a pre-existing
-      # pattern across this file, not something this job introduced, and changing how the jobs that push
-      # and read issues handle credentials deserves its own change rather than a drive-by here.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
