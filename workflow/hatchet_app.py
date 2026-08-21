@@ -79,8 +79,12 @@ def build_worker(
     `run_forever` that swallowed a startup failure would hide exactly the failure worth seeing.
 
     Both concurrency caps come from settings. `max_concurrent_packages` shapes the workflow's own
-    concurrency; `max_concurrent_page_tasks` bounds the worker's slots, which is what actually limits
-    how much rendering and OCR is resident at once.
+    concurrency; `max_concurrent_page_tasks` becomes the worker's slot count.
+
+    Being exact about that second one, because the setting's name is ahead of the code: the only tasks
+    registered today are the six stages, and they run in a line, so this currently caps concurrent stage
+    tasks rather than page tasks — and a single package can never occupy more than one slot. It becomes
+    literally what it says when B6.4 (#163) adds the per-page fan-out. See `app/config.py`.
     """
     hatchet = hatchet_client(settings)
     workflow = register(

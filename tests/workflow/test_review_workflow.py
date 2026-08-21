@@ -21,6 +21,7 @@ Source: backend proposal §9.1–§9.4 · Design: `docs/DESIGN_PLATFORM.md` §6 
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from itertools import pairwise
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -45,6 +46,7 @@ from workflow.review import (
     PackageReviewInput,
     PageResult,
     join_pages,
+    register,
     run_all,
     run_stage,
     stage_order,
@@ -58,7 +60,9 @@ DATABASE_URL = "postgresql+psycopg://gv:gv@localhost:5433/gv"
 
 @pytest.fixture
 def factory(postgres_engine: Engine) -> sessionmaker[Session]:
-    config = Config("alembic.ini")
+    # Resolved from REPO_ROOT, not the working directory: `Config("alembic.ini")` only finds the file
+    # when pytest happens to be run from the repository root. Several older test modules still do that.
+    config = Config(str(REPO_ROOT / "alembic.ini"))
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
     return session_factory(postgres_engine)
@@ -591,6 +595,63 @@ def test_building_a_client_without_a_token_fails_loudly() -> None:
 
     with pytest.raises(Exception, match="[Tt]oken"):
         hatchet_client(Settings(database_url=DATABASE_URL))  # type: ignore[call-arg]
+
+
+class RecordingClient:
+    """Enough of a Hatchet client for `register` to build its graph against, and nothing more.
+
+    The point is the boundary, not the engine. `register`'s body is the one part of this story no other
+    test reaches — it is the wiring between our stage table and the SDK — so without something here, a
+    wrong keyword or a mis-shaped argument would first show up at worker startup on a real box. A stub
+    that records what it was handed turns that into a test failure.
+    """
+
+    def __init__(self) -> None:
+        self.workflow_kwargs: dict[str, object] = {}
+        self.tasks: list[dict[str, object]] = []
+
+    def workflow(self, **kwargs: object) -> RecordingClient:
+        self.workflow_kwargs = kwargs
+        return self
+
+    def task(self, **kwargs: object) -> Callable[[object], object]:
+        self.tasks.append(kwargs)
+
+        def decorate(fn: object) -> object:
+            return fn
+
+        return decorate
+
+
+def test_registering_the_graph_passes_the_arguments_the_sdk_expects(
+    factory: sessionmaker[Session],
+) -> None:
+    """The wiring, checked without an engine.
+
+    `concurrency` is deliberately a plain `int`. The SDK's own signature is
+    `int | ConcurrencyExpression | list[ConcurrencyExpression] | None`, and it converts an int itself —
+    `ConcurrencyExpression.from_int(...)` in `hatchet_sdk/runnables/workflow.py` — so building the
+    expression by hand here would only duplicate what the SDK documents it does with the integer.
+    """
+    client = RecordingClient()
+    register(
+        client,  # type: ignore[arg-type]
+        factory=factory,
+        max_concurrent_packages=1,
+    )
+
+    assert client.workflow_kwargs["name"] == WORKFLOW_NAME
+    assert client.workflow_kwargs["input_validator"] is PackageReviewInput
+    assert client.workflow_kwargs["concurrency"] == 1
+
+    # Six stages, in pipeline order, each depending on the one before it and the first on nothing.
+    assert [task["name"] for task in client.tasks] == list(stage_order())
+    assert client.tasks[0]["parents"] is None, "the first stage waits for nothing"
+    for task in client.tasks[1:]:
+        parents = task["parents"]
+        assert (
+            isinstance(parents, list) and len(parents) == 1
+        ), "each later stage depends on exactly its predecessor, which is what makes the walk a line"
 
 
 def test_the_default_stages_say_they_did_nothing(factory: sessionmaker[Session]) -> None:

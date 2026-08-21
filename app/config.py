@@ -56,9 +56,18 @@ class Settings(BaseSettings):
     drawings, not an assumption that the box has room."""
 
     max_concurrent_page_tasks: int = Field(default=2, ge=1)
-    """How many page-level tasks a worker runs at once. Defaults to 2: a little parallelism where the
-    unit of work is a single page, which is far smaller than a package. This is the cap that actually
-    bounds how much rendering and OCR is resident, since pages are where both happen."""
+    """How many tasks one worker runs at once. Defaults to 2: a little parallelism where the unit of
+    work is smaller than a whole package.
+
+    **What it bounds today, stated precisely, because the name is ahead of the code.** This becomes the
+    worker's slot count, and the only tasks registered so far are the six stages — which run in a line,
+    each waiting for the one before. So today it caps concurrent *stage* tasks across packages, and one
+    package on its own cannot use more than a single slot.
+
+    It is named for pages because pages are what it is *for*: B6.4 (#163) adds the task-per-page fan-out,
+    and that is when rendering and OCR become the resident cost this number is meant to hold down. Until
+    then the name describes the intent and this docstring describes the effect. Worth renaming if #163
+    moves further out — that is Anant's call, not a silent change."""
 
     @field_validator("database_url")
     @classmethod
