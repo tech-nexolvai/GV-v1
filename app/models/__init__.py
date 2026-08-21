@@ -70,6 +70,8 @@ from app.models.rules import (
     RuleSnapshot,
 )
 from app.models.runs import (
+    AgentNodeInvocationClaim,
+    AgentNodeInvocationState,
     ExtractionRun,
     ModelInvocation,
     ModelInvocationOutcome,
@@ -84,6 +86,8 @@ from app.models.verdicts import (
 )
 
 __all__ = [
+    "AgentNodeInvocationClaim",
+    "AgentNodeInvocationState",
     "Alias",
     "Approval",
     "ApprovalSource",

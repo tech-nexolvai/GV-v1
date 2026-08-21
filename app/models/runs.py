@@ -42,6 +42,14 @@ class ModelInvocationOutcome(StrEnum):
     FAILED = "failed"
 
 
+class AgentNodeInvocationState(StrEnum):
+    """Durable state of the claim that prevents a repeated paid node call."""
+
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 #: The enum rendered as SQL literals, for the ORM's own `CHECK` constraint below.
 #:
 #: This is generated from the enum, so the two can never disagree — which is why the drift that
@@ -116,6 +124,10 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
     # Evidence artifacts land in C1.6. Retain their identity now without incorrectly
     # treating a generated crop as an uploaded source artifact.
     crop_artifact_id: Mapped[UUID | None] = mapped_column(default=None)
+    node_invocation_key: Mapped[str | None] = mapped_column(String(71), unique=True, default=None)
+    candidate_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), unique=True, default=None
+    )
     input_tokens: Mapped[int]
     output_tokens: Mapped[int]
     cost_micros: Mapped[int]
@@ -126,6 +138,10 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
         CheckConstraint("model_id <> ''", name="model_invocation_model_id"),
         CheckConstraint("prompt_id <> ''", name="model_invocation_prompt_id"),
         CheckConstraint("template_id <> ''", name="model_invocation_template_id"),
+        CheckConstraint(
+            "node_invocation_key IS NULL OR node_invocation_key ~ '^sha256:[0-9a-f]{64}$'",
+            name="model_invocation_node_key",
+        ),
         CheckConstraint("input_tokens >= 0", name="model_invocation_input_tokens"),
         CheckConstraint("output_tokens >= 0", name="model_invocation_output_tokens"),
         CheckConstraint("cost_micros >= 0", name="model_invocation_cost"),
@@ -135,4 +151,39 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
             name="model_invocation_outcome",
         ),
         Index("ix_model_invocations_created_at", "created_at"),
+    )
+
+
+class AgentNodeInvocationClaim(Base, TimestampedUUID):
+    """Mutable reservation; final invocation and candidate records remain append-only."""
+
+    __tablename__ = "agent_node_invocation_claims"
+
+    node_invocation_key: Mapped[str] = mapped_column(String(71), unique=True)
+    extraction_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), index=True
+    )
+    state: Mapped[str] = mapped_column(String(32))
+    model_invocation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_invocations.id", ondelete="RESTRICT"), unique=True, default=None
+    )
+    candidate_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), unique=True, default=None
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "node_invocation_key ~ '^sha256:[0-9a-f]{64}$'",
+            name="agent_node_invocation_claim_key",
+        ),
+        CheckConstraint(
+            "state IN ('in_progress', 'completed', 'failed')",
+            name="agent_node_invocation_claim_state",
+        ),
+        CheckConstraint(
+            "(state = 'in_progress' AND model_invocation_id IS NULL AND candidate_id IS NULL) OR "
+            "(state = 'completed' AND model_invocation_id IS NOT NULL AND candidate_id IS NOT NULL) OR "
+            "(state = 'failed' AND model_invocation_id IS NOT NULL AND candidate_id IS NULL)",
+            name="agent_node_invocation_claim_completion",
+        ),
     )

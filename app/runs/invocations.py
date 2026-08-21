@@ -107,6 +107,8 @@ def record(session: Session, invocation: InvocationRecord) -> ModelInvocation:
         prompt_id=invocation.prompt_id,
         template_id=invocation.template_id,
         crop_artifact_id=invocation.crop_artifact_id,
+        node_invocation_key=invocation.node_invocation_key,
+        candidate_id=invocation.candidate_id,
         input_tokens=invocation.input_tokens,
         output_tokens=invocation.output_tokens,
         cost_micros=invocation.cost_micros,

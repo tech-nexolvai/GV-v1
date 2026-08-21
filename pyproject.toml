@@ -37,9 +37,9 @@ extraction = [
 # Phase 3 — rule authoring: YAML loading. Validation itself is a runtime dependency.
 rules = ["pyyaml"]
 
-# Phase 4 — bounded extraction agent. LangGraph is MIT licensed; hard safety
-# bounds remain in our graph nodes rather than relying on framework defaults.
-ai = ["langgraph>=1,<2"]
+# Phase 4 — bounded extraction agent. LangGraph and its PostgreSQL saver are MIT
+# licensed; hard safety bounds remain in our nodes rather than framework defaults.
+ai = ["langgraph>=1,<2", "langgraph-checkpoint-postgres>=3,<4"]
 
 # Phase 6 — control plane and durable platform
 platform = [
