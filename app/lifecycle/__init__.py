@@ -28,11 +28,23 @@ from app.lifecycle.states import (
     render_transition_table,
     transition,
 )
+from app.lifecycle.supersede import (
+    PACKAGE_WORKFLOW,
+    NoNewVersions,
+    NothingToSupersede,
+    TwoVersionsOfOneDocument,
+    VersionFromAnotherPackage,
+    current_revision,
+    revision_chain,
+    supersede,
+    superseded_by,
+)
 
 __all__ = [
     "ASSEMBLY_STATES",
     "ENTRY_CONDITIONS",
     "FAILURE_STATES",
+    "PACKAGE_WORKFLOW",
     "PROCESSING_STATES",
     "RESUMABLE_STATES",
     "REVIEW_OUTCOMES",
@@ -44,11 +56,19 @@ __all__ = [
     "EntryCondition",
     "EntryConditionUnmet",
     "IllegalTransition",
+    "NoNewVersions",
+    "NothingToSupersede",
+    "TwoVersionsOfOneDocument",
     "UnknownRevision",
+    "VersionFromAnotherPackage",
     "begin",
+    "current_revision",
     "history",
     "record",
     "render_history",
     "render_transition_table",
+    "revision_chain",
+    "supersede",
+    "superseded_by",
     "transition",
 ]
