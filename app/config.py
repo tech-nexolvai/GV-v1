@@ -34,6 +34,32 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", min_length=1)
     request_id_header: str = Field(default="X-Request-ID", min_length=1)
 
+    hatchet_token: str = Field(default="", description="Hatchet client token")
+    """Empty by default, and the emptiness is caught where it matters. `workflow/hatchet_app.py` builds a
+    client only when a worker is started, and the SDK refuses a blank token there — so an API process,
+    which never starts a worker, does not need one. Requiring it here would make every API deployment
+    carry a credential it has no use for."""
+
+    hatchet_namespace: str = Field(default="", min_length=0)
+    """Namespace prefix for workflow names, so two environments can share one engine without one
+    picking up the other's packages."""
+
+    max_concurrent_packages: int = Field(default=1, ge=1)
+    """How many package revisions may be processed at once. **Defaults to 1 deliberately.**
+
+    One 8 GB VM shares memory between rendering, OCR and PostgreSQL, so a second package processing
+    alongside the first is a second package's worth of resident pages. At 1, peak memory is one
+    package's work plus the database, a second package queues rather than competing, and an
+    out-of-memory kill cannot be blamed on contention between packages.
+
+    It is a setting so it can be raised — but raising it should follow a measurement against real
+    drawings, not an assumption that the box has room."""
+
+    max_concurrent_page_tasks: int = Field(default=2, ge=1)
+    """How many page-level tasks a worker runs at once. Defaults to 2: a little parallelism where the
+    unit of work is a single page, which is far smaller than a package. This is the cap that actually
+    bounds how much rendering and OCR is resident, since pages are where both happen."""
+
     @field_validator("database_url")
     @classmethod
     def _looks_like_postgres(cls, value: str) -> str:

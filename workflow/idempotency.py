@@ -81,6 +81,7 @@ __all__ = [
     "Claim",
     "claim",
     "idempotency_key",
+    "stage_idempotency_key",
 ]
 
 #: Prefix naming the digest algorithm, matching how rule snapshots are identified in
@@ -196,6 +197,59 @@ def idempotency_key(
     # defaulted: `str.encode()` is UTF-8 today, and a key is not something to leave to a default.
     canonical = json.dumps(
         document,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return KEY_PREFIX + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def stage_idempotency_key(
+    *,
+    package_revision_id: UUID,
+    stage: str,
+    engine_version: str,
+) -> str:
+    """The stable identity of one *stage* of one package revision (#215, C4.3).
+
+    A second key function, because there is a second kind of identity. `idempotency_key` above names a
+    **read of a document region** — its components are the document version, the region, the extractor
+    and its config, exactly as backend §9.2 gives them. A workflow stage is coarser: "run the checks for
+    this package revision" has no document version and no region, and passing the revision id in as one
+    would be a lie about what the field means.
+
+    It lives here rather than in `workflow/review.py` for one reason: `_canonical` below. Two key
+    functions with two canonicalisers is how two keys come to disagree about whether `Decimal("1.0")`
+    and `Decimal("1.00")` are the same thing, and a key that changes when it should not costs a rerun
+    while a key that fails to change reuses a result computed under different conditions. One
+    canonicaliser, one prefix, one place to read both identities.
+
+    `engine_version` is inside the key for the same reason `extractor_version` is inside the other one:
+    a changed engine is a different task, not a cache hit (`AGENTS.md` §2.7).
+
+    Args:
+        package_revision_id: the revision the stage is running for.
+        stage: the stage name, e.g. `run_checks`.
+        engine_version: the version of the code running the stage.
+
+    Raises:
+        TypeError: `package_revision_id` is not a UUID.
+        ValueError: the stage or the engine version is blank.
+    """
+    if not isinstance(package_revision_id, UUID):
+        raise TypeError("package_revision_id must be a UUID")
+    _require_text(stage, "stage")
+    _require_text(engine_version, "engine_version")
+
+    canonical = json.dumps(
+        _canonical(
+            {
+                "package_revision_id": package_revision_id,
+                "stage": stage,
+                "engine_version": engine_version,
+            }
+        ),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,
