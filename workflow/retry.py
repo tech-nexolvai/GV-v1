@@ -56,6 +56,7 @@ __all__ = [
     "RETRY_POLICY",
     "STAGE_RULE",
     "UNKNOWN_TASK_RULE",
+    "EngineRetry",
     "Policy",
     "RetryRule",
     "Situation",
@@ -205,7 +206,22 @@ RETRY_POLICY: Final[Mapping[str, RetryRule]] = {
 }
 
 
-def engine_retry_settings(task_type: str) -> dict[str, object]:
+class EngineRetry(NamedTuple):
+    """`RetryRule` in the shape Hatchet's `task()` takes.
+
+    A NamedTuple rather than a Pydantic model, though the review suggested one. Pydantic earns its keep
+    validating input from outside the process; every field here is computed from constants in this file,
+    so validation would only re-check arithmetic. What the loose `dict[str, object]` actually cost was
+    *typing* at the call site — a `**` splat and a `type: ignore`. A NamedTuple fixes that, matches
+    `RetryRule` next door, and adds no dependency.
+    """
+
+    retries: int
+    backoff_factor: float
+    backoff_max_seconds: int
+
+
+def engine_retry_settings(task_type: str) -> EngineRetry:
     """`RETRY_POLICY[task_type]` expressed as Hatchet task settings.
 
     **Why this exists at all.** Without it the policy table was decorative: `run_all` never sleeps and
@@ -227,11 +243,11 @@ def engine_retry_settings(task_type: str) -> dict[str, object]:
     diverge, which turns that trap into a red test rather than a wrong wait nobody measures.
     """
     rule = rule_for(task_type)
-    return {
-        "retries": max(rule.max_attempts - 1, 0),
-        "backoff_factor": rule.base_delay_s,
-        "backoff_max_seconds": int(rule.max_delay_s),
-    }
+    return EngineRetry(
+        retries=max(rule.max_attempts - 1, 0),
+        backoff_factor=rule.base_delay_s,
+        backoff_max_seconds=int(rule.max_delay_s),
+    )
 
 
 def engine_delays(task_type: str) -> tuple[float, ...]:
@@ -248,7 +264,11 @@ def engine_delays(task_type: str) -> tuple[float, ...]:
 
 
 def policy_delays(task_type: str) -> tuple[float, ...]:
-    """The same waits as this module's own policy computes them, at full jitter.
+    """The same waits as this module's own policy computes them, at the top of the jitter window.
+
+    `jitter_fraction=1.0` is the **maximum of the equal-jitter window**, not "full jitter" — I called it
+    that first and the two mean different things. `delay_for` draws from `[capped / 2, capped]`, so 1.0
+    picks `capped`; full jitter would be a draw from `[0, capped]`, which this deliberately is not.
 
     Compared against `engine_delays` by a test. Two functions rather than one because the point is that
     they are two different formulas that happen to agree, not one formula used twice.

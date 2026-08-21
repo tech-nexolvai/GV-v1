@@ -266,11 +266,16 @@ def test_the_engine_gets_the_budget_the_policy_describes() -> None:
     for stage in stage_order():
         settings = engine_retry_settings(stage)
         # Hatchet counts retries, we count attempts.
-        assert settings["retries"] == STAGE_RULE.max_attempts - 1 == 2
-        assert settings["backoff_max_seconds"] == int(STAGE_RULE.max_delay_s) == 120
+        assert settings.retries == STAGE_RULE.max_attempts - 1 == 2
+        assert settings.backoff_max_seconds == int(STAGE_RULE.max_delay_s) == 120
+        # Asserted independently of `engine_delays`, which reads `RetryRule` directly — otherwise a
+        # wrongly mapped factor would agree with itself and fail nothing.
+        assert settings.backoff_factor == STAGE_RULE.base_delay_s == 2.0
 
-    assert engine_retry_settings("ocr")["retries"] == 1, "OCR's smaller budget survives the mapping"
-    assert engine_retry_settings("pdf_repair")["retries"] == 0, "one attempt means no retries"
+    assert engine_retry_settings("ocr").retries == 1, "OCR's smaller budget survives the mapping"
+    assert engine_retry_settings("ocr").backoff_factor == OCR_RULE.base_delay_s == 2.0
+    assert engine_retry_settings("pdf_repair").retries == 0, "one attempt means no retries"
+    assert engine_retry_settings("pdf_repair").backoff_factor == 0.0
 
 
 def test_the_engine_and_the_policy_compute_the_same_waits() -> None:

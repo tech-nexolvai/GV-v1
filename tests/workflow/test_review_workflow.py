@@ -609,6 +609,7 @@ class RecordingClient:
     def __init__(self) -> None:
         self.workflow_kwargs: dict[str, object] = {}
         self.tasks: list[dict[str, object]] = []
+        self.functions: dict[str, object] = {}
 
     def workflow(self, **kwargs: object) -> RecordingClient:
         self.workflow_kwargs = kwargs
@@ -618,6 +619,9 @@ class RecordingClient:
         self.tasks.append(kwargs)
 
         def decorate(fn: object) -> object:
+            # Kept, so a test can call the registered function and see what the engine would see. The
+            # bodies of these tasks are the one part of the story no other test reaches.
+            self.functions[str(kwargs.get("name"))] = fn
             return fn
 
         return decorate
@@ -655,7 +659,7 @@ def test_registering_the_graph_passes_the_arguments_the_sdk_expects(
 
     for task in client.tasks:
         expected = engine_retry_settings(str(task["name"]))
-        for setting, value in expected.items():
+        for setting, value in expected._asdict().items():
             # Presence asserted before equality, so a stage registered with no budget at all reports that
             # rather than dying on a KeyError that names nothing.
             assert setting in task, (
@@ -664,12 +668,108 @@ def test_registering_the_graph_passes_the_arguments_the_sdk_expects(
             )
             assert task[setting] == value, f"{task['name']} lost {setting}"
         assert task["retries"] == 2, "three attempts is two retries"
+        assert task["backoff_factor"] == 2.0, "the base delay reaches the engine as its factor"
     assert client.tasks[0]["parents"] is None, "the first stage waits for nothing"
     for task in client.tasks[1:]:
         parents = task["parents"]
         assert (
             isinstance(parents, list) and len(parents) == 1
         ), "each later stage depends on exactly its predecessor, which is what makes the walk a line"
+
+
+class Boom:
+    """Stages that fail on demand, so the task body's error handling can be exercised."""
+
+    def __init__(self, error: Exception, *, at: str = "ingest") -> None:
+        self.error = error
+        self.at = at
+        self.calls: list[str] = []
+
+    def __getattr__(self, name: str) -> object:
+        def stage(session: Session, package_revision_id: UUID) -> dict[str, object]:
+            del session, package_revision_id
+            self.calls.append(name)
+            if name == self.at:
+                raise self.error
+            return {"ran": name}
+
+        return stage
+
+
+def test_a_permanent_failure_is_not_handed_back_for_retry(
+    factory: sessionmaker[Session],
+) -> None:
+    """**A bug this PR introduced, then fixed.**
+
+    Giving the engine a retry budget without this check made things worse than the zero-retry default it
+    replaced: Hatchet retries any exception, so a `ValueError` — which #212 classifies as PERMANENT — would
+    have been re-run twice with backoff. `workflow/retry.py`'s `should_retry` says never to retry a
+    permanent failure, and the task body is not `run_all`, so nothing was consulting it.
+
+    The task now raises `NonRetryableException`, which is how the engine is told not to try again.
+    """
+    from hatchet_sdk.exceptions import NonRetryableException
+
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _revision_and_run(session)
+
+    stages = Boom(ValueError("the rulebook is missing"), at="run_checks")
+    client = RecordingClient()
+    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]
+
+    payload = PackageReviewInput(package_revision_id=revision_id, workflow_run_id=run_id)
+    # Walk the earlier stages so the package is processing when the failing one runs.
+    for stage in stage_order():
+        function = client.functions[stage]
+        assert callable(function)
+        if stage != "run_checks":
+            function(payload, None)
+            continue
+        with pytest.raises(NonRetryableException):
+            function(payload, None)
+        break
+
+    assert stages.calls.count("run_checks") == 1, "it must not be retried in-process either"
+
+    with unit_of_work(factory) as session:
+        reached = [event.to_state for event in history(session, revision_id)]
+    assert PackageState.FAILED_PERMANENT.value in [str(state) for state in reached]
+
+
+def test_a_failure_that_cannot_be_recorded_still_reports_itself(
+    factory: sessionmaker[Session],
+) -> None:
+    """**A pre-existing hole from #215, found while fixing the one above.**
+
+    A package only reaches a failure state from a *processing* state. So when the very first stage fails,
+    the revision is still `UPLOADED`, `enter_failure` raises `IllegalTransition`, and that used to be the
+    only exception the caller ever saw — the `ValueError` that actually stopped the package vanished.
+
+    Now the recording problem is attached as a note and the original propagates. This does not fix the
+    underlying gap, which is a lifecycle design question raised on the PR: a package failing in its first
+    stage still ends up with no failure state.
+    """
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _revision_and_run(session)
+
+    stages = Boom(ValueError("the rulebook is missing"), at="ingest")
+    client = RecordingClient()
+    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]
+
+    function = client.functions["ingest"]
+    assert callable(function)
+    payload = PackageReviewInput(package_revision_id=revision_id, workflow_run_id=run_id)
+
+    with pytest.raises(Exception) as caught:
+        function(payload, None)
+
+    # The real error, not the state machine's complaint about recording it.
+    assert "the rulebook is missing" in str(caught.value)
+    notes = getattr(caught.value, "__notes__", [])
+    assert any(
+        "could not be recorded" in note for note in notes
+    ), "the caller should be told that the failure state was not written, not left to guess"
+    assert any("IllegalTransition" in note for note in notes)
 
 
 def test_the_default_stages_say_they_did_nothing(factory: sessionmaker[Session]) -> None:

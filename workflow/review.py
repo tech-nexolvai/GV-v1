@@ -40,7 +40,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.session import unit_of_work
-from app.lifecycle.side_states import enter_failure
+from app.lifecycle.side_states import FailureClass, classify, enter_failure
 from app.lifecycle.states import transition
 from app.models import PackageState
 from workflow.idempotency import CLAIMED, claim, stage_idempotency_key
@@ -342,15 +342,51 @@ def run_all(
                     )
                 )
         except Exception as error:
-            with unit_of_work(factory) as session:
-                enter_failure(
-                    session,
-                    package_revision_id,
-                    actor=f"the {stage.replace('_', ' ')} worker",
-                    error=error,
-                )
+            _record_failure(
+                factory,
+                package_revision_id,
+                actor=f"the {stage.replace('_', ' ')} worker",
+                error=error,
+            )
             raise
     return tuple(outcomes)
+
+
+def _record_failure(
+    factory: sessionmaker[Session],
+    package_revision_id: UUID,
+    *,
+    actor: str,
+    error: BaseException,
+) -> None:
+    """Record a stage failure, and never let the recording hide what failed.
+
+    **Recording can itself be refused, and that used to lose the real error.** A package only reaches a
+    failure state from a *processing* state, so a first-stage failure — where the revision is still
+    `UPLOADED` — makes `enter_failure` raise `IllegalTransition`, and that exception replaced the one it
+    was trying to report. Proved against the database before writing this:
+
+        IllegalTransition: a package revision in UPLOADED may not move to FAILED_PERMANENT.
+
+    The caller saw a state-machine complaint and no sign of the `ValueError` that had actually stopped the
+    package. So a recording problem is attached to the original as a note, and the original is what
+    propagates: both visible, neither swallowed.
+
+    This does **not** close the underlying gap. A package that fails during its first stage still ends up
+    with no failure state, because the table has nowhere for it to go from `UPLOADED`. That is a lifecycle
+    design question — whether `run_stage` should move the package into the stage's state before doing the
+    work, or whether `UPLOADED` should be allowed to fail — and it is raised rather than decided here.
+
+    A separate transaction from the failed one on purpose: that one has rolled back, so a reason written
+    inside it would be discarded along with the work it describes.
+    """
+    try:
+        with unit_of_work(factory) as session:
+            enter_failure(session, package_revision_id, actor=actor, error=error)
+    except Exception as write_failed:  # noqa: BLE001 - the original error must outlive this one
+        error.add_note(
+            f"the failure could not be recorded: {type(write_failed).__name__}: {write_failed}"
+        )
 
 
 def register(
@@ -400,15 +436,41 @@ def register(
             _state: PackageState = state,
         ) -> dict[str, object]:
             del ctx
-            with unit_of_work(factory) as session:
-                outcome = run_stage(
-                    session,
-                    stage=_stage,
-                    state=_state,
-                    package_revision_id=payload.package_revision_id,
-                    workflow_run_id=payload.workflow_run_id,
-                    stages=resolved,
-                )
+            actor = f"the {_stage.replace('_', ' ')} worker"
+            try:
+                with unit_of_work(factory) as session:
+                    outcome = run_stage(
+                        session,
+                        stage=_stage,
+                        state=_state,
+                        package_revision_id=payload.package_revision_id,
+                        workflow_run_id=payload.workflow_run_id,
+                        stages=resolved,
+                    )
+            except Exception as error:
+                # **A permanent failure must not be retried, and the engine cannot know that.** This task
+                # is not `run_all` — it is the engine calling `run_stage` directly — so without this the
+                # retry budget above would happily re-run a `ValueError` twice. `workflow/retry.py`'s
+                # `should_retry` says never to do that, and giving the engine a budget while leaving this
+                # out made the behaviour worse than the zero-retry default it replaced.
+                #
+                # Recorded through `_record_failure`, which is careful not to let a refused transition
+                # replace the error it was reporting.
+                _record_failure(factory, payload.package_revision_id, actor=actor, error=error)
+                if classify(error) is FailureClass.PERMANENT:
+                    # Imported here for the same reason the client is: `hatchet_sdk` pulls in gRPC, and
+                    # this module is imported by tests that never start an engine.
+                    from hatchet_sdk.exceptions import NonRetryableException
+
+                    permanent = NonRetryableException(str(error))
+                    # Notes travel with the exception that actually escapes, not the one it replaces.
+                    # `_record_failure` attaches "the failure could not be recorded" to the original, and
+                    # a caller reading this task sees only what is raised here — my own test caught that,
+                    # by asserting on the notes of whatever came out.
+                    for note in getattr(error, "__notes__", []):
+                        permanent.add_note(note)
+                    raise permanent from error
+                raise
             return {
                 "stage": outcome.stage,
                 "state": outcome.state.value,
@@ -419,11 +481,14 @@ def register(
         # **The retry budget goes to the engine, because the engine is what retries.** `run_all` neither
         # sleeps nor re-runs a stage, so before this the policy in `workflow/retry.py` had no caller and
         # described behaviour nothing implemented. See `engine_retry_settings` for the mapping and for the
-        # one place it is fragile.
+        # one place it is fragile. The budget only applies to failures `step` lets through as retryable.
+        budget = engine_retry_settings(stage)
         decorate = workflow.task(
             name=stage,
             parents=[previous] if previous else None,
-            **engine_retry_settings(stage),  # type: ignore[arg-type]
+            retries=budget.retries,
+            backoff_factor=budget.backoff_factor,
+            backoff_max_seconds=budget.backoff_max_seconds,
         )
         previous = decorate(step)
 
