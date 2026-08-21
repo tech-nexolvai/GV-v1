@@ -82,3 +82,42 @@ def test_gitignore_covers_the_sensitive_paths() -> None:
     text = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     for needed in ("data/", "eval/gold_set/cases/", ".env", ".claude/settings.local.json"):
         assert needed in text, f".gitignore no longer covers {needed!r}"
+
+
+#: `tone_instructions` in `.coderabbit.yaml`, from CodeRabbit's published schema
+#: (https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json). Hardcoded rather than
+#: fetched: a test that needs the network fails for reasons that have nothing to do with the repository.
+CODERABBIT_TONE_LIMIT = 250
+
+
+def test_the_coderabbit_config_is_actually_used() -> None:
+    """The reviewer config must parse and fit its schema, or it is silently thrown away.
+
+    This is a regression test for a real and quiet failure. `tone_instructions` had grown to 431
+    characters against a 250-character cap, so CodeRabbit rejected **the whole file** and reviewed on
+    defaults — profile CHILL, and none of the `path_instructions` for `verdict/`, `units/`, `rules/` or
+    `evidence/` in force. Every review for weeks ran without the safety rules the file exists to state,
+    and nothing failed: the only sign was one collapsed warning inside a PR comment.
+
+    That is the worst shape a problem can have here — a safety control that is configured, believed to be
+    working, and not running. So it is asserted, cheaply, with no network.
+    """
+    import yaml
+
+    config_path = REPO_ROOT / ".coderabbit.yaml"
+    assert config_path.is_file(), ".coderabbit.yaml is missing, so the reviewer runs on defaults"
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert isinstance(config, dict), ".coderabbit.yaml did not parse into a mapping"
+
+    tone = config.get("tone_instructions", "")
+    assert len(tone) <= CODERABBIT_TONE_LIMIT, (
+        f"tone_instructions is {len(tone)} characters, over the {CODERABBIT_TONE_LIMIT} the schema "
+        "allows. CodeRabbit does not truncate it — it discards the entire config and reviews on "
+        "defaults. Move the detail into a path_instructions entry, which allows 20000."
+    )
+
+    # The path rules are the substance of the file; losing them is what the cap above actually cost.
+    covered = {entry["path"] for entry in config["reviews"]["path_instructions"]}
+    for zone in ("verdict/**", "units/**", "rules/**", "evidence/**"):
+        assert zone in covered, f"{zone} has no review instructions"
