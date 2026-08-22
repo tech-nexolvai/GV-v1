@@ -381,3 +381,52 @@ def test_a_payload_with_no_usable_title_is_malformed(
     monkeypatch.setattr(issue_gate, "gh_json", lambda _path: payload)
     monkeypatch.setattr(issue_gate.sys, "argv", ["issue_gate.py", "219"])
     assert int(issue_gate.main()) == issue_gate.MALFORMED
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            {"state": "open", "title": "T", "body": [], "labels": []}, id="body-is-a-list"
+        ),
+        pytest.param(
+            {"state": "open", "title": "T", "body": 42, "labels": []}, id="body-is-a-number"
+        ),
+        pytest.param(
+            {"state": "open", "title": "T", "body": "x", "labels": "ready"}, id="labels-is-a-string"
+        ),
+        pytest.param(
+            {"state": "open", "title": "T", "body": "x", "labels": [{"nom": "ready"}]},
+            id="label-without-a-name",
+        ),
+        pytest.param(
+            {"state": "open", "title": "T", "body": "x", "labels": ["ready"]},
+            id="bare-string-label",
+        ),
+    ],
+)
+def test_a_malformed_payload_is_malformed_not_a_traceback(
+    payload: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every field this gate reads, in a shape it cannot use.
+
+    These are the paths that used to be dereferenced before anything could return MALFORMED: a non-string
+    `body` reached the contract parser, and a malformed `labels` reached the label reads. Each was a
+    traceback, and a gate that crashes has not answered the question it was asked.
+
+    The model is what makes this a list of parameters rather than a list of hand-written guards — the point
+    of declaring the shape once is that the cases nobody thought of are covered too.
+    """
+    monkeypatch.setattr(issue_gate, "gh_json", lambda _path: payload)
+    monkeypatch.setattr(issue_gate.sys, "argv", ["issue_gate.py", "219"])
+    assert int(issue_gate.main()) == issue_gate.MALFORMED
+
+
+@pytest.mark.parametrize("payload", [None, [], "closed", 42])
+def test_a_payload_that_is_not_an_object_is_malformed(
+    payload: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not just the fields — the payload itself. `iss.get(...)` on a list raises `AttributeError`."""
+    monkeypatch.setattr(issue_gate, "gh_json", lambda _path: payload)
+    monkeypatch.setattr(issue_gate.sys, "argv", ["issue_gate.py", "219"])
+    assert int(issue_gate.main()) == issue_gate.MALFORMED

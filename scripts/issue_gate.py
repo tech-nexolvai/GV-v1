@@ -26,7 +26,14 @@ in progress for ever. The `state:` label answers "is this being worked?", so the
 answer for something closed is no label rather than a "done" one — which is why there is no
 `state:done` in the label set.
 
-No third-party dependencies: standard library plus the `gh` CLI.
+Dependencies: the standard library, the `gh` CLI, and Pydantic v2 for the one thing that comes from
+outside — the issue payload. `AGENTS.md` §4 requires "Pydantic v2 for every boundary contract" and this is
+a boundary; pydantic is already a runtime dependency of the project, so it costs nothing to honour it here.
+
+An earlier version of this file claimed no third-party dependencies at all and hand-rolled the checks. That
+lasted until the payload arrived in shapes the checks had not imagined — a `KeyError` on a missing title, a
+`TypeError` on a list-valued state — each found one at a time by review. A gate that crashes has not
+answered the question it was asked, so the shape is now declared once instead of guessed at repeatedly.
 """
 
 from __future__ import annotations
@@ -37,10 +44,53 @@ import re
 import subprocess
 import sys
 from pathlib import Path as _Path
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 REPO = "tech-nexolvai/GV-v1"
+
+
+class Label(BaseModel):
+    """One label as the API returns it — an object with a name, not a bare string."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+
+
+class IssuePayload(BaseModel):
+    """The issue fields this gate reads, and the shapes they must have.
+
+    **Declared rather than checked field by field.** Everything here arrives from `gh api`, so it is the
+    one true boundary in this script. Hand-rolled `isinstance` guards covered the cases somebody thought
+    of; this covers the ones nobody did, and it turns every malformed payload into MALFORMED instead of a
+    traceback.
+
+    `extra="ignore"` because GitHub returns dozens of fields and adding more must not break the gate — it
+    is the unexpected *shape* of a field we read that matters, not the presence of fields we do not.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    state: Literal["open", "closed"]
+
+    # Stripped before the length check, so a title of spaces is as unusable as an empty one. `min_length=1`
+    # alone accepted "   " — the model was briefly weaker than the hand-rolled check it replaced, which a
+    # test caught.
+    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    body: str | None = None
+    labels: list[Label] = Field(default_factory=list)
+
+
+# `from __future__ import annotations` makes every annotation a string, and this module is also loaded by
+# its tests through `importlib`, where Pydantic cannot resolve `Label` from the namespace it expects. One
+# explicit rebuild fixes both — without it, validation raises `PydanticUserError` at the first call, which
+# would be the gate crashing on the very path added to stop it crashing.
+IssuePayload.model_rebuild()
+
 
 READY = 0
 BLOCKED = 2
@@ -368,6 +418,18 @@ def main() -> int:
     args = ap.parse_args()
 
     iss = gh_json(f"repos/{REPO}/issues/{args.issue}")
+
+    # The payload must be an object before anything asks what is in it. `"pull_request" in iss` raised
+    # `TypeError: argument of type 'NoneType' is not a container or iterable` on a non-object response —
+    # found by the tests for the very validation added below, which sat one line too late to help.
+    if not isinstance(iss, dict):
+        sys.stderr.write(
+            f"MALFORMED  #{args.issue}\n\n"
+            f"The API returned {type(iss).__name__}, not an issue object. Check the issue number and the\n"
+            "`gh` version.\n"
+        )
+        return MALFORMED
+
     if "pull_request" in iss:
         sys.stderr.write(f"#{args.issue} is a pull request, not an issue.\n")
         return MALFORMED
@@ -377,43 +439,26 @@ def main() -> int:
     # anything to say about work that has already landed. Requiring them would mean an issue whose
     # contract was edited after the merge could never be tidied up, and the drift this step exists to
     # clear would be permanent for exactly the issues most likely to have it.
-    # **The payload is checked before it is used, with plain `isinstance`.**
-    #
-    # Two ways this crashed instead of answering. `iss["title"]` raised `KeyError` when the field was
-    # absent, and `state not in {"open", "closed"}` raised `TypeError: unhashable type: 'list'` when the
-    # state was a container — both a traceback rather than MALFORMED, which is the one thing a gate must
-    # never do. It is asked whether work may start; "it crashed" is not an answer anyone can act on.
-    #
-    # Deliberately not a Pydantic model, which review suggested. This module's contract, stated at the top,
-    # is standard library plus the `gh` CLI — it has to run in a bare checkout before anything is
-    # installed, because it is what tells you whether to start. Two `isinstance` checks buy the same
-    # protection without spending that.
-    title = iss.get("title")
-    if not isinstance(title, str) or not title.strip():
+    # **One validation, at the boundary.** Everything below reads a shape that has been proved, so no path
+    # can branch on a field it never checked — which is how a missing title and a list-valued state each
+    # became a traceback instead of an exit code.
+    try:
+        payload = IssuePayload.model_validate(iss)
+    except ValidationError as invalid:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or '<root>'}: {error['msg']}"
+            for error in invalid.errors()
+        )
         sys.stderr.write(
             f"MALFORMED  #{args.issue}\n\n"
-            "The issue payload has no usable title, so this is not an issue as GitHub describes one.\n"
-            "Check the issue number, and the `gh` version if this looks like an API change.\n"
+            f"The issue payload is not the shape this gate reads: {problems}\n\n"
+            "This gate will not guess whether work may start from something it cannot read. Check the\n"
+            "issue number, and the `gh` version if this looks like an API change.\n"
         )
         return MALFORMED
 
-    # **Validated before any path branches on it, `--done` included.** `== "closed"` meant anything else —
-    # missing, null, a value the API adds later — fell through to the readiness path and could reach READY.
-    # A gate that answers "go ahead" for an input it did not understand is the wrong way round, and it is
-    # the same shape as the bug this check was added to fix.
-    #
-    # Above `--done` rather than below it, because that path also reads the state: it refuses an issue that
-    # is not closed, so an unrecognised value would be reported as "still open" — a specific claim about
-    # something nobody knows. Review caught the ordering.
-    state = iss.get("state")
-    if not isinstance(state, str) or state not in {"open", "closed"}:
-        sys.stderr.write(
-            f"MALFORMED  #{args.issue} {title}\n\n"
-            f"The issue's state reads {state!r}, which is neither 'open' nor 'closed'. This gate will not\n"
-            "guess what may happen to an issue whose state it cannot read. Check the issue on GitHub, or\n"
-            "the `gh` version if this looks like an API change.\n"
-        )
-        return MALFORMED
+    title = payload.title
+    state = payload.state
 
     if args.done:
         return finish(args.issue, iss)
