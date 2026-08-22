@@ -255,6 +255,7 @@ def run_stage(
     workflow_run_id: UUID,
     stages: Stages,
     engine_version: str = ENGINE_VERSION,
+    actor: str | None = None,
 ) -> StageOutcome:
     """Claim the stage, move the package into the stage's state, then do the work. Commits nothing.
 
@@ -288,6 +289,10 @@ def run_stage(
 
     The claim still goes first, so a re-delivered stage recognises itself and returns without repeating the
     work or moving the package — `already_done` on the outcome.
+
+    `actor` names who caused the move, defaulting to this stage's worker. A resume passes the person or
+    supervisor who asked for it, because the transition out of a failure state *is* the recovery and
+    `workflow/durability.py` counts those by actor.
 
     The caller owns the transaction, as everywhere else in this codebase: the claim, the state change and
     whatever the stage wrote land together or not at all. A claim that committed on its own would block the
@@ -325,7 +330,7 @@ def run_stage(
         session,
         package_revision_id,
         state,
-        actor=f"the {stage.replace('_', ' ')} worker",
+        actor=actor or f"the {stage.replace('_', ' ')} worker",
         reason=None,
         workflow_run_id=workflow_run_id,
     )
