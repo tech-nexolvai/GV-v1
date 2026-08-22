@@ -321,7 +321,7 @@ def test_a_closed_issue_is_refused_even_with_no_contract(monkeypatch: pytest.Mon
     assert int(issue_gate.main()) == issue_gate.CLOSED_ALREADY
 
 
-@pytest.mark.parametrize("state", [None, "", "merged", "locked", 42])
+@pytest.mark.parametrize("state", [None, "", "merged", "locked", 42, [], {}, ["open"]])
 def test_an_unrecognised_state_is_malformed_not_ready(
     state: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -347,7 +347,7 @@ def test_an_unrecognised_state_is_malformed_not_ready(
     assert code != issue_gate.READY
 
 
-@pytest.mark.parametrize("state", [None, "", "merged", 42])
+@pytest.mark.parametrize("state", [None, "", "merged", 42, [], {}])
 def test_done_also_refuses_an_unrecognised_state(
     state: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -363,4 +363,21 @@ def test_done_also_refuses_an_unrecognised_state(
         lambda _path: {"state": state, "title": "Odd", "body": _READY_CONTRACT, "labels": []},
     )
     monkeypatch.setattr(issue_gate.sys, "argv", ["issue_gate.py", "219", "--done"])
+    assert int(issue_gate.main()) == issue_gate.MALFORMED
+
+
+@pytest.mark.parametrize("title", [None, "", "   ", 42, []])
+def test_a_payload_with_no_usable_title_is_malformed(
+    title: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`iss["title"]` raised `KeyError` on an absent field — a traceback where an exit code was needed.
+
+    A gate that crashes has not answered the question it was asked. "It blew up" tells the caller nothing
+    about whether to start work, so every unusable payload becomes MALFORMED, which does.
+    """
+    payload: dict[str, object] = {"state": "open", "body": _READY_CONTRACT, "labels": []}
+    if title is not None:
+        payload["title"] = title
+    monkeypatch.setattr(issue_gate, "gh_json", lambda _path: payload)
+    monkeypatch.setattr(issue_gate.sys, "argv", ["issue_gate.py", "219"])
     assert int(issue_gate.main()) == issue_gate.MALFORMED

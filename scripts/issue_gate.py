@@ -377,7 +377,25 @@ def main() -> int:
     # anything to say about work that has already landed. Requiring them would mean an issue whose
     # contract was edited after the merge could never be tidied up, and the drift this step exists to
     # clear would be permanent for exactly the issues most likely to have it.
-    title = iss["title"]
+    # **The payload is checked before it is used, with plain `isinstance`.**
+    #
+    # Two ways this crashed instead of answering. `iss["title"]` raised `KeyError` when the field was
+    # absent, and `state not in {"open", "closed"}` raised `TypeError: unhashable type: 'list'` when the
+    # state was a container — both a traceback rather than MALFORMED, which is the one thing a gate must
+    # never do. It is asked whether work may start; "it crashed" is not an answer anyone can act on.
+    #
+    # Deliberately not a Pydantic model, which review suggested. This module's contract, stated at the top,
+    # is standard library plus the `gh` CLI — it has to run in a bare checkout before anything is
+    # installed, because it is what tells you whether to start. Two `isinstance` checks buy the same
+    # protection without spending that.
+    title = iss.get("title")
+    if not isinstance(title, str) or not title.strip():
+        sys.stderr.write(
+            f"MALFORMED  #{args.issue}\n\n"
+            "The issue payload has no usable title, so this is not an issue as GitHub describes one.\n"
+            "Check the issue number, and the `gh` version if this looks like an API change.\n"
+        )
+        return MALFORMED
 
     # **Validated before any path branches on it, `--done` included.** `== "closed"` meant anything else —
     # missing, null, a value the API adds later — fell through to the readiness path and could reach READY.
@@ -388,7 +406,7 @@ def main() -> int:
     # is not closed, so an unrecognised value would be reported as "still open" — a specific claim about
     # something nobody knows. Review caught the ordering.
     state = iss.get("state")
-    if state not in {"open", "closed"}:
+    if not isinstance(state, str) or state not in {"open", "closed"}:
         sys.stderr.write(
             f"MALFORMED  #{args.issue} {title}\n\n"
             f"The issue's state reads {state!r}, which is neither 'open' nor 'closed'. This gate will not\n"
