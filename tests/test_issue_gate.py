@@ -233,3 +233,73 @@ def test_contributing_documents_all_three_steps() -> None:
     text = (Path(__file__).resolve().parents[1] / "CONTRIBUTING.md").read_text(encoding="utf-8")
     for flag in ("--start", "--review", "--done"):
         assert f"issue_gate.py 40 {flag}" in text, f"{flag} is not in the worked example"
+
+
+# ---------------------------------------------------------------------------
+# It refuses an issue whose work is already done (#219)
+# ---------------------------------------------------------------------------
+
+#: A contract complete enough to reach READY. The design fields are not padding — the gate blocks without
+#: them, and rightly, because it refuses to let anyone invent a module or an interface. My first version of
+#: this fixture omitted them and the open-issue test below blocked: the gate was right and the test wrong.
+_READY_CONTRACT = """## Agent contract
+
+```yaml
+status: ready
+owner: dev
+requires: []
+implements: storage/hashing.py
+design: docs/DESIGN_PLATFORM.md §7
+verification: tests/storage/test_hashing.py
+```
+
+## Scope
+
+Something to build.
+"""
+
+
+def _gate_on(monkeypatch: pytest.MonkeyPatch, state: str) -> int:
+    """Run the gate against one issue in `state`, with no network and no writes."""
+    monkeypatch.setattr(
+        issue_gate,
+        "gh_json",
+        lambda _path: {
+            "state": state,
+            "title": "C5.2 — Content hashing and versioned keys",
+            "body": _READY_CONTRACT,
+            "labels": [],
+        },
+    )
+    monkeypatch.setattr(issue_gate.sys, "argv", ["issue_gate.py", "219"])
+    return int(issue_gate.main())
+
+
+def test_a_closed_issue_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**The case that happened.** Asked about #219, the gate said "READY — #219 may be implemented".
+
+    The story was finished: `storage/hashing.py` was written, tested and merged. Nothing in the contract
+    recorded that, because `status:` says whether a story was *ready to pick up*, not whether it is done —
+    so the gate read `status: ready`, agreed, and would have had a second implementation of a
+    safety-critical file written over a working one.
+    """
+    assert _gate_on(monkeypatch, "closed") == issue_gate.CLOSED_ALREADY
+
+
+def test_closed_is_its_own_answer_rather_than_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ "Already done" and "not yet allowed" must not share an exit code.
+
+    Reporting BLOCKED would send somebody hunting for a dependency to wait on when there is nothing left
+    to do at all.
+
+    Both halves are asserted, because the negative alone is vacuous: before the fix this returned READY,
+    which is also "not BLOCKED", so a test with only the second assertion passed while the bug was live.
+    """
+    code = _gate_on(monkeypatch, "closed")
+    assert code == issue_gate.CLOSED_ALREADY
+    assert code not in {issue_gate.BLOCKED, issue_gate.MALFORMED, issue_gate.ADMIN_ONLY}
+
+
+def test_an_open_ready_issue_is_still_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fix must not turn the gate into a wall: the ordinary path still opens."""
+    assert _gate_on(monkeypatch, "open") == issue_gate.READY

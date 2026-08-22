@@ -11,6 +11,7 @@ the agent — decides whether work may start. Exit code is the contract:
     2   BLOCKED    stop; do not write code; the reason is printed on stderr
     3   ADMIN ONLY  a decision or client question; never the dev's to answer
     4   MALFORMED  the issue has no valid agent contract; ask the admin to fix it
+    5   CLOSED     the work is already done; read it rather than writing it again
 
 `--comment` posts the stop reason to the issue so the block is visible and chaseable.
 
@@ -45,6 +46,11 @@ READY = 0
 BLOCKED = 2
 ADMIN_ONLY = 3
 MALFORMED = 4
+
+#: The issue is already closed, so the work exists. Its own code, distinct from BLOCKED: blocked means
+#: "not yet", this means "already". Confusing the two would send somebody to wait for a dependency that
+#: was never the problem.
+CLOSED_ALREADY = 5
 
 # status -> (exit code, plain-English explanation)
 STATUS = {
@@ -375,6 +381,27 @@ def main() -> int:
         return finish(args.issue, iss)
 
     title = iss["title"]
+
+    # **A closed issue is not work that may start, whatever its contract says.**
+    #
+    # Found by asking this gate about #219 and being told "READY — #219 may be implemented". The story was
+    # complete: `storage/hashing.py` had been written, tested and merged. Nothing in the contract records
+    # that, because `status:` describes whether the story was *ready to pick up*, not whether it is done —
+    # so the gate read `status: ready`, agreed, and would have had me build a second implementation of a
+    # safety-critical file over the top of a working one.
+    #
+    # That is the one thing this script exists to prevent: it decides whether work may start, and the
+    # caller is told not to decide for themselves. So it has to answer this case too.
+    if iss.get("state") == "closed":
+        sys.stderr.write(
+            f"CLOSED  #{args.issue} {title}\n\n"
+            "This issue is closed, so the work is done. Do not implement it again — read what is\n"
+            "already there first, and if something is genuinely missing, that is a new issue.\n\n"
+            "If this is a mistake and the story really is unfinished, reopen it. The gate reads the\n"
+            "issue's state, not an intention.\n"
+        )
+        return CLOSED_ALREADY
+
     body = iss.get("body") or ""
     contract = parse_contract(body)
 
