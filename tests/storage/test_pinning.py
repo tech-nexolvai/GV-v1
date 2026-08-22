@@ -20,6 +20,7 @@ import io
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -115,7 +116,10 @@ def test_a_version_resolves_to_the_bytes_it_recorded(factory: sessionmaker[Sessi
         version = _version(session)
         pin = require_pin(session, version.id)
 
-    assert pin == Pin(document_version_id=version.id, sha256=DIGEST)
+    assert pin == Pin(document_version_id=version.id, sha256=DIGEST, bytes_verified=False)
+    assert (
+        pin.bytes_verified is False
+    ), "no store was given, so the records were checked against each other and the bytes were not read"
 
 
 def test_a_version_that_does_not_exist_is_refused(factory: sessionmaker[Session]) -> None:
@@ -123,9 +127,13 @@ def test_a_version_that_does_not_exist_is_refused(factory: sessionmaker[Session]
     nothing in particular, which is the failure §7 describes."""
     with (
         unit_of_work(factory) as session,
-        pytest.raises(IntegrityRecordMissing, match="nothing is pinned"),
+        pytest.raises(IntegrityRecordMissing) as caught,
     ):
         require_pin(session, uuid4())
+
+    # The message must not name only the version: this is a join, so an orphaned version whose artifact
+    # row has gone lands here too, and pointing at the wrong table wastes the reader's time.
+    assert "artifact row is gone" in str(caught.value)
 
 
 def test_the_database_will_not_let_a_version_disagree_with_its_artifact(
@@ -156,9 +164,19 @@ def test_the_database_will_not_let_a_version_disagree_with_its_artifact(
     )
 
     other = hashlib.sha256(b"different bytes entirely").hexdigest()
-    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+    with pytest.raises(IntegrityError) as caught, unit_of_work(factory) as session:
         version = _version(session, digest=DIGEST, artifact_digest=other)
         del version
+
+    # **Which constraint refused it.** `_version` inserts a project, package, revision, document and
+    # artifact before the version, so any IntegrityError from any of those would satisfy a bare
+    # `pytest.raises` — the same defect I fixed in #402's node-key test and then repeated here.
+    assert isinstance(
+        caught.value.orig, psycopg.errors.ForeignKeyViolation
+    ), f"refused, but not by a foreign key: {type(caught.value.orig).__name__}"
+    assert "sha256" in str(
+        caught.value.orig
+    ), "and it must be the composite key on (source_artifact_id, sha256), not another relation"
 
 
 def test_a_prefixed_digest_cannot_even_be_stored(factory: sessionmaker[Session]) -> None:
@@ -186,7 +204,11 @@ def test_bytes_that_no_longer_match_are_refused(factory: sessionmaker[Session]) 
     own record — is catching the store and the database disagreeing with *each other*."""
     with unit_of_work(factory) as session:
         version = _version(session)
-        assert require_pin(session, version.id, store=_Store(BYTES)) is not None  # type: ignore[arg-type]
+        # Not `is not None`: `require_pin` either raises or returns a `Pin`, so that could never fail —
+        # review's point. Assert what the call is for.
+        verified = require_pin(session, version.id, store=_Store(BYTES))  # type: ignore[arg-type]
+        assert verified.sha256 == DIGEST
+        assert verified.bytes_verified is True, "a store was given, so the bytes were re-hashed"
         with pytest.raises(ArtifactCorrupt, match="no longer there"):
             require_pin(session, version.id, store=_Store(b"someone replaced the drawing"))  # type: ignore[arg-type]
 
@@ -211,9 +233,15 @@ def test_there_is_no_way_to_ask_for_the_latest_version() -> None:
         ), f"{name} reads as a resolver for whatever is there now"
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef):
-            for argument in node.args.args + node.args.kwonlyargs:
-                assert "latest" not in argument.arg.lower()
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        # posonlyargs and async definitions included: the first scan missed both, so a
+        # `def get(version, /, *, latest=True)` or an async resolver would have passed.
+        arguments = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+        for argument in arguments:
+            assert not any(
+                word in argument.arg.lower() for word in ("latest", "current", "newest")
+            ), f"{node.name}({argument.arg}) offers a way to ask for whatever is there now"
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +316,7 @@ def test_new_bytes_are_a_new_version_and_identical_bytes_are_refused(
         assert require_pin(session, first.id).sha256 == DIGEST, "the first version is untouched"
 
     # The same bytes again for the same document: refused.
-    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+    with pytest.raises(IntegrityError) as caught, unit_of_work(factory) as session:
         duplicate_artifact = SourceArtifact(
             storage_key="originals/probe-again.pdf",
             sha256=DIGEST,
@@ -307,6 +335,15 @@ def test_new_bytes_are_a_new_version_and_identical_bytes_are_refused(
         )
         session.flush()
 
+    assert isinstance(
+        caught.value.orig, psycopg.errors.UniqueViolation
+    ), f"refused, but not by a unique constraint: {type(caught.value.orig).__name__}"
+    message = str(caught.value.orig)
+    assert "document_id" in message and "sha256" in message, (
+        "and it must be uq_document_versions_document_id_sha256 — the constraint that makes identical "
+        "bytes a duplicate rather than a second version"
+    )
+
 
 def test_nothing_in_extraction_resolves_a_document_without_a_version() -> None:
     """Acceptance criterion two, asserted against the source.
@@ -315,8 +352,15 @@ def test_nothing_in_extraction_resolves_a_document_without_a_version() -> None:
     because the way this criterion gets broken is not a wrong answer but a convenience: a helper that takes
     a `document_id` "just for now", which then quietly becomes the path everything uses.
     """
+    extraction = REPO_ROOT / "extraction"
+    # Without this the whole test passes when the directory is renamed or removed — `rglob` over a missing
+    # path yields nothing, so "no offenders" and "nothing looked at" are indistinguishable.
+    assert extraction.is_dir(), "extraction/ is not where this guard expects it"
+    modules = sorted(extraction.rglob("*.py"))
+    assert modules, "extraction/ has no modules, so this guard is checking nothing"
+
     offenders: list[str] = []
-    for path in sorted((REPO_ROOT / "extraction").rglob("*.py")):
+    for path in modules:
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):

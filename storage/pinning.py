@@ -65,6 +65,16 @@ class Pin:
     document_version_id: UUID
     sha256: str
 
+    bytes_verified: bool = False
+    """Whether the stored bytes were re-hashed, or only the records were checked.
+
+    **The distinction was in the docstring and not in the return value, which review rightly called out.**
+    Without a `store`, `require_pin` proves the records agree with each other; with one, it proves the bytes
+    still hash to what was recorded. Those are different claims, and a caller holding a `Pin` had no way to
+    tell which it had — so a reviewer-facing statement like "the bytes were checked" could be made from a
+    pin that never read them.
+    """
+
 
 def require_pin(
     session: Session,
@@ -95,8 +105,8 @@ def require_pin(
       disagreeing with each other rather than either being internally inconsistent.
 
     **No `store` argument means the record is trusted, not that nothing was checked.** The first three still
-    run. Saying so because "verified" and "self-consistent" are different claims and the caller should know
-    which one it bought.
+    run. The returned pin carries `bytes_verified` so the caller can tell the two apart — saying it in a
+    docstring and not in the value was the earlier mistake.
 
     Deviation from the issue's sketch, recorded rather than hidden: it gives
     `require_pin(document_version_id) -> Pin`, which has nothing to resolve *from* — it would have to read a
@@ -108,8 +118,12 @@ def require_pin(
         .where(DocumentVersion.id == document_version_id)
     ).one_or_none()
     if row is None:
+        # Either row can be the missing one: this is a join, so an orphaned version whose source artifact
+        # has gone reaches here too. The message says so rather than naming only the version, which would
+        # send somebody looking in the wrong table.
         raise IntegrityRecordMissing(
-            f"there is no document version {document_version_id}, so nothing is pinned to it"
+            f"no document version {document_version_id} with a source artifact — either the version does "
+            "not exist or its artifact row is gone, and neither pins anything"
         )
     version, artifact = row
 
@@ -136,4 +150,8 @@ def require_pin(
                 "version is a claim about bytes that are no longer there."
             )
 
-    return Pin(document_version_id=document_version_id, sha256=version.sha256)
+    return Pin(
+        document_version_id=document_version_id,
+        sha256=version.sha256,
+        bytes_verified=store is not None,
+    )
