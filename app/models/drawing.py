@@ -136,6 +136,14 @@ class ItemIdentifier(Base, TimestampedUUID):
         # Deliberately NOT unique on `value_as_printed`. Real packages reuse marks, and refusing the
         # drawing would be refusing the fact. `duplicate_identifiers` reports them instead.
         Index("ix_item_identifiers_kind_value", "kind", "value_as_printed"),
+        # Lane 5 searches OCR variants through pg_trgm. The ordinary B-tree remains useful for exact
+        # identifiers; this GIN operator class serves similarity queries without replacing it.
+        Index(
+            "ix_item_identifiers_value_trigram",
+            "value_as_printed",
+            postgresql_using="gin",
+            postgresql_ops={"value_as_printed": "gin_trgm_ops"},
+        ),
     )
 
 
