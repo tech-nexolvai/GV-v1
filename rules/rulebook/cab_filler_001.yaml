@@ -1,0 +1,71 @@
+id: CAB-FILLER-001
+version: 1.0.0
+product_type: cabinet
+check_type: arch_vs_shop
+severity: CRITICAL
+arithmetic_unit: in
+
+name: Cabinet filler distribution
+description: >
+  Check an ordered left/right filler response to the difference between the architectural
+  width and the reviewer-supplied site width. Fillers absorb the difference first within the
+  project bounds. If they cannot, the finding requires a reviewer to select an adjustable
+  cabinet; the engine never selects or changes a cabinet itself.
+
+applicability:
+  discriminator: filler_symmetry
+  variants:
+    - when: equal_unless_noted
+      extras:
+        allow_asymmetric: 0
+    - when: reviewer_noted_asymmetric
+      extras:
+        allow_asymmetric: 1
+
+inputs:
+  field_width:
+    source: USER_INPUT
+    semantic_type: field_dimension
+    scope: same_assembly
+    cardinality: one
+  design_width:
+    source: ARCH
+    semantic_type: CT001
+    scope: same_assembly
+    cardinality: one
+  design_fillers:
+    source: ARCH
+    semantic_type: filler_width
+    scope: same_assembly
+    cardinality: many
+  proposed_fillers:
+    source: SHOP
+    semantic_type: filler_width
+    scope: same_assembly
+    cardinality: many
+
+parameters:
+  filler_min:
+    default:
+      value: "1"
+      unit: in
+    scope: project
+  filler_max:
+    default:
+      value: "2"
+      unit: in
+    scope: project
+
+operation:
+  type: filler_distribution
+  operands:
+    field_width: field_width
+    design_width: design_width
+    design_fillers: design_fillers
+    proposed_fillers: proposed_fillers
+    filler_min: filler_min
+    filler_max: filler_max
+    allow_asymmetric: allow_asymmetric
+
+on_missing: NOT_FOUND
+on_ambiguous: REVIEW_REQUIRED
