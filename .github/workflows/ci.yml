@@ -32,7 +32,9 @@ jobs:
     timeout-minutes: 10
     services:
       postgres:
-        image: postgres:17
+        # PostgreSQL 17 plus the vector extension required by B9.4. Versioned rather than the
+        # floating pg17 tag so an extension release cannot change a PR run without a commit here.
+        image: pgvector/pgvector:0.8.6-pg17
         env:
           POSTGRES_USER: gv_test
           POSTGRES_PASSWORD: gv_test

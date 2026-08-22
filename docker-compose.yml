@@ -1,4 +1,4 @@
-# Local PostgreSQL for the persistence tests. Pinned to postgres:17 to match .github/workflows/ci.yml —
+# Local PostgreSQL for the persistence tests. PostgreSQL 17 and pgvector are pinned to match CI —
 # a different major version locally would let a migration behave differently in the two places,
 # which is the class of difference this file exists to remove.
 #
@@ -15,7 +15,7 @@
 
 services:
   db:
-    image: postgres:17
+    image: pgvector/pgvector:0.8.6-pg17
     environment:
       POSTGRES_USER: gv
       POSTGRES_PASSWORD: gv
