@@ -22,6 +22,8 @@ from fractions import Fraction
 
 from units.measurement import Measurement, ensure_exact
 
+type OperandValue = Measurement | Fraction | str | tuple[Measurement, ...] | None
+
 
 class EvidenceStatus(StrEnum):
     """How well established a value is.
@@ -65,7 +67,7 @@ class VerdictOperand:
     """
 
     name: str
-    value: Measurement | Fraction | str | None
+    value: OperandValue
     status: EvidenceStatus
     source: str
     """`SHOP`, `ARCH`, `PRODUCT_SPEC`, `LITERAL` or `USER_INPUT`."""
@@ -79,7 +81,21 @@ class VerdictOperand:
             raise ValueError("a verdict operand must be named")
         if not isinstance(self.status, EvidenceStatus):
             raise TypeError("status must be an EvidenceStatus")
-        ensure_exact(self.value, context=f"operand {self.name!r}")
+        if isinstance(self.value, tuple):
+            for index, item in enumerate(self.value):
+                ensure_exact(item, context=f"operand {self.name!r}[{index}]")
+                if not isinstance(item, Measurement):
+                    raise TypeError(
+                        f"operand {self.name!r}[{index}] must be a Measurement; "
+                        "many-valued verdict operands are exact measurement tuples"
+                    )
+        elif self.value is None or isinstance(self.value, (Measurement, Fraction, str)):
+            ensure_exact(self.value, context=f"operand {self.name!r}")
+        else:
+            raise TypeError(
+                f"operand {self.name!r} must be an exact scalar or an immutable tuple of "
+                "Measurements"
+            )
         if not self.source.strip():
             raise ValueError(
                 f"operand {self.name!r} must name its source. A value whose origin is unknown "
@@ -103,4 +119,6 @@ class VerdictOperand:
             return False
         if isinstance(self.value, str):
             return bool(self.value.strip())
+        if isinstance(self.value, tuple):
+            return bool(self.value)
         return True

@@ -1,0 +1,78 @@
+id: CT-WIDTH-001
+version: 1.0.0
+product_type: countertop
+check_type: internal
+severity: CRITICAL
+arithmetic_unit: in
+
+name: Countertop width verification
+description: >
+  Compare the shop countertop's authored overall inch width with the exact sum of the
+  same assembly's cabinets, fillers and layout-driven field-cut allowance. The cabinet-run
+  filler that may be trimmed on site remains a filler; it is not one of the countertop's
+  separate one-inch field-cut allowances.
+
+applicability:
+  discriminator: wall_config
+  variants:
+    - when: back_left_right
+      extras:
+        field_cut_count: 2
+    - when: back_only
+      extras:
+        field_cut_count: 0
+    - when: island
+      extras:
+        field_cut_count: 0
+
+inputs:
+  countertop_width:
+    source: SHOP
+    semantic_type: countertop_overall_width
+    scope: same_assembly
+    cardinality: one
+  cabinet_widths:
+    source: SHOP
+    semantic_type: cabinet_width
+    scope: same_assembly
+    cardinality: many
+  filler_widths:
+    source: SHOP
+    semantic_type: filler_width
+    scope: same_assembly
+    cardinality: many
+
+parameters:
+  field_cut:
+    scope: project
+
+derivations:
+  - name: cabinet_total
+    operation: sum
+    operands:
+      values: cabinet_widths
+  - name: filler_total
+    operation: sum
+    operands:
+      values: filler_widths
+  - name: field_cut_total
+    operation: scale
+    operands:
+      value: field_cut
+      multiplier: field_cut_count
+  - name: expected_width
+    operation: sum
+    operands:
+      values:
+        - cabinet_total
+        - filler_total
+        - field_cut_total
+
+operation:
+  type: equals
+  operands:
+    actual: countertop_width
+    expected: expected_width
+
+on_missing: NOT_FOUND
+on_ambiguous: REVIEW_REQUIRED

@@ -37,7 +37,7 @@ def tolerances_of(rule: Rule) -> tuple[Tolerance, ...]:
     """Every tolerance a rule carries, across its variants and its operation."""
     found: list[Tolerance] = []
     if isinstance(rule.applicability, Applicability):
-        found.extend(v.tolerance for v in rule.applicability.variants)
+        found.extend(v.tolerance for v in rule.applicability.variants if v.tolerance is not None)
     if rule.operation.tolerance is not None:
         found.append(rule.operation.tolerance)
     return tuple(found)

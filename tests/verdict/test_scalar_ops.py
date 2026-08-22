@@ -215,7 +215,7 @@ def test_conditional_required_rejects_non_boolean_condition() -> None:
         conditional_required(when=1, value="oak")  # type: ignore[arg-type]
 
 
-def test_all_ten_operations_have_versioned_registry_specs() -> None:
+def test_all_eleven_operations_have_versioned_registry_specs() -> None:
     assert {spec.name for spec in SCALAR_SPECS} == {
         "exists",
         "equals",
@@ -226,8 +226,11 @@ def test_all_ten_operations_have_versioned_registry_specs() -> None:
         "one_of",
         "contains",
         "difference_between",
+        "scale",
         "conditional_required",
     }
     assert all(spec.version == "1.0.0" for spec in SCALAR_SPECS)
     difference = next(spec for spec in SCALAR_SPECS if spec.name == "difference_between")
+    scale_spec = next(spec for spec in SCALAR_SPECS if spec.name == "scale")
     assert difference.kind is OperationKind.DERIVATION
+    assert scale_spec.kind is OperationKind.DERIVATION

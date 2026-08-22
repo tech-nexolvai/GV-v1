@@ -209,7 +209,7 @@ def _resolve_one(snapshot: RuleSnapshot, context: CheckContext) -> ApplicableRul
         return Abstention(
             outcome=Outcome.REVIEW_REQUIRED,
             reason=(
-                f"{snapshot.rule_id} needs {discriminator!r} to choose its tolerance, and the "
+                f"{snapshot.rule_id} needs {discriminator!r} to choose its variant, and the "
                 f"drawing did not establish it — the layout is a question for the reviewer, "
                 f"never a guess"
             ),

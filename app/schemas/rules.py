@@ -111,14 +111,17 @@ class ApplicabilityVariantOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     when: str
-    tolerance: str = Field(
+    tolerance: str | None = Field(
         description=(
-            "The exact authored tolerance as text — `1/8 in`, or `UNCONFIRMED` when the client has "
-            "not supplied one. A string rather than a number on purpose: `1/8` is a fraction, and "
-            "rendering it as 0.125 would put a float in the one place this project refuses to."
+            "The exact authored tolerance as text — `1/8 in`, `UNCONFIRMED` when the client has "
+            "not supplied one, or null when this exact-equality operation uses no tolerance. A "
+            "string rather than a number on purpose: `1/8` is a fraction, and rendering it as "
+            "0.125 would put a float in the one place this project refuses to."
         )
     )
-    tolerance_confirmed: bool
+    tolerance_confirmed: bool | None = Field(
+        description="Null when no tolerance applies; otherwise whether its value is confirmed."
+    )
 
 
 class ApplicabilityOut(BaseModel):

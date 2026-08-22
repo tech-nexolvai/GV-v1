@@ -113,7 +113,11 @@ def equals(*, actual: ScalarValue, expected: ScalarValue) -> OperationResult:
     _require_value(actual, "actual")
     _require_value(expected, "expected")
     _validate_equal_types(actual, expected)
-    matched = actual == expected
+    matched = (
+        actual.exact == expected.exact and actual.unit is expected.unit
+        if isinstance(actual, Measurement) and isinstance(expected, Measurement)
+        else actual == expected
+    )
     return _result(
         Outcome.PASS if matched else Outcome.FAIL,
         f"{_value_text(actual)} {'==' if matched else '!='} {_value_text(expected)}",
@@ -251,6 +255,25 @@ def difference_between(*, a: ExactNumber, b: ExactNumber) -> DerivationResult:
     )
 
 
+def scale(*, value: Measurement, multiplier: int) -> DerivationResult:
+    """Return an exact measurement multiplied by a non-negative integer.
+
+    This is a derivation, not a verdict: it records a reviewed count such as the number of
+    layout-driven field cuts and leaves the final comparison to a separate operation. ``bool``,
+    floats, decimals and negative integers are refused rather than coerced.
+    """
+
+    value = _require_measurement(value, "value")
+    if type(multiplier) is not int or multiplier < 0:
+        raise RuleAuthoringError("multiplier must be a non-negative real integer")
+    result = Measurement(value.exact * multiplier, value.unit, None)
+    return DerivationResult(
+        value=result,
+        intermediates=(("multiplier", multiplier), ("scaled_value", result)),
+        expression=f"{_value_text(value)} * {multiplier} = {_value_text(result)}",
+    )
+
+
 def conditional_required(*, when: bool, value: object | None) -> OperationResult:
     """Require a present value only when ``when`` is true.
 
@@ -303,6 +326,13 @@ SCALAR_SPECS: tuple[OperationSpec, ...] = (
         "1.0.0",
         {"a": Arity.SCALAR, "b": Arity.SCALAR},
         difference_between,
+        OperationKind.DERIVATION,
+    ),
+    OperationSpec(
+        "scale",
+        "1.0.0",
+        {"value": Arity.SCALAR, "multiplier": Arity.SCALAR},
+        scale,
         OperationKind.DERIVATION,
     ),
     OperationSpec(
