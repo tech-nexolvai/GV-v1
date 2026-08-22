@@ -52,7 +52,7 @@ the tie.
 ## R2 — Wrong item/view association
 
 **Control (§16):** Exact identifiers first, metadata and geometry checks, human confirmation for ambiguity.
-**Status:** PARTIAL
+**Status:** ENFORCED
 **Refs:** test:tests/test_vendor_neutrality.py, module:extraction/model/assembly.py, module:extraction/geometry/text_association.py, module:retrieval/approval.py
 **Owner:** #168, #180, #190
 **Effectiveness claim:** an ambiguous association returns no association rather than the nearest
@@ -162,11 +162,12 @@ a human to raise the change.
 
 ## What this table says today
 
-ENFORCED: 5 — R1 (numerically plausible extraction), R3 (VLM hallucination), R4 (agent loops or cost
-runaway), R6 (rule injection), R9 (licensing). R3 is enforced by crop-bounded context, strict payload
-validation and verdict isolation rather than by trusting model behaviour.
+ENFORCED: 6 — R1 (numerically plausible extraction), R2 (wrong item/view association), R3 (VLM
+hallucination), R4 (agent loops or cost runaway), R6 (rule injection), R9 (licensing). R3 is enforced
+by crop-bounded context, strict payload validation and verdict isolation rather than by trusting model
+behaviour.
 
-PARTIAL: 5 — R2, R5, R7, R8, R10. **R5 (false PASS) is the one to look at** — the metric and the
+PARTIAL: 4 — R5, R7, R8, R10. **R5 (false PASS) is the one to look at** — the metric and the
 release gates both exist, and there is no gold set to run them against, so the project's primary
 safety metric currently reports NOT MEASURED for every check. That is not a bug in the metric; it is
 `#274` and `#188` waiting on the client. **R7 (retrieval contamination)** was read as enforced until
