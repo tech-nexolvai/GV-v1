@@ -499,45 +499,79 @@ def test_a_window_must_be_a_positive_length_of_time(factory: sessionmaker[Sessio
 def test_a_repeated_node_invocation_is_refused_by_the_database(
     factory: sessionmaker[Session],
 ) -> None:
-    """The no-repeated-paid-call guarantee is #247's, and it is enforced by a unique index.
+    """The no-repeated-paid-call guarantee is #247's, enforced by a unique index — and this is the second
+    attempt at asserting it, because the first could not fail for the right reason.
 
-    Asserted here rather than rebuilt: `ModelInvocation.node_invocation_key` is `unique=True`, so a second
-    attempt to record the same node invocation is refused by PostgreSQL. That is what makes a restarted
-    LangGraph node safe to re-enter — the reservation exists before the spend, and the spend cannot be
-    recorded twice under the same identity.
+    **What was wrong.** The row was built from invented values, so the *first* insert already violated
+    something: measured, it raised `NotNullViolation` on `input_tokens` before ever reaching the foreign key
+    or the unique index. `pytest.raises(IntegrityError)` caught that, the test passed, and the constraint it
+    claimed to cover was never exercised. Asserting the message named `node_invocation_key` did not save it
+    either — `str(IntegrityError)` embeds the whole INSERT statement, so the column name matched the SQL
+    text rather than any constraint.
 
-    A second mechanism in `workflow/durability.py` would be worse than none: two places deciding one
-    safety property is how the property stops being enforceable.
+    **What it does now.** Build a real workflow run, task run and extraction run, fill every required
+    column, and insert twice. The only thing left that can fail is the duplicate key — and the error type is
+    checked, not its text, so a schema change that drops the unique index fails this test instead of
+    slipping through on a different violation.
     """
-    from app.models.runs import ModelInvocation
+    import hashlib
 
-    key = f"node:{uuid4().hex}"
+    import psycopg
+
+    from app.models.runs import ExtractionRun, ModelInvocation
+
     with unit_of_work(factory) as session:
-        columns = {column.name for column in ModelInvocation.__table__.columns}
-    assert "node_invocation_key" in columns
-    assert (
-        ModelInvocation.__table__.columns["node_invocation_key"].unique is True
-    ), "the guarantee is the unique constraint; without it this test is decoration"
+        _, run_id = _uploaded_revision(session)
+        task_run = TaskRun(
+            workflow_run_id=run_id,
+            idempotency_key=f"key:{uuid4().hex}",
+            task_type="extract_pages",
+            attempt=1,
+            outcome="claimed",
+        )
+        session.add(task_run)
+        session.flush()
+        extraction_run = ExtractionRun(
+            task_run_id=task_run.id,
+            extractor="fake",
+            extractor_version="1.0.0",
+            config_hash="sha256:" + "0" * 64,
+        )
+        session.add(extraction_run)
+        session.flush()
+        extraction_run_id = extraction_run.id
 
-    # Two rows with one key, in one transaction: the second must be refused.
+    # The key's own check constraint is `^sha256:[0-9a-f]{64}$`, so it is hashed rather than
+    # improvised — an invented string fails that check first and the test would be back to passing on the
+    # wrong error, which is precisely the bug being fixed here.
+    key = "sha256:" + hashlib.sha256(uuid4().bytes).hexdigest()
+
+    def one() -> dict[str, object]:
+        return {
+            "id": uuid4(),
+            "extraction_run_id": extraction_run_id,
+            "model_id": "fake",
+            "prompt_id": "fake",
+            "template_id": "fake",
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cost_micros": 1,
+            "latency_ms": 1,
+            "outcome": "ok",
+            "node_invocation_key": key,
+        }
+
+    # The first insert must succeed, or the test is back to passing on the wrong error.
+    with unit_of_work(factory) as session:
+        session.execute(ModelInvocation.__table__.insert().values(**one()))
+
     with pytest.raises(IntegrityError) as caught, unit_of_work(factory) as session:
-        for _ in range(2):
-            session.execute(
-                ModelInvocation.__table__.insert().values(
-                    id=uuid4(),
-                    extraction_run_id=uuid4(),
-                    model_id="fake",
-                    prompt_id="fake",
-                    template_id="fake",
-                    node_invocation_key=key,
-                )
-            )
-            session.flush()
+        session.execute(ModelInvocation.__table__.insert().values(**one()))
 
-    # **Which constraint refused it matters.** Review's point, and a fair one: every value above is
-    # invented, so the insert could have failed on a foreign key or any other unique index and this test
-    # would still have passed while proving nothing about the node key. So the error has to name it.
-    message = str(caught.value)
-    assert (
-        "node_invocation_key" in message
-    ), f"refused, but not by the constraint this test is about: {message[:200]}"
+    # The type, not the text. A foreign-key or not-null violation is also an IntegrityError.
+    assert isinstance(
+        caught.value.orig, psycopg.errors.UniqueViolation
+    ), f"refused, but not by a unique constraint: {type(caught.value.orig).__name__}"
+    assert "node_invocation_key" in str(
+        caught.value.orig
+    ), "and it must be the node key's index, not some other unique column"
