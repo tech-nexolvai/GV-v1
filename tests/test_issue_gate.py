@@ -345,3 +345,22 @@ def test_an_unrecognised_state_is_malformed_not_ready(
     code = int(issue_gate.main())
     assert code == issue_gate.MALFORMED
     assert code != issue_gate.READY
+
+
+@pytest.mark.parametrize("state", [None, "", "merged", 42])
+def test_done_also_refuses_an_unrecognised_state(
+    state: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--done` reads the state too, so it must not be reached with one nobody can read.
+
+    It refuses anything that is not closed, so an unrecognised value would have been reported as "this
+    issue is still open" — a specific claim about something unknown. Validating above the dispatch rather
+    than inside each path is what makes that impossible.
+    """
+    monkeypatch.setattr(
+        issue_gate,
+        "gh_json",
+        lambda _path: {"state": state, "title": "Odd", "body": _READY_CONTRACT, "labels": []},
+    )
+    monkeypatch.setattr(issue_gate.sys, "argv", ["issue_gate.py", "219", "--done"])
+    assert int(issue_gate.main()) == issue_gate.MALFORMED

@@ -377,10 +377,28 @@ def main() -> int:
     # anything to say about work that has already landed. Requiring them would mean an issue whose
     # contract was edited after the merge could never be tidied up, and the drift this step exists to
     # clear would be permanent for exactly the issues most likely to have it.
+    title = iss["title"]
+
+    # **Validated before any path branches on it, `--done` included.** `== "closed"` meant anything else —
+    # missing, null, a value the API adds later — fell through to the readiness path and could reach READY.
+    # A gate that answers "go ahead" for an input it did not understand is the wrong way round, and it is
+    # the same shape as the bug this check was added to fix.
+    #
+    # Above `--done` rather than below it, because that path also reads the state: it refuses an issue that
+    # is not closed, so an unrecognised value would be reported as "still open" — a specific claim about
+    # something nobody knows. Review caught the ordering.
+    state = iss.get("state")
+    if state not in {"open", "closed"}:
+        sys.stderr.write(
+            f"MALFORMED  #{args.issue} {title}\n\n"
+            f"The issue's state reads {state!r}, which is neither 'open' nor 'closed'. This gate will not\n"
+            "guess what may happen to an issue whose state it cannot read. Check the issue on GitHub, or\n"
+            "the `gh` version if this looks like an API change.\n"
+        )
+        return MALFORMED
+
     if args.done:
         return finish(args.issue, iss)
-
-    title = iss["title"]
 
     # **A closed issue is not work that may start, whatever its contract says.**
     #
@@ -392,20 +410,6 @@ def main() -> int:
     #
     # That is the one thing this script exists to prevent: it decides whether work may start, and the
     # caller is told not to decide for themselves. So it has to answer this case too.
-    # **Validate the state rather than testing it for one value.** `== "closed"` means anything else —
-    # missing, null, a value GitHub adds later — falls through to the readiness path and can reach READY.
-    # A gate that fails toward "go ahead" on an input it did not understand is the wrong way round, and it
-    # is the same shape as the bug this whole check exists to fix.
-    state = iss.get("state")
-    if state not in {"open", "closed"}:
-        sys.stderr.write(
-            f"MALFORMED  #{args.issue} {title}\n\n"
-            f"The issue's state reads {state!r}, which is neither 'open' nor 'closed'. This gate will not\n"
-            "guess whether work may start from a value it does not recognise. Check the issue on GitHub,\n"
-            "or the `gh` version if this looks like an API change.\n"
-        )
-        return MALFORMED
-
     if state == "closed":
         sys.stderr.write(
             f"CLOSED  #{args.issue} {title}\n\n"
