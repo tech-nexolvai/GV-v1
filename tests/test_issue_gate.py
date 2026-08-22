@@ -430,3 +430,39 @@ def test_a_payload_that_is_not_an_object_is_malformed(
     monkeypatch.setattr(issue_gate, "gh_json", lambda _path: payload)
     monkeypatch.setattr(issue_gate.sys, "argv", ["issue_gate.py", "219"])
     assert int(issue_gate.main()) == issue_gate.MALFORMED
+
+
+@pytest.mark.parametrize("stdout", ["", "   ", "unknown\tSomething", "garbage"])
+def test_a_dependency_whose_state_cannot_be_read_blocks(
+    stdout: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unverifiable dependency is not a satisfied one.
+
+    `partition("\t")` on unparseable output leaves the state as something that is simply not "open", so it
+    used to read as landed and work was allowed to start — the same fail-toward-"go ahead" direction as the
+    closed-issue bug this change is about. The module already states the rule for a failed lookup; this
+    applies it to a successful lookup nobody can interpret.
+    """
+
+    class _Result:
+        returncode = 0
+
+        def __init__(self, out: str) -> None:
+            self.stdout = out
+
+    monkeypatch.setattr(issue_gate.subprocess, "run", lambda *a, **k: _Result(stdout))
+    blocking = issue_gate.open_issue_dependencies(["#42"])
+    assert blocking, f"{stdout!r} must block, not read as landed"
+    assert "unknown" in blocking[0] or "cannot read" in blocking[0]
+
+
+def test_a_dependency_that_is_closed_does_not_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The negative control: a genuinely landed dependency must still pass, or the guard above would just
+    block everything and look correct doing it."""
+
+    class _Result:
+        returncode = 0
+        stdout = "closed\tAlready done"
+
+    monkeypatch.setattr(issue_gate.subprocess, "run", lambda *a, **k: _Result())
+    assert issue_gate.open_issue_dependencies(["#42"]) == []

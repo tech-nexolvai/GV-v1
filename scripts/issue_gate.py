@@ -64,10 +64,15 @@ class Label(BaseModel):
 class IssuePayload(BaseModel):
     """The issue fields this gate reads, and the shapes they must have.
 
-    **Declared rather than checked field by field.** Everything here arrives from `gh api`, so it is the
-    one true boundary in this script. Hand-rolled `isinstance` guards covered the cases somebody thought
-    of; this covers the ones nobody did, and it turns every malformed payload into MALFORMED instead of a
-    traceback.
+    **Declared rather than checked field by field.** Hand-rolled `isinstance` guards covered the cases
+    somebody thought of; this covers the ones nobody did, and it turns a malformed payload into MALFORMED
+    instead of a traceback.
+
+    **This covers the issue response `main` reads, and nothing else** — it is not the only `gh` response in
+    the file, and saying so was an overstatement review caught. The other two are handled differently and
+    deliberately: `open_issue_dependencies` treats anything it cannot parse as blocking, and `set_state`
+    runs only after a READY decision, on a write path where a malformed response fails loudly rather than
+    letting work start.
 
     `extra="ignore"` because GitHub returns dozens of fields and adding more must not break the gate — it
     is the unexpected *shape* of a field we read that matters, not the presence of fields we do not.
@@ -173,6 +178,17 @@ def open_issue_dependencies(requires: list[object]) -> list[str]:
             blocking.append(f"#{text} could not be resolved, so whether it has landed is unknown")
             continue
         state, _, title = result.stdout.strip().partition("\t")
+        if state not in {"open", "closed"}:
+            # **Unparseable output blocks.** Before this, a garbled or empty response left `state` as ""
+            # — not "open" — so the dependency was treated as landed and work was allowed to start. That
+            # is the same fail-toward-"go ahead" shape as the closed-issue bug this change is about, and
+            # the rule here is the one already stated above: an unverifiable dependency is not a
+            # satisfied one.
+            blocking.append(
+                f"#{text} returned a state this gate cannot read ({state!r}), so whether it has landed "
+                "is unknown"
+            )
+            continue
         if state == "open":
             blocking.append(f"#{text} is still open — {title}")
     return blocking
