@@ -57,6 +57,9 @@ platform = [
     "alembic",
     # LGPL-2.0-or-later with the PostgreSQL linking exception; not AGPL.
     "psycopg[binary]",
+    # MIT. SQLAlchemy and Psycopg integration for PostgreSQL's vector extension; retrieval remains
+    # advisory and the database query is package-scoped before distance is calculated.
+    "pgvector>=0.5,<1",
     "hatchet-sdk",
     "boto3",
     "opentelemetry-sdk",

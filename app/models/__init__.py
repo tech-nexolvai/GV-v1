@@ -26,6 +26,7 @@ from app.models.document import (
 )
 from app.models.drawing import (
     Alias,
+    DenseEmbedding,
     DrawingItem,
     DrawingView,
     ItemIdentifier,
@@ -98,6 +99,7 @@ __all__ = [
     "CaseResult",
     "CheckRun",
     "CorrectionLedgerEntry",
+    "DenseEmbedding",
     "Document",
     "DocumentKind",
     "DocumentVersion",

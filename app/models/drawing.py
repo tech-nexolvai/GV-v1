@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
     DDL,
     CheckConstraint,
@@ -51,6 +52,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import Select
 
 from app.db.base import Base, Immutable, TimestampedUUID
+from vocabulary.dense_content import DenseContentKind
+
+DENSE_CONTENT_KIND_VALUES = ", ".join(f"'{kind.value}'" for kind in DenseContentKind)
 
 
 class DrawingView(Base, TimestampedUUID):
@@ -165,6 +169,69 @@ event.listen(
     ItemIdentifier.__table__,
     "before_create",
     DDL("CREATE EXTENSION IF NOT EXISTS pg_trgm").execute_if(  # type: ignore[no-untyped-call]
+        dialect="postgresql"
+    ),
+)
+
+
+class DenseEmbedding(Base, TimestampedUUID):
+    """One model-versioned semantic vector for prose attached to a drawing item.
+
+    The source text remains evidence-owned; its hash pins the bytes embedded without duplicating
+    client drawing text into this table. The unique source/model identity makes a later model change
+    a new record rather than silently colliding with an old vector. This table is not an append-only
+    audit ledger; the source observations and resulting match candidates carry that responsibility.
+    """
+
+    __tablename__ = "dense_embeddings"
+
+    drawing_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("drawing_items.id", ondelete="RESTRICT"), index=True
+    )
+    content_kind: Mapped[str] = mapped_column(String(32), index=True)
+    source_text_hash: Mapped[str] = mapped_column(String(64))
+    model_id: Mapped[str] = mapped_column(String(200), index=True)
+    model_version: Mapped[str] = mapped_column(String(100), index=True)
+    dimensions: Mapped[int]
+    embedding: Mapped[list[float]] = mapped_column(VECTOR())
+
+    __table_args__ = (
+        CheckConstraint(
+            f"content_kind IN ({DENSE_CONTENT_KIND_VALUES})", name="dense_embedding_content_kind"
+        ),
+        CheckConstraint(
+            "source_text_hash ~ '^[0-9a-f]{64}$'", name="dense_embedding_source_text_hash"
+        ),
+        CheckConstraint("model_id <> ''", name="dense_embedding_model_id_present"),
+        CheckConstraint("model_version <> ''", name="dense_embedding_model_version_present"),
+        CheckConstraint("dimensions > 0", name="dense_embedding_dimensions_positive"),
+        CheckConstraint(
+            "vector_dims(embedding) = dimensions", name="dense_embedding_dimensions_match"
+        ),
+        UniqueConstraint(
+            "drawing_item_id",
+            "content_kind",
+            "source_text_hash",
+            "model_id",
+            "model_version",
+            name="uq_dense_embeddings_source_model",
+        ),
+        Index(
+            "ix_dense_embeddings_model_version_kind",
+            "model_id",
+            "model_version",
+            "content_kind",
+        ),
+    )
+
+
+# Alembic migration 0021 enables the extension in deployed databases. Repository persistence tests
+# also construct tables directly from metadata, so that independent bootstrap path must establish
+# the same prerequisite before PostgreSQL sees the VECTOR column.
+event.listen(
+    DenseEmbedding.__table__,
+    "before_create",
+    DDL("CREATE EXTENSION IF NOT EXISTS vector").execute_if(  # type: ignore[no-untyped-call]
         dialect="postgresql"
     ),
 )
