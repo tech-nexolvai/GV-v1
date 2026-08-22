@@ -499,45 +499,182 @@ def test_a_window_must_be_a_positive_length_of_time(factory: sessionmaker[Sessio
 def test_a_repeated_node_invocation_is_refused_by_the_database(
     factory: sessionmaker[Session],
 ) -> None:
-    """The no-repeated-paid-call guarantee is #247's, and it is enforced by a unique index.
+    """A second invocation under one node identity is refused by PostgreSQL — #247's guarantee.
 
-    Asserted here rather than rebuilt: `ModelInvocation.node_invocation_key` is `unique=True`, so a second
-    attempt to record the same node invocation is refused by PostgreSQL. That is what makes a restarted
-    LangGraph node safe to re-enter — the reservation exists before the spend, and the spend cannot be
-    recorded twice under the same identity.
+    The row is built valid so the *first* insert succeeds; without that, an earlier version of this test
+    passed on a `NotNullViolation` and never reached the index at all.
 
-    A second mechanism in `workflow/durability.py` would be worse than none: two places deciding one
-    safety property is how the property stops being enforceable.
+    **The setup does not isolate the unique index, and it would be wrong to say it does.** The foreign key on
+    `extraction_run_id`, the `outcome` check and the node-key regex can all still reject a row. What rules
+    those out is the assertion on the error *type* — a `UniqueViolation` specifically, not any
+    `IntegrityError` — plus the constraint name in the message.
     """
-    from app.models.runs import ModelInvocation
+    import hashlib
 
-    key = f"node:{uuid4().hex}"
+    import psycopg
+
+    from app.models.runs import ExtractionRun, ModelInvocation
+
     with unit_of_work(factory) as session:
-        columns = {column.name for column in ModelInvocation.__table__.columns}
-    assert "node_invocation_key" in columns
-    assert (
-        ModelInvocation.__table__.columns["node_invocation_key"].unique is True
-    ), "the guarantee is the unique constraint; without it this test is decoration"
+        _, run_id = _uploaded_revision(session)
+        task_run = TaskRun(
+            workflow_run_id=run_id,
+            idempotency_key=f"key:{uuid4().hex}",
+            task_type="extract_pages",
+            attempt=1,
+            outcome="claimed",
+        )
+        session.add(task_run)
+        session.flush()
+        extraction_run = ExtractionRun(
+            task_run_id=task_run.id,
+            extractor="fake",
+            extractor_version="1.0.0",
+            config_hash="sha256:" + "0" * 64,
+        )
+        session.add(extraction_run)
+        session.flush()
+        extraction_run_id = extraction_run.id
 
-    # Two rows with one key, in one transaction: the second must be refused.
+    def key() -> str:
+        # The key has its own check constraint, `^sha256:[0-9a-f]{64}$`, so it is hashed rather than
+        # improvised — an invented string fails that check first.
+        return "sha256:" + hashlib.sha256(uuid4().bytes).hexdigest()
+
+    def row(node_key: str | None) -> dict[str, object]:
+        return {
+            "id": uuid4(),
+            "extraction_run_id": extraction_run_id,
+            "model_id": "fake",
+            "prompt_id": "fake",
+            "template_id": "fake",
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cost_micros": 1,
+            "latency_ms": 1,
+            "outcome": "ok",
+            "node_invocation_key": node_key,
+        }
+
+    shared = key()
+    with unit_of_work(factory) as session:
+        session.execute(ModelInvocation.__table__.insert().values(**row(shared)))
+
     with pytest.raises(IntegrityError) as caught, unit_of_work(factory) as session:
+        session.execute(ModelInvocation.__table__.insert().values(**row(shared)))
+
+    assert isinstance(
+        caught.value.orig, psycopg.errors.UniqueViolation
+    ), f"refused, but not by a unique constraint: {type(caught.value.orig).__name__}"
+    assert "node_invocation_key" in str(
+        caught.value.orig
+    ), "and it must be the node key's index, not some other unique column"
+
+
+def test_two_invocations_with_different_keys_both_persist(
+    factory: sessionmaker[Session],
+) -> None:
+    """**The negative control the test above needs to mean anything.**
+
+    Every assertion up there is about a refusal. A unique constraint accidentally widened to
+    `extraction_run_id` — or a stray unique on `model_id` — would refuse the second row too, name a column
+    in the message, and satisfy all of it. So this asserts the other direction: two invocations that differ
+    only in their node key both survive.
+
+    I checked this by hand while writing the fix. Review's point was to encode it, which is right — a check
+    that exists only in a PR description protects nothing.
+    """
+    import hashlib
+
+    from app.models.runs import ExtractionRun, ModelInvocation
+
+    with unit_of_work(factory) as session:
+        _, run_id = _uploaded_revision(session)
+        task_run = TaskRun(
+            workflow_run_id=run_id,
+            idempotency_key=f"key:{uuid4().hex}",
+            task_type="extract_pages",
+            attempt=1,
+            outcome="claimed",
+        )
+        session.add(task_run)
+        session.flush()
+        extraction_run = ExtractionRun(
+            task_run_id=task_run.id,
+            extractor="fake",
+            extractor_version="1.0.0",
+            config_hash="sha256:" + "0" * 64,
+        )
+        session.add(extraction_run)
+        session.flush()
+        extraction_run_id = extraction_run.id
+
+    def row(node_key: str | None) -> dict[str, object]:
+        return {
+            "id": uuid4(),
+            "extraction_run_id": extraction_run_id,
+            "model_id": "fake",
+            "prompt_id": "fake",
+            "template_id": "fake",
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cost_micros": 1,
+            "latency_ms": 1,
+            "outcome": "ok",
+            "node_invocation_key": node_key,
+        }
+
+    with unit_of_work(factory) as session:
         for _ in range(2):
             session.execute(
                 ModelInvocation.__table__.insert().values(
-                    id=uuid4(),
-                    extraction_run_id=uuid4(),
-                    model_id="fake",
-                    prompt_id="fake",
-                    template_id="fake",
-                    node_invocation_key=key,
+                    **row("sha256:" + hashlib.sha256(uuid4().bytes).hexdigest())
                 )
             )
-            session.flush()
 
-    # **Which constraint refused it matters.** Review's point, and a fair one: every value above is
-    # invented, so the insert could have failed on a foreign key or any other unique index and this test
-    # would still have passed while proving nothing about the node key. So the error has to name it.
-    message = str(caught.value)
-    assert (
-        "node_invocation_key" in message
-    ), f"refused, but not by the constraint this test is about: {message[:200]}"
+    # And two *unkeyed* invocations must both persist. `node_invocation_key` is nullable and PostgreSQL
+    # treats NULLs as distinct, so an invocation outside the agent path is not competing for an identity.
+    # If a migration ever added NULLS NOT DISTINCT, the first unkeyed invocation would still be accepted and
+    # every one after it rejected — not "all of them", which is what this comment said before review
+    # corrected it. That is a worse failure than all of them: it works once and then stops.
+    with unit_of_work(factory) as session:
+        for _ in range(2):
+            session.execute(ModelInvocation.__table__.insert().values(**row(None)))
+
+
+def test_starting_a_package_by_hand_is_not_a_recovery(factory: sessionmaker[Session]) -> None:
+    """**The false positive this PR exists to remove, encoded.**
+
+    Measured before the fix: a person moving an unstarted revision into `INGESTING` returned
+    `recovery_interventions = 1`. Nothing had failed and nothing was rescued — that is ordinary operation
+    inflating the quantity that decides whether Temporal is worth adopting.
+
+    Review asked for `CREATED` and `UPLOADING` origins too. Those cannot occur: the transition table allows
+    no processing state from either, so there is no such event for the metric to exclude. `UPLOADED` is the
+    only assembly state that reaches one, which is asserted below so that if a future edge is added, this
+    reasoning gets looked at again rather than silently becoming wrong.
+    """
+    from app.lifecycle.states import ASSEMBLY_STATES, TRANSITIONS
+    from workflow.durability import machine_actors
+
+    # **Pin that the actor is a person, or the zero below means nothing.** If a later change classified
+    # "anant" as a machine, the count would be zero for that reason instead and this test would keep
+    # passing while no longer checking the origin condition at all — review's point, and it is the same
+    # "passes for the wrong reason" trap as the constraint test earlier in this file.
+    assert "anant" not in machine_actors()
+
+    reaching = {
+        state.value for state in ASSEMBLY_STATES if TRANSITIONS[state] & set(PROCESSING_STATES)
+    }
+    assert reaching == {
+        PackageState.UPLOADED.value
+    }, "a new assembly state can now start work directly; check whether it also needs excluding"
+
+    with unit_of_work(factory) as session:
+        revision_id, _ = _uploaded_revision(session)
+        transition(session, revision_id, PackageState.INGESTING, actor="anant")
+
+    with unit_of_work(factory) as session:
+        assert (
+            recovery_interventions(session, timedelta(hours=1)) == 0
+        ), "starting work is not recovering it"

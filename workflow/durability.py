@@ -51,24 +51,37 @@ __all__ = [
     "AUTOMATIC_RESUME_ACTOR",
     "NotResumable",
     "WorkflowResult",
+    "machine_actors",
     "recovery_interventions",
     "resume_point",
     "run_to_completion",
 ]
 
-#: The one actor an automatic resume may use.
+#: The actor an automatic resume uses. One of the names in `machine_actors()`, which is the set the metric
+#: excludes — this constant alone is not the boundary, and saying it was is a mistake this comment used to
+#: make.
 #:
-#: **This constant is half of how a recovery intervention is counted, so it is load-bearing.** Anant's call
-#: on #217 is that only a *human* resume counts: an automatic retry is not toil, and toil is what Temporal
-#: removes. Rather than guess which actor strings look like people, everything the machine does names
-#: itself — this constant for a supervised resume, `worker_actors()` for the stages — and
-#: `recovery_interventions` counts whoever is left.
+#: Anant's call on #217 is that only a *human* rescue counts: an automatic retry is not toil, and toil is
+#: what Temporal removes. So everything the machine does names itself — this for a supervised resume,
+#: `worker_actors()` for the stages — and `recovery_interventions` counts whoever is left, from an origin
+#: that shows work had stopped.
 #:
 #: The error that leaves is deliberate. An unrecognised actor counts as an intervention, so a new automatic
 #: path added without reading this *inflates* the number rather than hiding it — and `docs/DESIGN_CONTROLS.md`
-#: §6 asks for exactly that direction: "not measured is displayed as prominently as a breach", because an
-#: unmeasured trigger makes the deferral permanent by accident.
+#: §6 asks for that direction: "not measured is displayed as prominently as a breach", because an unmeasured
+#: trigger makes the deferral permanent by accident.
 AUTOMATIC_RESUME_ACTOR: Final = "the workflow supervisor"
+
+
+def machine_actors() -> frozenset[str]:
+    """Every actor that is this system rather than a person.
+
+    **One definition, used by both halves, because they disagreed.** `run_to_completion` decided "is this by
+    hand?" by comparing against `AUTOMATIC_RESUME_ACTOR` alone, while the metric excluded the stage workers
+    too — so a caller passing `"the ingest worker"` was treated as a person by one and as a machine by the
+    other. Review caught it. Now there is a single set and no way for the two to drift apart.
+    """
+    return worker_actors() | {AUTOMATIC_RESUME_ACTOR}
 
 
 def worker_actors() -> frozenset[str]:
@@ -181,7 +194,7 @@ def run_to_completion(
     # state. The killed-mid-flight case sits in a *processing* state, and the first version attributed its
     # transitions to the stage workers — so a human rescuing it counted as nothing at all. Review caught
     # that; the metric would have drifted toward "no intervention needed" while somebody did the work.
-    by_hand = actor != AUTOMATIC_RESUME_ACTOR
+    by_hand = actor not in machine_actors()
 
     with unit_of_work(factory) as session:
         target = resume_point(session, package_revision_id)
@@ -294,9 +307,12 @@ def _resume_plan(
 def recovery_interventions(session: Session, window: timedelta) -> int:
     """How many times a person had to rescue a package in the last `window`.
 
-    **This is the measurement behind the Temporal upgrade trigger** (`docs/DESIGN_CONTROLS.md` §6). It
-    counts resumes out of a failure state by any actor other than `AUTOMATIC_RESUME_ACTOR` — see that
-    constant for why the boundary is drawn there and which way it errs.
+    **This is the measurement behind the Temporal upgrade trigger** (`docs/DESIGN_CONTROLS.md` §6).
+
+    Precisely: a move *into* a processing state, *from* a state that shows work had stopped — either a
+    failure state or a processing state the package was left sitting in — by an actor that is not in
+    `machine_actors()`. All three conditions matter, and an earlier version of this sentence named only the
+    first and the last, which is how it came to count a person merely starting an unstarted package.
 
     Zero is a real answer, not a missing one: it means nobody had to intervene. F6.1 (#267) is what
     distinguishes "measured, and it is zero" from "not measured", and its rule is that an unavailable
@@ -308,13 +324,24 @@ def recovery_interventions(session: Session, window: timedelta) -> int:
 
     since = datetime.now(UTC) - window
     processing = [state.value for state in PROCESSING_STATES]
-    machines = [*worker_actors(), AUTOMATIC_RESUME_ACTOR]
+
+    # **Where it moved *from* is what makes it a rescue.** Counting every non-machine move into a
+    # processing state also counted a person simply starting an unstarted package, which is ordinary
+    # operation and not recovery at all. Measured before fixing: `recovery_interventions = 1` for a package
+    # that had never failed and never stopped. That inflates the Temporal trigger with normal use, which is
+    # the opposite of a useful signal.
+    #
+    # A rescue always begins from work that had stopped — either a failure state, or a processing state the
+    # package was left sitting in when its worker died. A fresh start begins from `UPLOADED`, an assembly
+    # state, and is excluded by construction rather than by naming the actor.
+    stopped = [state.value for state in (*RESUMABLE_STATES, *PROCESSING_STATES)]
     counted = session.execute(
         select(func.count())
         .select_from(PackageStateEvent)
         .where(
+            PackageStateEvent.from_state.in_(stopped),
             PackageStateEvent.to_state.in_(processing),
-            PackageStateEvent.actor.notin_(machines),
+            PackageStateEvent.actor.notin_(list(machine_actors())),
             PackageStateEvent.created_at >= since,
         )
     ).scalar_one()
