@@ -418,7 +418,16 @@ class Rule(BaseModel):
     @model_validator(mode="after")
     def _operands_resolve(self) -> Rule:
         """Every operand the operation names must exist somewhere in the rule."""
-        known = set(self.inputs) | set(self.parameters) | {d.name for d in self.derivations}
+        applicability_values: set[str] = set()
+        if isinstance(self.applicability, Applicability):
+            extra_sets = [set(variant.extras) for variant in self.applicability.variants]
+            applicability_values = set.intersection(*extra_sets) if extra_sets else set()
+        known = (
+            set(self.inputs)
+            | set(self.parameters)
+            | {d.name for d in self.derivations}
+            | applicability_values
+        )
         unknown = sorted({ref for ref in self.operation.operands.values() if ref not in known})
         if unknown:
             raise ValueError(

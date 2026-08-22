@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from verdict.operations import aggregate, alignment, pairwise, scalar
+from verdict.operations import aggregate, alignment, distribution, pairwise, scalar
 from verdict.registry import REGISTRY, OperationSpec, RuleAuthoringError
 
 #: Every module of operations, with the specs it declares and the installer that registers them.
@@ -36,6 +36,11 @@ from verdict.registry import REGISTRY, OperationSpec, RuleAuthoringError
 _MODULES: tuple[tuple[str, tuple[OperationSpec, ...], Callable[[], None]], ...] = (
     ("aggregate", aggregate.AGGREGATE_SPECS, aggregate.register_aggregate_operations),
     ("alignment", alignment.ALIGNMENT_SPECS, alignment.register_alignment_operations),
+    (
+        "distribution",
+        distribution.DISTRIBUTION_SPECS,
+        distribution.register_distribution_operations,
+    ),
     ("pairwise", pairwise.PAIRWISE_SPECS, pairwise.register_pairwise_operations),
     ("scalar", scalar.SCALAR_SPECS, scalar.register_scalar_operations),
 )
