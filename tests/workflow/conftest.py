@@ -21,17 +21,27 @@ Source: issue #217 · Verification: `tests/workflow/test_durability.py`
 from __future__ import annotations
 
 import os
+import select
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
+from workflow.review import STAGES
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: How long to wait for the child to reach the stage we mean to kill it in. Generous, because the cost of
-#: it being too small is a flaky test and the cost of it being too large is nothing at all — the wait ends
-#: as soon as the child speaks.
+#: How long to wait for the child to reach the stage we mean to kill it in.
+#:
+#: **Enforced, not merely documented.** The first version named this constant and then used a blocking
+#: `readline()`, so a child that hung — or one whose stage never announced itself — hung the whole suite
+#: with a timeout sitting unused two screens above. Review caught the contradiction. Every read now waits
+#: against a deadline and the harness gives up loudly.
+#:
+#: Generous, because too small is a flaky test and too large costs nothing: the wait ends as soon as the
+#: child speaks.
 REACH_TIMEOUT_SECONDS = 60
 
 
@@ -68,26 +78,45 @@ run_id = UUID(os.environ["GV_KILL_RUN"])
 factory = session_factory(create_engine(url))
 
 
+def _announce(name):
+    """Announce this stage, wait to be killed, and return the shape the protocol asks for."""
+    print(name, flush=True)
+    # If the parent never kills us we carry on, so a harness bug shows up as a test that fails rather
+    # than one that hangs.
+    sys.stdin.readline()
+
+
 class Announcing:
-    """Says which stage it is in, then does a little work that must not survive a kill."""
+    """Says which stage it is in, then waits. Every method written out.
 
-    def _stage(self, name):
-        def run(session, package_revision_id):
-            print(name, flush=True)
-            # Wait to be killed. If the parent never kills us we carry on, so a harness bug shows up as a
-            # test that fails rather than one that hangs.
-            sys.stdin.readline()
-            return {"ran": name}
+    Not `__getattr__`: that answered to any name at all, so a typo in a test would have been announced as
+    a stage rather than refused — and it is the same looseness that once let this stub return a mapping
+    where `extract_pages` must return a sequence, which `join_pages` counted as a page nobody read.
+    """
 
-        return run
-
-    def __getattr__(self, name):
-        return self._stage(name)
+    def ingest(self, session, package_revision_id):
+        _announce("ingest")
+        return {"ran": "ingest"}
 
     def extract_pages(self, session, package_revision_id):
-        print("extract_pages", flush=True)
-        sys.stdin.readline()
+        _announce("extract_pages")
         return ()
+
+    def match(self, session, package_revision_id):
+        _announce("match")
+        return {"ran": "match"}
+
+    def validate_evidence(self, session, package_revision_id):
+        _announce("validate_evidence")
+        return {"ran": "validate_evidence"}
+
+    def run_checks(self, session, package_revision_id):
+        _announce("run_checks")
+        return {"ran": "run_checks"}
+
+    def generate_outputs(self, session, package_revision_id):
+        _announce("generate_outputs")
+        return {"ran": "generate_outputs"}
 
 
 stages = Announcing()
@@ -118,7 +147,7 @@ def kill_at(
     database kept. Raises if the child never reaches the step — a harness that silently killed nothing
     would make every assertion after it meaningless.
     """
-    if step not in {name for name, _ in _stages()}:
+    if step not in {name for name, _ in STAGES}:
         raise ValueError(f"{step!r} is not a stage; the harness would wait forever")
 
     environment = dict(
@@ -137,10 +166,20 @@ def kill_at(
         text=True,
     )
     entered: list[str] = []
+    deadline = time.monotonic() + REACH_TIMEOUT_SECONDS
     try:
-        assert child.stdout is not None
-        assert child.stdin is not None
+        if child.stdout is None or child.stdin is None:  # pragma: no cover - Popen was given both
+            raise AssertionError("the child was started without pipes")
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(
+                    f"the child did not reach {step!r} within {REACH_TIMEOUT_SECONDS}s; it entered "
+                    f"{entered}"
+                )
+            ready, _, _ = select.select([child.stdout], [], [], remaining)
+            if not ready:
+                continue
             line = child.stdout.readline()
             if not line:
                 raise AssertionError(
@@ -160,15 +199,14 @@ def kill_at(
     finally:
         child.kill()
         child.wait(timeout=REACH_TIMEOUT_SECONDS)
+        # Closed explicitly: `Popen` keeps both pipes open, so without this every call to this harness
+        # leaks two file descriptors — and it is called once per stage, per parametrised test.
+        for pipe in (child.stdin, child.stdout):
+            if pipe is not None:
+                pipe.close()
 
     return Killed(
         stages_entered=tuple(entered),
         killed_in=step,
         exit_code=child.returncode,
     )
-
-
-def _stages() -> tuple[tuple[str, object], ...]:
-    from workflow.review import STAGES
-
-    return STAGES

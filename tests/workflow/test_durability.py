@@ -31,7 +31,7 @@ from alembic import command
 from app.db.session import session_factory, unit_of_work
 from app.lifecycle.events import history
 from app.lifecycle.side_states import FailureClass, enter_failure
-from app.lifecycle.states import begin, transition
+from app.lifecycle.states import PROCESSING_STATES, begin, transition
 from app.models import (
     Package,
     PackageRevision,
@@ -52,8 +52,6 @@ from workflow.durability import (
 from workflow.review import STAGES, run_all, stage_order
 
 pytest_plugins = ("tests.app.postgres_fixture",)
-
-DATABASE_URL = "postgresql+psycopg://gv:gv@localhost:5433/gv"
 
 
 @pytest.fixture
@@ -138,8 +136,23 @@ def test_a_killed_worker_resumes_and_finishes(
         result.final_state == PackageState.GENERATING_OUTPUTS
     ), "the resumed run takes the package to the end of the pipeline"
     assert step in result.stages_run, "the killed stage is redone, because it never completed"
-    for done in killed.completed_stages:
+
+    # **Positive assertions, because the negative ones are vacuous at the ends.** For `ingest` there are no
+    # completed stages, so a loop over them checks nothing and `step not in survived` is trivially true —
+    # review pointed out that the first stage, one of the two the docstring calls most interesting, was
+    # effectively untested. So the expected set is stated outright.
+    expected_completed = tuple(stage_order()[: stage_order().index(step)])
+    assert (
+        killed.completed_stages == expected_completed
+    ), f"killed entering {step}, so exactly {expected_completed} should have finished"
+    assert survived == set(expected_completed)
+    for done in expected_completed:
         assert done not in result.stages_run, f"{done} completed before the kill and was repeated"
+    # Not `stages_skipped == expected_completed`: I asserted that first and it failed, which was the useful
+    # part. The walk begins after the last stage that committed, so earlier finished stages are never
+    # visited and never reported as skipped — they are absent from `outcomes` entirely. `stages_skipped`
+    # covers only stages the walk reached and found already claimed.
+    assert not set(result.stages_run) & set(expected_completed)
 
 
 def test_a_resumed_run_repeats_no_completed_stage(factory: sessionmaker[Session], url: str) -> None:
@@ -396,6 +409,63 @@ def test_a_human_resume_is_counted(factory: sessionmaker[Session]) -> None:
 
     with unit_of_work(factory) as session:
         assert recovery_interventions(session, timedelta(hours=1)) == 1
+        # The counted event, named. Without this the test passes on any event that happens to carry the
+        # actor, which is not the same as counting the recovery — review's point about both of these tests.
+        processing = {state.value for state in PROCESSING_STATES}
+        mine = [
+            event
+            for event in history(session, revision_id)
+            if event.actor == "anant" and str(event.to_state) in processing
+        ]
+        assert len(mine) == 1
+        assert (
+            str(mine[0].from_state) == PackageState.FAILED_RETRYABLE.value
+        ), "the counted event is the move out of the failure state — the recovery itself"
+
+
+def test_a_person_rescuing_a_killed_package_counts_too(
+    factory: sessionmaker[Session], url: str
+) -> None:
+    """**The gap review found in the first version of the metric.**
+
+    A worker killed mid-flight leaves its package in a *processing* state, not a failure state. The first
+    metric only counted transitions out of `RESUMABLE_STATES`, so a person picking that package up and
+    driving it to the end counted as **nothing** — the number would have drifted toward "no intervention
+    needed" while somebody did the work by hand.
+
+    Now anyone who is not a stage worker or the supervisor counts, whatever state they found the package
+    in.
+    """
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _uploaded_revision(session)
+
+    kill_at("match", database_url=url, package_revision_id=revision_id, workflow_run_id=run_id)
+
+    with unit_of_work(factory) as session:
+        assert resume_point(session, revision_id) is None, "it is mid-flight, not failed"
+
+    run_to_completion(
+        factory, package_revision_id=revision_id, workflow_run_id=run_id, actor="anant"
+    )
+
+    with unit_of_work(factory) as session:
+        assert recovery_interventions(session, timedelta(hours=1)) == 1
+        # **Pin the event, not just the count.** Review's point: both intervention tests would have passed
+        # if the number came from entirely the wrong events, as long as the actor filter happened to match.
+        # So this names the event that must be the one counted.
+        processing = {state.value for state in PROCESSING_STATES}
+        mine = [
+            event
+            for event in history(session, revision_id)
+            if event.actor == "anant" and str(event.to_state) in processing
+        ]
+        assert len(mine) == 1, "exactly one event carries the person's name"
+        # This package was killed mid-flight, so the rescue starts from a *processing* state rather than a
+        # failure one — which is the whole reason the first metric missed it. I first asserted
+        # FAILED_RETRYABLE here and the test said otherwise, which is the assertion doing its job.
+        assert (
+            str(mine[0].from_state) == PackageState.EXTRACTING.value
+        ), "the rescue moves it on from the last stage that committed"
 
 
 def test_zero_is_a_real_answer_not_a_missing_one(factory: sessionmaker[Session]) -> None:
@@ -416,6 +486,9 @@ def test_a_window_must_be_a_positive_length_of_time(factory: sessionmaker[Sessio
         for bad in (timedelta(0), timedelta(seconds=-1)):
             with pytest.raises(ValueError, match="positive"):
                 recovery_interventions(session, bad)
+        # And the smallest positive window is accepted rather than rejected along with them — a check that
+        # only ever refuses would pass if the boundary were on the wrong side.
+        assert recovery_interventions(session, timedelta(microseconds=1)) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +520,7 @@ def test_a_repeated_node_invocation_is_refused_by_the_database(
     ), "the guarantee is the unique constraint; without it this test is decoration"
 
     # Two rows with one key, in one transaction: the second must be refused.
-    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+    with pytest.raises(IntegrityError) as caught, unit_of_work(factory) as session:
         for _ in range(2):
             session.execute(
                 ModelInvocation.__table__.insert().values(
@@ -460,3 +533,11 @@ def test_a_repeated_node_invocation_is_refused_by_the_database(
                 )
             )
             session.flush()
+
+    # **Which constraint refused it matters.** Review's point, and a fair one: every value above is
+    # invented, so the insert could have failed on a foreign key or any other unique index and this test
+    # would still have passed while proving nothing about the node key. So the error has to name it.
+    message = str(caught.value)
+    assert (
+        "node_invocation_key" in message
+    ), f"refused, but not by the constraint this test is about: {message[:200]}"

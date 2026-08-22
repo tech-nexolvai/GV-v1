@@ -290,9 +290,11 @@ def run_stage(
     The claim still goes first, so a re-delivered stage recognises itself and returns without repeating the
     work or moving the package — `already_done` on the outcome.
 
-    `actor` names who caused the move, defaulting to this stage's worker. A resume passes the person or
-    supervisor who asked for it, because the transition out of a failure state *is* the recovery and
-    `workflow/durability.py` counts those by actor.
+    `actor` names who caused the move, defaulting to this stage's worker when it is `None`. **This function
+    records what it is given and checks nothing about it** — deciding whether a move is automatic or a
+    person's is the caller's job, and `workflow/durability.py` is the caller that does it. An empty string
+    is passed through rather than replaced, so `transition`'s own refusal of a nameless actor fires instead
+    of being masked by a silent default.
 
     The caller owns the transaction, as everywhere else in this codebase: the claim, the state change and
     whatever the stage wrote land together or not at all. A claim that committed on its own would block the
@@ -330,7 +332,7 @@ def run_stage(
         session,
         package_revision_id,
         state,
-        actor=actor or f"the {stage.replace('_', ' ')} worker",
+        actor=f"the {stage.replace('_', ' ')} worker" if actor is None else actor,
         reason=None,
         workflow_run_id=workflow_run_id,
     )

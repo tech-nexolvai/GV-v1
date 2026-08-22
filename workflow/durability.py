@@ -58,16 +58,27 @@ __all__ = [
 
 #: The one actor an automatic resume may use.
 #:
-#: **This constant is how a recovery intervention is counted, so it is load-bearing.** Anant's call on #217
-#: is that only a *human* resume counts: an automatic retry is not toil, and Temporal's value is removing
-#: toil. Rather than guess which actor strings look like people, a resume this module performs stamps
-#: itself with this exact string and `recovery_interventions` counts every resume that did not.
+#: **This constant is half of how a recovery intervention is counted, so it is load-bearing.** Anant's call
+#: on #217 is that only a *human* resume counts: an automatic retry is not toil, and toil is what Temporal
+#: removes. Rather than guess which actor strings look like people, everything the machine does names
+#: itself — this constant for a supervised resume, `worker_actors()` for the stages — and
+#: `recovery_interventions` counts whoever is left.
 #:
-#: The error that leaves is deliberate. A resume by an unrecognised actor counts as an intervention, so a
-#: new automatic path added without reading this would *inflate* the number rather than hide it — and
-#: `docs/DESIGN_CONTROLS.md` §6 asks for exactly that direction: "not measured is displayed as prominently
-#: as a breach", because an unmeasured trigger makes the deferral permanent by accident.
+#: The error that leaves is deliberate. An unrecognised actor counts as an intervention, so a new automatic
+#: path added without reading this *inflates* the number rather than hiding it — and `docs/DESIGN_CONTROLS.md`
+#: §6 asks for exactly that direction: "not measured is displayed as prominently as a breach", because an
+#: unmeasured trigger makes the deferral permanent by accident.
 AUTOMATIC_RESUME_ACTOR: Final = "the workflow supervisor"
+
+
+def worker_actors() -> frozenset[str]:
+    """The actor strings the stages use for themselves.
+
+    Derived from `STAGES` rather than listed again, so a stage added there cannot quietly start counting as
+    a person. `workflow/review.py` builds the same string, and that is the coupling — if it changes its
+    format this must follow, which is why the format lives in one expression here rather than six literals.
+    """
+    return frozenset(f"the {stage.replace('_', ' ')} worker" for stage, _ in STAGES)
 
 
 class NotResumable(Exception):
@@ -93,10 +104,15 @@ class WorkflowResult:
 
     @property
     def stages_skipped(self) -> tuple[str, ...]:
-        """The stages this run found already done and did not repeat.
+        """Stages this run *asked about* and found already claimed.
 
-        The whole point of the exercise. After a kill, this is where the work that was already paid for
-        shows up as not having been paid for twice.
+        **Narrower than it first appears, and a test caught me overstating it.** A resume begins after the
+        last stage that committed, so earlier finished stages are never visited and never appear here —
+        they are absent from `outcomes` entirely. What lands here is the boundary: a stage the walk did
+        reach whose claim was already recorded.
+
+        "Nothing paid for twice" is therefore read from `stages_run` — the stages that actually did work —
+        rather than from this. This is the smaller, honest statement.
         """
         return tuple(outcome.stage for outcome in self.outcomes if outcome.already_done)
 
@@ -105,8 +121,8 @@ def resume_point(session: Session, package_revision_id: UUID) -> PackageState | 
     """The state a resume must re-enter, or None if the package is not waiting to be resumed.
 
     Read from the event log rather than inferred: `_resumes_where_it_failed` will refuse a resume that
-    lands anywhere except the state that failed, so the answer has to be the state the package was in
-    when it stopped. That is the most recent processing state in its history.
+    lands anywhere except the state that failed, so the answer has to be the state the package was in when
+    it stopped — which is the `from_state` of the event that put it into the failure state.
     """
     revision = session.get(PackageRevision, package_revision_id)
     if revision is None:
@@ -114,22 +130,28 @@ def resume_point(session: Session, package_revision_id: UUID) -> PackageState | 
     if PackageState(revision.state) not in RESUMABLE_STATES:
         return None
 
-    processing = [state.value for state in PROCESSING_STATES]
-    last = session.execute(
-        select(PackageStateEvent.to_state)
+    # **Read the value the state machine will check, not a proxy for it.** The first version took the
+    # latest processing state in the whole history and relied on an unstated invariant — that no processing
+    # event is ever written after the failure event — to make the two agree. Review could not break it, but
+    # correctness resting on a sentence nobody wrote down is the thing to remove.
+    #
+    # `_resumes_where_it_failed` reads the `from_state` of the event that entered the failure state. So
+    # does this. There is now one definition of "where it failed", and no ordering assumption at all.
+    entered_failure = session.execute(
+        select(PackageStateEvent.from_state)
         .where(
             PackageStateEvent.package_revision_id == package_revision_id,
-            PackageStateEvent.to_state.in_(processing),
+            PackageStateEvent.to_state == revision.state,
         )
         .order_by(PackageStateEvent.sequence.desc())
         .limit(1)
     ).scalar_one_or_none()
-    if last is None:
+    if entered_failure is None:
         raise NotResumable(
-            f"package revision {package_revision_id} is in {revision.state} but its history contains no "
-            "processing state, so there is nowhere to resume to"
+            f"package revision {package_revision_id} is in {revision.state} but no event records it "
+            "entering that state, so there is nothing to resume to"
         )
-    return PackageState(last)
+    return PackageState(entered_failure)
 
 
 def run_to_completion(
@@ -155,6 +177,11 @@ def run_to_completion(
     should pass their own name — that is what makes it countable as an intervention.
     """
     resolved = stages if stages is not None else NoStages()
+    # A person driving this by hand is an intervention whether or not the package had reached a failure
+    # state. The killed-mid-flight case sits in a *processing* state, and the first version attributed its
+    # transitions to the stage workers — so a human rescuing it counted as nothing at all. Review caught
+    # that; the metric would have drifted toward "no intervention needed" while somebody did the work.
+    by_hand = actor != AUTOMATIC_RESUME_ACTOR
 
     with unit_of_work(factory) as session:
         target = resume_point(session, package_revision_id)
@@ -191,20 +218,19 @@ def run_to_completion(
                     package_revision_id=package_revision_id,
                     workflow_run_id=workflow_run_id,
                     stages=resolved,
-                    # Only the move out of a failure state is a recovery; the ordinary forward steps
-                    # that follow belong to their workers. Attributing all of them to the resumer would
-                    # count one intervention six times.
-                    actor=(
-                        actor
-                        if (target is not None and not move_first and index == start)
-                        else None
-                    ),
+                    # The first transition of this walk carries the caller's name when a person asked
+                    # for it, and nothing otherwise. Only the first: attributing all six to the
+                    # resumer would count one rescue six times.
+                    actor=actor if (index == start and not move_first and by_hand) else None,
                 )
             )
 
     with unit_of_work(factory) as session:
         revision = session.get(PackageRevision, package_revision_id)
-        assert revision is not None
+        if revision is None:  # pragma: no cover - it existed a moment ago; deleted mid-run at worst
+            raise NotResumable(
+                f"package revision {package_revision_id} disappeared while it was being processed"
+            )
         final = PackageState(revision.state)
 
     return WorkflowResult(
@@ -243,7 +269,9 @@ def _resume_plan(
     """
     order = [state for _, state in STAGES]
     if resume_target is None:
-        return _start_index(current, None), False
+        # Not waiting on a failure. A package killed mid-flight sits in the last state that committed, so
+        # the next stage is the one after it; anything else starts at the top and lets the claims decide.
+        return (order.index(current) + 1 if current in order else 0), False
 
     index = order.index(resume_target)
     stage_name = STAGES[index][0]
@@ -263,38 +291,6 @@ def _resume_plan(
     return index + 1, True
 
 
-def _start_index(current: PackageState, resume_target: PackageState | None) -> int:
-    """Which stage the walk begins at.
-
-    Three cases, and the order matters:
-
-    - **Resuming a failure.** Start at the stage that failed, so `run_stage` moves the package out of the
-      failure state and into exactly that stage. Anywhere else is refused by the state machine.
-    - **Picking up a package killed mid-flight.** It sits in the last state that actually committed, so the
-      next stage is the one after it. The killed stage's own claim rolled back with its work, so it is
-      redone.
-    - **Anything else** — never started, or already finished — begins at the top and every completed stage
-      short-circuits on its claim.
-
-    Positions come from `STAGES` rather than a second list, so a stage added there cannot be skipped here.
-
-    **This is an optimisation, not the guarantee, and it is worth being clear about which.** Deleting the
-    skip entirely leaves every test passing: the walk then visits stages that already completed, and each
-    one short-circuits on its claim instead. The claim is what protects paid work — that is #354's design
-    and `tests/workflow/test_review_workflow.py` pins it directly. What this saves is a pointless claim
-    lookup per finished stage, which matters for a package resumed near the end and nowhere else.
-
-    Verified by removing it and watching nothing fail, which is the only way to tell an optimisation from a
-    control.
-    """
-    order = [state for _, state in STAGES]
-    if resume_target is not None:
-        return order.index(resume_target)
-    if current in order:
-        return order.index(current) + 1
-    return 0
-
-
 def recovery_interventions(session: Session, window: timedelta) -> int:
     """How many times a person had to rescue a package in the last `window`.
 
@@ -311,15 +307,14 @@ def recovery_interventions(session: Session, window: timedelta) -> int:
         raise ValueError("a measurement window must be a positive length of time")
 
     since = datetime.now(UTC) - window
-    resumable = [state.value for state in RESUMABLE_STATES]
     processing = [state.value for state in PROCESSING_STATES]
+    machines = [*worker_actors(), AUTOMATIC_RESUME_ACTOR]
     counted = session.execute(
         select(func.count())
         .select_from(PackageStateEvent)
         .where(
-            PackageStateEvent.from_state.in_(resumable),
             PackageStateEvent.to_state.in_(processing),
-            PackageStateEvent.actor != AUTOMATIC_RESUME_ACTOR,
+            PackageStateEvent.actor.notin_(machines),
             PackageStateEvent.created_at >= since,
         )
     ).scalar_one()
