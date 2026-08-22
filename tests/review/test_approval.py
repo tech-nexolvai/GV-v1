@@ -25,7 +25,7 @@ from app.review.approval import (
     request_changes,
 )
 from app.review.session import open_session, record_action
-from tests.review.test_session import _finding, _revision
+from tests.review.test_session import _finding, _revision, _upgrade
 
 
 def reviewer(name: str = "anant") -> Principal:
@@ -71,6 +71,7 @@ def _review_required_finding(db: Session, revision: PackageRevision) -> Finding:
 
 def test_approval_pins_the_server_selected_finding_rows(postgres_engine: Engine) -> None:
     """Input: two addressed findings. Outcome: APPROVED and both exact finding ids are pinned."""
+    _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with factory.begin() as db:
         revision = _revision(db)
@@ -93,6 +94,7 @@ def test_approval_pins_the_server_selected_finding_rows(postgres_engine: Engine)
 
 def test_unaddressed_review_required_cannot_be_approved(postgres_engine: Engine) -> None:
     """Input: REVIEW REQUIRED with no human action. Outcome: refusal, never silent approval."""
+    _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with factory.begin() as db:
         revision = _revision(db)
@@ -105,6 +107,7 @@ def test_unaddressed_review_required_cannot_be_approved(postgres_engine: Engine)
 
 def test_an_explicit_action_addresses_review_required(postgres_engine: Engine) -> None:
     """Input: REVIEW REQUIRED plus named dismissal. Outcome: approval may proceed and remains traced."""
+    _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with factory.begin() as db:
         revision = _revision(db)
@@ -126,6 +129,7 @@ def test_an_explicit_action_addresses_review_required(postgres_engine: Engine) -
 
 def test_change_request_records_its_driver_findings(postgres_engine: Engine) -> None:
     """Input: two package findings. Outcome: CHANGES_REQUESTED event names both deterministically."""
+    _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with factory.begin() as db:
         revision = _revision(db)
@@ -148,6 +152,7 @@ def test_change_request_records_its_driver_findings(postgres_engine: Engine) -> 
 
 def test_change_request_needs_a_driver(postgres_engine: Engine) -> None:
     """Input: empty driver list. Outcome: refusal instead of an unexplained terminal decision."""
+    _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with factory.begin() as db:
         revision = _revision(db)
@@ -164,6 +169,7 @@ def test_change_request_needs_a_driver(postgres_engine: Engine) -> None:
 
 def test_change_request_refuses_a_finding_from_another_revision(postgres_engine: Engine) -> None:
     """Input: foreign finding id. Outcome: refusal; one package cannot cite another's problem."""
+    _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with factory.begin() as db:
         mine = _revision(db)
@@ -182,6 +188,7 @@ def test_change_request_refuses_a_finding_from_another_revision(postgres_engine:
 
 def test_approval_from_a_side_state_is_impossible(postgres_engine: Engine) -> None:
     """Input: NEEDS_INPUT package. Outcome: lifecycle table refuses APPROVED."""
+    _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with factory.begin() as db:
         revision = _revision(db, state=PackageState.NEEDS_INPUT)
