@@ -92,8 +92,11 @@ def critical_false_pass_rate(
     critical checks. Widening it would dilute the rate with cases that could never have been a false
     PASS, and make the number look better by adding work the system got right for free.
 
-    Until `Q4` (#12) assigns severities, no rule declares CRITICAL and this reports NOT MEASURED.
-    That is correct: nothing has been measured.
+    Rules do declare CRITICAL — the client declined to classify (`docs/CLIENT_FACTS.md` Q4), so the
+    designation is ours, and CT-1 and CT-2 are critical. This still reports NOT MEASURED, for the
+    other reason: the denominator needs a gold set with critical cases expected to FAIL, and there is
+    no gold set yet (#25). That is correct — nothing has been measured, and the remaining blocker is
+    the drawings rather than the severities.
     """
     expected = _expected_by_check(gold)
     at_risk = 0

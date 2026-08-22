@@ -650,9 +650,21 @@ is not.
 `Q4` (#12) assigns a severity to each check. It determines what `critical_false_pass_rate` *reports*,
 not whether it can be *computed* — this module reads `Finding.severity`, it does not classify.
 
-Until Q4 is answered no rule declares `CRITICAL`, so the metric's denominator is zero and it reports
-**not measured**. That is the correct output, and it is exactly why the `None` case above is not a
-detail.
+**Superseded 2026-08-22.** Q4 was put to the client and he declined to classify: *"Difficult to
+categorize between production blockers vs flagged for review. I think any dimension, cabinet type,
+sink type deviations should be highlighted."* (`docs/CLIENT_FACTS.md` Q4.) A decline is a final answer,
+so the severity designation is **ours**, not his, and waiting on Q4 was waiting for something that was
+never coming.
+
+Rules therefore do declare `CRITICAL` — `rules/rulebook/cab_arch_vs_shop_001.yaml` already did, and
+CT-1 (#58) and CT-2 (#59) were ruled critical on the grounds that a false PASS there cuts stone to the
+wrong size. Under V1's exact-match posture the label changes no behaviour, since every mismatch flags
+regardless; what it changes is whether the metric can be computed at all.
+
+The metric still reports **not measured**, but for the other reason: its denominator is *critical
+checks the gold set says should FAIL*, and there is no gold set yet (#25, #274). So the remaining
+blocker is the drawings, not the severities — and the `None` case above is what keeps that honest
+rather than reporting a flattering zero.
 
 ---
 
