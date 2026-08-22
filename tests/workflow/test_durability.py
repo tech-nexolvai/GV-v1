@@ -655,6 +655,13 @@ def test_starting_a_package_by_hand_is_not_a_recovery(factory: sessionmaker[Sess
     reasoning gets looked at again rather than silently becoming wrong.
     """
     from app.lifecycle.states import ASSEMBLY_STATES, TRANSITIONS
+    from workflow.durability import machine_actors
+
+    # **Pin that the actor is a person, or the zero below means nothing.** If a later change classified
+    # "anant" as a machine, the count would be zero for that reason instead and this test would keep
+    # passing while no longer checking the origin condition at all — review's point, and it is the same
+    # "passes for the wrong reason" trap as the constraint test earlier in this file.
+    assert "anant" not in machine_actors()
 
     reaching = {
         state.value for state in ASSEMBLY_STATES if TRANSITIONS[state] & set(PROCESSING_STATES)
