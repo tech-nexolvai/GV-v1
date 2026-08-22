@@ -131,9 +131,34 @@ def test_a_version_that_does_not_exist_is_refused(factory: sessionmaker[Session]
     ):
         require_pin(session, uuid4())
 
-    # The message must not name only the version: this is a join, so an orphaned version whose artifact
-    # row has gone lands here too, and pointing at the wrong table wastes the reader's time.
-    assert "artifact row is gone" in str(caught.value)
+    assert "nothing is pinned to it" in str(caught.value)
+
+
+def test_a_version_cannot_be_pointed_at_a_missing_artifact(factory: sessionmaker[Session]) -> None:
+    """The second absence is unreachable too, and for the same reason as the first.
+
+    I wrote this to detach a version from its artifact and see the message. PostgreSQL refuses:
+    `RestrictViolation`, from the composite foreign key's `ondelete="RESTRICT"`. So "the artifact row is
+    gone" is defence against a state the schema does not permit — worth having its own message for when it
+    is reached some other way, and worth not claiming as a live path.
+
+    That makes three of `require_pin`'s refusals unreachable while the schema holds. The schema is doing
+    nearly all of this story's work; this function's value is that a caller cannot proceed *unpinned*, not
+    that it is the thing keeping the pins honest.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError) as caught, unit_of_work(factory) as session:
+        version = _version(session)
+        session.execute(
+            DocumentVersion.__table__.update()
+            .where(DocumentVersion.id == version.id)
+            .values(source_artifact_id=uuid4())
+        )
+
+    assert isinstance(
+        caught.value.orig, psycopg.errors.ForeignKeyViolation | psycopg.errors.RestrictViolation
+    ), f"refused, but not by the artifact key: {type(caught.value.orig).__name__}"
 
 
 def test_the_database_will_not_let_a_version_disagree_with_its_artifact(

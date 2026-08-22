@@ -35,7 +35,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.document import DocumentVersion, SourceArtifact
@@ -84,11 +83,18 @@ def require_pin(
 ) -> Pin:
     """Resolve a document version into a pin, or refuse.
 
-    Refuses in four ways, and each is a different thing being wrong:
+    Refuses in five ways, each a different thing being wrong — and **three of them are unreachable while
+    the schema holds**, which is the honest summary of this whole story. The constraints do the work; this
+    function exists so that a caller cannot proceed *unpinned*, and so the refusals have somewhere to live
+    if a row ever arrives by another route.
 
     - **The version does not exist** — `IntegrityRecordMissing`. A fact pointing at a version that is not
-      there is not pinned to anything, and the foreign keys make this unreachable through the ORM; it is
-      checked because this function is also the path a raw id from an API request takes.
+      there is not pinned to anything. Unreachable through the ORM thanks to the foreign keys; checked
+      because this is also the path a raw id from an API request takes.
+    - **The version exists but its source artifact does not** — `IntegrityRecordMissing`, with its own
+      message. Two states, and one joined query could not tell them apart; the earlier docstring named only
+      the first, which made it a claim the code did not hold. Also unreachable while the schema holds: the
+      composite foreign key's `ondelete="RESTRICT"` refuses it, confirmed by trying.
     - **The recorded digest is not a digest** — `ArtifactCorrupt`. **Unreachable while the schema holds**,
       and I confirmed that by failing to construct it: `sha256` is `VARCHAR(64)` with a `^[0-9a-f]{64}$`
       check, so the `sha256:`-prefixed form cannot even be stored. Kept for a row that arrived another way.
@@ -112,20 +118,23 @@ def require_pin(
     `require_pin(document_version_id) -> Pin`, which has nothing to resolve *from* — it would have to read a
     global or hand back its own argument. This takes the session.
     """
-    row = session.execute(
-        select(DocumentVersion, SourceArtifact)
-        .join(SourceArtifact, DocumentVersion.source_artifact_id == SourceArtifact.id)
-        .where(DocumentVersion.id == document_version_id)
-    ).one_or_none()
-    if row is None:
-        # Either row can be the missing one: this is a join, so an orphaned version whose source artifact
-        # has gone reaches here too. The message says so rather than naming only the version, which would
-        # send somebody looking in the wrong table.
+    # **Resolved in two steps, so each absence reports its own cause.** A single joined query returns
+    # `None` for two different states — no version, or a version whose artifact row has gone — and one
+    # message cannot name both without guessing which happened. Review's suggestion, and better than the
+    # combined wording I tried first.
+    version = session.get(DocumentVersion, document_version_id)
+    if version is None:
         raise IntegrityRecordMissing(
-            f"no document version {document_version_id} with a source artifact — either the version does "
-            "not exist or its artifact row is gone, and neither pins anything"
+            f"there is no document version {document_version_id}, so nothing is pinned to it"
         )
-    version, artifact = row
+
+    artifact = session.get(SourceArtifact, version.source_artifact_id)
+    if artifact is None:
+        raise IntegrityRecordMissing(
+            f"document version {document_version_id} names source artifact "
+            f"{version.source_artifact_id}, which is not there — the version records a digest but the row "
+            "holding the bytes has gone, so the pin resolves to nothing"
+        )
 
     if not DIGEST.fullmatch(version.sha256 or ""):
         raise ArtifactCorrupt(
