@@ -35,7 +35,17 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, String, UniqueConstraint, func, select
+from sqlalchemy import (
+    DDL,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    event,
+    func,
+    select,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import Select
@@ -145,6 +155,19 @@ class ItemIdentifier(Base, TimestampedUUID):
             postgresql_ops={"value_as_printed": "gin_trgm_ops"},
         ),
     )
+
+
+# Production enables pg_trgm through migration 0020. A number of repository tests deliberately
+# construct the schema from ORM metadata instead, so that path must establish the same prerequisite
+# before SQLAlchemy creates the GIN index. PostgreSQL executes this table hook before its indexes;
+# other database dialects ignore it.
+event.listen(
+    ItemIdentifier.__table__,
+    "before_create",
+    DDL("CREATE EXTENSION IF NOT EXISTS pg_trgm").execute_if(  # type: ignore[no-untyped-call]
+        dialect="postgresql"
+    ),
+)
 
 
 class Alias(Base, TimestampedUUID, Immutable):

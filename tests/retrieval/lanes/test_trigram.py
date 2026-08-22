@@ -9,7 +9,9 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from sqlalchemy import create_mock_engine
 
+from app.models.drawing import ItemIdentifier
 from retrieval.candidate import Lane, MatchCandidate
 from retrieval.lanes.trigram import (
     TRIGRAM_SQL,
@@ -221,3 +223,24 @@ def test_migration_enables_pg_trgm_and_its_identifier_index() -> None:
     assert calls[0] == "CREATE EXTENSION IF NOT EXISTS pg_trgm"
     assert "gin_trgm_ops" in calls[1]
     assert module.down_revision == "0019_model_context"
+
+
+def test_metadata_bootstrap_enables_pg_trgm_before_creating_its_index() -> None:
+    """Input: ORM schema bootstrap. Output: extension first. Why: create_all must work in CI."""
+
+    statements: list[str] = []
+
+    def record(statement: object, *multiparams: object, **params: object) -> None:
+        del multiparams, params
+        statements.append(str(statement.compile(dialect=engine.dialect)))  # type: ignore[attr-defined]
+
+    engine = create_mock_engine("postgresql+psycopg://", record)
+    ItemIdentifier.__table__.create(engine)
+
+    extension_position = next(
+        index for index, statement in enumerate(statements) if "CREATE EXTENSION" in statement
+    )
+    trigram_index_position = next(
+        index for index, statement in enumerate(statements) if "gin_trgm_ops" in statement
+    )
+    assert extension_position < trigram_index_position
