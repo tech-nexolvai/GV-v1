@@ -75,6 +75,7 @@ def validate_derivation_references(
     *,
     inputs: Collection[str],
     parameters: Collection[str],
+    applicability_values: Collection[str] = (),
 ) -> None:
     """Validate a derivation graph by allowing references to known earlier names only.
 
@@ -82,7 +83,7 @@ def validate_derivation_references(
     detector. An unresolved reference names the offending derivation, keyword operand and
     reference to make a broken rule straightforward to repair.
     """
-    known = set(inputs) | set(parameters)
+    known = set(inputs) | set(parameters) | set(applicability_values)
     for derivation in derivations:
         if derivation.name in known:
             raise ValueError(f"derivation {derivation.name!r} redefines an existing name")
@@ -91,8 +92,8 @@ def validate_derivation_references(
                 if reference not in known:
                     raise ValueError(
                         f"derivation {derivation.name!r} operand {operand!r} references "
-                        f"{reference!r}, which is not an input, a parameter, or an earlier "
-                        "derivation. Derivations may only look backwards, which is what "
-                        "keeps the graph acyclic."
+                        f"{reference!r}, which is not an input, a parameter, an applicability "
+                        "value, or an earlier derivation. Derivations may only look backwards, "
+                        "which is what keeps the graph acyclic."
                     )
         known.add(derivation.name)

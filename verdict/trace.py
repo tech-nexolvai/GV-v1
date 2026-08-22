@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from fractions import Fraction
 
 from units.measurement import Measurement, Unit
+from verdict.operands import OperandValue
 from verdict.outcomes import Outcome
 
 
@@ -14,7 +14,7 @@ class TracedOperand:
     """One exact input and the evidence provenance used for it."""
 
     name: str
-    value: Measurement | Fraction | str | None
+    value: OperandValue
     source: str
     evidence_ref: str | None
 

@@ -90,7 +90,13 @@ def _abstain(
 
 
 def _measurements(operands: Mapping[str, VerdictOperand]) -> list[Measurement]:
-    return [o.value for o in operands.values() if isinstance(o.value, Measurement)]
+    measurements: list[Measurement] = []
+    for operand in operands.values():
+        if isinstance(operand.value, Measurement):
+            measurements.append(operand.value)
+        elif isinstance(operand.value, tuple):
+            measurements.extend(operand.value)
+    return measurements
 
 
 def _authored_units(operands: Mapping[str, VerdictOperand]) -> set[Unit]:
@@ -226,6 +232,11 @@ def execute(
 
     # ---- step 4: one authored unit system --------------------------------------
     units = _authored_units(operands)
+    units.update(
+        parameter.value.value.unit
+        for name, parameter in parameters.items()
+        if name in rule.parameters
+    )
     if len(units) > 1:
         allowance = rule.cross_unit_allowance
         if allowance is None:
@@ -246,12 +257,28 @@ def execute(
         )
 
     arithmetic_unit = rule.arithmetic_unit
+    if units and arithmetic_unit not in units:
+        return _abstain(
+            rule,
+            snapshot.snapshot_id,
+            Outcome.REVIEW_REQUIRED,
+            f"operands were authored in {next(iter(units)).value!r}, but this rule requires "
+            f"{arithmetic_unit.value!r} arithmetic. The engine does not silently convert the "
+            "drawing's verdict operands.",
+            operands,
+            variant=variant_name,
+        )
 
     # ---- steps 5 and 6: derive, then decide ------------------------------------
     resolved_values: dict[str, object] = {name: operand.value for name, operand in operands.items()}
     resolved_values.update(
         {name: parameter.value.value.as_measurement() for name, parameter in parameters.items()}
     )
+    if variant is not None:
+        # Variant extras are reviewed, typed rule data such as ``field_cut_count``. Exposing
+        # only those declared values lets derivations consume layout facts without an expression
+        # language or a caller-invented default. Rule validation rejects missing and colliding names.
+        resolved_values.update(variant.extras)
     derivation_intermediates: list[tuple[str, object]] = []
 
     try:

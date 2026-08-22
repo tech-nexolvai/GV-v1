@@ -403,8 +403,12 @@ def read_applicability(
         variants=[
             ApplicabilityVariantOut(
                 when=variant.when,
-                tolerance=render_tolerance(variant.tolerance),
-                tolerance_confirmed=variant.tolerance.is_confirmed,
+                tolerance=(
+                    render_tolerance(variant.tolerance) if variant.tolerance is not None else None
+                ),
+                tolerance_confirmed=(
+                    variant.tolerance.is_confirmed if variant.tolerance is not None else None
+                ),
             )
             for variant in applicability.variants
         ],

@@ -183,8 +183,26 @@ class ApplicabilityVariant(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     when: str
-    tolerance: Tolerance
+    tolerance: Tolerance | None = None
     extras: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("extras", mode="before")
+    @classmethod
+    def _extras_are_named_integers(cls, value: object) -> object:
+        """Keep variant extras a narrow, typed binding surface.
+
+        Extras carry reviewed layout facts such as ``field_cut_count``. They are not a
+        general-purpose value channel: names must be present and values must already be real
+        integers. In particular, ``bool`` is refused even though Python treats it as an integer.
+        """
+        if not isinstance(value, dict):
+            raise TypeError("applicability extras must be a mapping of names to integers")
+        for name, extra in value.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("applicability extra names must be non-empty strings")
+            if type(extra) is not int:
+                raise TypeError(f"applicability extra {name!r} must be a real integer")
+        return value
 
 
 #: Discriminator names that identify *who submitted the drawing*. Forbidden by ADR-0006.
@@ -376,10 +394,24 @@ class Rule(BaseModel):
         exist to be handed to the publisher. Restricting references to earlier names makes a
         cycle unrepresentable instead of relying on an execution-time cycle check.
         """
+        applicability_values: set[str] = set()
+        if isinstance(self.applicability, Applicability):
+            extra_sets = [set(variant.extras) for variant in self.applicability.variants]
+            applicability_values = set.intersection(*extra_sets) if extra_sets else set()
+            all_applicability_values = set.union(*extra_sets) if extra_sets else set()
+
+            reserved = set(self.inputs) | set(self.parameters)
+            collisions = sorted(all_applicability_values & reserved)
+            if collisions:
+                raise ValueError(
+                    f"applicability extras collide with input or parameter names: {collisions}"
+                )
+
         validate_derivation_references(
             self.derivations,
             inputs=self.inputs,
             parameters=self.parameters,
+            applicability_values=applicability_values,
         )
         return self
 
@@ -405,7 +437,7 @@ class Rule(BaseModel):
         FAIL. The release gate uses this to keep unconfirmed rules out of production.
         """
         tolerances = (
-            [v.tolerance for v in self.applicability.variants]
+            [v.tolerance for v in self.applicability.variants if v.tolerance is not None]
             if isinstance(self.applicability, Applicability)
             else []
         )

@@ -193,7 +193,8 @@ def _tolerance_text(rule: Rule) -> dict[str, str]:
     found: dict[str, str] = {}
     if isinstance(rule.applicability, Applicability):
         for variant in rule.applicability.variants:
-            found[f"when {variant.when}"] = str(variant.tolerance.value)
+            if variant.tolerance is not None:
+                found[f"when {variant.when}"] = str(variant.tolerance.value)
     if rule.operation.tolerance is not None:
         found["operation"] = str(rule.operation.tolerance.value)
     return found
