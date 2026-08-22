@@ -124,6 +124,28 @@ class ReviewAction(Base, TimestampedUUID, Immutable):
 
     note: Mapped[str | None] = mapped_column(String(1000), default=None)
 
+    original_observation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "canonical_observations.id",
+            ondelete="RESTRICT",
+            name="fk_review_action_original_observation",
+        ),
+        default=None,
+        index=True,
+    )
+    """The immutable fact a confirm/correct action reviewed, when this is an evidence action."""
+
+    resulting_observation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "canonical_observations.id",
+            ondelete="RESTRICT",
+            name="fk_review_action_resulting_observation",
+        ),
+        default=None,
+        index=True,
+    )
+    """The new HUMAN_CONFIRMED fact produced by an evidence action; never an in-place edit."""
+
     __table_args__ = (
         ForeignKeyConstraint(
             ["review_session_id", "package_revision_id"],
@@ -141,6 +163,12 @@ class ReviewAction(Base, TimestampedUUID, Immutable):
         UniqueConstraint("id", "action", name="uq_review_actions_id_action"),
         CheckConstraint(f"action IN ({ACTION_VALUES})", name="review_action_kind"),
         CheckConstraint("actor <> ''", name="review_action_actor_present"),
+        CheckConstraint(
+            "(original_observation_id IS NULL AND resulting_observation_id IS NULL) OR "
+            "(original_observation_id IS NOT NULL AND resulting_observation_id IS NOT NULL "
+            "AND original_observation_id <> resulting_observation_id)",
+            name="review_action_observation_pair",
+        ),
         Index("ix_review_actions_finding_action", "finding_id", "action"),
     )
 
