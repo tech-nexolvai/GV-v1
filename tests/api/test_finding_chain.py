@@ -283,5 +283,6 @@ def test_a_chain_in_another_project_is_not_disclosed(session: Session) -> None:
         f"{API_PREFIX}/projects/{other_project.id}/packages/{package_id}/findings/{finding_id}/chain"
     )
     assert response.status_code == 404
-    assert response.json()["detail"] == "Not found"
+    assert response.json()["error"] == "http_error"
+    assert response.json()["message"] == "Not found"
     assert str(project_id) not in response.text
