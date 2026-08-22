@@ -1,0 +1,44 @@
+id: CT-DEPTH-001
+version: 1.0.0
+product_type: countertop
+check_type: internal
+severity: CRITICAL
+arithmetic_unit: in
+
+name: Countertop depth verification
+description: >
+  Compare the authored shop countertop depth with the exact project cabinet depth plus
+  countertop overhang. Field-cut allowances apply to width, never to depth.
+
+applicability:
+  scope: global
+
+inputs:
+  countertop_depth:
+    source: SHOP
+    semantic_type: CT010
+    scope: same_assembly
+    cardinality: one
+
+parameters:
+  cabinet_depth:
+    scope: project
+  countertop_overhang:
+    scope: project
+
+derivations:
+  - name: expected_depth
+    operation: sum
+    operands:
+      values:
+        - cabinet_depth
+        - countertop_overhang
+
+operation:
+  type: equals
+  operands:
+    actual: countertop_depth
+    expected: expected_depth
+
+on_missing: NOT_FOUND
+on_ambiguous: REVIEW_REQUIRED

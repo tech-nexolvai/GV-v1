@@ -1,0 +1,57 @@
+id: CT-BACK-OFFSET-MIN-001
+version: 1.0.0
+product_type: countertop
+check_type: internal
+severity: CRITICAL
+arithmetic_unit: in
+
+name: Countertop back-offset minimum
+description: >
+  Derive the sink back offset as the exact remainder after the front offset and sink
+  cutout depth, then compare it with the required project minimum. The minimum has no
+  default because the vendor value is still pending.
+
+applicability:
+  scope: global
+
+inputs:
+  countertop_depth:
+    source: SHOP
+    semantic_type: CT010
+    scope: same_assembly
+    cardinality: one
+  front_offset:
+    source: SHOP
+    semantic_type: CT007
+    scope: same_assembly
+    cardinality: one
+  sink_depth:
+    source: SHOP
+    semantic_type: CT008
+    scope: same_assembly
+    cardinality: one
+
+parameters:
+  back_offset_minimum:
+    scope: project
+
+derivations:
+  - name: depth_after_front_offset
+    operation: difference_between
+    operands:
+      a: countertop_depth
+      b: front_offset
+  - name: back_offset
+    operation: difference_between
+    operands:
+      a: depth_after_front_offset
+      b: sink_depth
+
+operation:
+  type: minimum
+  operands:
+    x: back_offset
+    bound: back_offset_minimum
+
+on_missing: NOT_FOUND
+on_ambiguous: REVIEW_REQUIRED
