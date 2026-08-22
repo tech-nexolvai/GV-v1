@@ -392,7 +392,21 @@ def main() -> int:
     #
     # That is the one thing this script exists to prevent: it decides whether work may start, and the
     # caller is told not to decide for themselves. So it has to answer this case too.
-    if iss.get("state") == "closed":
+    # **Validate the state rather than testing it for one value.** `== "closed"` means anything else —
+    # missing, null, a value GitHub adds later — falls through to the readiness path and can reach READY.
+    # A gate that fails toward "go ahead" on an input it did not understand is the wrong way round, and it
+    # is the same shape as the bug this whole check exists to fix.
+    state = iss.get("state")
+    if state not in {"open", "closed"}:
+        sys.stderr.write(
+            f"MALFORMED  #{args.issue} {title}\n\n"
+            f"The issue's state reads {state!r}, which is neither 'open' nor 'closed'. This gate will not\n"
+            "guess whether work may start from a value it does not recognise. Check the issue on GitHub,\n"
+            "or the `gh` version if this looks like an API change.\n"
+        )
+        return MALFORMED
+
+    if state == "closed":
         sys.stderr.write(
             f"CLOSED  #{args.issue} {title}\n\n"
             "This issue is closed, so the work is done. Do not implement it again — read what is\n"

@@ -303,3 +303,45 @@ def test_closed_is_its_own_answer_rather_than_blocked(monkeypatch: pytest.Monkey
 def test_an_open_ready_issue_is_still_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     """The fix must not turn the gate into a wall: the ordinary path still opens."""
     assert _gate_on(monkeypatch, "open") == issue_gate.READY
+
+
+def test_a_closed_issue_is_refused_even_with_no_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The closed check must come *before* contract parsing, and this is what pins the order.
+
+    The tests above use a valid contract, so if a later change parsed the contract first they would still
+    pass — review's point. An issue with no contract at all can only reach CLOSED_ALREADY if the state is
+    read first; if parsing moved ahead of it, this returns MALFORMED instead.
+    """
+    monkeypatch.setattr(
+        issue_gate,
+        "gh_json",
+        lambda _path: {"state": "closed", "title": "Done long ago", "body": "", "labels": []},
+    )
+    monkeypatch.setattr(issue_gate.sys, "argv", ["issue_gate.py", "219"])
+    assert int(issue_gate.main()) == issue_gate.CLOSED_ALREADY
+
+
+@pytest.mark.parametrize("state", [None, "", "merged", "locked", 42])
+def test_an_unrecognised_state_is_malformed_not_ready(
+    state: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A state the gate does not understand must never reach READY.
+
+    `== "closed"` let everything else fall through to the readiness path, so a missing or renamed state
+    would have been answered with "implement it". A gate that fails toward "go ahead" on an input it did not
+    understand is the wrong way round — the same shape as the bug this check was added to fix.
+    """
+    monkeypatch.setattr(
+        issue_gate,
+        "gh_json",
+        lambda _path: {
+            "state": state,
+            "title": "Odd",
+            "body": _READY_CONTRACT,
+            "labels": [],
+        },
+    )
+    monkeypatch.setattr(issue_gate.sys, "argv", ["issue_gate.py", "219"])
+    code = int(issue_gate.main())
+    assert code == issue_gate.MALFORMED
+    assert code != issue_gate.READY
