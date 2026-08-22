@@ -215,13 +215,20 @@ def test_a_prefixed_digest_cannot_even_be_stored(factory: sessionmaker[Session])
 
     assert DocumentVersion.__table__.columns["sha256"].type.length == 64
 
-    with pytest.raises(DataError), unit_of_work(factory) as session:
+    with pytest.raises(DataError) as caught, unit_of_work(factory) as session:
         version = _version(session)
         session.execute(
             DocumentVersion.__table__.update()
             .where(DocumentVersion.id == version.id)
             .values(sha256=f"sha256:{DIGEST}")
         )
+
+    # **Which DataError.** PostgreSQL checks the column width before the append-only trigger fires, so this
+    # must be the length violation and not something else the setup happened to trip — otherwise the test
+    # passes while proving nothing about the column being 64 characters wide.
+    assert "value too long for type character varying" in str(
+        caught.value
+    ), f"refused, but not for the length: {str(caught.value)[:160]}"
 
 
 def test_bytes_that_no_longer_match_are_refused(factory: sessionmaker[Session]) -> None:
