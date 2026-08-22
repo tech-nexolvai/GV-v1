@@ -84,7 +84,7 @@ from evidence.polygon import Polygon
 from storage.hashing import content_key, sha256_stream
 from storage.store import ArtifactStore, StoredArtifact
 from verdict.finding import Finding
-from verdict.outcomes import Outcome
+from verdict.outcomes import Outcome, is_abstention
 
 PDF_CONTENT_TYPE: Final = "application/pdf"
 
@@ -352,7 +352,7 @@ def render_redline(
     _check_pages_describe_the_pdf(package, reader)
 
     marks, unplaced, marked = _place(package, findings)
-    document = _compose(package, reader, marks, len(findings), marked, unplaced)
+    document = _compose(package, reader, marks, findings, marked, unplaced)
 
     digest, _ = sha256_stream(BytesIO(document))
     key = content_key(f"redlines/{package.package_revision_id}/{mode.value}", digest, suffix=".pdf")
@@ -536,7 +536,7 @@ def _compose(
     package: RedlinePackage,
     reader: PdfReader,
     marks: dict[int, list[_Mark]],
-    total_findings: int,
+    findings: Sequence[Finding],
     marked: int,
     unplaced: Sequence[Unplaced],
 ) -> bytes:
@@ -555,7 +555,8 @@ def _compose(
         if page_marks:
             page.merge_page(_overlay(by_index[index], page_marks))
 
-    summary = _listing(package, total_findings, marked, unplaced)
+    pages_with_marks = frozenset(index for index, page_marks in marks.items() if page_marks)
+    summary = _listing(package, findings, marked, unplaced, pages_with_marks)
     for listing in PdfReader(BytesIO(summary)).pages:
         writer.add_page(listing)
 
@@ -671,9 +672,10 @@ def _listing_size(package: RedlinePackage) -> tuple[Decimal, Decimal]:
 
 def _listing(
     package: RedlinePackage,
-    total_findings: int,
+    findings: Sequence[Finding],
     marked: int,
     unplaced: Sequence[Unplaced],
+    pages_with_marks: frozenset[int],
 ) -> bytes:
     """Render the appended pages that account for every finding not on the drawing.
 
@@ -700,6 +702,7 @@ def _listing(
         for wrapped in textwrap.wrap(text, columns) or [""]:
             line(f"{indent}{wrapped}")
 
+    total_findings = len(findings)
     line("Redline summary", font="Helvetica-Bold", size=LISTING_FONT_SIZE * 1.8)
     paragraph(
         f"{total_findings} finding(s) in this report for package revision "
@@ -707,6 +710,35 @@ def _listing(
         f"{total_findings - marked} not marked, and listed below."
     )
     line("")
+
+    line("Page coverage", font="Helvetica-Bold", size=12.0)
+    paragraph(
+        "Every source page is listed. A page with no finding is not thereby approved; it means "
+        "this report produced no page-local finding to draw there."
+    )
+    line("")
+    for entry in sorted(package.pages, key=lambda item: item.source_index):
+        if entry.source_index in pages_with_marks:
+            paragraph(f"Page {entry.page + 1}: one or more findings are marked on this page.")
+        else:
+            paragraph(
+                f"Page {entry.page + 1}: NO FINDINGS WERE PRODUCED OR PLACED ON THIS PAGE. "
+                "This is not an approval."
+            )
+    line("")
+
+    abstentions = [finding for finding in findings if is_abstention(finding.outcome)]
+    line("What was not checked or could not be decided", font="Helvetica-Bold", size=12.0)
+    paragraph(
+        "These checks did not reach PASS or FAIL. They require a reviewer or rulebook action and "
+        "must not be read as approval."
+    )
+    line("")
+    if not abstentions:
+        paragraph("None. Every finding in this report reached PASS or FAIL.")
+    for finding in abstentions:
+        paragraph(finding.summary())
+        line("")
 
     not_checked = [item for item in unplaced if item.finding.outcome is Outcome.NO_APPLICABLE_RULE]
     others = [item for item in unplaced if item.finding.outcome is not Outcome.NO_APPLICABLE_RULE]
