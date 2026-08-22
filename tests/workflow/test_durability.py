@@ -634,8 +634,40 @@ def test_two_invocations_with_different_keys_both_persist(
 
     # And two *unkeyed* invocations must both persist. `node_invocation_key` is nullable and PostgreSQL
     # treats NULLs as distinct, so an invocation outside the agent path is not competing for an identity.
-    # If a migration ever adds NULLS NOT DISTINCT, every unkeyed invocation starts failing in production —
-    # this is what would catch it.
+    # If a migration ever added NULLS NOT DISTINCT, the first unkeyed invocation would still be accepted and
+    # every one after it rejected — not "all of them", which is what this comment said before review
+    # corrected it. That is a worse failure than all of them: it works once and then stops.
     with unit_of_work(factory) as session:
         for _ in range(2):
             session.execute(ModelInvocation.__table__.insert().values(**row(None)))
+
+
+def test_starting_a_package_by_hand_is_not_a_recovery(factory: sessionmaker[Session]) -> None:
+    """**The false positive this PR exists to remove, encoded.**
+
+    Measured before the fix: a person moving an unstarted revision into `INGESTING` returned
+    `recovery_interventions = 1`. Nothing had failed and nothing was rescued — that is ordinary operation
+    inflating the quantity that decides whether Temporal is worth adopting.
+
+    Review asked for `CREATED` and `UPLOADING` origins too. Those cannot occur: the transition table allows
+    no processing state from either, so there is no such event for the metric to exclude. `UPLOADED` is the
+    only assembly state that reaches one, which is asserted below so that if a future edge is added, this
+    reasoning gets looked at again rather than silently becoming wrong.
+    """
+    from app.lifecycle.states import ASSEMBLY_STATES, TRANSITIONS
+
+    reaching = {
+        state.value for state in ASSEMBLY_STATES if TRANSITIONS[state] & set(PROCESSING_STATES)
+    }
+    assert reaching == {
+        PackageState.UPLOADED.value
+    }, "a new assembly state can now start work directly; check whether it also needs excluding"
+
+    with unit_of_work(factory) as session:
+        revision_id, _ = _uploaded_revision(session)
+        transition(session, revision_id, PackageState.INGESTING, actor="anant")
+
+    with unit_of_work(factory) as session:
+        assert (
+            recovery_interventions(session, timedelta(hours=1)) == 0
+        ), "starting work is not recovering it"
