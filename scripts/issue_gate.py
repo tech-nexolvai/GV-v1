@@ -11,6 +11,7 @@ the agent — decides whether work may start. Exit code is the contract:
     2   BLOCKED    stop; do not write code; the reason is printed on stderr
     3   ADMIN ONLY  a decision or client question; never the dev's to answer
     4   MALFORMED  the issue has no valid agent contract; ask the admin to fix it
+    5   CLOSED     the work is already done; read it rather than writing it again
 
 `--comment` posts the stop reason to the issue so the block is visible and chaseable.
 
@@ -25,7 +26,14 @@ in progress for ever. The `state:` label answers "is this being worked?", so the
 answer for something closed is no label rather than a "done" one — which is why there is no
 `state:done` in the label set.
 
-No third-party dependencies: standard library plus the `gh` CLI.
+Dependencies: the standard library, the `gh` CLI, and Pydantic v2 for the one thing that comes from
+outside — the issue payload. `AGENTS.md` §4 requires "Pydantic v2 for every boundary contract" and this is
+a boundary; pydantic is already a runtime dependency of the project, so it costs nothing to honour it here.
+
+An earlier version of this file claimed no third-party dependencies at all and hand-rolled the checks. That
+lasted until the payload arrived in shapes the checks had not imagined — a `KeyError` on a missing title, a
+`TypeError` on a list-valued state — each found one at a time by review. A gate that crashes has not
+answered the question it was asked, so the shape is now declared once instead of guessed at repeatedly.
 """
 
 from __future__ import annotations
@@ -36,15 +44,68 @@ import re
 import subprocess
 import sys
 from pathlib import Path as _Path
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 REPO = "tech-nexolvai/GV-v1"
 
+
+class Label(BaseModel):
+    """One label as the API returns it — an object with a name, not a bare string."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+
+
+class IssuePayload(BaseModel):
+    """The issue fields this gate reads, and the shapes they must have.
+
+    **Declared rather than checked field by field.** Hand-rolled `isinstance` guards covered the cases
+    somebody thought of; this covers the ones nobody did, and it turns a malformed payload into MALFORMED
+    instead of a traceback.
+
+    **This covers the issue response `main` reads, and nothing else** — it is not the only `gh` response in
+    the file, and saying so was an overstatement review caught. The other two are handled differently and
+    deliberately: `open_issue_dependencies` treats anything it cannot parse as blocking, and `set_state`
+    runs only after a READY decision, on a write path where a malformed response fails loudly rather than
+    letting work start.
+
+    `extra="ignore"` because GitHub returns dozens of fields and adding more must not break the gate — it
+    is the unexpected *shape* of a field we read that matters, not the presence of fields we do not.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    state: Literal["open", "closed"]
+
+    # Stripped before the length check, so a title of spaces is as unusable as an empty one. `min_length=1`
+    # alone accepted "   " — the model was briefly weaker than the hand-rolled check it replaced, which a
+    # test caught.
+    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    body: str | None = None
+    labels: list[Label] = Field(default_factory=list)
+
+
+# `from __future__ import annotations` makes every annotation a string, and this module is also loaded by
+# its tests through `importlib`, where Pydantic cannot resolve `Label` from the namespace it expects. One
+# explicit rebuild fixes both — without it, validation raises `PydanticUserError` at the first call, which
+# would be the gate crashing on the very path added to stop it crashing.
+IssuePayload.model_rebuild()
+
+
 READY = 0
 BLOCKED = 2
 ADMIN_ONLY = 3
 MALFORMED = 4
+
+#: The issue is already closed, so the work exists. Its own code, distinct from BLOCKED: blocked means
+#: "not yet", this means "already". Confusing the two would send somebody to wait for a dependency that
+#: was never the problem.
+CLOSED_ALREADY = 5
 
 # status -> (exit code, plain-English explanation)
 STATUS = {
@@ -117,6 +178,17 @@ def open_issue_dependencies(requires: list[object]) -> list[str]:
             blocking.append(f"#{text} could not be resolved, so whether it has landed is unknown")
             continue
         state, _, title = result.stdout.strip().partition("\t")
+        if state not in {"open", "closed"}:
+            # **Unparseable output blocks.** Before this, a garbled or empty response left `state` as ""
+            # — not "open" — so the dependency was treated as landed and work was allowed to start. That
+            # is the same fail-toward-"go ahead" shape as the closed-issue bug this change is about, and
+            # the rule here is the one already stated above: an unverifiable dependency is not a
+            # satisfied one.
+            blocking.append(
+                f"#{text} returned a state this gate cannot read ({state!r}), so whether it has landed "
+                "is unknown"
+            )
+            continue
         if state == "open":
             blocking.append(f"#{text} is still open — {title}")
     return blocking
@@ -362,6 +434,18 @@ def main() -> int:
     args = ap.parse_args()
 
     iss = gh_json(f"repos/{REPO}/issues/{args.issue}")
+
+    # The payload must be an object before anything asks what is in it. `"pull_request" in iss` raised
+    # `TypeError: argument of type 'NoneType' is not a container or iterable` on a non-object response —
+    # found by the tests for the very validation added below, which sat one line too late to help.
+    if not isinstance(iss, dict):
+        sys.stderr.write(
+            f"MALFORMED  #{args.issue}\n\n"
+            f"The API returned {type(iss).__name__}, not an issue object. Check the issue number and the\n"
+            "`gh` version.\n"
+        )
+        return MALFORMED
+
     if "pull_request" in iss:
         sys.stderr.write(f"#{args.issue} is a pull request, not an issue.\n")
         return MALFORMED
@@ -371,10 +455,50 @@ def main() -> int:
     # anything to say about work that has already landed. Requiring them would mean an issue whose
     # contract was edited after the merge could never be tidied up, and the drift this step exists to
     # clear would be permanent for exactly the issues most likely to have it.
+    # **One validation, at the boundary.** Everything below reads a shape that has been proved, so no path
+    # can branch on a field it never checked — which is how a missing title and a list-valued state each
+    # became a traceback instead of an exit code.
+    try:
+        payload = IssuePayload.model_validate(iss)
+    except ValidationError as invalid:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or '<root>'}: {error['msg']}"
+            for error in invalid.errors()
+        )
+        sys.stderr.write(
+            f"MALFORMED  #{args.issue}\n\n"
+            f"The issue payload is not the shape this gate reads: {problems}\n\n"
+            "This gate will not guess whether work may start from something it cannot read. Check the\n"
+            "issue number, and the `gh` version if this looks like an API change.\n"
+        )
+        return MALFORMED
+
+    title = payload.title
+    state = payload.state
+
     if args.done:
         return finish(args.issue, iss)
 
-    title = iss["title"]
+    # **A closed issue is not work that may start, whatever its contract says.**
+    #
+    # Found by asking this gate about #219 and being told "READY — #219 may be implemented". The story was
+    # complete: `storage/hashing.py` had been written, tested and merged. Nothing in the contract records
+    # that, because `status:` describes whether the story was *ready to pick up*, not whether it is done —
+    # so the gate read `status: ready`, agreed, and would have had me build a second implementation of a
+    # safety-critical file over the top of a working one.
+    #
+    # That is the one thing this script exists to prevent: it decides whether work may start, and the
+    # caller is told not to decide for themselves. So it has to answer this case too.
+    if state == "closed":
+        sys.stderr.write(
+            f"CLOSED  #{args.issue} {title}\n\n"
+            "This issue is closed, so the work is done. Do not implement it again — read what is\n"
+            "already there first, and if something is genuinely missing, that is a new issue.\n\n"
+            "If this is a mistake and the story really is unfinished, reopen it. The gate reads the\n"
+            "issue's state, not an intention.\n"
+        )
+        return CLOSED_ALREADY
+
     body = iss.get("body") or ""
     contract = parse_contract(body)
 
