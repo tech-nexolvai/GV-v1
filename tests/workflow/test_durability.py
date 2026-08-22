@@ -499,20 +499,15 @@ def test_a_window_must_be_a_positive_length_of_time(factory: sessionmaker[Sessio
 def test_a_repeated_node_invocation_is_refused_by_the_database(
     factory: sessionmaker[Session],
 ) -> None:
-    """The no-repeated-paid-call guarantee is #247's, enforced by a unique index — and this is the second
-    attempt at asserting it, because the first could not fail for the right reason.
+    """A second invocation under one node identity is refused by PostgreSQL — #247's guarantee.
 
-    **What was wrong.** The row was built from invented values, so the *first* insert already violated
-    something: measured, it raised `NotNullViolation` on `input_tokens` before ever reaching the foreign key
-    or the unique index. `pytest.raises(IntegrityError)` caught that, the test passed, and the constraint it
-    claimed to cover was never exercised. Asserting the message named `node_invocation_key` did not save it
-    either — `str(IntegrityError)` embeds the whole INSERT statement, so the column name matched the SQL
-    text rather than any constraint.
+    The row is built valid so the *first* insert succeeds; without that, an earlier version of this test
+    passed on a `NotNullViolation` and never reached the index at all.
 
-    **What it does now.** Build a real workflow run, task run and extraction run, fill every required
-    column, and insert twice. The only thing left that can fail is the duplicate key — and the error type is
-    checked, not its text, so a schema change that drops the unique index fails this test instead of
-    slipping through on a different violation.
+    **The setup does not isolate the unique index, and it would be wrong to say it does.** The foreign key on
+    `extraction_run_id`, the `outcome` check and the node-key regex can all still reject a row. What rules
+    those out is the assertion on the error *type* — a `UniqueViolation` specifically, not any
+    `IntegrityError` — plus the constraint name in the message.
     """
     import hashlib
 
@@ -541,12 +536,12 @@ def test_a_repeated_node_invocation_is_refused_by_the_database(
         session.flush()
         extraction_run_id = extraction_run.id
 
-    # The key's own check constraint is `^sha256:[0-9a-f]{64}$`, so it is hashed rather than
-    # improvised — an invented string fails that check first and the test would be back to passing on the
-    # wrong error, which is precisely the bug being fixed here.
-    key = "sha256:" + hashlib.sha256(uuid4().bytes).hexdigest()
+    def key() -> str:
+        # The key has its own check constraint, `^sha256:[0-9a-f]{64}$`, so it is hashed rather than
+        # improvised — an invented string fails that check first.
+        return "sha256:" + hashlib.sha256(uuid4().bytes).hexdigest()
 
-    def one() -> dict[str, object]:
+    def row(node_key: str | None) -> dict[str, object]:
         return {
             "id": uuid4(),
             "extraction_run_id": extraction_run_id,
@@ -558,20 +553,89 @@ def test_a_repeated_node_invocation_is_refused_by_the_database(
             "cost_micros": 1,
             "latency_ms": 1,
             "outcome": "ok",
-            "node_invocation_key": key,
+            "node_invocation_key": node_key,
         }
 
-    # The first insert must succeed, or the test is back to passing on the wrong error.
+    shared = key()
     with unit_of_work(factory) as session:
-        session.execute(ModelInvocation.__table__.insert().values(**one()))
+        session.execute(ModelInvocation.__table__.insert().values(**row(shared)))
 
     with pytest.raises(IntegrityError) as caught, unit_of_work(factory) as session:
-        session.execute(ModelInvocation.__table__.insert().values(**one()))
+        session.execute(ModelInvocation.__table__.insert().values(**row(shared)))
 
-    # The type, not the text. A foreign-key or not-null violation is also an IntegrityError.
     assert isinstance(
         caught.value.orig, psycopg.errors.UniqueViolation
     ), f"refused, but not by a unique constraint: {type(caught.value.orig).__name__}"
     assert "node_invocation_key" in str(
         caught.value.orig
     ), "and it must be the node key's index, not some other unique column"
+
+
+def test_two_invocations_with_different_keys_both_persist(
+    factory: sessionmaker[Session],
+) -> None:
+    """**The negative control the test above needs to mean anything.**
+
+    Every assertion up there is about a refusal. A unique constraint accidentally widened to
+    `extraction_run_id` — or a stray unique on `model_id` — would refuse the second row too, name a column
+    in the message, and satisfy all of it. So this asserts the other direction: two invocations that differ
+    only in their node key both survive.
+
+    I checked this by hand while writing the fix. Review's point was to encode it, which is right — a check
+    that exists only in a PR description protects nothing.
+    """
+    import hashlib
+
+    from app.models.runs import ExtractionRun, ModelInvocation
+
+    with unit_of_work(factory) as session:
+        _, run_id = _uploaded_revision(session)
+        task_run = TaskRun(
+            workflow_run_id=run_id,
+            idempotency_key=f"key:{uuid4().hex}",
+            task_type="extract_pages",
+            attempt=1,
+            outcome="claimed",
+        )
+        session.add(task_run)
+        session.flush()
+        extraction_run = ExtractionRun(
+            task_run_id=task_run.id,
+            extractor="fake",
+            extractor_version="1.0.0",
+            config_hash="sha256:" + "0" * 64,
+        )
+        session.add(extraction_run)
+        session.flush()
+        extraction_run_id = extraction_run.id
+
+    def row(node_key: str | None) -> dict[str, object]:
+        return {
+            "id": uuid4(),
+            "extraction_run_id": extraction_run_id,
+            "model_id": "fake",
+            "prompt_id": "fake",
+            "template_id": "fake",
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cost_micros": 1,
+            "latency_ms": 1,
+            "outcome": "ok",
+            "node_invocation_key": node_key,
+        }
+
+    with unit_of_work(factory) as session:
+        for _ in range(2):
+            session.execute(
+                ModelInvocation.__table__.insert().values(
+                    **row("sha256:" + hashlib.sha256(uuid4().bytes).hexdigest())
+                )
+            )
+
+    # And two *unkeyed* invocations must both persist. `node_invocation_key` is nullable and PostgreSQL
+    # treats NULLs as distinct, so an invocation outside the agent path is not competing for an identity.
+    # If a migration ever adds NULLS NOT DISTINCT, every unkeyed invocation starts failing in production —
+    # this is what would catch it.
+    with unit_of_work(factory) as session:
+        for _ in range(2):
+            session.execute(ModelInvocation.__table__.insert().values(**row(None)))

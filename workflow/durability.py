@@ -57,18 +57,19 @@ __all__ = [
     "run_to_completion",
 ]
 
-#: The one actor an automatic resume may use.
+#: The actor an automatic resume uses. One of the names in `machine_actors()`, which is the set the metric
+#: excludes — this constant alone is not the boundary, and saying it was is a mistake this comment used to
+#: make.
 #:
-#: **This constant is half of how a recovery intervention is counted, so it is load-bearing.** Anant's call
-#: on #217 is that only a *human* resume counts: an automatic retry is not toil, and toil is what Temporal
-#: removes. Rather than guess which actor strings look like people, everything the machine does names
-#: itself — this constant for a supervised resume, `worker_actors()` for the stages — and
-#: `recovery_interventions` counts whoever is left.
+#: Anant's call on #217 is that only a *human* rescue counts: an automatic retry is not toil, and toil is
+#: what Temporal removes. So everything the machine does names itself — this for a supervised resume,
+#: `worker_actors()` for the stages — and `recovery_interventions` counts whoever is left, from an origin
+#: that shows work had stopped.
 #:
 #: The error that leaves is deliberate. An unrecognised actor counts as an intervention, so a new automatic
 #: path added without reading this *inflates* the number rather than hiding it — and `docs/DESIGN_CONTROLS.md`
-#: §6 asks for exactly that direction: "not measured is displayed as prominently as a breach", because an
-#: unmeasured trigger makes the deferral permanent by accident.
+#: §6 asks for that direction: "not measured is displayed as prominently as a breach", because an unmeasured
+#: trigger makes the deferral permanent by accident.
 AUTOMATIC_RESUME_ACTOR: Final = "the workflow supervisor"
 
 
@@ -306,9 +307,12 @@ def _resume_plan(
 def recovery_interventions(session: Session, window: timedelta) -> int:
     """How many times a person had to rescue a package in the last `window`.
 
-    **This is the measurement behind the Temporal upgrade trigger** (`docs/DESIGN_CONTROLS.md` §6). It
-    counts resumes out of a failure state by any actor other than `AUTOMATIC_RESUME_ACTOR` — see that
-    constant for why the boundary is drawn there and which way it errs.
+    **This is the measurement behind the Temporal upgrade trigger** (`docs/DESIGN_CONTROLS.md` §6).
+
+    Precisely: a move *into* a processing state, *from* a state that shows work had stopped — either a
+    failure state or a processing state the package was left sitting in — by an actor that is not in
+    `machine_actors()`. All three conditions matter, and an earlier version of this sentence named only the
+    first and the last, which is how it came to count a person merely starting an unstarted package.
 
     Zero is a real answer, not a missing one: it means nobody had to intervene. F6.1 (#267) is what
     distinguishes "measured, and it is zero" from "not measured", and its rule is that an unavailable
