@@ -44,8 +44,11 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.trace import Span, format_trace_id
 
 __all__ = [
+    "INSTRUMENTATION_NAME",
+    "MAX_ATTR_LENGTH",
     "SPAN_ATTRS",
     "TRACE_ID_HEADER",
+    "TRACE_ID_STATE",
     "DrawingContentInTrace",
     "UnknownSpanAttribute",
     "configure_tracing",
@@ -66,6 +69,15 @@ SPAN_ATTRS: Final = (
     "page_index",
     "extractor_version",
     "rule_snapshot_id",
+    # Not in the design's list, and added rather than smuggled past the guard. §3.1 names the attributes
+    # that connect the *pipeline*; the request id is what connects a trace to a person's complaint, and the
+    # request span has to carry it or "quote your request id" and "find the trace" are separate searches.
+    #
+    # The alternative was what the first version did: set it with `span.set_attribute` outside `traced()`.
+    # That made the very first call site the one that stepped around the vocabulary this module exists to
+    # enforce — and because the value is caller-supplied, it also meant an inbound header could put content
+    # on a span that `_checked` would have refused. Declaring it is the honest fix.
+    "request_id",
 )
 
 #: The response header carrying the trace id, so a caller can quote it when reporting a problem.
@@ -73,6 +85,15 @@ SPAN_ATTRS: Final = (
 #: Same reasoning as `X-Request-ID` in `app/errors.py`: an id nobody outside the process can see is an id
 #: that cannot appear in a bug report. 32 lowercase hex, the W3C form.
 TRACE_ID_HEADER: Final = "X-Trace-Id"
+
+#: Where the request's trace id is parked on `request.state`.
+#:
+#: Kept on the request rather than read from the active span when the response is built, because an
+#: unhandled exception is handled *outside* the middleware that opened the span — by then the span has
+#: ended and `current_trace_id()` is `None`. `app/errors.py` already learned this for the request id; the
+#: first version of the trace header repeated the same mistake, so the error case — the one a person is
+#: actually reporting — came back with no trace id at all.
+TRACE_ID_STATE: Final = "trace_id"
 
 #: The instrumentation name recorded on every span this project creates.
 INSTRUMENTATION_NAME: Final = "gv"
@@ -189,15 +210,24 @@ def _checked(name: str, value: object) -> str | int:
 
 
 @contextmanager
-def traced(name: str, **attrs: object) -> Iterator[Span]:
+def traced(name: str, *, parent: Context | None = None, **attrs: object) -> Iterator[Span]:
     """Run a block inside a span carrying `attrs`, refusing anything the trace must not hold.
 
     Every attribute name must be in `SPAN_ATTRS`, and every value must be a reference rather than content.
     Both refusals raise before the span starts: a span that exists with the wrong attributes is worse than
     no span, because it looks like evidence.
+
+    `parent` continues a trace a caller already started — pass what `incoming_context()` returned. It is
+    keyword-only and takes a `Context` rather than a header mapping so that the extraction stays in one
+    place; `None` starts a new trace.
+
+    **This is the only way to open a span in this project.** The first version of the request middleware
+    called the tracer directly and set an attribute with `span.set_attribute`, which meant the one span
+    every request creates was also the one span that never met these checks. `parent` exists so that no
+    call site has a reason to reach past this function again.
     """
     configure_tracing()
     checked = {key: _checked(key, value) for key, value in attrs.items()}
     tracer = trace.get_tracer(INSTRUMENTATION_NAME)
-    with tracer.start_as_current_span(name, attributes=checked) as span:
+    with tracer.start_as_current_span(name, context=parent, attributes=checked) as span:
         yield span

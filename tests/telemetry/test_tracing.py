@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import re
+from pathlib import Path
 
 import pytest
 
@@ -156,6 +157,15 @@ def test_bytes_are_refused_whatever_their_length() -> None:
         "JVBERi0xLjcK",
         "x" * (MAX_ATTR_LENGTH + 1),
         base64.b64encode(b"a drawing" * 40).decode(),
+        # **The case that reaches the base64 guard, which nothing did before.** Review pointed out that
+        # every value above is caught earlier — by a content marker or by the length check — so deleting
+        # `_BASE64_RUN` and its branch failed nothing. I confirmed it: 18 tests passed with the guard
+        # removed. It is a guard with no alarm on it, in the file whose docstring says the guard tests
+        # matter most.
+        #
+        # 90 bytes encode to 120 base64 characters: long enough to trip the run, short enough to pass the
+        # length check, and with no marker in it. That is the leak the regex actually exists for.
+        base64.b64encode(b"x" * 90).decode(),
     ],
 )
 def test_content_shaped_values_are_refused(value: str) -> None:
@@ -206,3 +216,59 @@ def test_an_integer_index_survives_as_an_integer() -> None:
     with traced("page", page_index=7) as span:
         recorded = getattr(span, "attributes", {}) or {}
     assert recorded.get("page_index") == 7
+
+
+def test_a_value_at_exactly_the_length_limit_is_allowed() -> None:
+    """The other side of the bound: `MAX_ATTR_LENGTH` characters is permitted, one more is not.
+
+    Only the refusing side was asserted, and `_checked` uses `>` — so a change to `>=` would start
+    rejecting a legitimate value at exactly the limit with nothing failing. The same boundary-both-sides
+    point the export cap was corrected for.
+
+    The value deliberately contains separators. A 256-character run of `x` would be refused for a different
+    reason — it is an unbroken base64-shaped run — and a test that passed for the wrong reason would tell me
+    nothing about the length check.
+    """
+    at_limit = ("abcdefghij-" * 24)[:MAX_ATTR_LENGTH]
+    assert len(at_limit) == MAX_ATTR_LENGTH
+
+    with traced("boundary", rule_snapshot_id=at_limit):
+        pass
+
+    with pytest.raises(DrawingContentInTrace), traced("boundary", rule_snapshot_id=at_limit + "x"):
+        pass
+
+
+def test_all_lists_the_module_s_public_names() -> None:
+    """`__all__` has to describe the surface, in the module whose argument is that names are declared once.
+
+    It omitted `INSTRUMENTATION_NAME` and `MAX_ATTR_LENGTH` while `app/main.py` and this file were already
+    importing them. Nothing broke — which is why this needs a test rather than a careful reader.
+
+    Read from the source rather than from `vars()`: the module's own namespace also holds everything it
+    imports, and `re` or `Final` appearing in `__all__` would be wrong. What is *assigned or defined at
+    module level here* is the honest definition of "this module's surface".
+    """
+    import ast
+
+    from app.telemetry import tracing
+
+    tree = ast.parse(Path(tracing.__file__).read_text())
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+
+    public = {name for name in defined if not name.startswith("_")} - {"__all__"}
+    declared = set(tracing.__all__)
+
+    assert (
+        public - declared == set()
+    ), f"defined here but missing from __all__: {sorted(public - declared)}"
+    assert (
+        declared - public == set()
+    ), f"__all__ names things not defined here: {sorted(declared - public)}"

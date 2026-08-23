@@ -26,6 +26,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.telemetry.tracing import TRACE_ID_HEADER, TRACE_ID_STATE
+
 #: Where the request id lives on the request state, set by the middleware in `app/main.py`.
 REQUEST_ID_STATE: Final = "request_id"
 
@@ -49,10 +51,20 @@ def _envelope(request: Request, code: str, message: str, http_status: int) -> JS
     request_id = getattr(request.state, REQUEST_ID_STATE, "unknown")
     settings = getattr(request.app.state, "settings", None)
     header = getattr(settings, "request_id_header", "X-Request-ID")
+    headers = {header: request_id}
+
+    # **The trace id, for exactly the reason above.** The middleware stamps it on a normal response, and an
+    # unhandled exception never reaches that code — so the first version of the trace header was missing
+    # from precisely the responses somebody is complaining about. Read from `request.state` rather than
+    # from the active span: by the time this runs the span has ended and there is no current trace.
+    trace_id = getattr(request.state, TRACE_ID_STATE, None)
+    if trace_id is not None:
+        headers[TRACE_ID_HEADER] = trace_id
+
     return JSONResponse(
         status_code=http_status,
         content=ErrorEnvelope(error=code, message=message, request_id=request_id).model_dump(),
-        headers={header: request_id},
+        headers=headers,
     )
 
 

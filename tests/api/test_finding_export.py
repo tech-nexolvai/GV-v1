@@ -474,7 +474,10 @@ def test_the_cap_refuses_before_any_finding_is_loaded(
         cursor: DBAPICursor,
         statement: str,
         parameters: object,
-        context: ExecutionContext,
+        # Optional, per SQLAlchemy's callback contract — `context` is `None` for a statement executed
+        # outside an execution context, so annotating it as always present was a promise the caller
+        # does not make.
+        context: ExecutionContext | None,
         executemany: bool,
     ) -> None:
         issued.append(statement)

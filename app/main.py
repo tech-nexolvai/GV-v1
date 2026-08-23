@@ -24,12 +24,12 @@ Source: `docs/DESIGN_PLATFORM.md` §4.1, §4.2 · Verification: `tests/api/test_
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
-from opentelemetry.trace import get_tracer
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
@@ -37,16 +37,48 @@ from app.api.guards import assert_no_verdict_fields
 from app.config import Settings
 from app.errors import REQUEST_ID_STATE, _envelope, install_error_handlers
 from app.telemetry.tracing import (
-    INSTRUMENTATION_NAME,
     TRACE_ID_HEADER,
-    configure_tracing,
+    TRACE_ID_STATE,
     current_trace_id,
     incoming_context,
+    traced,
 )
 
 #: The six API groups that hang off this app: packages, documents, findings, review, rules and
 #: operations. All but review are wired; review attaches the same way.
 API_PREFIX = "/api/v1"
+
+#: What a caller-supplied request id may look like: ids, hex, digests and prefixed forms.
+#:
+#: Deliberately narrow. The value is echoed in a response header, written to logs and put on a span, and
+#: before this it was taken from the header with no constraint at all — so a caller could choose a 200 KB
+#: value, embed a data URI, or include control characters. None of that is a plausible request id and all
+#: of it ends up somewhere it should not.
+#:
+#: **The length is 100 and not 128 for a reason worth writing down.** The accepted value goes onto a span,
+#: where `app/telemetry/tracing.py` refuses an unbroken run of 120 or more base64-shaped characters. My
+#: first attempt allowed 128, so a perfectly ordinary opaque token — 126 alphanumeric characters — passed
+#: this pattern and was then refused inside the middleware, turning a valid request into a 500. Two limits
+#: that have to agree, and they did not. `test_a_maximum_length_request_id_is_actually_usable` is what
+#: keeps them agreeing; it fails if either number moves into conflict with the other.
+ACCEPTED_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+
+
+def _accepted_request_id(supplied: str | None) -> str:
+    """The caller's request id if it is one, otherwise a fresh one.
+
+    **Replaced rather than rejected.** A malformed `X-Request-ID` is not worth failing a request over — the
+    caller gets a working response and an id we generated, which is exactly what happens when they send
+    none. Refusing would turn a cosmetic client bug into an outage.
+
+    100 characters is a chosen maximum, not a measured one: a UUID is 36 and a `sha256:`-prefixed digest is
+    71, so it is well clear of every real id while far too small to smuggle content through — and, as the
+    pattern's own comment records, below the span guard's base64-run threshold so that an id this function
+    accepts cannot then be refused downstream.
+    """
+    if supplied is not None and ACCEPTED_REQUEST_ID.fullmatch(supplied):
+        return supplied
+    return str(uuid4())
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -113,26 +145,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         goes back on the response for the same reason the request id does: an id nobody outside the
         process can see cannot appear in a bug report.
 
-        `SPAN_ATTRS` values are not set here. A request knows its path, not its `package_id` — those
-        belong on the spans the handlers and workers open inside this one, which is #259's remaining
-        work.
+        The only attribute set here is `request_id`, which is the one this layer actually knows. A
+        request knows its path, not its `package_id` — the rest of `SPAN_ATTRS` belongs on the spans the
+        handlers and workers open inside this one, which is #259's remaining work.
         """
         header = resolved.request_id_header
-        request_id = request.headers.get(header) or str(uuid4())
+        request_id = _accepted_request_id(request.headers.get(header))
         setattr(request.state, REQUEST_ID_STATE, request_id)
 
         # A caller's own trace is continued rather than restarted; `None` means it sent none, and the
-        # span below then starts a fresh trace.
-        parent = incoming_context(request.headers)
-        configure_tracing()
-        tracer = get_tracer(INSTRUMENTATION_NAME)
-        with tracer.start_as_current_span(
-            f"{request.method} {request.url.path}", context=parent
-        ) as span:
+        # span then starts a fresh trace.
+        #
+        # Opened through `traced()` and not the tracer directly. The first version did the latter and set
+        # `gv.request_id` with `span.set_attribute`, so the one span every request creates was the one span
+        # that never met the checks in `app/telemetry/tracing.py` — including on a value the caller
+        # controls. Going through the helper is what makes that guard mean something.
+        with traced(
+            f"{request.method} {request.url.path}",
+            parent=incoming_context(request.headers),
             # Correlated deliberately: the request id is what a person quotes and the trace id is what a
             # backend indexes, so each has to be findable from the other.
-            span.set_attribute("gv.request_id", request_id)
+            request_id=request_id,
+        ):
             trace_id = current_trace_id()
+            # Parked on the request, not just used here: an unhandled exception is handled outside this
+            # middleware, by which point the span has ended. `app/errors.py` stamps the header from state
+            # so the error case is not the one case without a trace id.
+            if trace_id is not None:
+                setattr(request.state, TRACE_ID_STATE, trace_id)
             response = await call_next(request)
 
         response.headers[header] = request_id
