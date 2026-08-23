@@ -134,9 +134,23 @@ do to this codebase, and the reason is in the next section.
 ## Before you push
 
 ```bash
-make check          # the CI chain, locally, in the same order
+make ci             # local CI: the full chain, with the database started so nothing skips
+make check          # the same chain, without starting the database
 make check-fast     # same without semgrep, for a tight edit loop
 ```
+
+`make ci` is the one to run before opening a pull request. It exits non-zero on any blocking
+failure, so it is safe to chain: `make ci && git push`.
+
+**A `pre-push` hook runs the fast chain automatically**, once you have run `make install` — or
+`make hooks` on its own, which sets `core.hooksPath` to `.githooks/`. Git does not install hooks on
+clone, so a fresh checkout has no gate until one of those runs.
+
+The hook runs `--fast` rather than the full chain on purpose: it fires on every push, and a gate
+people find slow is a gate they bypass. It skips semgrep and does not start the database, so
+`make ci` is still the pre-pull-request gate. `git push --no-verify` skips the hook — deliberately,
+because a gate with no escape hatch gets deleted rather than bypassed. If you use it, say so on the
+pull request; the template asks either way.
 
 Every CI failure on this project so far has been an **environment difference**, not a logic bug: a
 dependency in an extra the job did not install, a test module that resolved locally and not on the
@@ -148,13 +162,66 @@ installs, it says so and stops. A green run in a stale venv is worse than a red 
 believed.
 
 **It tells you what it could not check.** The PostgreSQL tests skip without `DATABASE_URL`, and a
-model/migration mismatch has already reached CI that way. To run them:
+model/migration mismatch has already reached CI that way. `make ci` starts the database for you;
+by hand it is:
 
 ```bash
 make db
 export DATABASE_URL=postgresql+psycopg://gv:gv@localhost:5433/gv
 make check
 ```
+
+### What local CI checks
+
+Every blocking check in `.github/workflows/ci.yml`, in the same order:
+
+| Check | Command |
+|---|---|
+| repo hygiene — nothing under `data/` is tracked | `pytest tests/test_repo_hygiene.py` |
+| licence policy — no AGPL | `pytest tests/test_licences.py` |
+| lint | `ruff check .` |
+| formatting | `black --check .` |
+| types, strict — the safety-critical zones | `mypy verdict rules evidence` |
+| verdict isolation | `pytest tests/test_verdict_isolation.py` |
+| risk-control traceability | `pytest tests/test_risk_controls.py` |
+| golden rules | `semgrep --config .semgrep/gv-rules.yaml --error` |
+| types, rest of the tree — **advisory**, as on CI | `mypy app workflow extraction retrieval reports eval` |
+| dependencies still resolve | `pip check` |
+| board status drift — **needs a GitHub token** | `pytest tests/test_board_drift.py`, `scripts/check_board_drift.py` |
+| the whole suite | `pytest -q` |
+
+**Prerequisites.** Python (see below), `pip install -e ".[ai,dev,rules,platform,reports]"` — which is
+`make install` — Docker Desktop for `--with-db`, and an authenticated `gh` for the board checks. The
+run degrades honestly without the last two: it names what it skipped rather than passing quietly.
+
+### What stays GitHub-only, and why
+
+**The weekly published-schema check.** CI asks whether CodeRabbit's *currently published* schema
+still accepts `.coderabbit.yaml`. That needs the network and a live third party, so a local failure
+would usually mean the wifi rather than the repository — and a check that goes red for reasons outside
+the repository is one people learn to ignore. Every pull request still validates the config against a
+vendored copy of the schema, which is the offline half of the same question. Force the live one with:
+
+```bash
+GV_CHECK_CODERABBIT_SCHEMA=1 pytest tests/test_repo_hygiene.py -k published_schema
+```
+
+**Python 3.12 as the tested floor.** CI pins 3.12 because `AGENTS.md` §4 promises it. A newer local
+interpreter accepts syntax and stdlib that 3.12 rejects, so a green local run on 3.13+ is weaker
+evidence. `scripts/check.py` detects the mismatch, says so, prints the command to build a matching
+venv, and qualifies its final summary line rather than claiming equivalence. It does not fail: a newer
+interpreter is a legitimate development environment, and `pyproject.toml` allows `>=3.12`.
+
+### Why they cannot drift apart
+
+`tests/test_local_ci_parity.py` reads both `.github/workflows/ci.yml` and the step list in
+`scripts/check.py`, and **fails when CI runs a check the local chain does not**. Exceptions live in
+one reviewable allow-list with a reason each. It also asserts the two `mypy` invocations cover the
+same packages, and that `scripts/check.py` reads the pinned Python version out of the workflow rather
+than restating it.
+
+So the workflow stays the source of truth, and forgetting to mirror a new check is a build failure
+rather than a silent gap.
 
 ---
 

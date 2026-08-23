@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Runs the fast local check chain before a push, so CI is not the first thing to notice a problem.
+#
+# Why `--fast` and not the full `make ci`: this runs on every push, and a gate people find slow is a
+# gate they bypass. `--fast` skips semgrep (a few seconds) and does not start the database. The full
+# chain stays the pre-pull-request gate that AGENTS.md §0 mandates:
+#
+#     make ci
+#
+# `--no-verify` skips this hook, deliberately. A gate with no escape hatch gets deleted rather than
+# bypassed, and a bypass that is visible in one command is better than a hook nobody installed. If you
+# use it, say so on the pull request — CONTRIBUTING.md asks for the local CI result either way.
+#
+# Installed by `make install`, which sets core.hooksPath to this directory. Git does not install hooks
+# on clone, so a fresh checkout has no gate until that runs — which is why AGENTS.md names `make ci`
+# as the rule and treats this hook as the reminder rather than the enforcement.
+
+set -euo pipefail
+
+# Pushing nothing (a delete, or an up-to-date branch) has nothing to check.
+if [ -t 0 ]; then
+    :
+elif ! read -r _local_ref _local_sha _remote_ref _remote_sha; then
+    exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if ! command -v python >/dev/null 2>&1; then
+    echo "pre-push: no python on PATH — skipping local checks." >&2
+    echo "          Run 'make ci' before opening a pull request." >&2
+    exit 0
+fi
+
+echo "pre-push: running the fast local check chain (skip with --no-verify)"
+echo
+
+# The status is captured directly rather than through `if python ...; then`. After a failed `if`
+# condition, `$?` is the status of the *if statement* — which is 0 — so the obvious spelling printed
+# "BLOCKED" and then exited successfully, allowing the push. Verified by making a check fail on
+# purpose: a hook that reports a problem and returns 0 is worse than no hook, because the message
+# makes it look as though something stopped.
+set +e
+python scripts/check.py --fast
+status=$?
+set -e
+
+if [ "$status" -eq 0 ]; then
+    echo
+    echo "pre-push: fast chain passed. Run 'make ci' before opening the pull request —"
+    echo "          it adds semgrep and the PostgreSQL suite, which this skipped."
+    exit 0
+fi
+
+echo
+echo "pre-push: BLOCKED — the local check chain failed above." >&2
+echo "          Fix it, or push with --no-verify and say so on the pull request." >&2
+exit "$status"

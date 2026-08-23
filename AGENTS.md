@@ -57,6 +57,37 @@ python scripts/ratify.py D1 --adr docs/adr/0001-unit-policy.md
 That rewrites every story waiting on D1 to `status: ready` automatically — which is what makes
 architecture-before-implementation hold without anyone having to remember it.
 
+**Before you call anything done, run local CI.**
+
+```bash
+make ci
+```
+
+That runs every blocking check in `.github/workflows/ci.yml`, in the same order, with the database
+started so the PostgreSQL suite runs instead of skipping. **Nothing is complete until it passes** —
+that includes opening a pull request and merging one.
+
+This is a gate, not a convenience. Actions minutes bill against a private-repo quota and may be
+unavailable, and this repository will not be made public to get CI. So local CI is the primary
+evidence that a change is sound.
+
+The loop: change → `make ci` → read the failures → fix the ones your change caused → `make ci` →
+repeat → only then done.
+
+`pytest` alone is **not** equivalent. It misses ruff, black, strict mypy, semgrep, the licence gate,
+the verdict-isolation guard, risk-control traceability and the board sweep.
+
+**Never do any of these to get a green run:** skip a failing check without saying so and why; edit a
+CI, lint or type rule to make a failure disappear; add `continue-on-error`, `# type: ignore`, `# noqa`
+or `pytest.mark.skip` over a real problem; delete or weaken a test; change expected behaviour to
+satisfy a test unless the implementation is genuinely wrong; or claim CI passes without having run it.
+A red check is information — suppressing it turns a known problem into an unknown one, which here
+means a confident wrong PASS reaching a drawing that gets built.
+
+A `pre-push` hook runs the fast chain automatically once you have run `make install`. What local CI
+covers, what stays GitHub-only and why, and the prerequisites: **[`CONTRIBUTING.md`](CONTRIBUTING.md)**
+→ *Before you push*.
+
 Full protocol, scope discipline and the four mistakes that get rejected: **[`CONTRIBUTING.md`](CONTRIBUTING.md)**.
 
 ---
