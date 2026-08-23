@@ -55,6 +55,27 @@ class Settings(BaseSettings):
     It is a setting so it can be raised — but raising it should follow a measurement against real
     drawings, not an assumption that the box has room."""
 
+    outbox_poll_seconds: float = Field(default=2.0, gt=0)
+    """How long the dispatcher waits between polls of the outbox (#415, F3.1).
+
+    Two seconds is a latency choice, not a throughput one. The outbox is drained by polling, so this is
+    the worst case between a package being accepted and its workflow starting — and a person who has
+    just uploaded a package is watching. Two seconds is short enough to read as "it started" and long
+    enough that an idle queue is one cheap `SELECT` every two seconds rather than a busy loop.
+
+    Lower it and an idle system does more useless work; raise it and the visible wait grows. Neither is
+    dangerous: nothing is lost by polling late, it just arrives late."""
+
+    outbox_batch_limit: int = Field(default=100, ge=1)
+    """How many outbox rows one pass may dispatch (#415, F3.1).
+
+    The whole batch shares one transaction, so this bounds two things at once: how long that transaction
+    holds its row locks, and how much work is repeated if the process dies mid-pass. 100 matches the
+    default `dispatch_committed()` already had, so making it configurable changes no behaviour.
+
+    A backlog larger than this is not stuck — `FOR UPDATE SKIP LOCKED` means the next pass takes the
+    next rows, and several dispatchers can run at once."""
+
     max_concurrent_page_tasks: int = Field(default=2, ge=1)
     """How many tasks one worker runs at once. Defaults to 2: a little parallelism where the unit of
     work is smaller than a whole package.
