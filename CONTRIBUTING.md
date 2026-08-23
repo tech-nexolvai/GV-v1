@@ -9,6 +9,65 @@ Coding agents (Codex, Claude Code, Cursor) must follow this document exactly. Re
 
 ---
 
+## Running the stack locally
+
+Until #416 there was no documented way to start this application at all — `make check` and `make db`
+were the only targets, so the API and the durable workflow could both be built and neither could be run.
+
+Local development only: no reverse proxy, no TLS, no cloud. #151 owns deployment.
+
+**Once, per clone:**
+
+```bash
+make install                 # the same dependencies CI installs
+cp .env.example .env         # then read the note below before trusting it
+make up                      # PostgreSQL and the Hatchet engine, waits until both are healthy
+make token                   # mints a client token and prints the line to add to .env
+make migrate                 # brings the application database to head
+```
+
+**Every time, in three terminals:**
+
+```bash
+make serve                   # the API on :8000
+make worker                  # runs the review stages
+make dispatch                # drains the outbox into the engine
+```
+
+**All three are needed for a package to move, and the failure if one is missing is quiet.** Without the
+dispatcher, the API accepts a package, commits the outbox row and returns success — and nothing ever
+runs it. Without the worker, the engine accepts the workflow and no stage executes. Neither looks like
+an error from the outside, which is why they are three named targets rather than a paragraph.
+
+Check it is all up:
+
+```bash
+curl -s localhost:8000/health    # the process is alive
+curl -s localhost:8000/ready     # 200 only when the schema is at head; 503 says run make migrate
+open http://localhost:8888       # the engine dashboard: workflow runs, and why one failed
+```
+
+### What runs where
+
+| Service | Where | Port | Notes |
+|---|---|---|---|
+| PostgreSQL | Compose | **5433** | Not 5432, so it cannot collide with a PostgreSQL you already run |
+| Hatchet engine | Compose | 8888, 7070 | Dashboard and gRPC, on the engine's own documented ports |
+| API | host | 8000 | `make serve` |
+| Worker | host | — | `make worker` |
+| Dispatcher | host | — | `make dispatch` |
+
+Two logical databases on the one PostgreSQL: `gv` for the application, `hatchet` for the engine. They
+are separate because the engine runs its own migrations, and sharing one database would put
+`hatchet-migrate` and Alembic in charge of the same namespace.
+
+**A note on `.env.example`:** it predates `app/config.py`'s `GV_` prefix and names `DATABASE_URL` where
+the application reads `GV_DATABASE_URL`, with port 5432 where this stack uses 5433. Copying it and
+expecting it to work will not work. That is #417's to fix, not this story's — until then, use the
+variable names `make token` and `make migrate` print.
+
+---
+
 ## The one command
 
 ```bash
