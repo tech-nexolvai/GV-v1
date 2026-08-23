@@ -12,6 +12,7 @@ Source: backend proposal §10.2 · Design: `docs/DESIGN_PRODUCT.md` §3.1 · Ver
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -257,19 +258,61 @@ def test_the_split_comes_from_the_engines_own_definition() -> None:
 def test_an_unrecognised_outcome_is_not_counted_as_a_decision() -> None:
     """A stored value outside the enum must abstain, not decide.
 
-    Both `_decided` and the summary have to fall that way: reporting an uninterpretable value as a verdict
-    the engine reached is how a wrong PASS gets built. Unit-level because the column's constraint stops such
-    a row being seeded — the branch is defence, and defence still needs a test, which review pointed out it
-    did not have.
+    Both the classifier and the summary have to fall that way: reporting an uninterpretable value as a
+    verdict the engine reached is how a wrong PASS gets built. Unit-level because the column's constraint
+    stops such a row being seeded — the branch is defence, and defence still needs a test, which review
+    pointed out it did not have.
     """
-    from app.api.finding_export import _decided, _summarise
+    from app.api.finding_export import _classify, _summarise
 
-    assert _decided("SOMETHING_NEW") is False
+    unknown = _classify("SOMETHING_NEW", finding_id=uuid4(), project_id=uuid4(), package_id=uuid4())
+    assert unknown is False
 
-    summary = _summarise(["PASS", "SOMETHING_NEW"])
+    summary = _summarise([("PASS", True), ("SOMETHING_NEW", unknown)])
     assert summary.decisions == 1, "only the PASS"
     assert summary.abstentions == 1, "the unknown value lands here, never in decisions"
     assert summary.by_outcome == {"PASS": 1, "SOMETHING_NEW": 1}
+
+
+def test_an_unrecognised_outcome_is_reported_once_and_names_the_finding(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One warning per bad row, carrying the id — both halves caught by review.
+
+    **The duplicate was mine, introduced while fixing the previous round.** Delegating `_summarise` to the
+    classifier stopped the decision split being restated, but it also meant every finding was judged in the
+    handler and judged again in the summary — so a single unrecognised value announced itself once per
+    finding plus once more from the count. An operator watching for this would see a number that tracks
+    package size rather than how many rows are actually wrong.
+
+    **And a warning without the id cannot be acted on.** "some outcome was unrecognised" says a row
+    somewhere has left the engine's vocabulary and gives nobody a way to find it.
+
+    So the guard is that `_summarise` classifies nothing: it is handed verdicts, and counting them must be
+    silent no matter how strange the values are.
+    """
+    from app.api.finding_export import _classify, _summarise
+
+    finding_id, project_id, package_id = uuid4(), uuid4(), uuid4()
+
+    with caplog.at_level(logging.WARNING, logger="gv.api.finding_export"):
+        decided = _classify(
+            "SOMETHING_NEW",
+            finding_id=finding_id,
+            project_id=project_id,
+            package_id=package_id,
+        )
+        # The value repeated, as it would be across many findings sharing one bad outcome.
+        _summarise([("SOMETHING_NEW", decided)] * 5)
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, (
+        "one bad row, one warning — counting the verdicts again is what made this fire per finding "
+        f"and then once more from the summary, got {[r.getMessage() for r in warnings]}"
+    )
+    message = warnings[0].getMessage()
+    assert str(finding_id) in message, "the id, or an operator cannot find the row this is about"
+    assert "SOMETHING_NEW" in message, "and the value that was not understood"
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +437,31 @@ def test_a_package_over_the_cap_is_refused_rather_than_truncated(
     assert "capped at 0" in message, "the limit is named, so a consumer knows what it hit"
     assert "1 findings" in message, "and how many there actually are"
     assert "page through" in message.lower(), "and what to do instead"
+
+
+def test_a_package_exactly_at_the_cap_is_exported_in_full(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of the boundary: at the limit is allowed, not refused.
+
+    The over-cap test alone holds just as well for `>=` as for `>`, so it would not notice the cap turning
+    into an off-by-one that rejects a complete export sitting exactly at the limit. That failure is quiet in
+    the worst way — a consumer sees a refusal and cannot tell "too big" from "the boundary is wrong", and
+    the fix looks like raising the number.
+
+    The path instructions ask for boundary-exact values on both sides, and this is the cheap side to have
+    been missing.
+    """
+    import app.api.finding_export as export
+
+    project_id, package_id, _ = _seed(session)
+    monkeypatch.setattr(export, "MAX_FINDINGS", 1)
+
+    response = _client(session, project_id).get(
+        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/findings/export"
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["findings"]) == 1, "the whole export, at exactly the limit"
 
 
 def test_two_exports_of_unchanged_data_are_identical(session: Session) -> None:

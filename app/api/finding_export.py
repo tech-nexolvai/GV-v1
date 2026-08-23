@@ -120,21 +120,21 @@ class FindingExportV1(BaseModel):
     findings: tuple[ExportedFinding, ...]
 
 
-def _summarise(outcomes: list[str]) -> ExportSummary:
-    """Count the outcomes, splitting decisions from abstentions by the engine's own definition.
+def _summarise(classified: list[tuple[str, bool]]) -> ExportSummary:
+    """Count already-classified outcomes: each `(outcome, decided)` pair as the classifier judged it.
 
-    An unrecognised outcome string counts as an abstention rather than a decision. That is the safe
-    direction: a value this code does not understand must not be reported as a verdict the engine reached.
+    **This function no longer decides anything, and that is the point.** It counts. The previous version
+    called the classifier a second time — one answer per finding in the handler, another per distinct value
+    here. Two callers agreeing is weaker than one caller: it made the classification a thing that happened
+    twice, so an unrecognised outcome was reported as news once per finding *and* again from the summary.
+    Taking the verdicts as an argument means there is exactly one place that judges.
     """
-    counts = Counter(outcomes)
-    # **One implementation, delegated.** This loop used to repeat what `_decided` does, in the module whose
-    # docstring says the split is not restated here — so the file contained two answers to "did the engine
-    # decide", and the per-finding flag and this count could have disagreed inside one payload.
-    decisions = sum(count for value, count in counts.items() if _decided(value))
+    counts = Counter(outcome for outcome, _ in classified)
+    decisions = sum(1 for _, decided in classified if decided)
     return ExportSummary(
-        findings=len(outcomes),
+        findings=len(classified),
         decisions=decisions,
-        abstentions=len(outcomes) - decisions,
+        abstentions=len(classified) - decisions,
         by_outcome=dict(sorted(counts.items())),
     )
 
@@ -213,7 +213,9 @@ def export_findings(
         # findings it never saw, which is the whole failure this endpoint's labelling exists to prevent.
         # The paginated list endpoint exists for packages this large.
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            # `CONTENT_TOO_LARGE`, not the deprecated `REQUEST_ENTITY_TOO_LARGE` spelling — same 413, and
+            # the old name emits a DeprecationWarning that would eventually fail a `-W error` run.
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
                 f"this package has {len(rows)} findings and the export is capped at {MAX_FINDINGS}. "
                 "Nothing is returned rather than a partial export, because a truncated export cannot be "
@@ -225,6 +227,22 @@ def export_findings(
     # made an export of N findings cost N+1 round trips, on the endpoint reports and spreadsheets poll.
     operands = _operands_by_run(session, [run.id for _, run, _, _ in rows])
 
+    # **Judged once per finding, then reused for both the flag and the count.** The per-finding `abstained`
+    # and the envelope's `decisions` are the same question asked about the same row, so asking twice bought
+    # nothing and cost an unrecognised outcome one log line per finding plus one more from the summary.
+    classified = [
+        (
+            str(finding.outcome),
+            _classify(
+                str(finding.outcome),
+                finding_id=finding.id,
+                project_id=project_id,
+                package_id=package_id,
+            ),
+        )
+        for finding, _, _, _ in rows
+    ]
+
     exported = tuple(
         ExportedFinding(
             chain=build_chain(
@@ -235,35 +253,56 @@ def export_findings(
                 definition,
                 operand_rows=operands.get(run.id, ()),
             ),
-            abstained=not _decided(finding.outcome),
+            abstained=not decided,
         )
-        for finding, run, snapshot, definition in rows
+        # `strict=True`: the two lists are built from `rows` in the same order, and a silent zip truncation
+        # would pair a finding with another finding's verdict — mislabelling rather than failing.
+        for (finding, run, snapshot, definition), (_, decided) in zip(rows, classified, strict=True)
     )
     return FindingExportV1(
         schema_version=SCHEMA_VERSION,
         project_id=project_id,
         package_id=package_id,
-        summary=_summarise([str(finding.outcome) for finding, _, _, _ in rows]),
+        summary=_summarise(classified),
         findings=exported,
     )
 
 
-def _decided(outcome: str) -> bool:
+def _classify(
+    outcome: str,
+    *,
+    finding_id: UUID,
+    project_id: UUID,
+    package_id: UUID,
+) -> bool:
     """Whether this stored outcome is a decision, treating anything unrecognised as an abstention.
 
     The column is a string, so a value outside the enum is possible in a way the enum alone would not
     suggest. Reporting such a row as a decision would be claiming the engine reached a verdict it may not
     have, so the unknown case falls the other way.
+
+    **The ids are required arguments because a warning without them cannot be acted on.** "some outcome was
+    unrecognised" tells an operator that a row somewhere has left the engine's vocabulary and gives them no
+    way to find it; naming the finding turns the log line into something a person can go and look at. They
+    are not optional, so no call site can produce the unactionable version.
     """
     try:
         return is_decision(Outcome(outcome))
     except ValueError:
-        # **Safe, and now also visible.** Falling to "abstained" is the right direction — a value this code
-        # cannot interpret must never be reported as a verdict the engine reached. But absorbing it in
-        # silence means persisted data has left the engine's vocabulary and nobody finds out: `by_outcome`
-        # grows a key nobody is watching. §2.2 again — silence must not read as completion.
+        # **Safe, and now also visible — once.** Falling to "abstained" is the right direction: a value this
+        # code cannot interpret must never be reported as a verdict the engine reached. But absorbing it in
+        # silence means persisted data has left the engine's vocabulary and nobody finds out, because
+        # `by_outcome` just grows a key nobody is watching. §2.2 again — silence must not read as completion.
+        #
+        # Plain stdlib logging with the ids as parameters, not a span: the tracer setup and the `trace_id`
+        # propagation convention are #259 F2.1's to establish, and a second convention invented here is
+        # exactly what that story exists to prevent.
         logger.warning(
-            "finding outcome %r is outside the Outcome vocabulary; counted as an abstention",
+            "finding %s (project %s, package %s) has outcome %r, which is outside the Outcome "
+            "vocabulary; counted as an abstention",
+            finding_id,
+            project_id,
+            package_id,
             outcome,
         )
         return False
