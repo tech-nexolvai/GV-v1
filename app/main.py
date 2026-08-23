@@ -77,7 +77,7 @@ REQUEST_ID_MAX_LENGTH: Final = 100
 RequestId = Annotated[
     str,
     StringConstraints(
-        pattern=r"^[A-Za-z0-9._:-]+$", min_length=1
+        pattern=r"^[A-Za-z0-9._:-]+$", min_length=1, max_length=REQUEST_ID_MAX_LENGTH
     ),
 ]
 
@@ -187,7 +187,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # until routing has run, so the span starts as the method and is renamed below once the route is
         # known — from our own route table, not from the caller.
         with traced(
-            f"{request.method} {request.url.path}",
+            request.method,
             parent=incoming_context(request.headers),
             # Correlated deliberately: the request id is what a person quotes and the trace id is what a
             # backend indexes, so each has to be findable from the other.

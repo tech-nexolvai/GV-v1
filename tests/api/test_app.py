@@ -408,10 +408,23 @@ def test_a_maximum_length_request_id_is_actually_usable(client: TestClient) -> N
     two limits agreeing, which is the only thing it exists to check. Probing for the longest value the
     pattern accepts means widening the pattern past the span guard's threshold fails this test.
     """
+    # **Bounded, because the first version of this loop had no ceiling.** It probed upward while the
+    # contract kept accepting — and when the length constraint went missing, "kept accepting" was true
+    # forever. The suite did not fail, it hung, which is far worse: a failure names a defect in a second,
+    # and a hang looks like a slow machine. A test may never loop without an exit it can assert on.
+    ceiling = 1_000
     longest = ""
-    while _accepted_request_id(longest + "a") == longest + "a":
-        longest += "a"
+    while len(longest) < ceiling:
+        candidate = longest + "a"
+        if _accepted_request_id(candidate) != candidate:
+            break
+        longest = candidate
+
     assert longest, "the contract accepts nothing, so this test cannot say anything"
+    assert len(longest) < ceiling, (
+        f"the contract accepted a {ceiling}-character request id, so it has no upper bound — this is the "
+        "condition that used to hang the suite instead of failing it"
+    )
 
     response = client.get("/health", headers={"X-Request-ID": longest})
 
