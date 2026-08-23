@@ -12,6 +12,10 @@ eval/gold_set/cases/
 .env
 *.pem
 *.key
+# The engine client token `make token` writes. It is a bearer credential for the whole tenant, and it
+# lands in the working tree by design so the runbook can tell you to copy it — which makes ignoring it
+# the difference between a convenience and a committed secret.
+.hatchet-token
 
 # --- Python ---
 __pycache__/
