@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.errors import ErrorEnvelope
-from app.main import ACCEPTED_REQUEST_ID, create_app
+from app.main import REQUEST_ID_MAX_LENGTH, _accepted_request_id, create_app
 from app.telemetry.tracing import TRACE_ID_HEADER
 from tests.app.postgres_fixture import alembic_config
 
@@ -350,7 +350,10 @@ def test_an_implausible_request_id_is_replaced_rather_than_echoed(client: TestCl
 @pytest.mark.parametrize(
     "supplied",
     [
-        "x" * 129,  # over the length limit
+        # **Exactly one over the limit, derived from the limit.** This case used to be `"x" * 129`, which
+        # is rejected whether the bound is 100 or 128 — so it pinned nothing, as review pointed out. One
+        # past the real maximum is the only value that fails if the bound moves.
+        "x" * (REQUEST_ID_MAX_LENGTH + 1),
         "has spaces",
         "with\nnewline",  # header injection shape
         "",
@@ -406,9 +409,9 @@ def test_a_maximum_length_request_id_is_actually_usable(client: TestClient) -> N
     pattern accepts means widening the pattern past the span guard's threshold fails this test.
     """
     longest = ""
-    while ACCEPTED_REQUEST_ID.fullmatch(longest + "a"):
+    while _accepted_request_id(longest + "a") == longest + "a":
         longest += "a"
-    assert longest, "the pattern accepts nothing, so this test cannot say anything"
+    assert longest, "the contract accepts nothing, so this test cannot say anything"
 
     response = client.get("/health", headers={"X-Request-ID": longest})
 
@@ -418,3 +421,84 @@ def test_a_maximum_length_request_id_is_actually_usable(client: TestClient) -> N
     )
     assert response.headers["X-Request-ID"] == longest
     assert response.headers[TRACE_ID_HEADER]
+
+
+def test_a_request_id_at_exactly_the_limit_is_kept(client: TestClient) -> None:
+    """Both sides of the length bound, derived from the bound.
+
+    The rejection cases prove one-too-long is replaced; without this, a change that started rejecting an
+    id of exactly the maximum length would fail nothing.
+    """
+    at_limit = "a" * REQUEST_ID_MAX_LENGTH
+    response = client.get("/health", headers={"X-Request-ID": at_limit})
+    assert response.headers["X-Request-ID"] == at_limit
+
+
+# ---------------------------------------------------------------------------
+# The span name is ours, not the caller's
+# ---------------------------------------------------------------------------
+
+
+def test_the_span_name_never_contains_the_requested_path(client: TestClient) -> None:
+    """A caller-controlled path must not reach the trace — `AGENTS.md` §6.
+
+    `_checked` guards span *attributes*; the name is not an attribute. The first version named the span
+    `f"{method} {path}"`, so a request to an unmatched path carrying encoded drawing content put that
+    content in the trace before routing rejected it — and gave every junk URL its own span name, which is
+    how a backend's cardinality gets away from you.
+
+    Recorded through a span processor, because the name is not visible on the response.
+    """
+    from opentelemetry import trace as otel
+    from opentelemetry.sdk.trace import SpanProcessor
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+
+    names: list[str] = []
+
+    class Recorder(SpanProcessor):
+        def on_end(self, span: object) -> None:  # pragma: no cover - trivial collector
+            name = getattr(span, "name", None)
+            if isinstance(name, str):
+                names.append(name)
+
+    provider = otel.get_tracer_provider()
+    assert isinstance(provider, SdkProvider), "tracing is not configured, so this proves nothing"
+    recorder = Recorder()
+    provider.add_span_processor(recorder)
+
+    leak = "/%PDF-1.7-JVBERi0xLjcK-" + "A" * 130
+    client.get(leak)
+
+    assert names, "no span was recorded, so this test cannot say anything"
+    for name in names:
+        assert "%PDF" not in name, f"drawing content reached the span name: {name!r}"
+        assert "JVBERi0" not in name
+        assert leak not in name
+        assert "A" * 130 not in name
+
+
+def test_a_matched_route_is_named_by_its_template(client: TestClient) -> None:
+    """The safe half of the same decision: a template we declared is fine to name a span with.
+
+    Method alone would be safe but useless for grouping, so the span is renamed once routing has resolved
+    a route — from our own route table, never from the caller's string.
+    """
+    from opentelemetry import trace as otel
+    from opentelemetry.sdk.trace import SpanProcessor
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+
+    names: list[str] = []
+
+    class Recorder(SpanProcessor):
+        def on_end(self, span: object) -> None:  # pragma: no cover - trivial collector
+            name = getattr(span, "name", None)
+            if isinstance(name, str):
+                names.append(name)
+
+    provider = otel.get_tracer_provider()
+    assert isinstance(provider, SdkProvider)
+    provider.add_span_processor(Recorder())
+
+    client.get("/health")
+
+    assert "GET /health" in names, f"the matched route did not name the span: {names}"
