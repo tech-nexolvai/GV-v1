@@ -439,6 +439,62 @@ def test_a_package_over_the_cap_is_refused_rather_than_truncated(
     assert "page through" in message.lower(), "and what to do instead"
 
 
+def test_the_cap_refuses_before_any_finding_is_loaded(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal has to happen *before* the expensive query, or the limit bounds nothing.
+
+    **The first version of the cap failed this, and its own docstring said otherwise.** It fetched every
+    matching row, materialised the lot into ORM objects, and compared `len(rows)` afterwards — so an
+    oversized package paid the full transfer and memory cost and then got a 413. That bounds the response
+    while leaving the request unbounded, which is the opposite of the point, and "no bound ties request
+    duration to package size" was a sentence the code did not honour.
+
+    Asserted against the SQL actually issued rather than by timing anything: the count must run, and the
+    ordered fetch must not. Watching the statements is the only way to see the difference, because both
+    versions return an identical 413 to the caller.
+    """
+    from sqlalchemy import event
+
+    import app.api.finding_export as export
+
+    project_id, package_id, _ = _seed(session)
+    monkeypatch.setattr(export, "MAX_FINDINGS", 0)
+
+    issued: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):  # type: ignore[no-untyped-def]
+        issued.append(statement)
+
+    bind = session.get_bind()
+    # Attached only around the request, so the seed's own inserts are not mistaken for the export's reads.
+    event.listen(bind, "before_cursor_execute", record)
+    try:
+        response = _client(session, project_id).get(
+            f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/findings/export"
+        )
+    finally:
+        event.remove(bind, "before_cursor_execute", record)
+
+    assert response.status_code == 413, response.text
+
+    lowered = [statement.lower() for statement in issued]
+
+    # **This assertion first, because it is the one that matters.** `revision_number` appears only in the
+    # export fetch's ORDER BY — the count joins the same tables but never names that column — so this
+    # identifies the heavy query and nothing else. Checked before the count assertion because the count is
+    # merely how the bound is achieved: with them the other way round, a regression that fetched the rows
+    # *and* forgot to count failed on the wrong line and reported the wrong cause.
+    fetched = [s for s in lowered if "order by" in s and "revision_number" in s]
+    assert (
+        fetched == []
+    ), f"the refusal loaded the findings anyway, so the cap bounds only what is returned: {fetched}"
+
+    assert any(
+        "count(" in statement for statement in lowered
+    ), "the size was established by counting"
+
+
 def test_a_package_exactly_at_the_cap_is_exported_in_full(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

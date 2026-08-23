@@ -34,7 +34,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
@@ -72,6 +72,11 @@ NOT_FOUND_DETAIL = "Not found"
 #: reports and spreadsheets poll. Chosen rather than measured — there is no real package to measure yet —
 #: so it is a documented maximum a reader can find and argue with, not a silent behaviour. Exceeding it
 #: refuses; see the handler for why refusing beats truncating.
+#:
+#: **This sentence was untrue when I first wrote it**, which review caught: the handler fetched every row
+#: and compared afterwards, so an oversized package was fully transferred and materialised before being
+#: refused. The limit bounded the response and not the request, so the cost it claims to prevent was still
+#: paid in full. The count now runs first — the cap is only a bound if nothing large happens before it.
 MAX_FINDINGS = 5000
 
 
@@ -195,6 +200,42 @@ def export_findings(
     if exists is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
+    # **Counted before anything is loaded, because the cap has to bound the work and not just the
+    # response.** The first version fetched every row and *then* compared `len(rows)` — so an oversized
+    # package was transferred out of the database and materialised into ORM objects in full, and only then
+    # refused. That bounds what we send while leaving the expensive part unbounded, which is the opposite of
+    # what the limit is for, and `MAX_FINDINGS` claimed otherwise in its own docstring.
+    #
+    # The same join chain as the fetch below rather than the shorter one the filter would allow: the inner
+    # joins cannot drop rows today because every key in the chain is non-nullable, but counting over exactly
+    # what we are about to select means the two can never disagree about how many rows that is.
+    counted = (
+        select(func.count())
+        .select_from(Finding)
+        .join(CheckRun, Finding.check_run_id == CheckRun.id)
+        .join(RuleSnapshot, CheckRun.rule_snapshot_id == RuleSnapshot.id)
+        .join(RuleDefinition, RuleSnapshot.rule_definition_id == RuleDefinition.id)
+        .join(PackageRevision, Finding.package_revision_id == PackageRevision.id)
+        .join(Package, PackageRevision.package_id == Package.id)
+        .where(Package.id == package_id, Package.project_id == project_id)
+    )
+    total = session.execute(counted).scalar_one()
+
+    if total > MAX_FINDINGS:
+        # **Refused, not truncated.** A silently shortened export is a consumer confidently reporting on
+        # findings it never saw, which is the whole failure this endpoint's labelling exists to prevent.
+        # The paginated list endpoint exists for packages this large.
+        raise HTTPException(
+            # `CONTENT_TOO_LARGE`, not the deprecated `REQUEST_ENTITY_TOO_LARGE` spelling — same 413, and
+            # the old name emits a DeprecationWarning that would eventually fail a `-W error` run.
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=(
+                f"this package has {total} findings and the export is capped at {MAX_FINDINGS}. "
+                "Nothing is returned rather than a partial export, because a truncated export cannot be "
+                "told apart from a complete one. Page through GET .../findings instead."
+            ),
+        )
+
     rows = session.execute(
         select(Finding, CheckRun, RuleSnapshot, RuleDefinition)
         .join(CheckRun, Finding.check_run_id == CheckRun.id)
@@ -207,21 +248,6 @@ def export_findings(
         # export against today's should see only what actually changed.
         .order_by(PackageRevision.revision_number, Finding.created_at, Finding.id)
     ).all()
-
-    if len(rows) > MAX_FINDINGS:
-        # **Refused, not truncated.** A silently shortened export is a consumer confidently reporting on
-        # findings it never saw, which is the whole failure this endpoint's labelling exists to prevent.
-        # The paginated list endpoint exists for packages this large.
-        raise HTTPException(
-            # `CONTENT_TOO_LARGE`, not the deprecated `REQUEST_ENTITY_TOO_LARGE` spelling — same 413, and
-            # the old name emits a DeprecationWarning that would eventually fail a `-W error` run.
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail=(
-                f"this package has {len(rows)} findings and the export is capped at {MAX_FINDINGS}. "
-                "Nothing is returned rather than a partial export, because a truncated export cannot be "
-                "told apart from a complete one. Page through GET .../findings instead."
-            ),
-        )
 
     # **One operand query for the whole export, not one per finding.** Calling `build_chain` without this
     # made an export of N findings cost N+1 round trips, on the endpoint reports and spreadsheets poll.
