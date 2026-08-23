@@ -130,6 +130,26 @@ def finding_chain(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
     finding, run, snapshot, definition = row
+    return build_chain(session, finding, run, snapshot, definition)
+
+
+def build_chain(
+    session: Session,
+    finding: Finding,
+    run: CheckRun,
+    snapshot: RuleSnapshot,
+    definition: RuleDefinition,
+) -> FindingChain:
+    """Assemble one finding's chain from rows the caller has already resolved.
+
+    Extracted for `app/api/finding_export.py` (#224), which needs the same assembly for many findings.
+    Copying it would have been forty lines of duplicated provenance logic, and two copies of "how a finding
+    explains itself" is two answers waiting to differ — the export could keep rendering an operand shape
+    this endpoint had stopped using and nothing would notice.
+
+    Takes resolved rows rather than ids, so each caller keeps its own project-isolation query: the export
+    must not inherit a narrower or wider access boundary by accident.
+    """
     operand_rows = session.execute(
         select(VerdictInput, CanonicalObservation, Page)
         .outerjoin(
