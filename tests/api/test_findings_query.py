@@ -161,15 +161,23 @@ def _tampered(payload: dict[str, str]) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
 
+# A fixed identifier, not `uuid4()`. Called inside `parametrize`, a fresh UUID is baked into the
+# test id at collection, so the ids differ every run: a failure cannot be re-run by node id, and
+# parallel workers each collect a different set and refuse to run at all. The value is irrelevant to
+# what these cases assert — that a cursor we did not issue is refused — so it only has to be a
+# well-formed UUID.
+TAMPERED_CURSOR_ID = "852497a4-2931-44fd-9268-f0a6232b917f"
+
+
 @pytest.mark.parametrize(
     "raw",
     [
         "not-base64-at-all!!",
         base64.urlsafe_b64encode(b"{not json").decode().rstrip("="),
         _tampered({"s": "CRITICAL"}),
-        _tampered({"s": "SEVERE", "o": "FAIL", "t": EPOCH.isoformat(), "i": str(uuid4())}),
-        _tampered({"s": "CRITICAL", "o": "CLEAN", "t": EPOCH.isoformat(), "i": str(uuid4())}),
-        _tampered({"s": "CRITICAL", "o": "FAIL", "t": "the day before", "i": str(uuid4())}),
+        _tampered({"s": "SEVERE", "o": "FAIL", "t": EPOCH.isoformat(), "i": TAMPERED_CURSOR_ID}),
+        _tampered({"s": "CRITICAL", "o": "CLEAN", "t": EPOCH.isoformat(), "i": TAMPERED_CURSOR_ID}),
+        _tampered({"s": "CRITICAL", "o": "FAIL", "t": "the day before", "i": TAMPERED_CURSOR_ID}),
         _tampered({"s": "CRITICAL", "o": "FAIL", "t": EPOCH.isoformat(), "i": "not-a-uuid"}),
     ],
 )

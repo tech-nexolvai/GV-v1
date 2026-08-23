@@ -15,8 +15,18 @@ tests skip or fail to collect, and a green run in a stale environment is worse t
 **It says how many tests were skipped and why.** The database tests skip silently without
 `DATABASE_URL`, which is how a model/migration mismatch reached CI once already.
 
-    python scripts/check.py            # everything
-    python scripts/check.py --fast     # skip semgrep, for a tight edit loop
+    python scripts/check.py              # everything except the database
+    python scripts/check.py --with-db    # everything, database started for you  (`make ci`)
+    python scripts/check.py --fast       # the tight edit loop                    (`make check-fast`)
+
+`--fast` drops semgrep, the network checks, and the five steps whose test modules the full `pytest`
+run collects anyway. CI gives those their own steps so a failure is legible in its log, which is
+worth the cost there; locally it was half the runtime spent re-running about fifty tests. Nothing
+goes unchecked, and `make ci` remains the gate.
+
+Measured on a 10-core machine with mypy and pytest caches warm: `--fast` about 15 seconds, the
+full chain about 22 without the database. A first run after a checkout is two to three times that
+while the caches fill, so judge the cost on the second run rather than the first.
 """
 
 from __future__ import annotations
@@ -82,6 +92,16 @@ class Step:
     needs_github_token: bool = False
     """Talks to the GitHub API. Skipped, loudly, when no token is available."""
 
+    also_in_full_suite: bool = False
+    """The module this runs is collected by the full `pytest` step as well.
+
+    CI gives these their own steps so a failure is legible in the log rather than buried in a
+    suite summary, and that is worth its cost there. Locally it was about half the runtime of
+    `--fast`, spent re-running roughly fifty tests the full run covers anyway — so `--fast` skips
+    them and the complete chain keeps them. Each one costs a fresh interpreter and a fresh
+    collection, which is where the time goes rather than in the assertions.
+    """
+
 
 def _python(*args: str) -> list[str]:
     return [sys.executable, *args]
@@ -98,14 +118,28 @@ STEPS: list[Step] = [
     # are proprietary, and CI rejects anything tracked under data/. A local run that reports success
     # with a drawing staged would send someone to push it.
     Step(
-        "repo hygiene (no client data)", _python("-m", "pytest", "tests/test_repo_hygiene.py", "-q")
+        "repo hygiene (no client data)",
+        _python("-m", "pytest", "tests/test_repo_hygiene.py", "-q"),
+        also_in_full_suite=True,
     ),
-    Step("licence policy", _python("-m", "pytest", "tests/test_licences.py", "-q")),
+    Step(
+        "licence policy",
+        _python("-m", "pytest", "tests/test_licences.py", "-q"),
+        also_in_full_suite=True,
+    ),
     Step("ruff", _python("-m", "ruff", "check", ".")),
     Step("black", _python("-m", "black", "--check", ".")),
     Step("mypy (strict)", _python("-m", "mypy", "verdict", "rules", "evidence")),
-    Step("verdict isolation", _python("-m", "pytest", "tests/test_verdict_isolation.py", "-q")),
-    Step("risk-control traceability", _python("-m", "pytest", "tests/test_risk_controls.py", "-q")),
+    Step(
+        "verdict isolation",
+        _python("-m", "pytest", "tests/test_verdict_isolation.py", "-q"),
+        also_in_full_suite=True,
+    ),
+    Step(
+        "risk-control traceability",
+        _python("-m", "pytest", "tests/test_risk_controls.py", "-q"),
+        also_in_full_suite=True,
+    ),
     # Resolved beside this interpreter rather than from PATH: semgrep is installed into the venv,
     # and a bare name misses it whenever the venv is not activated — which is exactly when someone
     # is most likely to push without having run it.
@@ -133,6 +167,7 @@ STEPS: list[Step] = [
         "board status drift (label vs contract)",
         _python("-m", "pytest", "tests/test_board_drift.py", "-q"),
         needs_github_token=True,
+        also_in_full_suite=True,
     ),
     Step(
         "board status drift (sweep)",
@@ -281,6 +316,12 @@ def main() -> int:
     for step in STEPS:
         if args.fast and step.name.startswith("semgrep"):
             skipped_steps.append(step.name)
+            continue
+        # In fast mode, drop the steps whose modules the full `pytest` run collects anyway, and the
+        # ones that need the network. Nothing is left unchecked — those tests still run, once,
+        # inside the suite — and it takes the chain from about 44 seconds to about 18.
+        if args.fast and (step.also_in_full_suite or step.needs_github_token):
+            skipped_steps.append(f"{step.name} (covered by the full suite)")
             continue
         if step.needs_github_token and not has_token:
             skipped_steps.append(f"{step.name} (no GitHub token)")
