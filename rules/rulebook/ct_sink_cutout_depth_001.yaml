@@ -1,0 +1,62 @@
+id: CT-SINK-CUTOUT-DEPTH-001
+version: 1.0.0
+product_type: countertop
+check_type: internal
+severity: CRITICAL
+arithmetic_unit: in
+
+name: Sink cutout depth
+description: >
+  Compare the drawn sink cutout depth with the sink's own interior depth less the
+  undermount clearance on each side. The interior depth comes from the sink's cut sheet and
+  is supplied per drawing set by the reviewer (client fact Q7), so it is a run-scoped
+  parameter with no default: absent, the check is NOT FOUND rather than a guess. The
+  clearance is a project parameter because the client calls the quarter inch typical and
+  says it may vary by fabricator.
+
+  One of the three checks the client's workbook labels CT-3. The ids here are ours, keyed to
+  the quantity each check verifies, because three rules cannot share one identifier.
+
+applicability:
+  scope: global
+
+inputs:
+  cutout_depth:
+    source: SHOP
+    semantic_type: CT008
+    scope: same_assembly
+    cardinality: one
+
+parameters:
+  # No default, deliberately. Every sink is different, so there is no typical value to fall
+  # back on — and a plausible one here would size a hole that gets cut.
+  sink_interior_depth:
+    scope: run
+  sink_cutout_clearance:
+    default:
+      value: "1/4"
+      unit: in
+    scope: project
+
+# Subtracted once per side rather than doubled: the operation registry has no multiply, and
+# spelling out both sides keeps the trace readable — a reviewer sees each clearance come off.
+derivations:
+  - name: depth_less_near_clearance
+    operation: difference_between
+    operands:
+      a: sink_interior_depth
+      b: sink_cutout_clearance
+  - name: expected_cutout_depth
+    operation: difference_between
+    operands:
+      a: depth_less_near_clearance
+      b: sink_cutout_clearance
+
+operation:
+  type: equals
+  operands:
+    actual: cutout_depth
+    expected: expected_cutout_depth
+
+on_missing: NOT_FOUND
+on_ambiguous: REVIEW_REQUIRED

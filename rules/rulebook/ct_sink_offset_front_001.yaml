@@ -1,0 +1,47 @@
+id: CT-SINK-OFFSET-FRONT-001
+version: 1.0.0
+product_type: countertop
+check_type: global
+severity: CRITICAL
+arithmetic_unit: in
+
+name: Sink front offset
+description: >
+  Check the drawn front offset — the countertop in front of the sink cutout — against the
+  required value, by exact equality.
+
+  Exact, not a minimum. The client's words were "typical value is 4 inches, varies rarely",
+  and Q2 settled exact matching for V1, so the check is equality rather than a lower bound
+  (client fact Q5). A minimum would pass a five-inch offset that nobody intended, which on
+  the countertop's front edge is a visible error the reviewer is meant to catch.
+
+  The four inches is a project parameter with a default rather than a constant, because the
+  client asked to be able to change it "under special circumstances". The back offset is a
+  different animal — a derived remainder, not a constant — and lives in
+  CT-BACK-OFFSET-MIN-001.
+
+applicability:
+  scope: global
+
+inputs:
+  front_offset:
+    source: SHOP
+    semantic_type: CT007
+    scope: same_assembly
+    cardinality: one
+
+parameters:
+  front_offset_required:
+    default:
+      value: "4"
+      unit: in
+    scope: project
+
+operation:
+  type: equals
+  operands:
+    actual: front_offset
+    expected: front_offset_required
+
+on_missing: NOT_FOUND
+on_ambiguous: REVIEW_REQUIRED
