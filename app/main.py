@@ -63,12 +63,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # a module-level import would make `app.main` drag the database into anything that merely wants
     # `create_app` — including the isolation tests, whose whole job is to prove what does not import
     # what.
-    from app.api import background, documents, finding_chain, findings, operations, packages, rules
+    from app.api import (
+        background,
+        documents,
+        finding_chain,
+        finding_export,
+        findings,
+        operations,
+        packages,
+        rules,
+    )
 
     app.include_router(packages.router, prefix=API_PREFIX)
     app.include_router(documents.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(finding_chain.router, prefix=API_PREFIX)
+    # The versioned export downstream consumers read (#224, D1.3). Same prefix as the rest, so the shape a
+    # report or spreadsheet pins is served from the path the API documents.
+    app.include_router(finding_export.router, prefix=API_PREFIX)
     # The handle for work the API accepted rather than did (#208, C2.6). Mounted under the same prefix,
     # which is what makes the `status_url` handed to a client a path this service actually serves.
     app.include_router(background.router, prefix=API_PREFIX)
