@@ -295,3 +295,95 @@ def test_an_unresolved_required_offset_is_not_found_rather_than_defaulted() -> N
     )
 
     assert finding.outcome is Outcome.NOT_FOUND
+
+
+# ---------------------------------------------------------------------------
+# Abstention paths — the states where a false PASS would be worst
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status", [EvidenceStatus.RAW_CANDIDATE, EvidenceStatus.CONFLICTING, EvidenceStatus.REJECTED]
+)
+def test_an_unqualified_reading_never_reaches_the_arithmetic(status: EvidenceStatus) -> None:
+    """Input: a drawn offset that is not CORROBORATED or HUMAN_CONFIRMED. Outcome: REVIEW REQUIRED.
+
+    Only two statuses may enter a verdict. A `CONFLICTING` reading is the sharp case: two readers
+    disagreed about the number, and deciding either way would be picking a winner by arithmetic.
+    """
+    finding = execute(
+        publish(_load(FRONT_OFFSET_RULE_PATH)),
+        {
+            "front_offset": VerdictOperand(
+                name="front_offset",
+                value=_inch(4),
+                status=status,
+                source="SHOP",
+                evidence_ref="shop:p1:front_offset",
+            )
+        },
+        _required(),
+    )
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+
+
+def test_a_millimetre_reading_does_not_silently_convert_into_an_inch_rule() -> None:
+    """Input: CT007 authored in mm against an inch rule. Outcome: REVIEW REQUIRED.
+
+    ADR-0001 and client fact Q12: inches are authoritative on these drawings, and mm is the
+    vendor's machine reference. Converting would produce a confident verdict from a number the
+    rule was not written against — 101.6 mm and 4 inches are equal, and the point is that the
+    engine must not be the thing that decides they are.
+    """
+    finding = execute(
+        publish(_load(FRONT_OFFSET_RULE_PATH)),
+        {
+            "front_offset": VerdictOperand(
+                name="front_offset",
+                value=Measurement(Fraction(508, 5), Unit.MM, "101.6"),
+                status=EvidenceStatus.CORROBORATED,
+                source="SHOP",
+                evidence_ref="shop:p1:front_offset",
+            )
+        },
+        _required(),
+    )
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+
+
+def test_an_unqualified_cutout_depth_abstains_too() -> None:
+    """The same guard on the other rule, so neither can drift from it."""
+    finding = execute(
+        publish(_load(DEPTH_RULE_PATH)),
+        {
+            "cutout_depth": VerdictOperand(
+                name="cutout_depth",
+                value=_inch(Fraction(35, 2)),
+                status=EvidenceStatus.RAW_CANDIDATE,
+                source="SHOP",
+                evidence_ref="shop:p1:cutout_depth",
+            )
+        },
+        _depth_parameters(),
+    )
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+
+
+def test_a_missing_clearance_is_not_found_rather_than_the_typical_quarter_inch() -> None:
+    """Input: interior depth supplied, clearance unresolved. Outcome: NOT_FOUND.
+
+    The rule declares a quarter-inch default because the client calls it typical, but the engine
+    does not read that declaration — resolving it is the parameter layer's job. So an unresolved
+    clearance abstains here rather than sizing a cutout against a value nobody set for this
+    project.
+    """
+    finding = execute(
+        publish(_load(DEPTH_RULE_PATH)),
+        {"cutout_depth": _operand("cutout_depth", Fraction(35, 2))},
+        {"sink_interior_depth": _parameter("sink_interior_depth", 18, ParameterLayer.RUN)},
+    )
+
+    assert finding.outcome is Outcome.NOT_FOUND
