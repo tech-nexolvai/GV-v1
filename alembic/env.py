@@ -16,7 +16,15 @@ from app.db.session import settings_from_environment
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False` — the default is True, and it silenced the application.
+    #
+    # `alembic.ini` names only `root`, `sqlalchemy` and `alembic`, so with the default every *other*
+    # logger already constructed gets `disabled = True`. Anything running migrations in the same
+    # process — the test fixture, a management script — lost every `gv.*` log line from that point on,
+    # permanently and with no error. A warning that cannot be emitted is the same as one nobody wrote,
+    # which is how `app/api/finding_export.py`'s unrecognised-outcome warning came to be dead on
+    # arrival. Configuring Alembic's logging has no business turning ours off.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

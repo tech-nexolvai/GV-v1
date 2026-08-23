@@ -7,6 +7,9 @@ paths, because those are what a client writes once and never revisits.
 
 from __future__ import annotations
 
+import re
+from uuid import UUID
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -14,7 +17,8 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.errors import ErrorEnvelope
-from app.main import create_app
+from app.main import REQUEST_ID_MAX_LENGTH, _accepted_request_id, create_app
+from app.telemetry.tracing import TRACE_ID_HEADER
 from tests.app.postgres_fixture import alembic_config
 
 DATABASE_URL = "postgresql+psycopg://gv:gv@localhost:5433/gv"
@@ -315,3 +319,199 @@ def test_the_readiness_check_does_not_block_the_event_loop() -> None:
 
     source = inspect.getsource(main)
     assert "run_in_threadpool(_readiness_problems" in source
+
+
+# ---------------------------------------------------------------------------
+# The request id is caller-supplied, so it is caller-controlled
+# ---------------------------------------------------------------------------
+
+
+def test_an_implausible_request_id_is_replaced_rather_than_echoed(client: TestClient) -> None:
+    """A caller-supplied id is only kept when it looks like an id.
+
+    The first version read the header with no constraint at all, and that value was echoed in a response
+    header, written to logs, and put on a span. So a caller could choose a 200 KB value or embed a data
+    URI — and the span attribute guard in `app/telemetry/tracing.py`, which refuses exactly that, was
+    bypassed because the request span set its attribute directly.
+
+    Replaced rather than refused: a malformed header is a cosmetic client bug, and failing the request
+    would turn it into an outage. The caller gets a working response and an id we generated.
+    """
+    hostile = "data:application/pdf;base64," + "A" * 400
+    response = client.get("/health", headers={"X-Request-ID": hostile})
+
+    assert response.status_code == 200
+    returned = response.headers["X-Request-ID"]
+    assert returned != hostile, "an implausible id was echoed straight back"
+    assert "data:" not in returned and len(returned) <= 128
+    UUID(returned)  # a generated one, which is what "no usable id supplied" means
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        # **Exactly one over the limit, derived from the limit.** This case used to be `"x" * 129`, which
+        # is rejected whether the bound is 100 or 128 — so it pinned nothing, as review pointed out. One
+        # past the real maximum is the only value that fails if the bound moves.
+        "x" * (REQUEST_ID_MAX_LENGTH + 1),
+        "has spaces",
+        "with\nnewline",  # header injection shape
+        "",
+    ],
+)
+def test_only_id_shaped_values_are_kept(supplied: str, client: TestClient) -> None:
+    """Each of these is not an id, and none of them should come back."""
+    response = client.get("/health", headers={"X-Request-ID": supplied})
+    assert response.headers["X-Request-ID"] != supplied
+
+
+def test_an_error_response_carries_the_trace_id_too(client: TestClient) -> None:
+    """The case the trace header exists for, which the first version missed.
+
+    An unhandled exception is handled *outside* the middleware that opened the span, so the code that
+    stamps the header never runs and the span has already ended. `app/errors.py` had already learned this
+    for the request id — its docstring says so — and the trace id repeated the mistake, leaving the
+    responses somebody is actually complaining about as the only ones with no trace to quote.
+    """
+    app = client.app
+
+    @app.get("/explodes")
+    async def explodes() -> None:  # pragma: no cover - exercised via HTTP
+        raise RuntimeError("x")
+
+    response = client.get("/explodes")
+
+    assert response.status_code == 500
+    assert response.headers["X-Request-ID"]
+    trace_id = response.headers.get(TRACE_ID_HEADER)
+    assert trace_id is not None, "the failing response is the one with no trace id"
+    assert re.fullmatch(r"[0-9a-f]{32}", trace_id), f"not a trace id: {trace_id!r}"
+
+
+def test_a_successful_response_and_a_failing_one_use_the_same_header(client: TestClient) -> None:
+    """One header name for both paths, so a client reads one field whatever happened."""
+    ok = client.get("/health")
+    assert TRACE_ID_HEADER in ok.headers
+
+
+def test_a_maximum_length_request_id_is_actually_usable(client: TestClient) -> None:
+    """An id this app accepts must survive the span guard, not 500 halfway through.
+
+    **This is the test for a bug I introduced while fixing the one above.** Routing the request span
+    through `traced()` meant the request id met the attribute checks — correct, and the point of the fix.
+    But those checks refuse an unbroken run of 120+ base64-shaped characters, while the accepted pattern
+    allowed 128. So a 126-character alphanumeric token, which is an entirely ordinary opaque id, passed the
+    boundary and was then refused inside the middleware: a valid request answered with a 500.
+
+    **The length is discovered, not written down here.** My first attempt at this test hardcoded a
+    100-character value, which passes whether the limit is 100 or 128 — so it asserted nothing about the
+    two limits agreeing, which is the only thing it exists to check. Probing for the longest value the
+    pattern accepts means widening the pattern past the span guard's threshold fails this test.
+    """
+    # **Bounded, because the first version of this loop had no ceiling.** It probed upward while the
+    # contract kept accepting — and when the length constraint went missing, "kept accepting" was true
+    # forever. The suite did not fail, it hung, which is far worse: a failure names a defect in a second,
+    # and a hang looks like a slow machine. A test may never loop without an exit it can assert on.
+    ceiling = 1_000
+    longest = ""
+    while len(longest) < ceiling:
+        candidate = longest + "a"
+        if _accepted_request_id(candidate) != candidate:
+            break
+        longest = candidate
+
+    assert longest, "the contract accepts nothing, so this test cannot say anything"
+    assert len(longest) < ceiling, (
+        f"the contract accepted a {ceiling}-character request id, so it has no upper bound — this is the "
+        "condition that used to hang the suite instead of failing it"
+    )
+
+    response = client.get("/health", headers={"X-Request-ID": longest})
+
+    assert response.status_code == 200, (
+        f"the longest acceptable id ({len(longest)} characters) was not usable — the boundary accepts a "
+        "value the span guard refuses"
+    )
+    assert response.headers["X-Request-ID"] == longest
+    assert response.headers[TRACE_ID_HEADER]
+
+
+def test_a_request_id_at_exactly_the_limit_is_kept(client: TestClient) -> None:
+    """Both sides of the length bound, derived from the bound.
+
+    The rejection cases prove one-too-long is replaced; without this, a change that started rejecting an
+    id of exactly the maximum length would fail nothing.
+    """
+    at_limit = "a" * REQUEST_ID_MAX_LENGTH
+    response = client.get("/health", headers={"X-Request-ID": at_limit})
+    assert response.headers["X-Request-ID"] == at_limit
+
+
+# ---------------------------------------------------------------------------
+# The span name is ours, not the caller's
+# ---------------------------------------------------------------------------
+
+
+def test_the_span_name_never_contains_the_requested_path(client: TestClient) -> None:
+    """A caller-controlled path must not reach the trace — `AGENTS.md` §6.
+
+    `_checked` guards span *attributes*; the name is not an attribute. The first version named the span
+    `f"{method} {path}"`, so a request to an unmatched path carrying encoded drawing content put that
+    content in the trace before routing rejected it — and gave every junk URL its own span name, which is
+    how a backend's cardinality gets away from you.
+
+    Recorded through a span processor, because the name is not visible on the response.
+    """
+    from opentelemetry import trace as otel
+    from opentelemetry.sdk.trace import SpanProcessor
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+
+    names: list[str] = []
+
+    class Recorder(SpanProcessor):
+        def on_end(self, span: object) -> None:  # pragma: no cover - trivial collector
+            name = getattr(span, "name", None)
+            if isinstance(name, str):
+                names.append(name)
+
+    provider = otel.get_tracer_provider()
+    assert isinstance(provider, SdkProvider), "tracing is not configured, so this proves nothing"
+    recorder = Recorder()
+    provider.add_span_processor(recorder)
+
+    leak = "/%PDF-1.7-JVBERi0xLjcK-" + "A" * 130
+    client.get(leak)
+
+    assert names, "no span was recorded, so this test cannot say anything"
+    for name in names:
+        assert "%PDF" not in name, f"drawing content reached the span name: {name!r}"
+        assert "JVBERi0" not in name
+        assert leak not in name
+        assert "A" * 130 not in name
+
+
+def test_a_matched_route_is_named_by_its_template(client: TestClient) -> None:
+    """The safe half of the same decision: a template we declared is fine to name a span with.
+
+    Method alone would be safe but useless for grouping, so the span is renamed once routing has resolved
+    a route — from our own route table, never from the caller's string.
+    """
+    from opentelemetry import trace as otel
+    from opentelemetry.sdk.trace import SpanProcessor
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+
+    names: list[str] = []
+
+    class Recorder(SpanProcessor):
+        def on_end(self, span: object) -> None:  # pragma: no cover - trivial collector
+            name = getattr(span, "name", None)
+            if isinstance(name, str):
+                names.append(name)
+
+    provider = otel.get_tracer_provider()
+    assert isinstance(provider, SdkProvider)
+    provider.add_span_processor(Recorder())
+
+    client.get("/health")
+
+    assert "GET /health" in names, f"the matched route did not name the span: {names}"

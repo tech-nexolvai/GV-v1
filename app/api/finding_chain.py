@@ -14,6 +14,7 @@ Verification: ``tests/api/test_finding_chain.py``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -139,6 +140,9 @@ def build_chain(
     run: CheckRun,
     snapshot: RuleSnapshot,
     definition: RuleDefinition,
+    operand_rows: (
+        Sequence[tuple[VerdictInput, CanonicalObservation | None, Page | None]] | None
+    ) = None,
 ) -> FindingChain:
     """Assemble one finding's chain from rows the caller has already resolved.
 
@@ -149,8 +153,17 @@ def build_chain(
 
     Takes resolved rows rather than ids, so each caller keeps its own project-isolation query: the export
     must not inherit a narrower or wider access boundary by accident.
+
+    `operand_rows` lets a caller supply rows it has already fetched. The export needs that: calling this
+    once per finding meant one operand query per finding, so an export of N findings cost N+1 round trips
+    on the endpoint reports and spreadsheets poll. Passing pre-grouped rows keeps one assembly
+    implementation while removing the per-finding query — the alternative was a second assembly, which is
+    the duplication this function was extracted to avoid.
     """
-    operand_rows = session.execute(
+    if operand_rows is not None:
+        return _assemble(finding, run, snapshot, definition, operand_rows)
+
+    fetched = session.execute(
         select(VerdictInput, CanonicalObservation, Page)
         .outerjoin(
             CanonicalObservation,
@@ -161,6 +174,23 @@ def build_chain(
         .order_by(VerdictInput.operand_name, VerdictInput.id)
     ).all()
 
+    return _assemble(
+        finding,
+        run,
+        snapshot,
+        definition,
+        [(row[0], row[1], row[2]) for row in fetched],
+    )
+
+
+def _assemble(
+    finding: Finding,
+    run: CheckRun,
+    snapshot: RuleSnapshot,
+    definition: RuleDefinition,
+    operand_rows: Sequence[tuple[VerdictInput, CanonicalObservation | None, Page | None]],
+) -> FindingChain:
+    """Render the chain from rows, whoever fetched them. One place, so the two paths cannot diverge."""
     operands = tuple(
         _operand_record(verdict_input, observation, page)
         for verdict_input, observation, page in operand_rows
