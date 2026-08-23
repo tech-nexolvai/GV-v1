@@ -20,6 +20,8 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
+from sqlalchemy.engine import Connection, ExecutionContext
+from sqlalchemy.engine.interfaces import DBAPICursor
 from sqlalchemy.orm import Session
 
 from alembic import command
@@ -29,6 +31,7 @@ from app.config import Settings
 from app.db.session import session_factory
 from app.main import API_PREFIX, create_app
 from app.models import CheckRun, Finding, Package, PackageRevision, PackageState, Project
+from app.telemetry.tracing import TRACE_ID_HEADER
 from tests.api.test_finding_chain import _seed
 from tests.app.postgres_fixture import alembic_config
 from verdict.outcomes import ABSTAINING_OUTCOMES, DECISIVE_OUTCOMES, Outcome, Severity
@@ -463,7 +466,17 @@ def test_the_cap_refuses_before_any_finding_is_loaded(
 
     issued: list[str] = []
 
-    def record(conn, cursor, statement, parameters, context, executemany):  # type: ignore[no-untyped-def]
+    # Fully typed, per `AGENTS.md` — the first version carried a `no-untyped-def` suppression, which is a
+    # way of saying "I did not check this signature". `retval=True` is deliberately not used, so this
+    # listener observes and returns nothing; returning a tuple here would rewrite the statement.
+    def record(
+        conn: Connection,
+        cursor: DBAPICursor,
+        statement: str,
+        parameters: object,
+        context: ExecutionContext,
+        executemany: bool,
+    ) -> None:
         issued.append(statement)
 
     bind = session.get_bind()
@@ -493,6 +506,60 @@ def test_the_cap_refuses_before_any_finding_is_loaded(
     assert any(
         "count(" in statement for statement in lowered
     ), "the size was established by counting"
+
+
+def test_the_warning_and_the_response_name_the_same_trace(
+    session: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The unknown-outcome event carries the trace id of the request that produced it.
+
+    **This is the assertion that makes the trace id worth emitting.** An id in a log line that matches
+    nothing is decoration; the value is being able to start from a response a person is complaining about
+    and find the events behind it. So the response header and the log record are compared directly.
+
+    It also checks something I would otherwise have been assuming. The span is opened in the middleware and
+    the warning is emitted deep inside the endpoint, and Starlette runs the endpoint in a separate task from
+    the middleware — if the context did not propagate across that boundary, the header would hold one trace
+    and the log another, and every "same trace" claim in this codebase would be false.
+
+    The unknown outcome is forced rather than seeded: the column's check constraint refuses a value outside
+    the enum, so the only way to reach the branch through a real request is to make the parse fail.
+    """
+    import app.api.finding_export as export
+
+    def unrecognised(value: str) -> Outcome:
+        raise ValueError(f"{value} is not an Outcome, for this test")
+
+    project_id, package_id, _ = _seed(session)
+    monkeypatch.setattr(export, "Outcome", unrecognised)
+
+    with caplog.at_level(logging.WARNING, logger="gv.api.finding_export"):
+        response = _client(session, project_id).get(
+            f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/findings/export"
+        )
+
+    assert response.status_code == 200, response.text
+    header_trace = response.headers.get(TRACE_ID_HEADER)
+    assert header_trace is not None, "the response does not expose a trace id to correlate against"
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, f"expected one warning, got {[r.getMessage() for r in warnings]}"
+    record = warnings[0]
+
+    logged_trace = getattr(record, "trace_id", None)
+    assert logged_trace == header_trace, (
+        "the event and the response name different traces, so the correlation this exists for does not "
+        f"work: log={logged_trace} header={header_trace}"
+    )
+    # And in the message itself, because that is what a person greps.
+    assert header_trace in record.getMessage()
+
+    # The structured fields review asked for, so a log backend can filter on them rather than parse prose.
+    for field in ("finding_id", "project_id", "package_id", "outcome"):
+        assert getattr(record, field, None) is not None, f"{field} is not on the record"
+
+    # The export still reports it as an abstention — the safe direction, unchanged by any of this.
+    assert response.json()["summary"]["decisions"] == 0
 
 
 def test_a_package_exactly_at_the_cap_is_exported_in_full(

@@ -29,12 +29,20 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
+from opentelemetry.trace import get_tracer
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
 from app.api.guards import assert_no_verdict_fields
 from app.config import Settings
 from app.errors import REQUEST_ID_STATE, _envelope, install_error_handlers
+from app.telemetry.tracing import (
+    INSTRUMENTATION_NAME,
+    TRACE_ID_HEADER,
+    configure_tracing,
+    current_trace_id,
+    incoming_context,
+)
 
 #: The six API groups that hang off this app: packages, documents, findings, review, rules and
 #: operations. All but review are wired; review attaches the same way.
@@ -94,17 +102,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _request_id(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        """Bind one id to the request, and put it back on the response.
+        """Bind one id and one trace to the request, and put both back on the response.
 
         Read from the inbound header when the caller supplied one: an id that changes at our boundary
         makes a distributed trace two traces, and the reviewer's report cites whichever half we
         happened to log.
+
+        **The span is here and not in each handler**, so no route can forget it and no route can invent
+        its own convention — `app/telemetry/tracing.py` explains why there is exactly one. The trace id
+        goes back on the response for the same reason the request id does: an id nobody outside the
+        process can see cannot appear in a bug report.
+
+        `SPAN_ATTRS` values are not set here. A request knows its path, not its `package_id` — those
+        belong on the spans the handlers and workers open inside this one, which is #259's remaining
+        work.
         """
         header = resolved.request_id_header
         request_id = request.headers.get(header) or str(uuid4())
         setattr(request.state, REQUEST_ID_STATE, request_id)
-        response = await call_next(request)
+
+        # A caller's own trace is continued rather than restarted; `None` means it sent none, and the
+        # span below then starts a fresh trace.
+        parent = incoming_context(request.headers)
+        configure_tracing()
+        tracer = get_tracer(INSTRUMENTATION_NAME)
+        with tracer.start_as_current_span(
+            f"{request.method} {request.url.path}", context=parent
+        ) as span:
+            # Correlated deliberately: the request id is what a person quotes and the trace id is what a
+            # backend indexes, so each has to be findable from the other.
+            span.set_attribute("gv.request_id", request_id)
+            trace_id = current_trace_id()
+            response = await call_next(request)
+
         response.headers[header] = request_id
+        if trace_id is not None:
+            response.headers[TRACE_ID_HEADER] = trace_id
         return response
 
     @app.get("/health", tags=["operations"])

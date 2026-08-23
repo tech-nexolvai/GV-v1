@@ -51,13 +51,18 @@ from app.models import (
     RuleSnapshot,
     VerdictInput,
 )
+from app.telemetry.tracing import current_trace_id
 from verdict.outcomes import Outcome, is_decision
 
 router = APIRouter(tags=["findings"])
 
-#: Plain stdlib logging, following the one existing precedent in this codebase (`gv.auth`). Not a span:
-#: the tracer setup and `trace_id` propagation convention belong to #259 F2.1, and inventing a second one
-#: here is what that story exists to prevent.
+#: Stdlib logging, following the one existing precedent in this codebase (`gv.auth`), now carrying the
+#: trace id from `app/telemetry/tracing.py`.
+#:
+#: The earlier version of this comment deferred the whole question to #259 F2.1 and emitted no trace id at
+#: all, which was the right call only while there was nothing to defer *to*. There is now: the shared
+#: helper landed with this change, so this event can be found next to the request that produced it without
+#: a second convention being invented here.
 logger = logging.getLogger("gv.api.finding_export")
 
 #: The only schema version this module emits. A literal rather than a free string: a consumer pinning "1"
@@ -320,15 +325,25 @@ def _classify(
         # silence means persisted data has left the engine's vocabulary and nobody finds out, because
         # `by_outcome` just grows a key nobody is watching. §2.2 again — silence must not read as completion.
         #
-        # Plain stdlib logging with the ids as parameters, not a span: the tracer setup and the `trace_id`
-        # propagation convention are #259 F2.1's to establish, and a second convention invented here is
-        # exactly what that story exists to prevent.
+        # **The trace id comes from the shared helper, not from a convention invented here.** The event is
+        # only useful next to the request that produced it, and `app/telemetry/tracing.py` is what makes
+        # "the same trace id" mean the same thing in both places. `None` when there is no active trace —
+        # this function is also called from unit tests and from anything outside a request — and the log
+        # says so rather than printing a zero id that looks lookup-able.
         logger.warning(
             "finding %s (project %s, package %s) has outcome %r, which is outside the Outcome "
-            "vocabulary; counted as an abstention",
+            "vocabulary; counted as an abstention [trace %s]",
             finding_id,
             project_id,
             package_id,
             outcome,
+            current_trace_id() or "none",
+            extra={
+                "finding_id": str(finding_id),
+                "project_id": str(project_id),
+                "package_id": str(package_id),
+                "outcome": outcome,
+                "trace_id": current_trace_id(),
+            },
         )
         return False

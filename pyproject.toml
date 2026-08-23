@@ -62,6 +62,11 @@ platform = [
     "pgvector>=0.5,<1",
     "hatchet-sdk",
     "boto3",
+    # Apache-2.0, both — licence-checked for #259 F2.1 as AGENTS.md §2.8 requires; neither is AGPL.
+    # The API is listed explicitly rather than left to arrive through the SDK: `app/telemetry/tracing.py`
+    # imports from `opentelemetry.trace` directly, and a direct import on an indirect dependency breaks
+    # the day the SDK reorganises its own requirements.
+    "opentelemetry-api",
     "opentelemetry-sdk",
 ]
 
