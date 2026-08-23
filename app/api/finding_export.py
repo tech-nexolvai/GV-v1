@@ -27,6 +27,7 @@ Verification: `tests/api/test_finding_export.py`
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from typing import Annotated, Literal
 from uuid import UUID
@@ -40,22 +41,38 @@ from app.api.dependencies import get_session
 from app.api.finding_chain import FindingChain, build_chain
 from app.auth import Principal, require_project_access
 from app.models import (
+    CanonicalObservation,
     CheckRun,
     Finding,
     Package,
     PackageRevision,
+    Page,
     RuleDefinition,
     RuleSnapshot,
+    VerdictInput,
 )
 from verdict.outcomes import Outcome, is_decision
 
 router = APIRouter(tags=["findings"])
+
+#: Plain stdlib logging, following the one existing precedent in this codebase (`gv.auth`). Not a span:
+#: the tracer setup and `trace_id` propagation convention belong to #259 F2.1, and inventing a second one
+#: here is what that story exists to prevent.
+logger = logging.getLogger("gv.api.finding_export")
 
 #: The only schema version this module emits. A literal rather than a free string: a consumer pinning "1"
 #: must fail on a change, and a version field that could hold anything is a version field nobody trusts.
 SCHEMA_VERSION: Literal["1"] = "1"
 
 NOT_FOUND_DETAIL = "Not found"
+
+#: The most findings one export will return.
+#:
+#: A synchronous endpoint with no bound ties request duration to package size, and this is the endpoint
+#: reports and spreadsheets poll. Chosen rather than measured — there is no real package to measure yet —
+#: so it is a documented maximum a reader can find and argue with, not a silent behaviour. Exceeding it
+#: refuses; see the handler for why refusing beats truncating.
+MAX_FINDINGS = 5000
 
 
 class ExportedFinding(BaseModel):
@@ -110,20 +127,44 @@ def _summarise(outcomes: list[str]) -> ExportSummary:
     direction: a value this code does not understand must not be reported as a verdict the engine reached.
     """
     counts = Counter(outcomes)
-    decisions = 0
-    for value, count in counts.items():
-        try:
-            outcome = Outcome(value)
-        except ValueError:
-            continue  # Unknown: left out of the decision count, so it lands in abstentions.
-        if is_decision(outcome):
-            decisions += count
+    # **One implementation, delegated.** This loop used to repeat what `_decided` does, in the module whose
+    # docstring says the split is not restated here — so the file contained two answers to "did the engine
+    # decide", and the per-finding flag and this count could have disagreed inside one payload.
+    decisions = sum(count for value, count in counts.items() if _decided(value))
     return ExportSummary(
         findings=len(outcomes),
         decisions=decisions,
         abstentions=len(outcomes) - decisions,
         by_outcome=dict(sorted(counts.items())),
     )
+
+
+def _operands_by_run(
+    session: Session, run_ids: list[UUID]
+) -> dict[UUID, list[tuple[VerdictInput, CanonicalObservation | None, Page | None]]]:
+    """Every operand for every run in the export, in one query, grouped by run.
+
+    Ordered by the same keys `build_chain` uses when it fetches its own, so a finding exported here and the
+    same finding fetched from the chain endpoint present their operands identically. A different order
+    would be a difference a consumer could see between two endpoints that claim to show the same thing.
+    """
+    if not run_ids:
+        return {}
+    rows = session.execute(
+        select(VerdictInput, CanonicalObservation, Page)
+        .outerjoin(
+            CanonicalObservation,
+            VerdictInput.canonical_observation_id == CanonicalObservation.id,
+        )
+        .outerjoin(Page, CanonicalObservation.page_id == Page.id)
+        .where(VerdictInput.check_run_id.in_(run_ids))
+        .order_by(VerdictInput.check_run_id, VerdictInput.operand_name, VerdictInput.id)
+    ).all()
+
+    grouped: dict[UUID, list[tuple[VerdictInput, CanonicalObservation | None, Page | None]]] = {}
+    for row in rows:
+        grouped.setdefault(row[0].check_run_id, []).append((row[0], row[1], row[2]))
+    return grouped
 
 
 @router.get(
@@ -167,9 +208,33 @@ def export_findings(
         .order_by(PackageRevision.revision_number, Finding.created_at, Finding.id)
     ).all()
 
+    if len(rows) > MAX_FINDINGS:
+        # **Refused, not truncated.** A silently shortened export is a consumer confidently reporting on
+        # findings it never saw, which is the whole failure this endpoint's labelling exists to prevent.
+        # The paginated list endpoint exists for packages this large.
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"this package has {len(rows)} findings and the export is capped at {MAX_FINDINGS}. "
+                "Nothing is returned rather than a partial export, because a truncated export cannot be "
+                "told apart from a complete one. Page through GET .../findings instead."
+            ),
+        )
+
+    # **One operand query for the whole export, not one per finding.** Calling `build_chain` without this
+    # made an export of N findings cost N+1 round trips, on the endpoint reports and spreadsheets poll.
+    operands = _operands_by_run(session, [run.id for _, run, _, _ in rows])
+
     exported = tuple(
         ExportedFinding(
-            chain=build_chain(session, finding, run, snapshot, definition),
+            chain=build_chain(
+                session,
+                finding,
+                run,
+                snapshot,
+                definition,
+                operand_rows=operands.get(run.id, ()),
+            ),
             abstained=not _decided(finding.outcome),
         )
         for finding, run, snapshot, definition in rows
@@ -193,4 +258,12 @@ def _decided(outcome: str) -> bool:
     try:
         return is_decision(Outcome(outcome))
     except ValueError:
+        # **Safe, and now also visible.** Falling to "abstained" is the right direction — a value this code
+        # cannot interpret must never be reported as a verdict the engine reached. But absorbing it in
+        # silence means persisted data has left the engine's vocabulary and nobody finds out: `by_outcome`
+        # grows a key nobody is watching. §2.2 again — silence must not read as completion.
+        logger.warning(
+            "finding outcome %r is outside the Outcome vocabulary; counted as an abstention",
+            outcome,
+        )
         return False
