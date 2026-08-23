@@ -134,10 +134,19 @@ do to this codebase, and the reason is in the next section.
 ## Before you push
 
 ```bash
-make ci             # local CI: the full chain, with the database started so nothing skips
-make check          # the same chain, without starting the database
-make check-fast     # same without semgrep, for a tight edit loop
+make check-fast     # the tight edit loop            — about 15s
+make check          # everything but the database    — about 22s
+make ci             # everything, database started     — about 2.5 min
 ```
+
+Measured on a 10-core machine with caches warm; a first run after a checkout is roughly twice that
+while mypy and pytest fill theirs.
+
+**`make check-fast` is what to run while editing.** It drops semgrep, the network checks, and the
+five steps whose test modules the full `pytest` run collects anyway — CI gives those their own steps
+so a failure is legible in its log, which is worth the cost there, but locally it was half the
+runtime spent re-running about fifty tests. Nothing goes unchecked: each of those tests still runs
+once, inside the suite, and the run prints what it skipped.
 
 `make ci` is the one to run before opening a pull request. It exits non-zero on any blocking
 failure, so it is safe to chain: `make ci && git push`.
