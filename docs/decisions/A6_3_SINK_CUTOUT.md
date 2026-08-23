@@ -2,20 +2,20 @@
 
 Go/no-go for the three sink-cutout checks (cutout width, cutout depth, front/back offset). Grounded
 in `docs/CLIENT_FACTS.md` and the ADRs. The key finding: the client's width/depth defect is **local
-to one rule**, so most of the family ships now. Last updated 2026-08-22.
+to one rule**, so most of the family ships now. Last updated 2026-08-24.
 
 ---
 
 ### D1. Which of the sink-cutout rules can be authored now?
 status: DECIDED
-decision: Author **cutout depth** and **front offset** now — both fully confirmed. Author **back offset** with its minimum marked UNCONFIRMED (D3). **Hold cutout width** until the client resolves the width/depth question (D5). The width/depth ambiguity does **not** contaminate the others: depth is derived from the interior *depth* (undisputed by text and diagram alike), and the offsets never touch the interior dimensions. Cutout depth also needs a reviewer-tunable **clearance** parameter (default ~0.25″ each side, the client's stated *typical*), authored the same way as the 4″ front-offset default.
+decision: Author **cutout depth** and **front offset** now — both fully confirmed. Author **back offset** with its minimum as a required GLOBAL parameter, so it returns `NOT_FOUND` until the client supplies it, and hold the rule from production until then (D3). **Hold cutout width** until the client resolves the width/depth question (D5). The width/depth ambiguity does **not** contaminate the others: depth is derived from the interior *depth* (undisputed by text and diagram alike), and the offsets never touch the interior dimensions. Cutout depth also needs a reviewer-tunable **clearance** parameter (default ~0.25″ each side, the client's stated *typical*), authored the same way as the 4″ front-offset default.
 because: front offset is exact equality to a configurable 4″ (Q5); depth = interior depth − 2×clearance with the interior depth reviewer-provided (Q7) and the clearance a documented default; only the *width* formula's input is the unconfirmed S19 typo (Q15).
 source: docs/CLIENT_FACTS.md Q5, Q6, Q7, Q2/Q12 (exact match, inches), Q15
 affects: #60; rules/rulebook/
 
 ### D2. Split "front and back offset" into two rules.
 status: DECIDED
-decision: Author front and back offset as **separate** rules. Front = exact equality to the configurable 4″ (live now). Back = derived remainder (countertop depth − front offset − sink depth) checked **≥ a global minimum** (UNCONFIRMED until supplied).
+decision: Author front and back offset as **separate** rules. Front = exact equality to the configurable 4″ (live now). Back = derived remainder (countertop depth − front offset − sink depth) checked **≥ a global minimum**, which is a required GLOBAL parameter — `NOT_FOUND` until supplied, not a tolerance (D3).
 because: they are different operations (exact-equality vs minimum) at different readiness; bundling them would hold the confirmed front check hostage to the back's missing number.
 source: CLIENT_FACTS Q5 (front, exact), Q6 (back = remainder ≥ pending minimum)
 affects: #60
@@ -50,4 +50,4 @@ affects: rules/publication.py; a new follow-up story; #60 (the back-offset rule 
 
 ---
 
-**Ships now:** cutout depth, front offset, and the back-offset rule (UNCONFIRMED, REVIEW-only) — three of four units, with the fourth's gap visible rather than silent. **Held:** cutout width, on one client answer. **Verification note:** the two email asks were checked against Raj's replies — the back-offset minimum is a *promised* value (he committed to it, pending vendor), so it is a follow-up; the width/depth question is genuinely unanswered, so it is a new ask.
+**Ships now:** cutout depth and front offset. The back-offset rule is **authored** with its minimum as a required GLOBAL parameter, so it returns `NOT_FOUND` until the client supplies the value, and it is **held from production** until then (D3) — the gate will enforce that once D6 lands (#427). Three of four units authored, with the fourth's gap visible rather than silent. **Held:** cutout width, on one client answer. **Verification note:** the two email asks were checked against Raj's replies — the back-offset minimum is a *promised* value (he committed to it, pending vendor), so it is a follow-up; the width/depth question is genuinely unanswered, so it is a new ask.
