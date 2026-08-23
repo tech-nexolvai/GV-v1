@@ -25,6 +25,7 @@ import argparse
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -33,8 +34,29 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+#: The workflow is the reference for what must be checked. Anything this script assumes about CI is
+#: read out of that file rather than restated here, so the two cannot drift in silence — and
+#: `tests/test_local_ci_parity.py` fails the build if a CI step gains no local counterpart.
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+
 #: Extras CI installs for the main job. Kept in step with `.github/workflows/ci.yml`.
 REQUIRED_EXTRAS = ("ai", "dev", "rules", "platform", "reports")
+
+#: What CI does that a local run cannot honestly reproduce, and why. Printed at the end of every
+#: run: a developer who believes local and CI are equivalent will eventually be wrong about
+#: something that matters, and the fix is to say so every time rather than once in a document.
+GITHUB_ONLY = {
+    "published CodeRabbit schema (weekly)": (
+        "asks whether CodeRabbit's *currently published* schema still accepts our config. It needs "
+        "the network and a live third party, so a local failure would usually mean the wifi rather "
+        "than the repository. Runs weekly on CI; force it here with "
+        "GV_CHECK_CODERABBIT_SCHEMA=1 pytest tests/test_repo_hygiene.py -k published_schema"
+    ),
+    "Python 3.12 as the tested floor": (
+        "CI pins 3.12 because AGENTS.md §4 promises it. A local interpreter that is newer can accept "
+        "syntax and stdlib that 3.12 rejects, so a green local run on 3.14 is not the same evidence"
+    ),
+}
 
 #: One importable module per extra, to detect drift without shelling out to pip.
 EXTRA_PROBES = {
@@ -56,6 +78,9 @@ class Step:
 
     advisory: bool = False
     """Reported but never fails the chain — CI runs it with continue-on-error."""
+
+    needs_github_token: bool = False
+    """Talks to the GitHub API. Skipped, loudly, when no token is available."""
 
 
 def _python(*args: str) -> list[str]:
@@ -97,8 +122,73 @@ STEPS: list[Step] = [
         _python("-m", "mypy", "app", "workflow", "extraction", "retrieval", "reports", "eval"),
         advisory=True,
     ),
+    # From the weekly job. Nothing in this project is pinned — every dependency is a floor — so the
+    # installed set changes without a commit. Cheap, offline, and it catches the resolution breaking
+    # before CI does.
+    Step("dependencies resolve (pip check)", _python("-m", "pip", "check")),
+    # From the `board` job. Needs a GitHub token, so it is optional here: a developer without `gh`
+    # authenticated should not be blocked by a check about issue labels. It is not advisory —
+    # when it can run, a disagreement is a real failure.
+    Step(
+        "board status drift (label vs contract)",
+        _python("-m", "pytest", "tests/test_board_drift.py", "-q"),
+        needs_github_token=True,
+    ),
+    Step(
+        "board status drift (sweep)",
+        _python("scripts/check_board_drift.py"),
+        needs_github_token=True,
+    ),
     Step("tests", _python("-m", "pytest", "-q")),
 ]
+
+
+def ci_python_version() -> str | None:
+    """The Python version CI pins, read from the workflow rather than restated here.
+
+    Returns ``None`` when the workflow names more than one version or none at all — an ambiguous
+    answer is reported to the developer instead of being guessed at.
+    """
+    versions = set(re.findall(r'python-version:\s*"([\d.]+)"', CI_WORKFLOW.read_text()))
+    return versions.pop() if len(versions) == 1 else None
+
+
+def github_token_available() -> bool:
+    """True when the GitHub API is reachable — an explicit token, or an authenticated `gh`."""
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        return True
+    try:
+        return (
+            subprocess.run(
+                ["gh", "auth", "status"], capture_output=True, check=False, timeout=15
+            ).returncode
+            == 0
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def start_database() -> str | None:
+    """Start the Compose database and return a URL for it, or ``None`` if it could not be started.
+
+    The image and credentials come from `docker-compose.yml`, which is pinned to the same
+    `pgvector` version CI's service container uses — that pinning is the point, so this does not
+    accept a database that happens to be running on the port instead.
+    """
+    compose = subprocess.run(
+        ["docker", "compose", "up", "-d", "--wait", "db"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if compose.returncode != 0:
+        tail = (compose.stderr or compose.stdout).strip().splitlines()
+        print("  could not start the database:")
+        for line in tail[-6:]:
+            print(f"    {line}")
+        return None
+    return "postgresql+psycopg://gv:gv@localhost:5433/gv"
 
 
 def check_environment() -> list[str]:
@@ -117,10 +207,39 @@ def check_environment() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fast", action="store_true", help="skip semgrep")
+    parser.add_argument(
+        "--with-db",
+        action="store_true",
+        help="start the Compose database first, so the PostgreSQL suite runs instead of skipping",
+    )
     args = parser.parse_args()
 
     print("Running the CI check chain locally")
     print("=" * 64)
+
+    # Reported before anything runs, because it changes what every result below means. Not fatal:
+    # pyproject allows >=3.12, so a newer interpreter is a legitimate development environment — but
+    # it is not the one CI tests, and a green run here must not be mistaken for CI's answer.
+    pinned = ci_python_version()
+    running = f"{sys.version_info.major}.{sys.version_info.minor}"
+    version_drift = pinned is not None and running != pinned
+    if pinned is None:
+        print(
+            "\n  Could not read a single pinned Python version from .github/workflows/ci.yml.\n"
+            "  Check the workflow — this script reads it rather than hard-coding one."
+        )
+    elif version_drift:
+        remedy = f"python{pinned}"
+        have = "" if shutil.which(remedy) else f" (not on PATH — install Python {pinned})"
+        print(
+            f"\n  PYTHON VERSION DRIFT — CI tests {pinned}; this interpreter is {running}.\n"
+            f"  AGENTS.md §4 promises {pinned}, so CI tests the floor rather than the newest.\n"
+            f"  A newer interpreter accepts syntax and stdlib that {pinned} rejects, so a green run\n"
+            f"  here is weaker evidence than a green run on CI.{have}\n\n"
+            f"      {remedy} -m venv .venv-ci && .venv-ci/bin/pip install -e "
+            f'".[{",".join(REQUIRED_EXTRAS)}]"\n'
+            f"      .venv-ci/bin/python scripts/check.py\n"
+        )
 
     if missing := check_environment():
         print(
@@ -131,27 +250,47 @@ def main() -> int:
         )
         return 2
 
-    if not os.environ.get("DATABASE_URL"):
+    env = dict(os.environ)
+    if args.with_db and not env.get("DATABASE_URL"):
+        print("\n  ---- starting the database ----")
+        if url := start_database():
+            env["DATABASE_URL"] = url
+            print(f"  database up; DATABASE_URL set for this run ({url.rsplit('@', 1)[-1]})")
+
+    if not env.get("DATABASE_URL"):
+        remedy = (
+            "      start Docker Desktop, then re-run `make ci`\n"
+            if args.with_db
+            else "      make ci        (starts the database for you)\n"
+            "\n  or, by hand:\n\n"
+            "      docker compose up -d --wait db\n"
+            "      export DATABASE_URL=postgresql+psycopg://gv:gv@localhost:5433/gv\n"
+        )
         print(
             "\n  No DATABASE_URL — the PostgreSQL tests will skip.\n"
-            "  CI runs them, so a mismatch between a model and its migration will surface there\n"
-            "  rather than here. To run them locally:\n\n"
-            "      docker compose up -d db\n"
-            "      export DATABASE_URL=postgresql+psycopg://gv:gv@localhost:5433/gv\n"
+            "  CI runs them against pgvector, so a mismatch between a model and its migration will\n"
+            f"  surface there rather than here. To run them:\n\n{remedy}"
         )
 
     failures: list[str] = []
     advisory_failures: list[str] = []
     skipped_steps: list[str] = []
 
+    has_token = github_token_available()
+
     for step in STEPS:
         if args.fast and step.name.startswith("semgrep"):
             skipped_steps.append(step.name)
             continue
+        if step.needs_github_token and not has_token:
+            skipped_steps.append(f"{step.name} (no GitHub token)")
+            print(f"\n  ---- {step.name} ----")
+            print("  SKIPPED — no GH_TOKEN and `gh` is not authenticated. CI still runs it.")
+            continue
         print(f"\n  ---- {step.name} ----")
         try:
             result = subprocess.run(
-                step.command, cwd=REPO_ROOT, capture_output=True, text=True, check=False
+                step.command, cwd=REPO_ROOT, capture_output=True, text=True, check=False, env=env
             )
         except FileNotFoundError:
             if step.optional:
@@ -178,6 +317,10 @@ def main() -> int:
             )
 
     print("\n" + "=" * 64)
+    print("  CI checks with no local equivalent, by design:")
+    for name, why in GITHUB_ONLY.items():
+        print(f"    - {name}: {why}")
+    print()
     if skipped_steps:
         print(f"  not run: {', '.join(skipped_steps)}")
     if advisory_failures:
@@ -188,10 +331,16 @@ def main() -> int:
     if failures:
         print(f"  FAILED: {', '.join(failures)}")
         return 1
+    caveat = ""
+    if version_drift:
+        caveat = f" — but on Python {running}, not the {pinned} CI tests"
+    elif skipped_steps:
+        caveat = " — with the steps above not run"
+
     if advisory_failures:
-        print("  Blocking checks passed. The advisory step above did not.")
+        print(f"  Blocking checks passed{caveat}. The advisory step above did not.")
         return 0
-    print("  All checks passed. This is what CI will run.")
+    print(f"  All checks passed{caveat}.")
     return 0
 
 

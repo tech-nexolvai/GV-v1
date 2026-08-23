@@ -10,6 +10,39 @@ notes. If anything here conflicts with `AGENTS.md`, `AGENTS.md` wins.
 The pass/fail verdict is exact arithmetic — never an LLM judgment. The verdict service has no
 model/retrieval/memory/internet access and uses no `eval`. Primary metric = critical false-PASS rate.
 
+## Run local CI before you call anything done
+**`make ci` is the definition of "it works". Nothing is complete until it passes.**
+
+This applies to every code change, and to every pull request before it is opened or merged. GitHub
+Actions minutes bill against a private-repo quota and may not be available, so local CI is the
+primary gate rather than a convenience.
+
+The loop, every time:
+
+1. Make the change.
+2. Run `make ci`.
+3. Read the failures.
+4. Fix the ones your change caused.
+5. Run `make ci` again.
+6. Repeat until the blocking checks pass.
+7. Only then say the work is done, or open the PR.
+
+What `make ci` covers, what it deliberately leaves to GitHub, and the prerequisites are in
+`CONTRIBUTING.md` → *Before you push*. `tests/test_local_ci_parity.py` fails the build if CI gains a
+check the local chain does not run, so the two cannot drift.
+
+**Never do any of these to get a green run:**
+- skip a failing check without saying so, in plain words, and why
+- edit a CI rule, a lint rule or a type setting to make a failure disappear
+- add `continue-on-error`, `# type: ignore`, `# noqa`, or `pytest.mark.skip` to hide a real problem
+- delete or weaken a test, or mark one skipped because it is inconvenient
+- change expected behaviour to satisfy a test, unless the implementation is genuinely wrong
+- say "CI passes" without having run `make ci` and seen it pass
+- assume local CI and GitHub CI are equivalent — the run prints what it could not check, so read it
+
+A red check is information. Suppressing it converts a known problem into an unknown one, which on
+this project means a confident wrong PASS reaching a drawing that gets manufactured.
+
 ## How to work in this repo
 - **Plan before big changes.** For anything touching `verdict/`, `rules/`, `evidence/`, or the data
   model, use plan mode / propose the approach first — these are the safety-critical zones.
