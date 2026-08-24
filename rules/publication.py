@@ -87,8 +87,10 @@ def unresolved_client_parameters(rule: Rule) -> tuple[str, ...]:
 def is_production_ready(rule: Rule) -> bool:
     """True when nothing this rule needs is still waiting on the client.
 
-    Two ways a rule can fail that: an unconfirmed tolerance, and a project-scoped parameter with
-    no value. Both make the rule abstain on every drawing; both must hold it back.
+    Two ways a rule can fail that: an unconfirmed tolerance, and a **global** parameter with no
+    value. Both make the rule abstain on every drawing; both must hold it back. Project- and
+    run-scoped parameters do not — they are routine configuration, supplied per project or per
+    drawing set.
 
     A rule with **no** tolerance at all is ready: `exists` and `equals` need none. Only a rule that
     declares one and has not had it confirmed is held back.
@@ -103,23 +105,32 @@ def assert_production_ready(rule: Rule) -> None:
     rule with a placeholder is exactly what the sentinel is for. It is releasing one that is
     the mistake.
     """
+    # Both blockers are collected before raising. Reporting only the first would send somebody to
+    # fetch one value, release again, and be stopped by the other — and a rule can genuinely be
+    # waiting on both, since a tolerance and a standard come from different conversations.
+    reasons: list[str] = []
+
     owed = unresolved_client_parameters(rule)
     if owed:
-        raise NotProductionReadyError(
-            f"rule {rule.id!r} needs {', '.join(repr(name) for name in owed)}, which only the "
-            "client can supply and which has no value. It would return NOT FOUND for every "
-            "drawing, which reads as 'the drawing did not give us this' rather than 'nobody has "
-            "given us the standard to check against'. Obtain the value before release, or hold "
-            "the rule back."
+        reasons.append(
+            f"needs {', '.join(repr(name) for name in owed)}, which only the client can supply "
+            "and which has no value. It would return NOT FOUND for every drawing, which reads as "
+            "'the drawing did not give us this' rather than 'nobody has given us the standard to "
+            "check against'"
         )
 
     missing = unconfirmed_tolerance_count(rule)
     if missing:
+        reasons.append(
+            f"has {missing} unconfirmed tolerance{'s' if missing > 1 else ''} and cannot decide "
+            "anything. It would return REVIEW REQUIRED for every drawing, which reads as 'a "
+            "reviewer should look at this' rather than 'nobody has told us the limit for this "
+            "check'"
+        )
+
+    if reasons:
         raise NotProductionReadyError(
-            f"rule {rule.id!r} has {missing} unconfirmed tolerance"
-            f"{'s' if missing > 1 else ''} and cannot decide anything. It would return REVIEW "
-            "REQUIRED for every drawing, which reads as 'a reviewer should look at this' rather "
-            "than 'nobody has told us the limit for this check'. Obtain the value before "
+            f"rule {rule.id!r} " + "; and ".join(reasons) + ". Obtain the value(s) before "
             "release, or hold the rule back."
         )
 
