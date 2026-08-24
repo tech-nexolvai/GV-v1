@@ -27,15 +27,24 @@ are treated as silent, not as agreement.
 **Nothing is deleted.** A superseded page is retained and marked with the reason it lost, because a
 reviewer asking *"what did Rev A say?"* is asking a legitimate question and the answer has to exist.
 
+**An unresolved sheet is REVIEW REQUIRED, and there is no path to anything else** (#185, B11.3). §7:
+*"Unresolved supersession produces REVIEW REQUIRED for every finding drawn from that sheet."* Every
+finding, not the ones that look doubtful — the sheet itself is in question, so arithmetic done on it is
+not wrong, it is arithmetic about the wrong drawing. `Unresolved.trace()` names the competing revisions
+so a reviewer can settle it in seconds rather than reopening the package.
+
 Source: backend proposal §11 · Design: `docs/DESIGN_EXTRACTION.md` §7 ·
-Verification: `tests/extraction/test_supersession.py`
+Verification: `tests/extraction/test_supersession.py`,
+`tests/extraction/test_supersession_refusal.py`
 """
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
+from enum import StrEnum
 from itertools import pairwise
 from typing import Final
 
@@ -46,11 +55,32 @@ __all__ = [
     "GoverningRevision",
     "SheetPage",
     "SupersededPage",
+    "SupersessionStatus",
     "Unresolved",
     "governing_revision",
     "group_by_sheet",
     "recorded_order",
 ]
+
+
+class SupersessionStatus(StrEnum):
+    """Whether a sheet's governing revision was established, or needs a reviewer (#185, B11.3).
+
+    **`REVIEW_REQUIRED` is spelled out here rather than imported from `verdict/`**, because
+    `docs/DESIGN_EXTRACTION.md` §2 forbids `extraction/` importing the engine: *"An extractor that knows
+    which rule is coming is an extractor that can be tuned to satisfy it."* `evidence/crop.py` already
+    solves this the same way with its own `CropStatus.REVIEW_REQUIRED`, so this follows a precedent rather
+    than inventing a second convention.
+
+    The string must equal `verdict.outcomes.Outcome.REVIEW_REQUIRED` or an unresolved sheet would produce
+    an outcome the engine does not recognise. That is asserted in
+    `tests/extraction/test_supersession_refusal.py`, which *may* import `verdict/` — a test proving two
+    vocabularies agree is not the same thing as a module depending on one.
+    """
+
+    RESOLVED = "RESOLVED"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+
 
 #: Why a sheet could not be resolved. One of these, never a free-form string, so `#185` can branch on the
 #: cause rather than parse prose — and so a new cause has to be named here rather than smuggled in.
@@ -114,6 +144,11 @@ class GoverningRevision:
         """Always true. Present so a caller can branch on the union without `isinstance`."""
         return True
 
+    @property
+    def status(self) -> SupersessionStatus:
+        """`RESOLVED`. The findings drawn from this sheet may be decided normally."""
+        return SupersessionStatus.RESOLVED
+
 
 @dataclass(frozen=True, slots=True)
 class Unresolved:
@@ -132,6 +167,75 @@ class Unresolved:
     @property
     def is_resolved(self) -> bool:
         return False
+
+    @property
+    def status(self) -> SupersessionStatus:
+        """`REVIEW_REQUIRED`, always — and there is deliberately no path to any other value.
+
+        §7: *"Unresolved supersession produces REVIEW REQUIRED for every finding drawn from that
+        sheet."* Every finding, not the ones that look doubtful: the sheet itself is in question, so the
+        arithmetic done on it is not wrong, it is arithmetic about the wrong drawing.
+
+        A property rather than a field, because a field could be constructed with any value. There is no
+        way to build an `Unresolved` that says anything else.
+        """
+        return SupersessionStatus.REVIEW_REQUIRED
+
+    def trace(self) -> str:
+        """Deterministic JSON naming the competing revisions — *"so the reviewer can settle it in
+        seconds"*.
+
+        What a reviewer needs to answer this is the shortlist: which sheets are competing, what revision
+        each claims, what date it printed, and which page to open. That is what this carries, and nothing
+        more — no polygons, no crops, no drawing content, per `AGENTS.md` §6.
+
+        Sorted keys and a stable separator, matching `evidence/gate.py`'s `_evidence_ref`: two traces of
+        the same refusal must be byte-identical or a stored trace cannot be compared with a recomputed
+        one.
+
+        The date is recorded **as printed**, with its readings alongside. A reviewer settling a
+        supersession needs to see `03/04/26` — the thing on the paper — rather than one interpretation of
+        it presented as fact.
+        """
+        return json.dumps(
+            {
+                "cause": self.cause,
+                "detail": self.detail,
+                "sheet_number": self.sheet_number,
+                "status": str(self.status),
+                "competing": [
+                    {
+                        "page_index": page.page.index,
+                        "revision_as_printed": (
+                            page.revision.current.as_printed
+                            if page.revision.current is not None
+                            else None
+                        ),
+                        "revision_normalised": page.label,
+                        "date_as_printed": (
+                            page.revision.current.date.as_printed
+                            if page.revision.current is not None
+                            and page.revision.current.date is not None
+                            else None
+                        ),
+                        "date_readings": (
+                            [
+                                reading.isoformat()
+                                for reading in page.revision.current.date.candidates
+                            ]
+                            if page.revision.current is not None
+                            and page.revision.current.date is not None
+                            else []
+                        ),
+                    }
+                    # Ordered by page index rather than by argument order: a trace that changed because
+                    # the caller shuffled its input could not be compared with a stored one.
+                    for page in sorted(self.candidates, key=lambda candidate: candidate.page.index)
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
 
 def group_by_sheet(pages: list[SheetPage]) -> dict[str | None, tuple[SheetPage, ...]]:
