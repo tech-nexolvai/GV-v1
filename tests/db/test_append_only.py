@@ -27,15 +27,28 @@ from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
-MIGRATION = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0013_append_only.py"
+VERSIONS = Path(__file__).resolve().parents[2] / "alembic" / "versions"
 
 
 def _migration_tables() -> tuple[str, ...]:
-    spec = importlib.util.spec_from_file_location("append_only_migration", MIGRATION)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return tuple(module.IMMUTABLE_TABLES)
+    """Every table any migration has made append-only, unioned across all of them.
+
+    Read from **every** migration declaring `IMMUTABLE_TABLES`, not only 0013. That migration says
+    why in its own docstring: its list is written out because *"a migration has to keep saying what
+    it said the day it ran"*. So a table added later is protected by a later migration, and appending
+    to 0013 would make an applied migration claim it had protected something that did not yet exist.
+
+    Reading only the first migration made this guard fail the moment a new `Immutable` model landed
+    — which it did, correctly, for `audit_events`: the marker was there and the trigger was not.
+    """
+    names: list[str] = []
+    for path in sorted(VERSIONS.glob("*.py")):
+        spec = importlib.util.spec_from_file_location(f"append_only_{path.stem}", path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        names.extend(getattr(module, "IMMUTABLE_TABLES", ()))
+    return tuple(sorted(names))
 
 
 def _upgrade(engine: Engine) -> None:
