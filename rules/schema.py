@@ -63,10 +63,25 @@ class CheckType(StrEnum):
 
 
 class ParameterScope(StrEnum):
-    """Which layer may set a parameter (`RULE_ENGINE_SPEC.md` §3b)."""
+    """Which layer may set a parameter (`RULE_ENGINE_SPEC.md` §3b).
+
+    The three mirror `ParameterLayer` in `rules/parameters.py`, which has always had all three —
+    the schema could not say `global`, so a company-wide standard had to be authored as though it
+    were per-project configuration. That mattered once `rules/publication.py` began asking which
+    rules are waiting on the client: it could not tell the sink back-offset minimum, a single value
+    the client owes and has not supplied, from a cabinet depth that is simply set per project.
+    """
+
+    GLOBAL = "global"
+    """A company or client standard, supplied once. A rule needing one with no value is not
+    releasable — nobody has told us the number, and it will still be missing on the next project."""
 
     PROJECT = "project"
+    """Set per project, as routine configuration. Absent at publish says nothing about absent at
+    run time, so it does not hold a rule back."""
+
     RUN = "run"
+    """Supplied per drawing set by the reviewer, e.g. the sink's dimensions off its cut sheet."""
 
 
 #: Sentinel for a tolerance the client has not yet supplied.

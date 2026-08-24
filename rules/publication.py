@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rules.schema import Applicability, Rule, Tolerance
+from rules.schema import Applicability, ParameterScope, Rule, Tolerance
 from rules.snapshot import RuleSnapshot, SnapshotStore
 
 
@@ -48,13 +48,52 @@ def unconfirmed_tolerance_count(rule: Rule) -> int:
     return sum(1 for t in tolerances_of(rule) if not t.is_confirmed)
 
 
-def is_production_ready(rule: Rule) -> bool:
-    """True when every tolerance this rule carries is a real client-supplied value.
+def unresolved_client_parameters(rule: Rule) -> tuple[str, ...]:
+    """Parameters this rule needs that only the client can supply, and which have no value yet.
 
-    A rule with **no** tolerance at all is ready: `exists` and `equals` need none. Only a rule
-    that declares one and has not had it confirmed is held back.
+    A tolerance is not the only way a rule can be unable to decide. A rule can also depend on a
+    **project-scoped parameter with no default** — a standard the client owes us, like the sink
+    back-offset minimum his vendor has not yet given him. `resolve_required` correctly returns
+    `NOT_FOUND` for it, so the rule abstains on every drawing and never produces a verdict, while
+    the tolerance count says nothing and the gate reports it ready.
+
+    That is the failure this module's own docstring describes, one field over: an unresolved value
+    stops looking provisional when nothing counts it.
+
+    **Only GLOBAL scope counts.** Project- and run-scoped parameters are routine configuration —
+    a cabinet depth, an overhang, the sink's dimensions off its cut sheet — supplied for every
+    project or every drawing set. Their absence at publish says nothing about their absence at run
+    time, and flagging them would hold back almost the whole rulebook for values that are not due
+    yet. That is the opposite mistake and just as effective at stopping work.
+
+    A GLOBAL parameter is different: one number, owed once, and still missing on the next project
+    if nobody chases it. `back_offset_minimum` is the first — Raj's words were *"I will give a
+    global minimum for that variable after checking with the vendor"* (client fact Q6).
+
+    Decided from the rule alone rather than from a set of resolved parameters. The scope already
+    records who owes the value, so the answer does not depend on which project you happen to be
+    looking at — and a release gate that needed the caller to pass the right parameter sets would
+    pass everything the day somebody forgot.
     """
-    return unconfirmed_tolerance_count(rule) == 0
+    return tuple(
+        sorted(
+            name
+            for name, parameter in rule.parameters.items()
+            if parameter.default is None and parameter.scope is ParameterScope.GLOBAL
+        )
+    )
+
+
+def is_production_ready(rule: Rule) -> bool:
+    """True when nothing this rule needs is still waiting on the client.
+
+    Two ways a rule can fail that: an unconfirmed tolerance, and a project-scoped parameter with
+    no value. Both make the rule abstain on every drawing; both must hold it back.
+
+    A rule with **no** tolerance at all is ready: `exists` and `equals` need none. Only a rule that
+    declares one and has not had it confirmed is held back.
+    """
+    return unconfirmed_tolerance_count(rule) == 0 and not unresolved_client_parameters(rule)
 
 
 def assert_production_ready(rule: Rule) -> None:
@@ -64,6 +103,16 @@ def assert_production_ready(rule: Rule) -> None:
     rule with a placeholder is exactly what the sentinel is for. It is releasing one that is
     the mistake.
     """
+    owed = unresolved_client_parameters(rule)
+    if owed:
+        raise NotProductionReadyError(
+            f"rule {rule.id!r} needs {', '.join(repr(name) for name in owed)}, which only the "
+            "client can supply and which has no value. It would return NOT FOUND for every "
+            "drawing, which reads as 'the drawing did not give us this' rather than 'nobody has "
+            "given us the standard to check against'. Obtain the value before release, or hold "
+            "the rule back."
+        )
+
     missing = unconfirmed_tolerance_count(rule)
     if missing:
         raise NotProductionReadyError(

@@ -32,8 +32,11 @@ inputs:
     cardinality: one
 
 parameters:
+  # Global, not per-project: the client said "I will give a global minimum for that variable after
+  # checking with the vendor" (Q6). One number, owed once — so a rule needing it is held from
+  # production until it arrives, which rules/publication.py now enforces.
   back_offset_minimum:
-    scope: project
+    scope: global
 
 derivations:
   - name: depth_after_front_offset
