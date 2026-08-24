@@ -124,19 +124,26 @@ executes would otherwise read as a working control.
 ## R8 — Revision confusion
 
 **Control (§16):** Immutable document hashes and revision-aware source selection.
-**Status:** PARTIAL
+**Status:** ENFORCED
 **Refs:** module:storage/hashing.py, module:extraction/revision.py, module:extraction/supersession.py, test:tests/extraction/test_supersession_refusal.py
 **Owner:** #219, #183, #184, #185
-**Effectiveness claim:** the hashing half is built (#219): a stored artifact carries a SHA-256
-recorded at write time and every local read verifies against it, so a document that changes on disk
-cannot be read back as though it had not. **The revision half is not built.** Nothing yet decides
-*which* revision of a sheet to trust, so a superseded drawing is still selectable and produces a
-confident finding rather than REVIEW REQUIRED — the failure this risk is actually about.
+**Effectiveness claim:** both halves are built. The hashing half (#219): a stored artifact carries a
+SHA-256 recorded at write time and every local read verifies against it, so a document that changes on
+disk cannot be read back as though it had not. The revision half (#183, #184, #185): a sheet's revision
+block is read with unknown kept distinct from "the first revision"; the governing revision is selected
+from the order a drawing's own history records, never from a collation we invented; and a supersession
+that cannot be established produces REVIEW REQUIRED for every finding drawn from that sheet, with a trace
+naming the competing revisions.
 
-This is the dangerous state described at the top of this file, and the reason PARTIAL is a status
-rather than a rounding of PLANNED up to ENFORCED: hashing makes tampering detectable, which is easy
-to mistake for revision safety. It is not. Detecting that bytes changed says nothing about whether
-the right sheet was chosen. #183, #184 and #185 close the half that matters here.
+The part that makes this ENFORCED rather than optimistic is the refusal. Ordering is taken from what a
+drawing states, so `AA` after `B` and a vendor restarting at `01` are read correctly rather than sorted
+confidently — and where nothing states the order, the answer is REVIEW REQUIRED. "The highest letter
+wins" is exactly the rule that picks the wrong sheet, and it is not implemented anywhere.
+
+What was PARTIAL about this until #185: hashing makes tampering detectable, which is easy to mistake for
+revision safety. It is not — detecting that bytes changed says nothing about whether the right sheet was
+chosen. That gap is now closed, and #186 (cross-revision delta) is reporting convenience rather than part
+of this control.
 
 ## R9 — Licensing surprise
 
@@ -162,12 +169,14 @@ a human to raise the change.
 
 ## What this table says today
 
-ENFORCED: 6 — R1 (numerically plausible extraction), R2 (wrong item/view association), R3 (VLM
-hallucination), R4 (agent loops or cost runaway), R6 (rule injection), R9 (licensing). R3 is enforced
-by crop-bounded context, strict payload validation and verdict isolation rather than by trusting model
-behaviour.
+ENFORCED: 7 — R1 (numerically plausible extraction), R2 (wrong item/view association), R3 (VLM
+hallucination), R4 (agent loops or cost runaway), R6 (rule injection), R8 (revision confusion), R9
+(licensing). R3 is enforced by crop-bounded context, strict payload validation and verdict isolation
+rather than by trusting model behaviour. **R8 moved here from PARTIAL when `#185` landed**: the hashing
+half was always built, and the half that mattered — deciding which revision governs, and refusing when
+that cannot be established — arrived with `#183`, `#184` and `#185`.
 
-PARTIAL: 4 — R5, R7, R8, R10. **R5 (false PASS) is the one to look at** — the metric and the
+PARTIAL: 3 — R5, R7, R10. **R5 (false PASS) is the one to look at** — the metric and the
 release gates both exist, and there is no gold set to run them against, so the project's primary
 safety metric currently reports NOT MEASURED for every check. That is not a bug in the metric; it is
 `#274` and `#188` waiting on the client. **R7 (retrieval contamination)** was read as enforced until

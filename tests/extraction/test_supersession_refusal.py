@@ -155,14 +155,29 @@ def test_no_pass_can_be_produced_from_an_unresolved_sheet() -> None:
             outcome.value for outcome in DECISIVE_OUTCOMES
         }, f"{cause} produced a decisive outcome; an unresolved sheet must never decide"
 
-    # And no `Unresolved` can be constructed that says otherwise: `status` takes no argument and the
-    # dataclass is frozen, so there is no assignment and no override.
+    # And no `Unresolved` can be constructed that says otherwise, asserted structurally rather than by
+    # catching an exception.
+    #
+    # **The first version caught `(FrozenInstanceError, AttributeError)` and failed on CI.** Assigning to
+    # a property on a frozen slots dataclass raises `FrozenInstanceError` on Python 3.14 and `TypeError`
+    # on 3.12 — and CI runs 3.12 while this machine runs 3.14. A test that asserts *which* exception a
+    # language version happens to raise is testing the interpreter; what matters is that `status` is
+    # derived and the class is closed, and both of those are checkable directly.
     from dataclasses import FrozenInstanceError
 
     refusal = Unresolved("A-101", NO_RECORDED_ORDER, "detail")
-    assert "status" not in {field for field in Unresolved.__dataclass_fields__}
-    with pytest.raises((FrozenInstanceError, AttributeError)):
-        refusal.status = SupersessionStatus.RESOLVED  # type: ignore[misc]
+
+    assert (
+        "status" not in Unresolved.__dataclass_fields__
+    ), "status became a field, so it can be constructed with any value"
+    assert isinstance(
+        getattr(Unresolved, "status", None), property
+    ), "status is no longer a derived property"
+    assert Unresolved.__dataclass_params__.frozen, "Unresolved is no longer frozen"
+
+    # A real field, to show the frozen-ness is not theoretical.
+    with pytest.raises(FrozenInstanceError):
+        refusal.cause = "something_else"  # type: ignore[misc]
 
 
 def test_a_resolved_sheet_is_not_review_required() -> None:
