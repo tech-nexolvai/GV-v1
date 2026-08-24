@@ -343,3 +343,48 @@ def test_the_rules_that_only_need_project_configuration_are_still_releasable() -
         rule = _load_rulebook_rule(filename)
         assert unresolved_client_parameters(rule) == (), filename
         assert is_production_ready(rule), filename
+
+
+def test_a_rule_waiting_on_both_reports_both() -> None:
+    """Input: an unconfirmed tolerance *and* a missing global standard. Outcome: both named.
+
+    Reporting only the first would send somebody to fetch one value, release again, and be stopped
+    by the other. The two come from different conversations — a tolerance is a limit the client
+    agrees, a global standard is a number he obtains — so a rule can genuinely be waiting on both.
+    """
+    rule = Rule.model_validate(
+        {
+            "id": "TEST-BOTH-BLOCKERS",
+            "version": "1.0.0",
+            "product_type": "countertop",
+            "check_type": "internal",
+            "severity": "CRITICAL",
+            "arithmetic_unit": "in",
+            "applicability": {"scope": "global"},
+            "inputs": {
+                "drawn": {
+                    "source": "SHOP",
+                    "semantic_type": "CT010",
+                    "scope": "same_assembly",
+                    "cardinality": "one",
+                }
+            },
+            "parameters": {"the_standard": {"scope": "global"}},
+            "operation": {
+                "type": "within_tolerance",
+                "operands": {"actual": "drawn", "expected": "the_standard"},
+                "tolerance": {"value": "UNCONFIRMED"},
+            },
+        }
+    )
+
+    assert unconfirmed_tolerance_count(rule) == 1
+    assert unresolved_client_parameters(rule) == ("the_standard",)
+    assert not is_production_ready(rule)
+
+    with pytest.raises(NotProductionReadyError) as refusal:
+        assert_production_ready(rule)
+
+    message = str(refusal.value)
+    assert "the_standard" in message, "the missing standard is not named"
+    assert "unconfirmed tolerance" in message, "the unconfirmed tolerance is not named"
