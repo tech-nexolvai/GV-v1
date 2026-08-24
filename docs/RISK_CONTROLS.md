@@ -125,7 +125,7 @@ executes would otherwise read as a working control.
 
 **Control (§16):** Immutable document hashes and revision-aware source selection.
 **Status:** PARTIAL
-**Refs:** module:storage/hashing.py, module:extraction/revision.py, module:extraction/supersession.py
+**Refs:** module:storage/hashing.py, module:extraction/revision.py, module:extraction/supersession.py, test:tests/extraction/test_supersession_refusal.py
 **Owner:** #219, #183, #184, #185
 **Effectiveness claim:** the hashing half is built (#219): a stored artifact carries a SHA-256
 recorded at write time and every local read verifies against it, so a document that changes on disk
