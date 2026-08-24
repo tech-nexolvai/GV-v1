@@ -52,10 +52,10 @@ def unresolved_client_parameters(rule: Rule) -> tuple[str, ...]:
     """Parameters this rule needs that only the client can supply, and which have no value yet.
 
     A tolerance is not the only way a rule can be unable to decide. A rule can also depend on a
-    **project-scoped parameter with no default** — a standard the client owes us, like the sink
+    **global parameter with no default** — a standard the client owes us once, like the sink
     back-offset minimum his vendor has not yet given him. `resolve_required` correctly returns
     `NOT_FOUND` for it, so the rule abstains on every drawing and never produces a verdict, while
-    the tolerance count says nothing and the gate reports it ready.
+    a tolerance count alone says nothing and the gate would report it ready.
 
     That is the failure this module's own docstring describes, one field over: an unresolved value
     stops looking provisional when nothing counts it.
