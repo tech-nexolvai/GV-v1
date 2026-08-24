@@ -15,6 +15,7 @@ migrated, and the first sign of it is a missing table in production.
 
 from __future__ import annotations
 
+from app.audit.events import AuditEvent
 from app.models.document import (
     Document,
     DocumentKind,
@@ -95,6 +96,7 @@ __all__ = [
     "ApprovalSource",
     "ApprovedFinding",
     "ApprovedMatch",
+    "AuditEvent",
     "CanonicalObservation",
     "CaseResult",
     "CheckRun",
