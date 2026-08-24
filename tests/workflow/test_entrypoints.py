@@ -14,6 +14,7 @@ Verification: this file
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -209,13 +210,20 @@ def test_the_worker_refuses_to_start_without_a_token(caplog: pytest.LogCaptureFi
 
 
 def test_a_missing_setting_is_reported_rather_than_raised(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path: Path
 ) -> None:
     """`settings_or_none` turns an incomplete environment into a reportable `None`.
 
     Returning rather than raising is what lets both entrypoints share one exit code without each one
     catching Pydantic's error type.
+
+    **Run from an empty directory, deliberately.** `Settings` reads `.env` from the working directory
+    (#417), so on a developer's machine this test used to pass or fail depending on whether they happened
+    to have one — green in CI, red on a laptop, which is the kind of test that teaches people to ignore
+    failures. `chdir` to a temporary directory makes "the environment is incomplete" mean the same thing
+    everywhere.
     """
+    monkeypatch.chdir(tmp_path)
     for leftover in ("GV_DATABASE_URL", "GV_HATCHET_TOKEN"):
         monkeypatch.delenv(leftover, raising=False)
 

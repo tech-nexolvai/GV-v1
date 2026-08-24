@@ -23,9 +23,27 @@ class Settings(BaseSettings):
     `extra="forbid"`: an unrecognised `GV_` variable is an error, not something to ignore. A typo in
     a deployment variable would otherwise leave the setting at its default and the operator
     convinced they had changed it.
+
+    **`env_file=".env"` makes `.env.example`'s own first line true** (#417, admin decision
+    2026-08-23). It said *"Copy to .env and fill"* while this was `None`, so copying it did nothing
+    at all — and combined with the missing `GV_` prefix, a developer following the instructions got a
+    application that would not start and no clue why.
+
+    Two consequences worth stating, because both are load-bearing:
+
+    * **A real environment variable wins over the same key in `.env`.** That is pydantic-settings'
+      own precedence and it is the order that matters: CI and containers pass variables directly, and
+      a developer's stale file must never override them. `tests/test_env_example.py` asserts it
+      rather than trusting the library not to change.
+    * **`extra="forbid"` now applies to the file as well.** An unknown key in `.env` raises instead
+      of being ignored — verified, not assumed. So `.env.example` may only carry live keys that are
+      real settings; anything this project will need later lives there as a comment, and the file
+      says why.
     """
 
-    model_config = SettingsConfigDict(env_prefix="GV_", extra="forbid", frozen=True, env_file=None)
+    model_config = SettingsConfigDict(
+        env_prefix="GV_", extra="forbid", frozen=True, env_file=".env"
+    )
 
     database_url: str = Field(min_length=1)
     """No default. A service pointed at the wrong database by a fallback is worse than one that
