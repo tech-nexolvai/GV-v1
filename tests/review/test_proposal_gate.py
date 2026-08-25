@@ -20,8 +20,8 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from app.audit.events import SYSTEM_ACTOR
 
+from app.audit.events import SYSTEM_ACTOR
 from app.review.proposal import RuleChangeSuggestion, suggest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
