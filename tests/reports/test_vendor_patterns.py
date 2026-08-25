@@ -375,8 +375,9 @@ def test_the_aggregates_cannot_be_edited_by_a_caller(
     with unit_of_work(sessions) as session:
         report = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
 
-    with pytest.raises(TypeError):
-        report.recurring_failures["anything"] = ()  # type: ignore[index]
+    for aggregate in (report.recurring_failures, report.correction_hotspots):
+        with pytest.raises(TypeError):
+            aggregate["anything"] = ()  # type: ignore[index]
 
 
 def test_the_same_data_produces_the_same_report_twice(
@@ -389,8 +390,9 @@ def test_the_same_data_produces_the_same_report_twice(
     """
     with unit_of_work(sessions) as session:
         revision = _revision(session, VENDOR)
-        snapshot = _snapshot(session)
-        for day in (2, 4, 6, 8, 10):
+        # Several snapshots, so key order is exercised as well as the ids inside each.
+        snapshots = [_snapshot(session) for _ in range(3)]
+        for day, snapshot in zip((2, 4, 6, 8, 10, 12), snapshots * 2, strict=False):
             _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=day))
 
     with unit_of_work(sessions) as session:
@@ -398,15 +400,21 @@ def test_the_same_data_produces_the_same_report_twice(
         second = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
 
     assert dict(first.recurring_failures) == dict(second.recurring_failures)
-    (ids,) = first.recurring_failures.values()
-    assert list(ids) == sorted(ids, key=str)
+    keys = list(first.recurring_failures)
+    assert keys == sorted(keys), "snapshot keys are not in a stable order"
+    for ids in first.recurring_failures.values():
+        assert list(ids) == sorted(ids, key=str), "finding ids are not in a stable order"
 
 
 @pytest.mark.parametrize("window", [timedelta(0), timedelta(days=-1)])
 def test_a_non_positive_window_is_refused(
     window: timedelta, sessions: sessionmaker[Session]
 ) -> None:
-    """It returns an empty report, which is indistinguishable from a vendor with a clean record."""
+    """Refused rather than answered.
+
+    A zero or negative window would otherwise return an empty report, which is indistinguishable
+    from a vendor with a clean record — so the caller learns nothing and believes something.
+    """
     with unit_of_work(sessions) as session, pytest.raises(ValueError, match="must be positive"):
         vendor_patterns(session, VENDOR, window, now=NOW)
 
