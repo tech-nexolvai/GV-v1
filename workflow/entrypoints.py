@@ -31,6 +31,7 @@ import threading
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Final
 
+from app.telemetry.tracing import carrier
 from workflow.outbox import OutboxDispatchError, WorkflowStarter, dispatch_committed
 
 if TYPE_CHECKING:  # pragma: no cover - annotations only, keeps gRPC and the ORM out of import
@@ -155,10 +156,19 @@ def hatchet_starter(settings: Settings) -> WorkflowStarter:
     client = hatchet_client(settings)
 
     def start(*, workflow: str, payload: Mapping[str, object], idempotency_key: str) -> None:
+        # The trace context goes in the metadata, not the input. Same reason the outbox keeps it in its
+        # own column: the input is the workflow's contract, and a `traceparent` appearing in it would be
+        # an argument the workflow could read.
+        #
+        # Injected from whatever context is active, which `dispatch_committed` has already made the
+        # enqueueing request's. Nothing here needs to know that — it just propagates what it is inside,
+        # which is the one arrangement that cannot forget.
+        metadata: dict[str, str] = {OUTBOX_ROW_METADATA_KEY: idempotency_key}
+        metadata.update(carrier())
         client.runs.create(
             workflow_name=workflow,
             input=dict(payload),
-            additional_metadata={OUTBOX_ROW_METADATA_KEY: idempotency_key},
+            additional_metadata=metadata,
         )
 
     return start

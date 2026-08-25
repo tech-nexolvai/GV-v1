@@ -26,6 +26,7 @@ from alembic import command
 from app.db.base import Base, Immutable, immutable_table_names, utc_now
 from app.db.session import session_factory, unit_of_work
 from app.models import OutboxEntry, Project
+from app.telemetry.tracing import carrier, configure_tracing, incoming_context, traced
 from tests.app.postgres_fixture import alembic_config
 from workflow.outbox import (
     OutboxDispatchError,
@@ -47,6 +48,7 @@ class RecordingStarter:
 
     def __init__(self, *, fail_on: frozenset[str] = frozenset(), crash_on: str | None = None):
         self.calls: list[tuple[str, Mapping[str, object], str]] = []
+        self.contexts: list[dict[str, str]] = []
         self._fail_on = fail_on
         self._crash_on = crash_on
 
@@ -54,6 +56,10 @@ class RecordingStarter:
         self, *, workflow: str, payload: Mapping[str, object], idempotency_key: str
     ) -> None:
         self.calls.append((workflow, dict(payload), idempotency_key))
+        # What a real starter injects into the engine's metadata. Recorded here so a test can assert
+        # the dispatcher called this *inside* the enqueueing request's trace, which is the whole of
+        # what "the trace survives the workflow boundary" means.
+        self.contexts.append(carrier())
         if workflow == self._crash_on:
             raise KeyboardInterrupt("the dispatcher process was killed")
         if workflow in self._fail_on:
@@ -626,3 +632,106 @@ def test_the_outbox_is_deliberately_not_append_only() -> None:
 
     assert not issubclass(OutboxEntry, Immutable)
     assert "outbox_entries" not in immutable_table_names()
+
+
+# ---------------------------------------------------------------------------
+# The trace survives the workflow boundary (#259, F2.1)
+# ---------------------------------------------------------------------------
+
+
+def test_the_enqueueing_request_s_trace_reaches_the_starter(
+    factory: sessionmaker[Session],
+) -> None:
+    """A Hatchet task is not a separate story.
+
+    The context is captured in the caller's transaction and restored around the starter call, so
+    what the engine is handed is the *request's* trace rather than the dispatcher's. Asserted by
+    comparing trace ids across the boundary: the same-trace claim is the one that fails silently if
+    the propagation is wrong, because a fresh trace looks exactly as healthy in a viewer.
+    """
+    configure_tracing()
+
+    with traced("api.request") as request_span:
+        requested = request_span.get_span_context().trace_id
+        with unit_of_work(factory) as session:
+            enqueue(session, workflow=WORKFLOW, payload={"package": "p-1"})
+
+    starter = RecordingStarter()
+    assert dispatch_committed(factory, starter) == 1
+
+    (handed_on,) = starter.contexts
+    resumed = incoming_context(handed_on)
+    assert resumed is not None, "the starter was called outside any trace"
+    with traced("workflow.task", parent=resumed) as task_span:
+        assert task_span.get_span_context().trace_id == requested
+
+
+def test_the_row_records_the_trace_it_was_enqueued_in(factory: sessionmaker[Session]) -> None:
+    """Durable, because the dispatcher runs in another process minutes later. A context held only in
+    memory would not survive the gap the outbox exists to span."""
+    configure_tracing()
+
+    with traced("api.request"), unit_of_work(factory) as session:
+        enqueue(session, workflow=WORKFLOW, payload={"package": "p-1"})
+
+    with unit_of_work(factory) as session:
+        entry = _only(session)
+        assert entry.trace_context is not None
+        assert "traceparent" in entry.trace_context
+
+
+def test_work_enqueued_outside_a_trace_records_none_rather_than_an_empty_object(
+    factory: sessionmaker[Session],
+) -> None:
+    """A cron job or a backfill has no request behind it, and "no trace" and "a trace with nothing
+    in it" are different facts. Inventing a parent would connect the workflow to a span that never
+    existed."""
+    with unit_of_work(factory) as session:
+        enqueue(session, workflow=WORKFLOW, payload={"package": "p-1"})
+
+    with unit_of_work(factory) as session:
+        assert _only(session).trace_context is None
+
+
+def test_an_untraced_row_still_dispatches(factory: sessionmaker[Session]) -> None:
+    """Tracing is observability. A row that cannot be traced is still work that has to happen, and a
+    dispatcher that refused it would have made telemetry load-bearing."""
+    with unit_of_work(factory) as session:
+        enqueue(session, workflow=WORKFLOW, payload={"package": "p-1"})
+
+    starter = RecordingStarter()
+
+    assert dispatch_committed(factory, starter) == 1
+    assert starter.workflows == [WORKFLOW]
+
+
+def test_two_rows_from_two_requests_keep_their_own_traces(
+    factory: sessionmaker[Session],
+) -> None:
+    """The failure a single-row test cannot see.
+
+    A dispatcher that leaked one row's context into the next — by entering a span and not leaving
+    it, say — would put every workflow in a batch under whichever request happened to be first, and
+    the batch would still dispatch cleanly.
+    """
+    configure_tracing()
+    traces = []
+
+    for package in ("p-1", "p-2"):
+        with traced("api.request") as span:
+            traces.append(span.get_span_context().trace_id)
+            with unit_of_work(factory) as session:
+                enqueue(session, workflow=WORKFLOW, payload={"package": package})
+
+    starter = RecordingStarter()
+    assert dispatch_committed(factory, starter) == 2
+
+    seen = []
+    for handed_on in starter.contexts:
+        resumed = incoming_context(handed_on)
+        assert resumed is not None
+        with traced("workflow.task", parent=resumed) as task_span:
+            seen.append(task_span.get_span_context().trace_id)
+
+    assert seen == traces, "each workflow must continue the request that asked for it"
+    assert len(set(seen)) == 2

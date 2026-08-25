@@ -18,8 +18,10 @@ import pytest
 from app.telemetry.tracing import (
     MAX_ATTR_LENGTH,
     SPAN_ATTRS,
+    TRACE_CONTEXT_FIELDS,
     DrawingContentInTrace,
     UnknownSpanAttribute,
+    carrier,
     configure_tracing,
     current_trace_id,
     incoming_context,
@@ -272,3 +274,131 @@ def test_all_lists_the_module_s_public_names() -> None:
     assert (
         declared - public == set()
     ), f"__all__ names things not defined here: {sorted(declared - public)}"
+
+
+# ---------------------------------------------------------------------------
+# The chain from a finding back to the model call and the page region
+# ---------------------------------------------------------------------------
+
+
+def test_a_finding_traces_back_to_the_model_call_and_the_page_region() -> None:
+    """The attributes that join a finding to the model call and the region behind it.
+
+    In one process, deliberately: this checks that the vocabulary can express the chain and that
+    nested spans share a trace, which is what makes the three rows joinable. It does **not**
+    demonstrate cross-process propagation — nested spans share a trace trivially, and claiming
+    otherwise would let a broken boundary look covered.
+
+    The cross-process case is `tests/workflow/test_outbox.py`, which carries a context through the
+    database and compares trace ids on the far side.
+    """
+    configure_tracing()
+    model_call = "8f14e45f-ea8f-4b0a-9c1a-000000000001"
+    finding = "8f14e45f-ea8f-4b0a-9c1a-000000000002"
+    region = '{"document_version_id":"11111111-1111-1111-1111-111111111111","page":3}'
+
+    with traced("package.review", package_id="pkg-1") as package_span:
+        trace_id = package_span.get_span_context().trace_id
+        with traced(
+            "model.read",
+            model_invocation_id=model_call,
+            page_index=3,
+            evidence_ref=region,
+            extractor_version="nova2-lite-2026-08",
+        ) as model_span:
+            assert model_span.get_span_context().trace_id == trace_id
+        with traced(
+            "verdict.check",
+            finding_id=finding,
+            rule_snapshot_id="sha256:" + "a" * 64,
+        ) as finding_span:
+            assert finding_span.get_span_context().trace_id == trace_id
+
+
+def test_the_rule_snapshot_id_is_a_declared_attribute() -> None:
+    """So a behaviour change is attributable to a rule change rather than to "something changed".
+
+    Two runs of the same package disagreeing is either a bug or a new rule version, and the snapshot
+    id on the span is what tells them apart without anybody guessing.
+    """
+    assert "rule_snapshot_id" in SPAN_ATTRS
+
+    configure_tracing()
+    with traced("verdict.check", rule_snapshot_id="sha256:" + "b" * 64):
+        pass
+
+
+def test_a_crop_cannot_be_put_on_a_span_as_a_region() -> None:
+    """`evidence_ref` is where somebody would reach for when they mean "the region", and the region
+    is a reference — the crop itself is a stored artifact. §6 forbids the bytes."""
+    configure_tracing()
+
+    with (
+        pytest.raises(DrawingContentInTrace),
+        traced("model.read", evidence_ref=b"\x89PNG\r\n\x1a\n" + b"0" * 40),
+    ):
+        pass
+
+    with (
+        pytest.raises(DrawingContentInTrace),
+        traced("model.read", evidence_ref="data:image/png;base64,iVBORw0KGgo="),
+    ):
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Handing the context to something that runs later
+# ---------------------------------------------------------------------------
+
+
+def test_a_carrier_round_trips_the_active_trace() -> None:
+    """The two halves of the workflow boundary, checked against each other.
+
+    A carrier that could be produced but not consumed would look like propagation and connect
+    nothing, and nothing downstream would report an error.
+    """
+    configure_tracing()
+
+    with traced("request") as span:
+        expected = span.get_span_context().trace_id
+        handed_on = carrier()
+
+    assert "traceparent" in handed_on
+
+    resumed = incoming_context(handed_on)
+    assert resumed is not None
+    with traced("workflow.task", parent=resumed) as later:
+        assert later.get_span_context().trace_id == expected
+
+
+def test_a_carrier_taken_outside_a_span_is_empty() -> None:
+    """A real answer, not a failure. Work enqueued by a cron job has no request behind it, and a
+    fabricated trace id would connect it to nothing while looking like it connected it to
+    something."""
+    assert carrier() == {}
+
+
+def test_baggage_never_reaches_the_carrier() -> None:
+    """The carrier is persisted, so anything in it is written to a database and shipped onwards.
+
+    `propagate.inject` emits a `baggage` header alongside `traceparent`, and baggage is arbitrary
+    caller-set key/value data. A call site that had put a filename — or a crop — in baggage would
+    have it stored in `outbox_entries` and handed to the workflow engine as metadata, which is the
+    exact route §6 closes everywhere else. Nothing would raise; the value would simply be there.
+    """
+    from opentelemetry import baggage
+    from opentelemetry import context as otel_context
+
+    configure_tracing()
+    token = otel_context.attach(baggage.set_baggage("customer", "ACME drawing 12"))
+    try:
+        with traced("api.request"):
+            handed_on = carrier()
+    finally:
+        otel_context.detach(token)
+
+    assert "baggage" not in handed_on
+    assert set(handed_on) <= set(TRACE_CONTEXT_FIELDS)
+    assert "ACME" not in "".join(handed_on.values())
+    # Still a usable carrier, so the filter cannot pass by discarding everything.
+    assert "traceparent" in handed_on

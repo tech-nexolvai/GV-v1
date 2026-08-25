@@ -59,6 +59,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.base import utc_now
 from app.db.session import unit_of_work
 from app.models.outbox import OutboxEntry
+from app.telemetry.tracing import carrier, incoming_context, traced
 
 __all__ = [
     "OutboxDispatchError",
@@ -155,7 +156,20 @@ def enqueue(session: Session, *, workflow: str, payload: Mapping[str, object]) -
     if not workflow.strip():
         raise ValueError("workflow must be a non-empty name")
     _reject_inexact_numbers(payload, "payload")
-    entry = OutboxEntry(workflow=workflow, payload=dict(payload), dispatched_at=None, attempts=0)
+    # Captured here, in the caller's transaction, because *here* is where the work was asked for. The
+    # dispatcher runs later in another process; a context captured there would produce a trace that
+    # begins at a background poll and answers none of the questions a trace exists to answer.
+    #
+    # Empty when nothing is being traced — a cron job, a test — and stored as NULL rather than as an
+    # empty object, so "no trace" and "a trace with nothing in it" are not the same row.
+    context = carrier()
+    entry = OutboxEntry(
+        workflow=workflow,
+        payload=dict(payload),
+        trace_context=context or None,
+        dispatched_at=None,
+        attempts=0,
+    )
     session.add(entry)
     return entry.id
 
@@ -203,12 +217,23 @@ def dispatch_committed(
         ).all()
         for entry in entries:
             entry.attempts += 1
+            # The starter is called *inside* the row's own trace, so whatever it hands the engine is
+            # injected from the request's context rather than the dispatcher's. That is what makes the
+            # workflow a continuation of the request instead of a sibling of it — and it is why the
+            # propagation lives here rather than in `hatchet_starter`, which would otherwise have to be
+            # told the context and could forget.
+            parent = incoming_context(entry.trace_context or {})
             try:
-                start(
-                    workflow=entry.workflow,
-                    payload=entry.payload,
-                    idempotency_key=str(entry.id),
-                )
+                with traced(
+                    "outbox.dispatch",
+                    parent=parent,
+                    workflow_run_id=str(entry.id),
+                ):
+                    start(
+                        workflow=entry.workflow,
+                        payload=entry.payload,
+                        idempotency_key=str(entry.id),
+                    )
             except Exception as failure:  # noqa: BLE001 - re-raised below, after the commit
                 failures.append((entry.id, failure))
                 continue
