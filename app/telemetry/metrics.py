@@ -47,7 +47,7 @@ from typing import Final, Literal
 from opentelemetry import metrics
 from opentelemetry.metrics import Counter, Histogram
 
-from app.telemetry.tracing import INSTRUMENTATION_NAME
+from app.telemetry.tracing import INSTRUMENTATION_NAME, current_trace_id
 
 __all__ = [
     "DIMENSIONS",
@@ -261,14 +261,31 @@ def record(metric: str, value: int, **dimensions: str) -> None:
             f"{metric} takes an int, not {type(value).__name__}. Costs are millionths and durations "
             "are whole milliseconds; a float here is a total nobody can reconcile later."
         )
+    if value < 0:
+        # A counter is monotonic — OpenTelemetry drops a negative `add` and says so in a log nobody
+        # reads, so the series would simply be short by that amount with no error anywhere. A
+        # negative duration or count is a caller subtracting somewhere it should not, and it is
+        # worth failing on rather than silently under-reporting the number somebody will act on.
+        raise ValueError(
+            f"{metric} was given {value}. Every metric here is a count, a cost or a duration, and "
+            "none of them go backwards; a counter would drop this and leave the series quietly low."
+        )
 
-    for name in dimensions:
+    for name, given in dimensions.items():
         if name not in DIMENSIONS:
             raise UnknownDimension(
                 f"{name!r} is not a declared dimension. The set is fixed so a series is not "
                 f"silently split in two: {', '.join(DIMENSIONS)}."
             )
-    missing = [name for name in spec.requires if not dimensions.get(name)]
+        if not isinstance(given, str):
+            raise UnknownDimension(
+                f"{name} must be a string, not {type(given).__name__}. A dimension is a label a "
+                "dashboard groups by, and a value of another type groups by its repr — so the same "
+                "extractor arrives under two labels depending on how the caller spelled it."
+            )
+    # `strip()`, not truthiness: "   " is truthy and attributes nothing, and it is exactly the shape
+    # a call site produces when it does not have the value to hand.
+    missing = [name for name in spec.requires if not dimensions.get(name, "").strip()]
     if missing:
         raise UnknownDimension(
             f"{metric} must be dimensioned by {', '.join(missing)}. A metric without them is "
@@ -286,7 +303,15 @@ def record(metric: str, value: int, **dimensions: str) -> None:
         _collection_failures += 1
         # Logged, not raised. A metrics outage that is invisible from inside the process is an
         # outage nobody notices until somebody asks why a dashboard is flat.
-        logger.warning("metric %s could not be recorded", metric, exc_info=True)
+        #
+        # With the trace id, because the question that follows a dropped measurement is "dropped for
+        # which work?" — and this module is imported by the code that answers it.
+        logger.warning(
+            "metric %s could not be recorded (trace %s)",
+            metric,
+            current_trace_id() or "none",
+            exc_info=True,
+        )
 
 
 def rate(numerator: int, denominator: int) -> float | None:

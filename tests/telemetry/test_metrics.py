@@ -373,3 +373,82 @@ def test_a_measurement_reaches_a_real_opentelemetry_reader(
     assert dict(point.attributes)["extractor_version"] == "nova2-lite-2026-08"  # type: ignore[attr-defined]
 
     assert collection_failures() == 0, "a real recording must not have been swallowed"
+
+
+def test_a_failure_while_emitting_is_swallowed_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The more likely runtime failure, and the one the other tests miss.
+
+    Instrument creation happens once; emission happens on every measurement. A collector that goes
+    away mid-run fails at `add`, not at `create_counter`, so a guard that only covered creation
+    would let the realistic outage through.
+    """
+
+    class Failing:
+        def add(self, value: int, attributes: dict[str, str] | None = None) -> None:
+            raise RuntimeError("the collector went away")
+
+        def record(self, value: int, attributes: dict[str, str] | None = None) -> None:
+            raise RuntimeError("the collector went away")
+
+    monkeypatch.setattr(metrics_module, "_instrument", lambda spec: Failing())
+
+    record("retries", 1, workflow="review", task="extract")
+    record("queue_wait_ms", 10, workflow="review", task="extract")
+
+    assert collection_failures() == 2
+
+
+@pytest.mark.parametrize("value", [-1, -1000])
+def test_a_negative_measurement_is_refused(
+    value: int, recorded: dict[str, RecordingInstrument]
+) -> None:
+    """A counter is monotonic. OpenTelemetry drops a negative `add` and logs it somewhere nobody
+    reads, so the series would simply be short by that amount with no error anywhere — a number
+    somebody acts on, quietly low."""
+    with pytest.raises(ValueError, match="go backwards"):
+        record("retries", value, workflow="review", task="extract")
+
+
+@pytest.mark.parametrize("given", ["   ", "\t", "\n"])
+def test_a_whitespace_only_dimension_is_refused(
+    given: str, recorded: dict[str, RecordingInstrument]
+) -> None:
+    """`"   "` is truthy and attributes nothing. Checking truthiness rather than content is how a
+    blank label reaches a dashboard looking like a real one."""
+    with pytest.raises(UnknownDimension, match="extractor_version"):
+        record("task_duration_ms", 1200, workflow="review", task="extract", extractor_version=given)
+
+
+def test_a_non_string_dimension_is_refused(recorded: dict[str, RecordingInstrument]) -> None:
+    """A dimension is a label a dashboard groups by. A non-string groups by its repr, so the same
+    extractor arrives under two labels depending on how each caller spelled it."""
+    with pytest.raises(UnknownDimension, match="must be a string"):
+        record("retries", 1, workflow="review", task=3)  # type: ignore[arg-type]
+
+
+def test_every_dimension_given_reaches_the_measurement(
+    recorded: dict[str, RecordingInstrument],
+) -> None:
+    """All of them, not just the one being asserted. A dimension silently dropped between the call
+    and the instrument is a series that cannot be sliced by it, which is the whole story."""
+    record(
+        "findings",
+        1,
+        check_type="internal",
+        rule_snapshot_id="sha256:" + "c" * 64,
+        outcome="FAIL",
+    )
+
+    _, attributes = recorded["findings"].calls[0]
+    assert attributes == {
+        "check_type": "internal",
+        "rule_snapshot_id": "sha256:" + "c" * 64,
+        "outcome": "FAIL",
+    }
+
+
+def test_a_rate_cannot_be_built_from_a_negative_numerator() -> None:
+    """Both sides, because only the denominator was checked at first and a negative numerator
+    produces a negative rate that looks like a real reading."""
+    with pytest.raises(ValueError, match="counts"):
+        rate(-1, 100)
