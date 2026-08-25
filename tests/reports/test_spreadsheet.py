@@ -383,3 +383,63 @@ def test_a_bare_finding_is_refused_rather_than_iterated() -> None:
     treated as a list of findings."""
     with pytest.raises(TypeError, match="sequence of Finding"):
         write_workbook("CT-WIDTH-001")  # type: ignore[arg-type]
+
+
+def test_a_reference_without_its_document_is_not_reported_as_a_page() -> None:
+    """ "Page 1" of which drawing?
+
+    A reference carrying `page` and no `document_version_id` decodes happily. Reporting it as
+    provenance puts an unfollowable citation in the column a reader uses to go and check — they
+    look, fail to find it, and doubt the finding rather than the export.
+    """
+    partial = json.dumps({"page": 0}, separators=(",", ":"))
+    operands = (
+        TracedOperand(
+            name="countertop_width", value=_inches(97, 8), source="SHOP", evidence_ref=partial
+        ),
+    )
+    data = write_workbook([_finding(trace=_trace(operands=operands), refs=(partial,))])
+
+    finding_row = _sheet(data, FINDINGS_SHEET)[1]
+    assert finding_row[FINDING_COLUMNS.index("evidence_pages")] == "unreadable reference"
+
+    operand_row = _sheet(data, OPERANDS_SHEET)[1]
+    assert operand_row[OPERAND_COLUMNS.index("evidence_page")] == "unreadable reference"
+    assert operand_row[OPERAND_COLUMNS.index("evidence_uri")] == partial
+
+
+def test_both_sheets_agree_about_what_is_readable() -> None:
+    """One decoder for both callers.
+
+    Two copies of "what counts as a readable reference" is how the operand sheet and the findings
+    sheet come to disagree about the same reference, and a reader comparing them has no way to tell
+    which is right.
+    """
+    for reference in ('{"page": 0}', '{"document_version_id": "x"}', "not json", '{"page": "1"}'):
+        operands = (
+            TracedOperand(name="w", value=_inches(1), source="SHOP", evidence_ref=reference),
+        )
+        data = write_workbook([_finding(trace=_trace(operands=operands), refs=(reference,))])
+
+        from_findings = _sheet(data, FINDINGS_SHEET)[1][FINDING_COLUMNS.index("evidence_pages")]
+        from_operands = _sheet(data, OPERANDS_SHEET)[1][OPERAND_COLUMNS.index("evidence_page")]
+
+        assert from_findings == from_operands == "unreadable reference", reference
+
+
+def test_an_abstention_that_carries_a_trace_shows_what_it_computed() -> None:
+    """`Finding` requires a trace for a decision but permits one on an abstention, which is the
+    ordinary shape of a REVIEW_REQUIRED raised partway through arithmetic.
+
+    The columns follow the calculation, not the outcome. Hiding a trace that exists would leave a
+    reviewer with an abstention and no idea how far the check got — and an abstention raised because
+    two readings disagreed is one whose readings are the most useful thing in the file.
+    """
+    data = write_workbook([_finding(outcome=Outcome.REVIEW_REQUIRED, trace=_trace())])
+
+    finding_row = _sheet(data, FINDINGS_SHEET)[1]
+    assert finding_row[FINDING_COLUMNS.index("outcome")] == Outcome.REVIEW_REQUIRED.value
+    assert finding_row[FINDING_COLUMNS.index("comparison")] == "12 1/8 in vs 12 in"
+    assert "abstained" not in str(finding_row[FINDING_COLUMNS.index("comparison")])
+
+    assert len(_sheet(data, OPERANDS_SHEET)) == 2, "its operands were read, so they are listed"

@@ -15,10 +15,15 @@ So values are written as strings, each cell's number format is pinned to text, a
 enough on its own: openpyxl will happily give a string cell a numeric format, and a consumer that
 re-saves the file can then have it converted for them.
 
-**Abstentions are rows.** A `NOT_FOUND` or `REVIEW_REQUIRED` check has no numbers to put in the
-value columns, and the tempting thing is to leave the row out. That reproduces exactly the failure
-`NO_APPLICABLE_RULE` was invented to stop: a reader scanning for problems sees nothing and reads it
-as nothing wrong. Every finding gets a row, and the value columns say what is missing and why.
+**Abstentions are rows.** A `NOT_FOUND` check has no numbers to put in the value columns, and the
+tempting thing is to leave the row out. That reproduces exactly the failure `NO_APPLICABLE_RULE` was
+invented to stop: a reader scanning for problems sees nothing and reads it as nothing wrong. Every
+finding gets a row, and the value columns say what is missing and why.
+
+An abstention is not always empty, and the value columns follow **the calculation, not the outcome**.
+A `REVIEW_REQUIRED` raised partway through arithmetic carries a trace, and its comparison and
+operands are written out: an abstention raised because two readings disagreed is one whose readings
+are the most useful thing in the file.
 
 **Two sheets, because a finding and an operand are different rows.** One row per finding answers
 "what did this check conclude?"; one row per traced operand answers "which numbers did it use, and
@@ -63,6 +68,7 @@ __all__ = [
     "OPERANDS_SHEET",
     "OPERAND_COLUMNS",
     "TEXT_FORMAT",
+    "UNREADABLE_REFERENCE",
     "exact_text",
     "write_value",
     "write_workbook",
@@ -112,6 +118,9 @@ NOT_APPLICABLE: Final = "n/a — check abstained"
 #: What a value column says when a decision was reached but the rule declares no such value.
 NONE_DECLARED: Final = "none declared"
 
+#: What a value column says when a reference could not be read as a complete citation.
+UNREADABLE_REFERENCE: Final = "unreadable reference"
+
 
 def exact_text(value: object) -> str:
     """Render a value as text that has lost nothing.
@@ -144,6 +153,34 @@ def write_value(cell: Cell, value: object) -> None:
     cell.number_format = TEXT_FORMAT
 
 
+def _decode_reference(reference: str) -> tuple[str, str] | None:
+    """(page, document version) for one evidence reference, or `None` if it is not a citation.
+
+    **Both fields or neither.** A reference carrying `page` and no `document_version_id` decodes
+    happily and yields "page 1" — of which drawing, nobody can say. Reporting that as provenance
+    would put an unfollowable citation in the column a reader uses to go and check, which is worse
+    than admitting the reference could not be read: they would look, fail to find it, and doubt the
+    finding rather than the export.
+
+    One decoder for both callers, deliberately. Two copies of "what counts as a readable reference"
+    is how the operand sheet and the findings sheet come to disagree about the same reference — and
+    a reader comparing them would have no way to tell which was right.
+
+    `evidence/gate.py` writes `document_version_id`, `page`, `polygon` and `space`. Only the two
+    fields this module reports are required here; a reference with no polygon is still a page in a
+    document, and refusing it would drop a usable citation to enforce a field nothing here reads.
+    """
+    try:
+        decoded = json.loads(reference)
+        page = decoded["page"]
+        document = decoded["document_version_id"]
+    except (ValueError, TypeError, KeyError):
+        return None
+    if isinstance(page, bool) or not isinstance(page, int) or not isinstance(document, str):
+        return None
+    return (str(page + 1), document)
+
+
 def _evidence_pages(finding: Finding) -> str:
     """The pages this finding's evidence sits on, for someone holding the drawing set.
 
@@ -151,14 +188,8 @@ def _evidence_pages(finding: Finding) -> str:
     not decode is a fact about the export, and dropping it would leave the row looking like a
     finding with no evidence.
     """
-    pages: list[str] = []
-    for reference in finding.evidence_refs:
-        try:
-            decoded = json.loads(reference)
-            pages.append(str(decoded["page"] + 1))
-        except (ValueError, TypeError, KeyError):
-            pages.append("unreadable reference")
-    return ", ".join(pages)
+    decoded = [_decode_reference(reference) for reference in finding.evidence_refs]
+    return ", ".join(UNREADABLE_REFERENCE if parts is None else parts[0] for parts in decoded)
 
 
 def _evidence_parts(reference: str | None) -> tuple[str, str]:
@@ -170,15 +201,20 @@ def _evidence_parts(reference: str | None) -> tuple[str, str]:
     """
     if not reference:
         return ("", "")
-    try:
-        decoded = json.loads(reference)
-        return (str(decoded["page"] + 1), str(decoded["document_version_id"]))
-    except (ValueError, TypeError, KeyError):
-        return ("unreadable reference", reference)
+    decoded = _decode_reference(reference)
+    return decoded if decoded is not None else (UNREADABLE_REFERENCE, reference)
 
 
 def _finding_row(finding: Finding) -> tuple[object, ...]:
-    """One finding as a row, in `FINDING_COLUMNS` order."""
+    """One finding as a row, in `FINDING_COLUMNS` order.
+
+    Keyed on **whether a calculation happened**, not on whether the outcome was a decision. The two
+    are not the same: `Finding` requires a trace for a decision but *permits* one on an abstention,
+    which is the ordinary shape of a `REVIEW_REQUIRED` raised partway through arithmetic — a unit it
+    could not reconcile, say. When there is a trace, its comparison and tolerance are written,
+    because the calculation genuinely ran and hiding it would leave a reviewer with an abstention and
+    no idea how far it got.
+    """
     trace = finding.trace
     abstained = is_abstention(finding.outcome)
 
@@ -211,9 +247,13 @@ def _finding_row(finding: Finding) -> tuple[object, ...]:
 def _operand_rows(finding: Finding) -> list[tuple[object, ...]]:
     """One row per operand the calculation used, in `OPERAND_COLUMNS` order.
 
-    An abstention contributes no rows here — nothing was read, and a row of blanks would suggest an
-    operand was found and had no value. The finding still appears on the findings sheet, which is
+    A finding with no trace contributes no rows — nothing was read, and a row of blanks would
+    suggest an operand was found and had no value. It still appears on the findings sheet, which is
     where a reader learns the check did not decide.
+
+    An abstention that *does* carry a trace contributes its operands, for the same reason
+    `_finding_row` writes its comparison: those operands were read. An abstention raised because two
+    operands disagreed is one whose operands are the most useful thing in the file.
     """
     if finding.trace is None:
         return []
