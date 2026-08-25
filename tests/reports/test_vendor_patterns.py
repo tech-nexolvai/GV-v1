@@ -357,3 +357,73 @@ def test_the_report_states_the_window_it_covers(sessions: sessionmaker[Session])
     assert report.until == NOW
     assert report.since == NOW - WINDOW
     assert report.vendor == VENDOR
+
+
+def test_the_aggregates_cannot_be_edited_by_a_caller(
+    sessions: sessionmaker[Session],
+) -> None:
+    """`VendorReport` is frozen, and a frozen dataclass holding a plain dict is not.
+
+    A caller editing an aggregate would change the report underneath whoever else is holding it —
+    the same defect `ProjectScope` was fixed for.
+    """
+    with unit_of_work(sessions) as session:
+        revision = _revision(session, VENDOR)
+        snapshot = _snapshot(session)
+        _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=2))
+
+    with unit_of_work(sessions) as session:
+        report = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
+
+    with pytest.raises(TypeError):
+        report.recurring_failures["anything"] = ()  # type: ignore[index]
+
+
+def test_the_same_data_produces_the_same_report_twice(
+    sessions: sessionmaker[Session],
+) -> None:
+    """The query has no ORDER BY, so row order is whatever the database returns.
+
+    A report listing the same findings in a different order each run looks like it changed when it
+    did not — and this one exists to be reconciled against a previous copy.
+    """
+    with unit_of_work(sessions) as session:
+        revision = _revision(session, VENDOR)
+        snapshot = _snapshot(session)
+        for day in (2, 4, 6, 8, 10):
+            _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=day))
+
+    with unit_of_work(sessions) as session:
+        first = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
+        second = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
+
+    assert dict(first.recurring_failures) == dict(second.recurring_failures)
+    (ids,) = first.recurring_failures.values()
+    assert list(ids) == sorted(ids, key=str)
+
+
+@pytest.mark.parametrize("window", [timedelta(0), timedelta(days=-1)])
+def test_a_non_positive_window_is_refused(
+    window: timedelta, sessions: sessionmaker[Session]
+) -> None:
+    """It returns an empty report, which is indistinguishable from a vendor with a clean record."""
+    with unit_of_work(sessions) as session, pytest.raises(ValueError, match="must be positive"):
+        vendor_patterns(session, VENDOR, window, now=NOW)
+
+
+def test_no_failures_then_several_is_reported_as_worsening(
+    sessions: sessionmaker[Session],
+) -> None:
+    """Either half reaching the threshold is enough, and this is why.
+
+    Requiring *both* halves to be busy would report a vendor who went from nothing to five failures
+    as steady — the exact case most worth raising.
+    """
+    with unit_of_work(sessions) as session:
+        revision = _revision(session, VENDOR)
+        snapshot = _snapshot(session)
+        for day in (10, 8, 6, 4, 2):
+            _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=day))
+
+    with unit_of_work(sessions) as session:
+        assert vendor_patterns(session, VENDOR, WINDOW, now=NOW).trend == "worsening"
