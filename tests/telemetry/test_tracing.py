@@ -18,6 +18,7 @@ import pytest
 from app.telemetry.tracing import (
     MAX_ATTR_LENGTH,
     SPAN_ATTRS,
+    TRACE_CONTEXT_FIELDS,
     DrawingContentInTrace,
     UnknownSpanAttribute,
     carrier,
@@ -281,12 +282,15 @@ def test_all_lists_the_module_s_public_names() -> None:
 
 
 def test_a_finding_traces_back_to_the_model_call_and_the_page_region() -> None:
-    """The acceptance criterion, asserted as one trace rather than as three spans.
+    """The attributes that join a finding to the model call and the region behind it.
 
-    A finding, the model call that read the dimension, and the page region it was read from are
-    three spans in different processes at different times. What makes them one story is that they
-    share a trace id and each carries the id of the row it wrote — so "why does this finding say
-    that?" is a query, not an investigation.
+    In one process, deliberately: this checks that the vocabulary can express the chain and that
+    nested spans share a trace, which is what makes the three rows joinable. It does **not**
+    demonstrate cross-process propagation — nested spans share a trace trivially, and claiming
+    otherwise would let a broken boundary look covered.
+
+    The cross-process case is `tests/workflow/test_outbox.py`, which carries a context through the
+    database and compares trace ids on the far side.
     """
     configure_tracing()
     model_call = "8f14e45f-ea8f-4b0a-9c1a-000000000001"
@@ -372,3 +376,29 @@ def test_a_carrier_taken_outside_a_span_is_empty() -> None:
     fabricated trace id would connect it to nothing while looking like it connected it to
     something."""
     assert carrier() == {}
+
+
+def test_baggage_never_reaches_the_carrier() -> None:
+    """The carrier is persisted, so anything in it is written to a database and shipped onwards.
+
+    `propagate.inject` emits a `baggage` header alongside `traceparent`, and baggage is arbitrary
+    caller-set key/value data. A call site that had put a filename — or a crop — in baggage would
+    have it stored in `outbox_entries` and handed to the workflow engine as metadata, which is the
+    exact route §6 closes everywhere else. Nothing would raise; the value would simply be there.
+    """
+    from opentelemetry import baggage
+    from opentelemetry import context as otel_context
+
+    configure_tracing()
+    token = otel_context.attach(baggage.set_baggage("customer", "ACME drawing 12"))
+    try:
+        with traced("api.request"):
+            handed_on = carrier()
+    finally:
+        otel_context.detach(token)
+
+    assert "baggage" not in handed_on
+    assert set(handed_on) <= set(TRACE_CONTEXT_FIELDS)
+    assert "ACME" not in "".join(handed_on.values())
+    # Still a usable carrier, so the filter cannot pass by discarding everything.
+    assert "traceparent" in handed_on

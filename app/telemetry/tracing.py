@@ -47,6 +47,7 @@ __all__ = [
     "INSTRUMENTATION_NAME",
     "MAX_ATTR_LENGTH",
     "SPAN_ATTRS",
+    "TRACE_CONTEXT_FIELDS",
     "TRACE_ID_HEADER",
     "TRACE_ID_STATE",
     "DrawingContentInTrace",
@@ -94,6 +95,15 @@ SPAN_ATTRS: Final = (
     # page and this is the region.
     "evidence_ref",
 )
+
+#: The only carrier fields this project propagates — W3C trace context, and nothing else.
+#:
+#: `propagate.inject` will also emit `baggage`, which is arbitrary caller-set data. `carrier()` is
+#: persisted in `outbox_entries` and handed to the workflow engine as metadata, so anything in baggage
+#: would be written to a database and shipped onwards — the exact shape of leak `AGENTS.md` §6 forbids.
+#: These two are ids and flags: a `traceparent` is a fixed-length hex string and a `tracestate` is
+#: vendor routing data, and neither can carry a crop.
+TRACE_CONTEXT_FIELDS: Final = ("traceparent", "tracestate")
 
 #: The response header carrying the trace id, so a caller can quote it when reporting a problem.
 #:
@@ -187,10 +197,16 @@ def carrier() -> dict[str, str]:
     inside the caller's transaction, so the context stored is the request's. Capturing it in the
     dispatcher instead would produce a trace that begins at a background poll — technically a trace, and
     useless for the question this exists to answer, which is *what asked for this?*
+
+    **Trace context only, never baggage.** `propagate.inject` also emits a `baggage` header, which is
+    arbitrary caller-set key/value data — and this carrier is *persisted*, in `outbox_entries`. Anything
+    a call site had put in baggage would be written to a database column and shipped to a workflow
+    engine's metadata, which is precisely the §6 route this project closes everywhere else. Filtered to
+    the W3C trace-context fields, which are ids and flags and cannot carry content.
     """
     into: dict[str, str] = {}
     propagate.inject(into)
-    return into
+    return {key: value for key, value in into.items() if key in TRACE_CONTEXT_FIELDS}
 
 
 def incoming_context(headers: Mapping[str, str]) -> Context | None:
