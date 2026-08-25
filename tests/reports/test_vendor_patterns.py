@@ -357,3 +357,89 @@ def test_the_report_states_the_window_it_covers(sessions: sessionmaker[Session])
     assert report.until == NOW
     assert report.since == NOW - WINDOW
     assert report.vendor == VENDOR
+
+
+def test_the_aggregates_cannot_be_edited_by_a_caller(
+    sessions: sessionmaker[Session],
+) -> None:
+    """`VendorReport` is frozen, and a frozen dataclass holding a plain dict is not.
+
+    A caller editing an aggregate would change the report underneath whoever else is holding it —
+    the same defect `ProjectScope` was fixed for.
+    """
+    with unit_of_work(sessions) as session:
+        revision = _revision(session, VENDOR)
+        snapshot = _snapshot(session)
+        failed = _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=2))
+        _correct(session, failed, revision, NOW - timedelta(days=2))
+
+    with unit_of_work(sessions) as session:
+        report = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
+
+    for aggregate in (report.recurring_failures, report.correction_hotspots):
+        # Non-empty first. An empty immutable mapping raises on assignment just as a populated one
+        # does, so without this the test would keep passing if the report stopped finding anything.
+        assert aggregate, "the seeded data should appear in both aggregates"
+        with pytest.raises(TypeError):
+            aggregate["anything"] = ()  # type: ignore[index]
+
+
+def test_the_same_data_produces_the_same_report_twice(
+    sessions: sessionmaker[Session],
+) -> None:
+    """The query has no ORDER BY, so row order is whatever the database returns.
+
+    A report listing the same findings in a different order each run looks like it changed when it
+    did not — and this one exists to be reconciled against a previous copy.
+    """
+    with unit_of_work(sessions) as session:
+        revision = _revision(session, VENDOR)
+        # Several snapshots, so key order is exercised as well as the ids inside each.
+        snapshots = [_snapshot(session) for _ in range(3)]
+        for day, snapshot in zip((2, 4, 6, 8, 10, 12), snapshots * 2, strict=False):
+            _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=day))
+
+    with unit_of_work(sessions) as session:
+        first = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
+        second = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
+
+    assert first.recurring_failures, "the seeded failures should appear, or this asserts nothing"
+    # Compared as item lists, not as dicts: `==` on two dicts ignores key order, which is the one
+    # property this test exists to check.
+    assert list(first.recurring_failures.items()) == list(second.recurring_failures.items())
+    for report in (first, second):
+        keys = list(report.recurring_failures)
+        assert keys == sorted(keys), "snapshot keys are not in a stable order"
+        for ids in report.recurring_failures.values():
+            assert list(ids) == sorted(ids, key=str), "finding ids are not in a stable order"
+
+
+@pytest.mark.parametrize("window", [timedelta(0), timedelta(days=-1)])
+def test_a_non_positive_window_is_refused(
+    window: timedelta, sessions: sessionmaker[Session]
+) -> None:
+    """Refused rather than answered.
+
+    A zero or negative window would otherwise return an empty report, which is indistinguishable
+    from a vendor with a clean record — so the caller learns nothing and believes something.
+    """
+    with unit_of_work(sessions) as session, pytest.raises(ValueError, match="must be positive"):
+        vendor_patterns(session, VENDOR, window, now=NOW)
+
+
+def test_no_failures_then_several_is_reported_as_worsening(
+    sessions: sessionmaker[Session],
+) -> None:
+    """Either half reaching the threshold is enough, and this is why.
+
+    Requiring *both* halves to be busy would report a vendor who went from nothing to five failures
+    as steady — the exact case most worth raising.
+    """
+    with unit_of_work(sessions) as session:
+        revision = _revision(session, VENDOR)
+        snapshot = _snapshot(session)
+        for day in (10, 8, 6, 4, 2):
+            _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=day))
+
+    with unit_of_work(sessions) as session:
+        assert vendor_patterns(session, VENDOR, WINDOW, now=NOW).trend == "worsening"

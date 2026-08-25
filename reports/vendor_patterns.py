@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Literal
 from uuid import UUID
 
@@ -40,7 +41,12 @@ from verdict.outcomes import Outcome
 #: conversation the data does not support.
 Trend = Literal["improving", "steady", "worsening"]
 
-#: The minimum findings in each half before a direction is claimed at all.
+#: The minimum failures one half must reach before a direction is claimed at all.
+#:
+#: Either half reaching it is enough, deliberately. Nought failures followed by five is a
+#: real deterioration and the report should say so; requiring both halves to be busy would
+#: report the vendor as steady in exactly the case worth raising. What it suppresses is the
+#: thin case — one against two — where the direction is arithmetic rather than signal.
 _MINIMUM_FOR_A_TREND = 3
 
 #: How much the failure rate must move before it counts as a direction rather than noise.
@@ -125,11 +131,24 @@ def _corrections(
     return [(str(snapshot), finding) for snapshot, finding in rows]
 
 
-def _group(pairs: list[tuple[str, UUID]]) -> dict[str, tuple[UUID, ...]]:
+def _group(pairs: list[tuple[str, UUID]]) -> Mapping[str, tuple[UUID, ...]]:
+    """Group findings by rule snapshot, in an order that does not change between runs.
+
+    Sorted twice over, and both matter for a report somebody may reconcile against a previous copy:
+    the keys, and the finding ids inside each. The query has no ORDER BY, so row order is whatever
+    the database returns — a report that listed the same findings in a different order each time
+    would look like it had changed when it had not.
+
+    Returned read-only: `VendorReport` is frozen, and a frozen dataclass holding a plain dict is not
+    actually immutable — the caller could edit the aggregate and the report would change underneath
+    whoever else is holding it.
+    """
     grouped: dict[str, list[UUID]] = {}
     for key, finding_id in pairs:
         grouped.setdefault(key, []).append(finding_id)
-    return {key: tuple(values) for key, values in sorted(grouped.items())}
+    return MappingProxyType(
+        {key: tuple(sorted(values, key=str)) for key, values in sorted(grouped.items())}
+    )
 
 
 def _trend(failures: list[tuple[str, UUID, datetime]], since: datetime, until: datetime) -> Trend:
@@ -138,7 +157,12 @@ def _trend(failures: list[tuple[str, UUID, datetime]], since: datetime, until: d
     Counts, not rates: the total drawings a vendor submitted per half is not in scope here, so a
     vendor who simply sent more work would read as "worsening" on a rate we cannot compute. Counting
     failures answers the question actually being asked — *is this happening more or less often than
-    it was?* — and `steady` is returned whenever either half is too thin to say.
+    it was?*
+
+    `steady` when **both** halves fall below `_MINIMUM_FOR_A_TREND` — not when either does. Nought
+    failures followed by five is the case most worth raising, and requiring both halves to be busy
+    would report it as steady. What the threshold suppresses is one against two, where the direction
+    is arithmetic rather than signal.
     """
     midpoint = since + (until - since) / 2
     earlier = sum(1 for _, _, when in failures if when < midpoint)
@@ -174,6 +198,12 @@ def vendor_patterns(
         raise ValueError(
             "vendor must be named. An empty vendor would aggregate every package whose vendor is "
             "unrecorded into one report and attribute it to nobody."
+        )
+
+    if window <= timedelta(0):
+        raise ValueError(
+            f"window must be positive, got {window}. A zero or negative window returns an empty "
+            "report, which is indistinguishable from a vendor with nothing against them."
         )
 
     until = now if now is not None else datetime.now(UTC)
