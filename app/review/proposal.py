@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID
 
+from app.audit.events import SYSTEM_ACTOR
+
 
 @dataclass(frozen=True, slots=True)
 class RuleChangeSuggestion:
@@ -49,11 +51,17 @@ class RuleChangeSuggestion:
     """
 
     raised_by: str
-    """The person who raised it. Never a system actor — see `suggest`."""
+    """The person who raised it. `SYSTEM_ACTOR` is refused: a suggestion the system attributed to
+    itself is the automated path with a human name missing from it."""
 
     motivating_corrections: tuple[UUID, ...]
     """The correction-ledger entries that prompted this, so an approver can judge the evidence
-    rather than the claim. A suggestion without them is an opinion."""
+    rather than the claim. A suggestion without them is an opinion.
+
+    Copied into a tuple at construction. A caller passing a list would otherwise keep a handle on
+    the evidence and could append to it afterwards — the approver would then be shown a different
+    set of corrections than the one argued from, with nothing recording that it changed.
+    """
 
     suggestion: str
     """Plain English: what looks wrong, and why these corrections suggest it."""
@@ -61,6 +69,21 @@ class RuleChangeSuggestion:
     raised_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "motivating_corrections", tuple(self.motivating_corrections))
+        for correction in self.motivating_corrections:
+            if not isinstance(correction, UUID):
+                raise TypeError(
+                    "motivating corrections are correction-ledger ids, not "
+                    f"{type(correction).__name__}. A string that looks like an id is one an "
+                    "approver cannot look up."
+                )
+        if self.raised_by == SYSTEM_ACTOR:
+            raise ValueError(
+                f"{SYSTEM_ACTOR!r} cannot raise a suggestion. This module exists so that a pattern "
+                "of corrections becomes a rule change only when a person argues for one, and a "
+                "suggestion attributed to the system is that path with a human name missing from "
+                "it — the approver would be reviewing an argument nobody made."
+            )
         if not self.raised_by.strip():
             raise ValueError(
                 "a suggestion must name the person who raised it. The first question about any "
