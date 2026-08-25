@@ -48,17 +48,22 @@ compared as `Decimal`. `float` appears only at the ReportLab call boundary, beca
 its drawing API takes; by then the arithmetic is finished and the number is on its way into the file.
 Nothing is decided after that conversion.
 
-**What this deliberately does not do.**
+**A vendor render needs a `VendorClearance`, and this module cannot make one.** ADR-0010 is
+unambiguous: *"no computed dimension reaches a vendor without reviewer sign-off."* Establishing
+sign-off means reading the approval record and matching it against stored finding rows, and this
+module has neither a database session nor row identities — it is handed finding *values*. So
+`ReportMode.VENDOR` refuses unless something that can establish sign-off already has, which is
+`reports.publication.render_vendor_redline`. Refusing here is what makes that the only route to a
+vendor document rather than the recommended one.
 
-`ReportMode.VENDOR` raises. ADR-0010 is accepted and unambiguous — *"no computed dimension reaches a
-vendor without reviewer sign-off"* — and the reviewer approval record it refers to (D4–D5,
-`app/review/approval.py`) does not exist yet. There is therefore nothing this module could consult to
-establish that a finding was approved, and the two available behaviours are to emit an unapproved
-vendor document or to refuse. It refuses, and says why. When approval lands, this becomes a real
-check against a real record rather than a blanket refusal.
+**Every calculated value is labelled as calculated, in both modes.** ADR-0010 permits showing a
+derived expectation and forbids issuing one, and the difference is entirely in how it is presented:
+a bare number in a document somebody builds from is an instruction. Each is printed with its
+operation and operands, under a heading that says not to build to it.
 
-Nothing here decides which findings belong in a redline, filters by severity, or lays out a
-cover sheet. The report is what it is given, in the order it is given.
+**What this deliberately does not do.** Nothing here decides which findings belong in a redline,
+filters by severity, or lays out a cover sheet. The report is what it is given, in the order it is
+given.
 
 Source: `AGENTS.md` §4 and §8 Phase 7; ADR-0010 · Design: `docs/DESIGN_PRODUCT.md` §3.2 ·
 Verification: `tests/reports/test_redline.py`
@@ -68,8 +73,9 @@ from __future__ import annotations
 
 import json
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from io import BytesIO
@@ -103,7 +109,8 @@ class ReportMode(StrEnum):
     """Engine output, for the reviewer. Everything is shown, including abstentions."""
 
     VENDOR = "vendor"
-    """Only reviewer-approved content. See the module docstring — this currently refuses."""
+    """Only reviewer-approved content. Reachable solely through `reports.publication`, which
+    establishes the sign-off this module cannot."""
 
 
 class PageMismatchError(ValueError):
@@ -116,11 +123,33 @@ class PageMismatchError(ValueError):
 
 
 class VendorApprovalUnavailable(RuntimeError):
-    """Raised on a vendor render, because no reviewer approval record exists to consult.
+    """Raised on a vendor render that was not handed a `VendorClearance`.
 
-    ADR-0010: no computed dimension reaches a vendor without sign-off. Until D4–D5 build the
-    approval record, refusing is the only behaviour that honours that.
+    ADR-0010: no computed dimension reaches a vendor without sign-off. This module cannot establish
+    sign-off itself — it holds no database session, and it is given finding *values*, which carry no
+    row identity to match an approval against. So it refuses unless something that can establish it
+    already has. That is `reports.publication.render_vendor_redline`, and refusing here is what
+    makes it the only route rather than the recommended one.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class VendorClearance:
+    """Evidence that the content of a vendor render was signed off, and by whom.
+
+    Deliberately not a boolean. A flag says a check happened somewhere; this says which approval it
+    was, so the same fact that unlocks the render is the fact printed in it — a vendor holding the
+    document can see whose sign-off it was issued under without asking.
+
+    Built in `reports.publication` after every finding has been matched against the stored approval.
+    Constructing one by hand to get past the gate is possible in the way that any Python object is,
+    and pointless in the way that writing a false approval row would be: the document then names a
+    person who did not sign it.
+    """
+
+    approval_id: UUID
+    approved_by: str
+    approved_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +347,8 @@ def render_redline(
     findings: Sequence[Finding],
     mode: ReportMode,
     store: ArtifactStore,
+    *,
+    clearance: VendorClearance | None = None,
 ) -> StoredArtifact:
     """Overlay the findings onto the source pages and store the result.
 
@@ -326,8 +357,11 @@ def render_redline(
     summary pages — no finding is silently absent from both.
 
     Raises `PageMismatchError` if a page's transform does not describe that PDF page, and
-    `VendorApprovalUnavailable` for `ReportMode.VENDOR`. Both are refusals rather than degraded
-    output; see the module docstring.
+    `VendorApprovalUnavailable` for `ReportMode.VENDOR` without a `VendorClearance`. Both are
+    refusals rather than degraded output; see the module docstring.
+
+    `clearance` is meaningful only in vendor mode, and supplying one for an internal render is
+    refused rather than ignored — a caller who passed it believed it was doing something.
     """
     if not isinstance(package, RedlinePackage):
         raise TypeError("package must be a RedlinePackage")
@@ -341,18 +375,27 @@ def render_redline(
     if not isinstance(store, ArtifactStore):
         raise TypeError("store must implement the ArtifactStore protocol")
 
-    if mode is ReportMode.VENDOR:
+    if clearance is not None and not isinstance(clearance, VendorClearance):
+        raise TypeError("clearance must be a VendorClearance")
+    if mode is ReportMode.VENDOR and clearance is None:
         raise VendorApprovalUnavailable(
-            "a vendor redline cannot be produced yet. ADR-0010 requires reviewer sign-off before "
-            "any computed dimension reaches a vendor, and the approval record that would prove "
-            "sign-off does not exist in this system yet. Render the internal report for review."
+            "a vendor redline cannot be produced from unapproved content. ADR-0010 requires "
+            "reviewer sign-off before any computed dimension reaches a vendor, and nothing here "
+            "can establish that these findings were signed off. Use "
+            "`reports.publication.render_vendor_redline`, which reads the approval and checks "
+            "every finding against it, or render the internal report for review."
+        )
+    if mode is not ReportMode.VENDOR and clearance is not None:
+        raise ValueError(
+            "clearance applies to a vendor render. An internal report is engine output and is not "
+            "issued under anyone's sign-off; printing an approval on it would say otherwise."
         )
 
     reader = PdfReader(BytesIO(package.source_pdf))
     _check_pages_describe_the_pdf(package, reader)
 
     marks, unplaced, marked = _place(package, findings)
-    document = _compose(package, reader, marks, findings, marked, unplaced)
+    document = _compose(package, reader, marks, findings, marked, unplaced, clearance)
 
     digest, _ = sha256_stream(BytesIO(document))
     key = content_key(f"redlines/{package.package_revision_id}/{mode.value}", digest, suffix=".pdf")
@@ -539,6 +582,7 @@ def _compose(
     findings: Sequence[Finding],
     marked: int,
     unplaced: Sequence[Unplaced],
+    clearance: VendorClearance | None,
 ) -> bytes:
     """Merge the overlays onto the original pages and append the summary pages.
 
@@ -556,7 +600,7 @@ def _compose(
             page.merge_page(_overlay(by_index[index], page_marks))
 
     pages_with_marks = frozenset(index for index, page_marks in marks.items() if page_marks)
-    summary = _listing(package, findings, marked, unplaced, pages_with_marks)
+    summary = _listing(package, findings, marked, unplaced, pages_with_marks, clearance)
     for listing in PdfReader(BytesIO(summary)).pages:
         writer.add_page(listing)
 
@@ -670,12 +714,93 @@ def _listing_size(package: RedlinePackage) -> tuple[Decimal, Decimal]:
     return (height, width) if entry.transform.rotation in (90, 270) else (width, height)
 
 
+@dataclass(frozen=True, slots=True)
+class DerivedExpectation:
+    """A value the engine calculated, with the arithmetic that produced it.
+
+    Not a specification, and the report says so on every line. A bare number in a document a vendor
+    builds from is read as an instruction however clearly a heading two pages earlier said
+    otherwise — which is precisely the reading ADR-0010 exists to prevent.
+    """
+
+    rule_id: str
+    name: str
+    value: str
+    calculation: str
+    """Plain English: which operation, over which operands and their values."""
+
+
+def derived_expectations(finding: Finding) -> tuple[DerivedExpectation, ...]:
+    """The values this finding's calculation produced, rather than read off a drawing.
+
+    Read from `trace.intermediates`, which is where a derivation records what it computed. The
+    operands are named with their values so the arithmetic can be repeated by hand: an expectation
+    a reviewer cannot check is the thing ADR-0010 is trying to keep out of a vendor's hands, whether
+    or not somebody signed it.
+
+    An abstention has no trace and therefore no derived values — nothing was calculated, and
+    returning an empty calculation would suggest something was.
+
+    Lives here rather than in `reports.publication` because that module imports this one; the other
+    direction would be a cycle. `reports.publication` re-exports it, so the documented entry point
+    for vendor publication stays one module.
+    """
+    if not isinstance(finding, Finding):
+        raise TypeError("finding must be a Finding")
+    if finding.trace is None:
+        return ()
+
+    trace = finding.trace
+    inputs = (
+        ", ".join(f"{operand.name} = {operand.value}" for operand in trace.operands)
+        or "no named operands"
+    )
+    return tuple(
+        DerivedExpectation(
+            rule_id=finding.rule_id,
+            name=name,
+            value=str(value),
+            calculation=f"calculated by {trace.operation} from {inputs}",
+        )
+        for name, value in trace.intermediates
+    )
+
+
+def _derived_section(
+    findings: Sequence[Finding],
+    line: Callable[..., None],
+    paragraph: Callable[..., None],
+) -> None:
+    """Write out every calculated value in the report, labelled as calculated.
+
+    Emitted even when there are none, for the same reason the unplaced section is: a reader should
+    be told that the report contains no derived numbers rather than having to infer it from an
+    absent heading.
+    """
+    derived = [expectation for finding in findings for expectation in derived_expectations(finding)]
+
+    line("Derived expectations", font="Helvetica-Bold", size=12.0)
+    paragraph(
+        "These values were CALCULATED by the checks below, not measured from the drawing and not "
+        "issued as instructions. They are shown with their arithmetic so they can be checked. Do "
+        "not build to them: a dimension to build to comes from the design, not from this report."
+    )
+    line("")
+    if not derived:
+        paragraph("None. No value in this report was calculated; every figure was read or given.")
+    for expectation in derived:
+        paragraph(f"{expectation.rule_id} — {expectation.name} (DERIVED): {expectation.value}")
+        paragraph(expectation.calculation, "    ")
+    line("")
+
+
 def _listing(
     package: RedlinePackage,
     findings: Sequence[Finding],
     marked: int,
     unplaced: Sequence[Unplaced],
     pages_with_marks: frozenset[int],
+    clearance: VendorClearance | None,
 ) -> bytes:
     """Render the appended pages that account for every finding not on the drawing.
 
@@ -710,6 +835,20 @@ def _listing(
         f"{total_findings - marked} not marked, and listed below."
     )
     line("")
+
+    if clearance is not None:
+        line("Approved by", font="Helvetica-Bold", size=12.0)
+        paragraph(
+            f"{clearance.approved_by} on {clearance.approved_at.isoformat()} "
+            f"(approval {clearance.approval_id})."
+        )
+        paragraph(
+            "Every finding in this document was covered by that sign-off. A person accepted "
+            "responsibility for this content; it is not raw engine output."
+        )
+        line("")
+
+    _derived_section(findings, line, paragraph)
 
     line("Page coverage", font="Helvetica-Bold", size=12.0)
     paragraph(

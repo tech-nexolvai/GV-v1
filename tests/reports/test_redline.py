@@ -577,11 +577,14 @@ def test_a_page_mapped_past_the_end_of_the_pdf_raises(tmp_path: Path) -> None:
         _render(package, [_finding()], tmp_path)
 
 
-def test_a_vendor_render_refuses_because_nothing_records_reviewer_sign_off(
+def test_a_vendor_render_refuses_without_clearance(
     tmp_path: Path,
 ) -> None:
-    """ADR-0010 forbids a computed dimension reaching a vendor without sign-off, and the approval
-    record it refers to does not exist yet. Emitting anyway would break an accepted decision."""
+    """ADR-0010 forbids a computed dimension reaching a vendor without sign-off, and this module
+    cannot establish sign-off: it holds no session and is given finding values with no row
+    identity. So it refuses unless something that can establish it already has, which is what makes
+    `reports.publication.render_vendor_redline` the only route to a vendor document rather than the
+    recommended one. Its own gate is asserted in `tests/reports/test_vendor_redline.py`."""
     with pytest.raises(VendorApprovalUnavailable, match="ADR-0010"):
         render_redline(_package(), [_finding()], ReportMode.VENDOR, LocalStore(tmp_path))
 
