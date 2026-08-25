@@ -97,11 +97,12 @@ class AuditEvent(Base, TimestampedUUID, Immutable):
             "category IN (" + ", ".join(f"'{member.value}'" for member in AuditCategory) + ")",
             name="audit_events_category",
         ),
-        # btrim, not length: "   " is zero information and would otherwise satisfy a bare length
-        # check, leaving "who did this?" answered by whitespace. `emit` refuses it too — this is
-        # the same rule at the boundary a direct INSERT would go through.
-        CheckConstraint("length(btrim(actor)) > 0", name="audit_events_actor_named"),
-        CheckConstraint("length(btrim(target_type)) > 0", name="audit_events_target_typed"),
+        # A regex rather than `btrim`: PostgreSQL's `btrim` strips **spaces** by default, while
+        # Python's `str.strip` — which `emit` uses — also strips tabs and newlines. A tab-only actor
+        # would have passed the database and failed the writer, so the two rules disagreed on
+        # exactly the input a direct INSERT would use to get round `emit`.
+        CheckConstraint("actor !~ '^[[:space:]]*$'", name="audit_events_actor_named"),
+        CheckConstraint("target_type !~ '^[[:space:]]*$'", name="audit_events_target_typed"),
         # The audit question is almost always "what happened to this thing, in order?", so the
         # index matches it rather than indexing the columns individually.
         Index("ix_audit_events_target", "target_type", "target_id", "created_at"),

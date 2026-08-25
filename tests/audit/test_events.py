@@ -246,8 +246,14 @@ def test_the_target_index_exists_so_the_common_question_is_answerable(
 
 @pytest.mark.parametrize(
     ("actor", "target_type"),
-    [("   ", "packages"), ("anant", "   ")],
-    ids=["whitespace-actor", "whitespace-target-type"],
+    [
+        ("   ", "packages"),
+        ("\t", "packages"),
+        ("\n", "packages"),
+        ("anant", "   "),
+        ("anant", "\t\n"),
+    ],
+    ids=["spaces", "tab", "newline", "spaces-target", "tab-newline-target"],
 )
 def test_the_database_rejects_whitespace_where_emit_would(
     actor: str, target_type: str, sessions: sessionmaker[Session]
