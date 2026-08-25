@@ -157,7 +157,12 @@ def _trend(failures: list[tuple[str, UUID, datetime]], since: datetime, until: d
     Counts, not rates: the total drawings a vendor submitted per half is not in scope here, so a
     vendor who simply sent more work would read as "worsening" on a rate we cannot compute. Counting
     failures answers the question actually being asked — *is this happening more or less often than
-    it was?* — and `steady` is returned whenever either half is too thin to say.
+    it was?*
+
+    `steady` when **both** halves fall below `_MINIMUM_FOR_A_TREND` — not when either does. Nought
+    failures followed by five is the case most worth raising, and requiring both halves to be busy
+    would report it as steady. What the threshold suppresses is one against two, where the direction
+    is arithmetic rather than signal.
     """
     midpoint = since + (until - since) / 2
     earlier = sum(1 for _, _, when in failures if when < midpoint)
