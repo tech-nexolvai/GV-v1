@@ -57,6 +57,18 @@ class AuditCategory(StrEnum):
     ARTIFACT_DOWNLOAD = "ARTIFACT_DOWNLOAD"
     """Somebody retrieved a stored artifact — a drawing, a crop or a report."""
 
+    ARTIFACT_DELETION = "ARTIFACT_DELETION"
+    """Retention removed an artifact's bytes (#258, F1.7).
+
+    Seven categories, not the six backend §11 lists. Deletion is the one event where the thing that
+    would have proved it happened is the thing being removed, so leaving it out would have made the
+    trail complete about everything except its own gaps. The row survives — only the bytes go — but
+    *when* they went and *under which policy* is knowable only from here.
+
+    A new member needs a new migration: the `CHECK` constraint hardcodes the values, which is how
+    `ModelInvocationOutcome.FAILED` came to be missing for as long as it was.
+    """
+
 
 #: The value recorded when the actor is the system rather than a person.
 #:

@@ -64,6 +64,7 @@ __all__ = [
     "RoleGrants",
     "all_table_names",
     "forbidden_for_verdict",
+    "grant_body",
 ]
 
 
@@ -232,6 +233,68 @@ ROLE_GRANTS: Final[MappingProxyType[Role, RoleGrants]] = MappingProxyType(
 Immutable at every level — the outer mapping and each `privileges` mapping are both read-only. A
 caller that could add a table to a role's grants at runtime would make the declaration and the
 database disagree, and the declaration is what the tests check.
+"""
+
+
+def grant_body() -> str:
+    """The PL/pgSQL body that puts `ROLE_GRANTS` into effect against `current_schema()`.
+
+    Returned as a body rather than a list of statements so the schema is resolved *inside*
+    PostgreSQL: `tests/app/test_migration_matches_models.py` renders every migration with
+    `alembic upgrade head --sql` against no database, and a `SELECT current_schema()` in Python
+    would break that check — the fix for which would have been to weaken the check.
+
+    Shared by every migration that applies grants rather than written out in one, because grants are
+    **current state**. A migration that added a table and did not re-apply them would leave the
+    newest table — the one nobody has thought about yet — held by nobody, or still covered by
+    whatever `PUBLIC` had.
+
+    Each `GRANT` is guarded by `to_regclass`, so this can run at a point in the chain where a table
+    does not exist yet. That is not hypothetical: `0025` derived its grants from live model metadata,
+    and the moment `0027` added `legal_holds` the earlier migration began failing on a table two
+    revisions in its own future. The guard makes a grant mean *"if this table is here, hold it to
+    this"*, which is what a replayable privilege declaration should mean.
+    """
+    lines: list[str] = [
+        *(
+            f"    EXECUTE format('GRANT USAGE ON SCHEMA %I TO {role.value}', gv_schema);"
+            for role in Role
+        ),
+        # PUBLIC is an implicit member of every role, so a privilege left here is granted to all
+        # four and would make each allowlist below meaningless without any of them changing.
+        "    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC', gv_schema);",
+        "    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM PUBLIC', gv_schema);",
+    ]
+    for role, grants in ROLE_GRANTS.items():
+        # Cleared first, so re-applying cannot leave behind a privilege the declaration has since
+        # dropped. A grant removed from this module has to disappear from the database, or the
+        # declaration describes what used to be true.
+        lines.append(
+            f"    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM {role.value}', "
+            "gv_schema);"
+        )
+        lines.append(
+            f"    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM {role.value}', "
+            "gv_schema);"
+        )
+        for table, privileges in grants.privileges.items():
+            granted = ", ".join(privileges)
+            lines.append(f"    IF to_regclass(format('%I.{table}', gv_schema)) IS NOT NULL THEN")
+            lines.append(
+                f"        EXECUTE format('GRANT {granted} ON TABLE %I.{table} TO {role.value}', "
+                "gv_schema);"
+            )
+            lines.append("    END IF;")
+
+    body = "\n".join(lines)
+    return f"""
+DO $$
+DECLARE
+    gv_schema text := current_schema();
+BEGIN
+{body}
+END
+$$;
 """
 
 

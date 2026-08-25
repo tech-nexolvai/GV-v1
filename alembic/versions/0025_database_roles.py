@@ -43,7 +43,7 @@ from collections.abc import Sequence
 from sqlalchemy import text
 
 from alembic import op
-from app.db.roles import ROLE_GRANTS, Role
+from app.db.roles import Role, grant_body
 
 revision: str = "0025_database_roles"
 down_revision: str | None = "0024_audit_events_append_only"
@@ -71,59 +71,17 @@ $$;
 """
 
 
-def _in_current_schema(*statements: str) -> str:
-    """Wrap statements so `%I` is filled with `current_schema()` when they run.
-
-    The schema has to be resolved at execution time — the test fixture gives every test its own —
-    but it must **not** be resolved by this file querying for it. `tests/app/test_migration_matches
-    _models.py` renders every migration with `alembic upgrade head --sql`, against no database at
-    all, because a migration nobody has tried to execute is a migration that may not execute. A
-    `SELECT current_schema()` in Python breaks that check, and the fix for the check would have been
-    to weaken it.
-
-    So the resolution happens inside PostgreSQL: the emitted SQL is a static `DO` block, which
-    renders offline exactly as it runs. `%I` quotes the identifier, so a schema name needing quotes
-    is handled by the database rather than by string concatenation here.
-    """
-    body = "\n".join(f"    EXECUTE format({statement!r}, gv_schema);" for statement in statements)
-    return f"""
-DO $$
-DECLARE
-    gv_schema text := current_schema();
-BEGIN
-{body}
-END
-$$;
-"""
-
-
 def upgrade() -> None:
     connection = op.get_bind()
 
     for role in Role:
         connection.execute(text(CREATE_ROLE.format(role=role.value)))
 
-    statements: list[str] = [
-        # USAGE only. CREATE would let a role add a table — or a view over a table it was not
-        # granted — inside the schema, and a view is a perfectly good way to read what you cannot.
-        *(f"GRANT USAGE ON SCHEMA %I TO {role.value}" for role in Role),
-        # PUBLIC is an implicit member of every role, so a privilege left here is granted to all
-        # four and would make each allowlist below meaningless without any of them changing.
-        "REVOKE ALL ON SCHEMA %I FROM PUBLIC",
-        "REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM PUBLIC",
-    ]
-
-    for role, grants in ROLE_GRANTS.items():
-        # Cleared first, so re-running this migration cannot leave behind a privilege the
-        # declaration has since dropped. A grant removed from `app/db/roles.py` has to disappear
-        # from the database, or the declaration describes what used to be true.
-        statements.append(f"REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM {role.value}")
-        statements.append(f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM {role.value}")
-        for table, privileges in grants.privileges.items():
-            granted = ", ".join(privileges)
-            statements.append(f'GRANT {granted} ON TABLE %I."{table}" TO {role.value}')
-
-    connection.execute(text(_in_current_schema(*statements)))
+    # The grant body comes from `app/db/roles.py` and is guarded per table with `to_regclass`, so
+    # this runs correctly at its own point in the chain — later migrations add tables, and this one
+    # must not fail on a table two revisions in its future. Each of those migrations re-applies the
+    # same body, because a grant is current state rather than a historical fact.
+    connection.execute(text(grant_body()))
 
 
 def downgrade() -> None:
@@ -139,13 +97,24 @@ def downgrade() -> None:
     system depended on `PUBLIC` holding those privileges in the first place. Said here rather than
     left for the next reader to assume the migration reverses cleanly.
     """
-    statements = [
-        statement
+    lines = [
+        line
         for role in Role
-        for statement in (
-            f"REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM {role.value}",
-            f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM {role.value}",
-            f"REVOKE USAGE ON SCHEMA %I FROM {role.value}",
+        for line in (
+            (
+                f"    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM {role.value}',"
+                " gv_schema);"
+            ),
+            (
+                f"    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM {role.value}',"
+                " gv_schema);"
+            ),
+            f"    EXECUTE format('REVOKE USAGE ON SCHEMA %I FROM {role.value}', gv_schema);",
         )
     ]
-    op.get_bind().execute(text(_in_current_schema(*statements)))
+    body = "\n".join(lines)
+    op.get_bind().execute(
+        text(
+            f"\nDO $$\nDECLARE\n    gv_schema text := current_schema();\nBEGIN\n{body}\nEND\n$$;\n"
+        )
+    )
