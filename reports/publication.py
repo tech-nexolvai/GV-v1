@@ -116,13 +116,29 @@ def sign_off(session: Session, package_revision_id: UUID) -> SignedOff:
     A revision approved more than once takes the latest, which is the sign-off in force. Earlier
     ones stay in the table; `Approval` is immutable precisely so the history of who accepted what
     survives a re-review.
+
+    Two approvals sharing the newest timestamp raise rather than resolve. `created_at` is generated
+    per row, so a tie needs a clock coarse enough to stamp two flushes identically — but if one ever
+    happens there is no fact that says which sign-off is in force, and the available tiebreak is a
+    random UUID. Picking by UUID would attribute a vendor document to whichever approver's id sorted
+    higher, which is a decision dressed up as an ordering.
     """
-    approval = session.scalars(
+    newest = session.scalars(
         select(Approval)
         .where(Approval.package_revision_id == package_revision_id)
-        .order_by(Approval.created_at.desc(), Approval.id.desc())
-        .limit(1)
-    ).one_or_none()
+        .order_by(Approval.created_at.desc())
+        .limit(2)
+    ).all()
+    approval = newest[0] if newest else None
+
+    if len(newest) == 2 and newest[0].created_at == newest[1].created_at:
+        raise UnapprovedContent(
+            f"package revision {package_revision_id} has two approvals recorded at "
+            f"{newest[0].created_at.isoformat()} — {newest[0].approved_by} and "
+            f"{newest[1].approved_by} — and nothing says which is in force. A vendor document names "
+            "its approver, so guessing here would attribute it to a person who may not have been "
+            "the one who signed."
+        )
 
     if approval is None:
         raise UnapprovedContent(
@@ -147,9 +163,9 @@ def sign_off(session: Session, package_revision_id: UUID) -> SignedOff:
 def assert_vendor_safe(findings: Sequence[IdentifiedFinding], signed_off: SignedOff) -> None:
     """Raise unless every finding in the render was covered by the sign-off.
 
-    Two ways this fails, and both are the same mistake seen from different ends: a finding the
-    approval never listed, and a finding belonging to a different package revision than the one
-    signed off. Either produces a document that cites an approval covering something else.
+    Coverage only. Whether the approval is even *for* this package revision is checked by
+    `render_vendor_redline`, which is the caller that holds the package — this function is given a
+    `SignedOff` and a list of findings and cannot tell what package they belong to.
     """
     if isinstance(findings, str) or not isinstance(findings, Sequence):
         raise TypeError("findings must be a sequence of IdentifiedFinding values")

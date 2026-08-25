@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from io import BytesIO
@@ -347,7 +347,9 @@ def test_the_derived_section_says_so_when_there_are_none(tmp_path: Path) -> None
     text = _text(tmp_path, stored.key)
 
     assert "Derived expectations" in text
-    assert "None." in text
+    # Specific to this section. A bare `"None." in text` cannot fail — the unplaced and abstention
+    # sections each print their own "None." — so it would have asserted nothing.
+    assert "No value in this report was calculated" in text
 
 
 def test_an_abstention_has_no_derived_values() -> None:
@@ -425,9 +427,16 @@ def _stored_finding(session: Session, revision: PackageRevision) -> StoredFindin
 
 
 def _approve(
-    session: Session, revision: PackageRevision, findings: Sequence[StoredFinding], by: str
+    session: Session,
+    revision: PackageRevision,
+    findings: Sequence[StoredFinding],
+    by: str,
+    when: datetime | None = None,
 ) -> Approval:
+    """`when` is explicit so a test about ordering does not depend on the clock."""
     approval = Approval(package_revision_id=revision.id, approved_by=by)
+    if when is not None:
+        approval.created_at = when
     session.add(approval)
     session.flush()
     session.add_all(
@@ -484,13 +493,20 @@ def test_a_re_approved_revision_uses_the_sign_off_in_force(
     sessions: sessionmaker[Session],
 ) -> None:
     """The latest approval governs. The earlier one stays in the table — `Approval` is immutable so
-    the history of who accepted what survives a re-review."""
+    the history of who accepted what survives a re-review.
+
+    The two approvals are written with explicit, ordered timestamps rather than left to the clock.
+    A test that relied on two flushes landing at different microseconds would be asserting the
+    ordering it is supposed to be checking.
+    """
     with unit_of_work(sessions) as session:
         revision = _stored_revision(session)
         first = _stored_finding(session, revision)
         second = _stored_finding(session, revision)
-        _approve(session, revision, [first], by="raj")
-        _approve(session, revision, [first, second], by="anant")
+        _approve(session, revision, [first], by="raj", when=APPROVED_AT)
+        _approve(
+            session, revision, [first, second], by="anant", when=APPROVED_AT + timedelta(hours=1)
+        )
         revision_id = revision.id
         both = {first.id, second.id}
 
@@ -499,6 +515,52 @@ def test_a_re_approved_revision_uses_the_sign_off_in_force(
 
     assert signed.approved_by == "anant"
     assert signed.finding_ids == both
+
+
+def test_two_approvals_at_the_same_instant_are_refused(
+    sessions: sessionmaker[Session],
+) -> None:
+    """Nothing says which is in force, and the only available tiebreak is a random UUID.
+
+    Ordering by it would attribute a vendor document to whichever approver's id happened to sort
+    higher — a decision dressed up as an ordering. Refusing puts the question to a person.
+    """
+    with unit_of_work(sessions) as session:
+        revision = _stored_revision(session)
+        finding = _stored_finding(session, revision)
+        _approve(session, revision, [finding], by="raj", when=APPROVED_AT)
+        _approve(session, revision, [finding], by="anant", when=APPROVED_AT)
+        revision_id = revision.id
+
+    with (
+        unit_of_work(sessions) as session,
+        pytest.raises(UnapprovedContent, match="which is in force"),
+    ):
+        sign_off(session, revision_id)
+
+
+# ---------------------------------------------------------------------------
+# A clearance that could not be attributed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("approved_by", ["", "   ", "\t"])
+def test_a_clearance_with_no_named_approver_is_refused(approved_by: str) -> None:
+    """The report prints this as an attribution. A blank one puts a document in front of a vendor
+    claiming sign-off by nobody, which reads as approved and is not."""
+    with pytest.raises(ValueError, match="must name its approver"):
+        VendorClearance(approval_id=APPROVAL, approved_by=approved_by, approved_at=APPROVED_AT)
+
+
+def test_a_clearance_with_a_naive_timestamp_is_refused() -> None:
+    """A naive timestamp printed in a vendor document is a time in an unstated zone, and "when was
+    this approved?" is the question the line exists to answer."""
+    with pytest.raises(ValueError, match="timezone-aware"):
+        VendorClearance(
+            approval_id=APPROVAL,
+            approved_by="anant",
+            approved_at=datetime(2026, 8, 25, 9, 30),  # noqa: DTZ001
+        )
 
 
 # ---------------------------------------------------------------------------

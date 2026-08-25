@@ -151,6 +151,24 @@ class VendorClearance:
     approved_by: str
     approved_at: datetime
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.approval_id, UUID):
+            raise TypeError("approval_id must be a UUID")
+        if not isinstance(self.approved_by, str) or not self.approved_by.strip():
+            raise ValueError(
+                "a clearance must name its approver. The report prints this as an attribution, so "
+                "a blank one puts a document in front of a vendor claiming sign-off by nobody — "
+                "which reads as approved and is not."
+            )
+        if not isinstance(self.approved_at, datetime):
+            raise TypeError("approved_at must be a datetime")
+        if self.approved_at.tzinfo is None:
+            raise ValueError(
+                "approved_at must be timezone-aware. A naive timestamp printed in a vendor document "
+                "is a time in an unstated zone, and 'when was this approved?' is the question the "
+                "line exists to answer."
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class RedlinePage:
