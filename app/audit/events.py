@@ -21,6 +21,7 @@ Verification: ``tests/audit/test_events.py``.
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from uuid import UUID
 
@@ -62,6 +63,12 @@ class AuditCategory(StrEnum):
 #: Named rather than left null. "who did this?" answered with an empty column is indistinguishable
 #: from a record whose actor was lost, and the two want different responses.
 SYSTEM_ACTOR = "system"
+
+#: The shape `current_trace_id` produces: 32 lowercase hex characters (W3C).
+#:
+#: Lowercase specifically, not case-insensitive. The same trace written both ways would not join to
+#: itself in a report, and the column is what a trail is reconciled against.
+_TRACE_ID = re.compile(r"[0-9a-f]{32}")
 
 
 class AuditEvent(Base, TimestampedUUID, Immutable):
@@ -127,7 +134,9 @@ def emit(
     after it failed.
 
     `trace_id` defaults to the active trace, so a caller inside a request does not have to thread it
-    through. Pass it explicitly only when recording something on behalf of another trace.
+    through. Pass it explicitly only when recording something on behalf of another trace — and it is
+    checked against the shape `current_trace_id` produces, since a hand-passed one is exactly the
+    case where a request id or a span id gets supplied by mistake.
 
     Raises rather than returning a failure: the caller's operation must not proceed unaudited, and a
     return value invites being ignored.
@@ -140,6 +149,13 @@ def emit(
         )
     if not target_type.strip():
         raise ValueError("an audit event must say what kind of thing target_id refers to")
+    if trace_id is not None and not _TRACE_ID.fullmatch(trace_id):
+        raise ValueError(
+            f"trace_id must be 32 lowercase hex characters, not {trace_id!r}. `String(32)` would "
+            "store a malformed one happily, and the event would then cite a trace nobody can open "
+            "— audit evidence pointing at nothing, which is worse than the honest `None` this "
+            "argument already allows."
+        )
 
     event = AuditEvent(
         category=category.value,

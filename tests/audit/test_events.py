@@ -247,13 +247,23 @@ def test_the_target_index_exists_so_the_common_question_is_answerable(
 @pytest.mark.parametrize(
     ("actor", "target_type"),
     [
+        ("", "packages"),
         ("   ", "packages"),
         ("\t", "packages"),
         ("\n", "packages"),
+        ("anant", ""),
         ("anant", "   "),
         ("anant", "\t\n"),
     ],
-    ids=["spaces", "tab", "newline", "spaces-target", "tab-newline-target"],
+    ids=[
+        "empty",
+        "spaces",
+        "tab",
+        "newline",
+        "empty-target",
+        "spaces-target",
+        "tab-newline-target",
+    ],
 )
 def test_the_database_rejects_whitespace_where_emit_would(
     actor: str, target_type: str, sessions: sessionmaker[Session]
@@ -263,6 +273,10 @@ def test_the_database_rejects_whitespace_where_emit_would(
     A bare `length(...) > 0` accepts "   ", which answers "who did this?" with whitespace — no more
     useful than the blank the constraint exists to prevent. Asserted by inserting directly, because
     the point is the path that bypasses `emit`.
+
+    The empty string is included alongside the whitespace: `^[[:space:]]*$` rejects it too, and a
+    regression narrowing the pattern to `+` would otherwise leave the plainest case of missing
+    attribution passing.
     """
     from sqlalchemy.exc import IntegrityError
 
@@ -274,4 +288,36 @@ def test_the_database_rejects_whitespace_where_emit_would(
                 target_id=uuid4(),
                 target_type=target_type,
             )
+        )
+
+
+@pytest.mark.parametrize(
+    "trace_id",
+    [
+        "not-a-trace",
+        "ABCDEF01234567890ABCDEF012345678",
+        "0123456789abcdef",
+        "0123456789abcdef0123456789abcde",
+        " 0123456789abcdef0123456789abcd",
+    ],
+    ids=["prose", "uppercase", "too-short", "one-short", "padded"],
+)
+def test_a_malformed_explicit_trace_is_refused(
+    trace_id: str, sessions: sessionmaker[Session]
+) -> None:
+    """`String(32)` would store any of these, and the event would cite a trace nobody can open.
+
+    Uppercase is refused rather than normalised: the same trace written both ways would not join to
+    itself, and silently rewriting a caller's id hides that they passed the wrong thing. The
+    defaulted path cannot produce these — this is the hand-passed one, which is exactly where a
+    request id or a span id gets supplied by mistake.
+    """
+    with pytest.raises(ValueError, match="32 lowercase hex"), unit_of_work(sessions) as session:
+        emit(
+            session,
+            category=AuditCategory.STATE_CHANGE,
+            actor=SYSTEM_ACTOR,
+            target_id=uuid4(),
+            target_type="packages",
+            trace_id=trace_id,
         )
