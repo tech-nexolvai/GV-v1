@@ -339,6 +339,24 @@ class LocalStore:
 
         return self._path(key).as_uri()
 
+    def delete(self, key: str) -> bool:
+        """Remove the artifact and its integrity sidecar. Returns whether anything was removed.
+
+        The sidecar goes too, and after the bytes. Left behind it would claim a digest for content
+        that is not there, and `exists()` would keep saying `True` for an artifact that cannot be
+        read — a store that lies about what it holds is worse than one missing a file.
+
+        Ordering matters if the process dies between the two unlinks: bytes gone and sidecar present
+        makes `exists()` false, which is the truthful answer. The other order would leave readable
+        bytes with no digest to check them against.
+        """
+
+        target = self._path(key)
+        removed = target.is_file()
+        target.unlink(missing_ok=True)
+        self._integrity_path(key).unlink(missing_ok=True)
+        return removed
+
     def upload_ticket(self, key: str, *, content_type: str, expires_in: timedelta) -> UploadTicket:
         """Issue an HMAC-signed ticket permitting one write to ``key`` until it expires.
 

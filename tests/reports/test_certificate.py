@@ -134,6 +134,9 @@ class MemoryStore:
     def upload_ticket(self, key: str, *, content_type: str, expires_in: timedelta) -> UploadTicket:
         raise NotImplementedError((key, content_type, expires_in))
 
+    def delete(self, key: str) -> bool:
+        return self.objects.pop(key, None) is not None
+
 
 def test_issued_certificate_is_content_addressed_and_idempotent() -> None:
     """Input: same approval issued twice. Output: one immutable key carrying the certificate hash."""

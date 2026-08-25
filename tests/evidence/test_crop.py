@@ -164,6 +164,10 @@ class FailingStore:
     def upload_ticket(self, key: str, *, content_type: str, expires_in: timedelta) -> UploadTicket:
         raise NotImplementedError
 
+    def delete(self, key: str) -> bool:
+        """Nothing was ever written, so there is nothing to remove."""
+        return False
+
 
 def test_storage_failure_is_an_explicit_review_not_partial_evidence() -> None:
     """Input: failed artifact write. Outcome: REVIEW_REQUIRED and no artifact or URI."""

@@ -35,8 +35,17 @@ def sessions(postgres_engine: object) -> sessionmaker[Session]:
 # ---------------------------------------------------------------------------
 
 
-def test_the_six_audited_categories_are_all_declared() -> None:
-    """Backend §11 lists six. A category nobody declared is one no report counts."""
+def test_the_audited_categories_are_all_declared() -> None:
+    """Backend §11 lists six; there are seven.
+
+    `ARTIFACT_DELETION` was added by #258, and it is the one category §11 does not name because
+    deletion is the event whose own evidence is the thing being removed — without it the trail would
+    be complete about everything except its own gaps.
+
+    The set is asserted exactly rather than by membership, so a category added without a migration
+    fails here. The `CHECK` constraint hardcodes these values, which is how
+    `ModelInvocationOutcome.FAILED` came to be rejected by the database for as long as it was.
+    """
     assert {member.value for member in AuditCategory} == {
         "STATE_CHANGE",
         "RULE_PUBLICATION",
@@ -44,6 +53,7 @@ def test_the_six_audited_categories_are_all_declared() -> None:
         "REVIEW_ACTION",
         "EXCEPTION",
         "ARTIFACT_DOWNLOAD",
+        "ARTIFACT_DELETION",
     }
 
 
