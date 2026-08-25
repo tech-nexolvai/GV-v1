@@ -40,7 +40,7 @@ from evidence.polygon import Polygon
 __all__ = [
     "DrawingView",
     "TagStyle",
-    "ViewIdentity",
+    "ViewKey",
     "ViewMatch",
     "ViewTag",
     "normalise_tag",
@@ -84,8 +84,21 @@ class ViewTag:
 
 
 @dataclass(frozen=True, slots=True)
-class ViewIdentity:
+class ViewKey:
     """What makes two views the same view.
+
+    **Named `ViewKey`, not `ViewIdentity`, and that is a correction.** `extraction/model/items.py`
+    already defines a `ViewIdentity` — `(document_version_id, page, tag)` with the tag required — and
+    #164 added a second type under the same name in the same package. Two same-named types meaning
+    different things is worse than either alone: a reader cannot tell which one a signature refers to,
+    and swapping the import would still type-check.
+
+    They genuinely differ rather than merely overlapping: `items.ViewIdentity` requires a non-empty tag,
+    so it cannot express an untagged view, which is this story's third acceptance criterion. This is
+    therefore a distinct concept needing a distinct name, not a duplicate to delete.
+
+    **Consolidating the two into one type is architecture and belongs to the admin** — it would change
+    `DrawingItem.view`, which is another story's contract.
 
     A type rather than a tuple, so the untagged case cannot be flattened into the tagged one by accident.
     `tag` is the normalised tag for a tagged view; `region_key` is set instead for an untagged one, and
@@ -133,7 +146,7 @@ class DrawingView:
         return self.tag is not None
 
     @property
-    def identity(self) -> ViewIdentity:
+    def identity(self) -> ViewKey:
         """`(page, tag)` for a tagged view; `(page, region)` for an untagged one.
 
         The untagged branch is what stops every unlabelled region on a sheet collapsing into one view.
@@ -141,8 +154,8 @@ class DrawingView:
         outline in the same place really are the same view.
         """
         if self.tag is not None:
-            return ViewIdentity(self.document_version_id, self.page, tag=self.tag.normalised)
-        return ViewIdentity(
+            return ViewKey(self.document_version_id, self.page, tag=self.tag.normalised)
+        return ViewKey(
             self.document_version_id,
             self.page,
             region_key=_region_key(self.region),

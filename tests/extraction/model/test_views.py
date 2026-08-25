@@ -23,7 +23,7 @@ from evidence.polygon import Polygon
 from extraction.model.views import (
     DrawingView,
     TagStyle,
-    ViewIdentity,
+    ViewKey,
     ViewTag,
     normalise_tag,
     view_containing,
@@ -177,9 +177,9 @@ def test_an_untagged_view_and_a_tagged_one_are_never_the_same() -> None:
 def test_an_identity_must_use_exactly_one_basis() -> None:
     """Neither would make every view equal; both would make the tag redundant."""
     with pytest.raises(ValueError, match="exactly one"):
-        ViewIdentity(DOC, 0)
+        ViewKey(DOC, 0)
     with pytest.raises(ValueError, match="exactly one"):
-        ViewIdentity(DOC, 0, tag="D", region_key="0.1:0.1")
+        ViewKey(DOC, 0, tag="D", region_key="0.1:0.1")
 
 
 # ---------------------------------------------------------------------------
@@ -385,3 +385,36 @@ def test_this_module_does_not_reach_the_verdict_engine() -> None:
 
     for forbidden in ("verdict", "rules", "retrieval"):
         assert forbidden not in imported, f"extraction/model/views.py imports {forbidden}"
+
+
+def test_no_two_modules_in_the_drawing_model_define_the_same_type_name() -> None:
+    """The guard for the mistake this rename fixes.
+
+    #164 added a second `ViewIdentity` to `extraction/model/`, alongside the one `items.py` already had —
+    two same-named types meaning different things in one package. A reader cannot tell which a signature
+    refers to, and swapping the import would type-check. It reached `main` before I noticed.
+
+    So the package's public type names are checked for collisions. This is the same argument
+    `vocabulary/page_types.py` makes about `app/models/document.py` declaring its own identical copy:
+    *"there is exactly one definition rather than two that happen to agree."*
+    """
+    import ast
+    from collections import defaultdict
+    from pathlib import Path
+
+    import extraction.model as package
+
+    directory = Path(package.__file__).parent
+    defined: dict[str, list[str]] = defaultdict(list)
+
+    for source in sorted(directory.glob("*.py")):
+        tree = ast.parse(source.read_text())
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+                defined[node.name].append(source.name)
+
+    collisions = {name: files for name, files in defined.items() if len(files) > 1}
+    assert not collisions, (
+        "these type names are defined in more than one module of extraction/model/, so a signature "
+        f"naming one is ambiguous: {collisions}"
+    )
