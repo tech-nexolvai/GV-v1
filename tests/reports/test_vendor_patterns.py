@@ -370,12 +370,16 @@ def test_the_aggregates_cannot_be_edited_by_a_caller(
     with unit_of_work(sessions) as session:
         revision = _revision(session, VENDOR)
         snapshot = _snapshot(session)
-        _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=2))
+        failed = _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=2))
+        _correct(session, failed, revision, NOW - timedelta(days=2))
 
     with unit_of_work(sessions) as session:
         report = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
 
     for aggregate in (report.recurring_failures, report.correction_hotspots):
+        # Non-empty first. An empty immutable mapping raises on assignment just as a populated one
+        # does, so without this the test would keep passing if the report stopped finding anything.
+        assert aggregate, "the seeded data should appear in both aggregates"
         with pytest.raises(TypeError):
             aggregate["anything"] = ()  # type: ignore[index]
 
@@ -399,11 +403,15 @@ def test_the_same_data_produces_the_same_report_twice(
         first = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
         second = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
 
-    assert dict(first.recurring_failures) == dict(second.recurring_failures)
-    keys = list(first.recurring_failures)
-    assert keys == sorted(keys), "snapshot keys are not in a stable order"
-    for ids in first.recurring_failures.values():
-        assert list(ids) == sorted(ids, key=str), "finding ids are not in a stable order"
+    assert first.recurring_failures, "the seeded failures should appear, or this asserts nothing"
+    # Compared as item lists, not as dicts: `==` on two dicts ignores key order, which is the one
+    # property this test exists to check.
+    assert list(first.recurring_failures.items()) == list(second.recurring_failures.items())
+    for report in (first, second):
+        keys = list(report.recurring_failures)
+        assert keys == sorted(keys), "snapshot keys are not in a stable order"
+        for ids in report.recurring_failures.values():
+            assert list(ids) == sorted(ids, key=str), "finding ids are not in a stable order"
 
 
 @pytest.mark.parametrize("window", [timedelta(0), timedelta(days=-1)])
