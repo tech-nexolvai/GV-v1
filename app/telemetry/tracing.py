@@ -21,11 +21,11 @@ backend, nothing at all — is an operations decision with cost and data-residen
 this module's to make. Without an exporter, spans still carry real ids, so `trace_id` correlation across
 logs works today and choosing a backend later changes configuration rather than code.
 
-**What is not done yet.** #259 also requires that trace context survive the Hatchet boundary and that a
-finding be traceable to the model call and page region behind it. Neither is in this module; both need the
-workflow and extraction call sites to adopt `traced()`. This is the foundation those need, landed early
-because the export's unrecognised-outcome warning needed a `trace_id` and inventing a second convention for
-it was the one outcome worth avoiding.
+**Crossing the workflow boundary.** A Hatchet task runs in another process, minutes later, and carries
+none of this automatically. `carrier()` and `incoming_context()` are the two halves: the outbox captures
+the context in the caller's transaction — so it is the *request's* context, not the dispatcher's — and the
+worker resumes from it. See `workflow/outbox.py`; the column exists because telemetry is not a start
+argument and does not belong in a workflow's input contract.
 
 Source: `AGENTS.md` §6 · Design: `docs/DESIGN_CONTROLS.md` §3.1 ·
 Verification: `tests/telemetry/test_tracing.py`
@@ -51,6 +51,7 @@ __all__ = [
     "TRACE_ID_STATE",
     "DrawingContentInTrace",
     "UnknownSpanAttribute",
+    "carrier",
     "configure_tracing",
     "current_trace_id",
     "incoming_context",
@@ -78,6 +79,20 @@ SPAN_ATTRS: Final = (
     # enforce — and because the value is caller-supplied, it also meant an inbound header could put content
     # on a span that `_checked` would have refused. Declaring it is the honest fix.
     "request_id",
+    # The two ends of the chain the design asks for. §3.1 names the attributes that identify *where* in
+    # the pipeline a span sits; these name *what it produced*, and without them a finding and the model
+    # call behind it are two spans in one trace with nothing joining them to the rows they wrote.
+    #
+    # Both are row ids, not content: `model_invocations.id` and `findings.id`. What the model was asked
+    # and what it answered stay in the database, where they are already recorded and access-controlled —
+    # putting a prompt or a crop on a span is exactly what §6 forbids.
+    "model_invocation_id",
+    "finding_id",
+    # The evidence region a reading came from, as a reference. Not the crop: `evidence/gate.py` writes
+    # the polygon in normalised stored space and the crop is a stored artifact, so a span carries the
+    # artifact's key or hash and a reader follows it. §3.1 asks for "page/region"; `page_index` is the
+    # page and this is the region.
+    "evidence_ref",
 )
 
 #: The response header carrying the trace id, so a caller can quote it when reporting a problem.
@@ -156,6 +171,26 @@ def current_trace_id() -> str | None:
     if not context.is_valid:
         return None
     return format_trace_id(context.trace_id)
+
+
+def carrier() -> dict[str, str]:
+    """The active trace context as a W3C carrier, for handing to something that runs later.
+
+    The mirror of `incoming_context`. A `traceparent` is a short ASCII string, so it travels anywhere a
+    string does — an HTTP header, a queue message, a JSONB column — and it is what makes a workflow
+    started ten seconds from now part of the trace of the request that asked for it.
+
+    Empty when there is no active span. That is a real answer, not a failure: work enqueued by a cron job
+    or a test has no request behind it, and inventing a trace id would connect it to nothing.
+
+    **Captured where the work is decided, not where it is dispatched.** `workflow/outbox.py` calls this
+    inside the caller's transaction, so the context stored is the request's. Capturing it in the
+    dispatcher instead would produce a trace that begins at a background poll — technically a trace, and
+    useless for the question this exists to answer, which is *what asked for this?*
+    """
+    into: dict[str, str] = {}
+    propagate.inject(into)
+    return into
 
 
 def incoming_context(headers: Mapping[str, str]) -> Context | None:

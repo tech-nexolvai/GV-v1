@@ -53,6 +53,18 @@ class OutboxEntry(Base, TimestampedUUID):
     """Start arguments. `enqueue()` rejects floats in here — a persisted approximate number is
     exactly what `AGENTS.md` §6 forbids, and JSONB would happily keep one."""
 
+    trace_context: Mapped[dict[str, str] | None] = mapped_column(JSONB, default=None)
+    """The W3C trace context of whatever asked for this work, captured when the row was written.
+
+    Separate from `payload` on purpose. The payload is the workflow's input contract, and telemetry is
+    not one of its arguments — a workflow that started behaving differently because a `traceparent`
+    appeared in its input would be a workflow whose behaviour depends on whether tracing is on.
+
+    `NULL` when nothing was being traced, which is the honest answer for work enqueued by a cron job or
+    a test. The dispatcher then starts a fresh trace rather than inventing a parent that connects to
+    nothing.
+    """
+
     dispatched_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=None)
     attempts: Mapped[int] = mapped_column(default=0)
 
