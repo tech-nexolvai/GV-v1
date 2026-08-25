@@ -97,11 +97,51 @@ $$;
 """
 
 
+def _guarded_in_current_schema(guarded: list[tuple[str, str]]) -> str:
+    """Wrap per-table statements so each runs only if that table exists.
+
+    **Why this guard exists, added by #303.** The grant list is derived from `Base.metadata` — which the
+    module docstring above defends, and rightly: a grant is the current privilege set, not a historical
+    fact, and two copies would drift in the direction of more privilege. But `Base.metadata` names *every*
+    mapped table, including ones created by migrations that run **after** this one. So the first story to
+    add a table made `alembic upgrade head` fail here on a fresh database, with a `GRANT` on a relation
+    that did not exist yet.
+
+    The check is in SQL rather than in Python on purpose. `tests/app/test_migration_matches_models.py`
+    renders every migration with `--sql` against no database at all, so a `SELECT` here would break that
+    check — and, as the docstring above says about `current_schema()`, the fix for the check would have
+    been to weaken it. A `DO` block renders offline exactly as it runs.
+
+    A table skipped here is granted by the migration that creates it, which re-applies this same block
+    once the table exists. The declaration stays single-sourced; only the timing moves.
+    """
+    body = "\n".join(f"""    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = gv_schema AND table_name = {table!r}
+    ) THEN
+        EXECUTE format({statement!r}, gv_schema);
+    END IF;""" for table, statement in guarded)
+    return f"""
+DO $$
+DECLARE
+    gv_schema text := current_schema();
+BEGIN
+{body}
+END
+$$;
+"""
+
+
 def upgrade() -> None:
     connection = op.get_bind()
 
     for role in Role:
         connection.execute(text(CREATE_ROLE.format(role=role.value)))
+
+    # Per-table grants are collected separately because each has to be guarded on the table
+    # existing. See `_guarded_in_current_schema` for why — in short, this migration's grant list is
+    # derived from `Base.metadata`, so it names tables that *later* migrations create.
+    guarded: list[tuple[str, str]] = []
 
     statements: list[str] = [
         # USAGE only. CREATE would let a role add a table — or a view over a table it was not
@@ -121,9 +161,10 @@ def upgrade() -> None:
         statements.append(f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM {role.value}")
         for table, privileges in grants.privileges.items():
             granted = ", ".join(privileges)
-            statements.append(f'GRANT {granted} ON TABLE %I."{table}" TO {role.value}')
+            guarded.append((table, f'GRANT {granted} ON TABLE %I."{table}" TO {role.value}'))
 
     connection.execute(text(_in_current_schema(*statements)))
+    connection.execute(text(_guarded_in_current_schema(guarded)))
 
 
 def downgrade() -> None:

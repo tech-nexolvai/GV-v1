@@ -57,6 +57,7 @@ from app.models.matching import (
 )
 from app.models.outbox import OutboxEntry
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
+from app.models.parameters import ParameterSet, ParameterValue
 from app.models.review import (
     Approval,
     ApprovedFinding,
@@ -134,6 +135,8 @@ __all__ = [
     "PackageStateEvent",
     "Page",
     "PageType",
+    "ParameterSet",
+    "ParameterValue",
     "Project",
     "ReviewAction",
     "ReviewActionKind",
