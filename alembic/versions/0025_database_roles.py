@@ -131,7 +131,13 @@ def downgrade() -> None:
 
     A role is cluster-wide and may own objects or be a member of something outside this schema, so
     `DROP ROLE` from a per-schema downgrade could fail, or take something with it that this migration
-    never created. Revoking is the reversal of what was granted here.
+    never created. Revoking is the reversal of what was *granted* here.
+
+    **Deliberately not symmetric.** `upgrade()` also revokes everything from `PUBLIC`, and this does
+    not put it back. Restoring a privilege to `PUBLIC` on the way down would hand it to all four
+    roles — a downgrade that widened access is not a downgrade anybody wants, and nothing in this
+    system depended on `PUBLIC` holding those privileges in the first place. Said here rather than
+    left for the next reader to assume the migration reverses cleanly.
     """
     statements = [
         statement

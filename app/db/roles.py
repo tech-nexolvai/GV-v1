@@ -47,7 +47,11 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Final
 
-import app.models  # noqa: F401  (side-effect import, must come after Base)
+# Imported for its side effects: a model registers itself in `Base.metadata` only when its module
+# is imported, and every grant below is derived from that metadata. See the module docstring — this
+# import is the difference between a real declaration and an empty one. Order does not matter here;
+# `app.models` pulls in `app.db.base` itself, and nothing under it imports this module.
+import app.models  # noqa: F401
 from app.db.base import Base, immutable_table_names
 
 __all__ = [
@@ -114,7 +118,12 @@ VERDICT_READS: Final = (
     "verdict_inputs",
 )
 
-#: What a verdict writes. All three are immutable, so `INSERT` and `SELECT` only.
+#: What a verdict writes — `INSERT` and `SELECT`, never `UPDATE`.
+#:
+#: `findings` and `finding_evidence` carry `Immutable`, so append-only is the schema's rule as well
+#: as this one. `check_runs` does not, and is held to it anyway: a verdict records that a check ran
+#: and does not revise the record afterwards. A re-run is a new run, which is what makes two results
+#: comparable rather than one of them having quietly become the other.
 VERDICT_WRITES: Final = ("check_runs", "finding_evidence", "findings")
 
 #: Tables the worker needs beyond what the API does — the queue and the run records.
@@ -175,7 +184,13 @@ def _app_grants() -> dict[str, tuple[str, ...]]:
     """
     grants = _operational_grants()
     for table in WORKER_ONLY:
-        grants.pop(table, None)
+        if table not in grants:
+            raise RuntimeError(
+                f"{table!r} is listed in WORKER_ONLY but is not a mapped table. Renaming a table "
+                "and leaving the old name here would silently widen the API's privileges: the "
+                "removal would quietly do nothing, and gv_app would keep the queue."
+            )
+        del grants[table]
     return grants
 
 

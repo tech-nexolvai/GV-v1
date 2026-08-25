@@ -61,11 +61,21 @@ def _as_role(engine: Engine, role: Role, statement: str) -> None:
 
     Rolled back rather than committed: several of these are writes that are *expected* to succeed,
     and a test that left rows behind would make the next assertion depend on the order tests ran in.
+
+    Assuming the role is asserted separately from running the statement. If `SET LOCAL ROLE` failed —
+    the role was never created, say — the caller's `pytest.raises` would otherwise swallow it, and a
+    test looking for "permission denied" would report a missing role as a passing privilege check.
     """
     with engine.connect() as connection:
         transaction = connection.begin()
         try:
-            connection.execute(text(f"SET LOCAL ROLE {role.value}"))
+            try:
+                connection.execute(text(f"SET LOCAL ROLE {role.value}"))
+            except ProgrammingError as error:  # pragma: no cover - only on a broken migration
+                raise AssertionError(
+                    f"could not assume {role.value}: {error}. The migration did not create it, so "
+                    "every privilege assertion in this file would have run as the owner."
+                ) from error
             connection.execute(text(statement))
         finally:
             transaction.rollback()
