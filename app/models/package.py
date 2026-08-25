@@ -49,9 +49,16 @@ class Project(Base, TimestampedUUID):
     __tablename__ = "projects"
 
     name: Mapped[str] = mapped_column(String(200))
-    # The A7 parameter-set table has not landed yet. As with GoldCase.document_version_id,
-    # retain the identity now and add its foreign key in a later, additive migration.
-    company_standards_id: Mapped[UUID | None] = mapped_column(default=None)
+    company_standards_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("parameter_sets.id", ondelete="RESTRICT"), default=None
+    )
+    """The company-standard parameter set this project starts from, if it has one (#303).
+
+    This column has existed since migration 0003 with no foreign key, because the table it points at did
+    not exist — the comment here used to say so. Migration 0027 adds the constraint additively.
+
+    `RESTRICT`: deleting a parameter set that a project still names would leave the project pointing at
+    nothing, and the numbers behind its findings are what that pointer is for."""
 
 
 class Package(Base, TimestampedUUID):
