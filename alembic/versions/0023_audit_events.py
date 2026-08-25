@@ -47,7 +47,8 @@ def upgrade() -> None:
             "category IN (" + ", ".join(f"'{name}'" for name in _CATEGORIES) + ")",
             name="audit_events_category",
         ),
-        sa.CheckConstraint("length(actor) > 0", name="audit_events_actor_named"),
+        sa.CheckConstraint("length(btrim(actor)) > 0", name="audit_events_actor_named"),
+        sa.CheckConstraint("length(btrim(target_type)) > 0", name="audit_events_target_typed"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_audit_events")),
     )
     op.create_index(

@@ -41,13 +41,13 @@ def _migration_tables() -> tuple[str, ...]:
     Reading only the first migration made this guard fail the moment a new `Immutable` model landed
     — which it did, correctly, for `audit_events`: the marker was there and the trigger was not.
     """
-    names: list[str] = []
+    names: set[str] = set()
     for path in sorted(VERSIONS.glob("*.py")):
         spec = importlib.util.spec_from_file_location(f"append_only_{path.stem}", path)
         assert spec and spec.loader
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        names.extend(getattr(module, "IMMUTABLE_TABLES", ()))
+        names.update(getattr(module, "IMMUTABLE_TABLES", ()))
     return tuple(sorted(names))
 
 

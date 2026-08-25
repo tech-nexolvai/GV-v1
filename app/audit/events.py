@@ -97,7 +97,11 @@ class AuditEvent(Base, TimestampedUUID, Immutable):
             "category IN (" + ", ".join(f"'{member.value}'" for member in AuditCategory) + ")",
             name="audit_events_category",
         ),
-        CheckConstraint("length(actor) > 0", name="audit_events_actor_named"),
+        # btrim, not length: "   " is zero information and would otherwise satisfy a bare length
+        # check, leaving "who did this?" answered by whitespace. `emit` refuses it too — this is
+        # the same rule at the boundary a direct INSERT would go through.
+        CheckConstraint("length(btrim(actor)) > 0", name="audit_events_actor_named"),
+        CheckConstraint("length(btrim(target_type)) > 0", name="audit_events_target_typed"),
         # The audit question is almost always "what happened to this thing, in order?", so the
         # index matches it rather than indexing the columns individually.
         Index("ix_audit_events_target", "target_type", "target_id", "created_at"),

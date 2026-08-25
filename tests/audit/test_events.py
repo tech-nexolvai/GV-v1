@@ -194,8 +194,9 @@ def test_an_absent_trace_is_null_rather_than_a_zero_id(
             target_id=uuid4(),
             target_type="packages",
         )
-        assert event.trace_id is None or len(event.trace_id) == 32
-        assert event.trace_id != "0" * 32
+        # Deterministic: these tests run outside any span, so the trace is absent rather than
+        # "absent or a valid id" — an assertion that accepts both could not fail.
+        assert event.trace_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +242,30 @@ def test_the_target_index_exists_so_the_common_question_is_answerable(
     """
     names = {index["name"] for index in inspect(postgres_engine).get_indexes("audit_events")}
     assert "ix_audit_events_target" in names
+
+
+@pytest.mark.parametrize(
+    ("actor", "target_type"),
+    [("   ", "packages"), ("anant", "   ")],
+    ids=["whitespace-actor", "whitespace-target-type"],
+)
+def test_the_database_rejects_whitespace_where_emit_would(
+    actor: str, target_type: str, sessions: sessionmaker[Session]
+) -> None:
+    """`emit` refuses these, and so must the table.
+
+    A bare `length(...) > 0` accepts "   ", which answers "who did this?" with whitespace — no more
+    useful than the blank the constraint exists to prevent. Asserted by inserting directly, because
+    the point is the path that bypasses `emit`.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError), unit_of_work(sessions) as session:
+        session.add(
+            AuditEvent(
+                category=AuditCategory.STATE_CHANGE.value,
+                actor=actor,
+                target_id=uuid4(),
+                target_type=target_type,
+            )
+        )
