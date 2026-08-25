@@ -176,7 +176,13 @@ def _decode_reference(reference: str) -> tuple[str, str] | None:
         document = decoded["document_version_id"]
     except (ValueError, TypeError, KeyError):
         return None
-    if isinstance(page, bool) or not isinstance(page, int) or not isinstance(document, str):
+    # A blank document id and a negative page both survive a shape check and produce a citation
+    # that looks followable: "page 1" of document "", or page 0 of a set whose first sheet is 1. The
+    # column exists so somebody can go and look, and a reader who looks and fails to find it doubts
+    # the finding rather than the export.
+    if isinstance(page, bool) or not isinstance(page, int) or page < 0:
+        return None
+    if not isinstance(document, str) or not document.strip():
         return None
     return (str(page + 1), document)
 

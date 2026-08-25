@@ -415,7 +415,18 @@ def test_both_sheets_agree_about_what_is_readable() -> None:
     sheet come to disagree about the same reference, and a reader comparing them has no way to tell
     which is right.
     """
-    for reference in ('{"page": 0}', '{"document_version_id": "x"}', "not json", '{"page": "1"}'):
+    for reference in (
+        '{"page": 0}',
+        '{"document_version_id": "x"}',
+        "not json",
+        '{"page": "1"}',
+        # Shape-valid and still not a citation: no document can be retrieved by an empty id, and a
+        # negative page renders as page 0 of a set whose first sheet is 1.
+        '{"page": 0, "document_version_id": ""}',
+        '{"page": 0, "document_version_id": "   "}',
+        '{"page": -1, "document_version_id": "11111111-1111-1111-1111-111111111111"}',
+        '{"page": true, "document_version_id": "11111111-1111-1111-1111-111111111111"}',
+    ):
         operands = (
             TracedOperand(name="w", value=_inches(1), source="SHOP", evidence_ref=reference),
         )
