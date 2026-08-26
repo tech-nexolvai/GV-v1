@@ -11,9 +11,11 @@ date under this policy" stays answerable after the drawing itself is gone. A ret
 erased the record along with the bytes would destroy the audit trail it operates under, and the
 question retention exists to answer is precisely *what did you have, and what happened to it?*
 
-**Nothing disappears without a record.** Every deletion emits an `ARTIFACT_DELETION` audit event in
-the same transaction as the database work. Backend §11 lists six audit categories; this is a seventh,
-because deletion is the one event whose own evidence is the thing being removed.
+**Nothing disappears without a record.** Every deletion emits an `ARTIFACT_DELETION` audit event, and
+the audit trail is committed *before* any byte is touched — storage cannot join a database
+transaction, so one of the two has to go first, and a record of a deletion that has not happened yet
+is recoverable where a deletion with no record is not. Backend §11 lists six audit categories; this is
+a seventh, because deletion is the one event whose own evidence is the thing being removed.
 
 **Legal hold wins, always.** A project under hold has nothing deleted, however old. The check is a
 positive one — *is there an unreleased hold?* — rather than an exclusion applied afterwards, so a
@@ -269,11 +271,24 @@ def apply_retention(
     clock could not be tested for the day an artifact expires, and the boundary is where a schedule
     is most often wrong by one.
 
-    Writes in the caller's transaction and does not commit it — the audit events and whatever else
-    the caller is doing land together, the same contract `app/audit/events.py` keeps. The storage
-    deletions cannot participate in that transaction, which is why they happen **after** the audit
-    row is written: a rolled-back transaction then leaves bytes that are still there and an audit
-    trail that never claimed otherwise. The other order would record a deletion that did not happen.
+    **`commit=True` commits the session, and that is a deliberate departure.** Everything else in
+    this codebase writes in the caller's transaction and leaves the commit to them. Here it cannot:
+    storage is a second system with no shared transaction, so the audit row and the byte removal
+    cannot land together whatever order they are written in. One of two things has to be possible.
+
+    Either the bytes go first — and a rollback afterwards discards the audit rows, leaving content
+    deleted with no record of it, which is the state this module calls undetectable by construction.
+    Or the audit rows are committed first — and a crash before the storage call leaves a row saying
+    an artifact was deleted while its bytes are still there.
+
+    The second is recoverable and the first is not. A row claiming a deletion that has not happened
+    yet is corrected by the next pass, which deletes the bytes and appends a second row; a deletion
+    with no row is invisible forever. So the audit trail is committed **before** any byte is touched,
+    and this function owns that commit. The cost is an occasional duplicate audit row after a crash,
+    which over-records rather than under-records — the direction to fail in.
+
+    A caller that wants the audit rows in its own transaction should run a dry pass, do its own work,
+    and call again; it must not wrap this in a `unit_of_work` it intends to roll back.
     """
     if not isinstance(commit, bool):
         raise TypeError("commit must be a bool")
@@ -307,8 +322,6 @@ def apply_retention(
             committed=False,
         )
 
-    deleted: list[Expired] = []
-    already_gone: list[Expired] = []
     for item in expired:
         emit(
             session,
@@ -321,6 +334,16 @@ def apply_retention(
                 else "evidence_artifacts"
             ),
         )
+
+    # Committed before a single byte is removed, and this is the whole reason the function owns its
+    # commit. Storage cannot join this transaction, so the choice is between a record of a deletion
+    # that has not happened yet and a deletion with no record. The first is corrected by the next
+    # pass; the second is invisible forever.
+    session.commit()
+
+    deleted: list[Expired] = []
+    already_gone: list[Expired] = []
+    for item in expired:
         if store.delete(item.storage_key):
             deleted.append(item)
         else:

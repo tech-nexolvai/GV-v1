@@ -137,6 +137,29 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Drops the table; refuses to narrow the category set once it has been used.
+
+    `audit_events` is append-only — a trigger from `0024` refuses `DELETE`, and no role holds the
+    privilege either. So once a single `ARTIFACT_DELETION` row exists, narrowing the `CHECK` back to
+    six categories cannot succeed: the constraint would be violated by rows nothing is permitted to
+    remove, and the migration would fail partway with the table already dropped.
+
+    Refusing up front, with the count and an explanation, is the honest behaviour. The alternative —
+    deleting the offending rows — would have this migration destroy audit records to make its own
+    downgrade tidy, which is the exact thing the append-only trigger exists to prevent.
+    """
+    connection = op.get_bind()
+    recorded = connection.execute(
+        sa.text("SELECT count(*) FROM audit_events WHERE category = 'ARTIFACT_DELETION'")
+    ).scalar_one()
+    if recorded:
+        raise RuntimeError(
+            f"{recorded} ARTIFACT_DELETION audit row(s) exist, and audit_events is append-only, so "
+            "this downgrade cannot narrow the category constraint back to six. Those rows are the "
+            "record that content was deleted; removing them to tidy a downgrade is what the "
+            "append-only trigger exists to prevent."
+        )
+
     op.drop_index("ix_legal_holds_active", table_name="legal_holds")
     op.drop_table("legal_holds")
     _recheck(_PREVIOUS_CATEGORIES)
