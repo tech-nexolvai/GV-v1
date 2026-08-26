@@ -1,5 +1,11 @@
 # --- Proprietary client inputs — NEVER commit ---
-data/
+# Anchored with a leading slash on purpose. Unanchored, `data/` matches a directory of that name
+# ANYWHERE in the tree, and it silently swallowed `frontend/main/src/data/` — the frontend's mock
+# data and its type definitions — so eight modules on `frontend-init-dev` import a file that was
+# never committed and the app cannot build. The rule still has to catch the real thing, which is the
+# client's drawings at the repository root; `tests/test_repo_hygiene.py` asserts both halves by
+# asking git rather than by reading this file.
+/data/
 eval/gold_set/cases/
 *.dwg
 # Client spreadsheets belong in data/, which is ignored above. This catches the case
