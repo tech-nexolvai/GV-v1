@@ -35,7 +35,14 @@ from datetime import datetime
 from fractions import Fraction
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime
@@ -76,7 +83,7 @@ class ParameterSet(Base, TimestampedUUID, Immutable):
 
     __tablename__ = "parameter_sets"
 
-    set_id: Mapped[str] = mapped_column(String(71), unique=True, index=True)
+    set_id: Mapped[str] = mapped_column(String(71), index=True)
     """The content hash from `rules.parameters.ParameterSet.set_id`, as `sha256:<64 hex>`.
 
     Unique, because two rows sharing a content hash would mean the same numbers stored twice — and a
@@ -98,6 +105,11 @@ class ParameterSet(Base, TimestampedUUID, Immutable):
         UniqueConstraint(
             "project_id", "layer", "version", name="uq_parameter_sets_project_layer_version"
         ),
+        # Named explicitly rather than written as `unique=True` on the column. `unique=True` plus
+        # `index=True` produces one *unique index*; migration 0027 created a unique *constraint* and
+        # a separate plain index, and alembic compares those as different objects — which is what put
+        # `main` red. The database is the authority here, so the model says what the database has.
+        UniqueConstraint("set_id", name="uq_parameter_sets_set_id"),
         CheckConstraint(f"layer IN ({_LAYER_SQL})", name="layer_in_vocabulary"),
         CheckConstraint("version >= 1", name="version_positive"),
         CheckConstraint("set_id ~ '^sha256:[0-9a-f]{64}$'", name="set_id_is_a_digest"),
@@ -121,8 +133,8 @@ class ParameterValue(Base, TimestampedUUID, Immutable):
     )
     name: Mapped[str] = mapped_column(String(200), index=True)
 
-    numerator: Mapped[int] = mapped_column()
-    denominator: Mapped[int] = mapped_column()
+    numerator: Mapped[int] = mapped_column(BigInteger())
+    denominator: Mapped[int] = mapped_column(BigInteger())
     """The value as an exact fraction. **Two integers, never a float.**
 
     `1/8` is `1` over `8` and returns as `Fraction(1, 8)`. A `float` column would store `0.125` and lose
