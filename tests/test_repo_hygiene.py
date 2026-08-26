@@ -89,6 +89,58 @@ def test_gitignore_covers_the_sensitive_paths() -> None:
         assert needed in text, f".gitignore no longer covers {needed!r}"
 
 
+def _is_ignored(relative_path: str) -> bool:
+    """Ask git, rather than reading the file and guessing how the pattern would match."""
+    return (
+        subprocess.run(
+            ["git", "check-ignore", "-q", relative_path],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "data/drawings/vanity.pdf",
+        "data/checklists/ct.xlsx",
+        "eval/gold_set/cases/case_001.json",
+    ],
+)
+def test_client_material_is_actually_ignored(path: str) -> None:
+    """The rule that matters, asked of git instead of inferred from the text.
+
+    The check above is a substring search, and it passed happily throughout the bug this was added
+    for: `data/` appears inside `/data/`, inside a comment, and inside prose. It cannot tell whether
+    the pattern still *does* anything.
+    """
+    assert _is_ignored(path), f"{path} is no longer ignored — client material could be committed"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["frontend/main/src/data/mock.ts", "frontend/main/src/data/fixtures.ts"],
+)
+def test_the_frontends_own_data_directory_is_not_swept_up(path: str) -> None:
+    """**The bug this pair exists for.**
+
+    `data/` was unanchored, so it matched a directory of that name anywhere in the tree. It silently
+    excluded `frontend/main/src/data/` — the frontend's mock data and its type definitions — and
+    eight modules on `frontend-init-dev` import a file that was therefore never committed. Nothing
+    failed loudly; the directory simply was not there and the app could not build.
+
+    Anchoring to `/data/` fixes it, and this asserts the fix in the direction the substring check
+    cannot see. An edit that drops the leading slash to "tidy up" fails here.
+    """
+    assert not _is_ignored(path), (
+        f"{path} is ignored again — the client-data rule has been un-anchored and is swallowing "
+        "the frontend's source"
+    )
+
+
 #: CodeRabbit's published config schema, vendored so the check is offline and deterministic. A test that
 #: fetched it would fail whenever the network did, for reasons having nothing to do with this repository —
 #: and a review-config check that goes red for unrelated reasons is one people learn to ignore.
