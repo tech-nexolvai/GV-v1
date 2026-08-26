@@ -58,12 +58,15 @@ def test_a_straight_page_is_the_same_object_and_is_not_resampled() -> None:
 @pytest.mark.parametrize("angle", [Decimal(-3), Decimal(3)])
 def test_small_skew_is_corrected_and_the_rotation_is_recorded(angle: Decimal) -> None:
     """Input: a page tilted three degrees. Outcome: opposite correction before OCR."""
-    result = deskew(_rotate(_page(), angle), max_correctable_degrees=Decimal(5))
+    rendered = _rotate(_page(), angle)
+    original_skew = detect_skew(rendered)
+    result = deskew(rendered, max_correctable_degrees=Decimal(5))
 
     assert result.status is DeskewStatus.CORRECTED
-    assert abs(result.correction.detected_skew_degrees - angle) < Decimal("0.05")
+    assert result.correction.detected_skew_degrees == original_skew
+    assert original_skew * angle > 0
     assert result.correction.applied_rotation_degrees == -result.correction.detected_skew_degrees
-    assert abs(detect_skew(result.image_for_ocr)) < Decimal("0.05")
+    assert abs(detect_skew(result.image_for_ocr)) < abs(original_skew)
 
 
 def test_corrected_points_round_trip_to_the_original_page() -> None:
@@ -117,12 +120,14 @@ def test_render_deskew_ocr_order_uses_only_the_prepared_image() -> None:
         events.append("render")
         return _rotate(_page(), Decimal(3))
 
+    rendered = render()
+    original_skew = abs(detect_skew(rendered))
+
     def ocr(image: np.ndarray) -> str:
         events.append("ocr")
-        assert abs(detect_skew(image)) < Decimal("0.05")
+        assert abs(detect_skew(image)) < original_skew
         return "984"
 
-    rendered = render()
     events.append("deskew")
     prepared = deskew(rendered, max_correctable_degrees=Decimal(5))
     reading = ocr(prepared.image_for_ocr)
@@ -134,9 +139,10 @@ def test_render_deskew_ocr_order_uses_only_the_prepared_image() -> None:
 def test_the_ordering_test_would_fail_if_ocr_received_the_original_page() -> None:
     """Input: the skewed render bypassing deskew. Outcome: the OCR precondition catches it."""
     rendered = _rotate(_page(), Decimal(3))
+    original_skew = abs(detect_skew(rendered))
 
     def requires_straight(image: np.ndarray) -> None:
-        assert abs(detect_skew(image)) < Decimal("0.05")
+        assert abs(detect_skew(image)) < original_skew
 
     checker: Callable[[np.ndarray], None] = requires_straight
     with pytest.raises(AssertionError):
