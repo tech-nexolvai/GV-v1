@@ -249,8 +249,10 @@ def grant_body() -> str:
     newest table — the one nobody has thought about yet — held by nobody, or still covered by
     whatever `PUBLIC` had.
 
-    Each `GRANT` is guarded by `to_regclass`, so this can run at a point in the chain where a table
-    does not exist yet. That is not hypothetical: `0025` derived its grants from live model metadata,
+    Each **table** `GRANT` is guarded by `to_regclass`, so this can run at a point in the chain where
+    a table does not exist yet. The schema-level `GRANT USAGE` and the `REVOKE`s are unguarded: a
+    schema is always there by the time any migration runs, and `REVOKE ... ON ALL TABLES` is a no-op
+    on a schema whose tables have not been created. That is not hypothetical: `0025` derived its grants from live model metadata,
     and the moment `0027` added `legal_holds` the earlier migration began failing on a table two
     revisions in its own future. The guard makes a grant mean *"if this table is here, hold it to
     this"*, which is what a replayable privilege declaration should mean.

@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import io
 import logging
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
+from itertools import count
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -40,10 +42,15 @@ from app.models.document import (
     Page,
     SourceArtifact,
 )
-from app.models.evidence import CanonicalObservation, EvidenceArtifact
+from app.models.evidence import (
+    CanonicalObservation,
+    EvidenceArtifact,
+    EvidenceArtifactKind,
+)
 from app.models.package import Package, PackageRevision, PackageState, Project
 from app.models.retention import LegalHold
 from app.retention.policy import (
+    _EVIDENCE_CLASS,
     DELETABLE,
     RETENTION,
     ArtifactClass,
@@ -124,12 +131,17 @@ def _original(
     return artifact.id, key, version
 
 
+#: Pages are unique per (document version, index), and several crops in one test need several
+#: pages. A counter keeps the fixtures independent of how many crops a test happens to make.
+_page_index = count()
+
+
 def _crop(
     session: Session, store: LocalStore, version: DocumentVersion, *, age: timedelta, kind: str
 ) -> tuple[UUID, str]:
     page = Page(
         document_version_id=version.id,
-        index=0,
+        index=next(_page_index),
         content_hash="a" * 64,
         width_pt=Decimal(1000),
         height_pt=Decimal(800),
@@ -503,7 +515,7 @@ class CapturingSink(logging.Handler):
 
 
 @pytest.fixture
-def sink() -> CapturingSink:
+def sink() -> Iterator[CapturingSink]:
     handler = CapturingSink()
     root = logging.getLogger()
     previous = root.level
@@ -571,3 +583,137 @@ def test_a_storage_key_is_loggable_and_a_hash_is_too(
 
 def project_in(held: tuple[UUID, ...], project: Project) -> bool:
     return project.id in held
+
+
+# ---------------------------------------------------------------------------
+# The branches that decide whether content is deleted
+# ---------------------------------------------------------------------------
+
+
+def test_a_crop_under_legal_hold_is_not_deleted(
+    factory: sessionmaker[Session], store: LocalStore
+) -> None:
+    """The hold check on the evidence path, which every other hold test here misses.
+
+    `_expired_evidence` applies its own check, so a crop belonging to a held project could have been
+    deleted with the whole hold suite still green — the same worst outcome, reached through the
+    other of the two code paths.
+    """
+    with unit_of_work(factory) as session:
+        project = _project(session)
+        _, original_key, version = _original(session, store, project, age=timedelta(days=9999))
+        _, crop_key = _crop(session, store, version, age=timedelta(days=9999), kind="crop")
+        session.add(LegalHold(project_id=project.id, reason="dispute", placed_by="anant"))
+
+    with unit_of_work(factory) as session:
+        report = apply_retention(session, store, now=NOW, commit=True)
+
+    assert report.deleted == ()
+    assert store.exists(crop_key), "a crop was deleted while its project was under hold"
+    assert store.exists(original_key)
+
+
+def test_every_declared_artifact_kind_has_a_schedule() -> None:
+    """The realistic version of "an unrecognised kind is kept".
+
+    An unrecognised kind cannot be inserted at all: `evidence_artifacts` has a `CHECK` on `kind`, and
+    the table is append-only so the value cannot be edited afterwards either. A test that tried to
+    create one would be testing the constraint, not the policy.
+
+    What *can* happen is somebody adding a member to `EvidenceArtifactKind` with a migration and
+    forgetting the schedule — at which point `_EVIDENCE_CLASS.get` returns `None` and the artifact is
+    kept forever, silently. This asserts the two vocabularies agree, so that omission fails here
+    instead of becoming a storage bill nobody can explain.
+    """
+    for kind in EvidenceArtifactKind:
+        assert kind.value in _EVIDENCE_CLASS, (
+            f"{kind.value} has no retention schedule, so artifacts of that kind would be kept "
+            "forever without anything reporting it"
+        )
+        assert _EVIDENCE_CLASS[kind.value] in DELETABLE
+
+
+def test_an_unmapped_kind_is_kept_rather_than_guessed() -> None:
+    """The fallback itself, at the level it can be reached.
+
+    Keeping costs storage; guessing at a schedule deletes a customer's content under a rule nobody
+    wrote. The lookup returns `None` rather than a default, which is what makes the safe choice the
+    automatic one.
+    """
+    assert _EVIDENCE_CLASS.get("thumbnail") is None
+
+
+def test_the_boundary_is_exact_for_an_original(
+    factory: sessionmaker[Session], store: LocalStore
+) -> None:
+    """`now` is injectable so this is testable, and a schedule is most often wrong by one.
+
+    Exactly at the period is kept; one second past it goes. Stated both ways because a comparison
+    that flipped from `<` to `<=` would still pass a test that only checked one side.
+    """
+    period = RETENTION[ArtifactClass.ORIGINAL]
+
+    with unit_of_work(factory) as session:
+        project = _project(session)
+        _, exactly_key, _ = _original(session, store, project, age=period)
+        _, past_key, _ = _original(
+            session, store, _project(session), age=period + timedelta(seconds=1)
+        )
+
+    with unit_of_work(factory) as session:
+        apply_retention(session, store, now=NOW, commit=True)
+
+    assert store.exists(exactly_key), "an artifact exactly at its period was deleted"
+    assert not store.exists(past_key), "an artifact one second past its period was kept"
+
+
+def test_the_boundary_is_exact_for_a_crop(
+    factory: sessionmaker[Session], store: LocalStore
+) -> None:
+    """The evidence path compares differently — `created >= now - period` in Python, against the
+    originals' `created_at < cutoff` in SQL. Two comparisons is two chances to be off by one."""
+    period = RETENTION[ArtifactClass.CROP]
+
+    with unit_of_work(factory) as session:
+        project = _project(session)
+        _, _, version = _original(session, store, project, age=timedelta(days=1))
+        _, exactly_key = _crop(session, store, version, age=period, kind="crop")
+        _, past_key = _crop(session, store, version, age=period + timedelta(seconds=1), kind="crop")
+
+    with unit_of_work(factory) as session:
+        apply_retention(session, store, now=NOW, commit=True)
+
+    assert store.exists(exactly_key)
+    assert not store.exists(past_key)
+
+
+def test_the_audit_trail_survives_a_rollback_after_the_bytes_are_gone(
+    factory: sessionmaker[Session], store: LocalStore
+) -> None:
+    """The exposure that made the ordering wrong the first time.
+
+    Storage cannot join a database transaction, so either the bytes go first — and a rollback
+    discards the audit rows, leaving content deleted with no record — or the audit trail is
+    committed first. Only the second is recoverable, so `apply_retention` commits before touching
+    storage, and a caller's later failure cannot take the record with it.
+    """
+    with unit_of_work(factory) as session:
+        project = _project(session)
+        artifact_id, key, _ = _original(session, store, project, age=timedelta(days=9999))
+
+    with (
+        pytest.raises(RuntimeError, match="something else failed"),
+        unit_of_work(factory) as session,
+    ):
+        apply_retention(session, store, now=NOW, commit=True)
+        raise RuntimeError("something else failed after the pass")
+
+    assert not store.exists(key), "the bytes were removed"
+
+    with unit_of_work(factory) as session:
+        events = list(
+            session.scalars(select(AuditEvent).where(AuditEvent.target_id == artifact_id))
+        )
+
+    assert len(events) == 1, "the record of the deletion was lost with the caller's rollback"
+    assert events[0].category == AuditCategory.ARTIFACT_DELETION.value

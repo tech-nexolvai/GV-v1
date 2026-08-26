@@ -139,6 +139,11 @@ class ArtifactStore(Protocol):
         Returns `False` rather than raising when the key is already gone. Retention is re-run on a
         schedule and interrupted halfway more often than anyone plans for, so "already deleted" is
         the ordinary case on the second pass, not an error.
+
+        **`False` means absent, never failed.** A deletion that could not be carried out — a
+        permission error, an unreachable backend, a read-only volume — must raise. Reporting it as
+        `False` would let a retention pass record "already gone" for content that is still there and
+        still billing, and the schedule would report itself satisfied while nothing had expired.
         """
 
         ...

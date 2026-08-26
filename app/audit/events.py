@@ -33,7 +33,9 @@ from app.telemetry.tracing import current_trace_id
 
 
 class AuditCategory(StrEnum):
-    """The six things backend §11 requires an audit record for.
+    """The seven things this system keeps an audit record for.
+
+    Backend §11 names six; `ARTIFACT_DELETION` is the seventh, added by #258 — see its docstring.
 
     A closed set, and deliberately not extensible by a caller passing a string: a category nobody
     declared is a category no report counts, which is how a class of event goes unwatched.
