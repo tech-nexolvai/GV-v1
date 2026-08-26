@@ -178,6 +178,10 @@ def detect_skew(image: PageImage) -> Decimal:
     if width == 0 or height == 0:
         return Decimal(0)
     detected = 90.0 - raw_angle if width < height else -raw_angle
+    # A line has no arrow, so its orientation repeats every 180 degrees. OpenCV builds have
+    # returned equivalent horizontal rectangles as either 0 or 180 degrees; normalising before
+    # applying the caller's bound keeps that representation detail from becoming a false review.
+    detected = ((detected + 90.0) % 180.0) - 90.0
     if detected == 0.0:
         return Decimal(0)
     return _decimal(detected)
