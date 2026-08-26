@@ -83,6 +83,11 @@ DIMENSIONS: Final = (
     # abstentions rising is the system getting more careful or the input getting worse, and either
     # way it is not visible in a total.
     "outcome",
+    # F6.1. Kept as dimensions on the shared F2 path so an absent upgrade measurement is visible
+    # without creating a second telemetry system.
+    "upgrade_trigger",
+    "upgrade_measurement",
+    "measurement_status",
 )
 
 
@@ -207,6 +212,79 @@ METRICS: Final[Mapping[str, MetricSpec]] = {
             description="Findings produced, by outcome and rule version. A behaviour change is "
             "attributable to a rule change only if the snapshot is on the series.",
             requires=("check_type", "rule_snapshot_id", "outcome"),
+        ),
+        MetricSpec(
+            name="upgrade_trigger_measurement_status",
+            kind="counter",
+            unit="1",
+            description="Whether one F6 upgrade-trigger quantity was measured in this sample.",
+            requires=("upgrade_trigger", "upgrade_measurement", "measurement_status"),
+        ),
+        *(
+            MetricSpec(
+                name=name,
+                kind="histogram",
+                unit=unit,
+                description=description,
+                requires=("upgrade_trigger",),
+            )
+            for name, unit, description in (
+                (
+                    "upgrade_separate_worker_pools_concurrent_packages",
+                    "1",
+                    "Concurrent packages observed for the separate-worker-pools trigger.",
+                ),
+                (
+                    "upgrade_separate_worker_pools_queue_depth",
+                    "1",
+                    "Worker queue depth observed for the separate-worker-pools trigger.",
+                ),
+                (
+                    "upgrade_managed_postgres_available",
+                    "1",
+                    "Database availability sample: one available, zero unavailable.",
+                ),
+                (
+                    "upgrade_managed_postgres_recovery_events",
+                    "1",
+                    "Database recovery events observed for the managed-Postgres trigger.",
+                ),
+                (
+                    "upgrade_temporal_recovery_interventions",
+                    "1",
+                    "Manual workflow recovery interventions observed for the Temporal trigger.",
+                ),
+                (
+                    "upgrade_qdrant_pgvector_latency_ns",
+                    "ns",
+                    "pgvector query latency observed for the dedicated-vector-service trigger.",
+                ),
+                (
+                    "upgrade_qdrant_transaction_latency_ns",
+                    "ns",
+                    "Transactional latency observed beside pgvector load.",
+                ),
+                (
+                    "upgrade_opensearch_bm25_corpus_size",
+                    "1",
+                    "BM25 corpus size observed for the OpenSearch trigger.",
+                ),
+                (
+                    "upgrade_opensearch_bm25_latency_ns",
+                    "ns",
+                    "BM25 query latency observed for the OpenSearch trigger.",
+                ),
+                (
+                    "upgrade_self_hosted_vlm_managed_cost_micros",
+                    "1",
+                    "Recorded managed-VLM spend in integer micros.",
+                ),
+                (
+                    "upgrade_self_hosted_vlm_gpu_baseline_micros",
+                    "1",
+                    "Measured GPU-hour baseline in integer micros.",
+                ),
+            )
         ),
     )
 }
