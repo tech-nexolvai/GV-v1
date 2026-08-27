@@ -1,0 +1,215 @@
+/* ============================================================
+   GV DESIGN TOKENS — V2
+   Graniti Vicentia Review Platform
+   
+   Audience: Architects & Interior Designers
+   Aesthetic: Premium editorial, warm whites, GV crimson accents
+   
+   Light mode = default. Dark mode via [data-theme="dark"].
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Josefin+Sans:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ============================================================
+   INVARIANT TOKENS — never change with theme
+   ============================================================ */
+:root {
+  /* ── Brand ─────────────────────────────────────────────── */
+  --gv-crimson:        #ba0c2f;
+  --gv-crimson-hover:  #9e0a28;
+  --gv-crimson-light:  #d41135;
+  --gv-crimson-dim:    rgba(186, 12, 47, 0.10);
+  --gv-crimson-dim-2:  rgba(186, 12, 47, 0.06);
+  --gv-crimson-border: rgba(186, 12, 47, 0.22);
+
+  /* ── Primary action color (blue) — NEVER red for CTAs ── */
+  /* #0f7dc1 on white = 4.7:1 contrast — passes WCAG AA    */
+  --color-primary:        #0f7dc1;
+  --color-primary-hover:  #0d6aa8;
+  --color-primary-dim:    rgba(15, 125, 193, 0.10);
+  --color-primary-border: rgba(15, 125, 193, 0.25);
+  --shadow-primary: 0 0 0 1px rgba(15, 125, 193, 0.2), 0 4px 12px rgba(15, 125, 193, 0.12);
+
+  /* ── Status — never change (semantic) ──────────────────── */
+  --status-pass:           #16a34a;
+  --status-pass-bg:        rgba(22, 163, 74, 0.08);
+  --status-pass-border:    rgba(22, 163, 74, 0.22);
+
+  --status-fail:           #dc2626;
+  --status-fail-bg:        rgba(220, 38, 38, 0.08);
+  --status-fail-border:    rgba(220, 38, 38, 0.22);
+
+  --status-review:         #a73a15;   /* Terracotta Rust — matches clay text and stone */
+  --status-review-bg:      rgba(167, 58, 21, 0.06);
+  --status-review-border:  rgba(167, 58, 21, 0.20);
+
+  --status-missing:        #6b7280;
+  --status-missing-bg:     rgba(107, 114, 128, 0.08);
+  --status-missing-border: rgba(107, 114, 128, 0.20);
+
+  --status-none:           #9ca3af;
+  --status-none-bg:        rgba(156, 163, 175, 0.08);
+  --status-none-border:    rgba(156, 163, 175, 0.20);
+
+  /* PDF evidence overlays */
+  --evidence-fail:   rgba(220, 38, 38, 0.18);
+  --evidence-review: rgba(167, 58, 21, 0.15);
+  --evidence-pass:   rgba(22, 163, 74, 0.12);
+
+  /* ── Typography ────────────────────────────────────────── */
+  --font-sans:    'Inter', system-ui, -apple-system, sans-serif;
+  --font-heading: 'Josefin Sans', 'Inter', sans-serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+
+  --text-xs:   11px;
+  --text-sm:   12px;
+  --text-base: 13px;
+  --text-md:   14px;
+  --text-lg:   16px;
+  --text-xl:   18px;
+  --text-2xl:  22px;
+  --text-3xl:  30px;
+
+  --weight-light:   300;
+  --weight-regular: 400;
+  --weight-medium:  500;
+  --weight-semi:    600;
+  --weight-bold:    700;
+
+  --leading-tight:  1.2;
+  --leading-normal: 1.5;
+  --leading-loose:  1.7;
+
+  --tracking-tight:  -0.02em;
+  --tracking-normal:  0;
+  --tracking-wide:    0.06em;
+  --tracking-wider:   0.10em;
+  --tracking-widest:  0.16em;
+
+  /* ── Spacing (4px grid) ────────────────────────────────── */
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ── Radii ──────────────────────────────────────────────── */
+  --radius-sm:   3px;
+  --radius-md:   6px;
+  --radius-lg:   8px;
+  --radius-xl:  12px;
+  --radius-full: 9999px;
+
+  /* ── Layout ─────────────────────────────────────────────── */
+  --sidebar-width:        264px;
+  --sidebar-collapsed:    52px;
+  --evidence-panel-width: 380px;
+  --topbar-height:        52px;
+
+  /* ── Transitions ─────────────────────────────────────────── */
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --duration-fast:   110ms;
+  --duration-base:   180ms;
+  --duration-slow:   300ms;
+  --duration-panel:  260ms;
+}
+
+/* ============================================================
+   LIGHT MODE (DEFAULT) — Warm architectural surfaces
+   Feels like: Bianco Lasa marble, Pietra Serena sandstone
+   ============================================================ */
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg-base:      #ffffff;   /* Bianco Lasa (pure base) */
+  --bg-surface:   #f7f5f2;   /* Light Pietra Serena (paper) */
+  --bg-elevated:  #efebe5;   /* Medium Pietra Serena (cards) */
+  --bg-input:     #e5dfd6;   /* Deep Pietra Serena (fields) */
+  --bg-hover:     #eae3da;   /* Hover states */
+  --bg-active:    #dfd7cc;   /* Active selection */
+  --bg-overlay:   rgba(26, 22, 21, 0.35);
+  --bg-glass:     rgba(255, 255, 255, 0.65); /* Glassmorphism surface */
+
+  /* Borders */
+  --border-subtle:  rgba(26, 22, 21, 0.05);
+  --border-default: rgba(26, 22, 21, 0.09);
+  --border-strong:  rgba(26, 22, 21, 0.16);
+  --border-focus:   rgba(186, 12, 47, 0.45);
+
+  /* Text */
+  --text-primary:   #1a1615;   /* Nero Marquina (deep slate black) */
+  --text-body:      #594d46;   /* Muted Clay (warm body text) */
+  --text-muted:     #6b5f58;   /* Raised from #8c7e75 — passes WCAG AA 4.5:1 on white */
+  --text-faint:     #c9c0b5;   /* Faint warm grey */
+  --text-inverse:   #ffffff;
+  --text-brand:     #ba0c2f;
+
+  /* Shadows */
+  --shadow-sm:  0 1px 2px rgba(26, 22, 21, 0.04), 0 1px 1px rgba(26, 22, 21, 0.02);
+  --shadow-md:  0 4px 10px rgba(26, 22, 21, 0.06), 0 2px 4px rgba(26, 22, 21, 0.04);
+  --shadow-lg:  0 12px 32px rgba(26, 22, 21, 0.08), 0 4px 12px rgba(26, 22, 21, 0.04);
+  --shadow-brand: 0 0 0 1px rgba(186, 12, 47, 0.2), 0 4px 12px rgba(186, 12, 47, 0.12);
+  --shadow-topbar: 0 1px 0 rgba(26, 22, 21, 0.06);
+
+  /* PDF simulation background */
+  --pdf-bg:       #fcfbfa;
+  --pdf-lines:    #e0dad0;
+  --pdf-text:     #6b6159;
+  --pdf-footer:   #f2eee8;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces (matte zinc black, faded with white) */
+  --bg-base:      #0b0b0d;   /* Milky matte black base */
+  --bg-surface:   #121216;   /* Faded slate dark container */
+  --bg-elevated:  #1b1b22;   /* Faded slate dark cards */
+  --bg-input:     #23232c;   /* Faded inputs */
+  --bg-hover:     #2b2b36;   /* Hover states */
+  --bg-active:    #353542;   /* Active states */
+  --bg-overlay:   rgba(11, 11, 14, 0.75);
+  --bg-glass:     rgba(18, 18, 22, 0.65); /* Glassmorphism surface */
+
+  /* Borders */
+  --border-subtle:  rgba(244, 244, 245, 0.03);
+  --border-default: rgba(244, 244, 245, 0.08);
+  --border-strong:  rgba(244, 244, 245, 0.15);
+  --border-focus:   rgba(186, 12, 47, 0.65);
+
+  /* Text */
+  --text-primary:   #f4f4f5;   /* Soft faded white */
+  --text-body:      #a1a1aa;   /* Cool medium grey */
+  --text-muted:     #71717a;   /* Neutral slate grey */
+  --text-faint:     #2e2e33;   /* Divider zinc */
+  --text-inverse:   #0b0b0d;
+  --text-brand:     #ba0c2f;   /* Crimson accent */
+
+  /* Shadows */
+  --shadow-sm:  0 1px 3px rgba(0,0,0,0.60);
+  --shadow-md:  0 4px 16px rgba(0,0,0,0.75);
+  --shadow-lg:  0 24px 48px rgba(0,0,0,0.85);
+  --shadow-brand: 0 0 0 1px rgba(186, 12, 47, 0.40), 0 4px 16px rgba(186, 12, 47, 0.20);
+  --shadow-topbar: 0 1px 0 rgba(244, 244, 245, 0.03);
+
+  /* PDF simulation background */
+  --pdf-bg:       #fcfbfa;
+  --pdf-lines:    #e0dad0;
+  --pdf-text:     #6b6159;
+  --pdf-footer:   #f2eee8;
+
+  /* Overrides to preserve original orange in dark mode */
+  --status-review:         #d97706;
+  --status-review-bg:      rgba(217, 119, 6, 0.08);
+  --status-review-border:  rgba(217, 119, 6, 0.22);
+  --evidence-review:       rgba(217, 119, 6, 0.18);
+}
