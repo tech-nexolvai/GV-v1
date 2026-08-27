@@ -11,16 +11,23 @@ const OUTCOME_CONFIG: Record<Outcome, { label: string; cls: string; dot: string 
 };
 
 const STATUS_CONFIG: Record<PackageStatus, { label: string; cls: string }> = {
+  CREATED:             { label: 'Created',            cls: 'badge--muted'      },
   UPLOADING:           { label: 'Uploading',          cls: 'badge--processing' },
+  UPLOADED:            { label: 'Uploaded',           cls: 'badge--processing' },
   INGESTING:           { label: 'Ingesting',          cls: 'badge--processing' },
   EXTRACTING:          { label: 'Extracting',         cls: 'badge--processing' },
   MATCHING:            { label: 'Matching',           cls: 'badge--processing' },
   VALIDATING_EVIDENCE: { label: 'Validating',         cls: 'badge--processing' },
   RUNNING_CHECKS:      { label: 'Running Checks',     cls: 'badge--processing' },
+  GENERATING_OUTPUTS:  { label: 'Generating Outputs', cls: 'badge--processing' },
   AWAITING_REVIEW:     { label: 'Awaiting Review',    cls: 'badge--review'     },
   APPROVED:            { label: 'Approved',           cls: 'badge--pass'       },
   CHANGES_REQUESTED:   { label: 'Changes Requested',  cls: 'badge--fail'       },
-  FAILED:              { label: 'Failed',             cls: 'badge--fail'       },
+  FAILED_RETRYABLE:    { label: 'Failed — Retrying',  cls: 'badge--processing' },
+  FAILED_PERMANENT:    { label: 'Failed',             cls: 'badge--fail'       },
+  NEEDS_INPUT:         { label: 'Needs Input',        cls: 'badge--review'     },
+  CANCELLED:           { label: 'Cancelled',          cls: 'badge--muted'      },
+  SUPERSEDED:          { label: 'Superseded',         cls: 'badge--muted'      },
 };
 
 // ── OutcomeBadge ─────────────────────────────────────────────
