@@ -1,0 +1,2240 @@
+{
+  "components": {
+    "schemas": {
+      "AcceptedOut": {
+        "description": "What an endpoint returns when it has accepted work rather than done it.\n\nCarries no result and no estimate. There is nothing truthful to say about either at this point,\nand a hopeful one would be read as a promise.",
+        "properties": {
+          "accepted_work_id": {
+            "format": "uuid",
+            "title": "Accepted Work Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "queued",
+            "title": "Status",
+            "type": "string"
+          },
+          "status_url": {
+            "title": "Status Url",
+            "type": "string"
+          },
+          "what_it_means": {
+            "default": "Recorded and waiting. Nothing has started yet \u2014 the work is committed to happen, and a dispatcher has not picked it up.",
+            "title": "What It Means",
+            "type": "string"
+          }
+        },
+        "required": [
+          "accepted_work_id",
+          "status_url"
+        ],
+        "title": "AcceptedOut",
+        "type": "object"
+      },
+      "ApplicabilityOut": {
+        "additionalProperties": false,
+        "description": "What a rule applies to: one discriminator and its branches, or everything of its type.",
+        "properties": {
+          "discriminator": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The field that selects a variant, e.g. `wall_config`.",
+            "title": "Discriminator"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "scope": {
+            "description": "`global` when the rule applies to every item of its product type, otherwise `discriminated`. A rule with no discriminator has to say so \u2014 ADR-0007 refuses to read an absent applicability as 'applies to everything'.",
+            "title": "Scope",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/components/schemas/ApplicabilityVariantOut"
+            },
+            "title": "Variants",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "version",
+          "snapshot_id",
+          "scope"
+        ],
+        "title": "ApplicabilityOut",
+        "type": "object"
+      },
+      "ApplicabilityVariantOut": {
+        "additionalProperties": false,
+        "description": "One branch of a rule's discriminator, e.g. `when: back_left_right`.",
+        "properties": {
+          "tolerance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exact authored tolerance as text \u2014 `1/8 in`, `UNCONFIRMED` when the client has not supplied one, or null when this exact-equality operation uses no tolerance. A string rather than a number on purpose: `1/8` is a fraction, and rendering it as 0.125 would put a float in the one place this project refuses to.",
+            "title": "Tolerance"
+          },
+          "tolerance_confirmed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no tolerance applies; otherwise whether its value is confirmed.",
+            "title": "Tolerance Confirmed"
+          },
+          "when": {
+            "title": "When",
+            "type": "string"
+          }
+        },
+        "required": [
+          "when",
+          "tolerance",
+          "tolerance_confirmed"
+        ],
+        "title": "ApplicabilityVariantOut",
+        "type": "object"
+      },
+      "AwaitingToleranceOut": {
+        "additionalProperties": false,
+        "description": "One rule that cannot be released, and how much of it is still a guess.",
+        "properties": {
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "unconfirmed": {
+            "title": "Unconfirmed",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "version",
+          "snapshot_id",
+          "unconfirmed"
+        ],
+        "title": "AwaitingToleranceOut",
+        "type": "object"
+      },
+      "DocumentKind": {
+        "description": "Kinds of versioned source document accepted by the V1 ingestion path.",
+        "enum": [
+          "architectural",
+          "shop",
+          "schedule",
+          "product_spec"
+        ],
+        "title": "DocumentKind",
+        "type": "string"
+      },
+      "DocumentRegistration": {
+        "additionalProperties": false,
+        "description": "A document about to be uploaded: what it is, and the exact bytes it will be.\n\nThere is no size field. A declared size nothing compares against would read as a check and be\nnone \u2014 the size recorded on the artifact is measured from the stored object at confirmation, which\nis a measurement rather than a claim. The hash is the one declaration, and it is the one that is\nchecked.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/DocumentKind",
+            "description": "What kind of source document this is, from the fixed V1 vocabulary."
+          },
+          "sha256": {
+            "description": "The SHA-256 of the file you are about to upload, lowercase hex. Hash it locally first. It is part of the storage key, so the upload ticket you get back permits writing exactly these bytes and nothing else.",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "sha256"
+        ],
+        "title": "DocumentRegistration",
+        "type": "object"
+      },
+      "DocumentVersionOut": {
+        "description": "One immutable upload, pinned to the exact bytes it represents.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "page_count": {
+            "title": "Page Count",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "source_artifact_id": {
+            "format": "uuid",
+            "title": "Source Artifact Id",
+            "type": "string"
+          },
+          "storage_key": {
+            "title": "Storage Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "document_id",
+          "source_artifact_id",
+          "sha256",
+          "page_count",
+          "storage_key",
+          "size_bytes",
+          "created_at"
+        ],
+        "title": "DocumentVersionOut",
+        "type": "object"
+      },
+      "EvidenceLocation": {
+        "description": "The immutable drawing location behind one operand.",
+        "properties": {
+          "authority": {
+            "title": "Authority",
+            "type": "string"
+          },
+          "canonical_observation_id": {
+            "format": "uuid",
+            "title": "Canonical Observation Id",
+            "type": "string"
+          },
+          "coordinate_space": {
+            "title": "Coordinate Space",
+            "type": "string"
+          },
+          "crop_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop Uri"
+          },
+          "document_role": {
+            "title": "Document Role",
+            "type": "string"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "page_id": {
+            "format": "uuid",
+            "title": "Page Id",
+            "type": "string"
+          },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "polygon": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Polygon",
+            "type": "array"
+          },
+          "semantic_type": {
+            "title": "Semantic Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_observation_id",
+          "document_version_id",
+          "page_id",
+          "page_index",
+          "polygon",
+          "coordinate_space",
+          "crop_uri",
+          "document_role",
+          "semantic_type",
+          "authority"
+        ],
+        "title": "EvidenceLocation",
+        "type": "object"
+      },
+      "ExactOperand": {
+        "description": "One exact operand, with evidence when it came from a drawing.",
+        "properties": {
+          "denominator": {
+            "title": "Denominator",
+            "type": "string"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence_status": {
+            "title": "Evidence Status",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "numerator",
+          "denominator",
+          "unit",
+          "evidence_status",
+          "evidence"
+        ],
+        "title": "ExactOperand",
+        "type": "object"
+      },
+      "ExportSummary": {
+        "description": "Counts, so a consumer that ignores every flag still cannot report a clean package.\n\nThe per-finding label can be filtered out of a view. A total sitting at the top of the payload is\nharder to lose, and \"42 findings, 39 of which abstained\" is a sentence that stops somebody saying the\ndrawings passed.",
+        "properties": {
+          "abstentions": {
+            "title": "Abstentions",
+            "type": "integer"
+          },
+          "by_outcome": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Outcome",
+            "type": "object"
+          },
+          "decisions": {
+            "title": "Decisions",
+            "type": "integer"
+          },
+          "findings": {
+            "title": "Findings",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "findings",
+          "decisions",
+          "abstentions",
+          "by_outcome"
+        ],
+        "title": "ExportSummary",
+        "type": "object"
+      },
+      "ExportedFinding": {
+        "description": "One finding's full chain, with whether the engine actually decided anything.",
+        "properties": {
+          "abstained": {
+            "title": "Abstained",
+            "type": "boolean"
+          },
+          "chain": {
+            "$ref": "#/components/schemas/FindingChain"
+          }
+        },
+        "required": [
+          "chain",
+          "abstained"
+        ],
+        "title": "ExportedFinding",
+        "type": "object"
+      },
+      "FindingChain": {
+        "description": "Everything persisted to explain and recompute one finding.",
+        "properties": {
+          "engine_version": {
+            "title": "Engine Version",
+            "type": "string"
+          },
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "operands": {
+            "items": {
+              "$ref": "#/components/schemas/ExactOperand"
+            },
+            "title": "Operands",
+            "type": "array"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "parameter_versions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Parameter Versions",
+            "type": "object"
+          },
+          "rule_snapshot": {
+            "$ref": "#/components/schemas/RuleSnapshotRecord"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "trace": {
+            "additionalProperties": true,
+            "title": "Trace",
+            "type": "object"
+          }
+        },
+        "required": [
+          "finding_id",
+          "outcome",
+          "severity",
+          "rule_snapshot",
+          "parameter_versions",
+          "operands",
+          "trace",
+          "engine_version"
+        ],
+        "title": "FindingChain",
+        "type": "object"
+      },
+      "FindingExportV1": {
+        "description": "The export envelope. Version first, so a consumer can check before it parses.",
+        "properties": {
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/ExportedFinding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ExportSummary"
+          }
+        },
+        "required": [
+          "schema_version",
+          "project_id",
+          "package_id",
+          "summary",
+          "findings"
+        ],
+        "title": "FindingExportV1",
+        "type": "object"
+      },
+      "FindingOut": {
+        "description": "One finding, with enough version information to go and reconstruct it.\n\nEvery version that could explain the result is here \u2014 the rule snapshot's content hash, the rule\nversion, the engine build, the parameter sets in force. `AGENTS.md` \u00a72.7: a finding that cannot\nbe attributed to the versions that produced it is an assertion rather than a record.",
+        "properties": {
+          "check_run_id": {
+            "format": "uuid",
+            "title": "Check Run Id",
+            "type": "string"
+          },
+          "check_type": {
+            "title": "Check Type",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "engine_version": {
+            "title": "Engine Version",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "package_revision_id": {
+            "format": "uuid",
+            "title": "Package Revision Id",
+            "type": "string"
+          },
+          "parameter_set_versions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Parameter Set Versions",
+            "type": "object"
+          },
+          "product_type": {
+            "title": "Product Type",
+            "type": "string"
+          },
+          "revision_number": {
+            "title": "Revision Number",
+            "type": "integer"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_snapshot_hash": {
+            "title": "Rule Snapshot Hash",
+            "type": "string"
+          },
+          "rule_snapshot_id": {
+            "format": "uuid",
+            "title": "Rule Snapshot Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          }
+        },
+        "required": [
+          "id",
+          "check_run_id",
+          "package_revision_id",
+          "revision_number",
+          "outcome",
+          "severity",
+          "rule_id",
+          "rule_version",
+          "rule_snapshot_id",
+          "rule_snapshot_hash",
+          "check_type",
+          "product_type",
+          "engine_version",
+          "parameter_set_versions",
+          "created_at"
+        ],
+        "title": "FindingOut",
+        "type": "object"
+      },
+      "FindingPage": {
+        "description": "One page of findings, plus how to ask for the next one.\n\n`next_cursor` is `None` when this is the last page \u2014 and that is the only way to know. A page\nshorter than `limit` is *not* a reliable end-of-list signal in any cursor scheme, and treating it\nas one is how a consumer stops early and reports a package as clean.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FindingOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "ordering": {
+            "default": "Critical first, and within one severity the failures before the abstentions and the abstentions before the passes. Ties are broken by oldest first, then by id, so the order is total and a page boundary always falls in the same place. Full key: severity (CRITICAL, MAJOR, MINOR, ADVISORY), then outcome (FAIL, REVIEW_REQUIRED, NOT_FOUND, NO_APPLICABLE_RULE, PASS), then created_at ascending, then id ascending.",
+            "title": "Ordering",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "limit"
+        ],
+        "title": "FindingPage",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "OperationOut": {
+        "additionalProperties": false,
+        "description": "One reviewed operation a rule may name, and the operands it takes.\n\nThis is a signature, not an implementation. A rule selects an operation by name from the typed\nregistry (`AGENTS.md` \u00a72.2); there is no field here, and none anywhere in the API, that could\ncarry executable text.",
+        "properties": {
+          "kind": {
+            "description": "`verdict` for an operation that decides an outcome, `derivation` for one that produces an intermediate value another operation consumes.",
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "operands": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Operand name to arity \u2014 `scalar` for one value, `list` for many.",
+            "title": "Operands",
+            "type": "object"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "kind",
+          "operands"
+        ],
+        "title": "OperationOut",
+        "type": "object"
+      },
+      "Outcome": {
+        "description": "What a check concluded.\n\nOnly ``PASS`` and ``FAIL`` are decisions. The other three are honest abstentions, and\nthe distinction matters: abstaining costs reviewer time, whereas a wrong ``PASS`` can be\nmanufactured. See :func:`is_decision`.",
+        "enum": [
+          "PASS",
+          "FAIL",
+          "NOT_FOUND",
+          "REVIEW_REQUIRED",
+          "NO_APPLICABLE_RULE"
+        ],
+        "title": "Outcome",
+        "type": "string"
+      },
+      "PackageCreate": {
+        "additionalProperties": false,
+        "description": "A new reviewable drawing package.",
+        "properties": {
+          "vendor": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who supplied the drawings, if it is known. Left null rather than guessed \u2014 an invented vendor name is worse than an absent one, because it reads as a fact.",
+            "title": "Vendor"
+          }
+        },
+        "title": "PackageCreate",
+        "type": "object"
+      },
+      "PackageOut": {
+        "description": "One package, and the revision documents currently attach to.\n\n`current_revision_number` is returned rather than left to be inferred. A package has several\nrevisions and a client that assumed \"the latest\" would eventually register a document against a\nsuperseded one (`docs/DESIGN_PLATFORM.md` \u00a75).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_revision_id": {
+            "format": "uuid",
+            "title": "Current Revision Id",
+            "type": "string"
+          },
+          "current_revision_number": {
+            "title": "Current Revision Number",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "vendor",
+          "created_at",
+          "current_revision_id",
+          "current_revision_number",
+          "state"
+        ],
+        "title": "PackageOut",
+        "type": "object"
+      },
+      "PackagePage": {
+        "description": "One page of packages, plus how to ask for the next one.\n\n`next_cursor` is `None` on the last page, and that is the only reliable end-of-list signal \u2014 a page\nshorter than `limit` is not one in any cursor scheme.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PackageOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "ordering": {
+            "title": "Ordering",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "ordering"
+        ],
+        "title": "PackagePage",
+        "type": "object"
+      },
+      "PresignedUpload": {
+        "description": "Where to send the bytes, how, and until when.\n\nReplay `method` and `required_headers` exactly. On a backend that signs headers, the same bytes\nsent with a different verb or a different `Content-Type` is a different request and is refused \u2014\nwhich is the ticket being narrow, not the storage being awkward.",
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "required_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Required Headers",
+            "type": "object"
+          },
+          "storage_key": {
+            "title": "Storage Key",
+            "type": "string"
+          },
+          "upload_url": {
+            "title": "Upload Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "storage_key",
+          "upload_url",
+          "method",
+          "expires_at",
+          "required_headers"
+        ],
+        "title": "PresignedUpload",
+        "type": "object"
+      },
+      "PublicationOut": {
+        "additionalProperties": false,
+        "description": "What was published, by whom, and on what basis.\n\nCarries the approver, the author and the regression summary because \"was this approved?\" is a\nweaker question than \"who approved it, who wrote it, and what was it checked against?\", and only\nthe second is worth anything when a finding is disputed months later.",
+        "properties": {
+          "approved_at": {
+            "format": "date-time",
+            "title": "Approved At",
+            "type": "string"
+          },
+          "approved_by": {
+            "title": "Approved By",
+            "type": "string"
+          },
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "production_ready": {
+            "title": "Production Ready",
+            "type": "boolean"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "regression_summary": {
+            "title": "Regression Summary",
+            "type": "string"
+          },
+          "release_note": {
+            "title": "Release Note",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/PublicationTarget"
+          },
+          "unconfirmed_tolerances": {
+            "title": "Unconfirmed Tolerances",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "rule_id",
+          "version",
+          "approved_by",
+          "author",
+          "rationale",
+          "regression_summary",
+          "target",
+          "approved_at",
+          "production_ready",
+          "unconfirmed_tolerances",
+          "release_note"
+        ],
+        "title": "PublicationOut",
+        "type": "object"
+      },
+      "PublicationRequest": {
+        "additionalProperties": false,
+        "description": "Which proposal is being approved, and what for.\n\nIt names a proposal rather than carrying one. Two reasons, and the second is the load-bearing\none: no rule content crosses this boundary, so no tolerance a client typed can reach the\nrulebook; and naming the exact content hash means the approver approves the bytes they read,\nnot whatever the proposal says by the time the request arrives.",
+        "properties": {
+          "snapshot_id": {
+            "description": "The content hash of the proposal being approved \u2014 the `sha256:<hex>` it would publish as. Not a proposal id: the hash changes the moment the proposed rule does, so an approval cannot silently follow an edit.",
+            "minLength": 1,
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/PublicationTarget",
+            "description": "`development` for authoring and testing, where a placeholder tolerance is expected. `production` for real drawings, where every tolerance must be a client-supplied number \u2014 a rule with a placeholder is refused here (ADR-0011)."
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "target"
+        ],
+        "title": "PublicationRequest",
+        "type": "object"
+      },
+      "PublicationTarget": {
+        "description": "Where a snapshot is being published to.\n\nThe distinction exists because `ADR-0011`'s readiness gate belongs at **release**, not at\nauthoring. A rule carrying an unconfirmed tolerance should be authorable, reviewable and\ntestable \u2014 that is what the `UNCONFIRMED` sentinel is *for*. What it must never do is reach\nproduction, where it looks like a working check while returning REVIEW REQUIRED for everything.",
+        "enum": [
+          "development",
+          "production"
+        ],
+        "title": "PublicationTarget",
+        "type": "string"
+      },
+      "RuleOut": {
+        "additionalProperties": false,
+        "description": "One rule, as it stands today: its effective snapshot and whether it could be released.",
+        "properties": {
+          "check_type": {
+            "title": "Check Type",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "product_type": {
+            "title": "Product Type",
+            "type": "string"
+          },
+          "production_ready": {
+            "title": "Production Ready",
+            "type": "boolean"
+          },
+          "published_versions": {
+            "description": "How many snapshots exist for this rule, including superseded ones.",
+            "title": "Published Versions",
+            "type": "integer"
+          },
+          "release_note": {
+            "title": "Release Note",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "unconfirmed_tolerances": {
+            "title": "Unconfirmed Tolerances",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "name",
+          "version",
+          "snapshot_id",
+          "product_type",
+          "check_type",
+          "severity",
+          "production_ready",
+          "unconfirmed_tolerances",
+          "release_note",
+          "published_versions"
+        ],
+        "title": "RuleOut",
+        "type": "object"
+      },
+      "RuleSnapshotOut": {
+        "additionalProperties": false,
+        "description": "One published version of a rule, with everything needed to check what you were given.\n\n`snapshot_id` is the content hash and `canonical_json` is the exact bytes it was computed from,\nso a client can recompute `sha256(canonical_json)` and compare. What that proves is narrow and\nworth stating: the bytes in this response are the bytes this identifier names. It is not a\nsignature \u2014 anyone able to change the response could change both halves \u2014 and it says nothing\nabout whether this is the snapshot that judged any particular drawing. That question is answered\nby comparing this identifier with the one on the finding.",
+        "properties": {
+          "canonical_json": {
+            "description": "The exact RFC 8785 bytes that were hashed. Returned in full rather than behind a second request because a hash you cannot check is a promise rather than a fact.",
+            "title": "Canonical Json",
+            "type": "string"
+          },
+          "effective": {
+            "description": "Whether this is the version the resolver would pick today \u2014 the highest version of this rule. Older snapshots stay listed because findings cite them.",
+            "title": "Effective",
+            "type": "boolean"
+          },
+          "production_ready": {
+            "description": "False when any tolerance in this rule is still a placeholder. Such a rule can be authored, reviewed and tested, and it can never produce a PASS or a FAIL.",
+            "title": "Production Ready",
+            "type": "boolean"
+          },
+          "release_note": {
+            "description": "The same judgement as `production_ready`, in a sentence a person can act on.",
+            "title": "Release Note",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "description": "The content hash, algorithm included \u2014 `sha256:<hex>`. Recompute it from `canonical_json` to confirm you received what this identifier names.",
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "unconfirmed_tolerances": {
+            "title": "Unconfirmed Tolerances",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "version",
+          "snapshot_id",
+          "canonical_json",
+          "production_ready",
+          "unconfirmed_tolerances",
+          "release_note",
+          "effective"
+        ],
+        "title": "RuleSnapshotOut",
+        "type": "object"
+      },
+      "RuleSnapshotRecord": {
+        "description": "The complete immutable rule content used by the check run.",
+        "properties": {
+          "canonical_json": {
+            "title": "Canonical Json",
+            "type": "string"
+          },
+          "check_type": {
+            "title": "Check Type",
+            "type": "string"
+          },
+          "database_id": {
+            "format": "uuid",
+            "title": "Database Id",
+            "type": "string"
+          },
+          "product_type": {
+            "title": "Product Type",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "database_id",
+          "snapshot_id",
+          "rule_id",
+          "version",
+          "canonical_json",
+          "product_type",
+          "check_type"
+        ],
+        "title": "RuleSnapshotRecord",
+        "type": "object"
+      },
+      "Severity": {
+        "description": "How much a wrong answer on this check costs.\n\nThe primary release metric is the *critical* false-PASS rate, so without this the metric\ncannot be computed at all \u2014 nothing else records which checks are critical (D3).",
+        "enum": [
+          "CRITICAL",
+          "MAJOR",
+          "MINOR",
+          "ADVISORY"
+        ],
+        "title": "Severity",
+        "type": "string"
+      },
+      "ToleranceReportOut": {
+        "additionalProperties": false,
+        "description": "How much of the rulebook is still waiting on a number from the client.\n\n`report` is written to be pasted into an email unedited \u2014 that is the whole point of it, and\n`tests/api/test_rules_api.py` asserts on the wording rather than only on the counts.",
+        "properties": {
+          "awaiting_tolerance": {
+            "items": {
+              "$ref": "#/components/schemas/AwaitingToleranceOut"
+            },
+            "title": "Awaiting Tolerance",
+            "type": "array"
+          },
+          "blocked": {
+            "title": "Blocked",
+            "type": "integer"
+          },
+          "can_release_anything": {
+            "description": "False when no rule in the rulebook could produce a PASS or a FAIL. Kept separate from `blocked` because 'some rules are waiting' and 'nothing works yet' are different conversations.",
+            "title": "Can Release Anything",
+            "type": "boolean"
+          },
+          "releasable": {
+            "title": "Releasable",
+            "type": "integer"
+          },
+          "report": {
+            "title": "Report",
+            "type": "string"
+          },
+          "total_rules": {
+            "title": "Total Rules",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "report",
+          "total_rules",
+          "releasable",
+          "blocked",
+          "can_release_anything"
+        ],
+        "title": "ToleranceReportOut",
+        "type": "object"
+      },
+      "UploadConfirmation": {
+        "additionalProperties": false,
+        "description": "Tell the API the bytes have landed, and what they were.\n\nThe hash is required and re-checked against the stored object. That is the whole substance of this\nrequest: the API cannot know an upload finished, and it will not take \"it finished\" on trust.",
+        "properties": {
+          "page_count": {
+            "description": "How many pages the file has. Your count, not ours \u2014 the API never opens the file. Ingestion builds the real page manifest and a disagreement shows up there.",
+            "minimum": 1.0,
+            "title": "Page Count",
+            "type": "integer"
+          },
+          "sha256": {
+            "description": "The SHA-256 you declared at registration. The stored object is read and hashed, and a mismatch is rejected without writing anything.",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha256",
+          "page_count"
+        ],
+        "title": "UploadConfirmation",
+        "type": "object"
+      },
+      "UploadRequest": {
+        "additionalProperties": false,
+        "description": "Another upload of an existing document \u2014 a new version of the same logical document.\n\nSeparate from `DocumentRegistration` because the document already exists and its `kind` is already\nsettled. Sending `kind` again would let a caller appear to change it, and a document that silently\nchanges kind is a document whose earlier versions were classified under something else.",
+        "properties": {
+          "sha256": {
+            "description": "The SHA-256 of the new file.",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha256"
+        ],
+        "title": "UploadRequest",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "AI-assisted shop drawing review. The AI reads; deterministic Python decides; a reviewer signs off.",
+    "title": "Graniti Vicentia V1",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/operations": {
+      "get": {
+        "description": "Every reviewed operation in the typed registry, in name order.\n\nRead from `verdict.registry.REGISTRY` as it stands right now. Nothing in this module names an\noperation, so this endpoint cannot fall out of step with the engine: an operation the engine can\nrun appears here, and one it cannot does not.\n\nEach entry is a signature \u2014 a name, a version, whether it decides an outcome or derives an\nintermediate value, and what operands it takes. Not the implementation, and not a way to invoke\none: this API never runs a check on request.",
+        "operationId": "list_operations_api_v1_operations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/OperationOut"
+                  },
+                  "title": "Response List Operations Api V1 Operations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Every operation a rule may name, with its signature",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/accepted-work/{accepted_work_id}": {
+      "get": {
+        "description": "Whether accepted work has started, in plain English.\n\n**`started` is not `finished`.** This reports what the outbox knows \u2014 that the workflow was handed\nto the engine \u2014 and nothing about the outcome. For the result, read the package or its findings.\n\nWork belonging to another project is reported as not found, in the same words as work that does\nnot exist. A 403 would confirm it exists, which is what the boundary is for.",
+        "operationId": "read_accepted_work_api_v1_projects__project_id__accepted_work__accepted_work_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "accepted_work_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Accepted Work Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What happened to work this API accepted",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/documents/{document_id}/confirm": {
+      "post": {
+        "description": "Check the bytes, then write the version and the ingestion request in one transaction.\n\nIn order:\n\n1. The stored object for your declared hash must exist. Nothing there is `409` \u2014 there is no upload\n   to confirm, which is different from a bad request.\n2. It is read and hashed. If it does not hash to what you declared, the request is refused with\n   `422` and **nothing at all is written** \u2014 no artifact row, no version, no outbox row.\n3. The `SourceArtifact`, the `DocumentVersion` and the outbox row are written in one transaction.\n   Either all three land or none do.\n\nReturns `201` when a version was created and `200` when these exact bytes had already been\nconfirmed. The repeat is a genuine no-op: the same version comes back and no second outbox row is\nwritten, so ingestion does not run twice.\n\nReading the object to hash it is the one piece of real work here, and it is bounded by the size of\none drawing. It is also the only honest way to verify: `AGENTS.md` \u00a72.7 pins a document version to\nexact bytes, and taking the client's word for the hash would make that pin a restatement of their\nclaim. A backend that computes the checksum itself can answer this without a read; the local\nfilesystem cannot, and #221 is where that becomes worth optimising.",
+        "operationId": "confirm_upload_api_v1_projects__project_id__documents__document_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadConfirmation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm an upload landed, and start ingestion",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/documents/{document_id}/uploads": {
+      "post": {
+        "description": "A ticket for re-uploading this document \u2014 new bytes, same logical document.\n\nThis is the route that makes \"a re-upload is a new version, never an edit\" reachable through the\nAPI. The existing versions are untouched, and confirming these bytes inserts another\n`document_versions` row beside them.\n\nReads nothing and writes nothing: the document already exists, and the ticket is derived from its\nid and the hash you declared.",
+        "operationId": "request_upload_api_v1_projects__project_id__documents__document_id__uploads_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresignedUpload"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get an upload ticket for a new version of an existing document",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages": {
+      "get": {
+        "description": "One page of this project's packages, newest first.\n\nPass the `next_cursor` from the previous page to continue. `next_cursor` is `null` on the last\npage, and that is the only reliable way to know you have reached it \u2014 a short page is not one.",
+        "operationId": "list_packages_api_v1_projects__project_id__packages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The `next_cursor` from the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` from the previous page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackagePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List this project's packages, newest first",
+        "tags": [
+          "packages"
+        ]
+      },
+      "post": {
+        "description": "Create a package in this project, in state `CREATED`, with revision 1.\n\nTwo checks, because they answer different questions: `require_project_access` says the caller may\nsee this project at all, and `require_action` says creating a package is something their role may\ndo. Collapsing them would make \"any member of a project may create packages in it\" true by\naccident rather than by decision.\n\nThe package, its first revision and the revision's birth event are one transaction. A package with\nno revision would be a package nothing can be uploaded to, and it would look completely normal in\na list.\n\nA project that does not exist answers `404`, in the same words as a project the caller is not in.",
+        "operationId": "create_package_api_v1_projects__project_id__packages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PackageCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a package and its first revision",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}": {
+      "get": {
+        "description": "One package, or a `404` that cannot be told apart from the package not existing.",
+        "operationId": "get_package_api_v1_projects__project_id__packages__package_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read one package",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/documents": {
+      "post": {
+        "description": "Create the document's identity and hand back where to send its bytes.\n\n**No file in this request.** Hash your file locally, send the hash, and you get back a URL scoped\nto one storage key, permitting a write and nothing else, expiring at `expires_at`. Send the bytes\nthere with the `method` and `required_headers` exactly as returned, then call `/confirm`.\n\nThe ticket is issued *before* the document row is committed, so a store that cannot issue one\nleaves no half-registered document behind. Nothing is written to storage either \u2014 a ticket is an\nintention, and an intention that is never used leaves nothing to clean up.",
+        "operationId": "register_document_api_v1_projects__project_id__packages__package_id__documents_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresignedUpload"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register a document and get an upload ticket",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/findings": {
+      "get": {
+        "description": "One page of this package's findings, worst first.\n\n**Every outcome is included unless you ask for fewer.** The abstentions \u2014 `NOT_FOUND`,\n`REVIEW_REQUIRED`, `NO_APPLICABLE_RULE` \u2014 are things the engine concluded, and a default that\nhid them would report a package as clean on the strength of checks nobody looked at.\n\n**Order:** severity worst-first, then outcome (failures, then abstentions, then passes), then\noldest first, then id. The full description comes back in `ordering` on every page.\n\n**Paging:** pass the `next_cursor` from the previous page. `next_cursor` is `null` on the last\npage. The cursor names the last row rather than counting rows, so findings written while you are\npaging cannot push a row across a page boundary and out of sight.\n\n**Scope:** a package in another project is reported as not found, in the same words as a package\nthat does not exist. That is deliberate \u2014 see `docs/DESIGN_PLATFORM.md` \u00a74.3.\n\nThe response carries identity and versions, not calculation traces. Reconstructing a finding\nfrom its own operands is a per-finding request (`docs/DESIGN_PRODUCT.md` \u00a73.1).",
+        "operationId": "list_findings_api_v1_projects__project_id__packages__package_id__findings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Restrict to these outcomes. Omit for all of them, abstentions included \u2014 a list that quietly dropped REVIEW_REQUIRED would make a package look clean.",
+            "in": "query",
+            "name": "outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/Outcome"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict to these outcomes. Omit for all of them, abstentions included \u2014 a list that quietly dropped REVIEW_REQUIRED would make a package look clean.",
+              "title": "Outcome"
+            }
+          },
+          {
+            "description": "Restrict to these severities.",
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/Severity"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict to these severities.",
+              "title": "Severity"
+            }
+          },
+          {
+            "description": "Restrict to rules of these check types, e.g. `internal`.",
+            "in": "query",
+            "name": "check_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict to rules of these check types, e.g. `internal`.",
+              "title": "Check Type"
+            }
+          },
+          {
+            "description": "Restrict to rules about these product types, e.g. `countertop`.",
+            "in": "query",
+            "name": "product_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict to rules about these product types, e.g. `countertop`.",
+              "title": "Product Type"
+            }
+          },
+          {
+            "description": "The `next_cursor` from the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` from the previous page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List a package's findings, worst first",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/findings/export": {
+      "get": {
+        "description": "Every finding for one package, with its chain, labelled and counted.\n\nThe project boundary is established by the dependency and then again in SQL, the same belt-and-braces\n`finding_chain` uses: the dependency proves the caller may see the project, and the join proves these\nrows belong to it.\n\nA package with no findings is an empty export, not a 404 \u2014 but it is only reached for a package that\nexists in this project, so \"nothing found\" cannot be confused with \"no such package\".",
+        "operationId": "export_findings_api_v1_projects__project_id__packages__package_id__findings_export_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingExportV1"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export a package's findings in a versioned shape",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/findings/{finding_id}/chain": {
+      "get": {
+        "description": "Return the stored chain, while preserving the project isolation boundary.",
+        "operationId": "finding_chain_api_v1_projects__project_id__packages__package_id__findings__finding_id__chain_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Finding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingChain"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finding Chain",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
+    "/api/v1/rules": {
+      "get": {
+        "description": "Every rule in the rulebook, at its effective version, rule id order.\n\nA rule whose tolerance is still a placeholder appears here like any other, and says plainly that\nit cannot be released. Leaving it out would make the rulebook look finished, which is exactly\nhow a placeholder starts reading as a fact (ADR-0011).\n\nNot paged. The collection is the rules GV has authored \u2014 tens of them, not thousands \u2014 and no\nAPI client can add to it, so a cursor would be machinery guarding against growth that this\nendpoint cannot experience.",
+        "operationId": "list_rules_api_v1_rules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RuleOut"
+                  },
+                  "title": "Response List Rules Api V1 Rules Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Every published rule, with whether it could be released",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/rules/tolerance-report": {
+      "get": {
+        "description": "Which rules are still guesswork, and how many.\n\nDeclared before `/rules/{rule_id}/...` so the literal path cannot be shadowed by a rule id.\n\nThe prose comes from `rules/publication.py` unchanged, because it is written to be pasted into a\nclient email without editing \u2014 a report only this codebase can read is not a report. The counts\nbeside it come from `rules/governance/readiness.py`, so the numbers and the sentence cannot\ndrift into describing different rulebooks.\n\nWhy this is an endpoint at all: the `\u00b11/8\u2033` figure that circulated for weeks was our own\nplaceholder from a sample file, and it reached `docs/RULE_ENGINE_SPEC.md` \u00a74 reading as fact.\nNothing counted placeholders, so nothing contradicted the impression that the rulebook was\nfinished.",
+        "operationId": "read_tolerance_report_api_v1_rules_tolerance_report_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToleranceReportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "How much of the rulebook is still waiting on a client value",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/rules/{rule_id}/applicability": {
+      "get": {
+        "description": "The discriminator that selects a variant, and the tolerance each branch carries.\n\nReported for the effective version, because the question this answers is \"what would this rule\ndo to a drawing today?\".\n\nA rule that applies to everything of its product type says so explicitly (`scope: global`) \u2014 it\ndoes not simply have no variants. ADR-0007 refuses to read an absent applicability as \"applies\nto everything\", and this response keeps that distinction visible rather than flattening both\ncases into an empty list.",
+        "operationId": "read_applicability_api_v1_rules__rule_id__applicability_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicabilityOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What this rule applies to",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/rules/{rule_id}/publish": {
+      "post": {
+        "description": "Approve and publish one proposal. Every decision is D6's.\n\nThis endpoint does four things and decides nothing: it maps the caller onto a rulebook approver,\nfinds the proposal they named, calls `rules.governance.publish.publish()`, and turns whatever\ncomes back \u2014 a snapshot or a refusal \u2014 into a response. There is no \"already approved\"\nshortcut, no override for a failed regression, and no path that writes a snapshot without going\nthrough that call.\n\n**Who may.** `Action.PUBLISH_RULE` from the permission table, and then a rulebook role. The two\nare different questions and both are asked. A caller the API permits but the rulebook has no\nrole for is refused with `403` rather than approximated \u2014 see `GOVERNANCE_ROLES`.\n\n**Which proposal.** Named by the content hash it would publish as. The hash changes the moment\nthe proposed rule does, so approving one is approving the exact bytes that were read.\n\n**What each refusal means.**\n\n| Status | Reason |\n|---|---|\n| `403` | The caller may not publish, or may not approve this particular proposal (they raised it). |\n| `404` | No such proposal for this rule. |\n| `409` | The proposal did not validate, its tolerance is unconfirmed and the target is production, the regression failed, or this content is already published. |\n\nEvery one of those carries D6's own explanation. Replacing them with a generic message would\nsend an author looking for a fault in their rule when the real problem is that they are not\nallowed to publish at all.",
+        "operationId": "publish_rule_api_v1_rules__rule_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish an approved proposal through the D6 gate",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/rules/{rule_id}/snapshots": {
+      "get": {
+        "description": "Every snapshot of this rule, each with its content hash and the bytes behind it.\n\nSuperseded versions stay listed. A finding cites the snapshot that produced it, and answering\n\"what did you tell us in March?\" means being able to read the rule as it was in March.\n\nEach entry carries `canonical_json` in full so the hash can actually be checked. That costs a\nfew kilobytes per version and buys the client the ability to confirm they received what the\nidentifier names; a hash returned without the bytes it covers is decoration.",
+        "operationId": "list_snapshots_api_v1_rules__rule_id__snapshots_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RuleSnapshotOut"
+                  },
+                  "title": "Response List Snapshots Api V1 Rules  Rule Id  Snapshots Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Every published version of one rule, newest first",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "The process is alive. Says nothing about whether it can work \u2014 see `/ready`.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "description": "The process can do work: the database answers and the schema is **at head**.\n\nReturns 503 rather than raising, because a readiness probe that 500s is indistinguishable from\na crashed process, and the two call for different responses from an orchestrator.\n\nThe migration check is the part that matters, and the first version did not do what this\ndocstring claimed. It asked only whether `alembic_version` was non-empty, so a database three\nmigrations behind answered `200 ready` \u2014 exactly the failure the endpoint exists to catch. It\nnow compares the applied revision against the head revision in `alembic/versions`.\n\nThe work runs in a worker thread: `create_engine` and a synchronous session block the event\nloop, and a readiness probe that stalls it makes every other request slow while reporting on\nhealth.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ready",
+        "tags": [
+          "operations"
+        ]
+      }
+    }
+  }
+}

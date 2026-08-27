@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "api:schema": "python ../../scripts/export_openapi.py",
+    "api:types": "npm run api:schema && openapi-typescript openapi.json -o src/api/schema.d.ts",
+    "api:check": "npm run api:types && git diff --exit-code openapi.json src/api/schema.d.ts"
   },
   "dependencies": {
     "@types/react-router-dom": "^5.3.3",
@@ -30,6 +33,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.7.0",
+    "openapi-typescript": "^7.13.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.65.0",
     "vite": "^8.2.0"
