@@ -198,10 +198,27 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
             </div>
           </div>
 
+          {/* **Never wired, and it looked available.** This button had no `onClick` at all — the
+              reviewer's attestation, which is the fourth clause of "the AI reads, evidence qualifies,
+              deterministic Python decides, a reviewer signs off", did nothing when pressed. Worse, its
+              only guard was `needsAction > 0`, so on a package with no findings it rendered fully
+              enabled: the one state where signing off means attesting to a review that never ran.
+
+              Completing a review is `POST /review-sessions/{id}/complete`, and this screen holds a
+              package id rather than a session id, so wiring it is a real change to the sign-off path
+              and belongs in its own review. Until then it says what it is. A control that looks
+              armed and does nothing is the worst of the three options; a disabled one that explains
+              itself is the honest one. */}
           <button
             className="btn btn--action"
-            disabled={needsAction > 0}
-            data-tooltip={needsAction > 0 ? `${needsAction} findings still need review` : 'Sign off this package'}
+            disabled
+            data-tooltip={
+              findings.length === 0
+                ? 'There are no findings to sign off on'
+                : needsAction > 0
+                ? `${needsAction} finding${needsAction === 1 ? '' : 's'} still need review — and signing off is not connected yet`
+                : 'Signing off is not connected yet — no attestation is recorded'
+            }
           >
             <CheckSquare size={14} />
             Sign Off

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { PanelLeft, Bell, Sun, Moon } from 'lucide-react';
+import { PanelLeft, Sun, Moon } from 'lucide-react';
 import './Topbar.css';
 
 interface TopbarProps {
@@ -76,13 +76,9 @@ export function Topbar({
           {theme === 'light' ? <Moon size={15} /> : <Sun size={15} />}
         </button>
 
-        <button
-          className="btn btn--subtle btn--icon"
-          aria-label="Notifications"
-          data-tooltip="Notifications"
-        >
-          <Bell size={15} />
-        </button>
+        {/* The notifications bell was here, with no handler. There is nothing that notifies — no
+            endpoint, no channel, no unread state — so it was an icon that opened nothing and, worse,
+            implied a reviewer would be told when something needed them. */}
       </div>
     </header>
   );
