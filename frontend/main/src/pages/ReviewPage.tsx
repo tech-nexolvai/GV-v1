@@ -43,14 +43,20 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     if (remote.status === 'ready') setFindings(remote.data.found);
   }, [remote]);
 
-  // Auto-send the initial message from WelcomePage when loaded
+  // Auto-send the question WelcomePage was carrying, once the findings it will be answered from
+  // actually exist.
+  //
+  // **The fetched list is passed in rather than read from state.** Both effects run in the same
+  // commit, so `findings` is still `[]` here — `setFindings` above has been scheduled, not applied.
+  // The reply would have counted against an empty array and said "0 of 0 findings", which is not a
+  // slow render, it is the screen stating something false about the package.
   useEffect(() => {
-    if (!isLoading && initialMessage) {
-      handleSend(initialMessage);
+    if (remote.status === 'ready' && initialMessage) {
+      handleSend(initialMessage, remote.data.found);
       onMessageConsumed?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading, initialMessage]);
+  }, [remote, initialMessage]);
 
   if (isLoading) {
     return <ReviewSkeleton />;
@@ -70,7 +76,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     );
   }
 
-  function handleSend(text: string) {
+  function handleSend(text: string, source: readonly Finding[] = findings) {
     if (isProcessing) return;
 
     // Add user message
@@ -99,17 +105,17 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     const filter = filterFor(text);
     const matched =
       filter === 'FAIL'
-        ? findings.filter(f => f.outcome === 'FAIL')
+        ? source.filter(f => f.outcome === 'FAIL')
         : filter === 'REVIEW_REQUIRED'
-        ? findings.filter(f => f.outcome === 'REVIEW_REQUIRED')
+        ? source.filter(f => f.outcome === 'REVIEW_REQUIRED')
         : filter === 'ALL'
-        ? findings
+        ? [...source]
         : undefined;
 
     const replyMsg: ChatMessage = {
       id: `msg-a-${Date.now()}`,
       role: 'assistant',
-      content: describeFilter(filter, matched?.length ?? 0, findings.length),
+      content: describeFilter(filter, matched?.length ?? 0, source.length),
       timestamp: new Date().toISOString(),
       findings: matched,
     };
@@ -254,12 +260,19 @@ function describeFilter(filter: FindingFilter, matched: number, total: number): 
 
 type FindingFilter = 'FAIL' | 'REVIEW_REQUIRED' | 'ALL' | 'NONE';
 
-/** Read off the text, so the message and the list it produces can never disagree. */
+/**
+ * Read off the text, so the message and the list it produces can never disagree.
+ *
+ * **Order matters, and the obvious order was wrong.** "run full review" contains the word `review`,
+ * so testing that first classified a request for *everything* as a request for the abstentions —
+ * quietly dropping the failures, which are the findings somebody asking for a full review most needs
+ * to see. The whole-set phrases are checked before the single-outcome words for that reason.
+ */
 function filterFor(text: string): FindingFilter {
   const t = text.toLowerCase();
+  if (t.includes('full') || t.includes('everything') || t.includes('all')) return 'ALL';
   if (t.includes('fail')) return 'FAIL';
   if (t.includes('review')) return 'REVIEW_REQUIRED';
-  if (t.includes('full') || t.includes('run') || t.includes('all')) return 'ALL';
   return 'NONE';
 }
 

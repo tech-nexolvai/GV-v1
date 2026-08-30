@@ -55,6 +55,10 @@ export function WelcomePage({ onStartSession, onSend, onNewPackage }: WelcomePag
               // subject, and if there are none there is nothing to ask about yet.
               if (recent[0] !== undefined) open(recent[0].id, text);
             }}
+            // Disabled rather than accepting and discarding. `ChatInput` clears the box on submit, so
+            // a question typed before the packages arrived vanished with no message and no reply —
+            // indistinguishable, from the outside, from the app having ignored it.
+            disabled={packages.status !== 'ready' || recent.length === 0}
             placeholder={
               recent.length === 0
                 ? 'Submit a document set first — there is nothing to review yet'

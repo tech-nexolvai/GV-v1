@@ -119,8 +119,13 @@ export function UsagePage() {
             <div className="usage-section">
               <h2 className="usage-section__title">Finding outcomes</h2>
               {totals.data.counts.total === 0 ? (
+                /* Scoped to what was counted. `loadTotals` stops at `SAMPLE_LIMIT` and never asks
+                   for later pages, so "nothing in this project" would be a claim about packages this
+                   page did not look at. */
                 <p className="text-muted">
-                  No findings yet. Nothing has been through the engine in this project.
+                  No findings in the {totals.data.aggregated} package
+                  {totals.data.aggregated === 1 ? '' : 's'} counted here.
+                  {totals.data.packages === SAMPLE_LIMIT && ' There may be older packages beyond this page.'}
                 </p>
               ) : (
                 <div className="usage-breakdown">
