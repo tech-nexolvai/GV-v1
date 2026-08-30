@@ -79,6 +79,8 @@ export type FindingChain =
 export type FindingCounts =
   Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings/summary'>;
 export type ReviewSessionPage = Get<'/api/v1/projects/{project_id}/review-sessions'>;
+export type RuleList = Get<'/api/v1/rules'>;
+export type Rule = RuleList[number];
 export type ReviewSession = ReviewSessionPage['items'][number];
 
 export function listPackages(projectId: string, query?: { cursor?: string; limit?: number }) {
@@ -124,6 +126,19 @@ export function getFindingCounts(projectId: string, packageId: string) {
   return request<FindingCounts>(
     `/projects/${projectId}/packages/${packageId}/findings/summary`,
   );
+}
+
+/**
+ * Every rule the engine would apply, as the engine sees them.
+ *
+ * Not scoped to a project: a rulebook is published centrally through D6 and the same snapshot
+ * decides for every drawing. Nothing here is a project's own copy.
+ *
+ * An empty list is a real and expected answer. Until a rulebook is published there are no rules, and
+ * a screen that filled that silence with examples would be describing checks that will not run.
+ */
+export function listRules() {
+  return request<RuleList>('/rules');
 }
 
 async function send<T>(path: string, body: unknown): Promise<T> {

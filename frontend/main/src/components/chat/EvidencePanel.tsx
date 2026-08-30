@@ -43,7 +43,6 @@ export function EvidencePanel({ finding, onClose }: EvidencePanelProps) {
           <PdfPane
             label="Architectural Set"
             role="ARCH"
-            filename="GV_Arch_Set_Marriott_Houston_R4.pdf"
             page={finding.arch_evidence.page}
             rawText={finding.arch_evidence.raw_text}
             extractor={finding.arch_evidence.extractor}
@@ -57,7 +56,6 @@ export function EvidencePanel({ finding, onClose }: EvidencePanelProps) {
           <PdfPane
             label="Shop Drawing"
             role="SHOP"
-            filename="EliteStone_ShopDrawing_V2.pdf"
             page={finding.shop_evidence.page}
             rawText={finding.shop_evidence.raw_text}
             extractor={finding.shop_evidence.extractor}
@@ -87,7 +85,6 @@ export function EvidencePanel({ finding, onClose }: EvidencePanelProps) {
 interface PdfPaneProps {
   label: string;
   role: 'ARCH' | 'SHOP';
-  filename: string;
   page: number;
   rawText: string;
   extractor: string;
@@ -95,13 +92,7 @@ interface PdfPaneProps {
   polygon: [number, number][];
 }
 
-function PdfPane({ label, role, filename, page, rawText, extractor, outcome, polygon }: PdfPaneProps) {
-  const overlayColor =
-    outcome === 'FAIL'            ? 'var(--evidence-fail)' :
-    outcome === 'REVIEW_REQUIRED' ? 'var(--evidence-review)' :
-    outcome === 'PASS'            ? 'var(--evidence-pass)' :
-    'var(--bg-hover)';
-
+function PdfPane({ label, role, page, rawText, extractor, outcome, polygon }: PdfPaneProps) {
   const borderColor =
     outcome === 'FAIL'            ? 'var(--status-fail)' :
     outcome === 'REVIEW_REQUIRED' ? 'var(--status-review)' :
@@ -124,9 +115,8 @@ function PdfPane({ label, role, filename, page, rawText, extractor, outcome, pol
             {role}
           </div>
           <span className="pdf-pane__label">{label}</span>
-          <span className="pdf-pane__filename truncate" style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'var(--space-2)', maxWidth: '140px' }} title={filename}>
-            {filename}
-          </span>
+          {/* The filename used to be a fixed string here — two of them, naming documents
+              nobody uploaded. A finding does not carry one, so nothing is shown. */}
         </div>
         <span className="pdf-pane__page">
           <MapPin size={11} />
@@ -134,27 +124,22 @@ function PdfPane({ label, role, filename, page, rawText, extractor, outcome, pol
         </span>
       </div>
 
-      {/* Simulated PDF canvas */}
-      <div className="pdf-pane__canvas" aria-label={`${label} page ${page}`}>
-        {/* PDF placeholder — would be PDF.js in production */}
-        <div className="pdf-pane__placeholder">
-          {/* Fake dimension lines */}
-          <PdfSimulation polygon={polygon} overlayColor={overlayColor} borderColor={borderColor} />
-        </div>
+      {/* No page image. The overlay used to sit on a hand-drawn SVG of a title block reading
+          "MARRIOTT HOUSTON / PKG-2026-001" with a dimension of 6012 on it — a drawing that does not
+          exist, under a highlight box positioned from the finding's real polygon. A reviewer would
+          have been looking at genuine coordinates over invented paper and signing off on the result.
 
-        {/* Evidence highlight overlay */}
-        <div
-          className="pdf-pane__overlay"
-          aria-hidden="true"
-          style={{
-            left: `${(x / 560) * 100}%`,
-            top:  `${(y / 700) * 100}%`,
-            width: `${(w / 560) * 100}%`,
-            height: `${(h / 700) * 100}%`,
-            background: overlayColor,
-            borderColor,
-          }}
-        />
+          The page cannot be rendered yet: nothing serves document bytes back, so there is no image to
+          put here. Until there is, the panel shows the located region as numbers, which is true, and
+          says plainly that it is not showing the drawing. */}
+      <div className="pdf-pane__meta">
+        <span className="pdf-pane__meta-label">Located at</span>
+        <code className="pdf-pane__raw-value">
+          page {page} · x {Math.round(x)}–{Math.round(x + w)} · y {Math.round(y)}–{Math.round(y + h)}
+        </code>
+        <span className="pdf-pane__extractor" style={{ color: borderColor }}>
+          The drawing itself is not shown — the page image is not available to this app yet.
+        </span>
       </div>
 
       {/* Raw text readout */}
@@ -166,59 +151,5 @@ function PdfPane({ label, role, filename, page, rawText, extractor, outcome, pol
         <span className="pdf-pane__extractor">via {extractor}</span>
       </div>
     </div>
-  );
-}
-
-// ── Simulated PDF background ──────────────────────────────────
-function PdfSimulation({ polygon, overlayColor, borderColor }: {
-  polygon: [number, number][];
-  overlayColor: string;
-  borderColor: string;
-}) {
-  return (
-    <svg viewBox="0 0 560 700" className="pdf-pane__svg" aria-hidden="true">
-      {/* Page background */}
-      <rect width="560" height="700" fill="transparent" />
-
-      {/* Fake title block */}
-      <rect x="20" y="20" width="520" height="40" rx="2" fill="var(--pdf-footer)" />
-      <text x="40" y="46" fontSize="12" fill="var(--text-muted)" fontFamily="monospace">GV SHOP DRAWING — MARRIOTT HOUSTON</text>
-      <rect x="400" y="22" width="140" height="36" rx="1" fill="var(--border-default)" />
-      <text x="415" y="40" fontSize="9" fill="var(--text-muted)" fontFamily="monospace">PKG-2026-001</text>
-      <text x="415" y="52" fontSize="9" fill="var(--text-muted)" fontFamily="monospace">Rev 2 — 2026-08-15</text>
-
-      {/* Fake dimension lines + lines */}
-      <line x1="80" y1="200" x2="480" y2="200" stroke="var(--pdf-lines)" strokeWidth="0.5" />
-      <line x1="80" y1="200" x2="80" y2="220" stroke="var(--pdf-lines)" strokeWidth="0.5" />
-      <line x1="480" y1="200" x2="480" y2="220" stroke="var(--pdf-lines)" strokeWidth="0.5" />
-      <line x1="80" y1="300" x2="480" y2="300" stroke="var(--pdf-lines)" strokeWidth="1" />
-      <line x1="80" y1="300" x2="80" y2="420" stroke="var(--pdf-lines)" strokeWidth="1" />
-      <line x1="480" y1="300" x2="480" y2="420" stroke="var(--pdf-lines)" strokeWidth="1" />
-      <line x1="80" y1="420" x2="480" y2="420" stroke="var(--pdf-lines)" strokeWidth="1" />
-      <line x1="100" y1="330" x2="460" y2="330" stroke="var(--pdf-lines)" strokeWidth="0.5" strokeDasharray="4,4" />
-      <line x1="100" y1="390" x2="460" y2="390" stroke="var(--pdf-lines)" strokeWidth="0.5" strokeDasharray="4,4" />
-
-      {/* Highlighted region */}
-      <rect
-        x={Math.min(...polygon.map(p => p[0]))}
-        y={Math.min(...polygon.map(p => p[1]))}
-        width={Math.max(...polygon.map(p => p[0])) - Math.min(...polygon.map(p => p[0]))}
-        height={Math.max(...polygon.map(p => p[1])) - Math.min(...polygon.map(p => p[1]))}
-        fill={overlayColor}
-        stroke={borderColor}
-        strokeWidth="1.5"
-        rx="2"
-        opacity="0.9"
-      />
-
-      {/* Fake text labels */}
-      <text x="260" y="196" fontSize="9" fill="var(--text-muted)" textAnchor="middle" fontFamily="monospace">dimension line</text>
-      <text x="260" y="352" fontSize="10" fill="var(--text-primary)" textAnchor="middle" fontFamily="monospace" fontWeight="bold">6012 [236 3/4]</text>
-      <text x="260" y="395" fontSize="9" fill="var(--text-body)" textAnchor="middle" fontFamily="monospace">610 [24]</text>
-
-      {/* Bottom border */}
-      <rect x="0" y="660" width="560" height="40" fill="var(--pdf-footer)" />
-      <text x="280" y="682" fontSize="8" fill="var(--text-muted)" textAnchor="middle" fontFamily="monospace">GRANITI VICENTIA — CONFIDENTIAL SHOP DRAWING</text>
-    </svg>
   );
 }

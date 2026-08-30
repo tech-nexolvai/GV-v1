@@ -43,14 +43,20 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     if (remote.status === 'ready') setFindings(remote.data.found);
   }, [remote]);
 
-  // Auto-send the initial message from WelcomePage when loaded
+  // Auto-send the question WelcomePage was carrying, once the findings it will be answered from
+  // actually exist.
+  //
+  // **The fetched list is passed in rather than read from state.** Both effects run in the same
+  // commit, so `findings` is still `[]` here — `setFindings` above has been scheduled, not applied.
+  // The reply would have counted against an empty array and said "0 of 0 findings", which is not a
+  // slow render, it is the screen stating something false about the package.
   useEffect(() => {
-    if (!isLoading && initialMessage) {
-      handleSend(initialMessage);
+    if (remote.status === 'ready' && initialMessage) {
+      handleSend(initialMessage, remote.data.found);
       onMessageConsumed?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading, initialMessage]);
+  }, [remote, initialMessage]);
 
   if (isLoading) {
     return <ReviewSkeleton />;
@@ -70,7 +76,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     );
   }
 
-  function handleSend(text: string) {
+  function handleSend(text: string, source: readonly Finding[] = findings) {
     if (isProcessing) return;
 
     // Add user message
@@ -93,24 +99,28 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     setMessages(prev => [...prev, userMsg, typingMsg]);
     setIsProcessing(true);
 
-    // Simulate a response after delay
-    setTimeout(() => {
-      const replyMsg: ChatMessage = {
-        id: `msg-a-${Date.now()}`,
-        role: 'assistant',
-        content: getSimulatedReply(text),
-        timestamp: new Date().toISOString(),
-        findings: text.toLowerCase().includes('fail')
-          ? findings.filter(f => f.outcome === 'FAIL')
-          : text.toLowerCase().includes('review')
-          ? findings.filter(f => f.outcome === 'REVIEW_REQUIRED')
-          : text.toLowerCase().includes('full') || text.toLowerCase().includes('run')
-          ? findings
-          : undefined,
-      };
-      setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
-      setIsProcessing(false);
-    }, 1400);
+    // Resolved from the findings already fetched for this package — no request, so no delay to
+    // stage. The previous version waited 1400 ms to imitate thinking, which dressed a local array
+    // filter up as a system doing work.
+    const filter = filterFor(text);
+    const matched =
+      filter === 'FAIL'
+        ? source.filter(f => f.outcome === 'FAIL')
+        : filter === 'REVIEW_REQUIRED'
+        ? source.filter(f => f.outcome === 'REVIEW_REQUIRED')
+        : filter === 'ALL'
+        ? [...source]
+        : undefined;
+
+    const replyMsg: ChatMessage = {
+      id: `msg-a-${Date.now()}`,
+      role: 'assistant',
+      content: describeFilter(filter, matched?.length ?? 0, source.length),
+      timestamp: new Date().toISOString(),
+      findings: matched,
+    };
+    setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
+    setIsProcessing(false);
   }
 
   function handleViewEvidence(finding: Finding) {
@@ -216,14 +226,54 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
   );
 }
 
-function getSimulatedReply(text: string): string {
+/**
+ * What the app actually did with a typed message.
+ *
+ * This replaced `getSimulatedReply`, which invented verdicts: it would answer "explain CT-1" with
+ * *"shop 5980 mm vs arch 6012 mm, tolerance ±3.175 mm, verdict FAIL"* — numbers no drawing produced,
+ * a rule nobody published, and a tolerance band that V1 does not have, since Raj settled on exact
+ * match. Under **the AI reads, deterministic Python decides**, a screen that composes its own verdict
+ * is the exact failure the architecture exists to prevent, and it is worse here than anywhere else
+ * because this panel is where a reviewer signs off.
+ *
+ * There is no conversational endpoint yet. So this says only what it can defend: which filter it
+ * applied, and how many of the package's real findings matched.
+ */
+function describeFilter(filter: FindingFilter, matched: number, total: number): string {
+  const of = `${matched} of ${total} finding${total === 1 ? '' : 's'}`;
+
+  switch (filter) {
+    case 'FAIL':
+      return `Showing the ${of} that failed. The verdicts come from the engine — nothing on this screen recomputes them.`;
+    case 'REVIEW_REQUIRED':
+      return `Showing the ${of} the engine could not decide, which are the ones needing your judgement.`;
+    case 'ALL':
+      return `Showing all ${total} finding${total === 1 ? '' : 's'} recorded for this package.`;
+    case 'NONE':
+      return (
+        'Conversational review is not wired up yet — there is no endpoint behind this box, so nothing ' +
+        'here can answer a question about a drawing. The findings below are the real ones for this ' +
+        'package. Try "fail" or "review" to filter them.'
+      );
+  }
+}
+
+type FindingFilter = 'FAIL' | 'REVIEW_REQUIRED' | 'ALL' | 'NONE';
+
+/**
+ * Read off the text, so the message and the list it produces can never disagree.
+ *
+ * **Order matters, and the obvious order was wrong.** "run full review" contains the word `review`,
+ * so testing that first classified a request for *everything* as a request for the abstentions —
+ * quietly dropping the failures, which are the findings somebody asking for a full review most needs
+ * to see. The whole-set phrases are checked before the single-outcome words for that reason.
+ */
+function filterFor(text: string): FindingFilter {
   const t = text.toLowerCase();
-  if (t.includes('fail')) return 'Showing only **FAIL** findings. 1 critical failure detected — CT-1 width exceeds tolerance by 32 mm.';
-  if (t.includes('review')) return 'Showing findings requiring your review. 2 items need attention before sign-off.';
-  if (t.includes('explain') || t.includes('ct-1')) return '**CT-1 Width Verification** uses `within_tolerance`. The shop drawing shows **5980 mm** vs arch set **6012 mm**. Delta = 32 mm, tolerance = ±3.175 mm. Verdict: FAIL.\n\nThe extractor found this via `pdfplumber` (digital vector) on both documents — high confidence in the reading. The delta is nearly 10× the allowed tolerance.';
-  if (t.includes('report') || t.includes('vendor')) return 'Vendor report cannot be generated until all FAIL and REVIEW findings have been reviewed. **2 items still need action.**';
-  if (t.includes('full') || t.includes('run')) return 'Running full review against rulebook snapshot **CT-v1.2**. All 6 applicable checks executed for a 3-wall vanity configuration.';
-  return 'Understood. Running check against the active rulebook snapshot. Results will appear below.';
+  if (t.includes('full') || t.includes('everything') || t.includes('all')) return 'ALL';
+  if (t.includes('fail')) return 'FAIL';
+  if (t.includes('review')) return 'REVIEW_REQUIRED';
+  return 'NONE';
 }
 
 function ReviewSkeleton() {

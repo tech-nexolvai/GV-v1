@@ -32,7 +32,11 @@ export function useAsync<T>(load: () => Promise<T>, deps: readonly unknown[]): A
     let current = true;
     setState({ status: 'loading' });
 
-    load().then(
+    // `Promise.resolve().then(load)` rather than `load()`, so a loader that throws *synchronously*
+    // still lands in the error state. `projectId()` does exactly that when configuration is missing,
+    // and calling it directly threw past this hook — the screen stayed on its spinner for ever,
+    // which is the one outcome a reviewer cannot act on.
+    Promise.resolve().then(load).then(
       (data) => {
         if (current) setState({ status: 'ready', data });
       },

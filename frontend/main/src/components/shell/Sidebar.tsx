@@ -109,11 +109,14 @@ export function Sidebar({
           </div>
         </div>
       )}
-      {/* User profile footer — bottom-left matching ChatGPT style */}
+      {/* Deliberately unnamed. This said "Raj Gupta" for everyone who opened it — the client's name,
+          shown as though it were the signed-in reviewer, next to actions somebody else performed.
+          There is no endpoint that reports who you are, so the honest label is a generic one, and it
+          becomes a real name when identity is on the wire rather than before. */}
       <div className="sidebar__footer">
         <div className="sidebar__user" aria-label="User menu">
-          <div className="sidebar__avatar" aria-hidden="true">R</div>
-          {!collapsed && <span className="sidebar__username">Raj Gupta</span>}
+          <div className="sidebar__avatar" aria-hidden="true">·</div>
+          {!collapsed && <span className="sidebar__username">Signed in</span>}
         </div>
       </div>
     </aside>

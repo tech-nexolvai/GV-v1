@@ -132,6 +132,7 @@ export default function App() {
         <WelcomePage
           onStartSession={handleWelcomeStart}
           onSend={handleWelcomeSend}
+          onNewPackage={() => setIsModalOpen(true)}
         />
       )}
 
