@@ -274,6 +274,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/findings/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How this package's findings break down
+         * @description Counts per outcome for one package, so a list can show them without fetching every finding.
+         *
+         *     Built on `_base_query`, so the project boundary is the same one the list endpoint applies rather
+         *     than a second query that could drift from it — and a package in another project is `404`, not an
+         *     empty summary, because an empty summary would confirm the package exists.
+         *
+         *     **Every outcome is counted and they sum to the total.** Reporting only passes and failures would
+         *     leave the abstentions uncounted and invite a reader to treat the remainder as passing. Under
+         *     exact match those abstentions are the expected bulk of a run, not an edge case.
+         *
+         *     Counted in the database rather than by paging the findings and adding them up here: the control
+         *     plane does short work only (`DESIGN_PLATFORM.md` §4.1), and a package with thousands of findings
+         *     would otherwise turn a summary into the most expensive call in the API.
+         */
+        get: operations["summarise_findings_api_v1_projects__project_id__packages__package_id__findings_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/findings/{finding_id}/chain": {
         parameters: {
             query?: never;
@@ -758,6 +790,31 @@ export interface components {
             trace: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * FindingCounts
+         * @description How a package's findings break down, for a list that has not opened one yet.
+         *
+         *     **Every outcome is named, and they sum to `total`.** A summary that reported only passes and
+         *     failures would leave abstentions — `REVIEW_REQUIRED`, `NOT_FOUND`, `NO_APPLICABLE_RULE` — in
+         *     neither column, and a reader would take the remainder for passes. Under V1's exact-match rule the
+         *     abstention count is expected to be large, so hiding it would misrepresent the run.
+         */
+        FindingCounts: {
+            /** Critical Failed */
+            critical_failed: number;
+            /** Failed */
+            failed: number;
+            /** No Applicable Rule */
+            no_applicable_rule: number;
+            /** Not Found */
+            not_found: number;
+            /** Passed */
+            passed: number;
+            /** Review Required */
+            review_required: number;
+            /** Total */
+            total: number;
         };
         /**
          * FindingExportV1
@@ -1571,6 +1628,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingExportV1"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    summarise_findings_api_v1_projects__project_id__packages__package_id__findings_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FindingCounts"];
                 };
             };
             /** @description Validation Error */

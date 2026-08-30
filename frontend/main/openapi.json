@@ -464,6 +464,57 @@
         "title": "FindingChain",
         "type": "object"
       },
+      "FindingCounts": {
+        "description": "How a package's findings break down, for a list that has not opened one yet.\n\n**Every outcome is named, and they sum to `total`.** A summary that reported only passes and\nfailures would leave abstentions \u2014 `REVIEW_REQUIRED`, `NOT_FOUND`, `NO_APPLICABLE_RULE` \u2014 in\nneither column, and a reader would take the remainder for passes. Under V1's exact-match rule the\nabstention count is expected to be large, so hiding it would misrepresent the run.",
+        "properties": {
+          "critical_failed": {
+            "minimum": 0.0,
+            "title": "Critical Failed",
+            "type": "integer"
+          },
+          "failed": {
+            "minimum": 0.0,
+            "title": "Failed",
+            "type": "integer"
+          },
+          "no_applicable_rule": {
+            "minimum": 0.0,
+            "title": "No Applicable Rule",
+            "type": "integer"
+          },
+          "not_found": {
+            "minimum": 0.0,
+            "title": "Not Found",
+            "type": "integer"
+          },
+          "passed": {
+            "minimum": 0.0,
+            "title": "Passed",
+            "type": "integer"
+          },
+          "review_required": {
+            "minimum": 0.0,
+            "title": "Review Required",
+            "type": "integer"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "passed",
+          "failed",
+          "review_required",
+          "not_found",
+          "no_applicable_rule",
+          "critical_failed"
+        ],
+        "title": "FindingCounts",
+        "type": "object"
+      },
       "FindingExportV1": {
         "description": "The export envelope. Version first, so a consumer can check before it parses.",
         "properties": {
@@ -1930,6 +1981,60 @@
           }
         },
         "summary": "Export a package's findings in a versioned shape",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/findings/summary": {
+      "get": {
+        "description": "Counts per outcome for one package, so a list can show them without fetching every finding.\n\nBuilt on `_base_query`, so the project boundary is the same one the list endpoint applies rather\nthan a second query that could drift from it \u2014 and a package in another project is `404`, not an\nempty summary, because an empty summary would confirm the package exists.\n\n**Every outcome is counted and they sum to the total.** Reporting only passes and failures would\nleave the abstentions uncounted and invite a reader to treat the remainder as passing. Under\nexact match those abstentions are the expected bulk of a run, not an edge case.\n\nCounted in the database rather than by paging the findings and adding them up here: the control\nplane does short work only (`DESIGN_PLATFORM.md` \u00a74.1), and a package with thousands of findings\nwould otherwise turn a summary into the most expensive call in the API.",
+        "operationId": "summarise_findings_api_v1_projects__project_id__packages__package_id__findings_summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingCounts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "How this package's findings break down",
         "tags": [
           "findings"
         ]

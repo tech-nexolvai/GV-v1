@@ -83,9 +83,18 @@ export interface Finding {
   name: string;
   outcome: Outcome;
   severity: Severity;
-  expected: string;
-  found: string;
-  delta: string;
+  /**
+   * The values compared, the difference, the reason and the arithmetic.
+   *
+   * **Optional because the list endpoint does not carry them.** `GET .../findings` returns the
+   * verdict and its provenance; the operands and the trace come from `.../findings/{id}/chain`, one
+   * call per finding, fetched when a card is opened rather than for every row on load. The card
+   * already renders each of these conditionally, so a row shows what is known and does not invent
+   * the rest.
+   */
+  expected?: string;
+  found?: string;
+  delta?: string;
   /**
    * **Absent in V1, deliberately.** Raj settled on exact match with no tolerance band
    * (`docs/CLIENT_FACTS.md` Q2, `docs/decisions/V1_VERDICT_MODEL.md` D1) — the reviewer clearing a
@@ -93,10 +102,10 @@ export interface Finding {
    * Kept on the type because graded tolerances are deferred past iteration 1, not ruled out.
    */
   tolerance?: string;
-  reason: string;
-  trace: Trace;
-  arch_evidence: Evidence | null;
-  shop_evidence: Evidence | null;
+  reason?: string;
+  trace?: Trace;
+  arch_evidence?: Evidence | null;
+  shop_evidence?: Evidence | null;
   reviewer_action: ReviewerAction | null;
 }
 

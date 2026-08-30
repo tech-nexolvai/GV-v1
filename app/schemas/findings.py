@@ -142,3 +142,25 @@ class FindingPage(BaseModel):
     next_cursor: str | None = None
     limit: int
     ordering: str = Field(default=ORDERING_DESCRIPTION)
+
+
+class FindingCounts(BaseModel):
+    """How a package's findings break down, for a list that has not opened one yet.
+
+    **Every outcome is named, and they sum to `total`.** A summary that reported only passes and
+    failures would leave abstentions — `REVIEW_REQUIRED`, `NOT_FOUND`, `NO_APPLICABLE_RULE` — in
+    neither column, and a reader would take the remainder for passes. Under V1's exact-match rule the
+    abstention count is expected to be large, so hiding it would misrepresent the run.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    total: int = Field(ge=0)
+    passed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    review_required: int = Field(ge=0)
+    not_found: int = Field(ge=0)
+    no_applicable_rule: int = Field(ge=0)
+    critical_failed: int = Field(ge=0)
+    """Failures on a CRITICAL rule. The primary safety metric counts these, so the reviewer's list
+    should lead with them rather than leaving them to be spotted among the rest."""

@@ -232,3 +232,14 @@
   max-width: 180px;
   text-align: right;
 }
+
+/* Loading, failure and emptiness are three different sentences and must not look alike. */
+.packages-table__state {
+  padding: var(--space-6, 24px);
+  text-align: center;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.packages-table__state--error {
+  color: var(--color-danger, #b42318);
+}

@@ -140,3 +140,14 @@
 [data-style="ide"] .review-page__progress {
   align-items: flex-start;
 }
+
+/* A failure and a clean package must not look alike. */
+.review-page__error {
+  padding: var(--space-8, 32px);
+  max-width: 60ch;
+  color: var(--color-danger, #b42318);
+}
+
+.review-page__error p {
+  color: var(--color-text-muted, #6b7280);
+}

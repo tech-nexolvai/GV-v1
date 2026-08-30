@@ -3,8 +3,11 @@ import { ChatThread } from '../components/chat/ChatThread';
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { StatusBadge } from '../components/ui/Badge';
-import type { Finding, ChatMessage } from '../data/mock';
-import { MOCK_SESSIONS, MOCK_PACKAGE } from '../data/mock';
+import type { Finding, ChatMessage, PackageStatus } from '../data/mock';
+import { getPackage } from '../api/client';
+import { loadFindings } from '../api/findings';
+import { projectId } from '../api/config';
+import { useAsync } from '../api/useAsync';
 import { FileText, CheckSquare } from 'lucide-react';
 import './ReviewPage.css';
 
@@ -16,25 +19,29 @@ interface ReviewPageProps {
 }
 
 export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMessageConsumed }: ReviewPageProps) {
-  // Find current session
-  const initialSession = MOCK_SESSIONS.find(s => s.id === sessionId) || MOCK_SESSIONS[0];
+  // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
+  const packageId = sessionId;
 
-  const [messages, setMessages] = useState<ChatMessage[]>(initialSession.messages);
+  const remote = useAsync(async () => {
+    const project = projectId();
+    const [detail, found] = await Promise.all([
+      getPackage(project, packageId),
+      loadFindings(project, packageId),
+    ]);
+    return { detail, found };
+  }, [packageId]);
+
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
-  
-  // Extract findings from assistant message inside active session
-  const initialFindings = initialSession.messages.find(m => m.role === 'assistant' && m.findings)?.findings || [];
-  const [findings, setFindings] = useState<Finding[]>(initialFindings);
+  const [findings, setFindings] = useState<Finding[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const isLoading = remote.status === 'loading';
 
+  // The fetched findings are the starting point; reviewer actions below are applied on top, so they
+  // are not thrown away every time this re-renders.
   useEffect(() => {
-    setIsLoading(true);
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [sessionId]);
+    if (remote.status === 'ready') setFindings(remote.data.found);
+  }, [remote]);
 
   // Auto-send the initial message from WelcomePage when loaded
   useEffect(() => {
@@ -47,6 +54,20 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
 
   if (isLoading) {
     return <ReviewSkeleton />;
+  }
+
+  if (remote.status === 'error') {
+    // Said plainly, and never as an empty thread. A review screen showing no findings is the
+    // sentence "this drawing is clean" — the one thing a failed fetch must not be able to say.
+    return (
+      <div className="review-page review-page__error">
+        <h2>This review could not be loaded</h2>
+        <p>{remote.error.message}</p>
+        <p>
+          Nothing here has been checked. Do not read an empty list as a package with no findings.
+        </p>
+      </div>
+    );
   }
 
   function handleSend(text: string) {
@@ -115,7 +136,16 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     );
   }
 
-  const pkg = MOCK_PACKAGE;
+  const pkg = {
+    id: packageId,
+    vendor: remote.status === 'ready' ? (remote.data.detail.vendor ?? '—') : '—',
+    status: (remote.status === 'ready'
+      ? remote.data.detail.state
+      : 'CREATED') as PackageStatus,
+    // The project id, until the API carries a human project name. An id a reviewer can quote beats
+    // a friendly label that is not in any record.
+    project: remote.status === 'ready' ? remote.data.detail.project_id : '',
+  };
   const actioned = findings.filter(f => f.reviewer_action !== null).length;
   const needsAction = findings.filter(f =>
     f.reviewer_action === null &&

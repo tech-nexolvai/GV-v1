@@ -76,6 +76,8 @@ export type PackageDetail = Get<'/api/v1/projects/{project_id}/packages/{package
 export type FindingPage = Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings'>;
 export type FindingChain =
   Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings/{finding_id}/chain'>;
+export type FindingCounts =
+  Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings/summary'>;
 
 export function listPackages(projectId: string, query?: { cursor?: string; limit?: number }) {
   const search = new URLSearchParams();
@@ -106,5 +108,18 @@ export function listFindings(
 export function getFindingChain(projectId: string, packageId: string, findingId: string) {
   return request<FindingChain>(
     `/projects/${projectId}/packages/${packageId}/findings/${findingId}/chain`,
+  );
+}
+
+/**
+ * How a package's findings break down, without fetching them.
+ *
+ * Every outcome is counted and they sum to the total — including the abstentions. Rendering only
+ * passes and failures would invite a reader to treat the remainder as passing, and under V1's
+ * exact-match rule the abstentions are the expected bulk of a run rather than an edge case.
+ */
+export function getFindingCounts(projectId: string, packageId: string) {
+  return request<FindingCounts>(
+    `/projects/${projectId}/packages/${packageId}/findings/summary`,
   );
 }

@@ -49,7 +49,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import ColumnElement, Integer, Select, and_, case, or_, select
+from sqlalchemy import ColumnElement, Integer, Select, and_, case, func, or_, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from app.api.dependencies import get_session
@@ -65,6 +65,7 @@ from app.models import (
 from app.schemas.findings import (
     OUTCOME_ORDER,
     SEVERITY_ORDER,
+    FindingCounts,
     FindingOut,
     FindingPage,
 )
@@ -360,3 +361,57 @@ def list_findings(
         )
 
     return FindingPage(items=items, next_cursor=next_cursor, limit=limit)
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/findings/summary",
+    response_model=FindingCounts,
+    summary="How this package's findings break down",
+)
+def summarise_findings(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> FindingCounts:
+    """Counts per outcome for one package, so a list can show them without fetching every finding.
+
+    Built on `_base_query`, so the project boundary is the same one the list endpoint applies rather
+    than a second query that could drift from it — and a package in another project is `404`, not an
+    empty summary, because an empty summary would confirm the package exists.
+
+    **Every outcome is counted and they sum to the total.** Reporting only passes and failures would
+    leave the abstentions uncounted and invite a reader to treat the remainder as passing. Under
+    exact match those abstentions are the expected bulk of a run, not an edge case.
+
+    Counted in the database rather than by paging the findings and adding them up here: the control
+    plane does short work only (`DESIGN_PLATFORM.md` §4.1), and a package with thousands of findings
+    would otherwise turn a summary into the most expensive call in the API.
+    """
+    del principal
+    if not _package_is_in_project(session, project_id, package_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+
+    base = _base_query(project_id, package_id).subquery()
+    rows = session.execute(
+        select(base.c.outcome, base.c.severity, func.count().label("n")).group_by(
+            base.c.outcome, base.c.severity
+        )
+    ).all()
+
+    by_outcome: dict[str, int] = {}
+    critical_failed = 0
+    for outcome, severity, count in rows:
+        by_outcome[str(outcome)] = by_outcome.get(str(outcome), 0) + int(count)
+        if str(outcome) == Outcome.FAIL.value and str(severity) == Severity.CRITICAL.value:
+            critical_failed += int(count)
+
+    return FindingCounts(
+        total=sum(by_outcome.values()),
+        passed=by_outcome.get(Outcome.PASS.value, 0),
+        failed=by_outcome.get(Outcome.FAIL.value, 0),
+        review_required=by_outcome.get(Outcome.REVIEW_REQUIRED.value, 0),
+        not_found=by_outcome.get(Outcome.NOT_FOUND.value, 0),
+        no_applicable_rule=by_outcome.get(Outcome.NO_APPLICABLE_RULE.value, 0),
+        critical_failed=critical_failed,
+    )
