@@ -37,26 +37,39 @@ export function toFinding(listed: Listed): Finding {
 export function withChain(finding: Finding, chain: Chain): Finding {
   const operands = chain.operands ?? [];
 
-  // `trace` is `{[key: string]: unknown}` in the schema — the API sends a free-form dict, so the
-  // generated types cannot check it and this narrows rather than asserts. Worth tightening on the
-  // server: a typed trace would make the shape a compile error here instead of an empty panel.
-  const record = (chain.trace ?? {}) as Record<string, unknown>;
-  const text = (key: string): string =>
-    typeof record[key] === 'string' ? (record[key] as string) : '';
-
-  const trace: Trace = {
-    operation: text('operation'),
-    // Values are exact rationals and are formatted as fractions, never decimals. `formatExact` uses
-    // BigInt throughout — the parts arrive as strings precisely because `Number` would corrupt a
-    // numerator above 2^53, and under exact match a shifted value is a different verdict.
-    operands: operands.map((operand) => ({
-      name: operand.name,
-      value: formatExact({ numerator: operand.numerator, denominator: operand.denominator }),
-      status: operand.evidence_status,
-      source: operand.unit,
-    })),
-    comparison: text('comparison'),
-  };
+  // `trace` is a discriminated union now, so this narrows instead of guessing. It used to be a
+  // free-form dict and this function read fields out of it with a string guard — the one place the
+  // generated types could not check anything.
+  //
+  // The abstention case matters as much as the calculation one: `app/budget/overflow.py` writes a
+  // trace with a cause and no arithmetic, and rendering that as a calculation with no operands would
+  // say "the check ran and found nothing" about a check that never ran.
+  const source = chain.trace;
+  const trace: Trace =
+    source.kind === 'calculation'
+      ? {
+          operation: source.operation,
+          // Values are exact rationals and arrive as text. `formatExact` keeps them that way, using
+          // BigInt — under exact match a value shifted by binary rounding is a different verdict.
+          operands: operands.map((operand) => ({
+            name: operand.name,
+            value: formatExact({
+              numerator: operand.numerator,
+              denominator: operand.denominator,
+            }),
+            status: operand.evidence_status,
+            source: operand.unit,
+          })),
+          comparison: source.comparison ?? '',
+        }
+      : {
+          operation: source.kind === 'abstention' ? source.cause : 'unrecognised trace',
+          operands: [],
+          comparison:
+            source.kind === 'abstention'
+              ? (source.reason ?? 'The check did not run.')
+              : 'This trace was not recognised and is shown as stored.',
+        };
 
   return { ...finding, trace };
 }

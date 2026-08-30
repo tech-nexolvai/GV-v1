@@ -14,12 +14,12 @@ Verification: ``tests/api/test_finding_chain.py``.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Annotated, Any
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -85,6 +85,132 @@ class RuleSnapshotRecord(BaseModel):
     check_type: str
 
 
+class TracedOperandOut(BaseModel):
+    """One input to the calculation, as the engine recorded it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    value: str
+    """Rendered as text rather than a number. The engine's operand values are exact rationals and
+    measurements, and a JSON number would be turned into binary floating point by most clients —
+    which under exact match is not a rounding error but a different verdict."""
+
+    source: str
+    evidence_ref: str | None = None
+
+
+class CalculationTraceOut(BaseModel):
+    """The arithmetic, when arithmetic ran. Mirrors `verdict.trace.CalculationTrace`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["calculation"] = "calculation"
+    operation: str
+    operands: tuple[TracedOperandOut, ...] = ()
+    intermediates: tuple[tuple[str, str], ...] = ()
+    comparison: str = ""
+    tolerance: str | None = None
+    """Always absent in V1. Raj settled on exact match with no band, so there is no tolerance to
+    record — the reviewer clearing a flag is the tolerance. Kept because graded tolerances are
+    deferred past iteration 1 rather than ruled out."""
+
+    arithmetic_unit: str | None = None
+    outcome: str = ""
+    engine_version: str = ""
+    operation_version: str = ""
+
+
+class AbstentionTraceOut(BaseModel):
+    """Why nothing was calculated.
+
+    A real and separate shape, not a degenerate calculation: `app/budget/overflow.py` writes one when
+    a package exhausts its model budget, and it carries a cause and a reason rather than operands.
+    Reporting it as an empty calculation would render an abstention as a check that ran and found
+    nothing, which is the reading V1 must never invite.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["abstention"] = "abstention"
+    cause: str
+    reason: str = ""
+    regions_done: int | None = None
+    review_complete: bool | None = None
+
+
+class OpaqueTraceOut(BaseModel):
+    """A trace this API does not recognise, handed over intact.
+
+    **Not an error and not a silent empty object.** A recompute is compared against what the engine
+    recorded, so dropping a shape nobody has taught this endpoint about would lose the only copy. A
+    reader gets the content and is told plainly that it was not understood.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["unrecognised"] = "unrecognised"
+    content: dict[str, Any]
+
+
+#: What the wire carries. Discriminated on `kind`, which this API adds when it reads the row — the
+#: stored JSON has no tag of its own, and classifying on read means no migration and no rewriting of
+#: rows that already exist.
+TraceOut = Annotated[
+    CalculationTraceOut | AbstentionTraceOut | OpaqueTraceOut,
+    Field(discriminator="kind"),
+]
+
+
+def classify_trace(stored: Mapping[str, Any]) -> TraceOut:
+    """Decide which shape a stored trace is, without guessing.
+
+    Recognised by the field that only one shape has: a calculation names an `operation`, an
+    abstention names a `cause`. Anything else is handed over as-is rather than coerced into whichever
+    model is closest — a trace bent to fit would be read as the engine's own record of the
+    calculation, and it would not be.
+    """
+    if "operation" in stored:
+        return CalculationTraceOut(
+            operation=str(stored.get("operation", "")),
+            operands=tuple(
+                TracedOperandOut(
+                    name=str(operand.get("name", "")),
+                    value=str(operand.get("value", "")),
+                    source=str(operand.get("source", "")),
+                    evidence_ref=(
+                        str(operand["evidence_ref"])
+                        if operand.get("evidence_ref") is not None
+                        else None
+                    ),
+                )
+                for operand in stored.get("operands", ())
+                if isinstance(operand, Mapping)
+            ),
+            intermediates=tuple(
+                (str(name), str(value)) for name, value in stored.get("intermediates", ()) or ()
+            ),
+            comparison=str(stored.get("comparison", "")),
+            tolerance=None if stored.get("tolerance") is None else str(stored["tolerance"]),
+            arithmetic_unit=(
+                None if stored.get("arithmetic_unit") is None else str(stored["arithmetic_unit"])
+            ),
+            outcome=str(stored.get("outcome", "")),
+            engine_version=str(stored.get("engine_version", "")),
+            operation_version=str(stored.get("operation_version", "")),
+        )
+
+    if "cause" in stored:
+        return AbstentionTraceOut(
+            cause=str(stored["cause"]),
+            reason=str(stored.get("reason", "")),
+            regions_done=stored.get("regions_done"),
+            review_complete=stored.get("review_complete"),
+        )
+
+    return OpaqueTraceOut(content=dict(stored))
+
+
 class FindingChain(BaseModel):
     """Everything persisted to explain and recompute one finding."""
 
@@ -96,7 +222,7 @@ class FindingChain(BaseModel):
     rule_snapshot: RuleSnapshotRecord
     parameter_versions: dict[str, str]
     operands: tuple[ExactOperand, ...]
-    trace: dict[str, Any]
+    trace: TraceOut
     engine_version: str
 
 
@@ -210,7 +336,7 @@ def _assemble(
         ),
         parameter_versions=dict(finding.parameter_set_versions),
         operands=operands,
-        trace=dict(finding.trace),
+        trace=classify_trace(finding.trace),
         engine_version=run.engine_version,
     )
 
