@@ -38,6 +38,7 @@ import os
 import secrets
 import sys
 from pathlib import Path
+from typing import Final
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -49,7 +50,7 @@ class NotADevelopmentEnvironment(RuntimeError):
     """Raised when this is asked to run somewhere it must not."""
 
 
-def build_app():
+def build_app() -> FastAPI:
     """The application, plus the local fixtures a deployment would supply."""
     from app.api.dependencies import ARTIFACT_STORE_STATE
     from app.api.rules import RULEBOOK_STATE, Rulebook
@@ -57,7 +58,6 @@ def build_app():
     from app.main import create_app
     from rules.governance.publish import PublicationLog
     from rules.snapshot import SnapshotStore
-    from storage.local import LocalStore
 
     settings = Settings()  # type: ignore[call-arg]
     if settings.environment != DEVELOPMENT:
@@ -78,17 +78,43 @@ def build_app():
     store = LocalStore(root=root, ticket_secret=secret)
     setattr(app.state, ARTIFACT_STORE_STATE, store)
 
+    _mount_upload_shim(app, store)
+
     # Empty on purpose. The real rulebook is authored and published through D6; an empty one answers
     # "which rules exist?" with "none", which is true here, rather than with a fixture that would be
     # mistaken for the client's.
-    _mount_upload_shim(app, store)
-
     setattr(
         app.state,
         RULEBOOK_STATE,
-        Rulebook(store=SnapshotStore(), log=PublicationLog(), proposals={}, regression=None),
+        Rulebook(
+            store=SnapshotStore(),
+            log=PublicationLog(),
+            proposals={},
+            regression=_no_gold_set_here,
+        ),
     )
     return app
+
+
+def _no_gold_set_here(proposal: object) -> RegressionOutcome:
+    """The regression gate, on a machine that cannot run one.
+
+    `Rulebook.regression` has no default on purpose: §9 and #238 say a rulebook that publishes
+    without a gold-set comparison is not nearly configured, it is broken. This was `None` until mypy
+    objected, and mypy was right — the failure would have been `NoneType is not callable` at the
+    moment somebody tried to publish, which reads as a bug in the publish path rather than as the
+    answer.
+
+    So it refuses, and says why. A laptop has no gold set to compare against, and the honest outcome
+    of a check that cannot run is `passed=False` — never a pass that nothing stood behind.
+    """
+    return RegressionOutcome(
+        passed=False,
+        summary=(
+            "no gold-set regression runs on a development machine, so this gate cannot pass here. "
+            "Publish through D6 where the comparison is real."
+        ),
+    )
 
 
 #: Imported at module level, not inside `_mount_upload_shim`, and that is load-bearing.
@@ -98,12 +124,17 @@ def build_app():
 #: the mounting function, FastAPI could not resolve the annotation, decided `request` was an ordinary
 #: value, and demoted it to a required query parameter: every upload came back 422 asking for a query
 #: field named `request`. The route was mounted and matched; only the signature was misread.
-from fastapi import HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 
-from storage.local import TICKET_PARAMETER
+from rules.governance.publish import RegressionOutcome
+from storage.local import TICKET_PARAMETER, LocalStore
+
+#: The largest body the development shim will take. Drawing sets run to tens of megabytes, so this is
+#: roomy; it exists to bound a mistake, not to enforce a product limit.
+MAX_UPLOAD_BYTES: Final = 256 * 1024 * 1024
 
 
-def _mount_upload_shim(app, store) -> None:
+def _mount_upload_shim(app: FastAPI, store: LocalStore) -> None:
     """Accept the browser's upload, because a browser cannot PUT to a `file://` URL.
 
     `LocalStore.upload_ticket` returns a `file:` URI with a signed token in the query string, and
@@ -137,9 +168,39 @@ def _mount_upload_shim(app, store) -> None:
                 detail=f"This ticket does not permit writing that object: {error}",
             ) from error
 
+        # Refused on the declared length, before reading a byte. `await request.body()` accumulates
+        # the whole payload in memory — which is precisely why this route may not exist in `app/`,
+        # and the reason is not softer for being on a laptop where PostgreSQL is the other tenant.
+        # A cap does not make the shim shippable; it makes a mistyped `curl` a 413 instead of a swap
+        # storm. Real drawing sets are tens of megabytes, so the ceiling is generous on purpose.
+        declared = request.headers.get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=(
+                    f"{declared} bytes is over this development shim's {MAX_UPLOAD_BYTES}-byte "
+                    "ceiling. It is a laptop convenience, not the upload path."
+                ),
+            )
+
         body = await request.body()
+        if len(body) > MAX_UPLOAD_BYTES:
+            # A caller can lie about, or omit, content-length. The check above saves the read when it
+            # was honest; this one is what actually holds.
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"body of {len(body)} bytes is over the {MAX_UPLOAD_BYTES}-byte ceiling",
+            )
+
         content_type = request.headers.get("content-type", "application/octet-stream")
         store.put(key, io.BytesIO(body), content_type=content_type)
+
+        # Printed, not emitted as a telemetry event. The application's structured logging exists so a
+        # deployment can be reasoned about after the fact; nothing scrapes a laptop, and giving a
+        # script a dependency on the tracing setup would buy the person watching this terminal
+        # nothing. What they need is to see that the bytes arrived, which is this line. The key is
+        # a content hash and a document id — never a filename, and never any of the content.
+        print(f"upload accepted: {len(body)} bytes -> {key}", flush=True)
         return {"key": key, "bytes": str(len(body))}
 
 

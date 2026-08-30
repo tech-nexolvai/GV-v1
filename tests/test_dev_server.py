@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
+from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
 
@@ -27,7 +28,13 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from dev_server import DEVELOPMENT, NotADevelopmentEnvironment, _mount_upload_shim
+import dev_server
+from dev_server import (
+    NotADevelopmentEnvironment,
+    _mount_upload_shim,
+    _no_gold_set_here,
+    build_app,
+)
 
 from app.config import Settings
 from app.main import create_app
@@ -58,6 +65,15 @@ def shimmed(store: LocalStore) -> TestClient:
     app = FastAPI()
     _mount_upload_shim(app, store)
     return TestClient(app)
+
+
+def tmp_path_of(store: LocalStore) -> Path:
+    """The directory a store was rooted at.
+
+    Read back off the store rather than taking `tmp_path` as a second fixture parameter, so these
+    assertions cannot drift onto a directory the store never used and quietly find nothing.
+    """
+    return Path(store._root)
 
 
 def _ticket(store: LocalStore, key: str) -> str:
@@ -172,11 +188,127 @@ def test_the_shim_refuses_a_token_it_did_not_sign(shimmed: TestClient, token: st
     assert response.status_code == 403
 
 
-def test_the_runner_refuses_to_start_outside_development() -> None:
-    """The two locks are the environment and the principal; this is the first.
+@pytest.mark.parametrize("environment", ["production", "staging", "Development"])
+def test_the_runner_refuses_to_start_outside_development(
+    monkeypatch: pytest.MonkeyPatch, environment: str
+) -> None:
+    """The first of the two locks, exercised rather than described.
 
-    `scripts/dev_server.py` mounts an unauthenticated identity and an open-by-ticket write route. Run
-    against a staging database it would be a live vulnerability, so it declines rather than warns.
+    `scripts/dev_server.py` wires a filesystem store that signs its own upload tickets, mounts a
+    route that accepts file bytes, and runs behind an identity that checks no credential. Pointed at
+    a staging database that is not a development convenience, it is a live vulnerability — so it
+    raises rather than warning.
+
+    An earlier version of this test asserted that `DEVELOPMENT == "development"` and that the
+    exception subclassed `Exception`, which is to say it asserted that two lines of source exist.
+    It would have stayed green through the guard being deleted. `"Development"` is in the parameters
+    because the comparison is exact, and a capitalised value is the plausible way to get this wrong.
+
+    An empty environment is not in the parameters: `Settings` declares `min_length=1` and rejects it
+    before this guard is reached, so asserting on it here would be asserting about pydantic.
     """
-    assert DEVELOPMENT == "development"
-    assert issubclass(NotADevelopmentEnvironment, Exception)
+    monkeypatch.setenv("GV_ENVIRONMENT", environment)
+    monkeypatch.setenv("GV_DATABASE_URL", DATABASE_URL)
+
+    with pytest.raises(NotADevelopmentEnvironment):
+        build_app()
+
+
+def test_the_refusal_names_the_environment_it_saw(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whoever hits this is looking at a terminal wondering why nothing starts. "Not development" is
+    not the answer; which environment it thinks it is in, is."""
+    monkeypatch.setenv("GV_ENVIRONMENT", "staging")
+    monkeypatch.setenv("GV_DATABASE_URL", DATABASE_URL)
+
+    with pytest.raises(NotADevelopmentEnvironment, match="staging"):
+        build_app()
+
+
+def test_the_regression_gate_refuses_rather_than_being_absent() -> None:
+    """**A rulebook with no regression check is not nearly configured — it is broken** (§9, #238).
+
+    `Rulebook.regression` has no default for that reason, so the runner has to supply something. It
+    supplies a check that fails and says why, because a laptop has no gold set to compare against.
+    A `None` here — which is what this was until mypy objected — would have surfaced as
+    `NoneType is not callable` at publish time, reading as a bug in the publish path rather than as
+    the answer to the question the caller asked.
+    """
+    outcome = _no_gold_set_here(object())
+
+    assert outcome.passed is False, "a laptop cannot run the gold set, so this must never pass"
+    assert "development" in outcome.summary
+
+
+def test_an_oversized_upload_is_refused_on_its_declared_length(
+    shimmed: TestClient, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refused before the body is read, when the caller was honest about its size.
+
+    `await request.body()` accumulates the whole payload in memory. That is why this route may not
+    exist in `app/` at all, and the reason does not soften on a laptop where PostgreSQL is the other
+    tenant. The cap does not make the shim shippable — it makes a mistyped `curl` a 413 rather than
+    a swap storm.
+    """
+    monkeypatch.setattr(dev_server, "MAX_UPLOAD_BYTES", 32)
+    key = "documents/big.pdf"
+
+    response = shimmed.put(
+        f"/_dev/upload/{key}",
+        params={TICKET_PARAMETER: _token(_ticket(store, key))},
+        content=b"x" * 64,
+    )
+
+    assert response.status_code == 413
+    assert not list(
+        tmp_path_of(store).rglob("big.pdf")
+    ), "refused the write and performed it anyway"
+
+
+def test_an_oversized_upload_is_refused_even_when_the_length_was_a_lie(
+    shimmed: TestClient, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**The check that actually holds.**
+
+    A caller controls `content-length` and can understate it or omit it entirely, so the cheap check
+    is an optimisation and never the guarantee. Sent chunked, which is how a body arrives with no
+    declared length at all.
+    """
+    monkeypatch.setattr(dev_server, "MAX_UPLOAD_BYTES", 32)
+    key = "documents/liar.pdf"
+
+    def chunks() -> Iterator[bytes]:
+        yield b"x" * 64
+
+    response = shimmed.put(
+        f"/_dev/upload/{key}",
+        params={TICKET_PARAMETER: _token(_ticket(store, key))},
+        content=chunks(),
+    )
+
+    assert response.status_code == 413
+    assert not list(tmp_path_of(store).rglob("liar.pdf")), "wrote a body it had already refused"
+
+
+def test_the_cap_does_not_refuse_an_ordinary_drawing(
+    shimmed: TestClient, store: LocalStore
+) -> None:
+    """The control. A ceiling low enough to reject real work would be found in production, by
+    somebody who could not upload a drawing set."""
+    body = b"%PDF-1.4\n" + b"\x00" * (4 * 1024 * 1024) + b"\n%%EOF\n"
+    key = "documents/ordinary.pdf"
+
+    response = shimmed.put(
+        f"/_dev/upload/{key}",
+        params={TICKET_PARAMETER: _token(_ticket(store, key))},
+        content=body,
+    )
+
+    assert response.status_code == 200, "a 4 MB file is not large; real drawing sets are far bigger"
+
+    # A band, not a floor. Every other assertion about the cap monkeypatches it to something tiny, so
+    # the real constant is only ever exercised here — and a lower bound alone stays green while
+    # somebody raises the ceiling to a number that bounds nothing, which is the same as deleting it.
+    assert 64 * 1024 * 1024 <= dev_server.MAX_UPLOAD_BYTES <= 1024 * 1024 * 1024, (
+        f"{dev_server.MAX_UPLOAD_BYTES} bytes is outside the range that is both usable for a real "
+        "drawing set and small enough to bound a mistake on a laptop"
+    )
