@@ -695,6 +695,22 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "OpenReviewSession": {
+        "additionalProperties": false,
+        "description": "Start reviewing one package revision.\n\nNames the revision rather than the package: a package moves on, and a review that silently\nfollowed it would record decisions against drawings the reviewer never saw.",
+        "properties": {
+          "package_revision_id": {
+            "format": "uuid",
+            "title": "Package Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_revision_id"
+        ],
+        "title": "OpenReviewSession",
+        "type": "object"
+      },
       "OperationOut": {
         "additionalProperties": false,
         "description": "One reviewed operation a rule may name, and the operands it takes.\n\nThis is a signature, not an implementation. A rule selects an operation by name from the typed\nregistry (`AGENTS.md` \u00a72.2); there is no field here, and none anywhere in the API, that could\ncarry executable text.",
@@ -1001,6 +1017,171 @@
         ],
         "title": "PublicationTarget",
         "type": "string"
+      },
+      "RecordAction": {
+        "additionalProperties": false,
+        "description": "One thing a reviewer did to one finding.\n\nNo `actor` and no `package_revision_id`. The actor is the authenticated caller, and the revision\nis read off the finding the server loaded \u2014 a caller cannot state which revision they were\nlooking at, which is what makes the trail worth keeping.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ReviewActionKind"
+          },
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "finding_id",
+          "action"
+        ],
+        "title": "RecordAction",
+        "type": "object"
+      },
+      "ReviewActionKind": {
+        "description": "What a reviewer did to a finding. Four verbs, and no fifth.\n\nThere is deliberately no `edit`. A reviewer either confirms what the system said, corrects the\nvalue it read, grants a bounded exception, or dismisses the finding \u2014 each of which leaves a\ndifferent record. A general \"edit\" would collapse all four into one, and the ledger exists to\nkeep them apart.",
+        "enum": [
+          "confirm",
+          "correct",
+          "except",
+          "dismiss"
+        ],
+        "title": "ReviewActionKind",
+        "type": "string"
+      },
+      "ReviewActionOut": {
+        "description": "A recorded action. Append-only \u2014 a changed mind is a second row, and the first one stays.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ReviewActionKind"
+          },
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "package_revision_id": {
+            "format": "uuid",
+            "title": "Package Revision Id",
+            "type": "string"
+          },
+          "review_session_id": {
+            "format": "uuid",
+            "title": "Review Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "review_session_id",
+          "finding_id",
+          "package_revision_id",
+          "action",
+          "actor",
+          "note",
+          "created_at"
+        ],
+        "title": "ReviewActionOut",
+        "type": "object"
+      },
+      "ReviewSessionOut": {
+        "description": "A sitting of review work.",
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "package_revision_id": {
+            "format": "uuid",
+            "title": "Package Revision Id",
+            "type": "string"
+          },
+          "reviewer": {
+            "title": "Reviewer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "package_revision_id",
+          "reviewer",
+          "created_at",
+          "completed_at"
+        ],
+        "title": "ReviewSessionOut",
+        "type": "object"
+      },
+      "ReviewSessionPage": {
+        "description": "Sessions, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewSessionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ReviewSessionPage",
+        "type": "object"
       },
       "RuleOut": {
         "additionalProperties": false,
@@ -2101,6 +2282,242 @@
         "summary": "Finding Chain",
         "tags": [
           "findings"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/review-sessions": {
+      "post": {
+        "description": "Start a sitting. The reviewer is the caller, not a name in the body.\n\nA revision outside this project is `404` rather than `403`, like everything else here: a 403\nwould confirm it exists, and project scope is an isolation boundary rather than a filter.",
+        "operationId": "open_review_session_api_v1_projects__project_id__packages__package_id__review_sessions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenReviewSession"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewSessionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open a review session over one package revision",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/review-sessions": {
+      "get": {
+        "description": "The sessions a reviewer picks up again \u2014 what the workspace sidebar lists.\n\n`mine` defaults to true. A reviewer's own sittings are what they came back for, and a list\ndefaulting to everyone's would bury them on any project with more than one reviewer.",
+        "operationId": "list_review_sessions_api_v1_projects__project_id__review_sessions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mine",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Mine",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewSessionPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review sessions in this project, newest first",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/actions": {
+      "post": {
+        "description": "Append one action. Never an edit \u2014 a changed mind is a second row and the first one stays.\n\nThe actor is the caller and the revision is read off the finding the service loads, so neither\ncan be stated by the client. That is what \"an action references a server-side finding revision\"\nmeans in code rather than in a comment.",
+        "operationId": "record_review_action_api_v1_projects__project_id__review_sessions__review_session_id__actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "review_session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Review Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record what the reviewer did to one finding",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/complete": {
+      "post": {
+        "description": "Close the sitting. Completing twice is refused rather than treated as a no-op \u2014 the second\nattempt means somebody believes they are finishing work that was already finished.",
+        "operationId": "complete_review_session_api_v1_projects__project_id__review_sessions__review_session_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "review_session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Review Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewSessionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish a review session",
+        "tags": [
+          "review"
         ]
       }
     },

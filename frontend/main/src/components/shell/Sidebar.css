@@ -290,3 +290,14 @@
     height: 2px;
   }
 }
+
+/* An empty list and a failed one are different sentences. */
+.sidebar__thread-state {
+  padding: var(--space-3, 12px);
+  font-size: 0.8125rem;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.sidebar__thread-state--error {
+  color: var(--color-danger, #b42318);
+}

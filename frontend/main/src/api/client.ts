@@ -78,6 +78,8 @@ export type FindingChain =
   Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings/{finding_id}/chain'>;
 export type FindingCounts =
   Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings/summary'>;
+export type ReviewSessionPage = Get<'/api/v1/projects/{project_id}/review-sessions'>;
+export type ReviewSession = ReviewSessionPage['items'][number];
 
 export function listPackages(projectId: string, query?: { cursor?: string; limit?: number }) {
   const search = new URLSearchParams();
@@ -121,5 +123,59 @@ export function getFindingChain(projectId: string, packageId: string, findingId:
 export function getFindingCounts(projectId: string, packageId: string) {
   return request<FindingCounts>(
     `/projects/${projectId}/packages/${packageId}/findings/summary`,
+  );
+}
+
+async function send<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * The reviewer's own sittings in this project — what the sidebar lists.
+ *
+ * `mine` defaults to true on the server: a list showing everyone's would bury a reviewer's own on
+ * any project with more than one of them.
+ */
+export function listReviewSessions(projectId: string, options?: { mine?: boolean }) {
+  const search = options?.mine === false ? '?mine=false' : '';
+  return request<ReviewSessionPage>(`/projects/${projectId}/review-sessions${search}`);
+}
+
+/**
+ * Open a sitting over one package revision.
+ *
+ * **No reviewer is sent.** The server takes it from the authenticated caller, and the request model
+ * forbids the field outright — a body-supplied name would let this client record somebody else's
+ * decision, which is the one thing the audit trail exists to prevent.
+ */
+export function openReviewSession(projectId: string, packageId: string, revisionId: string) {
+  return send<ReviewSession>(
+    `/projects/${projectId}/packages/${packageId}/review-sessions`,
+    { package_revision_id: revisionId },
+  );
+}
+
+/** Record what the reviewer did to one finding. The actor is the caller; the revision is read off
+ *  the finding server-side. Append-only — a changed mind is a second call, not an edit. */
+export function recordReviewAction(
+  projectId: string,
+  reviewSessionId: string,
+  action: { finding_id: string; action: 'confirm' | 'correct' | 'except' | 'dismiss'; note?: string },
+) {
+  return send<unknown>(
+    `/projects/${projectId}/review-sessions/${reviewSessionId}/actions`,
+    action,
+  );
+}
+
+/** Close the sitting. Completing twice is refused rather than ignored. */
+export function completeReviewSession(projectId: string, reviewSessionId: string) {
+  return send<ReviewSession>(
+    `/projects/${projectId}/review-sessions/${reviewSessionId}/complete`,
+    {},
   );
 }

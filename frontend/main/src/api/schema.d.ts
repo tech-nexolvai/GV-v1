@@ -326,6 +326,97 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/review-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open a review session over one package revision
+         * @description Start a sitting. The reviewer is the caller, not a name in the body.
+         *
+         *     A revision outside this project is `404` rather than `403`, like everything else here: a 403
+         *     would confirm it exists, and project scope is an isolation boundary rather than a filter.
+         */
+        post: operations["open_review_session_api_v1_projects__project_id__packages__package_id__review_sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/review-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Review sessions in this project, newest first
+         * @description The sessions a reviewer picks up again — what the workspace sidebar lists.
+         *
+         *     `mine` defaults to true. A reviewer's own sittings are what they came back for, and a list
+         *     defaulting to everyone's would bury them on any project with more than one reviewer.
+         */
+        get: operations["list_review_sessions_api_v1_projects__project_id__review_sessions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record what the reviewer did to one finding
+         * @description Append one action. Never an edit — a changed mind is a second row and the first one stays.
+         *
+         *     The actor is the caller and the revision is read off the finding the service loads, so neither
+         *     can be stated by the client. That is what "an action references a server-side finding revision"
+         *     means in code rather than in a comment.
+         */
+        post: operations["record_review_action_api_v1_projects__project_id__review_sessions__review_session_id__actions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finish a review session
+         * @description Close the sitting. Completing twice is refused rather than treated as a no-op — the second
+         *     attempt means somebody believes they are finishing work that was already finished.
+         */
+        post: operations["complete_review_session_api_v1_projects__project_id__review_sessions__review_session_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rules": {
         parameters: {
             query?: never;
@@ -922,6 +1013,20 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * OpenReviewSession
+         * @description Start reviewing one package revision.
+         *
+         *     Names the revision rather than the package: a package moves on, and a review that silently
+         *     followed it would record decisions against drawings the reviewer never saw.
+         */
+        OpenReviewSession: {
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
+        };
+        /**
          * OperationOut
          * @description One reviewed operation a rule may name, and the operands it takes.
          *
@@ -1116,6 +1221,104 @@ export interface components {
          * @enum {string}
          */
         PublicationTarget: "development" | "production";
+        /**
+         * RecordAction
+         * @description One thing a reviewer did to one finding.
+         *
+         *     No `actor` and no `package_revision_id`. The actor is the authenticated caller, and the revision
+         *     is read off the finding the server loaded — a caller cannot state which revision they were
+         *     looking at, which is what makes the trail worth keeping.
+         */
+        RecordAction: {
+            action: components["schemas"]["ReviewActionKind"];
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /** Note */
+            note?: string | null;
+        };
+        /**
+         * ReviewActionKind
+         * @description What a reviewer did to a finding. Four verbs, and no fifth.
+         *
+         *     There is deliberately no `edit`. A reviewer either confirms what the system said, corrects the
+         *     value it read, grants a bounded exception, or dismisses the finding — each of which leaves a
+         *     different record. A general "edit" would collapse all four into one, and the ledger exists to
+         *     keep them apart.
+         * @enum {string}
+         */
+        ReviewActionKind: "confirm" | "correct" | "except" | "dismiss";
+        /**
+         * ReviewActionOut
+         * @description A recorded action. Append-only — a changed mind is a second row, and the first one stays.
+         */
+        ReviewActionOut: {
+            action: components["schemas"]["ReviewActionKind"];
+            /** Actor */
+            actor: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Note */
+            note: string | null;
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
+            /**
+             * Review Session Id
+             * Format: uuid
+             */
+            review_session_id: string;
+        };
+        /**
+         * ReviewSessionOut
+         * @description A sitting of review work.
+         */
+        ReviewSessionOut: {
+            /** Completed At */
+            completed_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
+            /** Reviewer */
+            reviewer: string;
+        };
+        /**
+         * ReviewSessionPage
+         * @description Sessions, newest first.
+         */
+        ReviewSessionPage: {
+            /** Items */
+            items: components["schemas"]["ReviewSessionOut"][];
+        };
         /**
          * RuleOut
          * @description One rule, as it stands today: its effective snapshot and whether it could be released.
@@ -1693,6 +1896,143 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingChain"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_review_session_api_v1_projects__project_id__packages__package_id__review_sessions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenReviewSession"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewSessionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_review_sessions_api_v1_projects__project_id__review_sessions_get: {
+        parameters: {
+            query?: {
+                mine?: boolean;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewSessionPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_review_action_api_v1_projects__project_id__review_sessions__review_session_id__actions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                review_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewActionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_review_session_api_v1_projects__project_id__review_sessions__review_session_id__complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                review_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewSessionOut"];
                 };
             };
             /** @description Validation Error */

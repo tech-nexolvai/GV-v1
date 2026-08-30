@@ -138,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         findings,
         operations,
         packages,
+        review,
         rules,
     )
 
@@ -156,6 +157,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # delegates to D6.
     app.include_router(rules.router, prefix=API_PREFIX)
     app.include_router(operations.router, prefix=API_PREFIX)
+
+    # Review sessions and the actions a reviewer takes (#229). The service has existed since
+    # D4.1; this is what lets the workspace reach it.
+    app.include_router(review.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def _request_id(

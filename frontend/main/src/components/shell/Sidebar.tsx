@@ -1,5 +1,7 @@
 import { Files, BookOpen, BarChart2, MessageSquare, Plus, ChevronRight } from 'lucide-react';
-import { MOCK_SESSIONS } from '../../data/mock';
+import { listReviewSessions } from '../../api/client';
+import { projectId } from '../../api/config';
+import { useAsync } from '../../api/useAsync';
 import { StatusBadge } from '../ui/Badge';
 import './Sidebar.css';
 
@@ -27,6 +29,11 @@ export function Sidebar({
   onSelectSession,
   onNewPackage,
 }: SidebarProps) {
+  // The reviewer's own open sittings. `mine` defaults to true on the server, which is what a
+  // reviewer came back for — everyone's list would bury their own on a shared project.
+  const sessions = useAsync(() => listReviewSessions(projectId()), []);
+  const items = sessions.status === 'ready' ? sessions.data.items : [];
+
   return (
     <aside
       className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`}
@@ -68,7 +75,17 @@ export function Sidebar({
           </div>
 
           <div className="sidebar__thread-list">
-            {MOCK_SESSIONS.map(session => (
+            {sessions.status === 'error' && (
+              /* Named, not rendered as an empty list. An empty sidebar reads as "no reviews open",
+                 which is a different and more comfortable statement than "we could not ask". */
+              <p className="sidebar__thread-state sidebar__thread-state--error">
+                Could not load reviews.
+              </p>
+            )}
+            {sessions.status === 'ready' && items.length === 0 && (
+              <p className="sidebar__thread-state">No open reviews.</p>
+            )}
+            {items.map(session => (
               <button
                 key={session.id}
                 className={`sidebar__thread ${activeSession === session.id ? 'sidebar__thread--active' : ''}`}
@@ -77,13 +94,16 @@ export function Sidebar({
               >
                 <div className="sidebar__thread-top">
                   <span className="sidebar__thread-id">
-                    {session.package_label.split('-').map((part, i, arr) => (
-                      <span key={i}>{part}{i < arr.length - 1 && <>{'-'}<wbr /></>}</span>
-                    ))}
+                    {/* The revision id until the API carries a package label. A real identifier a
+                        reviewer can quote beats a friendly name that is in no record. */}
+                    {session.package_revision_id.slice(0, 8)}
                   </span>
-                  <StatusBadge status={session.status} size="sm" />
+                  <StatusBadge
+                    status={session.completed_at ? 'APPROVED' : 'AWAITING_REVIEW'}
+                    size="sm"
+                  />
                 </div>
-                <span className="sidebar__thread-vendor truncate">{session.vendor}</span>
+                <span className="sidebar__thread-vendor truncate">{session.reviewer}</span>
               </button>
             ))}
           </div>
