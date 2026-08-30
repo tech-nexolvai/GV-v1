@@ -1,7 +1,59 @@
 import { Plus, ArrowRight } from 'lucide-react';
-import { MOCK_PACKAGES_LIST } from '../data/mock';
+import { listPackages, getFindingCounts } from '../api/client';
+import type { PackageStatus } from '../data/mock';
+import { projectId } from '../api/config';
+import { useAsync } from '../api/useAsync';
 import { StatusBadge } from '../components/ui/Badge';
 import './PackagesPage.css';
+
+/** A package plus its finding counts — two calls the table shows as one row. */
+interface PackageRow {
+  id: string;
+  vendor: string;
+  project: string;
+  category: string;
+  status: PackageStatus;
+  submitted_at: string;
+  reviewer: string | null;
+  pass_count: number;
+  fail_count: number;
+  review_count: number;
+  /** `NOT_FOUND` plus `NO_APPLICABLE_RULE` — the checks that produced no verdict at all. */
+  missing_count: number;
+}
+
+/**
+ * Fetch the packages, then each one's counts.
+ *
+ * The counts are a second call per package because the list endpoint does not carry them, and
+ * `Promise.all` rather than a loop so one slow package does not hold up the rest. If the number of
+ * packages ever grows past a page this wants a batched endpoint instead — noted rather than
+ * pre-built, since a page is currently 50.
+ */
+async function loadRows(): Promise<PackageRow[]> {
+  const project = projectId();
+  const page = await listPackages(project);
+
+  return Promise.all(
+    page.items.map(async (pkg) => {
+      const counts = await getFindingCounts(project, pkg.id);
+      return {
+        id: pkg.id,
+        vendor: pkg.vendor ?? '—',
+        project: pkg.project_id,
+        // No source on the wire yet; shown as absent rather than invented.
+        category: '—',
+        status: pkg.state as PackageStatus,
+        submitted_at: pkg.created_at,
+        reviewer: null,
+        pass_count: counts.passed,
+        fail_count: counts.failed,
+        review_count: counts.review_required,
+        missing_count: counts.not_found + counts.no_applicable_rule,
+      };
+    }),
+  );
+}
 
 interface PackagesPageProps {
   onOpenReview: (packageId: string) => void;
@@ -15,6 +67,8 @@ function formatDate(iso: string) {
 }
 
 export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) {
+  const rows = useAsync(loadRows, []);
+
   return (
     <div className="packages-page animate-fade-in">
       {/* Page header */}
@@ -48,7 +102,27 @@ export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) 
             </tr>
           </thead>
           <tbody>
-            {MOCK_PACKAGES_LIST.map((pkg, i) => (
+            {rows.status === 'loading' && (
+              <tr>
+                <td colSpan={8} className="packages-table__state">Loading documents…</td>
+              </tr>
+            )}
+            {rows.status === 'error' && (
+              /* Said out loud, not rendered as an empty table. An empty table here would read as
+                 "no documents", and in a review workflow that is the same sentence as "nothing to
+                 check" — the one thing a failure must never look like. */
+              <tr>
+                <td colSpan={8} className="packages-table__state packages-table__state--error">
+                  Could not load documents: {rows.error.message}
+                </td>
+              </tr>
+            )}
+            {rows.status === 'ready' && rows.data.length === 0 && (
+              <tr>
+                <td colSpan={8} className="packages-table__state">No documents yet.</td>
+              </tr>
+            )}
+            {(rows.status === 'ready' ? rows.data : []).map((pkg, i) => (
               <tr
                 key={pkg.id}
                 className="packages-table__row animate-fade-in"

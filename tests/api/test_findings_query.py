@@ -727,3 +727,103 @@ def test_the_list_does_not_carry_calculation_traces(session: Session) -> None:
 
     item = _page(_client(session, PROJECT_A), PROJECT_A, package.id)["items"][0]
     assert "trace" not in item
+
+
+# ---------------------------------------------------------------------------
+# The summary — what a package list shows before anyone opens a finding
+# ---------------------------------------------------------------------------
+
+
+def _summary(client: TestClient, project_id: UUID, package_id: UUID) -> dict[str, Any]:
+    response = client.get(f"{_url(project_id, package_id)}/summary")
+    assert response.status_code == 200, response.text
+    return dict(response.json())
+
+
+def test_every_outcome_is_counted_and_they_sum_to_the_total(session: Session) -> None:
+    """**Abstentions are counted, not left as a remainder.**
+
+    A summary reporting only passes and failures would leave `REVIEW_REQUIRED`, `NOT_FOUND` and
+    `NO_APPLICABLE_RULE` in neither column, and a reader would take what is left for passes. Under
+    V1's exact-match rule those abstentions are the expected bulk of a run.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+    for offset, outcome in enumerate(Outcome):
+        _finding(session, revision, snapshot, outcome, created_at=EPOCH + timedelta(minutes=offset))
+
+    body = _summary(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert body["total"] == len(list(Outcome))
+    assert body["passed"] == 1
+    assert body["failed"] == 1
+    assert body["review_required"] == 1
+    assert body["not_found"] == 1
+    assert body["no_applicable_rule"] == 1
+    counted = (
+        body["passed"]
+        + body["failed"]
+        + body["review_required"]
+        + body["not_found"]
+        + body["no_applicable_rule"]
+    )
+    assert (
+        counted == body["total"]
+    ), "the parts do not add up to the whole, so something is uncounted"
+
+
+def test_critical_failures_are_counted_separately(session: Session) -> None:
+    """The primary safety metric counts these, so the reviewer's list leads with them rather than
+    leaving them to be spotted among the rest."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+    _finding(session, revision, snapshot, Outcome.FAIL, Severity.CRITICAL, created_at=EPOCH)
+    _finding(
+        session,
+        revision,
+        snapshot,
+        Outcome.FAIL,
+        Severity.ADVISORY,
+        created_at=EPOCH + timedelta(minutes=1),
+    )
+    _finding(
+        session,
+        revision,
+        snapshot,
+        Outcome.PASS,
+        Severity.CRITICAL,
+        created_at=EPOCH + timedelta(minutes=2),
+    )
+
+    body = _summary(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert body["failed"] == 2
+    assert body["critical_failed"] == 1, "an advisory failure is not a critical one"
+
+
+def test_a_package_with_no_findings_summarises_to_zero(session: Session) -> None:
+    """Zero is a real answer here and must not be an error — a package whose checks have not run yet
+    is an ordinary state, and the list still has to render it."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    _revision(session, package.id)
+
+    body = _summary(_client(session, PROJECT_A), PROJECT_A, package.id)
+    assert body["total"] == 0 and body["critical_failed"] == 0
+
+
+def test_another_projects_package_does_not_summarise(session: Session) -> None:
+    """404, not an empty summary. An empty summary would confirm the package exists, which is what
+    the boundary is for."""
+    _project(session, PROJECT_A)
+    _project(session, PROJECT_B)
+    package = _package(session, PROJECT_B)
+    revision = _revision(session, package.id)
+    _finding(session, revision, _snapshot(session), Outcome.FAIL, created_at=EPOCH)
+
+    response = _client(session, PROJECT_A).get(f"{_url(PROJECT_A, package.id)}/summary")
+    assert response.status_code == 404

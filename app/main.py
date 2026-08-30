@@ -35,6 +35,8 @@ from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
 from app.api.guards import assert_no_verdict_fields
+from app.auth import authenticate
+from app.auth.development import principal_from_environment
 from app.config import Settings
 from app.errors import REQUEST_ID_STATE, _envelope, install_error_handlers
 from app.telemetry.tracing import (
@@ -114,6 +116,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = resolved
     install_error_handlers(app)
+
+    # A development identity, if one was asked for and this is a laptop. `authenticate` refuses by
+    # default so that a missing identity provider cannot become an anonymous principal — which is
+    # right, and also means nothing can call this API locally. `app/auth/development.py` is the
+    # local answer and refuses to exist anywhere else; the override is installed here, in the
+    # factory, rather than inside the dependency, so the decision is visible where the app is built.
+    development_principal = principal_from_environment(resolved.environment)
+    if development_principal is not None:
+        app.dependency_overrides[authenticate] = lambda: development_principal
 
     # Imported here rather than at module scope: the routers pull in the ORM and the query layer, and
     # a module-level import would make `app.main` drag the database into anything that merely wants
