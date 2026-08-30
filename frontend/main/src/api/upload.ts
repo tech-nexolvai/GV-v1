@@ -41,6 +41,31 @@ interface Ticket {
   required_headers: Record<string, string>;
 }
 
+/**
+ * Where the bytes actually go.
+ *
+ * On the S3 backend the ticket is a presigned HTTPS URL and this returns it unchanged — the browser
+ * writes straight to the bucket, which is the whole point of a ticket.
+ *
+ * On the local filesystem backend it is a `file:` URI with the signed token in the query string, and
+ * **a browser cannot PUT to `file:`**. `scripts/dev_server.py` mounts a shim that verifies the same
+ * token and performs the write; this points at it. The shim exists only in that script, never in
+ * `create_app`, so the API keeps its guarantee that no route it serves accepts a file body.
+ *
+ * Decided from the URL rather than from a build flag: the client does what the ticket it was handed
+ * permits, so nothing here has to know which deployment it is talking to.
+ */
+function writableUrl(ticket: Ticket): string {
+  if (!ticket.upload_url.startsWith('file:')) return ticket.upload_url;
+
+  // The whole query string is carried over, not a parameter picked out by name: the store composes
+  // that URL and only the store decides what the ticket is called. Copying it verbatim means a
+  // rename on the Python side cannot silently strip the ticket and turn every upload into a 403.
+  const source = new URL(ticket.upload_url);
+  const base = BASE.replace(/\/api\/v1$/, '');
+  return `${base}/_dev/upload/${ticket.storage_key}${source.search}`;
+}
+
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
     method: 'POST',
@@ -84,7 +109,7 @@ export async function uploadDocument(
   );
 
   onProgress?.({ step: 'Uploading', file: file.name });
-  const written = await fetch(ticket.upload_url, {
+  const written = await fetch(writableUrl(ticket), {
     method: ticket.method,
     // Replayed exactly. A signature normally covers them, so the same bytes sent with a different
     // verb or content type is a different request and a signing backend will refuse it.
