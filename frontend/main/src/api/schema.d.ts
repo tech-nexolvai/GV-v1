@@ -634,6 +634,33 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AbstentionTraceOut
+         * @description Why nothing was calculated.
+         *
+         *     A real and separate shape, not a degenerate calculation: `app/budget/overflow.py` writes one when
+         *     a package exhausts its model budget, and it carries a cause and a reason rather than operands.
+         *     Reporting it as an empty calculation would render an abstention as a check that ran and found
+         *     nothing, which is the reading V1 must never invite.
+         */
+        AbstentionTraceOut: {
+            /** Cause */
+            cause: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "abstention";
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Regions Done */
+            regions_done?: number | null;
+            /** Review Complete */
+            review_complete?: boolean | null;
+        };
+        /**
          * AcceptedOut
          * @description What an endpoint returns when it has accepted work rather than done it.
          *
@@ -714,6 +741,56 @@ export interface components {
             unconfirmed: number;
             /** Version */
             version: string;
+        };
+        /**
+         * CalculationTraceOut
+         * @description The arithmetic, when arithmetic ran. Mirrors `verdict.trace.CalculationTrace`.
+         */
+        CalculationTraceOut: {
+            /** Arithmetic Unit */
+            arithmetic_unit?: string | null;
+            /**
+             * Comparison
+             * @default
+             */
+            comparison: string;
+            /**
+             * Engine Version
+             * @default
+             */
+            engine_version: string;
+            /**
+             * Intermediates
+             * @default []
+             */
+            intermediates: [
+                string,
+                string
+            ][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "calculation";
+            /**
+             * Operands
+             * @default []
+             */
+            operands: components["schemas"]["TracedOperandOut"][];
+            /** Operation */
+            operation: string;
+            /**
+             * Operation Version
+             * @default
+             */
+            operation_version: string;
+            /**
+             * Outcome
+             * @default
+             */
+            outcome: string;
+            /** Tolerance */
+            tolerance?: string | null;
         };
         /**
          * DocumentKind
@@ -878,9 +955,7 @@ export interface components {
             /** Severity */
             severity: string;
             /** Trace */
-            trace: {
-                [key: string]: unknown;
-            };
+            trace: components["schemas"]["CalculationTraceOut"] | components["schemas"]["AbstentionTraceOut"] | components["schemas"]["OpaqueTraceOut"];
         };
         /**
          * FindingCounts
@@ -1011,6 +1086,25 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * OpaqueTraceOut
+         * @description A trace this API does not recognise, handed over intact.
+         *
+         *     **Not an error and not a silent empty object.** A recompute is compared against what the engine
+         *     recorded, so dropping a shape nobody has taught this endpoint about would lose the only copy. A
+         *     reader gets the content and is told plainly that it was not understood.
+         */
+        OpaqueTraceOut: {
+            /** Content */
+            content: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "unrecognised";
         };
         /**
          * OpenReviewSession
@@ -1449,6 +1543,20 @@ export interface components {
             report: string;
             /** Total Rules */
             total_rules: number;
+        };
+        /**
+         * TracedOperandOut
+         * @description One input to the calculation, as the engine recorded it.
+         */
+        TracedOperandOut: {
+            /** Evidence Ref */
+            evidence_ref?: string | null;
+            /** Name */
+            name: string;
+            /** Source */
+            source: string;
+            /** Value */
+            value: string;
         };
         /**
          * UploadConfirmation
