@@ -182,3 +182,20 @@
     border-right-color: var(--border);
   }
 }
+
+/* What the pipeline is really doing, and what went wrong if it did not finish. */
+.pipeline-step-live {
+  font-size: 0.875rem;
+  color: var(--color-text-muted, #6b7280);
+  margin-top: var(--space-2, 8px);
+}
+
+.upload-error {
+  color: var(--color-danger, #b42318);
+}
+
+.upload-error p {
+  color: var(--color-text-muted, #6b7280);
+  font-size: 0.875rem;
+  margin-top: var(--space-2, 8px);
+}

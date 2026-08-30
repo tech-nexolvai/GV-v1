@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { AppShell } from './components/shell/AppShell';
 import { ReviewPage } from './pages/ReviewPage';
 import { PackagesPage } from './pages/PackagesPage';
 import { WelcomePage } from './pages/WelcomePage';
 import { RulebookPage } from './pages/RulebookPage';
 import { UsagePage } from './pages/UsagePage';
-import { MOCK_SESSIONS, MOCK_PACKAGES_LIST } from './data/mock';
+import { createPackage } from './api/upload';
+import type { UploadProgress } from './api/upload';
+import { projectId } from './api/config';
 import { X, UploadCloud, Loader2, CheckCircle2 } from 'lucide-react';
 import './design/components.css';
 
@@ -41,8 +43,12 @@ export default function App() {
   const [project, setProject] = useState('Westin Towers — Double Countertops');
   const [category, setCategory] = useState<'countertop' | 'cabinet'>('countertop');
   const [rulebook, setRulebook] = useState('CT-v1.2');
-  const [archFileName, setArchFileName] = useState('');
-  const [shopFileName, setShopFileName] = useState('');
+  const [archFile, setArchFile] = useState<File | null>(null);
+  const [shopFile, setShopFile] = useState<File | null>(null);
+  const archInputRef = useRef<HTMLInputElement>(null);
+  const shopInputRef = useRef<HTMLInputElement>(null);
+  const [uploadStep, setUploadStep] = useState('');
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Simulation steps states
   const [isSimulating, setIsSimulating] = useState(false);
@@ -60,8 +66,9 @@ export default function App() {
   }
 
   function handleOpenReview(packageId: string) {
-    const session = MOCK_SESSIONS.find(s => s.package_id === packageId) ?? MOCK_SESSIONS[0];
-    setActiveSession(session.id);
+    // ReviewPage fetches by package id, so that is what the active selection carries. Sessions are
+    // listed in the sidebar from the API; there is no local table to look one up in.
+    setActiveSession(packageId);
     setActivePage('review');
     setEvidencePanel(null);
   }
@@ -77,128 +84,37 @@ export default function App() {
     setPendingMessage(text);
   }
 
-  function triggerSubmitPipeline() {
+  async function triggerSubmitPipeline() {
     setIsSimulating(true);
+    setUploadError(null);
     setSimulationStep(0);
 
-    const runStep = (stepIndex: number) => {
-      if (stepIndex < SIMULATION_STEPS.length) {
-        setSimulationStep(stepIndex);
-        setTimeout(() => {
-          runStep(stepIndex + 1);
-        }, 1100);
-      } else {
-        const nextIndex = MOCK_SESSIONS.length + 1;
-        const newPkgId = `PKG-2026-00${nextIndex}`;
-        const newSessId = `sess-00${nextIndex}`;
+    try {
+      // The real thing: create the package, hash each file in the browser, register it, PUT the
+      // bytes straight to storage against the returned ticket, and confirm. The API never carries
+      // the file — `src/api/upload.ts` explains why.
+      const { reviewSessionId } = await createPackage(
+        projectId(),
+        { vendor, architectural: archFile, shop: shopFile },
+        (progress: UploadProgress) => {
+          setUploadStep(progress.file ? `${progress.step} ${progress.file}` : progress.step);
+        },
+      );
 
-        // Create mock findings for the new package session
-        const newFindings: any[] = [
-          {
-            id: `f${nextIndex}-001`,
-            check_id: 'CT-1',
-            name: 'Width Verification',
-            outcome: 'PASS',
-            severity: 'CRITICAL',
-            expected: '5420 mm',
-            found: '5420 mm',
-            delta: '0 mm',
-            tolerance: '± 3.175 mm',
-            reason: null,
-            trace: {
-              operation: 'within_tolerance',
-              operands: [
-                { name: 'shop_width', value: '5420 mm', source: 'SHOP' },
-                { name: 'arch_width', value: '5420 mm', source: 'ARCH' },
-                { name: 'tolerance', value: '3.175 mm', source: 'LITERAL' },
-              ],
-              comparison: '|5420 - 5420| = 0 mm ≤ 3.175 mm',
-              tolerance: '3.175 mm',
-              arithmetic_unit: 'mm',
-              outcome: 'PASS',
-            },
-            arch_evidence: { role: 'ARCH', page: 1, polygon: [[100, 100], [200, 100], [200, 120], [100, 120]], raw_text: '5420 [213 3/8]', extractor: 'pdfplumber' },
-            shop_evidence: { role: 'SHOP', page: 2, polygon: [[110, 110], [210, 110], [210, 130], [110, 130]], raw_text: '5420 [213 3/8]', extractor: 'pdfplumber' },
-            reviewer_action: null,
-            reviewer_note: null,
-          },
-          {
-            id: `f${nextIndex}-002`,
-            check_id: 'CT-3a',
-            name: 'Sink Cutout Depth',
-            outcome: 'REVIEW_REQUIRED',
-            severity: 'MAJOR',
-            expected: null,
-            found: null,
-            delta: null,
-            tolerance: null,
-            reason: 'OCR mismatch: PaddleOCR read 324mm while docTR read 328mm on page 4. Reviewer must resolve site VIF or verify dimensions.',
-            trace: null,
-            arch_evidence: { role: 'ARCH', page: 2, polygon: [[200, 200], [300, 200], [300, 220], [200, 220]], raw_text: '325 [12 13/16]', extractor: 'pdfplumber' },
-            shop_evidence: { role: 'SHOP', page: 4, polygon: [[210, 210], [310, 210], [310, 230], [210, 230]], raw_text: '324 [12 3/4] / 328 [12 29/32]', extractor: 'paddleocr+doctr' },
-            reviewer_action: null,
-            reviewer_note: null,
-          }
-        ];
-
-        // Create new Review Session
-        const newSession = {
-          id: newSessId,
-          package_id: newPkgId,
-          package_label: newPkgId,
-          vendor: vendor,
-          status: 'AWAITING_REVIEW' as any,
-          last_activity: new Date().toISOString(),
-          messages: [
-            {
-              id: `msg-${nextIndex}-001`,
-              role: 'user' as const,
-              content: `Validate new drawings for ${project}. Category: ${category}.`,
-              timestamp: new Date(Date.now() - 10000).toISOString(),
-            },
-            {
-              id: `msg-${nextIndex}-002`,
-              role: 'assistant' as const,
-              content: `Ingestion & parallel extraction complete for **${newPkgId}**.\n\nS3 object paths:\n- Architectural: \`s3://gv-vault/${newPkgId}/arch.pdf\` (sha256: \`e97a...5a23\`)\n- Shop Drawing: \`s3://gv-vault/${newPkgId}/shop.pdf\` (sha256: \`b4f8...10de\`)\n\nRunning rule engine evaluation against snapshot **${rulebook}**. 1 PASS check and 1 REVIEW check resolved. Detailed checklist is displayed below:`,
-              timestamp: new Date().toISOString(),
-              findings: newFindings,
-            }
-          ]
-        };
-
-        // Create new Package List entry
-        const newPkg = {
-          id: newPkgId,
-          vendor: vendor,
-          project: project,
-          category: category,
-          status: 'AWAITING_REVIEW' as any,
-          submitted_at: new Date().toISOString(),
-          reviewer: 'Raj Gupta',
-          pass_count: 1,
-          fail_count: 0,
-          review_count: 1,
-          missing_count: 0,
-        };
-
-        MOCK_SESSIONS.push(newSession);
-        MOCK_PACKAGES_LIST.push(newPkg);
-
-        setIsSimulating(false);
-        setIsModalOpen(false);
-
-        // Auto-navigate to the new session
-        setActiveSession(newSessId);
-        setActivePage('review');
-        setEvidencePanel(null);
-
-        // Reset file selections
-        setArchFileName('');
-        setShopFileName('');
-      }
-    };
-
-    runStep(0);
+      setIsSimulating(false);
+      setIsModalOpen(false);
+      if (reviewSessionId) setActiveSession(reviewSessionId);
+      setActivePage('review');
+      setEvidencePanel(null);
+      setArchFile(null);
+      setShopFile(null);
+    } catch (error) {
+      // Left on screen with the modal open. Closing it and returning to the list would look exactly
+      // like a successful upload, and the reviewer would go looking for a document that does not
+      // exist. Nothing has been recorded — the API confirms bytes before it writes anything.
+      setIsSimulating(false);
+      setUploadError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   return (
@@ -259,10 +175,23 @@ export default function App() {
               )}
             </div>
 
+            {uploadError && !isSimulating && (
+              /* Shown with the modal still open. Closing it would look exactly like a successful
+                 upload, and the reviewer would go looking for a document that does not exist.
+                 Nothing has been recorded — the API confirms the bytes before it writes anything. */
+              <div className="modal__body upload-error" role="alert">
+                <strong>The document set was not submitted.</strong>
+                <p>{uploadError}</p>
+              </div>
+            )}
             {isSimulating ? (
               /* Simulated Pipeline status screen */
               <div className="modal__body pipeline-overlay">
                 <Loader2 className="pipeline-loader" size={32} />
+                {/* What is actually happening, rather than a fixed script. The old version stepped
+                    through a timed list whatever the server was doing; this says which file is
+                    being hashed, uploaded or confirmed. */}
+                <p className="pipeline-step-live">{uploadStep || 'Starting…'}</p>
                 <div className="pipeline-steps">
                   {SIMULATION_STEPS.map((step, idx) => {
                     const isCompleted = idx < simulationStep;
@@ -350,17 +279,35 @@ export default function App() {
                   <div className="form-group">
                     <label className="form-group__label">Upload Drawings (PDF only)</label>
                     <div className="upload-zone-wrapper">
+                      {/* Real file inputs. The zones used to set a filename string on click, which
+                          meant the pipeline had nothing to hash, upload or confirm. */}
+                      <input
+                        ref={archInputRef}
+                        type="file"
+                        accept="application/pdf"
+                        hidden
+                        onChange={(e) => setArchFile(e.target.files?.[0] ?? null)}
+                      />
+                      <input
+                        ref={shopInputRef}
+                        type="file"
+                        accept="application/pdf"
+                        hidden
+                        onChange={(e) => setShopFile(e.target.files?.[0] ?? null)}
+                      />
+
                       {/* Arch upload zone */}
                       <div
-                        className={`upload-zone ${archFileName ? 'upload-zone--has-file' : ''}`}
-                        onClick={() => setArchFileName('GV_Arch_Westin_R2.pdf')}
+                        className={`upload-zone ${archFile?.name ? 'upload-zone--has-file' : ''}`}
+                        onClick={() => archInputRef.current?.click()}
+
                         role="button"
                         aria-label="Upload Architectural Drawing Set"
                       >
                         <UploadCloud size={20} className="text-muted" />
                         <span className="upload-zone__title">Architectural Set</span>
-                        {archFileName ? (
-                          <span className="upload-zone__filename">{archFileName}</span>
+                        {archFile?.name ? (
+                          <span className="upload-zone__filename">{archFile?.name}</span>
                         ) : (
                           <span className="upload-zone__desc">Click to select PDF</span>
                         )}
@@ -368,15 +315,16 @@ export default function App() {
 
                       {/* Shop drawing upload zone */}
                       <div
-                        className={`upload-zone ${shopFileName ? 'upload-zone--has-file' : ''}`}
-                        onClick={() => setShopFileName('ApexStone_Shop_V1.pdf')}
+                        className={`upload-zone ${shopFile?.name ? 'upload-zone--has-file' : ''}`}
+                        onClick={() => shopInputRef.current?.click()}
+                        
                         role="button"
                         aria-label="Upload Shop Drawing Set"
                       >
                         <UploadCloud size={20} className="text-muted" />
                         <span className="upload-zone__title">Shop Drawings</span>
-                        {shopFileName ? (
-                          <span className="upload-zone__filename">{shopFileName}</span>
+                        {shopFile?.name ? (
+                          <span className="upload-zone__filename">{shopFile?.name}</span>
                         ) : (
                           <span className="upload-zone__desc">Click to select PDF</span>
                         )}
@@ -394,7 +342,7 @@ export default function App() {
                   </button>
                   <button
                     className="btn btn--action"
-                    disabled={!vendor || !project || !archFileName || !shopFileName}
+                    disabled={!vendor || !project || !archFile?.name || !shopFile?.name}
                     onClick={triggerSubmitPipeline}
                   >
                     Run Review Pipeline
