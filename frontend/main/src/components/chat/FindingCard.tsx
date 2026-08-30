@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ChevronDown, ChevronRight, FileSearch, ExternalLink, CheckCircle, XCircle, AlertTriangle, MinusCircle, TriangleAlert } from 'lucide-react';
-import type { Finding } from '../../data/mock';
+import type { Finding } from '../../data/types';
 import { OutcomeBadge, SeverityDot } from '../ui/Badge';
 import './FindingCard.css';
 
