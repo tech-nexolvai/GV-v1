@@ -28,6 +28,7 @@ behaviour changes.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import MappingProxyType
 
 from vocabulary.page_types import PageType
 
@@ -60,7 +61,7 @@ class UnroutedCheckError(LookupError):
 #: No rule checks overhang yet, so `SECTION` names no check here. The grouping is recorded in the
 #: docstring above rather than dropped, because the next person to author an overhang rule needs to
 #: know it can only be read from a section before they wonder why the plan never has the number.
-CHECK_VIEWS: Mapping[str, frozenset[PageType]] = {
+_ROUTES: dict[str, frozenset[PageType]] = {
     # Plan — the countertop laid out flat, where cut-outs and offsets are dimensioned.
     "CT-SINK-CUTOUT-WIDTH-001": frozenset({PageType.PLAN}),
     "CT-SINK-CUTOUT-DEPTH-001": frozenset({PageType.PLAN}),
@@ -71,6 +72,15 @@ CHECK_VIEWS: Mapping[str, frozenset[PageType]] = {
     "CAB-FILLER-001": frozenset({PageType.ELEVATION}),
     "CAB-ARCH-VS-SHOP-001": frozenset({PageType.ELEVATION}),
 }
+
+#: Read-only at runtime, and that is load-bearing rather than tidiness.
+#:
+#: A `Mapping` annotation is a promise to a type checker and nothing to the interpreter: the first
+#: version exported the `dict` itself, so any importer could write `CHECK_VIEWS["CT-DEPTH-001"] =
+#: ...` and route a check the client has never routed. That defeats the entire guarantee of this
+#: module — `may_read_from` would then permit evidence for it, and nothing would record that the
+#: route was invented at runtime rather than decided.
+CHECK_VIEWS: Mapping[str, frozenset[PageType]] = MappingProxyType(_ROUTES)
 
 
 def views_for(rule_id: str) -> frozenset[PageType] | None:

@@ -15,6 +15,7 @@ from fractions import Fraction
 
 import pytest
 
+from units.imperial import parse_imperial
 from units.measurement import Unit
 from units.normalise import (
     INCHES_PER_FOOT,
@@ -50,6 +51,15 @@ def test_feet_and_inches_convert_exactly(token: str, expected: Fraction) -> None
 
     assert measurement.exact == expected
     assert measurement.unit is Unit.INCH
+
+
+def test_the_authored_token_is_kept_exactly_including_its_whitespace() -> None:
+    """`raw_text` is the reviewer's evidence, so it is the string the drawing gave us.
+
+    The first version stored the *stripped* token, which is a small thing that quietly edits the
+    record: what a reviewer is shown should be what was read, not a tidied version of it.
+    """
+    assert normalise_to_inches("  3'-6\"  ").raw_text == "  3'-6\"  "
 
 
 def test_the_original_token_is_kept() -> None:
@@ -110,13 +120,46 @@ def test_a_converted_millimetre_value_is_not_rounded_to_a_drawn_inch() -> None:
     ("token", "expected"),
     [
         ('38 3/4"', Fraction(155, 4)),
-        ("38 3/4", Fraction(155, 4)),
-        ("4", Fraction(4)),
-        ("2.375", Fraction(19, 8)),
+        ('4"', Fraction(4)),
+        ('2.375"', Fraction(19, 8)),
+        ("4 in", Fraction(4)),
+        ("38 3/4 inches", Fraction(155, 4)),
     ],
 )
-def test_plain_inch_tokens_pass_through_unchanged(token: str, expected: Fraction) -> None:
+def test_marked_inch_tokens_pass_through_unchanged(token: str, expected: Fraction) -> None:
+    """Marked, meaning the token itself says inches — a quote or the word."""
     assert normalise_to_inches(token).exact == expected
+
+
+@pytest.mark.parametrize("token", ["38 3/4", "4", "2.375", "1/8"])
+def test_a_bare_number_is_refused_because_it_carries_no_unit(token: str) -> None:
+    """**The review finding that mattered most, and it was mine.**
+
+    The first version read a bare `38 3/4` as inches. That is the *same* assumption this module
+    refuses for `38 3/4 cm` — made silently, because inches happened to be the answer we wanted. A
+    token with no unit is exactly the ambiguity §2 says must abstain, and inches being authoritative
+    is a statement about which unit *decides*, not permission to invent one.
+    """
+    with pytest.raises(UnitNormalisationError, match="carries no unit"):
+        normalise_to_inches(token)
+
+
+@pytest.mark.parametrize("token", ["38 3/4", "4", "2.375"])
+def test_a_caller_that_knows_the_sheet_may_say_so(token: str) -> None:
+    """`unmarked_unit` is how a caller with real knowledge passes it in — a title block declaring
+    its units, a reviewer who has said so.
+
+    It has no default, so the assumption is always somebody's explicit act, written at the call site
+    where a reviewer of that code can see it rather than buried in this function.
+    """
+    assert normalise_to_inches(token, unmarked_unit=Unit.INCH).exact == parse_imperial(token)
+
+
+def test_declaring_millimetres_does_not_reinterpret_a_bare_number() -> None:
+    """`unmarked_unit` is narrow on purpose: it permits the inch reading a caller can vouch for and
+    is not a general unit-assumption hook."""
+    with pytest.raises(UnitNormalisationError):
+        normalise_to_inches("984", unmarked_unit=Unit.MM)
 
 
 # ---------------------------------------------------------------------------

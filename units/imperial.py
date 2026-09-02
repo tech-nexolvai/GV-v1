@@ -29,6 +29,13 @@ def parse_imperial(text: str) -> Fraction:
 
     token = text.strip()
 
+    # A leading minus, because `format_inches` emits one and this is its inverse. The pair claimed to
+    # round-trip while `-3 1/2` raised here, which made the claim false for exactly the values a
+    # derived dimension produces when a subtraction comes out negative.
+    negative = token.startswith("-")
+    if negative:
+        token = token[1:].strip()
+
     if token.endswith('"'):
         token = token[:-1].strip()
 
@@ -36,21 +43,23 @@ def parse_imperial(text: str) -> Fraction:
         raise ImperialParseError("imperial measurement is empty")
 
     try:
+        sign = -1 if negative else 1
+
         mixed = _MIXED_RE.fullmatch(token)
         if mixed:
             whole, numerator, denominator = (int(part) for part in mixed.groups())
-            return Fraction(whole) + Fraction(numerator, denominator)
+            return sign * (Fraction(whole) + Fraction(numerator, denominator))
 
         fraction = _FRACTION_RE.fullmatch(token)
         if fraction:
             numerator, denominator = (int(part) for part in fraction.groups())
-            return Fraction(numerator, denominator)
+            return sign * Fraction(numerator, denominator)
 
         if _WHOLE_RE.fullmatch(token):
-            return Fraction(int(token))
+            return sign * Fraction(int(token))
 
         if _DECIMAL_RE.fullmatch(token):
-            return Fraction(token)
+            return sign * Fraction(token)
 
     except ZeroDivisionError as error:
         raise ImperialParseError("imperial fraction cannot have a zero denominator") from error
