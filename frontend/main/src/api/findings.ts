@@ -9,7 +9,7 @@
 
 import { getFindingChain, listFindings } from './client';
 import { formatExact } from './fractions';
-import type { Finding, Outcome, Severity, Trace } from '../data/mock';
+import type { Finding, Outcome, Severity, Trace } from '../data/types';
 
 type Listed = Awaited<ReturnType<typeof listFindings>>['items'][number];
 type Chain = Awaited<ReturnType<typeof getFindingChain>>;

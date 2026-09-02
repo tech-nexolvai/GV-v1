@@ -1,6 +1,6 @@
 import { useRef, useEffect } from 'react';
 import { User } from 'lucide-react';
-import type { ChatMessage, Finding } from '../../data/mock';
+import type { ChatMessage, Finding } from '../../data/types';
 import { FindingCard } from './FindingCard';
 import './ChatThread.css';
 

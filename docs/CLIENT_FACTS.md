@@ -81,16 +81,18 @@ source:  Raj email reply (3.2): "Filler piece is not part of the cabinet. This i
          stay inside cabinet width (cell CT004), but the run's end strip is a separate filler.
 
 ## Q4 — Severity per check: critical vs advisory
-status:  OPEN
+status:  ANSWERED
 blocks:  value
 issue:   #12
-answer:  — (no per-check severity; V1 flags all and the reviewer decides)
-source:  Raj email reply (3.5): "Difficult to categorize between production blockers vs flagged for
-         review. I think any dimension, cabinet type, sink type deviations should be highlighted."
-         The 2nd reply's exact-match decision (Q2) makes this moot for V1 — every mismatch flags and
-         the reviewer clears false flags, so no per-check critical/advisory split is needed to ship.
-         Still OPEN because critical_false_pass_rate needs a CRITICAL designation to be measurable;
-         that is deferred, not required for V1.
+answer:  V1 flags EVERYTHING with no severity split — the reviewer decides. Severity tiers
+         (red / yellow / orange) are deliberately deferred until after 10–50 projects, because
+         whether a flag is serious depends on the project and product and can't be pinned now.
+         Confirmed by Raj AND Abhishek on the call.
+source:  Call 2026-08-25. Raj: "sometimes we might decide that it's not serious… it might become
+         serious in certain situations." Abhishek: "flag everything… when we do 10, 15, 20, 50
+         projects… they can select it as 'just worth a look'… for now flagging is important." By
+         explicit client choice no rule declares CRITICAL in V1, so critical_false_pass_rate reports
+         NOT MEASURED — now a decision, not a gap.
 
 ## Q5 — Sink front offset: "4" minimum" or "= 4""?
 status:  ANSWERED
@@ -113,7 +115,8 @@ answer:  CT010 (countertop depth) is primary — set from cabinet depth + overha
          CT007+CT008+CT009 is checked against it; if it EXCEEDS CT010 the program flags (sink hole
          too big → reviewer changes the sink). CT009 (back offset) is the constrained REMAINDER —
          whatever is left after front offset + sink depth — and carries a global MINIMUM (below it
-         the faucet hole will not fit). That minimum value is still pending (Raj checking the vendor).
+         the faucet hole will not fit). That minimum value is STILL PENDING — on the call (2026-08-25)
+         Raj said he had overlooked it and will email the vendor for the number.
 source:  Raj email reply (3.6): "CT010 Should be equal to CT007 + CT008 + CT009. If the value
          exceeds, then the program should throw a flag." 2nd reply (follow-up 1): "after the front
          offset and depth of the sink taken care of, whatever left will become the back offset… never
@@ -160,24 +163,32 @@ source:  Raj email reply (3.1): "Program should give flexibility through UI / UX
          adjusted… microwave might not fit." So identification is reviewer-driven, not automated.
 
 ## Q10 — "U.N.O." (unless-otherwise-noted) override handling
-status:  OPEN
+status:  ANSWERED
 blocks:  formula
 issue:   #15
-answer:  —
-source:  "U.N.O." marks a default that a drawing note may override — variable sheet G41
-         (CT007) "Global Constant. (U.N.O)", G43 (CT009) "(U.N.O)"; Cabinet_Checks H22-H23
-         "Note: Unless otherwise noted, Filler_Width_Right = Filler_Width_Left". Raj never
-         states how the system should detect a note and apply the override.
+answer:  Handled by the global-default + reviewer-override model, not by auto-reading a drawing note.
+         Each check has a GLOBAL default (e.g. front offset 4"); before a run the reviewer may set
+         PROJECT overrides (e.g. "3.5" is fine here"). The drawing is checked against the effective
+         value, and where the drawing differs the system FLAGS it for the reviewer to accept or reject.
+         The system also prints a summary of every global-vs-project override for the reviewer to
+         verify. No override given → the global takes over; a required field left blank → the reviewer
+         is prompted (a mandatory form field).
+source:  Call 2026-08-25. Raj: "you have the global variables… the reviewer says I can manage with
+         3.5 inch… wherever the global and project-specific variables differ, you can send a report,
+         a summary of the variable discrepancies… if they don't give the input, global values take
+         over… imagine filling a form, there are some mandatory entries." So the override is a
+         reviewer-set input, not a note the system reads off the drawing.
 
 ## Q11 — Is ADA in V1 scope? (cabinet height 864 mm = the 34" ADA max)
-status:  OPEN
+status:  ANSWERED
 blocks:  nothing
 issue:   #15
-answer:  — (scope decision, not stated)
-source:  "864 [34]" appears only as the cabinet HEIGHT in Cabinet_Checks B-Front-View
-         (image1.png). "Recommended ADA Installation 34" (864 mm)" appears on the Kohler
-         reference sheet (image8.png). Neither states that ADA compliance is a V1 check;
-         the height matching 34" may be coincidental.
+answer:  Deferred. ADA is important and WILL be checked in the main version — Raj calls it one of the
+         most important checks — but it is OUT of the demo / V1 so the demo isn't delayed by piling on
+         checks. (The 4" front offset is itself an ADA rule and stays; full ADA compliance waits.)
+source:  Call 2026-08-25. Raj: "you have to check eventually ADA, one of the most important… but if
+         you put too many things now, a demo might get delayed… for the demo version don't put too
+         many things. Basic thing works, small things we can add for the main version."
 
 ## Q12 — When mm and bracketed inches disagree, which governs?
 status:  ANSWERED
@@ -214,53 +225,68 @@ source:  Raj 2nd email reply: "We had drawings only with the walls on all three 
          request our millwork manager to get the drawings with wall at the back only and also for
          island. We should be able to give them today or tomorrow." Supplying drawings for a layout
          is confirmation it is in scope. The 3-wall geometric refusal logic already built (#181) is
-         layout-agnostic; the empirical numbers per layout still come from the drawings.
+         layout-agnostic; the empirical numbers per layout still come from the drawings. Call
+         2026-08-25: Raj has the shop drawings and will send the architectural set "tomorrow" (#274);
+         two-wall is still not explicitly ruled in or out.
 
 ## Q15 — S19 "interior depth" should be width
-status:  OPEN
+status:  ANSWERED
 blocks:  formula
 issue:   #16
-answer:  — (suspected typo; not confirmed by Raj)
-source:  Countertop_Checks_Updated S19: "Sink cutout width (A) = sink interior depth (E)
-         − 0.25" − 0.25"" derives a WIDTH from an interior DEPTH. Master diagram image10.png
-         shows A / CT012 is a horizontal WIDTH. Raj has not confirmed the correction.
+answer:  Confirmed live: cutout WIDTH = sink inside WIDTH − clearance each side (the spreadsheet's
+         "interior depth" was the typo; width comes from width, depth from depth). The clearance
+         defaults to 1/4" but is an EDITABLE per-project variable — it varies by fabricator (sometimes
+         1/8"). Raj will confirm the exact fabricator value. Unblocks the cutout-width rule (A6.3 D5).
+source:  Call 2026-08-25. Anant: "your diagram [shows] the cut-out width as an actual width… that
+         matches the natural reading." Raj confirmed, and on the clearance: "1/4, but make sure that
+         is editable, sometimes it's 1/8… a project-specific variable." Raj: "my CT012 is width."
 
 ## Q16 — S29 "cutout depth" should be width
-status:  OPEN
+status:  ANSWERED
 blocks:  formula
 issue:   #16
-answer:  — (suspected typo; not confirmed by Raj)
-source:  S29 (fail line of the sink cutout WIDTH rule): "Width of countertop <> Sink cutout
-         depth (A) + F + G" labels (A) as "depth", while the pass line S27 uses "Sink cutout
-         width (A)". Inconsistent; not confirmed by Raj.
+answer:  Resolved by the same confirmation as Q15 — the cutout WIDTH rule keys on width, so the
+         "depth" wording in the fail line is the slip. Raj asked us to highlight the contradictory
+         cells and send them back; he will correct the labels in his sheet.
+source:  Call 2026-08-25. Raj: "I might have contradicted myself somewhere… just tell your tech team
+         where it's contradictory, highlight that one and send it back, and I will fix it." Meaning
+         confirmed (width from width); the label fix is Raj's, via the highlighted list.
 
 ## Q17 — I3 header says CT-2 Width but the rule computes Depth
-status:  OPEN
+status:  ANSWERED
 blocks:  formula
 issue:   #16
-answer:  — (suspected mislabel; not confirmed by Raj)
-source:  I3 header "CT-2 : Countertop Width Verification" sits over a rule whose body is
-         depth — I9 "Countertop Depth Verification", I11 "…Depth of the countertop",
-         I19/I23 depth logic. The name feeds our vocabulary, so the mismatch matters.
+answer:  No issue — Raj checked it live and confirmed it is the COUNTERTOP depth check, correctly
+         (not a sink dimension). Our confusion, not his error. He also confirmed his own variable
+         naming: CT012 = width, CT008 = depth.
+source:  Call 2026-08-25. Raj (reading SYNC010): "it says countertop depth only, it's not sink depth.
+         No issues." Anant: "we just got confused, I guess." Raj: "my CT012 is width, and CT008 is
+         the depth."
 
 ## Q18 — Three different checks all labelled CT-3
-status:  OPEN
+status:  ANSWERED
 blocks:  formula
 issue:   #16
-answer:  — (id collision; not renamed by Raj)
-source:  Three headers share the CT-3 id: N3 "CT-3 : Countertop sink cutout depth (D)…",
-         S3 "CT-3 : Countertop sink cutout width (A)…", X3 "CT-3 : Countertop sink cutout
-         front /back offset…". As rule keys they collide. Raj has not disambiguated them.
+answer:  We mint our own unambiguous ids (docs/decisions/A6_3_SINK_CUTOUT.md D4); Raj confirmed the
+         three are genuinely separate checks (cutout depth, cutout width, offsets) and gave his real
+         variable names (CT012 = width, CT008 = depth). Raj will fix the duplicate CT-3 labels in his
+         own sheet once we send the highlighted list. Our tags stay provisional (Q20) until his final
+         tags land.
+source:  Call 2026-08-25. Raj asked what "labelled the same" meant, then confirmed his names and said
+         "just highlight that one and send it back, I will fix it." No engine-level blocker — our ids
+         are already distinct.
 
 ## Q19 — S27 "width of countertop" describes the sink cabinet
-status:  OPEN
+status:  ANSWERED
 blocks:  formula
 issue:   #16
-answer:  — (suspected mislabel; not confirmed by Raj)
-source:  S27 "Width of countertop = Sink cutout width (A) + F + G". Per master diagram
-         image10.png, A = CT012 (sink hole width) sits between F = CT011 and G = CT013
-         (clearances from the sink cabinet's interior faces) — so this sum is the SINK
-         CABINET interior width, not the countertop width. Not confirmed by Raj.
+answer:  Meaning confirmed — the sum (cutout width + the two clearances) is the sink-cabinet interior
+         width, and the clearances belong to the cutout-vs-cabinet geometry Raj confirmed. The "width
+         of countertop" wording is a label slip on Raj's sheet, going in the highlighted list for him
+         to correct.
+source:  Call 2026-08-25. Raj confirmed the CT011/CT012/CT013 clearance geometry earlier (email 3.8)
+         and, on the call, that contradictory labels should be highlighted and sent back for him to
+         fix. Geometry settled; only the label wording is Raj's to correct.
 
 ## Q20 — Two naming schemes coexist (letters A–G on Sheet1, CT0xx on the variable sheet)
 status:  OPEN
@@ -282,14 +308,19 @@ blocks:  formula
 issue:   #15
 answer:  Calculate. When the site differs from the design (e.g. 88" design, 90" site) the program
          distributes the difference — adjust the fillers first (keeping cabinet sizes) within the
-         filler bounds MIN 1" .. MAX 2"; if a filler would fall outside that, the reviewer chooses
-         via UI which cabinet to adjust (some must not move). Works both directions (Q8).
+         filler bounds MIN 1" .. MAX (see note); if a filler would fall outside that, the reviewer
+         chooses via UI which cabinet to adjust (some must not move). Works both directions (Q8).
+         MIN 1" is firm. The MAX default is UNSETTLED: Raj's email said "use 2"", but the 2026-08-25
+         call reportedly put the working max at 3–4" ("a 6" filler looks like a panel"). Both are
+         mutable/project-tunable, so this only sets the default — but the default changes when a
+         cabinet gets resized vs a filler widened. CONFIRM the max before authoring it.
 source:  Raj email reply (3.1), full 3-step procedure, plus the 2nd reply follow-ups giving the
          numbers: max filler width "please use 2". It is not too big or too small"; min filler width
          "Keep minimum filler width as 1" and create a mutable variable which can be adjusted later".
-         The earlier residual is resolved — MIN 1", MAX 2", both mutable/project-tunable defaults.
-         Materially larger than a pass/fail checker: an interactive filler-then-cabinet distribution
-         with reviewer choice.
+         Call 2026-08-25 (per the meeting summary, NOT in the transcript segment on hand): max filler
+         3–4", 6" reads as a panel — so treat the 2" email figure as a typical, not the ceiling, and
+         reconcile the MAX default with Raj. Materially larger than a pass/fail checker: an
+         interactive filler-then-cabinet distribution with reviewer choice.
 
 <!-- CLIENT FACTS END -->
 

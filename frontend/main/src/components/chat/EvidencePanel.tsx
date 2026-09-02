@@ -1,5 +1,5 @@
 import { X, FileText, MapPin } from 'lucide-react';
-import type { Finding } from '../../data/mock';
+import type { Finding } from '../../data/types';
 import { OutcomeBadge } from '../ui/Badge';
 import './EvidencePanel.css';
 

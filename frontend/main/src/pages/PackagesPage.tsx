@@ -1,6 +1,6 @@
 import { Plus, ArrowRight } from 'lucide-react';
-import { listPackages, getFindingCounts } from '../api/client';
-import type { PackageStatus } from '../data/mock';
+import { listPackages, getFindingCounts, listReviewSessions } from '../api/client';
+import type { PackageStatus } from '../data/types';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
 import { StatusBadge } from '../components/ui/Badge';
@@ -32,7 +32,18 @@ interface PackageRow {
  */
 async function loadRows(): Promise<PackageRow[]> {
   const project = projectId();
-  const page = await listPackages(project);
+  const [page, sessions] = await Promise.all([
+    listPackages(project),
+    // Every sitting in the project, not just the caller's: this column answers "who has this?", and
+    // a list showing only your own would leave somebody else's work looking unclaimed.
+    listReviewSessions(project, { mine: false }),
+  ]);
+
+  // Keyed by revision, because that is what a sitting is opened against. A package whose drawings
+  // were re-uploaded has a new revision, and the previous reviewer's name does not carry over to it.
+  const reviewerByRevision = new Map(
+    sessions.items.map((item) => [item.package_revision_id, item.reviewer]),
+  );
 
   return Promise.all(
     page.items.map(async (pkg) => {
@@ -45,7 +56,7 @@ async function loadRows(): Promise<PackageRow[]> {
         category: '—',
         status: pkg.state as PackageStatus,
         submitted_at: pkg.created_at,
-        reviewer: null,
+        reviewer: reviewerByRevision.get(pkg.current_revision_id) ?? null,
         pass_count: counts.passed,
         fail_count: counts.failed,
         review_count: counts.review_required,

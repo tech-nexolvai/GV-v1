@@ -1,4 +1,4 @@
-import type { Outcome, PackageStatus } from '../../data/mock';
+import type { Outcome, PackageStatus } from '../../data/types';
 import '../../design/components.css';
 
 // ── Outcome → display config ─────────────────────────────────
@@ -68,7 +68,7 @@ export function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
 }
 
 // ── SeverityDot ──────────────────────────────────────────────
-import type { Severity } from '../../data/mock';
+import type { Severity } from '../../data/types';
 
 const SEVERITY_COLOR: Record<Severity, string> = {
   CRITICAL: 'var(--status-fail)',

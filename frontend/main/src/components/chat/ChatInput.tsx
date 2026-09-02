@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Send, Paperclip } from 'lucide-react';
+import { Send } from 'lucide-react';
 import './ChatInput.css';
 
 interface ChatInputProps {
@@ -8,11 +8,25 @@ interface ChatInputProps {
   placeholder?: string;
 }
 
+/**
+ * The only three things this box can actually do.
+ *
+ * It used to suggest "Explain CT-1 result" and "Generate vendor report". There is no rule called
+ * CT-1, nothing here explains a verdict, and no report is generated anywhere in this app — so two of
+ * the four suggestions were instructions to ask for something that does not exist, and the reply
+ * would have been the "not wired up" message. A suggestion chip is a promise about what the software
+ * does; these are the ones it can keep.
+ *
+ * "Run full review" is gone for a narrower reason: it filters findings, it does not run anything.
+ *
+ * Each of these maps onto a branch of `filterFor` in `ReviewPage`. If that gains a filter, this gains
+ * a chip — and if it loses one, a chip here starts falling through to "not wired up", which is
+ * visible rather than silent.
+ */
 const QUICK_PROMPTS = [
-  'Run full review',
-  'Show FAIL findings only',
-  'Explain CT-1 result',
-  'Generate vendor report',
+  'Show all findings',
+  'Show FAIL findings',
+  'Show findings needing review',
 ];
 
 export function ChatInput({ onSend, disabled, placeholder = 'Ask about this package…' }: ChatInputProps) {
@@ -54,14 +68,10 @@ export function ChatInput({ onSend, disabled, placeholder = 'Ask about this pack
 
       {/* Input row */}
       <div className="chat-input-area__row">
-        <button
-          className="btn btn--subtle btn--icon"
-          aria-label="Attach file"
-          data-tooltip="Attach drawing"
-          disabled={disabled}
-        >
-          <Paperclip size={15} />
-        </button>
+        {/* The attach button was here. It had no handler — a paperclip captioned "Attach drawing"
+            that did nothing when clicked, on the screen where a reviewer would most reasonably expect
+            to add one. Drawings are submitted through the new-package flow, which does work; an
+            affordance that silently does nothing is worse than no affordance. */}
 
         <div className="chat-input-area__field">
           <textarea

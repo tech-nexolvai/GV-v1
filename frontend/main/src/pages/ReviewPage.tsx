@@ -3,8 +3,15 @@ import { ChatThread } from '../components/chat/ChatThread';
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { StatusBadge } from '../components/ui/Badge';
-import type { Finding, ChatMessage, PackageStatus } from '../data/mock';
-import { getPackage } from '../api/client';
+import type { Finding, ChatMessage, PackageStatus } from '../data/types';
+import {
+  getPackage,
+  listReviewSessions,
+  openReviewSession,
+  recordReviewAction,
+  completeReviewSession,
+} from '../api/client';
+import type { ReviewSession } from '../api/client';
 import { loadFindings } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
@@ -24,24 +31,58 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
 
   const remote = useAsync(async () => {
     const project = projectId();
-    const [detail, found] = await Promise.all([
+    const [detail, found, sessions] = await Promise.all([
       getPackage(project, packageId),
       loadFindings(project, packageId),
+      listReviewSessions(project),
     ]);
-    return { detail, found };
+
+    // The reviewer's own open sitting over *this* revision, if they already have one. A session is
+    // scoped to a revision rather than a package because a re-upload is a different set of drawings,
+    // and decisions taken against the old one do not carry over to it.
+    const open = sessions.items.find(
+      (item) =>
+        item.package_revision_id === detail.current_revision_id && item.completed_at === null,
+    );
+    return { detail, found, session: open ?? null };
   }, [packageId]);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [session, setSession] = useState<ReviewSession | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isSigningOff, setIsSigningOff] = useState(false);
   const isLoading = remote.status === 'loading';
 
   // The fetched findings are the starting point; reviewer actions below are applied on top, so they
   // are not thrown away every time this re-renders.
   useEffect(() => {
-    if (remote.status === 'ready') setFindings(remote.data.found);
+    if (remote.status === 'ready') {
+      setFindings(remote.data.found);
+      setSession(remote.data.session);
+    }
   }, [remote]);
+
+  /**
+   * The sitting these decisions belong to, opened on the first one rather than on arrival.
+   *
+   * Opening it when the page loads would mint a session every time somebody glanced at a package,
+   * and a session is a record that a review happened. Looking is not reviewing.
+   */
+  async function ensureSession(): Promise<ReviewSession> {
+    if (session !== null) return session;
+    if (remote.status !== 'ready') throw new Error('The package is still loading.');
+
+    const opened = await openReviewSession(
+      projectId(),
+      packageId,
+      remote.data.detail.current_revision_id,
+    );
+    setSession(opened);
+    return opened;
+  }
 
   // Auto-send the question WelcomePage was carrying, once the findings it will be answered from
   // actually exist.
@@ -136,14 +177,51 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     );
   }
 
-  function handleAction(findingId: string, action: 'confirm' | 'correct' | 'except' | 'dismiss') {
-    setFindings(prev =>
-      prev.map(f =>
-        f.id === findingId
-          ? { ...f, reviewer_action: action }
-          : f
-      )
-    );
+  /**
+   * Record what the reviewer decided — on the server, which is the whole point of the ledger.
+   *
+   * This used to set local state and stop there, so every confirmation, correction, exception and
+   * dismissal was discarded on refresh and nothing was ever written down. "A reviewer signs off" is
+   * the fourth clause of the invariant, and it was the one clause with no persistence behind it.
+   *
+   * Shown immediately and rolled back if the write fails. A reviewer works down a list, and waiting
+   * on a round trip per row makes that unusable — but a decision that silently did not save is worse
+   * than a slow one, so a failure puts the row back and says so rather than leaving the tick.
+   */
+  async function handleAction(
+    findingId: string,
+    action: 'confirm' | 'correct' | 'except' | 'dismiss',
+  ) {
+    const previous = findings;
+    setActionError(null);
+    setFindings(prev => prev.map(f => (f.id === findingId ? { ...f, reviewer_action: action } : f)));
+
+    try {
+      const current = await ensureSession();
+      await recordReviewAction(projectId(), current.id, { finding_id: findingId, action });
+    } catch (error) {
+      setFindings(previous);
+      setActionError(
+        `That decision was not recorded — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /** Close the sitting. Refused server-side if it is already complete, so this does not guess. */
+  async function handleSignOff() {
+    if (session === null || isSigningOff) return;
+    setActionError(null);
+    setIsSigningOff(true);
+    try {
+      const completed = await completeReviewSession(projectId(), session.id);
+      setSession(completed);
+    } catch (error) {
+      setActionError(
+        `Sign-off did not complete — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setIsSigningOff(false);
+    }
   }
 
   const pkg = {
@@ -198,16 +276,46 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
             </div>
           </div>
 
+          {/* Wired now. It had no handler at all, and its only guard was `needsAction > 0`, so on a
+              package with no findings it rendered fully enabled — the one state in which signing off
+              means attesting to a review that never ran. Both are conditions here. */}
           <button
             className="btn btn--action"
-            disabled={needsAction > 0}
-            data-tooltip={needsAction > 0 ? `${needsAction} findings still need review` : 'Sign off this package'}
+            onClick={handleSignOff}
+            disabled={
+              isSigningOff ||
+              findings.length === 0 ||
+              needsAction > 0 ||
+              session === null ||
+              session.completed_at !== null
+            }
+            data-tooltip={
+              findings.length === 0
+                ? 'There are no findings to sign off on'
+                : needsAction > 0
+                ? `${needsAction} finding${needsAction === 1 ? '' : 's'} still need review`
+                : session === null
+                ? 'Review a finding first — that is what opens the sitting this signs off'
+                : session.completed_at !== null
+                ? 'This sitting is already signed off'
+                : 'Sign off this package'
+            }
           >
             <CheckSquare size={14} />
-            Sign Off
+            {session?.completed_at != null ? 'Signed off' : isSigningOff ? 'Signing off…' : 'Sign Off'}
           </button>
         </div>
       </div>
+
+      {/* A write that failed, said out loud. The row has already been put back, so without this the
+          reviewer would see their tick disappear and have no idea why — and might reasonably assume
+          they had mis-clicked rather than that nothing was saved. */}
+      {actionError !== null && (
+        <div className="upload-error" role="alert">
+          <strong>Not recorded.</strong>
+          <p>{actionError}</p>
+        </div>
+      )}
 
       {/* Messages */}
       <ChatThread
