@@ -129,18 +129,41 @@ def test_the_three_equality_sink_rules_have_no_tolerance() -> None:
         assert tolerances_of(rule) == ()
 
 
-def test_the_new_width_rule_does_not_declare_itself_critical() -> None:
-    """**Q4: V1 flags everything, with no severity split.**
+def test_every_sink_rule_declares_the_same_severity() -> None:
+    """**A rulebook that disagrees with itself about the same family of checks.**
 
-    The client chose that deliberately — whether a flag is serious depends on the project, and they
-    will not know until 10–50 projects have run. So `critical_false_pass_rate` reading NOT MEASURED
-    is the designed state, not a gap in the evaluation.
+    The width rule was authored MAJOR while its three siblings said CRITICAL, on the reading that
+    Q4's "flag everything, no severity split" meant no rule should claim CRITICAL at all. Anant ruled
+    otherwise: the CRITICAL designation stays, on the checks whose wrong PASS gets stone cut to the
+    wrong size. The cut-out width is the clearest instance of that, so it matches its siblings.
 
-    Asserted on the rule authored *after* that answer. The six older rules still say CRITICAL, which
-    predates Q4 and contradicts it — see the note in this module's companion issue rather than
-    reading their silence here as agreement.
+    Asserted as *agreement across the family* rather than against the literal CRITICAL, because the
+    defect worth catching is one of these four drifting away from the others — which is what
+    happened, and which no test then noticed.
     """
-    assert _load(WIDTH_RULE_PATH).severity is not Severity.CRITICAL
+    severities = {
+        _load(path).severity
+        for path in (
+            WIDTH_RULE_PATH,
+            DEPTH_RULE_PATH,
+            FRONT_OFFSET_RULE_PATH,
+            BACK_OFFSET_RULE_PATH,
+        )
+    }
+
+    assert len(severities) == 1, f"the sink rules disagree about severity: {severities}"
+
+
+def test_the_cutout_checks_are_critical_because_a_wrong_pass_cuts_stone() -> None:
+    """The ruling, pinned to the reason for it rather than to the word.
+
+    Under exact match the label changes no behaviour — every mismatch flags regardless of severity —
+    so what it decides is whether the check counts toward `critical_false_pass_rate`. A hole cut to a
+    dimension nobody verified is precisely what that metric exists to catch, so excluding these from
+    it would leave the primary safety measure blind to the family most able to cost money.
+    """
+    assert _load(WIDTH_RULE_PATH).severity is Severity.CRITICAL
+    assert _load(DEPTH_RULE_PATH).severity is Severity.CRITICAL
 
 
 def test_the_four_sink_rules_have_distinct_ids() -> None:

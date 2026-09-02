@@ -2,7 +2,7 @@ id: CT-SINK-CUTOUT-WIDTH-001
 version: 1.0.0
 product_type: countertop
 check_type: internal
-severity: MAJOR
+severity: CRITICAL
 arithmetic_unit: in
 
 name: Sink cutout width
@@ -23,6 +23,12 @@ description: >
   The clearance is deliberately not a constant. Raj: "1/4, but make sure that is editable,
   sometimes it's 1/8 — a project-specific variable." It varies by fabricator, which is exactly
   what a project-scoped parameter is for.
+
+  CRITICAL, like its siblings. A wrong PASS here is a cut-out sized from the wrong number and cut
+  into stone, which is the definition the severity carries. Under exact match the label changes no
+  behaviour — every mismatch flags regardless — so what it decides is whether this check counts
+  toward the primary safety metric, and a hole cut to the wrong width is exactly what that metric
+  exists to catch.
 
   One of the three checks the client's workbook labels CT-3. The ids here are ours, keyed to
   the quantity each verifies, because three rules cannot share one identifier.
