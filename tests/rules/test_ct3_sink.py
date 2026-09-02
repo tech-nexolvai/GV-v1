@@ -114,9 +114,14 @@ def _depth_parameters(
 # ---------------------------------------------------------------------------
 
 
-def test_every_sink_rule_is_an_exact_inch_check_with_no_tolerance() -> None:
-    """Input: the three YAML files. Outcome: exact equality, no band. Why: Q2 settled exact match,
-    so a tolerance here would be a band nobody asked for."""
+def test_the_three_equality_sink_rules_have_no_tolerance() -> None:
+    """Input: the three YAML files that compare by equality. Outcome: exact, no band.
+
+    Named for the three rather than "every sink rule", because the back offset is deliberately not
+    among them — it is a `minimum` check, not an equality, so asserting `operation.type == "equals"`
+    over it would be asserting the wrong contract. A test whose name overstates its coverage is how
+    a rule ends up believed to be checked.
+    """
     for path in (WIDTH_RULE_PATH, DEPTH_RULE_PATH, FRONT_OFFSET_RULE_PATH):
         rule = _load(path)
         assert rule.arithmetic_unit is Unit.INCH
@@ -284,6 +289,42 @@ def test_a_missing_sink_interior_width_is_not_found_rather_than_assumed() -> Non
     )
 
     assert finding.outcome is Outcome.NOT_FOUND
+
+
+def test_a_missing_cutout_width_reading_abstains() -> None:
+    """The drawn dimension itself absent, rather than the parameter.
+
+    Both parameters supplied and nothing read off the drawing: there is nothing to compare, so the
+    check abstains. The failure worth guarding is a comparison against a zero or an empty operand,
+    which would produce a real verdict about a dimension nobody found.
+    """
+    finding = execute(publish(_load(WIDTH_RULE_PATH)), {}, _width_parameters())
+
+    assert finding.outcome in {Outcome.NOT_FOUND, Outcome.REVIEW_REQUIRED}
+    assert finding.outcome is not Outcome.PASS
+
+
+def test_an_unqualified_width_reading_abstains_rather_than_deciding() -> None:
+    """A single unverified extraction route is not evidence (`EvidenceStatus.RAW_CANDIDATE`).
+
+    The value may be perfectly correct and it has still only been read once. Two of the five statuses
+    may enter a verdict and this is not one of them, so the check must abstain — a PASS here would be
+    a verdict resting on one unconfirmed read of a dimension that gets cut.
+    """
+    unqualified = VerdictOperand(
+        name="cutout_width",
+        value=_inch(Fraction(65, 2)),
+        status=EvidenceStatus.RAW_CANDIDATE,
+        source="SHOP",
+        evidence_ref="shop:p1:cutout_width",
+    )
+
+    finding = execute(
+        publish(_load(WIDTH_RULE_PATH)), {"cutout_width": unqualified}, _width_parameters()
+    )
+
+    assert finding.outcome is not Outcome.PASS
+    assert finding.outcome is not Outcome.FAIL
 
 
 def test_the_width_rule_declares_no_default_interior_width() -> None:

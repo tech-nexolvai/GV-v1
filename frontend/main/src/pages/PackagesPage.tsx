@@ -32,18 +32,29 @@ interface PackageRow {
  */
 async function loadRows(): Promise<PackageRow[]> {
   const project = projectId();
-  const [page, sessions] = await Promise.all([
-    listPackages(project),
-    // Every sitting in the project, not just the caller's: this column answers "who has this?", and
-    // a list showing only your own would leave somebody else's work looking unclaimed.
-    listReviewSessions(project, { mine: false }),
-  ]);
+  const page = await listPackages(project);
 
-  // Keyed by revision, because that is what a sitting is opened against. A package whose drawings
-  // were re-uploaded has a new revision, and the previous reviewer's name does not carry over to it.
-  const reviewerByRevision = new Map(
-    sessions.items.map((item) => [item.package_revision_id, item.reviewer]),
-  );
+  // **Deliberately not awaited alongside the packages.** With both in one `Promise.all`, a failure
+  // fetching sessions rejected the whole load and the page reported that documents could not be
+  // listed — when the documents had arrived perfectly well and only the reviewer column was
+  // unavailable. A missing name in one column must not be able to hide the drawings.
+  //
+  // Every sitting in the project, not just the caller's: this column answers "who has this?", and a
+  // list showing only your own would leave somebody else's work looking unclaimed.
+  let reviewerByRevision = new Map<string, string>();
+  try {
+    const sessions = await listReviewSessions(project, { mine: false });
+    // Keyed by revision, because that is what a sitting is opened against. A package whose drawings
+    // were re-uploaded has a new revision, and the previous reviewer's name does not carry over.
+    reviewerByRevision = new Map(
+      sessions.items.map((item) => [item.package_revision_id, item.reviewer]),
+    );
+  } catch {
+    // Left empty, so the column renders unknown rather than the page rendering nothing. The rows
+    // below distinguish "nobody has claimed this" from "we could not find out", because a reviewer
+    // reading an unclaimed package differently from an unknown one is the whole point of the column.
+    reviewerByRevision = new Map();
+  }
 
   return Promise.all(
     page.items.map(async (pkg) => {

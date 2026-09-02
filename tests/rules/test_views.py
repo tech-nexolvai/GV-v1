@@ -159,3 +159,34 @@ def test_the_outstanding_list_is_reportable_rather_than_discovered_one_abstentio
 
     assert outstanding == tuple(sorted(outstanding))
     assert set(outstanding).isdisjoint(CHECK_VIEWS)
+
+
+def test_unrouted_of_nothing_is_nothing() -> None:
+    """A startup check or a report may legitimately be handed no rules — an empty rulebook, a
+    filtered subset. It must answer with an empty tuple rather than raising or inventing a name."""
+    assert unrouted(frozenset()) == ()
+    assert unrouted(set()) == ()
+    assert unrouted(()) == ()
+
+
+def test_the_routing_table_cannot_be_added_to_at_runtime() -> None:
+    """**A `Mapping` annotation is a promise to a type checker and nothing to the interpreter.**
+
+    The first version exported the `dict` itself, so any importer could write
+    `CHECK_VIEWS["CT-DEPTH-001"] = ...` and route a check the client has never routed —
+    `may_read_from` would then permit evidence for it, and nothing would record that the route was
+    invented at runtime rather than decided. The whole guarantee of this module rests on the table
+    being fixed at import.
+    """
+    with pytest.raises(TypeError):
+        CHECK_VIEWS["CT-DEPTH-001"] = frozenset({PageType.SECTION})  # type: ignore[index]
+
+    assert views_for("CT-DEPTH-001") is None
+    assert not may_read_from("CT-DEPTH-001", PageType.SECTION)
+
+
+def test_the_frozen_sets_inside_cannot_be_added_to_either() -> None:
+    """Immutability one level down. A mutable set as a value would let somebody widen an existing
+    route — `CT-WIDTH-001` gaining ELEVATION — which is the same failure through a smaller door."""
+    for allowed in CHECK_VIEWS.values():
+        assert isinstance(allowed, frozenset)

@@ -10,6 +10,7 @@ module cannot reach the verdict layer.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -45,12 +46,27 @@ def test_a_hint_has_nowhere_to_put_a_dimension() -> None:
 
 def test_the_module_cannot_reach_the_verdict_or_evidence_layers() -> None:
     """Asserted on the imports, because a test showing today's code not doing it would pass just as
-    happily the day somebody adds the import."""
-    source = SOURCE.read_text(encoding="utf-8")
+    happily the day somebody adds the import.
 
-    for forbidden in ("verdict", "evidence", "rules."):
-        assert f"import {forbidden}" not in source
-        assert f"from {forbidden}" not in source
+    **Parsed, not grepped.** The first version searched for the string `from rules.` and so missed
+    `from rules import ...` entirely — a forbidden import could have been added with this test still
+    green, which is the failure mode of every guard written as a substring search. Walking the AST
+    checks the module root whatever the import is spelled like.
+    """
+    tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+    forbidden = {"verdict", "evidence", "rules"}
+
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            roots.add(node.module.split(".")[0])
+
+    assert not (roots & forbidden), (
+        f"locators.py imports {sorted(roots & forbidden)}. A locator must not be able to reach the "
+        "layer that decides, or colour becomes evidence by import."
+    )
 
 
 # ---------------------------------------------------------------------------

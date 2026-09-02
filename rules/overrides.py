@@ -56,16 +56,23 @@ class Override:
         return any(s.layer is ParameterLayer.GLOBAL for s in self.displaced)
 
     def explain(self) -> str:
-        """One line of plain English, in the same shape `ResolvedParameter.explain` produces."""
+        """One line of plain English, in the same shape `ResolvedParameter.explain` produces.
+
+        Provenance is included, and it was missing while this docstring already claimed the shapes
+        matched. It is the field that distinguishes a company standard from a number the client sent
+        from something measured on site — a reviewer countersigning an override needs to know which
+        of those they are setting aside, and 3 1/2 reads identically whichever it was.
+        """
         displaced = ", ".join(
             f"{format_inches(s.value.value.exact_value)} {s.value.value.unit.value} "
-            f"({s.layer.value})"
+            f"({s.layer.value}, {s.value.provenance.value})"
             for s in self.displaced
         )
         return (
             f"{self.name} = {format_inches(self.effective.value.exact_value)} "
-            f"{self.effective.value.unit.value} ({self.layer.value}, set by "
-            f"{self.effective.set_by}); overrides {displaced}"
+            f"{self.effective.value.unit.value} ({self.layer.value}, "
+            f"{self.effective.provenance.value}, set by {self.effective.set_by}); "
+            f"overrides {displaced}"
         )
 
 

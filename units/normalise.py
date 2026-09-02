@@ -55,16 +55,28 @@ _FEET_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: A bare inch token, with or without its quote — `38 3/4`, `38 3/4"`, `4`, `2.375`.
-_INCH_RE = re.compile(r'^[\d\s/\.]+"?$')
+#: An inch token, with or without its marker — `38 3/4"`, `4 in`, `2.375 inches`, and the bare
+#: `38 3/4` which is matched here so it can be *refused with a reason* rather than falling through to
+#: the generic unknown-unit branch. Whether the marker was present is decided separately, below.
+_INCH_RE = re.compile(r'^(?P<value>[\d\s/\.]+?)\s*(?P<marker>"|in|inch|inches)?$', re.IGNORECASE)
 
 
-def normalise_to_inches(text: str) -> Measurement:
+def normalise_to_inches(text: str, *, unmarked_unit: Unit | None = None) -> Measurement:
     """Read a dimension token as inches, exactly.
 
-    Accepts millimetres (`984 mm`), feet (`3'`, `3 ft`), feet and inches (`3'-6 1/2"`) and plain
-    inches (`38 3/4"`). The returned `Measurement` keeps the original token as `raw_text`, so a
+    Accepts millimetres (`984 mm`), feet (`3'`, `3 ft`), feet and inches (`3'-6 1/2"`) and marked
+    inches (`38 3/4"`). The returned `Measurement` keeps the authored token as `raw_text`, so a
     reviewer is shown what the drawing actually said and not only what it became.
+
+    **A bare number is refused unless the caller says what the sheet is drawn in.** `38 3/4` carries
+    no unit at all, and the first version of this function read it as inches — which is the same
+    assumption it refuses for `38 3/4 cm`, made silently because inches happened to be the answer we
+    wanted. A bare token is exactly the ambiguity `AGENTS.md` §2 says must abstain.
+
+    `unmarked_unit` is how a caller that genuinely knows — a sheet whose title block declares its
+    units, a reviewer who has said so — passes that knowledge in. It has no default, so the
+    assumption is always somebody's explicit act and appears in the calling code where it can be
+    reviewed, rather than being buried here.
 
     **What conversion costs under exact match, and why it is still correct.** 984 mm is exactly
     `4920/127` inches — about 38.7402 — and the drawing that means it almost certainly writes
@@ -101,7 +113,7 @@ def normalise_to_inches(text: str) -> Measurement:
     millimetres = _MM_RE.match(token)
     if millimetres is not None:
         exact = Fraction(millimetres.group("value")) * INCHES_PER_MM
-        return Measurement(exact=exact, unit=Unit.INCH, raw_text=token)
+        return Measurement(exact=exact, unit=Unit.INCH, raw_text=text)
 
     feet = _FEET_RE.match(token)
     if feet is not None:
@@ -114,13 +126,21 @@ def normalise_to_inches(text: str) -> Measurement:
                 raise UnitNormalisationError(
                     f"unreadable inch part of a feet-and-inches dimension: {text!r}"
                 ) from error
-        return Measurement(exact=exact, unit=Unit.INCH, raw_text=token)
+        return Measurement(exact=exact, unit=Unit.INCH, raw_text=text)
 
-    if _INCH_RE.match(token):
+    inches = _INCH_RE.match(token)
+    if inches is not None:
+        if inches.group("marker") is None and unmarked_unit is not Unit.INCH:
+            raise UnitNormalisationError(
+                f"{text!r} carries no unit. Reading it as inches would be the same assumption this "
+                "refuses for '38 3/4 cm', made silently because inches is the answer we wanted. "
+                "Pass unmarked_unit=Unit.INCH if the sheet's units are actually known."
+            )
         try:
-            return Measurement(exact=parse_imperial(token), unit=Unit.INCH, raw_text=token)
+            exact = parse_imperial(inches.group("value"))
         except ImperialParseError as error:
             raise UnitNormalisationError(f"unreadable inch dimension: {text!r}") from error
+        return Measurement(exact=exact, unit=Unit.INCH, raw_text=text)
 
     raise UnitNormalisationError(
         f"no unit could be established for {text!r}. A dimension whose unit is unknown is an "

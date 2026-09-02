@@ -91,7 +91,20 @@ def test_format_inches_writes_what_a_drawing_writes(value: Fraction, expected: s
 
 
 @pytest.mark.parametrize(
-    "value", [Fraction(7, 2), Fraction(155, 4), Fraction(4), Fraction(1, 4), Fraction(4920, 127)]
+    "value",
+    [
+        Fraction(7, 2),
+        Fraction(155, 4),
+        Fraction(4),
+        Fraction(1, 4),
+        Fraction(4920, 127),
+        # Negatives were the case the claim failed on: `format_inches` wrote `-3 1/2` and
+        # `parse_imperial` refused it, so the round-trip docstring was false for exactly the values a
+        # derived dimension produces when a subtraction comes out negative.
+        Fraction(-7, 2),
+        Fraction(-1, 4),
+        Fraction(-4),
+    ],
 )
 def test_everything_it_writes_can_be_read_back(value: Fraction) -> None:
     """The pair must not drift into two different ideas of an inch. Round-tripping is what stops a
