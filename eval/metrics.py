@@ -92,8 +92,20 @@ def critical_false_pass_rate(
     critical checks. Widening it would dilute the rate with cases that could never have been a false
     PASS, and make the number look better by adding work the system got right for free.
 
-    Until `Q4` (#12) assigns severities, no rule declares CRITICAL and this reports NOT MEASURED.
-    That is correct: nothing has been measured.
+    **Why this reports NOT MEASURED today, which is not the reason it used to give.** Both this
+    docstring and `docs/DESIGN.md` used to say the metric was unmeasured because Q4 was unanswered
+    and no rule declared CRITICAL. Neither half is true any more: `Q4` was answered on the
+    2026-08-25 call, and the rulebook declares CRITICAL on the checks whose wrong PASS gets stone cut
+    to the wrong size. The denominator is still zero, and now for the honest reason — **`eval/gold_set/
+    cases/` is empty** (#274). There is no reviewed drawing on which a CRITICAL check should have
+    failed, so there is nothing this could have got wrong yet.
+
+    That distinction matters because the two states need different actions. "No rule is classified"
+    was ours to fix by classifying. "No gold set" is fixed only by the client sending drawings and
+    somebody reviewing them, and no amount of work here shortens it.
+
+    The release gate treats `value=None` as a refusal rather than a pass (`eval/release_gates.py`),
+    which is what stops an unmeasured primary safety metric from reading as a clean one.
     """
     expected = _expected_by_check(gold)
     at_risk = 0
@@ -111,8 +123,9 @@ def critical_false_pass_rate(
         wrong,
         at_risk,
         empty_note=(
-            "no CRITICAL check in the gold set expects FAIL. Either no rule declares a severity "
-            "yet (Q4 #12 is unanswered) or the gold set contains no critical defect to catch"
+            "no CRITICAL check in the gold set expects FAIL. The rulebook does declare CRITICAL "
+            "checks, so this is the gold set: it holds no reviewed case where one of them should "
+            "have failed. Until real drawings land (#274) there is nothing to measure against"
         ),
     )
 

@@ -645,14 +645,28 @@ records, not properties of a drawing. They return `MetricResult(value=None, note
 missing. Fabricating them from synthetic cases would produce a number that looks like evidence and
 is not.
 
-### What Q4 does and does not decide
+### What Q4 decided, and why the metric still reports nothing
 
-`Q4` (#12) assigns a severity to each check. It determines what `critical_false_pass_rate` *reports*,
-not whether it can be *computed* — this module reads `Finding.severity`, it does not classify.
+`Q4` (#12) is **answered**. On the 2026-08-25 call the client chose to flag every deviation with no
+severity split for the reviewer, deferring tiers until 10–50 projects have run. Severity remains a
+property of the rule and this module reads `Finding.severity` rather than classifying anything.
 
-Until Q4 is answered no rule declares `CRITICAL`, so the metric's denominator is zero and it reports
-**not measured**. That is the correct output, and it is exactly why the `None` case above is not a
-detail.
+The rulebook **does** declare `CRITICAL` — on the checks whose wrong PASS gets stone cut to the wrong
+size, which is what the designation is for. Under exact match the label changes no behaviour, since
+every mismatch flags regardless; what it changes is whether the primary safety metric has a
+denominator.
+
+`critical_false_pass_rate` still reports **not measured**, and for a different reason than this
+section used to give. It said the metric was unmeasured because Q4 was unanswered and no rule was
+classified. Neither half holds now. The denominator is zero because **`eval/gold_set/cases/` is
+empty** (#274): there is no reviewed drawing on which a `CRITICAL` check should have failed, so there
+is nothing the system could have got wrong yet.
+
+That distinction decides who fixes it. "Nothing is classified" was ours, and classifying was the fix.
+"No gold set" is fixed only by the client sending drawings and somebody reviewing them — no work in
+this repository shortens it, and a stale sentence blaming an unanswered question sends the next reader
+to the wrong task. It is also exactly why the `None` case above is not a detail: the release gate
+refuses an unmeasured primary metric rather than reading it as a clean one.
 
 ---
 
