@@ -29,6 +29,7 @@ Verification: `tests/db/test_verdict_models.py`
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
@@ -39,11 +40,12 @@ from sqlalchemy import (
     Index,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, Immutable, TimestampedUUID
+from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime
 from units.measurement import Unit
 from verdict.operands import QUALIFIED_STATUSES
 from verdict.outcomes import Outcome, Severity
@@ -88,11 +90,30 @@ class CheckRun(Base, TimestampedUUID):
     that can move a result without any input moving, and `eval/regression.py` needs to be able to
     attribute that."""
 
+    superseded_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None, nullable=True)
+    """When a later run replaced this one, or `NULL` while it is the current answer.
+
+    The findings themselves are never touched — every one ever written is still there, and this is
+    the annotation the class docstring above anticipates. Without it the findings query, which filters
+    by revision, would put two copies of every finding in front of a reviewer with nothing to say
+    which was current. They would usually agree, so it would read as duplication rather than
+    ambiguity — until the run where a rulebook fix changed a verdict, and the screen then shows a PASS
+    and a FAIL for the same check with equal standing.
+
+    A timestamp rather than a flag: it answers *when* a run stopped being current, which is what
+    somebody reconstructing a review months later actually needs.
+    """
+
     __table_args__ = (
         CheckConstraint("engine_version <> ''", name="check_run_engine_version_present"),
         # Lets a child carry the revision and have the database prove it is the run's own.
         UniqueConstraint("id", "package_revision_id", name="uq_check_runs_id_revision"),
         Index("ix_check_runs_revision_snapshot", "package_revision_id", "rule_snapshot_id"),
+        Index(
+            "ix_check_runs_live_by_revision",
+            "package_revision_id",
+            postgresql_where=text("superseded_at IS NULL"),
+        ),
     )
 
 
