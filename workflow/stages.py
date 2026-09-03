@@ -34,7 +34,13 @@ from sqlalchemy.orm import Session
 
 from app.api.documents import storage_key
 from app.db.base import utc_now
-from app.evidence.record import open_extraction_run, persist_manifest, record_candidates
+from app.evidence.record import (
+    open_extraction_run,
+    persist_manifest,
+    record_candidates,
+    record_unreadable_document,
+    record_unreadable_page,
+)
 from app.models.document import DocumentVersion, PackageRevisionDocument
 from app.models.package import Package, PackageRevision
 from app.models.parameters import declared_defaults, load_parameter_sets
@@ -159,9 +165,17 @@ class DatabaseStages:
         """One document: its manifest, then its text, page by page."""
         try:
             raw_pages = read_pages(data)
-        except UnreadablePdf:
-            # A document that will not parse is not a document with no dimensions. Skipped here and
-            # visible as a version with no pages, rather than one whose pages all read empty.
+        except UnreadablePdf as error:
+            # A document that will not parse is not a document with no dimensions — and until #491 the
+            # difference was invisible, because this returned an empty list and the package still
+            # reported extraction as complete. Recorded rather than raised: a corrupt file is not
+            # transient, so raising would roll back the claim and retry it for ever (#491).
+            record_unreadable_document(
+                session,
+                extraction_run_id=run.id,
+                document_version_id=version_id,
+                error=error,
+            )
             return []
 
         manifest = build_manifest(
@@ -183,11 +197,19 @@ class DatabaseStages:
                         contents = read_page_contents(
                             data, page.index, document_version_id=version_id, dpi=self._dpi
                         )
-                    except UnreadablePdf:
+                    except UnreadablePdf as error:
                         # One page that will not parse, in a document whose other pages might. The
-                        # count below stays 0 and the span records why, so "read nothing" and "could
-                        # not be read" are not the same entry in a trace.
+                        # count below stays 0, so without a row this would be indistinguishable from a
+                        # page that was read and had nothing on it. The span says so too, but a span
+                        # is ephemeral and unexported — the row is the durable half (#491).
                         contents = None
+                        record_unreadable_page(
+                            session,
+                            extraction_run_id=run.id,
+                            document_version_id=version_id,
+                            page_index=page.index,
+                            error=error,
+                        )
                         span.set_status(Status(StatusCode.ERROR, "page did not parse"))
                     if contents is not None:
                         written = len(

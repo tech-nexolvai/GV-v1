@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 
 from app.models.document import Page
 from app.models.evidence import ObservationCandidate
-from app.models.runs import ExtractionRun
+from app.models.runs import ExtractionFailure, ExtractionRun
 from extraction.manifest import PageManifest
 from extraction.reader import TextItem
 from units.imperial import ImperialParseError, parse_imperial
@@ -51,6 +51,8 @@ __all__ = [
     "open_extraction_run",
     "persist_manifest",
     "record_candidates",
+    "record_unreadable_document",
+    "record_unreadable_page",
 ]
 
 #: Flagged rather than dropped. A token the parser could not read is still a reading that happened,
@@ -232,6 +234,80 @@ def _unvalued_reason(text: str) -> str:
     # It parsed as a number but carried no unit. The value is deliberately not kept: see
     # `UNKNOWN_UNIT_FLAG`.
     return UNKNOWN_UNIT_FLAG
+
+
+def record_unreadable_document(
+    session: Session,
+    *,
+    extraction_run_id: UUID,
+    document_version_id: UUID,
+    error: Exception,
+) -> ExtractionFailure:
+    """A drawing that would not parse, written down rather than skipped.
+
+    Until this existed the stage caught `UnreadablePdf` and moved on, so the document contributed no
+    pages, no candidates and no result — and the package still reported extraction as complete. A
+    drawing nobody could read looked exactly like a drawing with nothing on it.
+
+    Only the exception's *class* is kept. A `pdfminer` message can quote the bytes it choked on, and
+    `AGENTS.md` §6 forbids drawing content in a trace for the reason it should not sit in a table
+    either.
+    """
+    return _record(
+        session,
+        extraction_run_id=extraction_run_id,
+        document_version_id=document_version_id,
+        page_index=None,
+        reason="document_unreadable",
+        error=error,
+    )
+
+
+def record_unreadable_page(
+    session: Session,
+    *,
+    extraction_run_id: UUID,
+    document_version_id: UUID,
+    page_index: int,
+    error: Exception,
+) -> ExtractionFailure:
+    """One page that would not parse, in a document whose other pages might.
+
+    Distinct from a page that was read and had nothing on it, which is an ordinary result and stays a
+    candidate count of zero. Same distinction as the document-level case, one level down: "read
+    nothing" and "could not be read" must not arrive at a reviewer as the same thing.
+    """
+    return _record(
+        session,
+        extraction_run_id=extraction_run_id,
+        document_version_id=document_version_id,
+        page_index=page_index,
+        reason="page_unreadable",
+        error=error,
+    )
+
+
+def _record(
+    session: Session,
+    *,
+    extraction_run_id: UUID,
+    document_version_id: UUID,
+    page_index: int | None,
+    reason: str,
+    error: Exception,
+) -> ExtractionFailure:
+    """The row both recorders write, so the two cannot drift in what they store."""
+    failure = ExtractionFailure(
+        extraction_run_id=extraction_run_id,
+        document_version_id=document_version_id,
+        page_index=page_index,
+        reason=reason,
+        # The class name, never `str(error)` — see `record_unreadable_document`.
+        error_type=type(error).__name__,
+    )
+    session.add(failure)
+    session.flush()
+    return failure
 
 
 def persist_manifest(session: Session, manifest: PageManifest) -> list[Page]:

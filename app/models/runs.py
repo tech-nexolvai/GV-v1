@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import StrEnum
+from typing import Final
 from uuid import UUID
 
 from sqlalchemy import CheckConstraint, ForeignKey, Index, Numeric, String
@@ -109,6 +110,68 @@ class ExtractionRun(Base, TimestampedUUID):
         CheckConstraint("extractor <> ''", name="extraction_run_extractor"),
         CheckConstraint("extractor_version <> ''", name="extraction_run_extractor_version"),
         CheckConstraint("config_hash <> ''", name="extraction_run_config_hash"),
+    )
+
+
+#: Why a drawing, or one of its pages, could not be read.
+#:
+#: A closed vocabulary rather than free text, and the check constraint below ties each value to
+#: whether a page index is present — so "the document would not parse" can never be filed against a
+#: page, and "this page would not parse" can never be filed without one.
+FAILURE_REASONS: Final = ("document_unreadable", "page_unreadable")
+
+_FAILURE_REASON_VALUES: Final = ", ".join(f"'{reason}'" for reason in FAILURE_REASONS)
+
+
+class ExtractionFailure(Base, TimestampedUUID, Immutable):
+    """A drawing that could not be read, written down so it is not mistaken for a drawing with nothing on it.
+
+    **The gap this closes.** `workflow/stages.py` caught `UnreadablePdf` and moved on, so a document
+    that would not parse contributed no pages, no candidates and no result — and the package still
+    reported extraction as complete. A drawing nobody could read then looked exactly like a drawing
+    that had no dimensions, which is the package-level shape of a false PASS.
+
+    **Recorded rather than raised, and that is the difference between this and a storage failure.**
+    `_fetch` raises, because a fetch that failed once may well succeed next time and `run_stage` will
+    redeliver it. A corrupt PDF is not transient: raising would roll the claim back and retry the same
+    broken file for ever, paying for it each time and recording nothing on any attempt. So the failure
+    is a row, written once, and the stage carries on with the drawings it *can* read.
+
+    **No message column, deliberately.** A `pdfminer` error can quote the bytes it choked on, and
+    `AGENTS.md` §6 forbids drawing content in a trace for exactly the reason it should not sit in a
+    table either. `reason` carries the meaning and `error_type` carries the diagnosis; a free-text
+    message would need a redaction story before it earned a place here.
+
+    Append-only, so a later successful re-read adds rows elsewhere rather than erasing this one. That
+    a drawing once could not be read is a fact about the package, and a reviewer may want it.
+    """
+
+    __tablename__ = "extraction_failures"
+
+    extraction_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), index=True
+    )
+    document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="RESTRICT"), index=True
+    )
+    #: `None` means the whole document, not "page zero" — hence the constraint pairing it with `reason`.
+    page_index: Mapped[int | None] = mapped_column(default=None)
+    reason: Mapped[str] = mapped_column(String(32))
+    error_type: Mapped[str] = mapped_column(String(100))
+
+    __table_args__ = (
+        CheckConstraint(f"reason IN ({_FAILURE_REASON_VALUES})", name="extraction_failure_reason"),
+        CheckConstraint(
+            "page_index IS NULL OR page_index >= 0", name="extraction_failure_page_index"
+        ),
+        # The pairing, enforced rather than trusted: a document-level failure has no page and a
+        # page-level one must name its page. Either mismatch would be a row nobody could interpret.
+        CheckConstraint(
+            "(reason = 'document_unreadable' AND page_index IS NULL) "
+            "OR (reason = 'page_unreadable' AND page_index IS NOT NULL)",
+            name="extraction_failure_scope",
+        ),
+        CheckConstraint("error_type <> ''", name="extraction_failure_error_type"),
     )
 
 
