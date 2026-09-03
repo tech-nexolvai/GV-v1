@@ -32,12 +32,17 @@ is a required keyword-only argument with no default, exactly like `endpoint_tole
 why it has no non-finite case to guard: an integer count is already exact, and a float is refused
 outright.
 
-**The reader is not this module.** Opening the PDF, repairing it and rendering its pages is B2.1
-(#123), and it needs real drawings before it can honestly be written. The seam between the two is
-`RawPage`: what a reader observed about one page, before any judgement is applied to it. That keeps
-every rule above testable today, and it keeps this module free of a PDF library — which matters,
-because CI installs only the `dev`, `rules` and `platform` extras, so a `pdfplumber` or `pypdfium2`
-path here would ship with nothing running against it.
+**The reader is not this module.** Opening the PDF is `extraction/reader.py` (B2.1, #123); this
+module decides what its observations mean. The seam between the two is `RawPage`: what a reader
+observed about one page, before any judgement is applied to it. That keeps every rule here testable
+against constructed observations and keeps this module free of a PDF library.
+
+Two claims that used to be here and are no longer true, kept visible rather than quietly deleted. The
+reader was said to need real drawings first: it does not, because reporting what a PDF says is a
+matter of faithfulness rather than of judgement, and it is tested against hand-written PDFs whose
+contents are known. And CI was said to install only the `dev`, `rules` and `platform` extras: the
+`quality` job installs `extraction` too, so the reader does run in CI. What still needs real drawings
+(#274) is everything with a threshold in it — fragment merging and text-to-line association.
 
 **What this deliberately does not carry.** No reason string for a failed page: the shipped `pages`
 table (`app/models/document.py`) has a boolean and nothing else, and a reviewer asking *why* page 7
