@@ -179,15 +179,26 @@ def _parse(text: str) -> tuple[Measurement | None, tuple[str, ...]]:
     try:
         return normalise_to_inches(text), ()
     except UnitNormalisationError:
-        pass
+        # No value, and the flag says which kind of nothing this is. Both branches abstain; neither
+        # swallows, because a reading that produced no measurement still has to say why.
+        return None, (_unvalued_reason(text),)
 
+
+def _unvalued_reason(text: str) -> str:
+    """Why a text run carries no measurement — a bare number, or not a number at all.
+
+    Split out from `_parse` so that no `except` branch ends in a bare `pass`. That is a rule the
+    repo enforces (`.semgrep/gv-rules.yaml`, `gv-no-silently-swallowed-errors`) and it is the right
+    rule here: an exception on this path decides what a reviewer is shown, so each one has to name
+    an outcome rather than fall through to whatever comes next.
+    """
     try:
         parse_imperial(text)
     except ImperialParseError:
-        return None, (UNPARSED_FLAG,)
+        return UNPARSED_FLAG
     # It parsed as a number but carried no unit. The value is deliberately not kept: see
     # `UNKNOWN_UNIT_FLAG`.
-    return None, (UNKNOWN_UNIT_FLAG,)
+    return UNKNOWN_UNIT_FLAG
 
 
 def persist_manifest(session: Session, manifest: PageManifest) -> list[Page]:
