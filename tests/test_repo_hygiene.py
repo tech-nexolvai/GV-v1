@@ -225,6 +225,44 @@ def test_the_unknown_key_check_finds_what_it_claims_and_nothing_more() -> None:
     )
 
 
+def test_every_top_level_package_is_installed() -> None:
+    """A package missing from the install list is importable until it suddenly is not.
+
+    `vocabulary` was absent, and `rules/semantic_types.py` does `from vocabulary.semantic_types
+    import *` — so `rules` could not be imported anywhere the repository root was not the working
+    directory. Nothing caught it: pytest and CI both run from the root, which puts it on `sys.path`
+    and hides the gap completely. It surfaced only when `scripts/run_gold_set.py` ran, because a
+    script's `sys.path[0]` is its own directory.
+
+    Derived from the tree rather than listed, for the reason `app/db/roles.py` gives about its own
+    derived list: a hand-kept copy leaves out the newest package, which is the one nobody has thought
+    about yet.
+    """
+    import fnmatch
+    import tomllib
+
+    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    patterns = config["tool"]["setuptools"]["packages"]["find"]["include"]
+    excluded = config["tool"]["setuptools"]["packages"]["find"]["exclude"]
+
+    present = {
+        path.name
+        for path in REPO_ROOT.iterdir()
+        if path.is_dir() and (path / "__init__.py").is_file() and not path.name.startswith(".")
+    }
+    missing = sorted(
+        name
+        for name in present
+        if not any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
+        and not any(fnmatch.fnmatch(name, pattern) for pattern in excluded)
+    )
+    assert not missing, (
+        f"these top-level packages are neither included nor excluded in pyproject.toml: {missing}. "
+        "They will not be installed, so anything importing them works only while the repository root "
+        "happens to be on sys.path — which is true under pytest and false in a worker process."
+    )
+
+
 def test_the_coderabbit_config_is_actually_used() -> None:
     """The reviewer config must parse and fit its schema, or it is silently thrown away.
 
