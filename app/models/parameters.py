@@ -31,6 +31,7 @@ Source: backend proposal §10.1; ADR-0006, ADR-0016 · Design: `docs/DESIGN.md` 
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from fractions import Fraction
 from uuid import UUID
@@ -42,14 +43,15 @@ from sqlalchemy import (
     Index,
     String,
     UniqueConstraint,
+    select,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime
 from rules.parameters import ParameterLayer, Provenance
 from rules.parameters import ParameterSet as InMemoryParameterSet
 from rules.parameters import ParameterValue as InMemoryParameterValue
-from rules.schema import Quantity
+from rules.schema import Quantity, Rule
 from units.measurement import Unit
 
 __all__ = [
@@ -222,4 +224,80 @@ def from_rows(stored: ParameterSet, values: list[ParameterValue]) -> InMemoryPar
             )
             for value in values
         },
+    )
+
+
+def load_parameter_sets(session: Session, project_id: UUID) -> tuple[InMemoryParameterSet, ...]:
+    """The stored layers in force for a project, in resolution order.
+
+    `from_rows` above turns one stored set into one value object; this answers the question that comes
+    first — *which* stored sets. The GLOBAL layer belongs to no project (`project_id IS NULL`) and the
+    PROJECT layer to this one; RUN sets are supplied per review and are not loaded here.
+
+    **The effective version is the highest, per layer.** Nothing in the schema said so: the table
+    enforces `(project_id, layer, version)` unique but never named a winner, so every caller would
+    have had to invent the same policy and one of them would eventually invent a different one. This
+    mirrors `SnapshotStore.latest`, which resolves a rule the same way, so a reader who knows one
+    knows both.
+
+    Returned in `GLOBAL, PROJECT` order for legibility only — `rules.parameters.resolve` orders the
+    sets itself by layer and raises on two sets sharing one, so the order here cannot change an
+    answer. It is the order somebody reading a log expects.
+    """
+    layers: list[InMemoryParameterSet] = []
+    for layer, owner in ((ParameterLayer.GLOBAL, None), (ParameterLayer.PROJECT, project_id)):
+        stored = session.execute(
+            select(ParameterSet)
+            .where(ParameterSet.layer == layer.value, ParameterSet.project_id == owner)
+            .order_by(ParameterSet.version.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if stored is None:
+            continue
+        values = list(
+            session.execute(
+                select(ParameterValue).where(ParameterValue.parameter_set_id == stored.id)
+            ).scalars()
+        )
+        layers.append(from_rows(stored, values))
+    return tuple(layers)
+
+
+def declared_defaults(rules: Iterable[Rule], *, when: datetime) -> InMemoryParameterSet:
+    """The rulebook's own defaults, as the bottom layer everything else overrides.
+
+    **Without this, a rule that needs nothing but its own default would abstain.** `execute` does not
+    read a rule's declared `default` — resolving parameters is the parameter layer's job, and the
+    engine only sees what it is handed. So a cut-out check whose clearance the author already answered
+    with `1/4` would return NOT_FOUND, and that NOT_FOUND would be a fact about our wiring dressed up
+    as a fact about the drawing. Abstaining for the wrong reason is worse than abstaining, because it
+    sends a reviewer to look for an input that was never missing.
+
+    This is not a silent fallback of the kind `AGENTS.md` §2.4 forbids. The value was written down by
+    a rule author, reviewed, and published inside the snapshot's own hash; it carries
+    `COMPANY_STANDARD` provenance and the rule id that declared it, so a reviewer reading the override
+    report sees where it came from. A parameter with *no* declared default still resolves to nothing
+    and still abstains — which is the case §2.4 is about.
+
+    Placed at GLOBAL so any stored global, project or run value displaces it, and the override report
+    (`rules/overrides.py`) then shows the displacement.
+    """
+    parameters: dict[str, InMemoryParameterValue] = {}
+    for rule in rules:
+        for name, declared in rule.parameters.items():
+            if declared.default is None or name in parameters:
+                continue
+            parameters[name] = InMemoryParameterValue(
+                value=declared.default,
+                provenance=Provenance.COMPANY_STANDARD,
+                set_by=f"rulebook default ({rule.id})",
+                set_at=when,
+            )
+    return InMemoryParameterSet(
+        project_id=None,
+        layer=ParameterLayer.GLOBAL,
+        # Version 1, because `ParameterSet` refuses 0 — versions start at one, and a set that claimed
+        # to be the zeroth would be asserting it predates the first recorded standard.
+        version=1,
+        parameters=parameters,
     )

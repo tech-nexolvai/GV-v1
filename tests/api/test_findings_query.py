@@ -845,12 +845,18 @@ def _session_and_action(
     actor: str = "anant",
     at: datetime | None = None,
     note: str | None = None,
+    action_id: UUID | None = None,
 ) -> ReviewAction:
-    """One sitting and one thing done in it."""
+    """One sitting and one thing done in it.
+
+    `action_id` is settable so a test can make insertion order and id order disagree, which is the
+    only way to pin a tie-break deterministically.
+    """
     sitting = ReviewSession(package_revision_id=revision.id, reviewer=actor)
     session.add(sitting)
     session.flush()
     recorded = ReviewAction(
+        **({"id": action_id} if action_id is not None else {}),
         review_session_id=sitting.id,
         finding_id=finding.id,
         package_revision_id=revision.id,
@@ -970,3 +976,96 @@ def test_the_action_does_not_multiply_the_findings(session: Session) -> None:
 
     assert len(body["items"]) == 1
     assert body["items"][0]["reviewer_action"]["action"] == "confirm"
+
+
+# ---------------------------------------------------------------------------
+# Superseded runs (#477)
+# ---------------------------------------------------------------------------
+
+
+def test_a_superseded_run_disappears_from_the_list(session: Session) -> None:
+    """**The reviewer must see one answer per check, and the endpoint is where that is decided.**
+
+    Findings are immutable, so re-running the checks adds a second set rather than replacing the
+    first. Both stay in the table — that is the audit trail — but a list showing both would put a
+    PASS and a FAIL for the same check in front of a reviewer with equal standing.
+
+    Asserted through the endpoint rather than against a hand-written query. A test that did its own
+    join would pass while the endpoint returned everything, which is exactly what happened: the first
+    version of this change was mutation-tested by deleting the filter from `_base_query`, and every
+    test still passed because they all filtered for themselves.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+
+    stale = _finding(session, revision, snapshot, Outcome.PASS)
+    session.get(CheckRun, stale.check_run_id).superseded_at = datetime(2026, 9, 1, tzinfo=UTC)
+    _finding(session, revision, snapshot, Outcome.FAIL)
+    session.flush()
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert _outcomes(body) == [
+        "FAIL"
+    ], "the superseded PASS is still listed; a reviewer would see two answers for one check"
+
+
+def test_the_summary_counts_only_live_findings(session: Session) -> None:
+    """The counts feed the packages table and the usage page. Counting superseded runs would report
+    twice the work and inflate the failure count on every re-run."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+
+    stale = _finding(session, revision, snapshot, Outcome.FAIL)
+    session.get(CheckRun, stale.check_run_id).superseded_at = datetime(2026, 9, 1, tzinfo=UTC)
+    _finding(session, revision, snapshot, Outcome.PASS)
+    session.flush()
+
+    client = _client(session, PROJECT_A)
+    response = client.get(f"{_url(PROJECT_A, package.id)}/summary")
+
+    assert response.status_code == 200, response.text
+    counts = response.json()
+    assert counts["total"] == 1
+    assert counts["failed"] == 0
+    assert counts["passed"] == 1
+
+
+def test_two_actions_in_the_same_instant_resolve_by_id(session: Session) -> None:
+    """**The tie-break I documented and did not test.**
+
+    `_latest_action` orders by `created_at` then `id`, and the second half is the whole point: two
+    actions written in one transaction share a timestamp, and without a total order the finding reads
+    `confirm` on one request and `dismiss` on the next. Nothing about that looks like a bug — it looks
+    like a reviewer's own decision being flaky.
+
+    **The ids are fixed, and the arrangement was measured rather than guessed.** With random uuids a
+    mutant that deleted the tie-break passed four runs in five, and the first fixed arrangement I
+    tried let it pass five in five — the broken order happened to agree with the right answer. So the
+    two arrangements were run against the mutant to find the one where they differ: with the *later*
+    decision carrying the higher id, the ordering that ignores id returns the earlier one.
+
+    Raised by review, which is where it should have been caught: the docstring already claimed the
+    property.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    finding = _finding(session, revision, _snapshot(session), Outcome.FAIL)
+
+    instant = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    low = UUID("00000000-0000-4000-8000-000000000000")
+    high = UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")
+    _session_and_action(session, revision, finding, "confirm", at=instant, action_id=low)
+    _session_and_action(session, revision, finding, "dismiss", at=instant, action_id=high)
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert body["items"][0]["reviewer_action"]["action"] == "dismiss", (
+        "the tie was broken by something other than id, so which decision a reviewer sees depends on "
+        "the query plan"
+    )

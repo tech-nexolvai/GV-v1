@@ -49,8 +49,9 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import ColumnElement, Integer, Select, and_, case, func, or_, select
+from sqlalchemy import ColumnElement, Integer, Row, Select, and_, case, func, or_, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
+from sqlalchemy.sql import Subquery
 
 from app.api.dependencies import get_session
 from app.auth import Principal, require_project_access
@@ -203,7 +204,7 @@ def _strictly_after(keys: Sequence[tuple[Any, Any]]) -> ColumnElement[bool]:
 # ---------------------------------------------------------------------------
 
 
-def _latest_action() -> Any:
+def _latest_action() -> Subquery:
     """The most recent review action per finding, as a joinable subquery.
 
     **Ranked, not aggregated.** `max(created_at)` would give the time and not the row, and a second
@@ -280,11 +281,22 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
         # Both halves matter. The package pins the resource; the project is the isolation boundary,
         # and leaving it to the dependency alone would mean a package id from another project reached
         # the database with nothing but a membership claim standing between them.
-        .where(Package.project_id == project_id, Package.id == package_id)
+        #
+        # **Live runs only.** A re-run writes new findings and never edits the old ones (#199), so
+        # without this a reviewer sees two copies of every check. They would usually agree, which is
+        # the dangerous part — it reads as duplication rather than ambiguity, until the run where a
+        # rulebook fix changed a verdict and the screen shows a PASS and a FAIL for the same check
+        # with equal standing. Applied here rather than in each endpoint so the list, the summary and
+        # the export cannot disagree about which run is current.
+        .where(
+            Package.project_id == project_id,
+            Package.id == package_id,
+            CheckRun.superseded_at.is_(None),
+        )
     )
 
 
-def _as_finding(row: Any) -> dict[str, Any]:
+def _as_finding(row: Row[Any]) -> dict[str, Any]:
     """One result row as the shape `FindingOut` expects.
 
     The reviewer action arrives as four flat columns from the outer join and is nested here, because
