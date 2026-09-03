@@ -334,6 +334,22 @@ def test_the_coderabbit_config_is_actually_used() -> None:
         "it is a silent fall back to the default profile."
     )
 
+    # **No green tick for a review that did not happen.** `reviews.commit_status` turns on a legacy
+    # commit-status mirror, and GitHub folds that status into the same rollup as the Actions checks. On
+    # #484 it reported `success` with the description "Review skipped: manual review required for this
+    # OSS repository" — a pass for a declined review, sitting in a list of five green ticks.
+    #
+    # Asserted as `is False` rather than falsy, because the default is `true` and the schema puts no
+    # `required` at this level: an absent key reads as "nobody chose" and behaves as "mirror on". This
+    # has to be a decision that stays made. Re-enabling it should mean arguing with this test, since the
+    # cost is not a noisy check but a silent claim of review coverage that nobody has any reason to
+    # doubt.
+    assert reviews.get("commit_status") is False, (
+        "reviews.commit_status is not explicitly false, so CodeRabbit mirrors its review state as a "
+        "legacy commit status. On this account every review is skipped, and the mirror reports that "
+        "skip as a green `CodeRabbit` tick in the checks list — a control that looks like it ran."
+    )
+
     # `**` carries the project-wide safety framing that used to live in `tone_instructions`. Asserted by
     # concept rather than by exact prose, so the wording can be improved but not quietly dropped.
     assert "false-PASS" in entries["**"], (
