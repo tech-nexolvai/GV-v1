@@ -45,6 +45,8 @@ from app.models import (
     PackageRevision,
     PackageState,
     Project,
+    ReviewAction,
+    ReviewSession,
     RuleDefinition,
     RuleSnapshot,
 )
@@ -827,3 +829,144 @@ def test_another_projects_package_does_not_summarise(session: Session) -> None:
 
     response = _client(session, PROJECT_A).get(f"{_url(PROJECT_A, package.id)}/summary")
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Reading a reviewer's decisions back (#472)
+# ---------------------------------------------------------------------------
+
+
+def _session_and_action(
+    session: Session,
+    revision: PackageRevision,
+    finding: Finding,
+    action: str,
+    *,
+    actor: str = "anant",
+    at: datetime | None = None,
+    note: str | None = None,
+) -> ReviewAction:
+    """One sitting and one thing done in it."""
+    sitting = ReviewSession(package_revision_id=revision.id, reviewer=actor)
+    session.add(sitting)
+    session.flush()
+    recorded = ReviewAction(
+        review_session_id=sitting.id,
+        finding_id=finding.id,
+        package_revision_id=revision.id,
+        action=action,
+        actor=actor,
+        note=note,
+        created_at=at if at is not None else EPOCH,
+    )
+    session.add(recorded)
+    session.flush()
+    return recorded
+
+
+def test_a_finding_nobody_has_touched_reports_no_action(session: Session) -> None:
+    """`None`, and it must stay reachable — an inner join would have dropped every untouched finding
+    and shown a reviewer only the work already done."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    _finding(session, revision, _snapshot(session), Outcome.FAIL)
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert len(body["items"]) == 1
+    assert body["items"][0]["reviewer_action"] is None
+
+
+def test_a_recorded_decision_comes_back_with_the_finding(session: Session) -> None:
+    """**The defect this closes.**
+
+    The action was written to the ledger and never returned, so the workspace showed every finding as
+    untouched after a refresh — and a reviewer could record the same decision twice because the first
+    was invisible. That happened in testing, on this exact path.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    finding = _finding(session, revision, _snapshot(session), Outcome.FAIL)
+    _session_and_action(session, revision, finding, "confirm", note="matches the cut sheet")
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+    recorded = body["items"][0]["reviewer_action"]
+
+    assert recorded["action"] == "confirm"
+    assert recorded["actor"] == "anant"
+    assert recorded["note"] == "matches the cut sheet"
+    assert recorded["at"] is not None
+
+
+def test_a_changed_mind_reports_the_later_decision(session: Session) -> None:
+    """The ledger is append-only, so a reviewer who changes their mind leaves two rows. The screen
+    must show the second — reporting the first would tell them their correction did not take."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    finding = _finding(session, revision, _snapshot(session), Outcome.FAIL)
+    _session_and_action(session, revision, finding, "confirm", at=EPOCH)
+    _session_and_action(session, revision, finding, "dismiss", at=EPOCH + timedelta(minutes=5))
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert body["items"][0]["reviewer_action"]["action"] == "dismiss"
+
+
+def test_a_colleagues_decision_is_shown_with_their_name(session: Session) -> None:
+    """A finding's disposition belongs to the package, not to whoever is looking.
+
+    Showing somebody else's confirmation as outstanding would invite a second opinion recorded as a
+    first. `actor` is what lets the screen say it was not you.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    finding = _finding(session, revision, _snapshot(session), Outcome.FAIL)
+    _session_and_action(session, revision, finding, "except", actor="priya")
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+    recorded = body["items"][0]["reviewer_action"]
+
+    assert recorded["action"] == "except"
+    assert recorded["actor"] == "priya"
+
+
+def test_an_action_on_one_finding_does_not_attach_to_another(session: Session) -> None:
+    """Two findings, one actioned. The join must not smear it across the package — a reviewer would
+    see work they never did and sign off on it."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+    first = _finding(session, revision, snapshot, Outcome.FAIL)
+    _finding(session, revision, snapshot, Outcome.REVIEW_REQUIRED)
+    _session_and_action(session, revision, first, "confirm")
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+    by_id = {item["id"]: item["reviewer_action"] for item in body["items"]}
+
+    assert by_id[str(first.id)]["action"] == "confirm"
+    assert [a for a in by_id.values() if a is None], "the untouched finding lost its None"
+    assert sum(1 for a in by_id.values() if a is not None) == 1
+
+
+def test_the_action_does_not_multiply_the_findings(session: Session) -> None:
+    """A join returning several action rows per finding would duplicate the finding itself.
+
+    Three actions on one finding, and the list must still hold one row — otherwise a package with a
+    much-revised finding reports more work than exists, and paging walks the same finding repeatedly.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    finding = _finding(session, revision, _snapshot(session), Outcome.FAIL)
+    for minute, verb in enumerate(("confirm", "dismiss", "confirm")):
+        _session_and_action(session, revision, finding, verb, at=EPOCH + timedelta(minutes=minute))
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert len(body["items"]) == 1
+    assert body["items"][0]["reviewer_action"]["action"] == "confirm"

@@ -111,6 +111,11 @@ export interface Finding {
   arch_evidence?: Evidence | null;
   shop_evidence?: Evidence | null;
   reviewer_action: ReviewerAction | null;
+
+  /** Who last acted, when somebody has. Not always the person looking at the screen: a finding's
+   *  disposition belongs to the package, so a colleague's decision shows with their name rather than
+   *  as untouched work inviting a second opinion recorded as a first. */
+  reviewed_by?: string | null;
 }
 
 /** One turn in the review thread. */

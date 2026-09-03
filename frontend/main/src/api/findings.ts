@@ -9,7 +9,7 @@
 
 import { getFindingChain, listFindings } from './client';
 import { formatExact } from './fractions';
-import type { Finding, Outcome, Severity, Trace } from '../data/types';
+import type { Finding, Outcome, ReviewerAction, Severity, Trace } from '../data/types';
 
 type Listed = Awaited<ReturnType<typeof listFindings>>['items'][number];
 type Chain = Awaited<ReturnType<typeof getFindingChain>>;
@@ -29,7 +29,12 @@ export function toFinding(listed: Listed): Finding {
     name: listed.rule_id,
     outcome: listed.outcome as Outcome,
     severity: listed.severity as Severity,
-    reviewer_action: null,
+    // Read back from the server rather than reset to null on every load. This was `null`
+    // unconditionally, so a reviewer who refreshed saw their own decisions vanish from the screen
+    // while the ledger still held them — and could record the same one twice, because the first was
+    // invisible. The two disagreeing was worse than either being empty.
+    reviewer_action: (listed.reviewer_action?.action ?? null) as ReviewerAction | null,
+    reviewed_by: listed.reviewer_action?.actor ?? null,
   };
 }
 
