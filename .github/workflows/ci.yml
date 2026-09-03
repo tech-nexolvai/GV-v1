@@ -12,8 +12,10 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
-# A newer push to the same branch cancels the older run — keeps Actions minutes
-# down, which matters because this is a private repo billing against a quota.
+# A newer push to the same branch cancels the older run. The reason recorded here used to be a
+# private-repo minutes quota; that was simply wrong — `gh repo view` reports `visibility=PUBLIC`, and
+# public repositories do not bill Actions minutes. Kept anyway, because two runs of the same suite on a
+# superseded commit tell nobody anything, and the second one to finish overwrites the first's answer.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -24,9 +26,10 @@ permissions:
 jobs:
   quality:
     name: lint, types, tests
-    # Not on the weekly schedule. That cron exists for the one network check below, and this file
-    # already notes that Actions minutes bill against a private-repo quota — so the schedule buys the
-    # drift check, not a second full run of everything.
+    # Not on the weekly schedule. That cron exists for the one network check below, so the schedule
+    # buys the drift check and not a second full run of everything. (This used to justify itself with a
+    # private-repo minutes quota, which does not exist — the repository is public. The narrower reason
+    # holds on its own: a weekly rerun of an unchanged tree answers no question.)
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
