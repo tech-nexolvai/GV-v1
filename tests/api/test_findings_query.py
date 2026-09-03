@@ -970,3 +970,60 @@ def test_the_action_does_not_multiply_the_findings(session: Session) -> None:
 
     assert len(body["items"]) == 1
     assert body["items"][0]["reviewer_action"]["action"] == "confirm"
+
+
+# ---------------------------------------------------------------------------
+# Superseded runs (#477)
+# ---------------------------------------------------------------------------
+
+
+def test_a_superseded_run_disappears_from_the_list(session: Session) -> None:
+    """**The reviewer must see one answer per check, and the endpoint is where that is decided.**
+
+    Findings are immutable, so re-running the checks adds a second set rather than replacing the
+    first. Both stay in the table — that is the audit trail — but a list showing both would put a
+    PASS and a FAIL for the same check in front of a reviewer with equal standing.
+
+    Asserted through the endpoint rather than against a hand-written query. A test that did its own
+    join would pass while the endpoint returned everything, which is exactly what happened: the first
+    version of this change was mutation-tested by deleting the filter from `_base_query`, and every
+    test still passed because they all filtered for themselves.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+
+    stale = _finding(session, revision, snapshot, Outcome.PASS)
+    session.get(CheckRun, stale.check_run_id).superseded_at = datetime(2026, 9, 1, tzinfo=UTC)
+    _finding(session, revision, snapshot, Outcome.FAIL)
+    session.flush()
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert _outcomes(body) == [
+        "FAIL"
+    ], "the superseded PASS is still listed; a reviewer would see two answers for one check"
+
+
+def test_the_summary_counts_only_live_findings(session: Session) -> None:
+    """The counts feed the packages table and the usage page. Counting superseded runs would report
+    twice the work and inflate the failure count on every re-run."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+
+    stale = _finding(session, revision, snapshot, Outcome.FAIL)
+    session.get(CheckRun, stale.check_run_id).superseded_at = datetime(2026, 9, 1, tzinfo=UTC)
+    _finding(session, revision, snapshot, Outcome.PASS)
+    session.flush()
+
+    client = _client(session, PROJECT_A)
+    response = client.get(f"{_url(PROJECT_A, package.id)}/summary")
+
+    assert response.status_code == 200, response.text
+    counts = response.json()
+    assert counts["total"] == 1
+    assert counts["failed"] == 0
+    assert counts["passed"] == 1

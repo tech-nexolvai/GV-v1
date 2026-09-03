@@ -280,7 +280,18 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
         # Both halves matter. The package pins the resource; the project is the isolation boundary,
         # and leaving it to the dependency alone would mean a package id from another project reached
         # the database with nothing but a membership claim standing between them.
-        .where(Package.project_id == project_id, Package.id == package_id)
+        #
+        # **Live runs only.** A re-run writes new findings and never edits the old ones (#199), so
+        # without this a reviewer sees two copies of every check. They would usually agree, which is
+        # the dangerous part — it reads as duplication rather than ambiguity, until the run where a
+        # rulebook fix changed a verdict and the screen shows a PASS and a FAIL for the same check
+        # with equal standing. Applied here rather than in each endpoint so the list, the summary and
+        # the export cannot disagree about which run is current.
+        .where(
+            Package.project_id == project_id,
+            Package.id == package_id,
+            CheckRun.superseded_at.is_(None),
+        )
     )
 
 
