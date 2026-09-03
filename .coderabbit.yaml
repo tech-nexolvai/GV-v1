@@ -47,7 +47,19 @@ reviews:
   commit_status: false
 
   auto_review:
-    enabled: true
+    # Off, because the plan does not provide it and saying `true` only records a belief. This repository
+    # is public (`gh repo view` reports `visibility=PUBLIC`), which puts CodeRabbit on the free
+    # open-source plan, where a review has to be asked for — its own status on #484 said "manual review
+    # required for this OSS repository". So `true` here never once caused a review.
+    #
+    # That is the third setting in this one file to be present, believed and inert, after the over-cap
+    # `tone_instructions` and the commit-status mirror in #485. The review this plan *does* give is
+    # requested by `.github/workflows/ci.yml`, on `opened` and `ready_for_review` only, because the
+    # manual quota is finite and a request per push would spend it.
+    #
+    # Turning this back on is only meaningful together with a plan that honours it, which is why a test
+    # asserts it rather than leaving it to whoever reads the file next.
+    enabled: false
     drafts: false
 
   path_filters:

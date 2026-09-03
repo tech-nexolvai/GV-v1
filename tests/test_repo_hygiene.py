@@ -350,6 +350,27 @@ def test_the_coderabbit_config_is_actually_used() -> None:
         "skip as a green `CodeRabbit` tick in the checks list — a control that looks like it ran."
     )
 
+    # **No claim of automatic review, because the plan declines it.** This repository is public, which
+    # puts CodeRabbit on the free open-source plan, where a review is requested rather than automatic —
+    # its status on #484 read "manual review required for this OSS repository". `enabled: true` was
+    # therefore a setting that had never once caused a review, and the cost was #487: five findings
+    # arrived on a requested review and were merged over, because nothing in the process expected a
+    # review to appear at all.
+    #
+    # `is False` for the same reason as `commit_status` above — the default is `true` and an absent key
+    # reads as "nobody chose". Flipping it back is only meaningful alongside a plan that honours it.
+    auto_review = reviews.get("auto_review")
+    assert isinstance(auto_review, dict), (
+        "the config has no `reviews.auto_review:` section, so the setting defaults to on and the file "
+        "implies an automatic review that this plan does not perform"
+    )
+    assert auto_review.get("enabled") is False, (
+        "reviews.auto_review.enabled is not explicitly false. On this plan CodeRabbit does not review "
+        "automatically, so `true` records a belief rather than a behaviour — and a PR nobody requests "
+        "a review for is then indistinguishable from one that passed review. The request is sent by "
+        "the `request review` job in .github/workflows/ci.yml."
+    )
+
     # `**` carries the project-wide safety framing that used to live in `tone_instructions`. Asserted by
     # concept rather than by exact prose, so the wording can be improved but not quietly dropped.
     assert "false-PASS" in entries["**"], (
