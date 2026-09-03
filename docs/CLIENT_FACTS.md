@@ -148,7 +148,8 @@ source:  Raj 2nd email reply (follow-up 3): "Same logic applies. First the diffe
          width as 1" and create a mutable variable which can be adjusted later. If the difference
          cannot be squeezed, then the cabinet widths has to be reduced because the width of the site
          is less than the architectural drawing." Raj offered to add an illustration if the flow is
-         unclear.
+         unclear. Cabinet deck (2026-09-04) formalizes this as Scenario 1 with named variables and a
+         worked example (90"→82"); see docs/decisions/CAB_CHECKS_FORMAT.md.
 
 ## Q9 — How are non-adjustable cabinets identified on a drawing?
 status:  ANSWERED
@@ -161,6 +162,10 @@ source:  Raj email reply (3.1): "Program should give flexibility through UI / UX
          reviewer to decide which cabinet should be adjusted… some cabinets must not deviate from
          the designer's original dimensions. For instance, if the microwave cabinet width is
          adjusted… microwave might not fit." So identification is reviewer-driven, not automated.
+         Cabinet deck (2026-09-04) confirms this in Raj's own terms: only CAB_REGULAR is resized,
+         never CAB_EQUIP, honoring per-type single/double/drawer width bounds. Still open there: how
+         the type and the equipment cabinet are identified (drawing tag vs reviewer input) — an ask
+         sent back 2026-09-04. See docs/decisions/CAB_CHECKS_FORMAT.md.
 
 ## Q10 — "U.N.O." (unless-otherwise-noted) override handling
 status:  ANSWERED
@@ -300,7 +305,11 @@ source:  Sheet1 rules use letters (A cutout width, B front offset, C back offset
          vocabulary yet. Please use these for the demo, because final tags will be given once we
          finalize all the possible layouts." So final tags are explicitly deferred and gated on the
          layouts — keep semantic_types provisional; do not author final rules against these names.
-         The A–G ↔ CT0xx letter mapping remains our inference, unconfirmed by Raj.
+         The A–G ↔ CT0xx letter mapping remains our inference, unconfirmed by Raj. Cabinet deck
+         (2026-09-04): for CABINETS Raj now supplies a clean named vocabulary (W2W_DIM_ARCH/SITE,
+         FILLER_WIDTH_MIN/MAX, CAB_REGULAR/CAB_EQUIP, per-type cabinet bounds) that supersedes the
+         letters — see docs/decisions/CAB_CHECKS_FORMAT.md. This stays OPEN because the COUNTERTOP
+         final tags are still deferred until the countertop deck + finalized layouts arrive.
 
 ## Q21 — Calculate or check: does the system derive filler/cabinet sizes or only verify them?
 status:  ANSWERED
@@ -320,7 +329,12 @@ source:  Raj email reply (3.1), full 3-step procedure, plus the 2nd reply follow
          Call 2026-08-25 (per the meeting summary, NOT in the transcript segment on hand): max filler
          3–4", 6" reads as a panel — so treat the 2" email figure as a typical, not the ceiling, and
          reconcile the MAX default with Raj. Materially larger than a pass/fail checker: an
-         interactive filler-then-cabinet distribution with reviewer choice.
+         interactive filler-then-cabinet distribution with reviewer choice. Cabinet deck (2026-09-04)
+         writes this logic out in Raj's own vocabulary — FILLER_WIDTH_MIN/MAX as named variables,
+         fillers-first then CAB_REGULAR (never CAB_EQUIP), per-type cabinet bounds — with two worked
+         examples now captured as distribution test cases (docs/decisions/CAB_CHECKS_FORMAT.md). The
+         MAX-default flag stands: the deck's examples use MIN 2"/MAX 3" as illustrative values, so the
+         committed defaults are one of the four asks sent back 2026-09-04.
 
 <!-- CLIENT FACTS END -->
 
