@@ -28,22 +28,41 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.documents import storage_key
 from app.db.base import utc_now
+from app.evidence.record import open_extraction_run, persist_manifest, record_candidates
+from app.models.document import DocumentVersion, PackageRevisionDocument
 from app.models.package import Package, PackageRevision
 from app.models.parameters import declared_defaults, load_parameter_sets
+from app.models.runs import ExtractionRun, TaskRun
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
+from extraction.manifest import build_manifest
+from extraction.reader import UnreadablePdf, read_page_contents, read_pages
 from rules.applicability import Abstention, CheckContext, resolve
 from rules.parameters import ParameterSet, resolve_all
 from rules.project import ProjectScope
 from rules.semantic_types import ProductType
 from rules.snapshot import RuleSnapshot
+from storage.store import ArtifactStore
 from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operations import register_all
+from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION, PageResult
+
+#: What produced these readings, recorded on the extraction run so a candidate can say what read it.
+EXTRACTOR = "pdfplumber"
+EXTRACTOR_VERSION = "extraction.reader/1"
+
+#: One character is enough to call a page text-bearing. `build_manifest` requires the threshold from
+#: its caller and gives it no default, because "enough text to be worth reading" is a judgement about
+#: real drawings. One is the only value that is not a guess: it separates a page with text from a page
+#: with none, which is the distinction the reader already reports.
+MINIMUM_VECTOR_CHARACTERS = 1
 
 __all__ = ["DatabaseStages"]
 
@@ -56,6 +75,23 @@ class DatabaseStages:
     fall-through produced — so every unimplemented stage is written out, and adding a seventh stage to
     the protocol will fail loudly here instead of being silently answered.
     """
+
+    def __init__(
+        self,
+        store: ArtifactStore | None = None,
+        *,
+        dpi: int = 150,
+    ) -> None:
+        """`store` is optional because nothing builds one for a worker yet.
+
+        The artifact store lives on `app.state` in the API and is constructed by
+        `scripts/dev_server.py`; no settings-driven factory exists. Rather than invent one here,
+        `extract_pages` reports that it has no store and does nothing — which is a fact a caller can
+        act on, where a crash on a missing dependency would look like a broken document.
+
+        """
+        self._store = store
+        self._dpi = dpi
 
     def _not_built(self, stage: str) -> Mapping[str, object]:
         """The same answer `NoStages` gives, for the stages that are still not built.
@@ -70,8 +106,88 @@ class DatabaseStages:
         return self._not_built("ingest")
 
     def extract_pages(self, session: Session, package_revision_id: UUID) -> Sequence[PageResult]:
-        del session, package_revision_id
-        return ()
+        """Read every document attached to this revision, and write down what was on its pages.
+
+        Persists three things nothing has ever written: the page manifest, an extraction run, and the
+        observation candidates themselves. All three go through the session inside the stage, because
+        `run_stage` discards what a stage returns — the payload is for the record, not the work.
+
+        **The candidates carry no semantic type**, and that is the state rather than a shortfall:
+        nothing in the system assigns one, and normalisation refuses to infer one from position.
+        """
+        if self._store is None:
+            return ()
+
+        documents = _documents_for(session, package_revision_id)
+        if not documents:
+            return ()
+
+        task_run = _task_run_for(session, package_revision_id, "extract_pages")
+        if task_run is None:
+            # The stage is always called through `run_stage`, which claims a task run first. Reached
+            # only when something called this directly, and a candidate with no run could not say
+            # what read it.
+            return ()
+
+        run = open_extraction_run(
+            session,
+            task_run_id=task_run.id,
+            extractor=EXTRACTOR,
+            extractor_version=EXTRACTOR_VERSION,
+            config_hash=f"dpi={self._dpi}",
+        )
+
+        results: list[PageResult] = []
+        for version, key in documents:
+            data = _fetch(self._store, key)
+            if data is None:
+                continue
+            results.extend(self._read_document(session, version_id=version, data=data, run=run))
+        return tuple(results)
+
+    def _read_document(
+        self, session: Session, *, version_id: UUID, data: bytes, run: ExtractionRun
+    ) -> list[PageResult]:
+        """One document: its manifest, then its text, page by page."""
+        try:
+            raw_pages = read_pages(data)
+        except UnreadablePdf:
+            # A document that will not parse is not a document with no dimensions. Skipped here and
+            # visible as a version with no pages, rather than one whose pages all read empty.
+            return []
+
+        manifest = build_manifest(
+            raw_pages, version_id, minimum_vector_characters=MINIMUM_VECTOR_CHARACTERS
+        )
+        pages = persist_manifest(session, manifest)
+
+        results: list[PageResult] = []
+        for page in pages:
+            written = 0
+            if page.has_vector_text:
+                try:
+                    contents = read_page_contents(
+                        data, page.index, document_version_id=version_id, dpi=self._dpi
+                    )
+                except UnreadablePdf:
+                    contents = None
+                if contents is not None:
+                    written = len(
+                        record_candidates(
+                            session,
+                            contents.texts,
+                            document_version_id=version_id,
+                            page_id=page.id,
+                            extraction_run_id=run.id,
+                        )
+                    )
+            results.append(
+                PageResult(
+                    index=page.index,
+                    payload={"candidates": written, "has_vector_text": page.has_vector_text},
+                )
+            )
+        return results
 
     def match(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
         del session, package_revision_id
@@ -260,3 +376,63 @@ def _declared_inputs(rule: object) -> dict[str, str]:
     """
     inputs = getattr(rule, "inputs", {})
     return {name: getattr(selector, "source", "?") for name, selector in inputs.items()}
+
+
+def _documents_for(session: Session, package_revision_id: UUID) -> list[tuple[UUID, str]]:
+    """Every document version attached to this revision, with the key its bytes live under.
+
+    Read through `package_revision_documents` rather than from `documents`, because a document
+    belongs to a *package* while a revision is composed of specific *versions* — going the short way
+    would read whatever version is newest rather than the one this revision was built from, and a
+    review would then be of drawings nobody submitted.
+
+    The storage key is derived rather than stored: `app/api/documents.py` builds it from the document
+    id and the content hash, and it is recomputed the same way here. Deriving it in two places is
+    worth naming as a smell — change that scheme and this breaks — but the alternative is a column
+    that does not exist, and adding one is a migration this change should not carry.
+    """
+    rows = session.execute(
+        select(
+            PackageRevisionDocument.document_version_id,
+            PackageRevisionDocument.document_id,
+            DocumentVersion.sha256,
+        )
+        .join(
+            DocumentVersion,
+            DocumentVersion.id == PackageRevisionDocument.document_version_id,
+        )
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .order_by(DocumentVersion.created_at)
+    ).all()
+    return [(version_id, storage_key(document_id, sha)) for version_id, document_id, sha in rows]
+
+
+def _task_run_for(session: Session, package_revision_id: UUID, stage: str) -> TaskRun | None:
+    """The task run `run_stage` claimed for this stage.
+
+    Looked up by recomputing the key rather than taken as an argument, because `run_stage` holds the
+    `Claim` and does not hand it to the stage body. Widening the `Stages` protocol for one caller
+    would change a seam five other implementations already satisfy; recomputing a deterministic key
+    does not.
+    """
+    key = stage_idempotency_key(
+        package_revision_id=package_revision_id, stage=stage, engine_version=ENGINE_VERSION
+    )
+    return session.execute(
+        select(TaskRun).where(TaskRun.idempotency_key == key)
+    ).scalar_one_or_none()
+
+
+def _fetch(store: ArtifactStore, key: str) -> bytes | None:
+    """The stored bytes for one document, or `None` when they cannot be read.
+
+    A missing or corrupt artifact is reported by returning nothing rather than by raising: the stage
+    reads several documents and one unreadable file should not lose the pages of the others. The
+    store verifies its own digest on the way out, so a corrupt object arrives here as an exception
+    rather than as wrong bytes.
+    """
+    try:
+        with store.get(key) as stored:
+            return stored.read()
+    except Exception:  # noqa: BLE001 - any failure to read is the same answer to the caller
+        return None
