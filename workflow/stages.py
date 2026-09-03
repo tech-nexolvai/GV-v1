@@ -28,6 +28,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from uuid import UUID
 
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -38,6 +39,7 @@ from app.models.document import DocumentVersion, PackageRevisionDocument
 from app.models.package import Package, PackageRevision
 from app.models.parameters import declared_defaults, load_parameter_sets
 from app.models.runs import ExtractionRun, TaskRun
+from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
 from extraction.manifest import build_manifest
@@ -139,10 +141,16 @@ class DatabaseStages:
 
         results: list[PageResult] = []
         for version, key in documents:
+            # No `try` around the fetch. An artifact this stage cannot read must fail the stage, not
+            # be skipped — see `_fetch`.
             data = _fetch(self._store, key)
-            if data is None:
-                continue
-            results.extend(self._read_document(session, version_id=version, data=data, run=run))
+            with traced(
+                "extraction.document",
+                document_version_id=str(version),
+                task_run_id=str(task_run.id),
+                extractor_version=EXTRACTOR_VERSION,
+            ):
+                results.extend(self._read_document(session, version_id=version, data=data, run=run))
         return tuple(results)
 
     def _read_document(
@@ -165,22 +173,32 @@ class DatabaseStages:
         for page in pages:
             written = 0
             if page.has_vector_text:
-                try:
-                    contents = read_page_contents(
-                        data, page.index, document_version_id=version_id, dpi=self._dpi
-                    )
-                except UnreadablePdf:
-                    contents = None
-                if contents is not None:
-                    written = len(
-                        record_candidates(
-                            session,
-                            contents.texts,
-                            document_version_id=version_id,
-                            page_id=page.id,
-                            extraction_run_id=run.id,
+                with traced(
+                    "extraction.page",
+                    document_version_id=str(version_id),
+                    page_index=page.index,
+                    extractor_version=EXTRACTOR_VERSION,
+                ) as span:
+                    try:
+                        contents = read_page_contents(
+                            data, page.index, document_version_id=version_id, dpi=self._dpi
                         )
-                    )
+                    except UnreadablePdf:
+                        # One page that will not parse, in a document whose other pages might. The
+                        # count below stays 0 and the span records why, so "read nothing" and "could
+                        # not be read" are not the same entry in a trace.
+                        contents = None
+                        span.set_status(Status(StatusCode.ERROR, "page did not parse"))
+                    if contents is not None:
+                        written = len(
+                            record_candidates(
+                                session,
+                                contents.texts,
+                                document_version_id=version_id,
+                                page_id=page.id,
+                                extraction_run_id=run.id,
+                            )
+                        )
             results.append(
                 PageResult(
                     index=page.index,
@@ -423,16 +441,23 @@ def _task_run_for(session: Session, package_revision_id: UUID, stage: str) -> Ta
     ).scalar_one_or_none()
 
 
-def _fetch(store: ArtifactStore, key: str) -> bytes | None:
-    """The stored bytes for one document, or `None` when they cannot be read.
+def _fetch(store: ArtifactStore, key: str) -> bytes:
+    """The stored bytes for one document. Raises when they cannot be read.
 
-    A missing or corrupt artifact is reported by returning nothing rather than by raising: the stage
-    reads several documents and one unreadable file should not lose the pages of the others. The
-    store verifies its own digest on the way out, so a corrupt object arrives here as an exception
-    rather than as wrong bytes.
+    **This used to catch `Exception` and return `None`, and that was the bug** (found in review on
+    #484, fixed in #487). The caller skipped a document that returned nothing, so a missing artifact,
+    an object whose digest no longer matches, and a document that simply is not attached to the
+    revision all became the same silent outcome: a revision that reported extraction as done, with
+    one of its drawings never read. A package that looks checked while a drawing in it was never
+    opened is the package-level shape of a false PASS.
+
+    The old docstring even said the store "verifies its own digest on the way out, so a corrupt
+    object arrives here as an exception rather than as wrong bytes" — and then discarded that
+    exception. The sentence was true and the code threw the value away.
+
+    So it raises, and the raise is the right mechanism rather than a nuisance: a storage failure is
+    infrastructure, not a fact about the drawing, and `run_stage` rolls the stage back for
+    re-delivery, which is exactly what should happen to a fetch that may well succeed next time.
     """
-    try:
-        with store.get(key) as stored:
-            return stored.read()
-    except Exception:  # noqa: BLE001 - any failure to read is the same answer to the caller
-        return None
+    with store.get(key) as stored:
+        return stored.read()
