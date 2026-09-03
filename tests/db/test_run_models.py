@@ -15,6 +15,9 @@ from alembic import command
 from app.db.base import Base, Immutable
 from app.db.session import session_factory, unit_of_work
 from app.models import (
+    Document,
+    DocumentVersion,
+    ExtractionFailure,
     ExtractionRun,
     ModelInvocation,
     ModelInvocationOutcome,
@@ -22,6 +25,7 @@ from app.models import (
     PackageRevision,
     PackageState,
     Project,
+    SourceArtifact,
     TaskRun,
     WorkflowRun,
 )
@@ -29,7 +33,13 @@ from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
-RUN_TABLES = ("workflow_runs", "task_runs", "extraction_runs", "model_invocations")
+RUN_TABLES = (
+    "workflow_runs",
+    "task_runs",
+    "extraction_runs",
+    "model_invocations",
+    "extraction_failures",
+)
 
 
 @pytest.mark.parametrize("table", RUN_TABLES)
@@ -411,3 +421,121 @@ def test_a_failed_row_survives_the_migration_that_permits_it(postgres_engine: En
     with unit_of_work(factory) as session:
         extraction = _persist_run_chain(session)
         session.add(_invocation(extraction.id, outcome=ModelInvocationOutcome.FAILED))
+
+
+def _persist_document_version(session: Session, package_id: UUID) -> UUID:
+    """A document version to hang an extraction failure off, built the long way the schema requires."""
+    digest = "b" * 64
+    document = Document(package_id=package_id, kind="shop")
+    session.add(document)
+    session.flush()
+    artifact = SourceArtifact(storage_key=f"documents/{document.id}", sha256=digest, size=1024)
+    session.add(artifact)
+    session.flush()
+    version = DocumentVersion(
+        document_id=document.id, source_artifact_id=artifact.id, sha256=digest, page_count=1
+    )
+    session.add(version)
+    session.flush()
+    return version.id
+
+
+def _failure(extraction: ExtractionRun, version_id: UUID, **changes: object) -> ExtractionFailure:
+    values: dict[str, object] = {
+        "extraction_run_id": extraction.id,
+        "document_version_id": version_id,
+        "page_index": None,
+        "reason": "document_unreadable",
+        "error_type": "UnreadablePdf",
+    }
+    values.update(changes)
+    return ExtractionFailure(**values)
+
+
+def test_extraction_failures_are_marked_immutable() -> None:
+    """A drawing that could not be read is a fact about the package, not a note to be tidied later.
+
+    A later successful re-read adds rows elsewhere; it does not get to erase the attempt that failed.
+    """
+    assert issubclass(ExtractionFailure, Immutable)
+
+
+def test_a_document_level_failure_may_not_claim_a_page(postgres_engine: Engine) -> None:
+    """`page_index IS NULL` is what *means* "the whole document", so a value there contradicts the reason.
+
+    Enforced in the database rather than in the recorder, because the two states are one nullable
+    column apart: without this, a row saying `document_unreadable` on page 3 stores cleanly and a
+    reader has to guess which half was meant.
+    """
+    Base.metadata.create_all(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        extraction = _persist_run_chain(session)
+        task = session.get(TaskRun, extraction.task_run_id)
+        assert task is not None
+        workflow = session.get(WorkflowRun, task.workflow_run_id)
+        assert workflow is not None
+        revision = session.get(PackageRevision, workflow.package_revision_id)
+        assert revision is not None
+        version_id = _persist_document_version(session, revision.package_id)
+        session.add(_failure(extraction, version_id, reason="document_unreadable", page_index=3))
+        session.flush()
+
+
+def test_a_page_level_failure_must_name_its_page(postgres_engine: Engine) -> None:
+    """The other half of the same constraint, asserted separately because one check can pass while the
+    other does not — and a `page_unreadable` row with no page names a gap nobody can go and look at.
+    """
+    Base.metadata.create_all(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        extraction = _persist_run_chain(session)
+        task = session.get(TaskRun, extraction.task_run_id)
+        assert task is not None
+        workflow = session.get(WorkflowRun, task.workflow_run_id)
+        assert workflow is not None
+        revision = session.get(PackageRevision, workflow.package_revision_id)
+        assert revision is not None
+        version_id = _persist_document_version(session, revision.package_id)
+        session.add(_failure(extraction, version_id, reason="page_unreadable", page_index=None))
+        session.flush()
+
+
+def test_an_unknown_reason_is_refused(postgres_engine: Engine) -> None:
+    """The vocabulary is closed. A reason nothing recognises is a row no reviewer can act on, and it
+    would be discovered by whoever later filtered on the two values that were meant to be exhaustive.
+    """
+    Base.metadata.create_all(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        extraction = _persist_run_chain(session)
+        task = session.get(TaskRun, extraction.task_run_id)
+        assert task is not None
+        workflow = session.get(WorkflowRun, task.workflow_run_id)
+        assert workflow is not None
+        revision = session.get(PackageRevision, workflow.package_revision_id)
+        assert revision is not None
+        version_id = _persist_document_version(session, revision.package_id)
+        session.add(_failure(extraction, version_id, reason="looked_wrong", page_index=None))
+        session.flush()
+
+
+def test_both_valid_shapes_are_accepted(postgres_engine: Engine) -> None:
+    """The positive control. Three constraints that reject everything would pass every test above."""
+    Base.metadata.create_all(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        extraction = _persist_run_chain(session)
+        task = session.get(TaskRun, extraction.task_run_id)
+        assert task is not None
+        workflow = session.get(WorkflowRun, task.workflow_run_id)
+        assert workflow is not None
+        revision = session.get(PackageRevision, workflow.package_revision_id)
+        assert revision is not None
+        version_id = _persist_document_version(session, revision.package_id)
+        session.add(_failure(extraction, version_id, reason="document_unreadable", page_index=None))
+        session.add(_failure(extraction, version_id, reason="page_unreadable", page_index=0))
+        session.flush()
+
+        stored = session.execute(select(ExtractionFailure)).scalars().all()
+        assert sorted(row.reason for row in stored) == ["document_unreadable", "page_unreadable"]

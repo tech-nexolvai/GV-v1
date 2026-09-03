@@ -76,6 +76,7 @@ from app.models.rules import (
 from app.models.runs import (
     AgentNodeInvocationClaim,
     AgentNodeInvocationState,
+    ExtractionFailure,
     ExtractionRun,
     ModelInvocation,
     ModelInvocationOutcome,
@@ -115,6 +116,7 @@ __all__ = [
     "EvidenceCorroborationLane",
     "EvidenceSupportingCandidate",
     "ExceptionScope",
+    "ExtractionFailure",
     "ExtractionRun",
     "Finding",
     "FindingEvidence",

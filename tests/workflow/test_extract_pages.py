@@ -46,8 +46,9 @@ from app.models import (
     Project,
     SourceArtifact,
 )
-from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+from app.models.runs import ExtractionFailure, ExtractionRun, TaskRun, WorkflowRun
 from app.telemetry.tracing import configure_tracing
+from extraction.reader import UnreadablePdf
 from storage.hashing import ArtifactCorrupt
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
@@ -495,8 +496,10 @@ def test_an_unreadable_document_does_not_produce_empty_pages(
 ) -> None:
     """**A document that will not parse is not a document with no dimensions.**
 
-    It is skipped, leaving a version with no pages rather than pages that all read empty — the second
-    would travel downstream as a drawing that showed nothing.
+    No pages are written, because pages that all read empty would travel downstream as a drawing that
+    showed nothing. But the absence is now *recorded* (#491): until then the package reported
+    extraction as complete with a drawing nobody could read in it, and that state was reachable only
+    by noticing a version with no pages — which nothing looks for.
     """
     revision = _revision(session, store, data=b"%PDF-1.4\nthis will not parse\n")
 
@@ -504,6 +507,71 @@ def test_an_unreadable_document_does_not_produce_empty_pages(
 
     assert results == ()
     assert list(session.execute(select(Page)).scalars()) == []
+
+    failure = session.execute(select(ExtractionFailure)).scalars().one()
+    assert failure.reason == "document_unreadable"
+    assert failure.page_index is None, "a document-level failure must not claim a page"
+    assert failure.error_type == "UnreadablePdf"
+    # It belongs to a run, which is what lets a reader say *which* attempt could not read it.
+    assert failure.extraction_run_id == session.execute(select(ExtractionRun.id)).scalar_one()
+
+
+def test_a_page_that_will_not_parse_is_told_apart_from_a_page_with_nothing_on_it(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**Both leave a candidate count of zero, and they do not mean the same thing.**
+
+    A page read successfully with no dimensions on it is an ordinary result. A page that could not be
+    read is a gap in the evidence, and a reviewer deciding whether to open the drawing themselves
+    needs to know which one they are looking at.
+
+    Patched rather than fixtured: a PDF whose manifest builds but whose page text extraction then
+    fails is not something to hand-craft reliably, and the branch under test is the recorder, not
+    pdfplumber's tolerance for damage.
+    """
+
+    def _fails(*args: object, **kwargs: object) -> object:
+        raise UnreadablePdf("page stream is damaged")
+
+    monkeypatch.setattr("workflow.stages.read_page_contents", _fails)
+    revision = _revision(session, store)
+
+    results = DatabaseStages(store).extract_pages(session, revision.id)
+
+    # The page itself is still recorded — the manifest read fine, so the page exists and is known.
+    assert [page.index for page in session.execute(select(Page)).scalars()] == [0]
+    assert [result.payload["candidates"] for result in results] == [0]
+
+    failure = session.execute(select(ExtractionFailure)).scalars().one()
+    assert failure.reason == "page_unreadable"
+    assert failure.page_index == 0, "a page-level failure has to name its page"
+    assert failure.error_type == "UnreadablePdf"
+
+
+def test_the_failure_records_the_error_type_and_not_its_message(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**A parser message can quote the bytes it choked on, and those are the client's drawing.**
+
+    `AGENTS.md` §6 forbids drawing content in a trace, and a table is no better a place for it. So the
+    class name is stored and the message is not — asserted with a message that would be unmistakable
+    if it ever leaked into a column.
+    """
+    secret = "CONFIDENTIAL VENDOR DIMENSION 38 3/4"
+
+    def _fails(*args: object, **kwargs: object) -> object:
+        raise UnreadablePdf(secret)
+
+    monkeypatch.setattr("workflow.stages.read_page_contents", _fails)
+    revision = _revision(session, store)
+    DatabaseStages(store).extract_pages(session, revision.id)
+
+    failure = session.execute(select(ExtractionFailure)).scalars().one()
+    stored = " ".join(
+        str(getattr(failure, column.name)) for column in ExtractionFailure.__table__.columns
+    )
+    assert secret not in stored, "the parser's message reached the database"
+    assert failure.error_type == "UnreadablePdf"
 
 
 def test_the_work_happens_inside_spans_that_name_the_document_and_the_page(
