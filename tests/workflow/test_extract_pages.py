@@ -48,6 +48,8 @@ from app.models import (
 )
 from app.models.runs import ExtractionFailure, ExtractionRun, TaskRun, WorkflowRun
 from app.telemetry.tracing import configure_tracing
+from evidence.coordinates import ImagePoint
+from extraction.ocr import OcrItem
 from extraction.reader import UnreadablePdf
 from storage.hashing import ArtifactCorrupt
 from storage.local import LocalStore
@@ -632,3 +634,123 @@ def test_the_work_happens_inside_spans_that_name_the_document_and_the_page(
     assert (
         parent is not None and parent.span_id == document_context.span_id
     ), "the page span is in the right trace but not under the document span"
+
+
+class _StubOcr:
+    """An OCR engine that returns a fixed reading, so the wiring is tested and no model is loaded."""
+
+    name = "stub-ocr"
+    version = "test/1"
+
+    def __init__(self, items: tuple[OcrItem, ...]) -> None:
+        self._items = items
+
+    def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+        del rgb, width, height
+        return self._items
+
+
+#: A page with a line and no text at all, so `has_vector_text` is false — what a scan looks like to
+#: the vector reader.
+SCANNED = _pdf(b"1 w 20 40 m 120 40 l S\n")
+
+_OCR_CORNERS = (
+    ImagePoint(10, 10),
+    ImagePoint(60, 10),
+    ImagePoint(60, 30),
+    ImagePoint(10, 30),
+)
+
+
+def test_a_page_with_no_vector_text_is_read_by_ocr_instead_of_skipped(
+    session: Session, store: LocalStore
+) -> None:
+    """**The gap this route closes: a scanned page used to produce nothing at all.**
+
+    `has_vector_text` false meant the page loop did no work, so a scanned drawing was
+    indistinguishable from a drawing with nothing on it — and scanned sheets are one of the six
+    things #274 asks the client for.
+    """
+    revision = _revision(session, store, data=SCANNED)
+    engine = _StubOcr(
+        (
+            OcrItem(text="984 mm", confidence=Decimal("0.87"), image_extent=_OCR_CORNERS),
+            OcrItem(text="TITLE", confidence=Decimal("0.91"), image_extent=_OCR_CORNERS),
+        )
+    )
+
+    results = DatabaseStages(store, ocr_engine=engine).extract_pages(session, revision.id)
+
+    assert [result.payload["route"] for result in results] == ["ocr"]
+    assert [result.payload["candidates"] for result in results] == [2]
+
+    candidates = _candidates(session)
+    assert set(candidates) == {"984 mm", "TITLE"}
+
+
+def test_an_ocr_reading_keeps_its_confidence_where_a_vector_one_has_none(
+    session: Session, store: LocalStore
+) -> None:
+    """The two routes differ here on purpose, and the difference is a claim about what is known.
+
+    A deterministic read of a PDF text object is not probabilistic, so the vector route stores
+    `None` rather than `1.0`. An engine really does report how sure it is, so that number is kept —
+    and kept only. Nothing filters or ranks on it.
+    """
+    revision = _revision(session, store, data=SCANNED)
+    engine = _StubOcr(
+        (OcrItem(text="984 mm", confidence=Decimal("0.87"), image_extent=_OCR_CORNERS),)
+    )
+
+    DatabaseStages(store, ocr_engine=engine).extract_pages(session, revision.id)
+
+    row = _candidates(session)["984 mm"]
+    assert row.confidence == Decimal("0.87")
+
+    # And it parsed, because this route hands the parser a whole token with its unit attached — the
+    # thing `extract_words` takes away from the vector route (#483). Stored in inches, exactly:
+    # inches are the authoritative unit (Q12) and 984 mm is 4920/127", a value no float holds.
+    assert row.unit == "in"
+    assert (row.value_numerator, row.value_denominator) == (4920, 127)
+
+
+def test_an_ocr_reading_is_recorded_under_its_own_extraction_run(
+    session: Session, store: LocalStore
+) -> None:
+    """A candidate points at a run to say what read it, so the two routes must not share one.
+
+    Sharing would make a scanned reading and a vector reading indistinguishable in provenance, which
+    is exactly what a reviewer needs to tell apart.
+    """
+    revision = _revision(session, store, data=SCANNED)
+    engine = _StubOcr(
+        (OcrItem(text="984 mm", confidence=Decimal("0.87"), image_extent=_OCR_CORNERS),)
+    )
+
+    DatabaseStages(store, ocr_engine=engine).extract_pages(session, revision.id)
+
+    runs = {run.extractor: run for run in session.execute(select(ExtractionRun)).scalars()}
+    assert "stub-ocr" in runs, f"the OCR reading was filed under {sorted(runs)}"
+    row = _candidates(session)["984 mm"]
+    assert row.extraction_run_id == runs["stub-ocr"].id
+
+
+def test_a_vector_page_never_reaches_the_ocr_route(session: Session, store: LocalStore) -> None:
+    """Fixed extraction first, always (DESIGN_AI §3.1) — and rendering every page would be expensive.
+
+    Asserted with an engine that raises, so a page taking the OCR route by mistake fails loudly
+    rather than producing a second set of rows nobody expected.
+    """
+
+    class _Exploding:
+        name = "never"
+        version = "test/1"
+
+        def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+            raise AssertionError("a page with vector text was sent to OCR")
+
+    revision = _revision(session, store)
+
+    results = DatabaseStages(store, ocr_engine=_Exploding()).extract_pages(session, revision.id)
+
+    assert [result.payload["route"] for result in results] == ["vector"]

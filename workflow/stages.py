@@ -38,10 +38,11 @@ from app.evidence.record import (
     open_extraction_run,
     persist_manifest,
     record_candidates,
+    record_ocr_candidates,
     record_unreadable_document,
     record_unreadable_page,
 )
-from app.models.document import DocumentVersion, PackageRevisionDocument
+from app.models.document import DocumentVersion, PackageRevisionDocument, Page
 from app.models.package import Package, PackageRevision
 from app.models.parameters import declared_defaults, load_parameter_sets
 from app.models.runs import ExtractionRun, TaskRun
@@ -49,6 +50,8 @@ from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
 from extraction.manifest import build_manifest
+from extraction.ocr import OcrEngine, RapidOcrEngine, read_page
+from extraction.rasterise import render_page
 from extraction.reader import UnreadablePdf, read_page_contents, read_pages
 from rules.applicability import Abstention, CheckContext, resolve
 from rules.parameters import ParameterSet, resolve_all
@@ -72,6 +75,13 @@ EXTRACTOR_VERSION = "extraction.reader/1"
 #: with none, which is the distinction the reader already reports.
 MINIMUM_VECTOR_CHARACTERS = 1
 
+#: The pixel ceiling for one rendered page, used only by the OCR route.
+#:
+#: 40 megapixels is roughly an ANSI E sheet at 150 dpi with room to spare, and 120 MB of RGB in one
+#: allocation. Above it `render_page` raises `PageTooLarge` rather than shrinking, because a page
+#: quietly rendered smaller is a page read at a resolution nobody chose.
+MAXIMUM_RENDER_PIXELS = 40_000_000
+
 __all__ = ["DatabaseStages"]
 
 
@@ -89,6 +99,7 @@ class DatabaseStages:
         store: ArtifactStore | None = None,
         *,
         dpi: int = 150,
+        ocr_engine: OcrEngine | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -100,6 +111,9 @@ class DatabaseStages:
         """
         self._store = store
         self._dpi = dpi
+        # Injected so a test can pass a stub: building the real one loads ONNX models, and a suite
+        # that loaded them to test row-writing would be paying for a model it is not testing.
+        self._ocr_engine = ocr_engine
 
     def _not_built(self, stage: str) -> Mapping[str, object]:
         """The same answer `NoStages` gives, for the stages that are still not built.
@@ -186,7 +200,21 @@ class DatabaseStages:
         results: list[PageResult] = []
         for page in pages:
             written = 0
-            if page.has_vector_text:
+            route = "vector"
+            if not page.has_vector_text:
+                # **A scanned page, which the vector reader cannot see at all.** Until this, such a
+                # page produced no candidates and was indistinguishable from a page with nothing on
+                # it. Scanned sheets are one of the six things #274 asks the client for, so this is
+                # not a hypothetical (#499).
+                route = "ocr"
+                written = self._read_page_by_ocr(
+                    session,
+                    version_id=version_id,
+                    data=data,
+                    page=page,
+                    task_run_id=run.task_run_id,
+                )
+            elif page.has_vector_text:
                 with traced(
                     "extraction.page",
                     document_version_id=str(version_id),
@@ -224,10 +252,86 @@ class DatabaseStages:
             results.append(
                 PageResult(
                     index=page.index,
-                    payload={"candidates": written, "has_vector_text": page.has_vector_text},
+                    payload={
+                        "candidates": written,
+                        "has_vector_text": page.has_vector_text,
+                        # Which route read this page. Two readings of the same page by different
+                        # routes are the basis of corroboration, so the route has to be visible.
+                        "route": route,
+                    },
                 )
             )
         return results
+
+    def _read_page_by_ocr(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        task_run_id: UUID,
+    ) -> int:
+        """Render one page and read it with the OCR engine, recording what it found.
+
+        **A separate extraction run, not the vector one.** A candidate points at a run to say what
+        read it, and `open_extraction_run` keys a run on extractor, version and config — so OCR
+        readings land under their own run and a reviewer can tell a scanned reading from a vector one
+        without inspecting the text.
+
+        **The dpi is part of that run's identity**, because it is part of the reading: the same page
+        at 150 and at 300 gives the engine different pixels and can give different text.
+
+        **Refuses rather than skips when the engine is unavailable.** A missing optional dependency is
+        a configuration fact, not a fact about the drawing — the same distinction `_fetch` draws for a
+        storage failure. Skipping would put the pipeline back where it started, reporting a scanned
+        page as read and empty.
+        """
+        engine = self._ocr()
+        rendered = render_page(
+            data,
+            page.index,
+            document_version_id=version_id,
+            page_content_hash=page.content_hash,
+            dpi=self._dpi,
+            # The rasteriser's own ceiling, passed explicitly because it has no default: a page that
+            # would not fit in memory must raise `PageTooLarge` rather than be silently shrunk.
+            maximum_pixels=MAXIMUM_RENDER_PIXELS,
+        )
+        with traced(
+            "extraction.page.ocr",
+            document_version_id=str(version_id),
+            page_index=page.index,
+            extractor_version=engine.version,
+        ):
+            read = read_page(rendered, engine=engine)
+            ocr_run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=engine.name,
+                extractor_version=engine.version,
+                config_hash=f"dpi={self._dpi}",
+            )
+            return len(
+                record_ocr_candidates(
+                    session,
+                    read.items,
+                    document_version_id=version_id,
+                    page_id=page.id,
+                    extraction_run_id=ocr_run.id,
+                )
+            )
+
+    def _ocr(self) -> OcrEngine:
+        """The OCR engine, built once and only when a page actually needs it.
+
+        Constructing `RapidOcrEngine` loads ONNX models, which is slow and pointless for a package of
+        vector drawings. Injected rather than imported at the call site so a test can pass a stub and
+        the suite never loads a model it is not testing.
+        """
+        if self._ocr_engine is None:
+            self._ocr_engine = RapidOcrEngine()
+        return self._ocr_engine
 
     def match(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
         del session, package_revision_id
