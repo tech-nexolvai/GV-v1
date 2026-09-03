@@ -88,12 +88,20 @@ def open_extraction_run(
 
     Reused when one already exists for this task run and extractor, because a stage that is
     redelivered has already claimed its task run and should not accumulate a run per attempt.
+
+    **`config_hash` is part of that identity, and leaving it out was a provenance bug** (found in
+    review on #484, fixed in #487). Without it, a second read of the same task run at a different DPI
+    got the *first* run back: the new candidates carried geometry rendered at the new DPI while the
+    row still recorded the old one, so the stored evidence described a configuration that did not
+    produce it. Nothing downstream could detect that, because both the geometry and the hash are
+    individually well-formed. A different configuration is a different run.
     """
     existing = session.execute(
         select(ExtractionRun).where(
             ExtractionRun.task_run_id == task_run_id,
             ExtractionRun.extractor == extractor,
             ExtractionRun.extractor_version == extractor_version,
+            ExtractionRun.config_hash == config_hash,
         )
     ).scalar_one_or_none()
     if existing is not None:
@@ -131,7 +139,32 @@ def record_candidates(
     first looks necessary, and it is a correction: an earlier version let a caller declare the
     sheet's unit, and recorded `984 mm` as 984 *inches* — 82 feet — because word splitting had
     already separated the `mm`.
+
+    **Writes nothing when this run has already recorded this page.** The table is append-only and a
+    re-read is a new reading, but a *redelivery* is not a re-read — it is the same work arriving
+    twice, and duplicating it makes one dimension look like two.
     """
+    # **A redelivery must not double the rows.** A killed worker is redelivered, reclaims the same
+    # task run, and reuses the same extraction run — and this used to write the page's candidates a
+    # second time. The rows are individually correct, which is what makes it bad: downstream
+    # association cannot tell two identical readings of one dimension from one dimension read twice,
+    # and `38` appears on a drawing more than once for real.
+    #
+    # Keyed on the run and the page rather than on text, because two genuinely distinct text runs with
+    # the same characters are ordinary and must both survive. A re-read under a different
+    # configuration is a *different* `ExtractionRun` now that `config_hash` is part of its identity,
+    # so this suppresses only the repeat of work already recorded. Found in review on #484 (#487).
+    already = list(
+        session.execute(
+            select(ObservationCandidate).where(
+                ObservationCandidate.extraction_run_id == extraction_run_id,
+                ObservationCandidate.page_id == page_id,
+            )
+        ).scalars()
+    )
+    if already:
+        return already
+
     written: list[ObservationCandidate] = []
     for item in texts:
         measurement, flags = _parse(item.text)
