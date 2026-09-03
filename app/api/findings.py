@@ -59,6 +59,7 @@ from app.models import (
     Finding,
     Package,
     PackageRevision,
+    ReviewAction,
     RuleDefinition,
     RuleSnapshot,
 )
@@ -202,6 +203,38 @@ def _strictly_after(keys: Sequence[tuple[Any, Any]]) -> ColumnElement[bool]:
 # ---------------------------------------------------------------------------
 
 
+def _latest_action() -> Any:
+    """The most recent review action per finding, as a joinable subquery.
+
+    **Ranked, not aggregated.** `max(created_at)` would give the time and not the row, and a second
+    join back to fetch the verb reintroduces the tie it was meant to resolve. A window function keeps
+    the whole row that won.
+
+    **The ordering is total on purpose**, `created_at` then `id`. Two actions written in the same
+    microsecond would otherwise tie, and a tie here is a finding that reads `confirm` on one request
+    and `dismiss` on the next — the same reason the findings list orders by `id` last.
+
+    Matched on the revision as well as the finding, mirroring the composite foreign keys on
+    `review_actions`: a finding and an action that disagree about which revision they concern is a
+    row that should never exist, and joining on both means it cannot be resurrected by a join either.
+    """
+    ranked = select(
+        ReviewAction.finding_id,
+        ReviewAction.package_revision_id,
+        ReviewAction.action,
+        ReviewAction.actor,
+        ReviewAction.note,
+        ReviewAction.created_at,
+        func.row_number()
+        .over(
+            partition_by=ReviewAction.finding_id,
+            order_by=(ReviewAction.created_at.desc(), ReviewAction.id.desc()),
+        )
+        .label("rank"),
+    ).subquery()
+    return select(ranked).where(ranked.c.rank == 1).subquery()
+
+
 def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
     """Every finding for one package, with the versions that explain it.
 
@@ -209,6 +242,7 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
     `findings.package_revision_id` are covered by one composite foreign key to `check_runs`, so
     SQLAlchemy cannot work out a single-column join condition for either on its own.
     """
+    latest = _latest_action()
     return (
         select(
             Finding.id,
@@ -226,17 +260,56 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
             RuleSnapshot.check_type,
             RuleSnapshot.product_type,
             RuleDefinition.rule_id,
+            latest.c.action.label("reviewer_action_kind"),
+            latest.c.actor.label("reviewer_action_actor"),
+            latest.c.note.label("reviewer_action_note"),
+            latest.c.created_at.label("reviewer_action_at"),
         )
         .join(PackageRevision, PackageRevision.id == Finding.package_revision_id)
         .join(Package, Package.id == PackageRevision.package_id)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
         .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
         .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+        # Outer, because most findings have no action and an inner join would silently drop every
+        # untouched one — a reviewer would open a package and see only the work already done.
+        .outerjoin(
+            latest,
+            (latest.c.finding_id == Finding.id)
+            & (latest.c.package_revision_id == Finding.package_revision_id),
+        )
         # Both halves matter. The package pins the resource; the project is the isolation boundary,
         # and leaving it to the dependency alone would mean a package id from another project reached
         # the database with nothing but a membership claim standing between them.
         .where(Package.project_id == project_id, Package.id == package_id)
     )
+
+
+def _as_finding(row: Any) -> dict[str, Any]:
+    """One result row as the shape `FindingOut` expects.
+
+    The reviewer action arrives as four flat columns from the outer join and is nested here, because
+    the API's shape should say what it means: an action is one thing that either happened or did not.
+    Four independently-nullable fields would let a caller read an `actor` with no verb and invent a
+    state nobody recorded.
+
+    `_mapping` rather than attribute access: a `Row` is a tuple subclass, and handing one to a model
+    that expects named fields is the sort of thing that works until a library decides to treat the
+    tuple half first.
+    """
+    data = dict(row._mapping)
+    kind = data.pop("reviewer_action_kind", None)
+    actor = data.pop("reviewer_action_actor", None)
+    note = data.pop("reviewer_action_note", None)
+    at = data.pop("reviewer_action_at", None)
+
+    # All-or-nothing. A half-populated action means the join produced something this code did not
+    # anticipate, and inventing a verb for it would put a decision in the record that no reviewer made.
+    data["reviewer_action"] = (
+        None
+        if kind is None or actor is None or at is None
+        else {"action": kind, "actor": actor, "note": note, "at": at}
+    )
+    return data
 
 
 def _package_is_in_project(session: Session, project_id: UUID, package_id: UUID) -> bool:
@@ -346,7 +419,7 @@ def list_findings(
     # `_mapping` rather than attribute access: a `Row` is a tuple subclass, and handing one to a
     # model that expects named fields is the sort of thing that works until a library decides to
     # treat the tuple half first. The mapping is unambiguous.
-    items = [FindingOut.model_validate(dict(row._mapping)) for row in page]
+    items = [FindingOut.model_validate(_as_finding(row)) for row in page]
 
     next_cursor = None
     if len(rows) > limit and items:

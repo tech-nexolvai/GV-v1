@@ -1046,6 +1046,7 @@ export interface components {
             };
             /** Product Type */
             product_type: string;
+            reviewer_action?: components["schemas"]["ReviewerActionOut"] | null;
             /** Revision Number */
             revision_number: number;
             /** Rule Id */
@@ -1412,6 +1413,36 @@ export interface components {
         ReviewSessionPage: {
             /** Items */
             items: components["schemas"]["ReviewSessionOut"][];
+        };
+        /**
+         * ReviewerActionOut
+         * @description What a reviewer last did to a finding, so a reload does not undo their work.
+         *
+         *     **Why this is on the finding rather than fetched per session.** The actions ledger is
+         *     append-only and keyed by session, which is right for the audit trail and wrong for the question
+         *     a review screen asks: *has this finding been dealt with?* Without an answer the workspace showed
+         *     every finding as untouched after a refresh, and a reviewer could — and did, in testing — record
+         *     the same decision twice because the first one was invisible.
+         *
+         *     **It is the latest action by anyone, not by the caller.** A finding's disposition is a property
+         *     of the package, not of whoever is looking: if a colleague confirmed it an hour ago, showing it as
+         *     outstanding would invite a second opinion recorded as a first. `actor` says who, so the screen
+         *     can show that it was somebody else.
+         *
+         *     A changed mind is a later row, never an edit, so "latest" is the whole state. The earlier rows
+         *     remain in the ledger and are what an approval is reconstructed from.
+         */
+        ReviewerActionOut: {
+            action: components["schemas"]["ReviewActionKind"];
+            /** Actor */
+            actor: string;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Note */
+            note?: string | null;
         };
         /**
          * RuleOut

@@ -751,6 +751,16 @@
             "title": "Product Type",
             "type": "string"
           },
+          "reviewer_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewerActionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "revision_number": {
             "title": "Revision Number",
             "type": "integer"
@@ -1354,6 +1364,41 @@
           "items"
         ],
         "title": "ReviewSessionPage",
+        "type": "object"
+      },
+      "ReviewerActionOut": {
+        "description": "What a reviewer last did to a finding, so a reload does not undo their work.\n\n**Why this is on the finding rather than fetched per session.** The actions ledger is\nappend-only and keyed by session, which is right for the audit trail and wrong for the question\na review screen asks: *has this finding been dealt with?* Without an answer the workspace showed\nevery finding as untouched after a refresh, and a reviewer could \u2014 and did, in testing \u2014 record\nthe same decision twice because the first one was invisible.\n\n**It is the latest action by anyone, not by the caller.** A finding's disposition is a property\nof the package, not of whoever is looking: if a colleague confirmed it an hour ago, showing it as\noutstanding would invite a second opinion recorded as a first. `actor` says who, so the screen\ncan show that it was somebody else.\n\nA changed mind is a later row, never an edit, so \"latest\" is the whole state. The earlier rows\nremain in the ledger and are what an approval is reconstructed from.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ReviewActionKind"
+          },
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "action",
+          "actor",
+          "at"
+        ],
+        "title": "ReviewerActionOut",
         "type": "object"
       },
       "RuleOut": {

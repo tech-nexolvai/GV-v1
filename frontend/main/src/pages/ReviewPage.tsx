@@ -293,7 +293,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
               findings.length === 0
                 ? 'There are no findings to sign off on'
                 : needsAction > 0
-                ? `${needsAction} finding${needsAction === 1 ? '' : 's'} still need review`
+                ? needsAction === 1
+                  ? '1 finding still needs review'
+                  : `${needsAction} findings still need review`
                 : session === null
                 ? 'Review a finding first — that is what opens the sitting this signs off'
                 : session.completed_at !== null
