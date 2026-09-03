@@ -49,8 +49,9 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import ColumnElement, Integer, Select, and_, case, func, or_, select
+from sqlalchemy import ColumnElement, Integer, Row, Select, and_, case, func, or_, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
+from sqlalchemy.sql import Subquery
 
 from app.api.dependencies import get_session
 from app.auth import Principal, require_project_access
@@ -203,7 +204,7 @@ def _strictly_after(keys: Sequence[tuple[Any, Any]]) -> ColumnElement[bool]:
 # ---------------------------------------------------------------------------
 
 
-def _latest_action() -> Any:
+def _latest_action() -> Subquery:
     """The most recent review action per finding, as a joinable subquery.
 
     **Ranked, not aggregated.** `max(created_at)` would give the time and not the row, and a second
@@ -295,7 +296,7 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
     )
 
 
-def _as_finding(row: Any) -> dict[str, Any]:
+def _as_finding(row: Row[Any]) -> dict[str, Any]:
     """One result row as the shape `FindingOut` expects.
 
     The reviewer action arrives as four flat columns from the outer join and is nested here, because
