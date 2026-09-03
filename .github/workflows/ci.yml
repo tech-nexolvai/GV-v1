@@ -74,7 +74,10 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[ai,dev,extraction,rules,platform,reports]"
+          # `ocr` is here so the RapidOCR adapter is actually exercised. The engine is injectable
+          # and every wiring test uses a stub, so without the extra the adapter itself would run in
+          # no test anywhere — and a skipped test reads as coverage.
+          pip install -e ".[ai,dev,extraction,ocr,rules,platform,reports]"
 
       # AGENTS.md section 2.8 forbids AGPL. Run it early and on its own so a licence
       # violation is unmistakable in the log rather than buried in the test summary.

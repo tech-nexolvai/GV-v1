@@ -39,6 +39,19 @@ extraction = [
     "opencv-python-headless",
 ]
 
+# B2.4 — the OCR reading route, for pages with no vector text.
+#
+# RapidOCR (Apache-2.0) over the alternatives on two grounds that are about this repository rather
+# than about accuracy. It installs from PyPI with no system binary, so CI needs no extra step and
+# `tests/test_licences.py` can inspect it — Tesseract would have needed a package in the runner,
+# which is a licence-clean dependency the licence test cannot see. And it reuses
+# `opencv-python-headless`, which `extraction` already carries.
+#
+# Optional, because most of this project never renders a page: the engine ships ONNX models and
+# loading them costs seconds. `extraction/ocr.py` raises `OcrUnavailable` with the install command
+# rather than a bare ModuleNotFoundError.
+ocr = ["rapidocr-onnxruntime"]
+
 # Phase 3 — rule authoring: YAML loading. Validation itself is a runtime dependency.
 rules = ["pyyaml"]
 

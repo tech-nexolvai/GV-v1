@@ -40,6 +40,7 @@ from app.models.document import Page
 from app.models.evidence import ObservationCandidate
 from app.models.runs import ExtractionFailure, ExtractionRun
 from extraction.manifest import PageManifest
+from extraction.ocr import OcrItem
 from extraction.reader import TextItem
 from units.imperial import ImperialParseError, parse_imperial
 from units.measurement import Measurement
@@ -51,6 +52,7 @@ __all__ = [
     "open_extraction_run",
     "persist_manifest",
     "record_candidates",
+    "record_ocr_candidates",
     "record_unreadable_document",
     "record_unreadable_page",
 ]
@@ -189,6 +191,69 @@ def record_candidates(
             # A deterministic read of a text object is not a probabilistic one. `None` says there is
             # no confidence to report, where `1.0` would claim a certainty that means nothing here.
             confidence=None,
+            ambiguity_flags=list(flags),
+        )
+        session.add(row)
+        written.append(row)
+
+    session.flush()
+    return written
+
+
+def record_ocr_candidates(
+    session: Session,
+    items: Sequence[OcrItem],
+    *,
+    document_version_id: UUID,
+    page_id: UUID,
+    extraction_run_id: UUID,
+) -> list[ObservationCandidate]:
+    """The same rows, from the other reading route.
+
+    Two differences from the vector route, and both are about honesty rather than convenience.
+
+    **Confidence is stored.** `record_candidates` writes `None`, because a deterministic read of a
+    text object is not a probabilistic one and `1.0` would claim a certainty that means nothing. An
+    OCR engine really does report how sure it is, so the number is kept — and kept only. Nothing
+    filters, ranks or gates on it; a low-confidence reading that were quietly dropped would be
+    indistinguishable from a page with nothing on it, which is the failure this whole route exists to
+    fix.
+
+    **The parsing rule is unchanged.** A token carrying its own unit gets a value and a bare number
+    does not, exactly as for vector text. This route happens to suffer the `984 mm` splitting problem
+    less, because the engine returns a line whole where `extract_words` splits at the space — but that
+    is a property of the engine, not a guarantee, and the rule does not soften for it.
+
+    Idempotent per run and page, for the reason `record_candidates` gives: a redelivery is the same
+    work arriving twice, not a second reading.
+    """
+    already = list(
+        session.execute(
+            select(ObservationCandidate).where(
+                ObservationCandidate.extraction_run_id == extraction_run_id,
+                ObservationCandidate.page_id == page_id,
+            )
+        ).scalars()
+    )
+    if already:
+        return already
+
+    written: list[ObservationCandidate] = []
+    for item in items:
+        measurement, flags = _parse(item.text)
+        row = ObservationCandidate(
+            document_version_id=document_version_id,
+            page_id=page_id,
+            extraction_run_id=extraction_run_id,
+            raw_text=item.text,
+            value_numerator=None if measurement is None else measurement.exact.numerator,
+            value_denominator=None if measurement is None else measurement.exact.denominator,
+            unit=None if measurement is None else measurement.unit.value,
+            unit_guess=None if measurement is None else measurement.unit.value,
+            semantic_guess=None,
+            polygon=[[point.x, point.y] for point in item.image_extent],
+            coordinate_space="image",
+            confidence=item.confidence,
             ambiguity_flags=list(flags),
         )
         session.add(row)
