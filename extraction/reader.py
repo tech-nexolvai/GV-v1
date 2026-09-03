@@ -54,6 +54,7 @@ from pdfplumber.ctm import CTM
 
 from evidence.coordinates import (
     SUPPORTED_ROTATIONS,
+    ImagePoint,
     PageBox,
     PageTransform,
     PdfPoint,
@@ -104,6 +105,16 @@ class TextItem:
 
     text: str
     extent: Polygon
+    """Where it sits, normalised against the visible page. What geometry and evidence work in."""
+
+    image_extent: tuple[ImagePoint, ...]
+    """The same box in integer image pixels, which is what `observation_candidates` stores.
+
+    Carried alongside rather than derived on demand: recovering it from `extent` needs the `dpi`,
+    `media_box` and `crop_box` the transform was built from, and none of those are persisted
+    anywhere. A candidate written without it would have geometry nothing could later place.
+    """
+
     rotation_degrees: int
     upright: bool
 
@@ -298,17 +309,29 @@ def read_page_contents(
     )
 
 
+def _image(x: object, top: object, transform: PageTransform, height: Decimal) -> ImagePoint:
+    """A pdfplumber `(x, top)` as an integer image point.
+
+    pdfplumber measures `top` downward from the top of the page while PDF user space measures upward
+    from the bottom, so the y is flipped against the page height before the transform sees it.
+
+    **Kept rather than discarded, because it cannot be recovered later.** `observation_candidates`
+    stores its polygon in image space, and going back from stored space needs the `dpi`, `media_box`
+    and `crop_box` that this transform was built from — none of which the database holds. An earlier
+    version computed this on the way to stored space and threw it away, which made a persisted
+    candidate's geometry unreconstructable from anything the system had written down.
+    """
+    return transform.to_image(PdfPoint(x=_decimal(x), y=height - _decimal(top)))
+
+
 def _stored(x: object, top: object, transform: PageTransform, height: Decimal) -> StoredPoint:
     """A pdfplumber `(x, top)` as a stored point.
 
-    Two conversions, both easy to get wrong. pdfplumber measures `top` downward from the top of the
-    page while PDF user space measures upward from the bottom, so the y is flipped against the page
-    height. Then stored space is reached through integer image space, because that is the only route
-    `PageTransform` offers — and going through it rather than normalising directly keeps this
-    agreeing with every other consumer of stored coordinates.
+    Reached through integer image space, because that is the only route `PageTransform` offers — and
+    going through it rather than normalising directly keeps this agreeing with every other consumer
+    of stored coordinates.
     """
-    pdf_point = PdfPoint(x=_decimal(x), y=height - _decimal(top))
-    return transform.to_stored(transform.to_image(pdf_point))
+    return transform.to_stored(_image(x, top, transform, height))
 
 
 def _text_item(
@@ -331,12 +354,18 @@ def _text_item(
     chars = word.get("chars") or ()
     rotation = _text_rotation(chars[0]) if chars else 0
 
-    corners = (
-        _stored(word["x0"], word["top"], transform, height),
-        _stored(word["x1"], word["top"], transform, height),
-        _stored(word["x1"], word["bottom"], transform, height),
-        _stored(word["x0"], word["bottom"], transform, height),
+    # One winding, converted twice. The corners are listed in the order
+    # `tests/extraction/geometry/test_text_association.py` uses, so a polygon built here and one
+    # built there wind the same way — an opposite winding is still a valid rectangle and would make
+    # containment tests disagree for reasons nobody would look for.
+    box = (
+        (word["x0"], word["top"]),
+        (word["x1"], word["top"]),
+        (word["x1"], word["bottom"]),
+        (word["x0"], word["bottom"]),
     )
+    corners = tuple(_stored(x, top, transform, height) for x, top in box)
+    image_corners = tuple(_image(x, top, transform, height) for x, top in box)
     try:
         extent = Polygon(
             points=corners,
@@ -350,6 +379,7 @@ def _text_item(
     return TextItem(
         text=text,
         extent=extent,
+        image_extent=image_corners,
         rotation_degrees=rotation,
         upright=bool(word.get("upright", True)),
     )
