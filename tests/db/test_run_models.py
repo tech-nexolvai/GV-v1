@@ -520,6 +520,32 @@ def test_an_unknown_reason_is_refused(postgres_engine: Engine) -> None:
         session.flush()
 
 
+def test_a_negative_page_index_is_refused(postgres_engine: Engine) -> None:
+    """The other side of the boundary, which `page_index=0` does not establish.
+
+    Found in review on #492, and the gap was real: `extraction_failure_page_index` could be deleted
+    outright and the whole suite stayed green. A constraint nothing exercises is a constraint nobody
+    knows works, and this one is the difference between a failure that names a page somebody can open
+    and one that names `-1`.
+
+    Zero is the interesting neighbour and is asserted as *valid* in the test below, so the pair covers
+    both sides of the boundary rather than one convenient side of it.
+    """
+    Base.metadata.create_all(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        extraction = _persist_run_chain(session)
+        task = session.get(TaskRun, extraction.task_run_id)
+        assert task is not None
+        workflow = session.get(WorkflowRun, task.workflow_run_id)
+        assert workflow is not None
+        revision = session.get(PackageRevision, workflow.package_revision_id)
+        assert revision is not None
+        version_id = _persist_document_version(session, revision.package_id)
+        session.add(_failure(extraction, version_id, reason="page_unreadable", page_index=-1))
+        session.flush()
+
+
 def test_both_valid_shapes_are_accepted(postgres_engine: Engine) -> None:
     """The positive control. Three constraints that reject everything would pass every test above."""
     Base.metadata.create_all(postgres_engine)
