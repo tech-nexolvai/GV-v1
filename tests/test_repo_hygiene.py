@@ -367,8 +367,9 @@ def test_the_coderabbit_config_is_actually_used() -> None:
     assert auto_review.get("enabled") is False, (
         "reviews.auto_review.enabled is not explicitly false. On this plan CodeRabbit does not review "
         "automatically, so `true` records a belief rather than a behaviour — and a PR nobody requests "
-        "a review for is then indistinguishable from one that passed review. The request is sent by "
-        "the `request review` job in .github/workflows/ci.yml."
+        "a review for is then indistinguishable from one that passed review. Asking is a manual step, "
+        "because CodeRabbit ignores the command from a bot account; scripts/review_gate.py is what "
+        "refuses a merge when nobody took it."
     )
 
     # `**` carries the project-wide safety framing that used to live in `tone_instructions`. Asserted by

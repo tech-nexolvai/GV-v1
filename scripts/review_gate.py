@@ -6,8 +6,10 @@ merge gate was "CI is green" — and CI cannot see a review. It finishes before 
 knows nothing about it either way. Three defects went onto `main` past a wall of green ticks (#487).
 
 On this plan the review has to be asked for and lands a minute or two after the request, which is the
-window that swallowed it. `.github/workflows/ci.yml` now sends the request; this decides whether the
-answer came back before anything gets merged.
+window that swallowed it. Asking is a manual step — a CI job was tried and removed, because CodeRabbit
+ignores the command from a bot account (#489: it answered a human's request in six seconds and never
+answered the `github-actions[bot]` one at all). This decides whether the answer came back before
+anything gets merged, and it is also what catches the case where nobody asked.
 
 **The head SHA is the whole point.** A review of an earlier commit is not a review of what is about to
 land, and GitHub shows both the same way — a tick beside the PR. So a review is only counted when it

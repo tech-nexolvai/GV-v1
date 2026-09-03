@@ -3,10 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-  # `types` is spelled out because the default set is `opened`, `synchronize` and `reopened` — no
-  # `ready_for_review`, so a PR that starts as a draft would never trigger the review request below.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
   # Weekly, for the one check that needs the network: has CodeRabbit's published config schema moved
   # under us? The offline check keeps passing against the vendored copy, so without this the copy can go
   # stale indefinitely and an upstream constraint change would surface as a collapsed warning in a PR
@@ -268,37 +265,6 @@ jobs:
   # This is a board check, not a code check, so it can fail a pull request that changed nothing. That is
   # the point. The alternative is a sweep somebody remembers to run, and the last one was the first one.
   # ---------------------------------------------------------------------------
-  # ---------------------------------------------------------------------------
-  # The review this plan gives has to be asked for. `reviews.auto_review` is off in
-  # `.coderabbit.yaml` because the free open-source plan declines it — CodeRabbit's status on #484 said
-  # "manual review required for this OSS repository" — so the setting was recording a belief, not a
-  # behaviour. This step is the replacement: the request stops depending on somebody remembering to
-  # type it, which on #484 is the difference between a review and a PR that merely looks reviewed.
-  #
-  # `opened` and `ready_for_review` only. The manual quota is finite and a request per push would spend
-  # it on commits nobody is asking about yet; ask again by hand when a PR changes substantially.
-  # ---------------------------------------------------------------------------
-  review:
-    name: request review
-    if: >-
-      github.event_name == 'pull_request'
-      && (github.event.action == 'opened' || github.event.action == 'ready_for_review')
-      && github.event.pull_request.head.repo.full_name == github.repository
-      && github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      pull-requests: write
-
-    steps:
-      # No checkout: this job posts a comment and reads nothing from the tree. Nothing here should be
-      # able to run repository code, because it holds the one write token in this workflow.
-      - name: Ask CodeRabbit to review
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-        run: gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@coderabbitai review"
-
   board:
     name: board status drift
     if: github.event_name != 'schedule'
