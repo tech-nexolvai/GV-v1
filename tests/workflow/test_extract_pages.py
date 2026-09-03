@@ -16,6 +16,7 @@ import hashlib
 import io
 import tempfile
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import BinaryIO
@@ -66,6 +67,9 @@ DRAWING = _pdf(
     b"1 w 20 40 m 120 40 l S\n"
 )
 SHA = hashlib.sha256(DRAWING).hexdigest()
+
+#: A second sheet, differing in content so its bytes hash differently and it gets its own storage key.
+SECOND_DRAWING = _pdf(b'BT /F1 10 Tf 1 0 0 1 20 70 Tm (24 1/2") Tj ET\n')
 
 
 def _upgrade(engine: Engine) -> None:
@@ -152,6 +156,51 @@ def _revision(session: Session, store: LocalStore, *, data: bytes = DRAWING) -> 
 
     store.put(key, io.BytesIO(data), content_type="application/pdf")
     return revision
+
+
+def _attach_document(
+    session: Session, store: LocalStore, revision: PackageRevision, *, data: bytes, when: datetime
+) -> str:
+    """A second document on an existing revision, and the storage key its bytes live under.
+
+    `when` is passed rather than defaulted because `_documents_for` orders by
+    `DocumentVersion.created_at`, and two rows created in one transaction can share a timestamp. A
+    test that needs the good document read *before* the failing one cannot leave that to chance —
+    if the order flipped, the failure would happen first, nothing would have been written, and the
+    assertions would hold vacuously. Which is the bug this whole file is being corrected for.
+    """
+    digest = hashlib.sha256(data).hexdigest()
+    package_id = session.execute(
+        select(PackageRevision.package_id).where(PackageRevision.id == revision.id)
+    ).scalar_one()
+
+    document = Document(package_id=package_id, kind="shop")
+    session.add(document)
+    session.flush()
+    key = storage_key(document.id, digest)
+    artifact = SourceArtifact(storage_key=key, sha256=digest, size=len(data))
+    session.add(artifact)
+    session.flush()
+    version = DocumentVersion(
+        document_id=document.id,
+        source_artifact_id=artifact.id,
+        sha256=digest,
+        page_count=1,
+        created_at=when,
+    )
+    session.add(version)
+    session.flush()
+    session.add(
+        PackageRevisionDocument(
+            package_revision_id=revision.id,
+            package_id=package_id,
+            document_id=document.id,
+            document_version_id=version.id,
+        )
+    )
+    session.flush()
+    store.put(key, io.BytesIO(data), content_type="application/pdf")
+    return key
 
 
 def _candidates(session: Session) -> dict[str, ObservationCandidate]:
@@ -356,23 +405,39 @@ def test_an_unreadable_artifact_fails_the_stage_rather_than_skipping_the_documen
     what should happen to a fetch that may well succeed next time.
     """
     revision = _revision(session, store)
+    # A *second* document, failing after the first has already been read and written. With one
+    # document the fetch raises before anything is written, so "nothing was recorded" holds however
+    # the stage behaves — a vacuous assertion, and the same defect this file was just corrected for.
+    # Found in review on #490.
+    doomed = _attach_document(
+        session, store, revision, data=SECOND_DRAWING, when=datetime.now(UTC) + timedelta(minutes=1)
+    )
 
-    class _Unreadable(LocalStore):
-        """A store whose object cannot be read — the digest no longer matches what was recorded."""
+    class _OneBadObject(LocalStore):
+        """Readable except for one key, whose stored bytes no longer match the recorded digest."""
 
         def get(self, key: str) -> BinaryIO:
-            raise ArtifactCorrupt(f"artifact key {key!r} failed SHA-256 verification")
-
-    broken = _Unreadable(store.root)
+            if key == doomed:
+                raise ArtifactCorrupt(f"artifact key {key!r} failed SHA-256 verification")
+            return super().get(key)
 
     with pytest.raises(ArtifactCorrupt):
-        DatabaseStages(broken).extract_pages(session, revision.id)
+        DatabaseStages(_OneBadObject(store.root)).extract_pages(session, revision.id)
 
-    # And nothing was recorded as read. The point is not only that it raises: a stage that raised
-    # after writing half a document's candidates would leave evidence attributed to a run that never
-    # finished. `run_stage` owns the transaction, so the rollback is the caller's — this asserts the
-    # stage did not commit its own partial view.
+    # The first document *was* read before the failure — asserted, because if the ordering ever put
+    # the failing document first this test would go quiet rather than fail, and prove nothing again.
+    assert _candidates(
+        session
+    ), "the good document was never read, so the rollback below proves nothing"
+
+    # The partial view exists inside the transaction and does not survive it. That is the real
+    # property, and it is weaker than what this test used to claim: the stage does not commit, so
+    # what protects the database is the caller's transaction, not anything the stage does. `run_stage`
+    # owns it — here the rollback stands in for that owner.
+    session.rollback()
     assert list(session.execute(select(ObservationCandidate)).scalars()) == []
+    assert list(session.execute(select(Page)).scalars()) == []
+    assert list(session.execute(select(ExtractionRun)).scalars()) == []
 
 
 def test_the_page_result_reports_what_was_written(session: Session, store: LocalStore) -> None:
@@ -483,3 +548,19 @@ def test_the_work_happens_inside_spans_that_name_the_document_and_the_page(
     assert isinstance(
         page["page_index"], int
     ), "a page index stringified is not joinable as a number"
+
+    # **One trace, not two.** Names and attributes can both be right on spans that are separately
+    # rooted, and then the page span is not *under* the document span — which is the only thing that
+    # makes either of them useful, since correlation is the whole reason they exist. Found in review
+    # on #490, and it was right: the test passed without this.
+    document_context = spans["extraction.document"].context
+    page_context = spans["extraction.page"].context
+    assert document_context is not None and page_context is not None
+    assert page_context.trace_id == document_context.trace_id, (
+        "the page span started its own trace, so a candidate row cannot be joined to the document "
+        "read that produced it"
+    )
+    parent = spans["extraction.page"].parent
+    assert (
+        parent is not None and parent.span_id == document_context.span_id
+    ), "the page span is in the right trace but not under the document span"
