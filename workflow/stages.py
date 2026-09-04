@@ -61,6 +61,7 @@ from rules.snapshot import RuleSnapshot
 from storage.store import ArtifactStore
 from verdict.engine import execute
 from verdict.finding import Finding
+from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION, PageResult
@@ -100,6 +101,8 @@ class DatabaseStages:
         *,
         dpi: int = 150,
         ocr_engine: OcrEngine | None = None,
+        operands: Mapping[str, Mapping[str, VerdictOperand]] | None = None,
+        discriminators: Mapping[str, str] | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -114,6 +117,22 @@ class DatabaseStages:
         # Injected so a test can pass a stub: building the real one loads ONNX models, and a suite
         # that loaded them to test row-writing would be paying for a model it is not testing.
         self._ocr_engine = ocr_engine
+        # **Supplied operands and discriminators, keyed by rule id.**
+        #
+        # Nothing in the pipeline produces a verdict operand yet: a candidate has no semantic type,
+        # `evidence/gate.py:seal` needs a canonical observation, and nothing mints one. So `run_checks`
+        # executed every rule against `{}` and every rule abstained — correct, and not a demonstration
+        # of anything.
+        #
+        # These let a caller supply what a reviewer would supply. `CLIENT_FACTS` Q7 blesses exactly
+        # that for sink specs: *"the reviewer types the values into input fields for that drawing set"*.
+        # A reviewer's own reading is HUMAN_CONFIRMED, which the evidence gate already treats as
+        # qualified — so this is the sanctioned route with a human at the reading end, not a bypass.
+        #
+        # Empty by default, so the production path is unchanged and still abstains until evidence
+        # exists. Nothing here invents a value: a caller that supplies none gets the old behaviour.
+        self._operands = dict(operands or {})
+        self._discriminators = dict(discriminators or {})
 
     def _not_built(self, stage: str) -> Mapping[str, object]:
         """The same answer `NoStages` gives, for the stages that are still not built.
@@ -415,7 +434,14 @@ class DatabaseStages:
         for product_type in ProductType:
             resolution = resolve(
                 store,
-                CheckContext(product_type=product_type, project=scope, discriminators={}),
+                CheckContext(
+                    product_type=product_type,
+                    project=scope,
+                    # A reviewer stating the wall layout is the same manual input as a reviewer
+                    # typing a dimension. Empty unless supplied, so a rule with a discriminator
+                    # still abstains rather than being resolved to a variant nobody established.
+                    discriminators=self._discriminators,
+                ),
             )
             # **A rule that could not even be attempted becomes a finding too.**
             # The resolver abstains when it cannot establish which variant applies — today that is
@@ -444,12 +470,18 @@ class DatabaseStages:
                 written += 1
 
             for applicable in resolution.applicable:
-                finding = execute(applicable.snapshot, {}, resolved, discriminators={})
+                supplied = self._operands.get(applicable.snapshot.rule.id, {})
+                finding = execute(
+                    applicable.snapshot,
+                    supplied,
+                    resolved,
+                    discriminators=self._discriminators,
+                )
                 record_finding(
                     session,
                     package_revision_id=package_revision_id,
                     finding=finding,
-                    operands={},
+                    operands=supplied,
                     parameter_set_ids={layer.layer.value: layer.set_id for layer in layers},
                     missing=_declared_inputs(applicable.snapshot.rule),
                 )

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import pathlib
 from collections.abc import Iterator
+from fractions import Fraction
 from uuid import UUID, uuid4
 
 import pytest
@@ -24,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 from app.api.finding_chain import classify_trace
+from app.db.base import utc_now
 from app.db.session import session_factory
 from app.models import (
     CheckRun,
@@ -36,12 +38,18 @@ from app.models import (
     RuleSnapshot,
     VerdictInput,
 )
+from app.models.parameters import to_rows
 from app.verdicts.record import EvidenceMissing, record_finding
-from rules.schema import Rule
+from app.verdicts.rulebook import from_row
+from rules.parameters import ParameterLayer, Provenance
+from rules.parameters import ParameterSet as InMemoryParameterSet
+from rules.parameters import ParameterValue as InMemoryParameterValue
+from rules.schema import Quantity, Rule
 from rules.snapshot import publish
 from tests.app.postgres_fixture import alembic_config
-from units.measurement import Unit
+from units.measurement import Measurement, Unit
 from verdict.finding import Finding as DomainFinding
+from verdict.operands import EvidenceStatus, VerdictOperand
 from verdict.outcomes import Outcome, Severity
 from verdict.trace import CalculationTrace
 from workflow.stages import DatabaseStages
@@ -472,3 +480,145 @@ def test_extract_pages_returns_no_pages_rather_than_a_mapping(session: Session) 
     `join_pages` counted a phantom page.
     """
     assert DatabaseStages().extract_pages(session, uuid4()) == ()
+
+
+def _depth_operands(shop_depth: Fraction) -> dict[str, dict[str, VerdictOperand]]:
+    """What a reviewer supplies for `CT-DEPTH-001`: the shop depth they read off the drawing.
+
+    `HUMAN_CONFIRMED` because a person read it. That is one of the two statuses
+    `evidence/gate.py:QUALIFIED_STATUSES` accepts, so this is the sanctioned route with a human at the
+    reading end — not a way around the gate. `CLIENT_FACTS` Q7 blesses it for sink specs in exactly
+    these words: *"the reviewer types the values into input fields for that drawing set"*.
+    """
+    return {
+        "CT-DEPTH-001": {
+            "countertop_depth": VerdictOperand(
+                name="countertop_depth",
+                value=Measurement(shop_depth, Unit.INCH, str(shop_depth)),
+                status=EvidenceStatus.HUMAN_CONFIRMED,
+                source="SHOP",
+                evidence_ref="reviewer:typed",
+            )
+        }
+    }
+
+
+def _project_depth_parameters(session: Session, revision: PackageRevision) -> None:
+    """The project's cabinet depth and overhang, as a reviewer would set them for one job.
+
+    The **project** layer, deliberately: it is the sanctioned place for a per-project answer. A
+    company-layer or rulebook default would make these look like values the client had confirmed, and
+    `CLIENT_FACTS` records no such confirmation.
+    """
+    package = session.get(Package, revision.package_id)
+    assert package is not None
+    now = utc_now()
+    parameters = InMemoryParameterSet(
+        project_id=str(package.project_id),
+        layer=ParameterLayer.PROJECT,
+        version=1,
+        parameters={
+            "cabinet_depth": InMemoryParameterValue(
+                value=Quantity(value=Fraction(24), unit=Unit.INCH),
+                provenance=Provenance.MEASURED,
+                set_by="test reviewer",
+                set_at=now,
+            ),
+            "countertop_overhang": InMemoryParameterValue(
+                value=Quantity(value=Fraction(3, 2), unit=Unit.INCH),
+                provenance=Provenance.MEASURED,
+                set_by="test reviewer",
+                set_at=now,
+            ),
+        },
+    )
+    stored, values = to_rows(parameters)
+    session.add(stored)
+    for value in values:
+        session.add(value)
+    session.flush()
+
+
+def _outcome_for(session: Session, revision: PackageRevision, rule_id: str) -> str | None:
+    """One rule's outcome, joined through `RuleSnapshot.id` — not `snapshot_id`, which is text."""
+    rows = session.execute(
+        select(Finding, RuleSnapshot)
+        .join(CheckRun, CheckRun.id == Finding.check_run_id)
+        .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+        .where(Finding.package_revision_id == revision.id)
+    ).all()
+    for finding, snapshot in rows:
+        if from_row(snapshot).rule.id == rule_id:
+            return str(finding.outcome)
+    return None
+
+
+def test_a_reviewer_supplied_dimension_produces_a_real_pass(session: Session) -> None:
+    """**The whole product, with a person in the reading seat.**
+
+    `24 + 1 1/2 = 25 1/2` from persisted project parameters, compared exactly with what the reviewer
+    typed. Q2 gives no tolerance, so the comparison is `equals` and this is the honest PASS.
+    """
+    revision = _revision(session)
+    _publish_rulebook(session)
+    _project_depth_parameters(session, revision)
+
+    DatabaseStages(operands=_depth_operands(Fraction(51, 2))).run_checks(session, revision.id)
+
+    assert _outcome_for(session, revision, "CT-DEPTH-001") == "PASS"
+
+
+def test_a_quarter_inch_out_is_a_fail_not_a_pass(session: Session) -> None:
+    """The error this system exists to catch: a plausible number, correctly read, that does not add up.
+
+    A quarter inch is far too small to notice by eye on a drawing and far too large to build.
+    """
+    revision = _revision(session)
+    _publish_rulebook(session)
+    _project_depth_parameters(session, revision)
+
+    DatabaseStages(operands=_depth_operands(Fraction(101, 4))).run_checks(session, revision.id)
+
+    assert _outcome_for(session, revision, "CT-DEPTH-001") == "FAIL"
+
+
+def test_supplying_nothing_still_abstains(session: Session) -> None:
+    """The production path is unchanged: no operands supplied, no verdict invented.
+
+    This is what protects the default. A stage that guessed a value to avoid an abstention would be
+    the exact failure the abstention exists to prevent.
+    """
+    revision = _revision(session)
+    _publish_rulebook(session)
+    _project_depth_parameters(session, revision)
+
+    DatabaseStages().run_checks(session, revision.id)
+
+    assert _outcome_for(session, revision, "CT-DEPTH-001") == "NOT_FOUND"
+
+
+def test_a_supplied_discriminator_lets_a_variant_rule_be_attempted(session: Session) -> None:
+    """A reviewer stating the wall layout is the same manual input as typing a dimension.
+
+    Two revisions, not one: `run_checks` supersedes prior runs but every finding it ever wrote stays,
+    so asking one revision for "the outcome of CT-WIDTH-001" after two runs can answer from either.
+    The first version of this test did exactly that and passed with the discriminator ignored — found
+    by mutation.
+
+    `back_only` because that is one of the rule's actual variants. The first version used
+    `wall_to_wall`, which is not, and the rule answered NO_APPLICABLE_RULE — so the test was asserting
+    against a value the rulebook rejects.
+
+    The distinction being pinned: **REVIEW_REQUIRED means nobody could tell which variant applies;
+    NOT_FOUND means the variant is known and its inputs are missing.** Two different jobs for a
+    reviewer, and collapsing them would hide which one is theirs.
+    """
+    without_layout = _revision(session)
+    with_layout = _revision(session)
+    _publish_rulebook(session)
+
+    DatabaseStages().run_checks(session, without_layout.id)
+    DatabaseStages(discriminators={"wall_config": "back_only"}).run_checks(session, with_layout.id)
+
+    assert _outcome_for(session, without_layout, "CT-WIDTH-001") == "REVIEW_REQUIRED"
+    assert _outcome_for(session, with_layout, "CT-WIDTH-001") == "NOT_FOUND"
