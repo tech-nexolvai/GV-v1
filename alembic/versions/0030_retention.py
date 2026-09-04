@@ -1,7 +1,7 @@
 """Retention: what expires, what is held, and the record that something went (#258, F1.7).
 
-Revision ID: 0028_retention
-Revises: 0027_parameter_sets
+Revision ID: 0030_retention
+Revises: 0029_extraction_failures
 
 Client drawings are proprietary and backend §11 requires retention schedules. Two things are needed
 before a policy can run at all: somewhere to record that content is under legal hold, and a way to
@@ -36,8 +36,8 @@ import sqlalchemy as sa
 from alembic import op
 from app.db.roles import ROLE_GRANTS
 
-revision: str = "0028_retention"
-down_revision: str | None = "0027_parameter_sets"
+revision: str = "0030_retention"
+down_revision: str | None = "0029_extraction_failures"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
