@@ -1,0 +1,169 @@
+/*
+ * The measurement form.
+ *
+ * Every colour and space is a token, so both themes follow without a second stylesheet — the design
+ * system defines light and dark by redefining the same names. Hard-coding a hex here would look right
+ * in one theme and wrong in the other, which is the failure the tokens exist to prevent.
+ */
+
+.enter-values {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-5) var(--space-6);
+  background: var(--bg-surface);
+  max-width: 900px;
+}
+
+.enter-values__head h1 {
+  font-family: var(--font-heading);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semi);
+  color: var(--text-primary);
+  letter-spacing: var(--tracking-tight);
+  text-transform: uppercase;
+  margin: 0 0 var(--space-2);
+}
+
+.enter-values__head p,
+.enter-values__hint {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-4);
+  line-height: 1.5;
+}
+
+.enter-values__section {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.enter-values__section h2 {
+  font-family: var(--font-heading);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semi);
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-tight);
+  margin: 0 0 var(--space-2);
+}
+
+.value-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  align-items: center;
+}
+
+.value-input {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.value-input--rule { flex: 0 0 11rem; }
+.value-input--value { flex: 0 0 11rem; }
+.value-input--wide { width: 100%; }
+
+/* A visible ring rather than the browser default, which the token background can swallow. */
+.value-input:focus-visible,
+.value-add:focus-visible,
+.value-remove:focus-visible,
+.value-primary:focus-visible,
+.value-secondary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-primary-border);
+  border-color: var(--color-primary);
+}
+
+.value-input::placeholder {
+  /* `--text-muted` is documented as passing AA on this background; a lighter grey would not. */
+  color: var(--text-muted);
+}
+
+.value-remove,
+.value-add,
+.value-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.value-remove:hover,
+.value-add:hover,
+.value-secondary:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.value-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semi);
+  color: #ffffff;
+  background: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.value-primary:hover { background: var(--color-primary-hover); }
+
+.value-primary:disabled {
+  background: var(--bg-active);
+  border-color: var(--border-default);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.enter-values__actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.enter-values__error {
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--color-primary);
+  border-radius: var(--radius-md);
+}
+
+.enter-values__stored {
+  margin: 0;
+  padding-left: var(--space-5);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.enter-values__note {
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
