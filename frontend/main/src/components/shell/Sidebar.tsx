@@ -1,4 +1,12 @@
-import { Files, BookOpen, BarChart2, MessageSquare, Plus, ChevronRight } from 'lucide-react';
+import {
+  Files,
+  BookOpen,
+  BarChart2,
+  MessageSquare,
+  Plus,
+  ChevronRight,
+  Ruler,
+} from 'lucide-react';
 import { listReviewSessions } from '../../api/client';
 import { projectId } from '../../api/config';
 import { useAsync } from '../../api/useAsync';
@@ -17,6 +25,9 @@ interface SidebarProps {
 const NAV_ITEMS = [
   { id: 'review',    label: 'Review',    icon: MessageSquare },
   { id: 'documents', label: 'Documents', icon: Files },
+  // The reviewer enters the dimensions here. No AI and no drawing is involved — Q7 blesses a person
+  // doing the reading, and the engine decides from what they type.
+  { id: 'measure',   label: 'Measure',   icon: Ruler },
   { id: 'rulebook',  label: 'Rulebook',  icon: BookOpen },
   { id: 'usage',     label: 'Usage',     icon: BarChart2 },
 ];

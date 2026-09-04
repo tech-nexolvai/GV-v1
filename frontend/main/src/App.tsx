@@ -3,6 +3,7 @@ import { AppShell } from './components/shell/AppShell';
 import { ReviewPage } from './pages/ReviewPage';
 import { PackagesPage } from './pages/PackagesPage';
 import { WelcomePage } from './pages/WelcomePage';
+import { EnterValuesPage } from './pages/EnterValuesPage';
 import { RulebookPage } from './pages/RulebookPage';
 import { UsagePage } from './pages/UsagePage';
 import { createPackage } from './api/upload';
@@ -153,6 +154,16 @@ export default function App() {
         />
       )}
 
+      {activePage === 'measure' && (
+        <EnterValuesPage
+          onDone={() => {
+            // Straight to the packages list rather than to a findings view for this
+            // package: the checks are asynchronous, so there may be nothing to show yet,
+            // and a findings page that opened empty would read as a failed run.
+            setActivePage('documents');
+          }}
+        />
+      )}
       {activePage === 'rulebook' && <RulebookPage />}
 
       {activePage === 'usage' && <UsagePage />}

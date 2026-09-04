@@ -150,6 +150,58 @@ async function send<T>(path: string, body: unknown): Promise<T> {
 }
 
 /**
+ * Create a package in this project.
+ *
+ * The server opens revision 1 and its birth event in the same transaction, so a created package is
+ * always something values can be entered against.
+ */
+export function createPackage(projectId: string, vendor: string | null) {
+  type Body =
+    paths['/api/v1/projects/{project_id}/packages']['post']['requestBody']['content']['application/json'];
+  type Created =
+    paths['/api/v1/projects/{project_id}/packages']['post']['responses']['201']['content']['application/json'];
+  return send<Created>(`/projects/${projectId}/packages`, { vendor } satisfies Body);
+}
+
+/**
+ * Store what the reviewer typed.
+ *
+ * **Values go as the strings the person typed** — `25 1/2"`, `984 mm` — and the server parses them
+ * with the same code that reads a drawing. Nothing here converts a number: under exact match (Q2)
+ * there is no tolerance band to absorb a rounding error, and JavaScript has no exact rational, so a
+ * value this file touched arithmetically could already be a different verdict.
+ *
+ * A value with no unit comes back 422. That is deliberate on the server and worth surfacing rather
+ * than smoothing over: `984` with no unit was once stored as 984 inches.
+ */
+export function enterMeasurements(
+  projectId: string,
+  packageId: string,
+  entry: {
+    parameters?: { name: string; value: string }[];
+    measurements?: { rule_id: string; name: string; value: string }[];
+  },
+) {
+  type Stored =
+    paths['/api/v1/projects/{project_id}/packages/{package_id}/measurements']['post']['responses']['201']['content']['application/json'];
+  return send<Stored>(`/projects/${projectId}/packages/${packageId}/measurements`, entry);
+}
+
+/**
+ * Ask for the checks to be run.
+ *
+ * **Returns 202 and an `accepted_id`, not a run id.** Nothing has started when this resolves: the
+ * server writes an outbox row, and something outside the API does the work. So a caller must not
+ * treat the response as "the findings are ready" — it means "the request was recorded".
+ */
+export function requestChecks(projectId: string, packageId: string) {
+  return send<{ accepted_id: string; package_revision_id: string }>(
+    `/projects/${projectId}/packages/${packageId}/checks`,
+    {},
+  );
+}
+
+/**
  * The reviewer's own sittings in this project — what the sidebar lists.
  *
  * `mine` defaults to true on the server: a list showing everyone's would bury a reviewer's own on
