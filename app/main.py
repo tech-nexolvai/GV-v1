@@ -136,6 +136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finding_chain,
         finding_export,
         findings,
+        measurements,
         operations,
         packages,
         review,
@@ -144,6 +145,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(packages.router, prefix=API_PREFIX)
     app.include_router(documents.router, prefix=API_PREFIX)
+    # Reviewer-entered values and the request to check them. Ordinary control-plane
+    # writes: it enqueues rather than running anything, because it may not import the
+    # code that does — see the module docstring and tests/api/test_no_heavy_work.py.
+    app.include_router(measurements.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(finding_chain.router, prefix=API_PREFIX)
     # The versioned export downstream consumers read (#224, D1.3). Same prefix as the rest, so the shape a

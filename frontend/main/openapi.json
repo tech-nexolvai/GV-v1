@@ -857,6 +857,38 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "MeasurementEntry": {
+        "additionalProperties": false,
+        "description": "One dimension a reviewer read off a drawing, and which check input it is.\n\n**Keyed by rule and input name rather than by semantic type**, deliberately. The engine looks an\noperand up by the input name the rule declares, and the semantic vocabulary is still provisional\n(`CLIENT_FACTS` Q20) \u2014 so keying on a tag nobody has settled would bake a guess into the wire\nformat. This asks for what the rulebook already names.",
+        "properties": {
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "rule_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "value": {
+            "description": "The value as typed, with its unit.",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "name",
+          "value"
+        ],
+        "title": "MeasurementEntry",
+        "type": "object"
+      },
       "OpaqueTraceOut": {
         "description": "A trace this API does not recognise, handed over intact.\n\n**Not an error and not a silent empty object.** A recompute is compared against what the engine\nrecorded, so dropping a shape nobody has taught this endpoint about would lose the only copy. A\nreader gets the content and is told plainly that it was not understood.",
         "properties": {
@@ -1053,6 +1085,31 @@
           "ordering"
         ],
         "title": "PackagePage",
+        "type": "object"
+      },
+      "ParameterEntry": {
+        "additionalProperties": false,
+        "description": "One project setting a reviewer supplies for this job \u2014 a cabinet depth, an overhang.",
+        "properties": {
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "value": {
+            "description": "The value as typed, carrying its unit: 24\", 610 mm.",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "ParameterEntry",
         "type": "object"
       },
       "PresignedUpload": {
@@ -1401,6 +1458,79 @@
         "title": "ReviewerActionOut",
         "type": "object"
       },
+      "ReviewerEntry": {
+        "additionalProperties": false,
+        "description": "Everything one reviewer submission carries.\n\nBoth halves are optional so a reviewer can set the project's parameters once and then enter\nmeasurements per package without resending them.",
+        "properties": {
+          "measurements": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MeasurementEntry"
+            },
+            "title": "Measurements",
+            "type": "array"
+          },
+          "parameters": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ParameterEntry"
+            },
+            "title": "Parameters",
+            "type": "array"
+          }
+        },
+        "title": "ReviewerEntry",
+        "type": "object"
+      },
+      "ReviewerEntryOut": {
+        "description": "What was stored, echoed back exactly so a client can show what the system understood.\n\nEchoing the parse rather than the input is the point: `25.5\"` and `25 1/2\"` are the same value and\na reviewer should be able to see that the system agrees.",
+        "properties": {
+          "measurement_set_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measurement Set Version"
+          },
+          "measurements": {
+            "items": {
+              "$ref": "#/components/schemas/StoredValue"
+            },
+            "title": "Measurements",
+            "type": "array"
+          },
+          "parameter_set_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parameter Set Version"
+          },
+          "parameters": {
+            "items": {
+              "$ref": "#/components/schemas/StoredValue"
+            },
+            "title": "Parameters",
+            "type": "array"
+          }
+        },
+        "required": [
+          "parameter_set_version",
+          "measurement_set_version",
+          "parameters",
+          "measurements"
+        ],
+        "title": "ReviewerEntryOut",
+        "type": "object"
+      },
       "RuleOut": {
         "additionalProperties": false,
         "description": "One rule, as it stands today: its effective snapshot and whether it could be released.",
@@ -1577,6 +1707,40 @@
         ],
         "title": "Severity",
         "type": "string"
+      },
+      "StoredValue": {
+        "description": "One value as stored: exact, and in inches because inches decide (Q12).",
+        "properties": {
+          "as_typed": {
+            "title": "As Typed",
+            "type": "string"
+          },
+          "denominator": {
+            "title": "Denominator",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "numerator",
+          "denominator",
+          "unit",
+          "as_typed"
+        ],
+        "title": "StoredValue",
+        "type": "object"
       },
       "ToleranceReportOut": {
         "additionalProperties": false,
@@ -2134,6 +2298,64 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/checks": {
+      "post": {
+        "description": "Record the intent to run the checks. Starts nothing, and cannot.\n\n**202, not 200**, and the body carries an `accepted` id rather than a run id. Nothing has started:\n`workflow/outbox.py:enqueue` says the id \"names the enqueued work, not a workflow run\", and\ncalling it a run id here would have a client poll for something that does not exist yet.\n\nThe reason this is not simply `run_checks(...)` is a guard, not a preference.\n`tests/api/test_no_heavy_work.py` walks every import under `app/api/` and refuses any path to\nextraction or rendering \u2014 and `workflow/stages.py` reaches `extraction.reader` since the OCR\nroute landed. So this module may not import the thing that does the work, which is exactly the\nseparation `DESIGN_PLATFORM.md` \u00a74.2 asks for.",
+        "operationId": "request_checks_api_v1_projects__project_id__packages__package_id__checks_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Request Checks Api V1 Projects  Project Id  Packages  Package Id  Checks Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask for the checks to be run against this package",
+        "tags": [
+          "measurements"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/documents": {
       "post": {
         "description": "Create the document's identity and hand back where to send its bytes.\n\n**No file in this request.** Hash your file locally, send the hash, and you get back a URL scoped\nto one storage key, permitting a write and nothing else, expiring at `expires_at`. Send the bytes\nthere with the `method` and `required_headers` exactly as returned, then call `/confirm`.\n\nThe ticket is issued *before* the document row is committed, so a store that cannot issue one\nleaves no half-registered document behind. Nothing is written to storage either \u2014 a ticket is an\nintention, and an intention that is never used leaves nothing to clean up.",
@@ -2535,6 +2757,70 @@
         "summary": "Finding Chain",
         "tags": [
           "findings"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/measurements": {
+      "post": {
+        "description": "Store what the reviewer typed, exactly, and say back what the system understood.\n\nTwo checks for two questions, as `create_package` does: `require_project_access` says the caller\nmay see this project, `require_action` says entering values is something their role may do.\n\nNothing is run here. A submission records values; asking for the checks is a separate call, so a\nreviewer can correct a typo without a verdict being computed from the first attempt.",
+        "operationId": "enter_measurements_api_v1_projects__project_id__packages__package_id__measurements_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewerEntry"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewerEntryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enter reviewer-supplied parameters and measurements",
+        "tags": [
+          "measurements"
         ]
       }
     },
