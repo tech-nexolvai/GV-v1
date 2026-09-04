@@ -312,3 +312,102 @@ def test_the_cap_does_not_refuse_an_ordinary_drawing(
         f"{dev_server.MAX_UPLOAD_BYTES} bytes is outside the range that is both usable for a real "
         "drawing set and small enough to bound a mistake on a laptop"
     )
+
+
+def test_a_database_url_in_dotenv_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**The documented setup must work, and it did not.**
+
+    `.env.example` says to put `GV_DATABASE_URL` in `.env`, `Settings` reads `.env`, and this runner
+    checked `os.environ` directly — so a developer who followed the instructions was told to set
+    something they had already set. Found while trying to run the API for a visual pass over the UI.
+
+    The check now asks `Settings`, which is what the application asks.
+    """
+    monkeypatch.delenv("GV_DATABASE_URL", raising=False)
+
+    assert dev_server._database_url_resolves(), (
+        "the runner does not see the URL that .env supplies, so following .env.example gives you a "
+        "server that refuses to start and blames the setting you just made"
+    )
+
+
+def test_no_database_url_anywhere_is_still_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check has to keep failing when the setting genuinely is absent.
+
+    A check that returned `True` unconditionally would satisfy the test above and let a missing
+    setting arrive as a pydantic traceback, which is what the friendly message exists to replace.
+    """
+    from pydantic import ValidationError
+
+    def _no_settings_anywhere(*args: object, **kwargs: object) -> Settings:
+        raise ValidationError.from_exception_data(
+            "Settings",
+            [{"type": "missing", "loc": ("database_url",), "input": {}}],
+        )
+
+    monkeypatch.setattr("app.config.Settings", _no_settings_anywhere)
+
+    assert not dev_server._database_url_resolves()
+
+
+def test_a_validation_error_about_something_else_is_not_reported_as_a_missing_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another invalid setting must surface as itself, not as "no database URL".
+
+    Reporting every `ValidationError` as a missing database would send somebody to check the one
+    setting that is fine.
+    """
+    from pydantic import ValidationError
+
+    def _other_field_invalid(*args: object, **kwargs: object) -> Settings:
+        raise ValidationError.from_exception_data(
+            "Settings",
+            [{"type": "missing", "loc": ("hatchet_token",), "input": {}}],
+        )
+
+    monkeypatch.setattr("app.config.Settings", _other_field_invalid)
+
+    assert (
+        dev_server._database_url_resolves()
+    ), "an unrelated invalid setting was reported as a missing database URL"
+
+
+def test_main_starts_when_only_dotenv_supplies_the_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**`main()` must use the resolving check, not read the environment itself.**
+
+    Testing the helper alone was not enough: reverting the call site to
+    `os.environ.get("GV_DATABASE_URL")` left every other test in this file passing, because they
+    exercise the helper directly. Found by mutation, which is the only reason this test exists.
+
+    `uvicorn.run` is stubbed because reaching it *is* the assertion — it means the two refusals above
+    it let the process through.
+    """
+    started: list[str] = []
+
+    def _fake_run(app: object, **kwargs: object) -> None:
+        started.append("ran")
+
+    monkeypatch.delenv("GV_DATABASE_URL", raising=False)
+    monkeypatch.setenv("GV_DEV_PRINCIPAL", "test reviewer")
+    monkeypatch.setenv("GV_DEV_PROJECTS", "9cfa4820-ab55-4f06-bb89-15c1c071d8c6")
+    monkeypatch.setattr("uvicorn.run", _fake_run)
+
+    assert dev_server.main() == 0
+    assert started == ["ran"], (
+        "main() refused before starting, so it is not resolving the database URL the way the "
+        "application does"
+    )
+
+
+def test_main_still_refuses_when_the_principal_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other refusal must survive. `GV_DEV_PRINCIPAL` genuinely may only come from the
+    environment — it is not a `Settings` field, and in `.env` it stops the API starting (#504) — so
+    unlike the database URL there is nothing else to consult."""
+    monkeypatch.delenv("GV_DEV_PRINCIPAL", raising=False)
+
+    assert dev_server.main() == 1
