@@ -127,6 +127,27 @@ class ArtifactStore(Protocol):
 
         ...
 
+    def delete(self, key: str) -> bool:
+        """Remove the bytes at ``key``. Returns whether anything was there to remove.
+
+        For retention (`app/retention/policy.py`), which is the only thing that should call it. The
+        bytes expire; the **row** describing them does not — `SourceArtifact` and `EvidenceArtifact`
+        carry `Immutable`, so the record that an artifact existed, and its hash, survive the
+        deletion of its content. A retention policy that erased the record along with the bytes
+        would destroy the audit trail it is supposed to be operating under.
+
+        Returns `False` rather than raising when the key is already gone. Retention is re-run on a
+        schedule and interrupted halfway more often than anyone plans for, so "already deleted" is
+        the ordinary case on the second pass, not an error.
+
+        **`False` means absent, never failed.** A deletion that could not be carried out — a
+        permission error, an unreachable backend, a read-only volume — must raise. Reporting it as
+        `False` would let a retention pass record "already gone" for content that is still there and
+        still billing, and the schedule would report itself satisfied while nothing had expired.
+        """
+
+        ...
+
     def upload_ticket(self, key: str, *, content_type: str, expires_in: timedelta) -> UploadTicket:
         """Issue permission to write ``key`` directly, valid for ``expires_in``.
 
