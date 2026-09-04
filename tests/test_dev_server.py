@@ -314,16 +314,38 @@ def test_the_cap_does_not_refuse_an_ordinary_drawing(
     )
 
 
-def test_a_database_url_in_dotenv_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+def _dotenv_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    url: str = "postgresql+psycopg://x@localhost/x",
+) -> None:
+    """Put the database URL in a `.env` and nowhere else, in a directory of this test's own.
+
+    **Builds its own file rather than leaning on the repository's.** The first version of these tests
+    depended on a real `.env` being present, which is true on the machine that wrote them and false
+    in CI, where the file is gitignored — so they passed locally and failed on the first push. It also
+    made the assertion weaker than it looked: a test that relies on somebody's local file cannot
+    prove `.env` is consulted, only that it happened to be there.
+
+    `Settings` reads `.env` relative to the working directory, so the directory change is what makes
+    the temporary file the one it finds.
+    """
+    monkeypatch.delenv("GV_DATABASE_URL", raising=False)
+    (tmp_path / ".env").write_text(f"GV_DATABASE_URL={url}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+
+def test_a_database_url_in_dotenv_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """**The documented setup must work, and it did not.**
 
     `.env.example` says to put `GV_DATABASE_URL` in `.env`, `Settings` reads `.env`, and this runner
     checked `os.environ` directly — so a developer who followed the instructions was told to set
     something they had already set. Found while trying to run the API for a visual pass over the UI.
-
-    The check now asks `Settings`, which is what the application asks.
     """
-    monkeypatch.delenv("GV_DATABASE_URL", raising=False)
+    _dotenv_only(monkeypatch, tmp_path)
 
     assert dev_server._database_url_resolves(), (
         "the runner does not see the URL that .env supplies, so following .env.example gives you a "
@@ -331,21 +353,19 @@ def test_a_database_url_in_dotenv_is_accepted(monkeypatch: pytest.MonkeyPatch) -
     )
 
 
-def test_no_database_url_anywhere_is_still_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_database_url_anywhere_is_still_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """The check has to keep failing when the setting genuinely is absent.
 
     A check that returned `True` unconditionally would satisfy the test above and let a missing
     setting arrive as a pydantic traceback, which is what the friendly message exists to replace.
+
+    An empty directory rather than a stubbed `Settings`: this is the real resolution failing, which
+    is what a developer with no `.env` actually meets.
     """
-    from pydantic import ValidationError
-
-    def _no_settings_anywhere(*args: object, **kwargs: object) -> Settings:
-        raise ValidationError.from_exception_data(
-            "Settings",
-            [{"type": "missing", "loc": ("database_url",), "input": {}}],
-        )
-
-    monkeypatch.setattr("app.config.Settings", _no_settings_anywhere)
+    monkeypatch.delenv("GV_DATABASE_URL", raising=False)
+    monkeypatch.chdir(tmp_path)
 
     assert not dev_server._database_url_resolves()
 
@@ -374,7 +394,7 @@ def test_a_validation_error_about_something_else_is_not_reported_as_a_missing_da
 
 
 def test_main_starts_when_only_dotenv_supplies_the_database_url(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """**`main()` must use the resolving check, not read the environment itself.**
 
@@ -390,7 +410,7 @@ def test_main_starts_when_only_dotenv_supplies_the_database_url(
     def _fake_run(app: object, **kwargs: object) -> None:
         started.append("ran")
 
-    monkeypatch.delenv("GV_DATABASE_URL", raising=False)
+    _dotenv_only(monkeypatch, tmp_path)
     monkeypatch.setenv("GV_DEV_PRINCIPAL", "test reviewer")
     monkeypatch.setenv("GV_DEV_PROJECTS", "9cfa4820-ab55-4f06-bb89-15c1c071d8c6")
     monkeypatch.setattr("uvicorn.run", _fake_run)
@@ -403,11 +423,12 @@ def test_main_starts_when_only_dotenv_supplies_the_database_url(
 
 
 def test_main_still_refuses_when_the_principal_is_absent(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The other refusal must survive. `GV_DEV_PRINCIPAL` genuinely may only come from the
     environment — it is not a `Settings` field, and in `.env` it stops the API starting (#504) — so
     unlike the database URL there is nothing else to consult."""
+    _dotenv_only(monkeypatch, tmp_path)
     monkeypatch.delenv("GV_DEV_PRINCIPAL", raising=False)
 
     assert dev_server.main() == 1
