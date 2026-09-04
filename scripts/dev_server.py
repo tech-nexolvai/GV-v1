@@ -57,7 +57,6 @@ def build_app() -> FastAPI:
     from app.config import Settings
     from app.main import create_app
     from rules.governance.publish import PublicationLog
-    from rules.snapshot import SnapshotStore
 
     settings = Settings()  # type: ignore[call-arg]
     if settings.environment != DEVELOPMENT:
@@ -80,20 +79,56 @@ def build_app() -> FastAPI:
 
     _mount_upload_shim(app, store)
 
-    # Empty on purpose. The real rulebook is authored and published through D6; an empty one answers
-    # "which rules exist?" with "none", which is true here, rather than with a fixture that would be
-    # mistaken for the client's.
+    # **Read from the database, not left empty.** This was an empty `SnapshotStore`, on the reasoning
+    # that a fixture rulebook would be mistaken for the client's. That reasoning was right and the
+    # implementation did not follow from it: `scripts/run_checks.py --publish` writes the *authored*
+    # rulebook to `rule_snapshots`, and `workflow/stages.py:run_checks` reads it from there — so the
+    # checks ran against eight real rules while the Rulebook page, reading this store, showed none.
+    #
+    # Two sources of truth for "which rules exist", and the page read the one nothing writes. Now both
+    # read the database: published rules appear, and an unpublished database still answers "none",
+    # which is the honest answer this was reaching for.
     setattr(
         app.state,
         RULEBOOK_STATE,
         Rulebook(
-            store=SnapshotStore(),
+            store=_published_rulebook(),
             log=PublicationLog(),
             proposals={},
             regression=_no_gold_set_here,
         ),
     )
     return app
+
+
+def _published_rulebook() -> SnapshotStore:
+    """Every rule the database says is published, or an empty store if it cannot be reached.
+
+    A development server that refused to start because PostgreSQL was down would be a worse tool than
+    one that starts and says no rules are published — and the empty store is exactly what this passed
+    before, so the fallback is the previous behaviour rather than a new guess. The reason is printed,
+    because an empty Rulebook page with no explanation is what sent somebody looking for this bug.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.config import Settings
+    from app.verdicts.rulebook import snapshot_store
+
+    try:
+        engine = create_engine(Settings().database_url)  # type: ignore[call-arg]
+        with Session(engine) as session:
+            store = snapshot_store(session)
+    except Exception as unreachable:  # noqa: BLE001 - any failure is the same answer to the caller
+        print(f"  rulebook: database unreachable ({unreachable.__class__.__name__}); showing none")
+        return SnapshotStore()
+
+    published = len(store.rule_ids())
+    if published == 0:
+        print("  rulebook: nothing published — run `python scripts/run_checks.py <rev> --publish`")
+    else:
+        print(f"  rulebook: {published} published rule(s) from the database")
+    return store
 
 
 def _no_gold_set_here(proposal: object) -> RegressionOutcome:
@@ -127,6 +162,7 @@ def _no_gold_set_here(proposal: object) -> RegressionOutcome:
 from fastapi import FastAPI, HTTPException, Request, status
 
 from rules.governance.publish import RegressionOutcome
+from rules.snapshot import SnapshotStore
 from storage.local import TICKET_PARAMETER, LocalStore
 
 #: The largest body the development shim will take. Drawing sets run to tens of megabytes, so this is
@@ -223,7 +259,10 @@ def main() -> int:
         return 1
 
     port = int(os.environ.get("GV_DEV_PORT", DEFAULT_PORT))
-    print(f"API on http://localhost:{port} — development identity, local storage, empty rulebook.")
+    print(
+        f"API on http://localhost:{port} — development identity, local storage, "
+        "rulebook from the database."
+    )
     uvicorn.run(build_app(), host="127.0.0.1", port=port, log_level="info")
     return 0
 
