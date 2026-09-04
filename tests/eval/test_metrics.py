@@ -123,13 +123,30 @@ def test_an_abstention_on_a_defect_is_not_a_false_pass() -> None:
 def test_no_critical_cases_is_not_measured_rather_than_perfect() -> None:
     """The most important assertion in this file.
 
-    Zero over zero is not a perfect score. Before Q4 (#12) assigns severities this is the state the
-    real gold set will be in, and a `0` here would sail through a `maximum` threshold.
+    Zero over zero is not a perfect score, and a `0` here would sail through a `maximum` threshold —
+    the primary safety metric reading clean because nothing was checked.
     """
     result = critical_false_pass_rate([], [])
     assert result.value is None
     assert not result.measured
-    assert "Q4" in result.note
+
+
+def test_the_note_blames_the_gold_set_and_not_an_unanswered_question() -> None:
+    """**The reason changed, and a stale reason sends somebody to fix the wrong thing.**
+
+    This note used to say the metric was unmeasured because Q4 (#12) was unanswered and no rule
+    declared a severity. Both halves are now false: Q4 was answered on the 2026-08-25 call and the
+    rulebook does declare CRITICAL checks. The denominator is still zero because
+    `eval/gold_set/cases/` is empty (#274).
+
+    The distinction is not pedantic. "Nothing is classified" was ours to fix by classifying;
+    "no gold set" is fixed only by real drawings arriving and being reviewed, and no work in this
+    repository shortens it. A note naming the wrong cause sends the next person to the wrong task.
+    """
+    note = critical_false_pass_rate([], []).note
+
+    assert "Q4" not in note
+    assert "#274" in note
 
 
 # ---------------------------------------------------------------------------

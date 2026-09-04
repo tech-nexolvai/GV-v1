@@ -49,8 +49,9 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import ColumnElement, Integer, Select, and_, case, or_, select
+from sqlalchemy import ColumnElement, Integer, Row, Select, and_, case, func, or_, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
+from sqlalchemy.sql import Subquery
 
 from app.api.dependencies import get_session
 from app.auth import Principal, require_project_access
@@ -59,12 +60,14 @@ from app.models import (
     Finding,
     Package,
     PackageRevision,
+    ReviewAction,
     RuleDefinition,
     RuleSnapshot,
 )
 from app.schemas.findings import (
     OUTCOME_ORDER,
     SEVERITY_ORDER,
+    FindingCounts,
     FindingOut,
     FindingPage,
 )
@@ -201,6 +204,38 @@ def _strictly_after(keys: Sequence[tuple[Any, Any]]) -> ColumnElement[bool]:
 # ---------------------------------------------------------------------------
 
 
+def _latest_action() -> Subquery:
+    """The most recent review action per finding, as a joinable subquery.
+
+    **Ranked, not aggregated.** `max(created_at)` would give the time and not the row, and a second
+    join back to fetch the verb reintroduces the tie it was meant to resolve. A window function keeps
+    the whole row that won.
+
+    **The ordering is total on purpose**, `created_at` then `id`. Two actions written in the same
+    microsecond would otherwise tie, and a tie here is a finding that reads `confirm` on one request
+    and `dismiss` on the next — the same reason the findings list orders by `id` last.
+
+    Matched on the revision as well as the finding, mirroring the composite foreign keys on
+    `review_actions`: a finding and an action that disagree about which revision they concern is a
+    row that should never exist, and joining on both means it cannot be resurrected by a join either.
+    """
+    ranked = select(
+        ReviewAction.finding_id,
+        ReviewAction.package_revision_id,
+        ReviewAction.action,
+        ReviewAction.actor,
+        ReviewAction.note,
+        ReviewAction.created_at,
+        func.row_number()
+        .over(
+            partition_by=ReviewAction.finding_id,
+            order_by=(ReviewAction.created_at.desc(), ReviewAction.id.desc()),
+        )
+        .label("rank"),
+    ).subquery()
+    return select(ranked).where(ranked.c.rank == 1).subquery()
+
+
 def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
     """Every finding for one package, with the versions that explain it.
 
@@ -208,6 +243,7 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
     `findings.package_revision_id` are covered by one composite foreign key to `check_runs`, so
     SQLAlchemy cannot work out a single-column join condition for either on its own.
     """
+    latest = _latest_action()
     return (
         select(
             Finding.id,
@@ -225,17 +261,67 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
             RuleSnapshot.check_type,
             RuleSnapshot.product_type,
             RuleDefinition.rule_id,
+            latest.c.action.label("reviewer_action_kind"),
+            latest.c.actor.label("reviewer_action_actor"),
+            latest.c.note.label("reviewer_action_note"),
+            latest.c.created_at.label("reviewer_action_at"),
         )
         .join(PackageRevision, PackageRevision.id == Finding.package_revision_id)
         .join(Package, Package.id == PackageRevision.package_id)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
         .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
         .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+        # Outer, because most findings have no action and an inner join would silently drop every
+        # untouched one — a reviewer would open a package and see only the work already done.
+        .outerjoin(
+            latest,
+            (latest.c.finding_id == Finding.id)
+            & (latest.c.package_revision_id == Finding.package_revision_id),
+        )
         # Both halves matter. The package pins the resource; the project is the isolation boundary,
         # and leaving it to the dependency alone would mean a package id from another project reached
         # the database with nothing but a membership claim standing between them.
-        .where(Package.project_id == project_id, Package.id == package_id)
+        #
+        # **Live runs only.** A re-run writes new findings and never edits the old ones (#199), so
+        # without this a reviewer sees two copies of every check. They would usually agree, which is
+        # the dangerous part — it reads as duplication rather than ambiguity, until the run where a
+        # rulebook fix changed a verdict and the screen shows a PASS and a FAIL for the same check
+        # with equal standing. Applied here rather than in each endpoint so the list, the summary and
+        # the export cannot disagree about which run is current.
+        .where(
+            Package.project_id == project_id,
+            Package.id == package_id,
+            CheckRun.superseded_at.is_(None),
+        )
     )
+
+
+def _as_finding(row: Row[Any]) -> dict[str, Any]:
+    """One result row as the shape `FindingOut` expects.
+
+    The reviewer action arrives as four flat columns from the outer join and is nested here, because
+    the API's shape should say what it means: an action is one thing that either happened or did not.
+    Four independently-nullable fields would let a caller read an `actor` with no verb and invent a
+    state nobody recorded.
+
+    `_mapping` rather than attribute access: a `Row` is a tuple subclass, and handing one to a model
+    that expects named fields is the sort of thing that works until a library decides to treat the
+    tuple half first.
+    """
+    data = dict(row._mapping)
+    kind = data.pop("reviewer_action_kind", None)
+    actor = data.pop("reviewer_action_actor", None)
+    note = data.pop("reviewer_action_note", None)
+    at = data.pop("reviewer_action_at", None)
+
+    # All-or-nothing. A half-populated action means the join produced something this code did not
+    # anticipate, and inventing a verb for it would put a decision in the record that no reviewer made.
+    data["reviewer_action"] = (
+        None
+        if kind is None or actor is None or at is None
+        else {"action": kind, "actor": actor, "note": note, "at": at}
+    )
+    return data
 
 
 def _package_is_in_project(session: Session, project_id: UUID, package_id: UUID) -> bool:
@@ -345,7 +431,7 @@ def list_findings(
     # `_mapping` rather than attribute access: a `Row` is a tuple subclass, and handing one to a
     # model that expects named fields is the sort of thing that works until a library decides to
     # treat the tuple half first. The mapping is unambiguous.
-    items = [FindingOut.model_validate(dict(row._mapping)) for row in page]
+    items = [FindingOut.model_validate(_as_finding(row)) for row in page]
 
     next_cursor = None
     if len(rows) > limit and items:
@@ -360,3 +446,57 @@ def list_findings(
         )
 
     return FindingPage(items=items, next_cursor=next_cursor, limit=limit)
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/findings/summary",
+    response_model=FindingCounts,
+    summary="How this package's findings break down",
+)
+def summarise_findings(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> FindingCounts:
+    """Counts per outcome for one package, so a list can show them without fetching every finding.
+
+    Built on `_base_query`, so the project boundary is the same one the list endpoint applies rather
+    than a second query that could drift from it — and a package in another project is `404`, not an
+    empty summary, because an empty summary would confirm the package exists.
+
+    **Every outcome is counted and they sum to the total.** Reporting only passes and failures would
+    leave the abstentions uncounted and invite a reader to treat the remainder as passing. Under
+    exact match those abstentions are the expected bulk of a run, not an edge case.
+
+    Counted in the database rather than by paging the findings and adding them up here: the control
+    plane does short work only (`DESIGN_PLATFORM.md` §4.1), and a package with thousands of findings
+    would otherwise turn a summary into the most expensive call in the API.
+    """
+    del principal
+    if not _package_is_in_project(session, project_id, package_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+
+    base = _base_query(project_id, package_id).subquery()
+    rows = session.execute(
+        select(base.c.outcome, base.c.severity, func.count().label("n")).group_by(
+            base.c.outcome, base.c.severity
+        )
+    ).all()
+
+    by_outcome: dict[str, int] = {}
+    critical_failed = 0
+    for outcome, severity, count in rows:
+        by_outcome[str(outcome)] = by_outcome.get(str(outcome), 0) + int(count)
+        if str(outcome) == Outcome.FAIL.value and str(severity) == Severity.CRITICAL.value:
+            critical_failed += int(count)
+
+    return FindingCounts(
+        total=sum(by_outcome.values()),
+        passed=by_outcome.get(Outcome.PASS.value, 0),
+        failed=by_outcome.get(Outcome.FAIL.value, 0),
+        review_required=by_outcome.get(Outcome.REVIEW_REQUIRED.value, 0),
+        not_found=by_outcome.get(Outcome.NOT_FOUND.value, 0),
+        no_applicable_rule=by_outcome.get(Outcome.NO_APPLICABLE_RULE.value, 0),
+        critical_failed=critical_failed,
+    )

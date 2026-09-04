@@ -42,6 +42,13 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
   pikepdf (MPL), PaddleOCR/docTR (Apache), ReportLab (BSD).
 - **Deployment (pilot):** one 8 GB VM, Docker Compose; verdict process isolated even on the shared
   VM. ~Rs 6,000–9,000/month planning budget.
+- **The UI states nothing the backend has not said (#468).** Screens show fetched data or an explicit
+  blank — never an illustrative number. The workspace had been claiming a critical false-PASS rate of
+  0.0%, drawing a fake drawing under a real extraction polygon, and writing its own FAIL verdicts with
+  invented millimetre tolerances. Loading, failure and emptiness are three distinct states: "no
+  findings" on a failed fetch reads as *this drawing is clean*. Where nothing is on the wire the
+  screen says so — including the signed-in reviewer's name, which is shown as a generic label until an
+  identity endpoint exists, having previously displayed the client's name to everyone.
 
 ## OPEN — must-fix / to resolve
 - **Rule engine can't yet express the real first rules.** Typed op set lacks aggregate/variable-input

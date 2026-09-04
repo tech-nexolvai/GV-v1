@@ -10,7 +10,7 @@
 .PHONY: check check-fast db db-stop install up down token migrate serve worker dispatch
 
 install:            ## install exactly what CI installs
-	python -m pip install -e ".[dev,rules,platform]"
+	python -m pip install -e ".[ai,dev,extraction,rules,platform,reports]"
 
 check:              ## the full CI chain, locally
 	python scripts/check.py

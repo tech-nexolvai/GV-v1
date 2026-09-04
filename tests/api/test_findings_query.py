@@ -45,6 +45,8 @@ from app.models import (
     PackageRevision,
     PackageState,
     Project,
+    ReviewAction,
+    ReviewSession,
     RuleDefinition,
     RuleSnapshot,
 )
@@ -727,3 +729,343 @@ def test_the_list_does_not_carry_calculation_traces(session: Session) -> None:
 
     item = _page(_client(session, PROJECT_A), PROJECT_A, package.id)["items"][0]
     assert "trace" not in item
+
+
+# ---------------------------------------------------------------------------
+# The summary — what a package list shows before anyone opens a finding
+# ---------------------------------------------------------------------------
+
+
+def _summary(client: TestClient, project_id: UUID, package_id: UUID) -> dict[str, Any]:
+    response = client.get(f"{_url(project_id, package_id)}/summary")
+    assert response.status_code == 200, response.text
+    return dict(response.json())
+
+
+def test_every_outcome_is_counted_and_they_sum_to_the_total(session: Session) -> None:
+    """**Abstentions are counted, not left as a remainder.**
+
+    A summary reporting only passes and failures would leave `REVIEW_REQUIRED`, `NOT_FOUND` and
+    `NO_APPLICABLE_RULE` in neither column, and a reader would take what is left for passes. Under
+    V1's exact-match rule those abstentions are the expected bulk of a run.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+    for offset, outcome in enumerate(Outcome):
+        _finding(session, revision, snapshot, outcome, created_at=EPOCH + timedelta(minutes=offset))
+
+    body = _summary(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert body["total"] == len(list(Outcome))
+    assert body["passed"] == 1
+    assert body["failed"] == 1
+    assert body["review_required"] == 1
+    assert body["not_found"] == 1
+    assert body["no_applicable_rule"] == 1
+    counted = (
+        body["passed"]
+        + body["failed"]
+        + body["review_required"]
+        + body["not_found"]
+        + body["no_applicable_rule"]
+    )
+    assert (
+        counted == body["total"]
+    ), "the parts do not add up to the whole, so something is uncounted"
+
+
+def test_critical_failures_are_counted_separately(session: Session) -> None:
+    """The primary safety metric counts these, so the reviewer's list leads with them rather than
+    leaving them to be spotted among the rest."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+    _finding(session, revision, snapshot, Outcome.FAIL, Severity.CRITICAL, created_at=EPOCH)
+    _finding(
+        session,
+        revision,
+        snapshot,
+        Outcome.FAIL,
+        Severity.ADVISORY,
+        created_at=EPOCH + timedelta(minutes=1),
+    )
+    _finding(
+        session,
+        revision,
+        snapshot,
+        Outcome.PASS,
+        Severity.CRITICAL,
+        created_at=EPOCH + timedelta(minutes=2),
+    )
+
+    body = _summary(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert body["failed"] == 2
+    assert body["critical_failed"] == 1, "an advisory failure is not a critical one"
+
+
+def test_a_package_with_no_findings_summarises_to_zero(session: Session) -> None:
+    """Zero is a real answer here and must not be an error — a package whose checks have not run yet
+    is an ordinary state, and the list still has to render it."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    _revision(session, package.id)
+
+    body = _summary(_client(session, PROJECT_A), PROJECT_A, package.id)
+    assert body["total"] == 0 and body["critical_failed"] == 0
+
+
+def test_another_projects_package_does_not_summarise(session: Session) -> None:
+    """404, not an empty summary. An empty summary would confirm the package exists, which is what
+    the boundary is for."""
+    _project(session, PROJECT_A)
+    _project(session, PROJECT_B)
+    package = _package(session, PROJECT_B)
+    revision = _revision(session, package.id)
+    _finding(session, revision, _snapshot(session), Outcome.FAIL, created_at=EPOCH)
+
+    response = _client(session, PROJECT_A).get(f"{_url(PROJECT_A, package.id)}/summary")
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Reading a reviewer's decisions back (#472)
+# ---------------------------------------------------------------------------
+
+
+def _session_and_action(
+    session: Session,
+    revision: PackageRevision,
+    finding: Finding,
+    action: str,
+    *,
+    actor: str = "anant",
+    at: datetime | None = None,
+    note: str | None = None,
+    action_id: UUID | None = None,
+) -> ReviewAction:
+    """One sitting and one thing done in it.
+
+    `action_id` is settable so a test can make insertion order and id order disagree, which is the
+    only way to pin a tie-break deterministically.
+    """
+    sitting = ReviewSession(package_revision_id=revision.id, reviewer=actor)
+    session.add(sitting)
+    session.flush()
+    recorded = ReviewAction(
+        **({"id": action_id} if action_id is not None else {}),
+        review_session_id=sitting.id,
+        finding_id=finding.id,
+        package_revision_id=revision.id,
+        action=action,
+        actor=actor,
+        note=note,
+        created_at=at if at is not None else EPOCH,
+    )
+    session.add(recorded)
+    session.flush()
+    return recorded
+
+
+def test_a_finding_nobody_has_touched_reports_no_action(session: Session) -> None:
+    """`None`, and it must stay reachable — an inner join would have dropped every untouched finding
+    and shown a reviewer only the work already done."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    _finding(session, revision, _snapshot(session), Outcome.FAIL)
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert len(body["items"]) == 1
+    assert body["items"][0]["reviewer_action"] is None
+
+
+def test_a_recorded_decision_comes_back_with_the_finding(session: Session) -> None:
+    """**The defect this closes.**
+
+    The action was written to the ledger and never returned, so the workspace showed every finding as
+    untouched after a refresh — and a reviewer could record the same decision twice because the first
+    was invisible. That happened in testing, on this exact path.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    finding = _finding(session, revision, _snapshot(session), Outcome.FAIL)
+    _session_and_action(session, revision, finding, "confirm", note="matches the cut sheet")
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+    recorded = body["items"][0]["reviewer_action"]
+
+    assert recorded["action"] == "confirm"
+    assert recorded["actor"] == "anant"
+    assert recorded["note"] == "matches the cut sheet"
+    assert recorded["at"] is not None
+
+
+def test_a_changed_mind_reports_the_later_decision(session: Session) -> None:
+    """The ledger is append-only, so a reviewer who changes their mind leaves two rows. The screen
+    must show the second — reporting the first would tell them their correction did not take."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    finding = _finding(session, revision, _snapshot(session), Outcome.FAIL)
+    _session_and_action(session, revision, finding, "confirm", at=EPOCH)
+    _session_and_action(session, revision, finding, "dismiss", at=EPOCH + timedelta(minutes=5))
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert body["items"][0]["reviewer_action"]["action"] == "dismiss"
+
+
+def test_a_colleagues_decision_is_shown_with_their_name(session: Session) -> None:
+    """A finding's disposition belongs to the package, not to whoever is looking.
+
+    Showing somebody else's confirmation as outstanding would invite a second opinion recorded as a
+    first. `actor` is what lets the screen say it was not you.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    finding = _finding(session, revision, _snapshot(session), Outcome.FAIL)
+    _session_and_action(session, revision, finding, "except", actor="priya")
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+    recorded = body["items"][0]["reviewer_action"]
+
+    assert recorded["action"] == "except"
+    assert recorded["actor"] == "priya"
+
+
+def test_an_action_on_one_finding_does_not_attach_to_another(session: Session) -> None:
+    """Two findings, one actioned. The join must not smear it across the package — a reviewer would
+    see work they never did and sign off on it."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+    first = _finding(session, revision, snapshot, Outcome.FAIL)
+    _finding(session, revision, snapshot, Outcome.REVIEW_REQUIRED)
+    _session_and_action(session, revision, first, "confirm")
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+    by_id = {item["id"]: item["reviewer_action"] for item in body["items"]}
+
+    assert by_id[str(first.id)]["action"] == "confirm"
+    assert [a for a in by_id.values() if a is None], "the untouched finding lost its None"
+    assert sum(1 for a in by_id.values() if a is not None) == 1
+
+
+def test_the_action_does_not_multiply_the_findings(session: Session) -> None:
+    """A join returning several action rows per finding would duplicate the finding itself.
+
+    Three actions on one finding, and the list must still hold one row — otherwise a package with a
+    much-revised finding reports more work than exists, and paging walks the same finding repeatedly.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    finding = _finding(session, revision, _snapshot(session), Outcome.FAIL)
+    for minute, verb in enumerate(("confirm", "dismiss", "confirm")):
+        _session_and_action(session, revision, finding, verb, at=EPOCH + timedelta(minutes=minute))
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert len(body["items"]) == 1
+    assert body["items"][0]["reviewer_action"]["action"] == "confirm"
+
+
+# ---------------------------------------------------------------------------
+# Superseded runs (#477)
+# ---------------------------------------------------------------------------
+
+
+def test_a_superseded_run_disappears_from_the_list(session: Session) -> None:
+    """**The reviewer must see one answer per check, and the endpoint is where that is decided.**
+
+    Findings are immutable, so re-running the checks adds a second set rather than replacing the
+    first. Both stay in the table — that is the audit trail — but a list showing both would put a
+    PASS and a FAIL for the same check in front of a reviewer with equal standing.
+
+    Asserted through the endpoint rather than against a hand-written query. A test that did its own
+    join would pass while the endpoint returned everything, which is exactly what happened: the first
+    version of this change was mutation-tested by deleting the filter from `_base_query`, and every
+    test still passed because they all filtered for themselves.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+
+    stale = _finding(session, revision, snapshot, Outcome.PASS)
+    session.get(CheckRun, stale.check_run_id).superseded_at = datetime(2026, 9, 1, tzinfo=UTC)
+    _finding(session, revision, snapshot, Outcome.FAIL)
+    session.flush()
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert _outcomes(body) == [
+        "FAIL"
+    ], "the superseded PASS is still listed; a reviewer would see two answers for one check"
+
+
+def test_the_summary_counts_only_live_findings(session: Session) -> None:
+    """The counts feed the packages table and the usage page. Counting superseded runs would report
+    twice the work and inflate the failure count on every re-run."""
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    snapshot = _snapshot(session)
+
+    stale = _finding(session, revision, snapshot, Outcome.FAIL)
+    session.get(CheckRun, stale.check_run_id).superseded_at = datetime(2026, 9, 1, tzinfo=UTC)
+    _finding(session, revision, snapshot, Outcome.PASS)
+    session.flush()
+
+    client = _client(session, PROJECT_A)
+    response = client.get(f"{_url(PROJECT_A, package.id)}/summary")
+
+    assert response.status_code == 200, response.text
+    counts = response.json()
+    assert counts["total"] == 1
+    assert counts["failed"] == 0
+    assert counts["passed"] == 1
+
+
+def test_two_actions_in_the_same_instant_resolve_by_id(session: Session) -> None:
+    """**The tie-break I documented and did not test.**
+
+    `_latest_action` orders by `created_at` then `id`, and the second half is the whole point: two
+    actions written in one transaction share a timestamp, and without a total order the finding reads
+    `confirm` on one request and `dismiss` on the next. Nothing about that looks like a bug — it looks
+    like a reviewer's own decision being flaky.
+
+    **The ids are fixed, and the arrangement was measured rather than guessed.** With random uuids a
+    mutant that deleted the tie-break passed four runs in five, and the first fixed arrangement I
+    tried let it pass five in five — the broken order happened to agree with the right answer. So the
+    two arrangements were run against the mutant to find the one where they differ: with the *later*
+    decision carrying the higher id, the ordering that ignores id returns the earlier one.
+
+    Raised by review, which is where it should have been caught: the docstring already claimed the
+    property.
+    """
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    finding = _finding(session, revision, _snapshot(session), Outcome.FAIL)
+
+    instant = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    low = UUID("00000000-0000-4000-8000-000000000000")
+    high = UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")
+    _session_and_action(session, revision, finding, "confirm", at=instant, action_id=low)
+    _session_and_action(session, revision, finding, "dismiss", at=instant, action_id=high)
+
+    body = _page(_client(session, PROJECT_A), PROJECT_A, package.id)
+
+    assert body["items"][0]["reviewer_action"]["action"] == "dismiss", (
+        "the tie was broken by something other than id, so which decision a reviewer sees depends on "
+        "the query plan"
+    )

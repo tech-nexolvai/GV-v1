@@ -30,8 +30,42 @@ reviews:
   collapse_walkthrough: false
   poem: false
 
+  # No legacy commit-status mirror, because on this account it was posting a *green tick for a review
+  # that never ran*. On #484 the rollup read all-green and one of the five was `CodeRabbit`, described
+  # as "Review skipped: manual review required for this OSS repository" — a pass reported for a review
+  # that was declined. Anyone reading the checks list, including a reviewer deciding whether a PR has
+  # had a second pair of eyes, sees a tick.
+  #
+  # That is this file's original defect wearing a different coat: a safety control that is configured,
+  # believed to be working, and not running. It is worse than a red one, because red gets investigated.
+  #
+  # CodeRabbit does not post a check run here — it posts a legacy commit status, which GitHub merges
+  # into the same rollup as the Actions checks, and this is the switch for that surface. With it off
+  # there is no green rather than a wrong one, and the absence is honest: no automated review happened.
+  # `main` is not branch-protected and nothing requires the `CodeRabbit` context, so this cannot leave a
+  # PR unmergeable.
+  commit_status: false
+
   auto_review:
-    enabled: true
+    # Off, because the plan does not provide it and saying `true` only records a belief. This repository
+    # is public (`gh repo view` reports `visibility=PUBLIC`), which puts CodeRabbit on the free
+    # open-source plan, where a review has to be asked for — its own status on #484 said "manual review
+    # required for this OSS repository". So `true` here never once caused a review.
+    #
+    # That is the third setting in this one file to be present, believed and inert, after the over-cap
+    # `tone_instructions` and the commit-status mirror in #485.
+    #
+    # **The review this plan does give has to be asked for by a person.** CI used to post the request
+    # here, and it did nothing: on #489 CodeRabbit answered a human's `@coderabbitai review` in six
+    # seconds and never answered the `github-actions[bot]` comment posted 4 seconds earlier at all. It
+    # ignores commands from bots, so that job was a fourth inert setting and was removed rather than
+    # left in place looking like coverage. Automating it needs the comment to come from a real user
+    # token, which is a credential somebody has to decide to create.
+    #
+    # So requesting a review is a manual step, and `scripts/review_gate.py` is what refuses a merge
+    # when nobody took it. Turning this back on is only meaningful together with a plan that honours
+    # it, which is why a test asserts it rather than leaving it to whoever reads the file next.
+    enabled: false
     drafts: false
 
   path_filters:

@@ -89,6 +89,58 @@ def test_gitignore_covers_the_sensitive_paths() -> None:
         assert needed in text, f".gitignore no longer covers {needed!r}"
 
 
+def _is_ignored(relative_path: str) -> bool:
+    """Ask git, rather than reading the file and guessing how the pattern would match."""
+    return (
+        subprocess.run(
+            ["git", "check-ignore", "-q", relative_path],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "data/drawings/vanity.pdf",
+        "data/checklists/ct.xlsx",
+        "eval/gold_set/cases/case_001.json",
+    ],
+)
+def test_client_material_is_actually_ignored(path: str) -> None:
+    """The rule that matters, asked of git instead of inferred from the text.
+
+    The check above is a substring search, and it passed happily throughout the bug this was added
+    for: `data/` appears inside `/data/`, inside a comment, and inside prose. It cannot tell whether
+    the pattern still *does* anything.
+    """
+    assert _is_ignored(path), f"{path} is no longer ignored — client material could be committed"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["frontend/main/src/data/mock.ts", "frontend/main/src/data/fixtures.ts"],
+)
+def test_the_frontends_own_data_directory_is_not_swept_up(path: str) -> None:
+    """**The bug this pair exists for.**
+
+    `data/` was unanchored, so it matched a directory of that name anywhere in the tree. It silently
+    excluded `frontend/main/src/data/` — the frontend's mock data and its type definitions — and
+    eight modules on `frontend-init-dev` import a file that was therefore never committed. Nothing
+    failed loudly; the directory simply was not there and the app could not build.
+
+    Anchoring to `/data/` fixes it, and this asserts the fix in the direction the substring check
+    cannot see. An edit that drops the leading slash to "tidy up" fails here.
+    """
+    assert not _is_ignored(path), (
+        f"{path} is ignored again — the client-data rule has been un-anchored and is swallowing "
+        "the frontend's source"
+    )
+
+
 #: CodeRabbit's published config schema, vendored so the check is offline and deterministic. A test that
 #: fetched it would fail whenever the network did, for reasons having nothing to do with this repository —
 #: and a review-config check that goes red for unrelated reasons is one people learn to ignore.
@@ -170,6 +222,44 @@ def test_the_unknown_key_check_finds_what_it_claims_and_nothing_more() -> None:
     assert not _keys_the_schema_does_not_define(
         {"a": {"typo": 1}},
         {"properties": {"a": {"$ref": "#/$defs/x"}}, "$defs": {"x": {"properties": {"real": {}}}}},
+    )
+
+
+def test_every_top_level_package_is_installed() -> None:
+    """A package missing from the install list is importable until it suddenly is not.
+
+    `vocabulary` was absent, and `rules/semantic_types.py` does `from vocabulary.semantic_types
+    import *` — so `rules` could not be imported anywhere the repository root was not the working
+    directory. Nothing caught it: pytest and CI both run from the root, which puts it on `sys.path`
+    and hides the gap completely. It surfaced only when `scripts/run_gold_set.py` ran, because a
+    script's `sys.path[0]` is its own directory.
+
+    Derived from the tree rather than listed, for the reason `app/db/roles.py` gives about its own
+    derived list: a hand-kept copy leaves out the newest package, which is the one nobody has thought
+    about yet.
+    """
+    import fnmatch
+    import tomllib
+
+    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    patterns = config["tool"]["setuptools"]["packages"]["find"]["include"]
+    excluded = config["tool"]["setuptools"]["packages"]["find"]["exclude"]
+
+    present = {
+        path.name
+        for path in REPO_ROOT.iterdir()
+        if path.is_dir() and (path / "__init__.py").is_file() and not path.name.startswith(".")
+    }
+    missing = sorted(
+        name
+        for name in present
+        if not any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
+        and not any(fnmatch.fnmatch(name, pattern) for pattern in excluded)
+    )
+    assert not missing, (
+        f"these top-level packages are neither included nor excluded in pyproject.toml: {missing}. "
+        "They will not be installed, so anything importing them works only while the repository root "
+        "happens to be on sys.path — which is true under pytest and false in a worker process."
     )
 
 
@@ -280,6 +370,44 @@ def test_the_coderabbit_config_is_actually_used() -> None:
     assert profile in allowed, (
         f"reviews.profile is {profile!r}, not one of {allowed}. A misspelled key here is not an error, "
         "it is a silent fall back to the default profile."
+    )
+
+    # **No green tick for a review that did not happen.** `reviews.commit_status` turns on a legacy
+    # commit-status mirror, and GitHub folds that status into the same rollup as the Actions checks. On
+    # #484 it reported `success` with the description "Review skipped: manual review required for this
+    # OSS repository" — a pass for a declined review, sitting in a list of five green ticks.
+    #
+    # Asserted as `is False` rather than falsy, because the default is `true` and the schema puts no
+    # `required` at this level: an absent key reads as "nobody chose" and behaves as "mirror on". This
+    # has to be a decision that stays made. Re-enabling it should mean arguing with this test, since the
+    # cost is not a noisy check but a silent claim of review coverage that nobody has any reason to
+    # doubt.
+    assert reviews.get("commit_status") is False, (
+        "reviews.commit_status is not explicitly false, so CodeRabbit mirrors its review state as a "
+        "legacy commit status. On this account every review is skipped, and the mirror reports that "
+        "skip as a green `CodeRabbit` tick in the checks list — a control that looks like it ran."
+    )
+
+    # **No claim of automatic review, because the plan declines it.** This repository is public, which
+    # puts CodeRabbit on the free open-source plan, where a review is requested rather than automatic —
+    # its status on #484 read "manual review required for this OSS repository". `enabled: true` was
+    # therefore a setting that had never once caused a review, and the cost was #487: five findings
+    # arrived on a requested review and were merged over, because nothing in the process expected a
+    # review to appear at all.
+    #
+    # `is False` for the same reason as `commit_status` above — the default is `true` and an absent key
+    # reads as "nobody chose". Flipping it back is only meaningful alongside a plan that honours it.
+    auto_review = reviews.get("auto_review")
+    assert isinstance(auto_review, dict), (
+        "the config has no `reviews.auto_review:` section, so the setting defaults to on and the file "
+        "implies an automatic review that this plan does not perform"
+    )
+    assert auto_review.get("enabled") is False, (
+        "reviews.auto_review.enabled is not explicitly false. On this plan CodeRabbit does not review "
+        "automatically, so `true` records a belief rather than a behaviour — and a PR nobody requests "
+        "a review for is then indistinguishable from one that passed review. Asking is a manual step, "
+        "because CodeRabbit ignores the command from a bot account; scripts/review_gate.py is what "
+        "refuses a merge when nobody took it."
     )
 
     # `**` carries the project-wide safety framing that used to live in `tone_instructions`. Asserted by

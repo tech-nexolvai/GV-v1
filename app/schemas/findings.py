@@ -27,6 +27,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.review import ReviewActionKind
 from verdict.outcomes import Outcome, Severity
 
 #: Severities, worst first. The list a reviewer works down.
@@ -91,6 +92,34 @@ def validate_sort_orders(severities: tuple[Severity, ...], outcomes: tuple[Outco
 validate_sort_orders(SEVERITY_ORDER, OUTCOME_ORDER)
 
 
+class ReviewerActionOut(BaseModel):
+    """What a reviewer last did to a finding, so a reload does not undo their work.
+
+    **Why this is on the finding rather than fetched per session.** The actions ledger is
+    append-only and keyed by session, which is right for the audit trail and wrong for the question
+    a review screen asks: *has this finding been dealt with?* Without an answer the workspace showed
+    every finding as untouched after a refresh, and a reviewer could — and did, in testing — record
+    the same decision twice because the first one was invisible.
+
+    **It is the latest action by anyone, not by the caller.** A finding's disposition is a property
+    of the package, not of whoever is looking: if a colleague confirmed it an hour ago, showing it as
+    outstanding would invite a second opinion recorded as a first. `actor` says who, so the screen
+    can show that it was somebody else.
+
+    A changed mind is a later row, never an edit, so "latest" is the whole state. The earlier rows
+    remain in the ledger and are what an approval is reconstructed from.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    action: ReviewActionKind
+    actor: str
+    """Who performed it, by name. May not be the caller."""
+
+    at: datetime
+    note: str | None = None
+
+
 class FindingOut(BaseModel):
     """One finding, with enough version information to go and reconstruct it.
 
@@ -129,6 +158,14 @@ class FindingOut(BaseModel):
     parameter_set_versions: dict[str, str]
     created_at: datetime
 
+    reviewer_action: ReviewerActionOut | None = None
+    """What a reviewer last did to this finding, or `None` if nobody has.
+
+    `None` means untouched, and it is the honest default: a finding nobody has acted on and a finding
+    whose actions could not be read must not look alike, so this is populated by the same query that
+    returns the finding rather than by a second call that could quietly fail.
+    """
+
 
 class FindingPage(BaseModel):
     """One page of findings, plus how to ask for the next one.
@@ -142,3 +179,25 @@ class FindingPage(BaseModel):
     next_cursor: str | None = None
     limit: int
     ordering: str = Field(default=ORDERING_DESCRIPTION)
+
+
+class FindingCounts(BaseModel):
+    """How a package's findings break down, for a list that has not opened one yet.
+
+    **Every outcome is named, and they sum to `total`.** A summary that reported only passes and
+    failures would leave abstentions — `REVIEW_REQUIRED`, `NOT_FOUND`, `NO_APPLICABLE_RULE` — in
+    neither column, and a reader would take the remainder for passes. Under V1's exact-match rule the
+    abstention count is expected to be large, so hiding it would misrepresent the run.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    total: int = Field(ge=0)
+    passed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    review_required: int = Field(ge=0)
+    not_found: int = Field(ge=0)
+    no_applicable_rule: int = Field(ge=0)
+    critical_failed: int = Field(ge=0)
+    """Failures on a CRITICAL rule. The primary safety metric counts these, so the reviewer's list
+    should lead with them rather than leaving them to be spotted among the rest."""

@@ -33,6 +33,7 @@ from enum import StrEnum
 from types import MappingProxyType
 
 from rules.schema import Quantity
+from units.imperial import format_inches
 from verdict.outcomes import Outcome
 
 #: Prefix on every parameter-set identifier, so the algorithm is visible in stored data.
@@ -350,13 +351,15 @@ class ResolvedParameter:
     def explain(self) -> str:
         """One line of plain English for a report or a finding."""
         head = (
-            f"{self.name} = {self.value.value.exact_value} {self.value.value.unit.value} "
+            f"{self.name} = {format_inches(self.value.value.exact_value)} "
+            f"{self.value.value.unit.value} "
             f"({self.layer.value}, {self.value.provenance.value}, set by {self.value.set_by})"
         )
         if not self.shadowed:
             return head
         displaced = ", ".join(
-            f"{s.value.value.exact_value} {s.value.value.unit.value} ({s.layer.value})"
+            f"{format_inches(s.value.value.exact_value)} {s.value.value.unit.value} "
+            f"({s.layer.value})"
             for s in self.shadowed
         )
         return f"{head}; overrides {displaced}"

@@ -1,0 +1,82 @@
+id: CT-SINK-CUTOUT-WIDTH-001
+version: 1.0.0
+product_type: countertop
+check_type: internal
+severity: CRITICAL
+arithmetic_unit: in
+
+name: Sink cutout width
+description: >
+  Compare the drawn sink cutout width with the sink's own interior width less the undermount
+  clearance on each side. Width from width — the interior *width* is the input, not the depth.
+
+  This rule was held back on purpose. The client's spreadsheet said the cutout width came from
+  the interior DEPTH (S19) while their diagram showed it coming from the width, and rather than
+  pick the reading that looked natural we asked, because a guess here sizes a hole that gets
+  cut in stone. On the 2026-08-25 call Raj confirmed the diagram: "my CT012 is width". The
+  answer matched the natural reading, which is the point — we were right without having had to
+  be lucky.
+
+  The interior width comes from the sink's cut sheet and is supplied per drawing set by the
+  reviewer, so it is run-scoped with no default: absent, this is NOT FOUND rather than a guess.
+
+  The clearance is deliberately not a constant. Raj: "1/4, but make sure that is editable,
+  sometimes it's 1/8 — a project-specific variable." It varies by fabricator, which is exactly
+  what a project-scoped parameter is for.
+
+  CRITICAL, like its siblings. A wrong PASS here is a cut-out sized from the wrong number and cut
+  into stone, which is the definition the severity carries. Under exact match the label changes no
+  behaviour — every mismatch flags regardless — so what it decides is whether this check counts
+  toward the primary safety metric, and a hole cut to the wrong width is exactly what that metric
+  exists to catch.
+
+  One of the three checks the client's workbook labels CT-3. The ids here are ours, keyed to
+  the quantity each verifies, because three rules cannot share one identifier.
+
+applicability:
+  scope: global
+
+inputs:
+  cutout_width:
+    source: SHOP
+    semantic_type: CT012
+    scope: same_assembly
+    cardinality: one
+
+parameters:
+  # No default, deliberately. Every sink is different, so there is no typical value to fall back
+  # on — and a plausible one here would size a hole that gets cut.
+  sink_interior_width:
+    scope: run
+  # Deliberately the same parameter name the depth rule uses, not a width-specific twin.
+  # Parameters resolve by name across the layers, so one project override sets the undermount
+  # clearance for both cutout checks — which is what a reviewer means when they say this
+  # fabricator works to 1/8". Two names would let the pair drift apart silently.
+  sink_cutout_clearance:
+    default:
+      value: "1/4"
+      unit: in
+    scope: project
+
+# Subtracted once per side rather than doubled: the operation registry has no multiply, and
+# spelling out both sides keeps the trace readable — a reviewer sees each clearance come off.
+derivations:
+  - name: width_less_near_clearance
+    operation: difference_between
+    operands:
+      a: sink_interior_width
+      b: sink_cutout_clearance
+  - name: expected_cutout_width
+    operation: difference_between
+    operands:
+      a: width_less_near_clearance
+      b: sink_cutout_clearance
+
+operation:
+  type: equals
+  operands:
+    actual: cutout_width
+    expected: expected_cutout_width
+
+on_missing: NOT_FOUND
+on_ambiguous: REVIEW_REQUIRED

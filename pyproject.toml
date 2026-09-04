@@ -39,6 +39,19 @@ extraction = [
     "opencv-python-headless",
 ]
 
+# B2.4 — the OCR reading route, for pages with no vector text.
+#
+# RapidOCR (Apache-2.0) over the alternatives on two grounds that are about this repository rather
+# than about accuracy. It installs from PyPI with no system binary, so CI needs no extra step and
+# `tests/test_licences.py` can inspect it — Tesseract would have needed a package in the runner,
+# which is a licence-clean dependency the licence test cannot see. And it reuses
+# `opencv-python-headless`, which `extraction` already carries.
+#
+# Optional, because most of this project never renders a page: the engine ships ONNX models and
+# loading them costs seconds. `extraction/ocr.py` raises `OcrUnavailable` with the install command
+# rather than a bare ModuleNotFoundError.
+ocr = ["rapidocr-onnxruntime"]
+
 # Phase 3 — rule authoring: YAML loading. Validation itself is a runtime dependency.
 rules = ["pyyaml"]
 
@@ -81,6 +94,16 @@ reports = ["reportlab", "pypdf", "openpyxl"]
 include = [
     "app*", "workflow*", "extraction*", "evidence*", "rules*", "storage*",
     "verdict*", "retrieval*", "reports*", "eval*", "units*",
+    # `vocabulary` was missing, and `rules/semantic_types.py` does `from vocabulary.semantic_types
+    # import *` — so `rules` was unimportable anywhere the repo root was not the working directory.
+    # Masked completely, because pytest and CI both run from the root and put it on `sys.path`; found
+    # by running `scripts/run_gold_set.py`, whose `sys.path[0]` is `scripts/`.
+    "vocabulary*",
+    # `deploy.verdict_isolation.entrypoint` is how the isolated verdict service starts. It was in
+    # neither list — not included, not excluded — which reads as an oversight rather than a decision,
+    # and it is the package that most needs to import in a context that is not this repository's root
+    # directory. Excluding it deliberately is a one-line change if deployment copies it instead.
+    "deploy*",
 ]
 exclude = ["data*", "frontend*", "docs*", "tests*", "scripts*", ".venv*"]
 

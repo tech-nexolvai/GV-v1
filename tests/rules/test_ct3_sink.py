@@ -1,14 +1,18 @@
-"""The two CT-3 sink checks that are not blocked: cutout depth and front offset.
+"""The CT-3 sink checks: cutout width, cutout depth and front offset.
 
-Source: issue #426; client facts Q5 (front offset exact, configurable 4 inches), Q7 (the reviewer
-supplies the sink's dimensions per drawing set), Q2 (exact matching for V1).
-Verification: ``rules/rulebook/ct_sink_cutout_depth_001.yaml`` and
+Source: issue #426 and #60; client facts Q5 (front offset exact, configurable 4 inches), Q7 (the
+reviewer supplies the sink's dimensions per drawing set), Q2 (exact matching for V1), Q15 (cutout
+width comes from the interior *width*, answered on the 2026-08-25 call).
+Verification: ``rules/rulebook/ct_sink_cutout_width_001.yaml``,
+``rules/rulebook/ct_sink_cutout_depth_001.yaml`` and
 ``rules/rulebook/ct_sink_offset_front_001.yaml``.
 
-**The cutout width rule is deliberately absent.** Its formula takes the sink's interior dimension,
-and the client's notes call that a depth while his diagram shows a width (Q15, still open). Authoring
-it would mean choosing between his text and his drawing — a guess on a dimension that gets cut. It
-stays on #60 until he answers.
+**The cutout width rule used to be deliberately absent**, because the client's notes called its
+input a depth while his diagram showed a width, and authoring it would have meant choosing between
+his text and his drawing — a guess on a dimension that gets cut in stone. We asked instead. On the
+2026-08-25 call Raj confirmed the diagram ("my CT012 is width") and it is authored here now. The
+answer matched the natural reading, which is exactly the point: being right by luck and being right
+on purpose look identical afterwards, and only one of them is repeatable.
 
 Most of what follows is about the two ways these checks can be wrong without looking wrong: a
 parameter treated as a constant, and an equality quietly behaving as a minimum.
@@ -25,7 +29,7 @@ import yaml
 
 from rules.parameters import ParameterLayer, ParameterValue, Provenance, ResolvedParameter
 from rules.publication import is_production_ready, tolerances_of
-from rules.schema import Quantity, Rule
+from rules.schema import ParameterScope, Quantity, Rule
 from rules.semantic_types import SemanticType
 from rules.snapshot import publish
 from units.measurement import Measurement, Unit
@@ -36,6 +40,7 @@ from verdict.outcomes import Outcome, Severity
 from verdict.registry import REGISTRY
 
 RULEBOOK = Path(__file__).resolve().parents[2] / "rules" / "rulebook"
+WIDTH_RULE_PATH = RULEBOOK / "ct_sink_cutout_width_001.yaml"
 DEPTH_RULE_PATH = RULEBOOK / "ct_sink_cutout_depth_001.yaml"
 FRONT_OFFSET_RULE_PATH = RULEBOOK / "ct_sink_offset_front_001.yaml"
 BACK_OFFSET_RULE_PATH = RULEBOOK / "ct_back_offset_min_001.yaml"
@@ -85,6 +90,16 @@ def _parameter(
     )
 
 
+def _width_parameters(
+    interior: int | Fraction = 33, clearance: int | Fraction = Fraction(1, 4)
+) -> dict[str, ResolvedParameter]:
+    """The sink's interior width, and the undermount clearance taken off each side."""
+    return {
+        "sink_interior_width": _parameter("sink_interior_width", interior, ParameterLayer.RUN),
+        "sink_cutout_clearance": _parameter("sink_cutout_clearance", clearance),
+    }
+
+
 def _depth_parameters(
     interior: int | Fraction = 18, clearance: int | Fraction = Fraction(1, 4)
 ) -> dict[str, ResolvedParameter]:
@@ -99,30 +114,75 @@ def _depth_parameters(
 # ---------------------------------------------------------------------------
 
 
-def test_both_rules_are_exact_critical_inch_checks_with_no_tolerance() -> None:
-    """Input: the two YAML files. Outcome: exact equality, no band. Why: Q2 settled exact match,
-    so a tolerance here would be a band nobody asked for."""
-    for path in (DEPTH_RULE_PATH, FRONT_OFFSET_RULE_PATH):
+def test_the_three_equality_sink_rules_have_no_tolerance() -> None:
+    """Input: the three YAML files that compare by equality. Outcome: exact, no band.
+
+    Named for the three rather than "every sink rule", because the back offset is deliberately not
+    among them — it is a `minimum` check, not an equality, so asserting `operation.type == "equals"`
+    over it would be asserting the wrong contract. A test whose name overstates its coverage is how
+    a rule ends up believed to be checked.
+    """
+    for path in (WIDTH_RULE_PATH, DEPTH_RULE_PATH, FRONT_OFFSET_RULE_PATH):
         rule = _load(path)
-        assert rule.severity is Severity.CRITICAL
         assert rule.arithmetic_unit is Unit.INCH
         assert rule.operation.type == "equals"
         assert tolerances_of(rule) == ()
 
 
-def test_the_three_sink_rules_have_distinct_ids() -> None:
+def test_every_sink_rule_declares_the_same_severity() -> None:
+    """**A rulebook that disagrees with itself about the same family of checks.**
+
+    The width rule was authored MAJOR while its three siblings said CRITICAL, on the reading that
+    Q4's "flag everything, no severity split" meant no rule should claim CRITICAL at all. Anant ruled
+    otherwise: the CRITICAL designation stays, on the checks whose wrong PASS gets stone cut to the
+    wrong size. The cut-out width is the clearest instance of that, so it matches its siblings.
+
+    Asserted as *agreement across the family* rather than against the literal CRITICAL, because the
+    defect worth catching is one of these four drifting away from the others — which is what
+    happened, and which no test then noticed.
+    """
+    severities = {
+        _load(path).severity
+        for path in (
+            WIDTH_RULE_PATH,
+            DEPTH_RULE_PATH,
+            FRONT_OFFSET_RULE_PATH,
+            BACK_OFFSET_RULE_PATH,
+        )
+    }
+
+    assert len(severities) == 1, f"the sink rules disagree about severity: {severities}"
+
+
+def test_the_cutout_checks_are_critical_because_a_wrong_pass_cuts_stone() -> None:
+    """The ruling, pinned to the reason for it rather than to the word.
+
+    Under exact match the label changes no behaviour — every mismatch flags regardless of severity —
+    so what it decides is whether the check counts toward `critical_false_pass_rate`. A hole cut to a
+    dimension nobody verified is precisely what that metric exists to catch, so excluding these from
+    it would leave the primary safety measure blind to the family most able to cost money.
+    """
+    assert _load(WIDTH_RULE_PATH).severity is Severity.CRITICAL
+    assert _load(DEPTH_RULE_PATH).severity is Severity.CRITICAL
+
+
+def test_the_four_sink_rules_have_distinct_ids() -> None:
     """The client's workbook labels three different checks CT-3, so ours must not.
 
     Asserted against the rulebook rather than against literals: a future copy-paste that reuses an
     id fails here, which is the mistake worth catching.
     """
-    ids = [_load(p).id for p in (DEPTH_RULE_PATH, FRONT_OFFSET_RULE_PATH, BACK_OFFSET_RULE_PATH)]
-    assert len(set(ids)) == 3, f"sink rule ids collide: {ids}"
+    ids = [
+        _load(p).id
+        for p in (WIDTH_RULE_PATH, DEPTH_RULE_PATH, FRONT_OFFSET_RULE_PATH, BACK_OFFSET_RULE_PATH)
+    ]
+    assert len(set(ids)) == 4, f"sink rule ids collide: {ids}"
     assert "CT-3" not in ids
 
 
 def test_each_rule_reads_the_semantic_type_it_claims() -> None:
     """A rule pointed at the wrong CT code would check a real number against the wrong quantity."""
+    assert _load(WIDTH_RULE_PATH).inputs["cutout_width"].semantic_type is SemanticType.CT012
     assert _load(DEPTH_RULE_PATH).inputs["cutout_depth"].semantic_type is SemanticType.CT008
     assert _load(FRONT_OFFSET_RULE_PATH).inputs["front_offset"].semantic_type is SemanticType.CT007
 
@@ -136,6 +196,172 @@ def test_both_rules_may_be_released() -> None:
     """
     assert is_production_ready(_load(DEPTH_RULE_PATH))
     assert is_production_ready(_load(FRONT_OFFSET_RULE_PATH))
+
+
+# ---------------------------------------------------------------------------
+# Cutout width — width from width (Q15, answered on the 2026-08-25 call)
+# ---------------------------------------------------------------------------
+
+
+def test_cutout_width_passes_when_it_equals_the_interior_width_less_both_clearances() -> None:
+    """Input: interior width 33, clearance 1/4, drawn cutout 32 1/2. Outcome: PASS."""
+    finding = execute(
+        publish(_load(WIDTH_RULE_PATH)),
+        {"cutout_width": _operand("cutout_width", Fraction(65, 2))},
+        _width_parameters(),
+    )
+
+    assert finding.outcome is Outcome.PASS
+    assert finding.trace is not None
+    assert finding.trace.tolerance is None
+
+
+def test_an_eighth_out_fails_rather_than_being_absorbed() -> None:
+    """Input: cutout 1/8 wider than expected. Outcome: FAIL. Why: exact match, no hidden band."""
+    finding = execute(
+        publish(_load(WIDTH_RULE_PATH)),
+        {"cutout_width": _operand("cutout_width", Fraction(65, 2) + Fraction(1, 8))},
+        _width_parameters(),
+    )
+
+    assert finding.outcome is Outcome.FAIL
+
+
+def test_the_width_rule_reads_the_interior_width_and_never_the_depth() -> None:
+    """**The whole reason this rule was held for a month.**
+
+    The client's spreadsheet said the cutout width came from the interior *depth* (S19) while his
+    diagram showed it coming from the width. Authoring from the text would have produced a rule that
+    computes a real number, passes its own tests, and sizes the hole from the wrong dimension — the
+    failure that survives review because nothing about it looks broken.
+
+    Pinned two ways: the rule consumes `sink_interior_width`, and supplying only the depth leaves it
+    unable to decide rather than quietly reaching for whatever else is present.
+    """
+    rule = _load(WIDTH_RULE_PATH)
+    assert "sink_interior_width" in rule.parameters
+    assert "sink_interior_depth" not in rule.parameters
+
+    finding = execute(
+        publish(rule),
+        {"cutout_width": _operand("cutout_width", Fraction(65, 2))},
+        {
+            "sink_interior_depth": _parameter("sink_interior_depth", 18, ParameterLayer.RUN),
+            "sink_cutout_clearance": _parameter("sink_cutout_clearance", Fraction(1, 4)),
+        },
+    )
+
+    assert finding.outcome is Outcome.NOT_FOUND
+
+
+def test_the_width_clearance_is_editable_and_moves_the_verdict() -> None:
+    """Raj: "1/4, but make sure that is editable, sometimes it's 1/8 — a project-specific variable."
+
+    A constant would be right for most fabricators and silently wrong for the rest. At 1/8 the same
+    drawn 32 1/2 that passed above must fail, and 32 3/4 must pass — which is only true if the
+    parameter genuinely feeds the arithmetic.
+    """
+    rule = publish(_load(WIDTH_RULE_PATH))
+    eighth = _width_parameters(clearance=Fraction(1, 8))
+
+    assert (
+        execute(rule, {"cutout_width": _operand("cutout_width", Fraction(65, 2))}, eighth).outcome
+        is Outcome.FAIL
+    )
+    assert (
+        execute(rule, {"cutout_width": _operand("cutout_width", Fraction(131, 4))}, eighth).outcome
+        is Outcome.PASS
+    )
+
+
+def test_the_width_and_depth_rules_share_one_clearance_parameter() -> None:
+    """One name, so one project override sets the undermount clearance for both cutout checks.
+
+    Parameters resolve by name across the layers, so a reviewer who says "this fabricator works to
+    1/8" says it once. Two names would let the pair drift — a cutout narrowed to the new clearance
+    and deepened to the old one, each rule internally consistent and the hole wrong.
+    """
+    assert "sink_cutout_clearance" in _load(WIDTH_RULE_PATH).parameters
+    assert "sink_cutout_clearance" in _load(DEPTH_RULE_PATH).parameters
+
+
+def test_the_clearance_is_scoped_per_project_and_the_sink_width_per_run() -> None:
+    """**Scope is the whole point of Q15's answer, and nothing else here would notice it changing.**
+
+    Raj asked for the clearance to be editable *per project* because it varies by fabricator. Scoped
+    GLOBAL it would still have a 1/4 default, still compute, and still pass every arithmetic test in
+    this module — while quietly becoming a company-wide constant a reviewer cannot set for their
+    project, which is the thing he specifically said it must not be. It would also change what the
+    publication gate does with it (A6_3 D6).
+
+    The sink's own width is RUN-scoped for the opposite reason: it comes off a cut sheet with the
+    drawing set, and is not a standard anybody configures.
+    """
+    parameters = _load(WIDTH_RULE_PATH).parameters
+
+    assert parameters["sink_cutout_clearance"].scope is ParameterScope.PROJECT
+    assert parameters["sink_interior_width"].scope is ParameterScope.RUN
+
+
+def test_a_missing_sink_interior_width_is_not_found_rather_than_assumed() -> None:
+    """Every sink is different, so there is no typical interior width to fall back on."""
+    finding = execute(
+        publish(_load(WIDTH_RULE_PATH)),
+        {"cutout_width": _operand("cutout_width", Fraction(65, 2))},
+        {"sink_cutout_clearance": _parameter("sink_cutout_clearance", Fraction(1, 4))},
+    )
+
+    assert finding.outcome is Outcome.NOT_FOUND
+
+
+def test_a_missing_cutout_width_reading_abstains() -> None:
+    """The drawn dimension itself absent, rather than the parameter.
+
+    Both parameters supplied and nothing read off the drawing: there is nothing to compare, so the
+    check abstains. The failure worth guarding is a comparison against a zero or an empty operand,
+    which would produce a real verdict about a dimension nobody found.
+    """
+    finding = execute(publish(_load(WIDTH_RULE_PATH)), {}, _width_parameters())
+
+    assert finding.outcome in {Outcome.NOT_FOUND, Outcome.REVIEW_REQUIRED}
+    assert finding.outcome is not Outcome.PASS
+
+
+def test_an_unqualified_width_reading_abstains_rather_than_deciding() -> None:
+    """A single unverified extraction route is not evidence (`EvidenceStatus.RAW_CANDIDATE`).
+
+    The value may be perfectly correct and it has still only been read once. Two of the five statuses
+    may enter a verdict and this is not one of them, so the check must abstain — a PASS here would be
+    a verdict resting on one unconfirmed read of a dimension that gets cut.
+    """
+    unqualified = VerdictOperand(
+        name="cutout_width",
+        value=_inch(Fraction(65, 2)),
+        status=EvidenceStatus.RAW_CANDIDATE,
+        source="SHOP",
+        evidence_ref="shop:p1:cutout_width",
+    )
+
+    finding = execute(
+        publish(_load(WIDTH_RULE_PATH)), {"cutout_width": unqualified}, _width_parameters()
+    )
+
+    assert finding.outcome is not Outcome.PASS
+    assert finding.outcome is not Outcome.FAIL
+
+
+def test_the_width_rule_declares_no_default_interior_width() -> None:
+    """The test above proves the behaviour; this proves the rule cannot acquire a default quietly."""
+    assert _load(WIDTH_RULE_PATH).parameters["sink_interior_width"].default is None
+
+
+def test_the_width_rule_may_be_released() -> None:
+    """It carries no unconfirmed tolerance and no missing client-owed standard, so nothing holds it.
+
+    Its `sink_interior_width` has no default and still does not block release: run-scoped, supplied
+    per drawing set, so its absence at publish says nothing about its absence at run time.
+    """
+    assert is_production_ready(_load(WIDTH_RULE_PATH))
 
 
 # ---------------------------------------------------------------------------

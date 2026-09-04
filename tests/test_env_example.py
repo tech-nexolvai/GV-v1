@@ -236,3 +236,42 @@ def test_the_template_carries_no_credential() -> None:
     text = TEMPLATE.read_text()
     for marker in ("BEGIN RSA", "BEGIN PRIVATE", "AKIA", "eyJhbGciOi"):
         assert marker not in text, f"{marker} appears in .env.example"
+
+
+def test_the_development_identity_variables_are_documented_by_their_real_names() -> None:
+    """The two names come from `app/auth/development.py`, not from prose here.
+
+    Without this the template could keep saying `GV_DEV_PRINCIPAL` long after the constant was
+    renamed, and following the instructions would give you an API that refuses every request with no
+    hint why — which is what happens today when nobody sets them at all.
+    """
+    from app.auth.development import PRINCIPAL_VARIABLE, PROJECTS_VARIABLE
+
+    text = TEMPLATE.read_text()
+    for variable in (PRINCIPAL_VARIABLE, PROJECTS_VARIABLE):
+        assert variable in text, (
+            f"{variable} is not mentioned in .env.example, so nothing tells a newcomer how to get an "
+            "identity the API will accept"
+        )
+
+
+def test_the_development_identity_variables_are_not_live_keys() -> None:
+    """**They must stay commented, because setting them here stops the application starting.**
+
+    Neither is a field on `Settings`, and `extra="forbid"` means `Settings()` refuses an unknown key it
+    finds in `.env`. Verified rather than reasoned about: with both written in, `Settings()` raises
+    `extra_forbidden` for each and the API never boots.
+
+    `test_every_variable_resolves_to_a_real_setting` would also catch this, but it would report "not a
+    real setting", which reads as *add a field* — the opposite of what is needed. These belong in the
+    environment, not in the file.
+    """
+    from app.auth.development import PRINCIPAL_VARIABLE, PROJECTS_VARIABLE
+
+    active = _active_keys()
+    for variable in (PRINCIPAL_VARIABLE, PROJECTS_VARIABLE):
+        assert variable not in active, (
+            f"{variable} is an active key in .env.example. It is not a Settings field, so a copied "
+            "`.env` containing it makes Settings() raise extra_forbidden and the API cannot start. "
+            "Export it for the process instead."
+        )
