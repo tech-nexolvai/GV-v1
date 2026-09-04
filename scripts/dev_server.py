@@ -240,16 +240,55 @@ def _mount_upload_shim(app: FastAPI, store: LocalStore) -> None:
         return {"key": key, "bytes": str(len(body))}
 
 
+def _database_url_resolves() -> bool:
+    """Whether the application would find a database URL, from the environment or from `.env`.
+
+    Asks `Settings` rather than reimplementing its precedence: a real environment variable wins over
+    the same key in `.env`, and duplicating that here is how a wrapper comes to disagree with the
+    thing it wraps.
+
+    A `ValidationError` mentioning any other field is somebody else's problem and is left to surface
+    as itself — this returns `True` so the real error is reported by the code that understands it,
+    rather than being reported here as a missing database URL.
+    """
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    try:
+        Settings()  # type: ignore[call-arg]
+    except ValidationError as invalid:
+        return not any("database_url" in str(error.get("loc", ())) for error in invalid.errors())
+    return True
+
+
 def main() -> int:
     import uvicorn
 
-    if not os.environ.get("GV_DATABASE_URL"):
+    # **Resolved the way the application resolves it, which includes `.env`.**
+    #
+    # This read `os.environ` directly and refused when the variable was absent from the process
+    # environment — so a developer who followed `.env.example`, put `GV_DATABASE_URL` in `.env`, and
+    # started the server was told to set something they had already set. `Settings` reads `.env`
+    # (`tests/test_env_example.py:test_settings_reads_a_dotenv_file`), so the check disagreed with
+    # both the documentation and the application it is a wrapper for.
+    #
+    # The check is still worth having: without it a missing setting arrives as a pydantic
+    # `ValidationError` traceback, where this says which variable and why the prefix matters.
+    if not _database_url_resolves():
         print(
-            "GV_DATABASE_URL is not set. The API needs a schema to talk to. Note the GV_ prefix — "
-            "a bare DATABASE_URL is what the test fixture reads, not the application.",
+            "GV_DATABASE_URL is not set, in the environment or in .env. The API needs a schema to "
+            "talk to. Note the GV_ prefix — a bare DATABASE_URL is what the test fixture reads, "
+            "not the application.",
             file=sys.stderr,
         )
         return 1
+    # **This one reads the environment on purpose, and the asymmetry above is not an oversight.**
+    #
+    # `GV_DEV_PRINCIPAL` is not a field on `Settings`; `app/auth/development.py` reads it from
+    # `os.environ`. Putting it in `.env` does not merely fail to work — `extra="forbid"` makes
+    # `Settings()` refuse the unknown key and the API never starts (#504). So the database URL may
+    # come from either place and this may come only from the environment.
     if not os.environ.get("GV_DEV_PRINCIPAL"):
         print(
             "GV_DEV_PRINCIPAL is not set, so every request would be refused. Set it to your name "
