@@ -182,6 +182,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask for the checks to be run against this package
+         * @description Record the intent to run the checks. Starts nothing, and cannot.
+         *
+         *     **202, not 200**, and the body carries an `accepted` id rather than a run id. Nothing has started:
+         *     `workflow/outbox.py:enqueue` says the id "names the enqueued work, not a workflow run", and
+         *     calling it a run id here would have a client poll for something that does not exist yet.
+         *
+         *     The reason this is not simply `run_checks(...)` is a guard, not a preference.
+         *     `tests/api/test_no_heavy_work.py` walks every import under `app/api/` and refuses any path to
+         *     extraction or rendering — and `workflow/stages.py` reaches `extraction.reader` since the OCR
+         *     route landed. So this module may not import the thing that does the work, which is exactly the
+         *     separation `DESIGN_PLATFORM.md` §4.2 asks for.
+         */
+        post: operations["request_checks_api_v1_projects__project_id__packages__package_id__checks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/documents": {
         parameters: {
             query?: never;
@@ -320,6 +350,32 @@ export interface paths {
         get: operations["finding_chain_api_v1_projects__project_id__packages__package_id__findings__finding_id__chain_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/measurements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enter reviewer-supplied parameters and measurements
+         * @description Store what the reviewer typed, exactly, and say back what the system understood.
+         *
+         *     Two checks for two questions, as `create_package` does: `require_project_access` says the caller
+         *     may see this project, `require_action` says entering values is something their role may do.
+         *
+         *     Nothing is run here. A submission records values; asking for the checks is a separate call, so a
+         *     reviewer can correct a typo without a verdict being computed from the first attempt.
+         */
+        post: operations["enter_measurements_api_v1_projects__project_id__packages__package_id__measurements_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1089,6 +1145,26 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * MeasurementEntry
+         * @description One dimension a reviewer read off a drawing, and which check input it is.
+         *
+         *     **Keyed by rule and input name rather than by semantic type**, deliberately. The engine looks an
+         *     operand up by the input name the rule declares, and the semantic vocabulary is still provisional
+         *     (`CLIENT_FACTS` Q20) — so keying on a tag nobody has settled would bake a guess into the wire
+         *     format. This asks for what the rulebook already names.
+         */
+        MeasurementEntry: {
+            /** Name */
+            name: string;
+            /** Rule Id */
+            rule_id: string;
+            /**
+             * Value
+             * @description The value as typed, with its unit.
+             */
+            value: string;
+        };
+        /**
          * OpaqueTraceOut
          * @description A trace this API does not recognise, handed over intact.
          *
@@ -1220,6 +1296,19 @@ export interface components {
             next_cursor?: string | null;
             /** Ordering */
             ordering: string;
+        };
+        /**
+         * ParameterEntry
+         * @description One project setting a reviewer supplies for this job — a cabinet depth, an overhang.
+         */
+        ParameterEntry: {
+            /** Name */
+            name: string;
+            /**
+             * Value
+             * @description The value as typed, carrying its unit: 24", 610 mm.
+             */
+            value: string;
         };
         /**
          * PresignedUpload
@@ -1445,6 +1534,42 @@ export interface components {
             note?: string | null;
         };
         /**
+         * ReviewerEntry
+         * @description Everything one reviewer submission carries.
+         *
+         *     Both halves are optional so a reviewer can set the project's parameters once and then enter
+         *     measurements per package without resending them.
+         */
+        ReviewerEntry: {
+            /**
+             * Measurements
+             * @default []
+             */
+            measurements: components["schemas"]["MeasurementEntry"][];
+            /**
+             * Parameters
+             * @default []
+             */
+            parameters: components["schemas"]["ParameterEntry"][];
+        };
+        /**
+         * ReviewerEntryOut
+         * @description What was stored, echoed back exactly so a client can show what the system understood.
+         *
+         *     Echoing the parse rather than the input is the point: `25.5"` and `25 1/2"` are the same value and
+         *     a reviewer should be able to see that the system agrees.
+         */
+        ReviewerEntryOut: {
+            /** Measurement Set Version */
+            measurement_set_version: number | null;
+            /** Measurements */
+            measurements: components["schemas"]["StoredValue"][];
+            /** Parameter Set Version */
+            parameter_set_version: number | null;
+            /** Parameters */
+            parameters: components["schemas"]["StoredValue"][];
+        };
+        /**
          * RuleOut
          * @description One rule, as it stands today: its effective snapshot and whether it could be released.
          */
@@ -1551,6 +1676,22 @@ export interface components {
          * @enum {string}
          */
         Severity: "CRITICAL" | "MAJOR" | "MINOR" | "ADVISORY";
+        /**
+         * StoredValue
+         * @description One value as stored: exact, and in inches because inches decide (Q12).
+         */
+        StoredValue: {
+            /** As Typed */
+            as_typed: string;
+            /** Denominator */
+            denominator: string;
+            /** Name */
+            name: string;
+            /** Numerator */
+            numerator: string;
+            /** Unit */
+            unit: string;
+        };
         /**
          * ToleranceReportOut
          * @description How much of the rulebook is still waiting on a number from the client.
@@ -1871,6 +2012,40 @@ export interface operations {
             };
         };
     };
+    request_checks_api_v1_projects__project_id__packages__package_id__checks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     register_document_api_v1_projects__project_id__packages__package_id__documents_post: {
         parameters: {
             query?: never;
@@ -2035,6 +2210,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingChain"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enter_measurements_api_v1_projects__project_id__packages__package_id__measurements_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewerEntry"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewerEntryOut"];
                 };
             };
             /** @description Validation Error */
