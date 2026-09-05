@@ -22,13 +22,25 @@
   --gv-crimson-dim-2:  rgba(186, 12, 47, 0.06);
   --gv-crimson-border: rgba(186, 12, 47, 0.22);
 
-  /* ── Primary action color (blue) — NEVER red for CTAs ── */
-  /* #0f7dc1 on white = 4.7:1 contrast — passes WCAG AA    */
-  --color-primary:        #0f7dc1;
+  /* ── Primary action color (blue) — NEVER red for CTAs ──────────────────────────────────
+     #0e77b8 carries white text at 4.83:1, which clears WCAG AA's 4.5:1 for normal text.
+
+     It was #0f7dc1, and the comment here said "4.7:1 — passes WCAG AA". The real figure is
+     4.45:1, so every blue button in the app has been failing AA while a comment said it passed.
+     Measured with a checker calibrated against WCAG's own published pairs (#767676 on white =
+     4.54, #595959 = 7.00) before contradicting the note, because a wrong correction here would
+     be worse than the wrong claim.
+
+     Buttons carry this at 12px, so the 4.5:1 threshold applies rather than the 3:1 for large
+     text. The darkening is barely perceptible and the hover (#0d6aa8, 5.76:1) already passed.
+
+     The rgba values below are the same colour at low alpha, used for focus rings and dim
+     backgrounds rather than for text, so they follow the hue rather than a contrast figure. */
+  --color-primary:        #0e77b8;
   --color-primary-hover:  #0d6aa8;
-  --color-primary-dim:    rgba(15, 125, 193, 0.10);
-  --color-primary-border: rgba(15, 125, 193, 0.25);
-  --shadow-primary: 0 0 0 1px rgba(15, 125, 193, 0.2), 0 4px 12px rgba(15, 125, 193, 0.12);
+  --color-primary-dim:    rgba(14, 119, 184, 0.10);
+  --color-primary-border: rgba(14, 119, 184, 0.25);
+  --shadow-primary: 0 0 0 1px rgba(14, 119, 184, 0.2), 0 4px 12px rgba(14, 119, 184, 0.12);
 
   /* ── Status — never change (semantic) ──────────────────── */
   --status-pass:           #16a34a;
@@ -38,6 +50,25 @@
   --status-fail:           #dc2626;
   --status-fail-bg:        rgba(220, 38, 38, 0.08);
   --status-fail-border:    rgba(220, 38, 38, 0.22);
+
+  /* ── Which drawing a page came from ────────────────────────────────────────────────────
+     ARCH and SHOP, as a token triple like the statuses above, because they were hard-coded
+     light-on-dark values: #7a9bff and #c084fc gave 2.28:1 and 2.29:1 in light theme against a
+     4.5:1 requirement — roughly half. They read correctly in dark theme and nowhere else.
+
+     Measured on the composited chip background (a 0.12 tint of the same hue over --bg-surface)
+     rather than against the page, since that is what the text actually sits on. Light values
+     clear 5.2:1; the dark block below clears 6.4:1.
+
+     The distinction matters more than a tag usually would: CAB-ARCH-VS-SHOP-001 exists to
+     compare the two drawings, so a reviewer misreading which sheet a page came from is reading
+     the wrong half of a check. */
+  --role-arch:        #1d4ed8;
+  --role-arch-bg:     rgba(37, 99, 235, 0.12);
+  --role-arch-border: rgba(37, 99, 235, 0.28);
+  --role-shop:        #7e22ce;
+  --role-shop-bg:     rgba(147, 51, 234, 0.12);
+  --role-shop-border: rgba(147, 51, 234, 0.28);
 
   --status-review:         #a73a15;   /* Terracotta Rust — matches clay text and stone */
   --status-review-bg:      rgba(167, 58, 21, 0.06);
@@ -181,6 +212,11 @@
   --bg-glass:     rgba(18, 18, 22, 0.65); /* Glassmorphism surface */
 
   /* Borders */
+  /* Lighter here for the reason the light values exist: one colour cannot clear 4.5:1 against
+     both a near-white and a near-black chip. Measured the same way — 8.25:1 and 9.73:1. */
+  --role-arch:        #93b4ff;
+  --role-shop:        #d8b4fe;
+
   --border-subtle:  rgba(244, 244, 245, 0.03);
   --border-default: rgba(244, 244, 245, 0.08);
   --border-strong:  rgba(244, 244, 245, 0.15);

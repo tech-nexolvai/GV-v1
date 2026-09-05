@@ -105,16 +105,18 @@
   letter-spacing: 0.04em;
 }
 
+/* Tokens, not hex: these were hard-coded light-on-dark values and gave 2.28:1 in light theme
+   against a 4.5:1 requirement. See --role-arch in tokens.css for the measurements. */
 .pdf-pane__role-tag--arch {
-  background: rgba(79, 110, 247, 0.12);
-  color: #7a9bff;
-  border: 1px solid rgba(79, 110, 247, 0.2);
+  background: var(--role-arch-bg);
+  color: var(--role-arch);
+  border: 1px solid var(--role-arch-border);
 }
 
 .pdf-pane__role-tag--shop {
-  background: rgba(168, 85, 247, 0.12);
-  color: #c084fc;
-  border: 1px solid rgba(168, 85, 247, 0.2);
+  background: var(--role-shop-bg);
+  color: var(--role-shop);
+  border: 1px solid var(--role-shop-border);
 }
 
 .pdf-pane__label {
