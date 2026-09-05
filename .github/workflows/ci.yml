@@ -32,7 +32,15 @@ jobs:
     # holds on its own: a weekly rerun of an unchanged tree answers no question.)
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A ceiling for a hung run, not a performance target. Raised from 10 when the suite crossed it:
+    # the job took 9m21s at 4173 tests, 9m41s at 4196, and was cancelled mid-run at 4229 — the tests
+    # were passing, the clock ran out. Ten minutes had stopped meaning "something is stuck" and
+    # started meaning "somebody added tests", which is the wrong thing for a timeout to detect.
+    #
+    # The real cost is that every database-backed test builds its own schema by running every
+    # migration, so the suite gets slower with each migration as well as with each test. Making that
+    # cheaper is worth doing on its own terms; raising this is not a substitute for it.
+    timeout-minutes: 20
     services:
       postgres:
         # PostgreSQL 17 plus the vector extension required by B9.4. Versioned rather than the
