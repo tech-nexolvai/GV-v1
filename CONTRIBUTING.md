@@ -68,6 +68,58 @@ variable names `make token` and `make migrate` print.
 
 ---
 
+## Two sessions at once: use a worktree
+
+Two people — or two agents — in one checkout fight over three things, and the third is expensive.
+
+They overwrite each other's `frontend/main/.env.local`, they race on the same ports, and **they share
+the test database**. The last one is not what it looks like. `tests/app/postgres_fixture.py` already
+gives every test its own schema, so schemas were never the problem: `alembic/versions/0020_pg_trgm.py`
+runs `CREATE EXTENSION IF NOT EXISTS pg_trgm` **unqualified**, so it lands in whichever schema is
+first on `search_path` — the per-test one — while an extension is a *database-wide* object. The second
+concurrent run's `IF NOT EXISTS` finds it already present, skips, and its schema then cannot see
+`gin_trgm_ops`. Every test touching a trigram index fails, the failure count is large and uniform, and
+it looks exactly like a regression. Six test runs were discarded to this in one day before anybody
+worked out what it was.
+
+So the isolation has to be per **database**, and a worktree gets one:
+
+```bash
+make worktree NAME=512-my-branch     # its own checkout, database and ports
+cd .claude/worktrees/512-my-branch
+make where                           # what this checkout uses
+make check                           # against its own test database
+make demo                            # its own ports, its own data
+```
+
+`make where` in any checkout prints its database names and ports. The main checkout keeps the plain
+`gv`, `gvtest`, `:8000` and `:5173` — README, `.env.example` and this file all name them, and renaming
+them would make those instructions wrong. A linked worktree gets a suffix and a port offset derived
+from its own name, stable across runs so a stale server never holds the port the next run wants.
+
+Every checkout drives **one** PostgreSQL: `COMPOSE_PROJECT_NAME` is pinned, because compose otherwise
+names a project after its directory and a worktree would start a second database that cannot bind 5433.
+
+## The demo, in one command
+
+```bash
+make demo
+```
+
+Stack, database, schema, rulebook, a seeded package with one deliberate error, the API and the UI —
+and it is re-runnable without cleaning anything up first. It prints the URL and the project id at the
+end, and Ctrl-C stops both servers.
+
+**The two spellings of the database URL.** `alembic` reads a bare `DATABASE_URL`; it is a separate
+tool and knows nothing of this application's `GV_` prefix. The application reads `GV_DATABASE_URL`
+through `Settings`. Following one instruction with the other variable set gives a server that refuses
+to start and blames a setting you have just made — `make demo` exports both explicitly, side by side,
+so the difference stays visible rather than becoming folklore.
+
+`GV_DEV_PRINCIPAL`, `GV_DEV_PROJECTS` and `VITE_PROJECT_ID` are **exported for the process, never
+written to a file**. Neither of the first two is a field on `Settings`, and `extra="forbid"` means a
+`.env` containing them stops the API starting; `.env.local` is the file two sessions used to fight over.
+
 ## The one command
 
 ```bash
