@@ -1,21 +1,30 @@
-"""The first real pipeline stage: running the rules and writing what they decided.
+"""The pipeline stages: what each one actually does, and where the work stops.
 
-Until now the only implementation of `Stages` was `NoStages`, which answers `{"implemented": False}`
-for every stage and is deliberately loud about it — a default returning `{}` would let a package walk
-the whole pipeline and arrive at review looking processed. This replaces one of those six answers with
-work, and leaves the other five saying exactly what they said before.
+Five of the six are built. `ingest` checks a document is still the one that was uploaded;
+`extract_pages` reads its pages and records what was on them; `validate_evidence` cuts a picture of
+every reading; `match` proposes which architectural item is which shop item; `run_checks` runs the
+rules. `generate_outputs` still answers `{"implemented": False}`, the way `NoStages` answers
+everything — deliberately loud, because a default returning `{}` would let a package walk the whole
+pipeline and arrive at review looking processed.
 
-**Why `run_checks` first, when extraction is not built.** The engine has been finished and tested for
-some time and has never had a caller: no code in the repository writes a `CheckRun` or a `Finding`, so
-every finding anyone has seen was inserted by hand. Wiring the caller proves the spine — applicable
-rules selected, parameters resolved, `execute()` run, rows written, findings visible to a reviewer —
-and makes extraction a matter of supplying operands to something that already works, rather than
-another layer with nothing downstream of it.
+**The stages were wired in the opposite order to the one the data flows in**, and that was
+deliberate. `run_checks` came first, when extraction did not exist, because the engine had been
+finished and tested for a long time and had never had a caller — every finding anyone had seen was
+inserted by hand. Wiring the last stage first proved the spine and made extraction a matter of
+supplying operands to something that already worked. The reading half (#517) followed the same
+principle: `evidence/crop.py` and `retrieval/matching.py` were finished, tested and unreachable from
+production, so what was missing was the connection rather than the algorithm.
 
-**Every finding will be `NOT_FOUND`, and that is the honest result.** There are no observations, so
-there are no operands, so no check can decide anything. The alternative — waiting until extraction
-exists — leaves the engine uncalled and the `CHECKS_HAVE_RUN` entry condition unsatisfiable, so no
-package can legally reach `AWAITING_REVIEW` at all.
+**The pipeline stops at untyped candidates, and that is the state rather than a shortfall.** A
+candidate is a reading with a picture of where it came from. Nothing gives it a meaning, so nothing
+mints a canonical observation, so nothing becomes eligible as a verdict operand — `evidence/gate.py`
+takes a canonical observation and there are none. Which value means "countertop depth" needs the real
+drawings (#274) and a vocabulary Q20 explicitly defers, and a heuristic here would look like progress
+and be a fabricated fact in a review. `docs/decisions/PIPELINE_SPINE.md` records the whole boundary.
+
+**A check therefore still abstains unless a reviewer supplies the reading**, which `CLIENT_FACTS` Q7
+blesses for exactly this. That is the honest result, not a broken one: no observations means no
+operands means nothing to decide from.
 
 **Why here and not in `app/`.** The `Stages` protocol is handed a SQLAlchemy `Session`, and
 `sqlalchemy` is in the banned set for `verdict/` and `rules/` — those packages could not implement
@@ -25,7 +34,9 @@ and the domain layers side by side (`workflow/retry.py`), which is exactly what 
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from uuid import UUID
 
 from opentelemetry.trace import Status, StatusCode
@@ -42,17 +53,31 @@ from app.evidence.record import (
     record_unreadable_document,
     record_unreadable_page,
 )
-from app.models.document import DocumentVersion, PackageRevisionDocument, Page
+from app.models.document import (
+    Document,
+    DocumentKind,
+    DocumentVersion,
+    PackageRevisionDocument,
+    Page,
+)
+from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier
+from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind, ObservationCandidate
+from app.models.matching import MatchCandidate as MatchCandidateRow
 from app.models.package import Package, PackageRevision
 from app.models.parameters import declared_defaults, load_parameter_sets
 from app.models.runs import ExtractionRun, TaskRun
 from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
+from evidence.coordinates import StoredPoint
+from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
+from evidence.polygon import Polygon
 from extraction.manifest import build_manifest
 from extraction.ocr import OcrEngine, RapidOcrEngine, read_page
-from extraction.rasterise import render_page
+from extraction.rasterise import PageTooLarge, render_page
 from extraction.reader import UnreadablePdf, read_page_contents, read_pages
+from retrieval.identifiers import NormalizedIdentifier, normalize_identifier
+from retrieval.matching import MatchableItem, MatchDocumentRole, exact_match
 from rules.applicability import Abstention, CheckContext, resolve
 from rules.parameters import ParameterSet, resolve_all
 from rules.project import ProjectScope
@@ -83,6 +108,41 @@ MINIMUM_VECTOR_CHARACTERS = 1
 #: allocation. Above it `render_page` raises `PageTooLarge` rather than shrinking, because a page
 #: quietly rendered smaller is a page read at a resolution nobody chose.
 MAXIMUM_RENDER_PIXELS = 40_000_000
+
+#: How much page to keep around an evidence crop, in PDF points (72 to the inch).
+#:
+#: Nine points is an eighth of an inch. A crop of exactly the text box is unreadable as evidence — a
+#: reviewer looking at `38 3/4"` needs to see what it is dimensioning — and a crop of the whole page
+#: is not evidence of anything in particular. `CropSpec` gives this no default and requires it from
+#: the caller, which is the right call: it is a judgement about drawings, and this value is the
+#: smallest one that shows a dimension line either side of its text. **Expect to tune it against the
+#: real GV drawings when #274 lands**; it is a starting point chosen deliberately, not a measured one.
+CROP_CONTEXT_MARGIN_PT = Decimal(9)
+
+#: How many individual refusals a stage payload carries, before it reports only the count.
+#:
+#: The payload is stored as JSON on the task run. A document whose pages will not render produces one
+#: refusal per candidate — thousands of near-identical sentences — and a reviewer reads the first few
+#: or none at all. The exact number is always reported alongside.
+REPORTED_REFUSALS = 20
+
+#: The identifier kinds that can say two drawn items are the same item.
+#:
+#: `catalogue` is deliberately absent. `app/models/drawing.py` states the reason on the column
+#: itself: a catalogue number is shared by every unit of that model, while a mark is unique to a
+#: drawing. Matching on a catalogue number would propose that every cabinet of one model is the same
+#: cabinet — mass ambiguity presented as evidence, which is worse than no match at all.
+MATCHABLE_IDENTIFIER_KINDS: tuple[str, ...] = ("vendor_unique", "mark")
+
+#: `Document.kind` to the two roles arch-to-shop matching accepts.
+#:
+#: Schedules and product specs are absent because they are not drawings of the item: a schedule
+#: tabulates, and matching a tabulated row to a drawn cabinet is a different problem with a different
+#: answer. They are ingested and read like any other document; they just do not take part in this.
+MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
+    DocumentKind.ARCHITECTURAL.value: MatchDocumentRole.ARCH,
+    DocumentKind.SHOP.value: MatchDocumentRole.SHOP,
+}
 
 __all__ = ["DatabaseStages"]
 
@@ -144,8 +204,65 @@ class DatabaseStages:
         return {"implemented": False, "stage": stage}
 
     def ingest(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
-        del session, package_revision_id
-        return self._not_built("ingest")
+        """Confirm every document this revision names is still the bytes that were uploaded.
+
+        The API hashed each file on the way in and recorded the digest and the page count. Nothing
+        has ever checked them again. Until now a document that was truncated, replaced or corrupted
+        in storage would be read by `extract_pages` without a word, and the readings would look like
+        readings of the drawing somebody submitted.
+
+        **Three facts are checked, and all three are already recorded** — no new authority is
+        invented here. The bytes hash to `DocumentVersion.sha256`; the file still parses as a PDF;
+        it still has `DocumentVersion.page_count` pages.
+
+        **It reports; it does not gate.** A mismatch is returned in the payload rather than raised,
+        for the reason #491 gave: a corrupt artifact is not transient, so raising would roll the
+        claim back and retry the same broken file for ever. What *should* happen — a revision with a
+        failed digest never reaching `extract_pages` — is an entry condition on the next stage, and
+        no such condition exists yet. That is a real gap and it is stated here rather than papered
+        over: today this makes the failure visible, and a human acts on it.
+        """
+        if self._store is None:
+            # The same answer `extract_pages` gives, and for the same reason: no store is a fact
+            # about this worker's configuration, not about the drawings.
+            return {
+                "implemented": True,
+                "ran": False,
+                "reason": "no artifact store is configured",
+                "documents": 0,
+            }
+
+        records = _document_records_for(session, package_revision_id)
+        verified = 0
+        mismatched: list[str] = []
+        unreadable: list[str] = []
+        miscounted: list[str] = []
+        for version_id, key, sha256, page_count in records:
+            data = _fetch(self._store, key)
+            if hashlib.sha256(data).hexdigest() != sha256:
+                # Recorded and not read further. Counting its pages would be describing a file that
+                # is not the one under review.
+                mismatched.append(str(version_id))
+                continue
+            try:
+                pages = read_pages(data)
+            except UnreadablePdf as error:
+                unreadable.append(f"{version_id}: {error}")
+                continue
+            if len(pages) != page_count:
+                miscounted.append(f"{version_id}: {len(pages)} pages, {page_count} recorded")
+                continue
+            verified += 1
+
+        return {
+            "implemented": True,
+            "ran": True,
+            "documents": len(records),
+            "verified": verified,
+            "digest_mismatched": mismatched,
+            "unreadable": unreadable,
+            "page_count_changed": miscounted,
+        }
 
     def extract_pages(self, session: Session, package_revision_id: UUID) -> Sequence[PageResult]:
         """Read every document attached to this revision, and write down what was on its pages.
@@ -354,14 +471,260 @@ class DatabaseStages:
         return self._ocr_engine
 
     def match(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
-        del session, package_revision_id
-        return self._not_built("match")
+        """Propose which architectural item is which shop item, and write the proposals down.
+
+        `retrieval/matching.py` is finished and tested and has never had a caller: no
+        `match_candidates` row has ever been written by anything but a test. This runs the real exact
+        lane over the revision's own drawing items and persists what it proposes.
+
+        **Per identifier kind, not per item.** An item can carry a vendor code and a mark at once,
+        and the model keeps both deliberately because they disagree often enough that keeping one
+        would lose the disagreement. Collapsing them here would re-make that choice by guess, so each
+        kind is matched against its own kind and the lane is recorded on every row.
+
+        **A proposal, and nothing more.** `match_candidates` has no approval column by design, and
+        this writes nothing else — no approved match, no verdict operand. Approval is a separate
+        insert that names who decided, and nothing here decides.
+
+        **Today this finds nothing, and says so rather than appearing to work.** Writing a candidate
+        needs two `drawing_items` rows, an item needs a view and a type from the `CT0xx` vocabulary,
+        and nothing in the system detects a view or an item on a page — `extraction/model/` reasons
+        about items it is given and does not find them. Both missing pieces are semantic: they need
+        the real drawings (#274) and the vocabulary Q20 defers. So this stage is wired to the real
+        matcher and returns an honest zero with the reason, which is what it should say until item
+        detection exists. The moment it does, this runs unchanged.
+        """
+        items = _matchable_items(session, package_revision_id)
+        if not items:
+            return {
+                "implemented": True,
+                "ran": True,
+                "items": 0,
+                "candidates": 0,
+                "reason": (
+                    "no drawing items exist for this revision: nothing detects views or items on a "
+                    "page yet, which needs the real drawings (#274) and the vocabulary Q20 defers"
+                ),
+            }
+
+        written = 0
+        proposed = 0
+        for kind in MATCHABLE_IDENTIFIER_KINDS:
+            architectural = [
+                item
+                for item, item_kind in items
+                if item_kind == kind and item.document_role is MatchDocumentRole.ARCH
+            ]
+            shop = [
+                item
+                for item, item_kind in items
+                if item_kind == kind and item.document_role is MatchDocumentRole.SHOP
+            ]
+            if not architectural or not shop:
+                continue
+            for result in exact_match(architectural, shop):
+                for candidate in result.candidates:
+                    proposed += 1
+                    # The pair is unique on (left, right, lane), and a re-run proposes the same pair
+                    # again. Checked rather than caught: an IntegrityError would abort the whole
+                    # transaction, taking the rows that were fine with it.
+                    exists = session.execute(
+                        select(MatchCandidateRow.id).where(
+                            MatchCandidateRow.left_item_id == candidate.left_item_id,
+                            MatchCandidateRow.right_item_id == candidate.right_item_id,
+                            MatchCandidateRow.lane == candidate.lane.value,
+                        )
+                    ).first()
+                    if exists is not None:
+                        continue
+                    session.add(
+                        MatchCandidateRow(
+                            left_item_id=candidate.left_item_id,
+                            right_item_id=candidate.right_item_id,
+                            lane=candidate.lane.value,
+                            score=candidate.score,
+                        )
+                    )
+                    written += 1
+
+        session.flush()
+        return {
+            "implemented": True,
+            "ran": True,
+            "items": len({item.item_id for item, _ in items}),
+            "proposed": proposed,
+            "candidates": written,
+        }
 
     def validate_evidence(
         self, session: Session, package_revision_id: UUID
     ) -> Mapping[str, object]:
-        del session, package_revision_id
-        return self._not_built("validate_evidence")
+        """Cut the picture of the region every candidate was read from.
+
+        `evidence/crop.py` has been finished and tested for months with **no production caller**, so
+        no reviewer has ever been shown the pixels behind a reading. A number in a table that a
+        person cannot check against the sheet is a number they have to take on trust, which is the
+        one thing this system is not supposed to ask for.
+
+        **What this does not do.** It does not qualify evidence, promote a candidate, or assign it a
+        meaning. A crop is a picture of a region; the candidate it belongs to stays exactly as
+        untyped after this stage as before it. The stage is named for the step it will eventually
+        also perform — corroboration and the evidence gate — and it performs the part that is built.
+
+        **The coordinate round trip is the delicate part, so it is exact rather than trusted.** A
+        candidate's polygon is integer image pixels at the dpi the reader used. `CropSpec` wants
+        stored space: the same points normalised to 0..1. Dividing by the rendered page's own pixel
+        dimensions is the exact inverse of the multiplication `_crop_box` performs, so the pixels
+        that come back are the pixels the reader was looking at — provided the render matches the
+        read. Rendering at `self._dpi`, the dpi the candidates were read at, is what makes that true,
+        and `_stored_polygon` refuses rather than guesses when a point falls outside the page.
+        """
+        if self._store is None:
+            return {
+                "implemented": True,
+                "ran": False,
+                "reason": "no artifact store is configured",
+                "crops": 0,
+            }
+
+        keys = dict(_documents_for(session, package_revision_id))
+        if not keys:
+            return {"implemented": True, "ran": True, "candidates": 0, "crops": 0}
+
+        rows = session.execute(
+            select(ObservationCandidate, Page)
+            .join(Page, Page.id == ObservationCandidate.page_id)
+            .where(ObservationCandidate.document_version_id.in_(list(keys)))
+            .order_by(Page.index, ObservationCandidate.created_at)
+        ).all()
+        if not rows:
+            return {"implemented": True, "ran": True, "candidates": 0, "crops": 0}
+
+        # **Which candidates already have a crop.** `evidence_artifacts` is append-only and unique on
+        # (storage_key, sha256), and a crop's key is content-addressed — so re-running this stage on
+        # the same page would regenerate byte-identical crops and collide. A redelivery is not a
+        # second reading, exactly as `record_candidates` says of its own rows.
+        existing = session.execute(
+            select(
+                EvidenceArtifact.candidate_id,
+                EvidenceArtifact.storage_key,
+                EvidenceArtifact.sha256,
+            ).where(EvidenceArtifact.document_version_id.in_(list(keys)))
+        ).all()
+        already = {candidate_id for candidate_id, _, _ in existing}
+
+        by_page: dict[UUID, list[ObservationCandidate]] = {}
+        pages: dict[UUID, Page] = {}
+        for candidate, page in rows:
+            by_page.setdefault(page.id, []).append(candidate)
+            pages[page.id] = page
+
+        written = 0
+        abstained: list[str] = []
+        skipped = 0
+        # **Seeded from the database, not empty.** Two candidates whose crops are byte-identical
+        # share one content-addressed key, so only the first gets a row and the second is skipped
+        # without one. On the next pass that second candidate is not in `already` — it has no
+        # artifact — and regenerating its crop collides with the row its twin wrote. An in-memory set
+        # cannot see that, because the collision is with work from a previous call.
+        seen: set[tuple[str, str]] = {(key, digest) for _, key, digest in existing}
+        documents: dict[UUID, bytes] = {}
+        for page_id, candidates in by_page.items():
+            page = pages[page_id]
+            key = keys.get(page.document_version_id)
+            if key is None:
+                continue
+            if page.render_failed:
+                # The manifest already recorded that this page would not render. Asking the
+                # rasteriser again would produce the same failure more slowly.
+                abstained.append(f"page {page.index}: the manifest recorded a failed render")
+                skipped += len(candidates)
+                continue
+            if page.document_version_id not in documents:
+                documents[page.document_version_id] = _fetch(self._store, key)
+            try:
+                rendered = render_page(
+                    documents[page.document_version_id],
+                    page.index,
+                    document_version_id=page.document_version_id,
+                    page_content_hash=page.content_hash,
+                    dpi=self._dpi,
+                    maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                )
+            except (PageTooLarge, UnreadablePdf, ValueError) as error:
+                # One page that will not render, in a document whose others might. Every candidate on
+                # it keeps its reading and goes without a picture, which is the honest pair.
+                abstained.append(f"page {page.index}: {error}")
+                skipped += len(candidates)
+                continue
+
+            for candidate in candidates:
+                if candidate.id in already:
+                    skipped += 1
+                    continue
+                polygon = _stored_polygon(candidate, rendered)
+                if polygon is None:
+                    abstained.append(
+                        f"page {page.index}: a candidate's polygon does not describe a region of "
+                        "this rendering"
+                    )
+                    continue
+                result = generate_crop(
+                    rendered,
+                    CropSpec(
+                        polygon=polygon, context_margin_pt=CROP_CONTEXT_MARGIN_PT, dpi=self._dpi
+                    ),
+                    self._store,
+                )
+                if result.status is not CropStatus.AVAILABLE or result.artifact is None:
+                    # `generate_crop` abstains rather than raising, and the reason is a sentence. It
+                    # is carried through rather than counted, because "17 crops failed" tells a
+                    # reviewer nothing they can act on.
+                    abstained.append(f"page {page.index}: {result.reason}")
+                    continue
+                artifact = result.artifact
+                identity = (artifact.key, artifact.sha256)
+                if identity in seen:
+                    # Two candidates whose crops are byte-identical — the same region read twice, or
+                    # two identical labels in the same place. The image is stored once and belongs to
+                    # whichever candidate reached it first; this one gets no artifact row, because
+                    # the unique constraint on (storage_key, sha256) permits only one. That is a
+                    # real limit rather than a tidy outcome: a reviewer following the second
+                    # candidate finds no picture. Fixing it means letting two rows share one stored
+                    # object, which is a schema decision and not this change's to make.
+                    skipped += 1
+                    continue
+                seen.add(identity)
+                session.add(
+                    EvidenceArtifact(
+                        candidate_id=candidate.id,
+                        canonical_observation_id=None,
+                        document_version_id=page.document_version_id,
+                        page_id=page.id,
+                        kind=EvidenceArtifactKind.CROP.value,
+                        storage_key=artifact.key,
+                        sha256=artifact.sha256,
+                        media_type="image/png",
+                        # The crop is pixels of a rendered page, so the space it is expressed in is
+                        # the image's, not the normalised one the polygon was converted to.
+                        coordinate_space="image",
+                    )
+                )
+                written += 1
+
+        session.flush()
+        return {
+            "implemented": True,
+            "ran": True,
+            "candidates": len(rows),
+            "crops": written,
+            "already_had_one": skipped,
+            "refused": len(abstained),
+            # Capped, because this payload is persisted as JSON and a document that fails to render
+            # would otherwise put one sentence per candidate into it. The count above is exact; these
+            # are the examples a person reads first.
+            "refusals": abstained[:REPORTED_REFUSALS],
+        }
 
     def generate_outputs(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
         del session, package_revision_id
@@ -598,6 +961,162 @@ def _documents_for(session: Session, package_revision_id: UUID) -> list[tuple[UU
         .order_by(DocumentVersion.created_at)
     ).all()
     return [(version_id, storage_key(document_id, sha)) for version_id, document_id, sha in rows]
+
+
+def _document_records_for(
+    session: Session, package_revision_id: UUID
+) -> list[tuple[UUID, str, str, int]]:
+    """Every document version in this revision, with its key, recorded digest and page count.
+
+    Separate from `_documents_for` rather than widening it: that function's callers want somewhere to
+    read bytes from, and this one wants the facts to check those bytes against. One function
+    returning a four-tuple to callers that use two of it is how a helper starts drifting.
+    """
+    rows = session.execute(
+        select(
+            PackageRevisionDocument.document_version_id,
+            PackageRevisionDocument.document_id,
+            DocumentVersion.sha256,
+            DocumentVersion.page_count,
+        )
+        .join(
+            DocumentVersion,
+            DocumentVersion.id == PackageRevisionDocument.document_version_id,
+        )
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .order_by(DocumentVersion.created_at)
+    ).all()
+    return [
+        (version_id, storage_key(document_id, sha), sha, page_count)
+        for version_id, document_id, sha, page_count in rows
+    ]
+
+
+def _stored_polygon(candidate: ObservationCandidate, rendered: RenderedPage) -> Polygon | None:
+    """A candidate's image-pixel polygon as the normalised one a `CropSpec` takes.
+
+    Returns `None` rather than raising, and rather than clamping. A point outside the rendering means
+    the pixels in front of us are not the pixels the reader measured against — a different dpi, a
+    different page, a re-rendered document. Clamping would produce a crop of a real region that is
+    not the region the reading came from, which is worse than no crop: it is a picture that argues
+    for the wrong number. `validate_evidence` counts the refusal and says which page it was on.
+    """
+    width = Decimal(rendered.width_px)
+    height = Decimal(rendered.height_px)
+    try:
+        points = tuple(
+            StoredPoint(x=Decimal(int(x)) / width, y=Decimal(int(y)) / height)
+            for x, y in candidate.polygon
+        )
+        return Polygon(
+            points=points,
+            space="stored",
+            document_version_id=candidate.document_version_id,
+            page=rendered.page_index,
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        # `Polygon` refuses a degenerate, self-intersecting or out-of-page shape, and a text run with
+        # zero width is degenerate. Every one of those is a reason not to cut a crop.
+        return None
+
+
+def _projection(
+    item: DrawingItem,
+    role: MatchDocumentRole,
+    identifier: NormalizedIdentifier | None,
+    project_id: UUID,
+    package_revision_id: UUID,
+) -> MatchableItem:
+    """One drawing item as the matcher's own projection of it."""
+    return MatchableItem(
+        item_id=item.id,
+        identifier=identifier,
+        project_id=project_id,
+        package_revision_id=package_revision_id,
+        # The item's own type, which is the scope the matcher compares within: a countertop is not a
+        # candidate match for a cabinet however alike their marks.
+        category=item.item_type,
+        document_role=role,
+    )
+
+
+def _matchable_items(
+    session: Session, package_revision_id: UUID
+) -> list[tuple[MatchableItem, str]]:
+    """This revision's drawing items as the matcher's own projection, paired with identifier kind.
+
+    One entry per (item, identifier): an item carrying both a vendor code and a mark takes part in
+    both lanes, and each is matched only against its own kind. An item with no identifier at all is
+    included once with `identifier=None`, because the matcher's answer for it — unmatched, for a
+    stated reason — is a result a reviewer needs, not an absence to hide.
+
+    The role comes from `Document.kind`, which is the only place a drawing says whether it is the
+    architect's or the shop's. Schedules and product specs are filtered out by `MATCH_ROLES`.
+    """
+    project_id = session.execute(
+        select(Package.project_id)
+        .join(PackageRevision, PackageRevision.package_id == Package.id)
+        .where(PackageRevision.id == package_revision_id)
+    ).scalar_one_or_none()
+    if project_id is None:
+        return []
+
+    rows = session.execute(
+        select(DrawingItem, Document.kind, ItemIdentifier)
+        .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
+        .join(Page, Page.id == DrawingView.page_id)
+        .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
+        .join(Document, Document.id == DocumentVersion.document_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .outerjoin(ItemIdentifier, ItemIdentifier.drawing_item_id == DrawingItem.id)
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .order_by(DrawingItem.created_at)
+    ).all()
+
+    # Grouped by item first, because the decision below is per item and not per row. An item with
+    # two identifiers arrives as two rows, and an item whose only identifier is a catalogue number
+    # must still appear — as unmatchable, which is a result — rather than vanish because its one row
+    # was filtered out. Filtering row by row made exactly that mistake.
+    grouped: dict[UUID, tuple[DrawingItem, str, list[ItemIdentifier]]] = {}
+    for item, kind, identifier in rows:
+        entry = grouped.setdefault(item.id, (item, kind, []))
+        if identifier is not None:
+            entry[2].append(identifier)
+
+    items: list[tuple[MatchableItem, str]] = []
+    for item, kind, identifiers in grouped.values():
+        role = MATCH_ROLES.get(kind)
+        if role is None:
+            continue
+        usable = [
+            identifier
+            for identifier in identifiers
+            if identifier.kind in MATCHABLE_IDENTIFIER_KINDS
+        ]
+
+        if not usable:
+            # No identifier this lane can use — either none at all, or only a catalogue number,
+            # which names a model rather than a unit. The matcher's answer is unmatched with a
+            # reason, and a reviewer needs to see that far more than they need the row hidden.
+            items.append((_projection(item, role, None, project_id, package_revision_id), ""))
+            continue
+        for identifier in usable:
+            items.append(
+                (
+                    _projection(
+                        item,
+                        role,
+                        normalize_identifier(identifier.value_as_printed),
+                        project_id,
+                        package_revision_id,
+                    ),
+                    identifier.kind,
+                )
+            )
+    return items
 
 
 def _task_run_for(session: Session, package_revision_id: UUID, stage: str) -> TaskRun | None:
