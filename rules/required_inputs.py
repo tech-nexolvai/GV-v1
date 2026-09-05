@@ -30,7 +30,13 @@ from dataclasses import dataclass, field
 
 from rules.schema import Cardinality, Rule
 
-__all__ = ["ParameterNeed", "QuantityNeed", "RequiredInputs", "required_inputs"]
+__all__ = [
+    "DiscriminatorNeed",
+    "ParameterNeed",
+    "QuantityNeed",
+    "RequiredInputs",
+    "required_inputs",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,11 +79,31 @@ class ParameterNeed:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscriminatorNeed:
+    """A judgement about the drawing that decides which variant of a rule applies.
+
+    Neither an input nor a parameter, and it was the gap that made this class necessary: a rule with a
+    discriminator nobody stated abstains with REVIEW_REQUIRED whatever measurements are supplied, so a
+    form offering every input and every parameter still could not drive `CT-WIDTH-001` to a verdict.
+
+    `choices` is closed. The resolver matches the stated value against the declared variants and finds
+    nothing if it is misspelled — `NO_APPLICABLE_RULE`, which reads as "this rule does not apply here"
+    rather than "you typed the layout wrongly". So a caller must choose from these, and the API
+    refuses anything else.
+    """
+
+    name: str
+    rule_ids: tuple[str, ...]
+    choices: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RequiredInputs:
     """Everything the published rulebook wants, grouped so a form can render it."""
 
     quantities: tuple[QuantityNeed, ...]
     parameters: tuple[ParameterNeed, ...]
+    discriminators: tuple[DiscriminatorNeed, ...]
 
 
 #: Parameters that no reviewer may supply, and why.
@@ -112,6 +138,7 @@ def required_inputs(rules: Iterable[Rule]) -> RequiredInputs:
     """
     quantities: dict[str, tuple[str, str, bool, list[Consumer]]] = {}
     parameters: dict[str, tuple[str, list[str], str | None]] = {}
+    discriminators: dict[str, tuple[list[str], list[str]]] = {}
 
     for rule in rules:
         for input_name, selector in (rule.inputs or {}).items():
@@ -159,6 +186,24 @@ def required_inputs(rules: Iterable[Rule]) -> RequiredInputs:
                 declared if declared is not None else _default_text(spec),
             )
 
+        # A rule with no layout discriminator declares `GlobalApplicability` explicitly rather than
+        # omitting the field (ADR-0007), so absence here is a real answer and not a missing key.
+        applicability = rule.applicability
+        name = getattr(applicability, "discriminator", None)
+        if name:
+            choices = [
+                str(variant.when) for variant in (getattr(applicability, "variants", ()) or ())
+            ]
+            known_rules, known_choices = discriminators.get(name, ([], choices))
+            # Two rules sharing a discriminator name must agree on its vocabulary. They do not today,
+            # and if they ever disagreed the form would offer a choice one of them rejects — so the
+            # union is taken and the disagreement would surface as a variant that resolves for one
+            # rule and not the other, which the finding then states.
+            discriminators[name] = (
+                [*known_rules, rule.id],
+                [*known_choices, *(c for c in choices if c not in known_choices)],
+            )
+
     return RequiredInputs(
         quantities=tuple(
             QuantityNeed(
@@ -179,6 +224,14 @@ def required_inputs(rules: Iterable[Rule]) -> RequiredInputs:
                 blocked=name in BLOCKED_PARAMETERS,
             )
             for name, (scope, rule_ids, declared) in sorted(parameters.items())
+        ),
+        discriminators=tuple(
+            DiscriminatorNeed(
+                name=name,
+                rule_ids=tuple(sorted(set(rule_ids))),
+                choices=tuple(choices),
+            )
+            for name, (rule_ids, choices) in sorted(discriminators.items())
         ),
     )
 

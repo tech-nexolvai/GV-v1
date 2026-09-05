@@ -64,6 +64,7 @@ from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from workflow.idempotency import stage_idempotency_key
+from workflow.measurements import run_parameters_for
 from workflow.review import ENGINE_VERSION, PageResult
 
 #: What produced these readings, recorded on the extraction run so a candidate can say what read it.
@@ -398,7 +399,23 @@ class DatabaseStages:
                 "reason": "no rules are published; nothing to check",
             }
 
-        stored_layers = load_parameter_sets(session, package.project_id)
+        # **The RUN layer, which nothing else loads.** `load_parameter_sets` covers GLOBAL and
+        # PROJECT and says why — "RUN sets are supplied per review and are not loaded here" — so a
+        # run-scope parameter reached no resolver at all. `sink_interior_depth` and
+        # `sink_interior_width` come off the sink cut sheet for one review, and without this both
+        # sink-cutout checks abstained however carefully a reviewer typed them, for a reason nothing
+        # on the findings list could explain.
+        #
+        # Loaded here rather than injected, because unlike operands these values *are* in the
+        # database: reading them is the same act as reading the project's own settings.
+        stored_layers = [
+            *load_parameter_sets(session, package.project_id),
+            *(
+                run
+                for run in (run_parameters_for(session, package_revision_id),)
+                if run is not None
+            ),
+        ]
         rules = [store.latest(rule_id) for rule_id in store.rule_ids()]
         defaults = declared_defaults(
             [snapshot.rule for snapshot in rules if snapshot is not None], when=utc_now()

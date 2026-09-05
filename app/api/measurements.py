@@ -51,11 +51,24 @@ from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Package, PackageRevision
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import to_rows
-from app.schemas.measurements import ReviewerEntry, ReviewerEntryOut, StoredValue
+from app.schemas.measurements import (
+    CheckRequest,
+    DiscriminatorOut,
+    ParameterOut,
+    QuantityOut,
+    RequiredInputsOut,
+    ReviewerEntry,
+    ReviewerEntryOut,
+    StoredList,
+    StoredValue,
+)
+from app.verdicts.rulebook import snapshot_store
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
+from rules.required_inputs import required_inputs
 from rules.schema import Quantity
 from units.measurement import Measurement
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from workflow.measurements import LIST_MARKER
 from workflow.outbox import enqueue
 
 router = APIRouter(tags=["measurements"])
@@ -180,6 +193,77 @@ def _store(
     )
 
 
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/required-inputs",
+    response_model=RequiredInputsOut,
+    summary="What the published rulebook needs before it can decide anything",
+)
+def read_required_inputs(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> RequiredInputsOut:
+    """The fields a reviewer must fill, derived from the rules themselves.
+
+    **This exists so a form cannot omit a field.** A hand-written list is right the day it is written
+    and silently wrong the first time a rule gains an input — and the check then abstains for a reason
+    the reviewer cannot act on, which looks exactly like a genuine missing dimension.
+
+    Grouped by physical quantity rather than by rule input, because three rules read the sink's front
+    offset and one of them calls the same measurement by a different name. A reviewer measures it
+    once and is asked once; the `consumers` say which inputs the value feeds.
+
+    Reads the published rulebook from the database, which is what `run_checks` reads. Nothing
+    published means an empty form and `rules_published: 0` — a different situation from a rulebook
+    that wants nothing, and the caller can tell them apart.
+    """
+    _revision(session, project_id, package_id)
+
+    store = snapshot_store(session)
+    rules = [
+        snapshot.rule
+        for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
+        if snapshot is not None
+    ]
+    needs = required_inputs(rules)
+
+    return RequiredInputsOut(
+        quantities=tuple(
+            QuantityOut(
+                key=quantity.key,
+                semantic_type=quantity.semantic_type,
+                source=quantity.source,
+                many=quantity.many,
+                consumers=tuple(
+                    {"rule_id": consumer.rule_id, "input_name": consumer.input_name}
+                    for consumer in quantity.consumers
+                ),
+            )
+            for quantity in needs.quantities
+        ),
+        parameters=tuple(
+            ParameterOut(
+                name=parameter.name,
+                scope=parameter.scope,
+                rule_ids=parameter.rule_ids,
+                declared_default=parameter.declared_default,
+                blocked=parameter.blocked,
+            )
+            for parameter in needs.parameters
+        ),
+        discriminators=tuple(
+            DiscriminatorOut(
+                name=discriminator.name,
+                rule_ids=discriminator.rule_ids,
+                choices=discriminator.choices,
+            )
+            for discriminator in needs.discriminators
+        ),
+        rules_published=len(rules),
+    )
+
+
 @router.post(
     "/projects/{project_id}/packages/{package_id}/measurements",
     response_model=ReviewerEntryOut,
@@ -204,33 +288,70 @@ def enter_measurements(
     """
     _revision(session, project_id, package_id)
 
-    parameters = {entry.name: _parse(entry.value, field=entry.name) for entry in body.parameters}
-    parameter_typed = {entry.name: entry.value for entry in body.parameters}
-    # Keyed `rule_id:name`, because two rules may each declare an input called `width` and they are
-    # not the same reading. The drain splits this back apart when it builds the operand map.
-    measurements = {
-        f"{entry.rule_id}:{entry.name}": _parse(entry.value, field=f"{entry.rule_id}.{entry.name}")
-        for entry in body.measurements
-    }
-    measurement_typed = {
-        f"{entry.rule_id}:{entry.name}": entry.value for entry in body.measurements
-    }
+    # **Split by scope, because a layer is a claim about how long a value stays true.** A project
+    # setting applies to every review of the job; a run value was true for this one. Filing the sink
+    # from today's cut sheet as a project setting would make it look authoritative next time.
+    project_values: dict[str, Measurement] = {}
+    project_typed: dict[str, str] = {}
+    run_values: dict[str, Measurement] = {}
+    run_typed: dict[str, str] = {}
+    for entry in body.parameters:
+        parsed = _parse(entry.value, field=entry.name)
+        if entry.scope == "run":
+            run_values[entry.name] = parsed
+            run_typed[entry.name] = entry.value
+        else:
+            project_values[entry.name] = parsed
+            project_typed[entry.name] = entry.value
 
-    parameter_version, stored_parameters = _store(
+    # Keyed `rule_id:name`, because two rules may each declare an input called `width` and they are
+    # not the same reading. A many-valued input becomes one row per measurement, `#0` upward, in the
+    # order given — that order is the layout left to right, and `CAB-ARCH-VS-SHOP-001` compares two
+    # runs position by position, so reordering here would compare the wrong pair of cabinets.
+    measurement_keys: set[str] = set()
+    for measurement in body.measurements:
+        label = f"{measurement.rule_id}.{measurement.name}"
+        if measurement.values is not None:
+            for index, raw in enumerate(measurement.values):
+                key = f"{measurement.rule_id}:{measurement.name}{LIST_MARKER}{index}"
+                run_values[key] = _parse(raw, field=f"{label}[{index}]")
+                run_typed[key] = raw
+                measurement_keys.add(key)
+        else:
+            key = f"{measurement.rule_id}:{measurement.name}"
+            if measurement.value is None:  # pragma: no cover - the schema refuses neither form
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{label}: neither a value nor values was given.",
+                )
+            run_values[key] = _parse(measurement.value, field=label)
+            run_typed[key] = measurement.value
+            measurement_keys.add(key)
+
+    parameter_version, stored_project = _store(
         session,
         project_id=project_id,
         layer=ParameterLayer.PROJECT,
-        values=parameters,
-        typed=parameter_typed,
+        values=project_values,
+        typed=project_typed,
         actor=principal.id,
     )
-    measurement_version, stored_measurements = _store(
+    # **Run parameters and measurements share one stored set.** `rules/parameters.py` refuses two sets
+    # in one layer, so they cannot be stored separately — and they belong together anyway, being the
+    # two halves of what a reviewer supplied for this review. `workflow/measurements.py` tells them
+    # apart again by the `rule_id:` prefix.
+    measurement_version, stored_run = _store(
         session,
         project_id=project_id,
         layer=ParameterLayer.RUN,
-        values=measurements,
-        typed=measurement_typed,
+        values=run_values,
+        typed=run_typed,
         actor=principal.id,
+    )
+    stored_measurements = tuple(v for v in stored_run if v.name in measurement_keys)
+    stored_parameters = (
+        *stored_project,
+        *(v for v in stored_run if v.name not in measurement_keys),
     )
 
     try:
@@ -239,12 +360,70 @@ def enter_measurements(
         session.rollback()
         raise
 
+    grouped: dict[str, list[StoredValue]] = {}
+    for value in stored_measurements:
+        if LIST_MARKER in value.name:
+            grouped.setdefault(value.name.split(LIST_MARKER)[0], []).append(value)
+
     return ReviewerEntryOut(
         parameter_set_version=parameter_version,
         measurement_set_version=measurement_version,
         parameters=stored_parameters,
-        measurements=stored_measurements,
+        measurements=tuple(v for v in stored_measurements if LIST_MARKER not in v.name),
+        # Grouped back into runs, so a client shows four cabinets rather than `cabinet_widths#0`
+        # through `#3`. Sorted by index rather than by insertion: the order is the layout.
+        lists=tuple(
+            StoredList(
+                name=name,
+                values=tuple(sorted(values, key=lambda v: int(v.name.split(LIST_MARKER)[1]))),
+            )
+            for name, values in sorted(grouped.items())
+        ),
     )
+
+
+def _check_discriminators(session: Session, stated: dict[str, str]) -> None:
+    """Refuse a discriminator the rulebook does not declare, or a value it does not offer.
+
+    **A misspelling would not fail — it would abstain**, and the two are not the same to a reviewer.
+    The resolver matches the stated value against the declared variants and finds nothing, so the
+    rule reports NO_APPLICABLE_RULE: "this check does not apply to this package". A reviewer reading
+    that has no reason to suspect a typo, and the check they meant to run silently did not.
+
+    So the vocabulary is closed here, where the mistake can still be corrected, and the message names
+    what was offered.
+    """
+    if not stated:
+        return
+    store = snapshot_store(session)
+    rules = [
+        snapshot.rule
+        for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
+        if snapshot is not None
+    ]
+    declared = {
+        discriminator.name: discriminator.choices
+        for discriminator in required_inputs(rules).discriminators
+    }
+    for name, value in stated.items():
+        if name not in declared:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"no published rule uses a discriminator called {name!r}. "
+                    f"The rulebook declares: {sorted(declared) or 'none'}."
+                ),
+            )
+        if value not in declared[name]:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"{name}={value!r} is not one of the variants the rulebook declares "
+                    f"({list(declared[name])}). An unrecognised value does not fail the check — it "
+                    "makes the rule report that it does not apply, which reads as a deliberate "
+                    "exclusion rather than a typo."
+                ),
+            )
 
 
 @router.post(
@@ -258,6 +437,7 @@ def request_checks(
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
+    body: CheckRequest | None = None,
 ) -> dict[str, str]:
     """Record the intent to run the checks. Starts nothing, and cannot.
 
@@ -272,10 +452,12 @@ def request_checks(
     separation `DESIGN_PLATFORM.md` §4.2 asks for.
     """
     revision = _revision(session, project_id, package_id)
+    stated = dict((body.discriminators if body else {}) or {})
+    _check_discriminators(session, stated)
     accepted = enqueue(
         session,
         workflow=RUN_CHECKS_WORKFLOW,
-        payload={"package_revision_id": str(revision.id)},
+        payload={"package_revision_id": str(revision.id), "discriminators": stated},
     )
     try:
         session.commit()
