@@ -31,11 +31,11 @@ from app.models import Package, PackageRevision
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import ParameterValue as StoredParameterValue
 from app.models.parameters import from_rows
-from rules.parameters import ParameterLayer
+from rules.parameters import ParameterLayer, ParameterSet
 from units.measurement import Measurement, Unit
 from verdict.operands import EvidenceStatus, VerdictOperand
 
-__all__ = ["SOURCE", "operands_for"]
+__all__ = ["SOURCE", "operands_for", "run_parameters_for"]
 
 #: The operand source recorded against a reviewer's reading.
 #:
@@ -43,6 +43,52 @@ __all__ = ["SOURCE", "operands_for"]
 #: not, and a finding that claimed `SHOP` would say extraction had produced it. `verdict/operands.py`
 #: names this source for exactly this case.
 SOURCE = "USER_INPUT"
+
+
+#: How a many-valued measurement's position is written into its stored name.
+#:
+#: `CT-WIDTH-001:cabinet_widths#2` is the third cabinet. A separator the rulebook cannot produce, so
+#: an ordinary input name can never be mistaken for an indexed one — rule ids and input names are
+#: identifiers and carry no `#`.
+LIST_MARKER = "#"
+
+
+def _latest_run_set(
+    session: Session, package_revision_id: UUID
+) -> tuple[StoredParameterSet | None, ParameterSet | None]:
+    """The newest RUN set for this package's project, and its values.
+
+    **The newest, because a reviewer who corrects a typo submits again.** Running against an earlier
+    set would judge the package on a number the reviewer had already replaced, and it would look
+    entirely normal on the findings list. Earlier versions stay: a finding cites the version that
+    judged it (ADR-0016), and superseding a value is not deleting it.
+    """
+    project_id = session.execute(
+        select(Package.project_id)
+        .join(PackageRevision, PackageRevision.package_id == Package.id)
+        .where(PackageRevision.id == package_revision_id)
+    ).scalar_one_or_none()
+    if project_id is None:
+        return None, None
+
+    stored = session.execute(
+        select(StoredParameterSet)
+        .where(
+            StoredParameterSet.project_id == project_id,
+            StoredParameterSet.layer == ParameterLayer.RUN.value,
+        )
+        .order_by(StoredParameterSet.version.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if stored is None:
+        return None, None
+
+    values = list(
+        session.execute(
+            select(StoredParameterValue).where(StoredParameterValue.parameter_set_id == stored.id)
+        ).scalars()
+    )
+    return stored, from_rows(stored, values)
 
 
 def operands_for(
@@ -59,47 +105,88 @@ def operands_for(
     reviewer had already replaced. Earlier versions stay, because a finding cites the version that
     judged it (ADR-0016) and superseding a value is not deleting it.
     """
-    project_id = session.execute(
-        select(Package.project_id)
-        .join(PackageRevision, PackageRevision.package_id == Package.id)
-        .where(PackageRevision.id == package_revision_id)
-    ).scalar_one_or_none()
-    if project_id is None:
+    stored, parameters = _latest_run_set(session, package_revision_id)
+    if stored is None or parameters is None:
         return {}
 
-    stored = session.execute(
-        select(StoredParameterSet)
-        .where(
-            StoredParameterSet.project_id == project_id,
-            StoredParameterSet.layer == ParameterLayer.RUN.value,
-        )
-        .order_by(StoredParameterSet.version.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if stored is None:
-        return {}
-
-    values = list(
-        session.execute(
-            select(StoredParameterValue).where(StoredParameterValue.parameter_set_id == stored.id)
-        ).scalars()
-    )
-    parameters = from_rows(stored, values)
+    # **A many-valued input arrives as several rows and leaves as one tuple.**
+    #
+    # `parameter_values` holds one number per name, so a run of four cabinets is stored as
+    # `CT-WIDTH-001:cabinet_widths#0` through `#3` — one row per measurement, each carrying its own
+    # provenance, which is what a reviewer actually did. They are regrouped here because
+    # `VerdictOperand` takes a tuple of `Measurement` for a many-valued operand and the engine checks
+    # arity: a single value handed to `sum_within_tolerance` would compare a total against one
+    # cabinet.
+    #
+    # Sorted by index rather than by insertion, because the order is the layout left to right and
+    # `CAB-ARCH-VS-SHOP-001` compares two runs position by position.
+    scalars: dict[tuple[str, str], tuple[Measurement, str]] = {}
+    lists: dict[tuple[str, str], dict[int, tuple[Measurement, str]]] = {}
+    for key, value in parameters.parameters.items():
+        rule_id, _, remainder = key.partition(":")
+        if not remainder:
+            # Not a measurement. A RUN-layer entry with no `rule_id:` prefix is a run-scope parameter
+            # — `sink_interior_width` and the like — and belongs to `run_parameters_for`, not here.
+            continue
+        name, marker, index_text = remainder.partition(LIST_MARKER)
+        measurement = Measurement(value.value.value, Unit(value.value.unit), None)
+        # Names the person and the set, so a finding's operand can be traced to who supplied it and
+        # which version they supplied.
+        reference = f"reviewer:{value.set_by}:{stored.set_id}"
+        if marker:
+            try:
+                index = int(index_text)
+            except ValueError:
+                # A malformed index is dropped rather than guessed into position 0, where it would
+                # silently reorder a cabinet run. Nothing this module writes produces one.
+                continue
+            lists.setdefault((rule_id, name), {})[index] = (measurement, reference)
+        else:
+            scalars[(rule_id, name)] = (measurement, reference)
 
     operands: dict[str, dict[str, VerdictOperand]] = {}
-    for key, value in parameters.parameters.items():
-        rule_id, _, name = key.partition(":")
-        if not name:
-            # Not a measurement this module wrote. A RUN-layer parameter with no `rule_id:` prefix
-            # belongs to something else — skipped rather than guessed into a rule.
-            continue
+    for (rule_id, name), (measurement, reference) in scalars.items():
         operands.setdefault(rule_id, {})[name] = VerdictOperand(
             name=name,
-            value=Measurement(value.value.value, Unit(value.value.unit), None),
+            value=measurement,
             status=EvidenceStatus.HUMAN_CONFIRMED,
             source=SOURCE,
-            # Names the person and the set, so a finding's operand can be traced to who supplied it
-            # and which version they supplied.
-            evidence_ref=f"reviewer:{value.set_by}:{stored.set_id}",
+            evidence_ref=reference,
+        )
+    for (rule_id, name), indexed in lists.items():
+        ordered = [indexed[position] for position in sorted(indexed)]
+        operands.setdefault(rule_id, {})[name] = VerdictOperand(
+            name=name,
+            value=tuple(measurement for measurement, _ in ordered),
+            status=EvidenceStatus.HUMAN_CONFIRMED,
+            source=SOURCE,
+            evidence_ref=ordered[0][1],
         )
     return operands
+
+
+def run_parameters_for(session: Session, package_revision_id: UUID) -> ParameterSet | None:
+    """The run-scope parameters a reviewer supplied, as a layer the resolver can take.
+
+    **This exists because nothing else loads the RUN layer.** `app/models/parameters.py:
+    load_parameter_sets` covers GLOBAL and PROJECT and says so — "RUN sets are supplied per review and
+    are not loaded here" — so `sink_interior_depth` and `sink_interior_width` reached no resolver and
+    both sink-cutout checks abstained however carefully the reviewer typed the cut sheet.
+
+    Measurement keys are excluded. They live in the same stored set because both are per-review, but
+    they are operands rather than parameters, and handing `CT-WIDTH-001:cabinet_widths#0` to the
+    resolver as a parameter name would put a measurement in the effective parameter set a reviewer
+    reads.
+    """
+    stored, parameters = _latest_run_set(session, package_revision_id)
+    if stored is None or parameters is None:
+        return None
+    plain = {name: value for name, value in parameters.parameters.items() if ":" not in name}
+    if not plain:
+        return None
+    return ParameterSet(
+        project_id=parameters.project_id,
+        layer=ParameterLayer.RUN,
+        version=parameters.version,
+        parameters=plain,
+    )

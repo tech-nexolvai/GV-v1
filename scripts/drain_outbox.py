@@ -40,13 +40,24 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 WATCH_SECONDS = 2.0
 
 
-def _run_checks(session: object, package_revision_id: UUID) -> Mapping[str, object]:
-    """Run the checks for one revision, with whatever the reviewer supplied as operands."""
+def _run_checks(
+    session: object,
+    package_revision_id: UUID,
+    discriminators: Mapping[str, str] | None = None,
+) -> Mapping[str, object]:
+    """Run the checks for one revision, with what the reviewer supplied.
+
+    **Discriminators come from the request rather than the database**, because that is what they are:
+    a statement about how to read this package on this run. Without them `CT-WIDTH-001` and
+    `CAB-FILLER-001` abstain with REVIEW_REQUIRED however complete the measurements are — the
+    resolver cannot choose a variant nobody stated, and refuses to guess one.
+    """
     from workflow.measurements import operands_for
     from workflow.stages import DatabaseStages
 
     operands = operands_for(session, package_revision_id)  # type: ignore[arg-type]
-    return DatabaseStages(operands=operands).run_checks(session, package_revision_id)  # type: ignore[arg-type]
+    stages = DatabaseStages(operands=operands, discriminators=dict(discriminators or {}))
+    return stages.run_checks(session, package_revision_id)  # type: ignore[arg-type]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,8 +93,13 @@ def main(argv: list[str] | None = None) -> int:
             raise NotImplementedError(f"no local consumer for {workflow!r}")
 
         revision_id = UUID(str(payload["package_revision_id"]))
+        raw = payload.get("discriminators")
+        # Narrowed rather than cast: the payload is JSON from a database row, so its shape is a claim
+        # this process should check rather than assume. A malformed entry runs the checks without a
+        # discriminator, which abstains — visible — instead of raising here and stalling the queue.
+        stated = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
         with factory() as session:
-            result = _run_checks(session, revision_id)
+            result = _run_checks(session, revision_id, stated)
             session.commit()
         print(f"  run_checks {revision_id}: {dict(result)}")
 

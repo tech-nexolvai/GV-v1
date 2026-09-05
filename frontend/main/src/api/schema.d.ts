@@ -382,6 +382,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/required-inputs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the published rulebook needs before it can decide anything
+         * @description The fields a reviewer must fill, derived from the rules themselves.
+         *
+         *     **This exists so a form cannot omit a field.** A hand-written list is right the day it is written
+         *     and silently wrong the first time a rule gains an input — and the check then abstains for a reason
+         *     the reviewer cannot act on, which looks exactly like a genuine missing dimension.
+         *
+         *     Grouped by physical quantity rather than by rule input, because three rules read the sink's front
+         *     offset and one of them calls the same measurement by a different name. A reviewer measures it
+         *     once and is asked once; the `consumers` say which inputs the value feeds.
+         *
+         *     Reads the published rulebook from the database, which is what `run_checks` reads. Nothing
+         *     published means an empty form and `rules_published: 0` — a different situation from a rulebook
+         *     that wants nothing, and the caller can tell them apart.
+         */
+        get: operations["read_required_inputs_api_v1_projects__project_id__packages__package_id__required_inputs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/review-sessions": {
         parameters: {
             query?: never;
@@ -849,6 +881,33 @@ export interface components {
             tolerance?: string | null;
         };
         /**
+         * CheckRequest
+         * @description Asking for the checks, and what the reviewer says about the layout.
+         *
+         *     **Discriminators travel with the request rather than being stored as evidence**, because that is
+         *     what they are: a statement about how to read this package on this run. A rule with a discriminator
+         *     nobody stated abstains with REVIEW_REQUIRED however complete the measurements are, so without
+         *     these two `CT-WIDTH-001` and `CAB-FILLER-001` could never reach a verdict.
+         */
+        CheckRequest: {
+            /** Discriminators */
+            discriminators?: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * DiscriminatorOut
+         * @description A judgement about the drawing that decides which variant of a rule applies.
+         */
+        DiscriminatorOut: {
+            /** Choices */
+            choices: string[];
+            /** Name */
+            name: string;
+            /** Rule Ids */
+            rule_ids: string[];
+        };
+        /**
          * DocumentKind
          * @description Kinds of versioned source document accepted by the V1 ingestion path.
          * @enum {string}
@@ -1160,9 +1219,14 @@ export interface components {
             rule_id: string;
             /**
              * Value
-             * @description The value as typed, with its unit.
+             * @description The value as typed, with its unit. Use `values` for a many-valued input.
              */
-            value: string;
+            value?: string | null;
+            /**
+             * Values
+             * @description The values as typed, in layout order, for an input the rulebook declares as many — a run of cabinet widths, the fillers either side. Order is kept, because CAB-ARCH-VS-SHOP-001 compares two runs position by position.
+             */
+            values?: string[] | null;
         };
         /**
          * OpaqueTraceOut
@@ -1299,16 +1363,46 @@ export interface components {
         };
         /**
          * ParameterEntry
-         * @description One project setting a reviewer supplies for this job — a cabinet depth, an overhang.
+         * @description One setting a reviewer supplies for this job — a cabinet depth, an overhang, a sink interior.
+         *
+         *     **`scope` decides which layer it lands in and it is not cosmetic.** A `project` setting applies to
+         *     every review of the job; a `run` setting was true for this one — the sink on this cut sheet, the
+         *     room as measured today. `rules/parameters.py` draws the same line, and filing a run value as a
+         *     project setting would make a stale sink dimension look authoritative on the next review.
+         *
+         *     The rulebook says which each parameter is, so a caller should send back what
+         *     `GET .../required-inputs` reported rather than choosing.
          */
         ParameterEntry: {
             /** Name */
             name: string;
             /**
+             * Scope
+             * @default project
+             * @enum {string}
+             */
+            scope: "project" | "run";
+            /**
              * Value
              * @description The value as typed, carrying its unit: 24", 610 mm.
              */
             value: string;
+        };
+        /**
+         * ParameterOut
+         * @description One setting the reviewer supplies or confirms.
+         */
+        ParameterOut: {
+            /** Blocked */
+            blocked: boolean;
+            /** Declared Default */
+            declared_default: string | null;
+            /** Name */
+            name: string;
+            /** Rule Ids */
+            rule_ids: string[];
+            /** Scope */
+            scope: string;
         };
         /**
          * PresignedUpload
@@ -1406,6 +1500,24 @@ export interface components {
          */
         PublicationTarget: "development" | "production";
         /**
+         * QuantityOut
+         * @description One physical measurement the reviewer must read off a drawing.
+         */
+        QuantityOut: {
+            /** Consumers */
+            consumers: {
+                [key: string]: string;
+            }[];
+            /** Key */
+            key: string;
+            /** Many */
+            many: boolean;
+            /** Semantic Type */
+            semantic_type: string;
+            /** Source */
+            source: string;
+        };
+        /**
          * RecordAction
          * @description One thing a reviewer did to one finding.
          *
@@ -1422,6 +1534,23 @@ export interface components {
             finding_id: string;
             /** Note */
             note?: string | null;
+        };
+        /**
+         * RequiredInputsOut
+         * @description Everything the published rulebook needs, grouped so a form can render it.
+         *
+         *     Derived from the published rules rather than listed, which is what makes it impossible for a
+         *     field to be missing: a rule that gains an input gains a field here on the next publish.
+         */
+        RequiredInputsOut: {
+            /** Discriminators */
+            discriminators: components["schemas"]["DiscriminatorOut"][];
+            /** Parameters */
+            parameters: components["schemas"]["ParameterOut"][];
+            /** Quantities */
+            quantities: components["schemas"]["QuantityOut"][];
+            /** Rules Published */
+            rules_published: number;
         };
         /**
          * ReviewActionKind
@@ -1560,6 +1689,11 @@ export interface components {
          *     a reviewer should be able to see that the system agrees.
          */
         ReviewerEntryOut: {
+            /**
+             * Lists
+             * @default []
+             */
+            lists: components["schemas"]["StoredList"][];
             /** Measurement Set Version */
             measurement_set_version: number | null;
             /** Measurements */
@@ -1676,6 +1810,16 @@ export interface components {
          * @enum {string}
          */
         Severity: "CRITICAL" | "MAJOR" | "MINOR" | "ADVISORY";
+        /**
+         * StoredList
+         * @description One many-valued input as stored, in layout order.
+         */
+        StoredList: {
+            /** Name */
+            name: string;
+            /** Values */
+            values: components["schemas"]["StoredValue"][];
+        };
         /**
          * StoredValue
          * @description One value as stored: exact, and in inches because inches decide (Q12).
@@ -2022,7 +2166,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CheckRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             202: {
@@ -2246,6 +2394,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewerEntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_required_inputs_api_v1_projects__project_id__packages__package_id__required_inputs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequiredInputsOut"];
                 };
             };
             /** @description Validation Error */
