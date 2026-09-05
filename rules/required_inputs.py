@@ -194,7 +194,15 @@ def required_inputs(rules: Iterable[Rule]) -> RequiredInputs:
             choices = [
                 str(variant.when) for variant in (getattr(applicability, "variants", ()) or ())
             ]
-            known_rules, known_choices = discriminators.get(name, ([], choices))
+            if name not in discriminators:
+                discriminators[name] = ([], list(choices))
+            known_rules, known_choices = discriminators[name]
+            # Written as a membership test and an index rather than a defaulted `get`, matching the
+            # two loops above — and `.semgrep/gv-rules.yaml` forbids a fallback lookup anywhere in
+            # `rules/` on the grounds that a value must never be invented. This one accumulates rather
+            # than resolving a parameter, but the rule is deliberately about the shape, and a broad
+            # guard that everybody suppresses stops guarding anything.
+            #
             # Two rules sharing a discriminator name must agree on its vocabulary. They do not today,
             # and if they ever disagreed the form would offer a choice one of them rejects — so the
             # union is taken and the disagreement would surface as a variant that resolves for one
