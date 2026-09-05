@@ -460,17 +460,55 @@ def test_a_missing_revision_is_reported_rather_than_raising(session: Session) ->
 
 
 # ---------------------------------------------------------------------------
-# The five stages that are still not built
+# The stage that is still not built
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("stage", ["ingest", "match", "validate_evidence", "generate_outputs"])
+@pytest.mark.parametrize("stage", ["generate_outputs"])
 def test_the_unbuilt_stages_still_say_they_are_unbuilt(session: Session, stage: str) -> None:
     """`NoStages`' answer, kept verbatim. A stage that started returning `{}` because it was
-    inherited rather than written would let a package look processed."""
+    inherited rather than written would let a package look processed.
+
+    Down to one from four: `ingest`, `validate_evidence` and `match` are wired (#517) and now report
+    what they did. `generate_outputs` is the last one still saying it did nothing.
+    """
     result = getattr(DatabaseStages(), stage)(session, uuid4())
 
     assert result == {"implemented": False, "stage": stage}
+
+
+@pytest.mark.parametrize("stage", ["ingest", "validate_evidence"])
+def test_a_wired_stage_without_a_store_says_so_rather_than_claiming_it_ran(
+    session: Session, stage: str
+) -> None:
+    """No artifact store is a fact about this worker, not about the drawings.
+
+    The distinction matters because `ran: False` with a reason is actionable and `implemented: False`
+    is not: one says the work did not happen and why, the other says the work does not exist.
+    """
+    result = getattr(DatabaseStages(), stage)(session, uuid4())
+
+    assert result["implemented"] is True
+    assert result["ran"] is False
+    assert "no artifact store" in str(result["reason"])
+
+
+def test_match_runs_and_reports_nothing_to_match_rather_than_claiming_success(
+    session: Session,
+) -> None:
+    """`match` needs no store, so it runs — and finds no items, because nothing detects them.
+
+    This is the honest zero the stage exists to report. It is asserted rather than left to a
+    reviewer's assumption: a stage that returned `{"candidates": 0}` with no reason would be
+    indistinguishable from a package whose drawings genuinely share no identifiers.
+    """
+    result = DatabaseStages().match(session, uuid4())
+
+    assert result["implemented"] is True
+    assert result["ran"] is True
+    assert result["items"] == 0
+    assert result["candidates"] == 0
+    assert "nothing detects views or items" in str(result["reason"])
 
 
 def test_extract_pages_returns_no_pages_rather_than_a_mapping(session: Session) -> None:
