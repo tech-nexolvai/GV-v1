@@ -164,6 +164,24 @@ export function createPackage(projectId: string, vendor: string | null) {
 }
 
 /**
+ * What the published rulebook needs before it can decide anything.
+ *
+ * **The form is built from this rather than from a list in this repository.** A hand-written list of
+ * fields is right the day it is written and silently wrong the first time a rule gains an input — and
+ * the check then abstains for a reason the reviewer cannot act on, which looks exactly like a genuine
+ * missing dimension.
+ *
+ * Quantities are grouped by the physical measurement rather than by rule input, so a reviewer reads
+ * the sink's front offset off the drawing once even though three rules consume it. `consumers` says
+ * which inputs each value feeds.
+ */
+export function getRequiredInputs(projectId: string, packageId: string) {
+  type Needed =
+    paths['/api/v1/projects/{project_id}/packages/{package_id}/required-inputs']['get']['responses']['200']['content']['application/json'];
+  return request<Needed>(`/projects/${projectId}/packages/${packageId}/required-inputs`);
+}
+
+/**
  * Store what the reviewer typed.
  *
  * **Values go as the strings the person typed** — `25 1/2"`, `984 mm` — and the server parses them
@@ -178,8 +196,15 @@ export function enterMeasurements(
   projectId: string,
   packageId: string,
   entry: {
-    parameters?: { name: string; value: string }[];
-    measurements?: { rule_id: string; name: string; value: string }[];
+    parameters?: { name: string; value: string; scope?: 'project' | 'run' }[];
+    measurements?: {
+      rule_id: string;
+      name: string;
+      /** A single measurement. Exactly one of `value` or `values`, never both. */
+      value?: string;
+      /** A many-valued input, in layout order — the order is compared position by position. */
+      values?: string[];
+    }[];
   },
 ) {
   type Stored =
@@ -194,10 +219,14 @@ export function enterMeasurements(
  * server writes an outbox row, and something outside the API does the work. So a caller must not
  * treat the response as "the findings are ready" — it means "the request was recorded".
  */
-export function requestChecks(projectId: string, packageId: string) {
+export function requestChecks(
+  projectId: string,
+  packageId: string,
+  discriminators: Record<string, string> = {},
+) {
   return send<{ accepted_id: string; package_revision_id: string }>(
     `/projects/${projectId}/packages/${packageId}/checks`,
-    {},
+    { discriminators },
   );
 }
 

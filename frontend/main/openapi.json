@@ -287,6 +287,51 @@
         "title": "CalculationTraceOut",
         "type": "object"
       },
+      "CheckRequest": {
+        "additionalProperties": false,
+        "description": "Asking for the checks, and what the reviewer says about the layout.\n\n**Discriminators travel with the request rather than being stored as evidence**, because that is\nwhat they are: a statement about how to read this package on this run. A rule with a discriminator\nnobody stated abstains with REVIEW_REQUIRED however complete the measurements are, so without\nthese two `CT-WIDTH-001` and `CAB-FILLER-001` could never reach a verdict.",
+        "properties": {
+          "discriminators": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Discriminators",
+            "type": "object"
+          }
+        },
+        "title": "CheckRequest",
+        "type": "object"
+      },
+      "DiscriminatorOut": {
+        "description": "A judgement about the drawing that decides which variant of a rule applies.",
+        "properties": {
+          "choices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Choices",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rule_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rule Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "rule_ids",
+          "choices"
+        ],
+        "title": "DiscriminatorOut",
+        "type": "object"
+      },
       "DocumentKind": {
         "description": "Kinds of versioned source document accepted by the V1 ingestion path.",
         "enum": [
@@ -874,17 +919,38 @@
             "type": "string"
           },
           "value": {
-            "description": "The value as typed, with its unit.",
-            "maxLength": 100,
-            "minLength": 1,
-            "title": "Value",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The value as typed, with its unit. Use `values` for a many-valued input.",
+            "title": "Value"
+          },
+          "values": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The values as typed, in layout order, for an input the rulebook declares as many \u2014 a run of cabinet widths, the fillers either side. Order is kept, because CAB-ARCH-VS-SHOP-001 compares two runs position by position.",
+            "title": "Values"
           }
         },
         "required": [
           "rule_id",
-          "name",
-          "value"
+          "name"
         ],
         "title": "MeasurementEntry",
         "type": "object"
@@ -1089,12 +1155,21 @@
       },
       "ParameterEntry": {
         "additionalProperties": false,
-        "description": "One project setting a reviewer supplies for this job \u2014 a cabinet depth, an overhang.",
+        "description": "One setting a reviewer supplies for this job \u2014 a cabinet depth, an overhang, a sink interior.\n\n**`scope` decides which layer it lands in and it is not cosmetic.** A `project` setting applies to\nevery review of the job; a `run` setting was true for this one \u2014 the sink on this cut sheet, the\nroom as measured today. `rules/parameters.py` draws the same line, and filing a run value as a\nproject setting would make a stale sink dimension look authoritative on the next review.\n\nThe rulebook says which each parameter is, so a caller should send back what\n`GET .../required-inputs` reported rather than choosing.",
         "properties": {
           "name": {
             "maxLength": 200,
             "minLength": 1,
             "title": "Name",
+            "type": "string"
+          },
+          "scope": {
+            "default": "project",
+            "enum": [
+              "project",
+              "run"
+            ],
+            "title": "Scope",
             "type": "string"
           },
           "value": {
@@ -1110,6 +1185,50 @@
           "value"
         ],
         "title": "ParameterEntry",
+        "type": "object"
+      },
+      "ParameterOut": {
+        "description": "One setting the reviewer supplies or confirms.",
+        "properties": {
+          "blocked": {
+            "title": "Blocked",
+            "type": "boolean"
+          },
+          "declared_default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Declared Default"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rule_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rule Ids",
+            "type": "array"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "scope",
+          "rule_ids",
+          "declared_default",
+          "blocked"
+        ],
+        "title": "ParameterOut",
         "type": "object"
       },
       "PresignedUpload": {
@@ -1258,6 +1377,46 @@
         "title": "PublicationTarget",
         "type": "string"
       },
+      "QuantityOut": {
+        "description": "One physical measurement the reviewer must read off a drawing.",
+        "properties": {
+          "consumers": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Consumers",
+            "type": "array"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "many": {
+            "title": "Many",
+            "type": "boolean"
+          },
+          "semantic_type": {
+            "title": "Semantic Type",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "semantic_type",
+          "source",
+          "many",
+          "consumers"
+        ],
+        "title": "QuantityOut",
+        "type": "object"
+      },
       "RecordAction": {
         "additionalProperties": false,
         "description": "One thing a reviewer did to one finding.\n\nNo `actor` and no `package_revision_id`. The actor is the authenticated caller, and the revision\nis read off the finding the server loaded \u2014 a caller cannot state which revision they were\nlooking at, which is what makes the trail worth keeping.",
@@ -1288,6 +1447,44 @@
           "action"
         ],
         "title": "RecordAction",
+        "type": "object"
+      },
+      "RequiredInputsOut": {
+        "description": "Everything the published rulebook needs, grouped so a form can render it.\n\nDerived from the published rules rather than listed, which is what makes it impossible for a\nfield to be missing: a rule that gains an input gains a field here on the next publish.",
+        "properties": {
+          "discriminators": {
+            "items": {
+              "$ref": "#/components/schemas/DiscriminatorOut"
+            },
+            "title": "Discriminators",
+            "type": "array"
+          },
+          "parameters": {
+            "items": {
+              "$ref": "#/components/schemas/ParameterOut"
+            },
+            "title": "Parameters",
+            "type": "array"
+          },
+          "quantities": {
+            "items": {
+              "$ref": "#/components/schemas/QuantityOut"
+            },
+            "title": "Quantities",
+            "type": "array"
+          },
+          "rules_published": {
+            "title": "Rules Published",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "quantities",
+          "parameters",
+          "discriminators",
+          "rules_published"
+        ],
+        "title": "RequiredInputsOut",
         "type": "object"
       },
       "ReviewActionKind": {
@@ -1485,6 +1682,14 @@
       "ReviewerEntryOut": {
         "description": "What was stored, echoed back exactly so a client can show what the system understood.\n\nEchoing the parse rather than the input is the point: `25.5\"` and `25 1/2\"` are the same value and\na reviewer should be able to see that the system agrees.",
         "properties": {
+          "lists": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/StoredList"
+            },
+            "title": "Lists",
+            "type": "array"
+          },
           "measurement_set_version": {
             "anyOf": [
               {
@@ -1707,6 +1912,28 @@
         ],
         "title": "Severity",
         "type": "string"
+      },
+      "StoredList": {
+        "description": "One many-valued input as stored, in layout order.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/StoredValue"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "values"
+        ],
+        "title": "StoredList",
+        "type": "object"
       },
       "StoredValue": {
         "description": "One value as stored: exact, and in inches because inches decide (Q12).",
@@ -2324,6 +2551,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CheckRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {
@@ -2819,6 +3063,60 @@
           }
         },
         "summary": "Enter reviewer-supplied parameters and measurements",
+        "tags": [
+          "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/required-inputs": {
+      "get": {
+        "description": "The fields a reviewer must fill, derived from the rules themselves.\n\n**This exists so a form cannot omit a field.** A hand-written list is right the day it is written\nand silently wrong the first time a rule gains an input \u2014 and the check then abstains for a reason\nthe reviewer cannot act on, which looks exactly like a genuine missing dimension.\n\nGrouped by physical quantity rather than by rule input, because three rules read the sink's front\noffset and one of them calls the same measurement by a different name. A reviewer measures it\nonce and is asked once; the `consumers` say which inputs the value feeds.\n\nReads the published rulebook from the database, which is what `run_checks` reads. Nothing\npublished means an empty form and `rules_published: 0` \u2014 a different situation from a rulebook\nthat wants nothing, and the caller can tell them apart.",
+        "operationId": "read_required_inputs_api_v1_projects__project_id__packages__package_id__required_inputs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequiredInputsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What the published rulebook needs before it can decide anything",
         "tags": [
           "measurements"
         ]
