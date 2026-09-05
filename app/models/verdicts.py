@@ -30,7 +30,7 @@ Verification: `tests/db/test_verdict_models.py`
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from uuid import UUID
 
 from sqlalchemy import (
@@ -46,6 +46,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime
+from app.models.document import SHA256_PATTERN
 from units.measurement import Unit
 from verdict.operands import QUALIFIED_STATUSES
 from verdict.outcomes import Outcome, Severity
@@ -252,4 +253,62 @@ class FindingEvidence(Base, TimestampedUUID, Immutable):
             "finding_id", "canonical_observation_id", "role", name="uq_finding_evidence_link"
         ),
         CheckConstraint("role <> ''", name="finding_evidence_role_present"),
+    )
+
+
+class OutputArtifactKind(StrEnum):
+    """What kind of deliverable an output artifact holds.
+
+    One member, deliberately. A `REDLINE` member would be a promise the code does not keep: an
+    annotated drawing needs each finding tied to the region of the sheet it is about, which needs
+    semantic typing, and candidates are untyped until the real drawings (#274) and the vocabulary
+    Q20 defers. The enum gains the member on the day something writes one.
+    """
+
+    FINDINGS_WORKBOOK = "findings_workbook"
+
+
+OUTPUT_ARTIFACT_KIND_VALUES = _sql_values(OutputArtifactKind)
+
+
+class OutputArtifact(Base, TimestampedUUID, Immutable):
+    """A document produced from a revision's findings. The bytes live in storage.
+
+    Separate from `source_artifacts` and `evidence_artifacts` because it is neither. A source
+    artifact is a file somebody sent us; an evidence artifact must belong to a candidate or a
+    canonical observation, and a workbook covering a whole revision belongs to neither. Reusing
+    either would have meant a nullable owner column that is always null for one kind of row, which
+    is how a table stops being able to say what it holds.
+
+    `Immutable`, like the findings it is built from. Regenerating produces a new row: a deliverable
+    that could be edited in place would let the file a vendor was sent differ from the record of
+    what was sent, with nothing to show it had changed.
+    """
+
+    __tablename__ = "output_artifacts"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32))
+    storage_key: Mapped[str] = mapped_column(String(1000))
+    sha256: Mapped[str] = mapped_column(String(64))
+    media_type: Mapped[str] = mapped_column(String(200))
+    findings: Mapped[int]
+    """How many findings the document covers.
+
+    Stored rather than counted on read, because the count is a fact about the file: findings are
+    superseded when the checks are re-run, so counting the revision's findings later answers a
+    different question than "how many are in this workbook?"
+    """
+
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({OUTPUT_ARTIFACT_KIND_VALUES})", name="output_artifact_kind"),
+        CheckConstraint("storage_key <> ''", name="output_artifact_storage_key"),
+        CheckConstraint(f"sha256 ~ '{SHA256_PATTERN}'", name="output_artifact_sha256"),
+        CheckConstraint("media_type <> ''", name="output_artifact_media_type"),
+        CheckConstraint("findings >= 0", name="output_artifact_findings"),
+        # Content-addressed: regenerating an unchanged revision produces the same bytes under the
+        # same key, and one row is the truthful record of that.
+        UniqueConstraint("storage_key", "sha256", name="uq_output_artifacts_key_sha"),
     )
