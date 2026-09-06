@@ -118,7 +118,12 @@ class ExtractionRun(Base, TimestampedUUID):
 #: A closed vocabulary rather than free text, and the check constraint below ties each value to
 #: whether a page index is present — so "the document would not parse" can never be filed against a
 #: page, and "this page would not parse" can never be filed without one.
-FAILURE_REASONS: Final = ("document_unreadable", "page_unreadable")
+#:
+#: `document_digest_mismatch` is a different kind of failure from the other two and belongs here
+#: anyway: the file is readable, and it is not the file that was uploaded. Recording it beside them
+#: is what lets one query answer "which drawings did this run decline to read, and why" — and the
+#: alternative, a separate table, would leave a reader having to know there were two places to look.
+FAILURE_REASONS: Final = ("document_unreadable", "page_unreadable", "document_digest_mismatch")
 
 _FAILURE_REASON_VALUES: Final = ", ".join(f"'{reason}'" for reason in FAILURE_REASONS)
 
@@ -168,6 +173,7 @@ class ExtractionFailure(Base, TimestampedUUID, Immutable):
         # page-level one must name its page. Either mismatch would be a row nobody could interpret.
         CheckConstraint(
             "(reason = 'document_unreadable' AND page_index IS NULL) "
+            "OR (reason = 'document_digest_mismatch' AND page_index IS NULL) "
             "OR (reason = 'page_unreadable' AND page_index IS NOT NULL)",
             name="extraction_failure_scope",
         ),

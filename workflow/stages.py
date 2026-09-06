@@ -50,6 +50,7 @@ from app.evidence.record import (
     open_extraction_run,
     persist_manifest,
     record_candidates,
+    record_digest_mismatch,
     record_ocr_candidates,
     record_unreadable_document,
     record_unreadable_page,
@@ -291,7 +292,7 @@ class DatabaseStages:
         if self._store is None:
             return ()
 
-        documents = _documents_for(session, package_revision_id)
+        documents = _document_records_for(session, package_revision_id)
         if not documents:
             return ()
 
@@ -311,10 +312,27 @@ class DatabaseStages:
         )
 
         results: list[PageResult] = []
-        for version, key in documents:
+        for version, key, sha256, _ in documents:
             # No `try` around the fetch. An artifact this stage cannot read must fail the stage, not
             # be skipped — see `_fetch`.
             data = _fetch(self._store, key)
+
+            # **The bytes are checked before they are read (#523).** `ingest` performs the same
+            # comparison and could only report it; refusing is an entry condition on this stage, and
+            # this is the stage. Checking here rather than trusting the earlier report also closes
+            # the window between the two — the artifact could change in between, and the place that
+            # reads a document is the right place to establish it is the right document.
+            #
+            # Recorded and skipped rather than raised, for the reason #491 gave: a corrupt artifact
+            # is not transient, so raising would roll the claim back and retry the same file for
+            # ever. The row is what stops a skipped document looking like a document with nothing
+            # on it.
+            if hashlib.sha256(data).hexdigest() != sha256:
+                record_digest_mismatch(
+                    session, extraction_run_id=run.id, document_version_id=version
+                )
+                continue
+
             with traced(
                 "extraction.document",
                 document_version_id=str(version),
@@ -1090,9 +1108,10 @@ def _document_records_for(
 ) -> list[tuple[UUID, str, str, int]]:
     """Every document version in this revision, with its key, recorded digest and page count.
 
-    Separate from `_documents_for` rather than widening it: that function's callers want somewhere to
-    read bytes from, and this one wants the facts to check those bytes against. One function
-    returning a four-tuple to callers that use two of it is how a helper starts drifting.
+    Separate from `_documents_for` rather than replacing it. `validate_evidence` wants only somewhere
+    to read bytes from; `ingest` and `extract_pages` want the facts to check those bytes against as
+    well. Handing a four-tuple to a caller that uses two of it is how a helper starts drifting, and
+    the split says which callers care about verification.
     """
     rows = session.execute(
         select(

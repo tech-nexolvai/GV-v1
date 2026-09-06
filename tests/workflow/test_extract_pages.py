@@ -97,7 +97,9 @@ def store() -> Iterator[LocalStore]:
         yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
 
 
-def _revision(session: Session, store: LocalStore, *, data: bytes = DRAWING) -> PackageRevision:
+def _revision(
+    session: Session, store: LocalStore, *, data: bytes = DRAWING, stored: bytes | None = None
+) -> PackageRevision:
     """A package revision with one document attached, and its bytes in the store.
 
     Built the long way on purpose — project, package, revision, document, artifact, version, the
@@ -157,7 +159,10 @@ def _revision(session: Session, store: LocalStore, *, data: bytes = DRAWING) -> 
     )
     session.flush()
 
-    store.put(key, io.BytesIO(data), content_type="application/pdf")
+    # `stored` puts *different* bytes in the store than the digest the database recorded, which is
+    # the corruption `extract_pages` refuses (#523). The store is content-addressed and immutable, so
+    # this cannot be arranged by overwriting afterwards — the divergence has to exist from the start.
+    store.put(key, io.BytesIO(data if stored is None else stored), content_type="application/pdf")
     return revision
 
 
@@ -754,3 +759,69 @@ def test_a_vector_page_never_reaches_the_ocr_route(session: Session, store: Loca
     results = DatabaseStages(store, ocr_engine=_Exploding()).extract_pages(session, revision.id)
 
     assert [result.payload["route"] for result in results] == ["vector"]
+
+
+# ---------------------------------------------------------------------------
+# A document that is not the document that was uploaded (#523)
+# ---------------------------------------------------------------------------
+
+
+def test_a_document_whose_bytes_changed_in_storage_is_refused_and_recorded(
+    session: Session, store: LocalStore
+) -> None:
+    """**The gap #523 closes.** `ingest` reported this and the stage read the file anyway.
+
+    A document truncated or replaced in storage parses perfectly well. Reading it produces dimensions
+    that look exactly like readings of the drawing somebody submitted, and nothing about the result
+    looks wrong — which makes it worse than a file that will not open.
+
+    No pages, no candidates, and a row saying why. The row is what stops the skipped document looking
+    like a document with nothing on it, which is the distinction #491 exists for.
+    """
+    revision = _revision(session, store, data=DRAWING, stored=SECOND_DRAWING)
+
+    results = DatabaseStages(store).extract_pages(session, revision.id)
+
+    assert results == ()
+    assert list(session.execute(select(Page)).scalars()) == []
+    assert list(session.execute(select(ObservationCandidate)).scalars()) == []
+
+    failure = session.execute(select(ExtractionFailure)).scalars().one()
+    assert failure.reason == "document_digest_mismatch"
+    assert failure.page_index is None, "a document-level failure must not claim a page"
+    # Names the check that refused. Nothing was raised, so there is no exception class to name, and
+    # `NoneType` would describe our Python rather than the drawing.
+    assert failure.error_type == "DigestMismatch"
+    assert failure.extraction_run_id == session.execute(select(ExtractionRun.id)).scalar_one()
+
+
+def test_one_corrupt_document_does_not_stop_the_others_being_read(
+    session: Session, store: LocalStore
+) -> None:
+    """The refusal is per document, not per package.
+
+    A package is several drawings and one of them being wrong is not a reason to learn nothing about
+    the rest. This is the same shape as the unreadable-document case, asserted separately because the
+    refusal happens at a different point — before the reader is called at all.
+    """
+    # The first document's stored bytes are not the ones its digest describes; the second is intact.
+    # `_attach_document` takes an explicit `when` because `_documents_for` orders by creation time,
+    # and the corrupt document has to be reached first for this to prove anything.
+    revision = _revision(session, store, data=DRAWING, stored=SECOND_DRAWING)
+    _attach_document(
+        session,
+        store,
+        revision,
+        data=SECOND_DRAWING,
+        when=datetime.now(UTC) + timedelta(seconds=1),
+    )
+
+    results = DatabaseStages(store).extract_pages(session, revision.id)
+
+    assert results, "the second document was not read"
+    failure = session.execute(select(ExtractionFailure)).scalars().one()
+    assert failure.reason == "document_digest_mismatch"
+    # The pages that exist belong to the document that verified, and none to the one that did not.
+    pages = list(session.execute(select(Page)).scalars())
+    assert pages, "the readable document produced no pages"
+    assert failure.document_version_id not in {page.document_version_id for page in pages}

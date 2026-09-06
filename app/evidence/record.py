@@ -31,6 +31,7 @@ they cannot be recovered afterwards: `dpi`, `media_box` and `crop_box` are not p
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Final
 from uuid import UUID
 
 from sqlalchemy import select
@@ -328,6 +329,44 @@ def record_unreadable_document(
     )
 
 
+#: What `error_type` says when nothing was raised — the check that refused, named.
+#:
+#: The column exists to answer "what went wrong with this document"; for a digest mismatch the answer
+#: is the comparison itself, and there is no exception class to name.
+DIGEST_CHECK: Final = "DigestMismatch"
+
+
+def record_digest_mismatch(
+    session: Session,
+    *,
+    extraction_run_id: UUID,
+    document_version_id: UUID,
+) -> ExtractionFailure:
+    """A document whose stored bytes are not the bytes that were uploaded.
+
+    Different in kind from the other two failures: this file parses perfectly well. It is simply not
+    the drawing anybody submitted, so reading it would produce dimensions that look like readings of
+    the package under review and are readings of something else. That is worse than an unreadable
+    file, because nothing about the result looks wrong.
+
+    `ingest` reports the same mismatch, and reporting was all it could do — acting on it is an entry
+    condition on this stage, which is where the bytes are in hand (#523). Checking here rather than
+    trusting `ingest` also closes the window between the two: the artifact could change in between,
+    and a stage that reads a document is the right place to establish that it is the right document.
+
+    No exception to record, so the `error_type` names the check that refused rather than a class that
+    was never raised. A blank would leave the row unable to say what happened.
+    """
+    return _record(
+        session,
+        extraction_run_id=extraction_run_id,
+        document_version_id=document_version_id,
+        page_index=None,
+        reason="document_digest_mismatch",
+        error=None,
+    )
+
+
 def record_unreadable_page(
     session: Session,
     *,
@@ -359,16 +398,22 @@ def _record(
     document_version_id: UUID,
     page_index: int | None,
     reason: str,
-    error: Exception,
+    error: Exception | None,
 ) -> ExtractionFailure:
-    """The row both recorders write, so the two cannot drift in what they store."""
+    """The row every recorder writes, so they cannot drift in what they store.
+
+    `error` is optional because one failure has no exception behind it: a digest mismatch is a
+    comparison that came out unequal, not something that was raised. `type(None).__name__` would put
+    `NoneType` in the column — a word that describes our Python and not the drawing — so that case
+    names the check instead.
+    """
     failure = ExtractionFailure(
         extraction_run_id=extraction_run_id,
         document_version_id=document_version_id,
         page_index=page_index,
         reason=reason,
         # The class name, never `str(error)` — see `record_unreadable_document`.
-        error_type=type(error).__name__,
+        error_type=DIGEST_CHECK if error is None else type(error).__name__,
     )
     session.add(failure)
     session.flush()
