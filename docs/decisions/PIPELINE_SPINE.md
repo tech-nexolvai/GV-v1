@@ -56,14 +56,13 @@ than no redline: it looks like evidence, and evidence is the one thing a reviewe
 take at face value. `OutputArtifactKind` has a single member for the same reason — the enum gains
 `redline` on the day something can honestly write one, and a test asserts it has not.
 
-**The workbook cannot fill four of its columns**, and says so in each cell rather than leaving them
-blank. `findings` stores the outcome, severity, trace and parameter versions; it does **not** store
-a decision's prose reason, its delta, its applicability variant or its notes. Those live on
-`verdict.finding.Finding`, the engine's value type, and `record_finding` has never persisted them.
-Rebuilding that value type from storage is not an option either: `render_value` writes operand
-values as display text, so a tuple of measurements comes back as the single string `24, 24, 30`, and
-parsing presentation output into exact arithmetic is how `984 mm` once became 984 inches. Making
-those four fields storable is a schema change worth doing deliberately, not a gap to paper over.
+**The workbook now fills every column (#525).** `findings` stores the outcome, severity, trace and
+parameter versions, and — since #525 — a decision's prose reason, its delta, its applicability variant
+and its notes as well. Earlier this paragraph recorded those four as an unfilled gap: they lived only
+on `verdict.finding.Finding`, the engine's value type, and `record_finding` had never persisted them.
+Rebuilding the value type from display text was rejected (that path is how `984 mm` once became
+984 inches — see the dual-unit lane, #529); instead the four fields were made storable directly, which
+was the schema change this note said was worth doing deliberately. It is done.
 
 **Page classification is not wired, though the classifier is built.** `extraction/page_type.py:classify`
 takes a `PageText` whose `title_block` and `view_tags` are *separate* fields, and its precedence rule

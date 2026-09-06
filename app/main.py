@@ -132,6 +132,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # what.
     from app.api import (
         background,
+        confirmations,
         documents,
         finding_chain,
         finding_export,
@@ -149,6 +150,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # writes: it enqueues rather than running anything, because it may not import the
     # code that does — see the module docstring and tests/api/test_no_heavy_work.py.
     app.include_router(measurements.router, prefix=API_PREFIX)
+    app.include_router(confirmations.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(finding_chain.router, prefix=API_PREFIX)
     # The versioned export downstream consumers read (#224, D1.3). Same prefix as the rest, so the shape a

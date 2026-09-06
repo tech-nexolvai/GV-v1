@@ -275,3 +275,55 @@ export function completeReviewSession(projectId: string, reviewSessionId: string
     {},
   );
 }
+
+/**
+ * What the extractor read for this package, waiting for somebody to say what it is.
+ *
+ * Only readings that carry a value: a token with no unit was recorded without one, deliberately, and
+ * there is nothing for a reviewer to confirm about a bare number.
+ */
+export function listCandidates(projectId: string, packageId: string) {
+  return request<CandidatesOut>(
+    `/api/v1/projects/${projectId}/packages/${packageId}/candidates`,
+  );
+}
+
+/** The vocabulary a reviewer may choose from, read from the rulebook rather than hard-coded here. */
+export function listSemanticTypes() {
+  return request<string[]>('/api/v1/semantic-types');
+}
+
+/**
+ * Say what one extracted reading is.
+ *
+ * **No value is sent.** The reviewer is confirming the number the extractor read, not supplying one;
+ * a body carrying a value would be the old form path wearing a new name.
+ */
+export function confirmCandidate(
+  projectId: string,
+  packageId: string,
+  candidateId: string,
+  semanticType: string,
+) {
+  return request<ConfirmedOut>(
+    `/api/v1/projects/${projectId}/packages/${packageId}/candidates/${candidateId}/confirm`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ semantic_type: semanticType }),
+    },
+  );
+}
+
+/**
+ * The shapes above, taken from the generated schema rather than written out here.
+ *
+ * A hand-written copy is right the day it is written and silently wrong the first time the endpoint
+ * changes — and the compiler would go on agreeing with it. `npm run api:check` regenerates these from
+ * the running app's OpenAPI and fails if the checked-in file has drifted, which is what caught the
+ * first version of this file.
+ */
+export type CandidatesOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/candidates'>;
+export type CandidateOut = CandidatesOut['candidates'][number];
+export type ConfirmedOut =
+  paths['/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm']['post']['responses'][201]['content']['application/json'];

@@ -308,13 +308,19 @@ def test_shapely_is_reached_and_that_is_a_recorded_decision() -> None:
     # artefact of iteration order — every one of them reaches `app.models` — so asserting the first
     # hop would make this fail whenever a route module is added or renamed, which teaches nobody
     # anything. What was actually decided is that the chain runs through the evidence types.
+    #
+    # **Three modules rather than four, since #530.** The tail used to begin `app.models.evidence`,
+    # and it now begins `app.evidence.confirm` — the bridge that turns a reading into a canonical
+    # observation reaches the same types by a shorter road. Pinning that module would repeat the
+    # mistake this comment already warns about one hop further along: what matters is that GEOS
+    # arrives through `evidence/`, not which caller got there first.
     assert chain[0].startswith("app.api.")
-    assert chain[-4:] == [
-        "app.models.evidence",
+    assert chain[-3:] == [
         "evidence.canonical",
         "evidence.polygon",
         "shapely.geometry",
     ], chain
+    assert chain[-4].startswith(("app.models.", "app.evidence.")), chain
     assert "shapely" in TOLERATED_LIBRARIES
     assert "shapely" not in FORBIDDEN_LIBRARIES, "tolerated and forbidden are contradictory"
 

@@ -3,6 +3,7 @@ import { AppShell } from './components/shell/AppShell';
 import { ReviewPage } from './pages/ReviewPage';
 import { PackagesPage } from './pages/PackagesPage';
 import { WelcomePage } from './pages/WelcomePage';
+import { ConfirmReadingsPage } from './pages/ConfirmReadingsPage';
 import { EnterValuesPage } from './pages/EnterValuesPage';
 import { RulebookPage } from './pages/RulebookPage';
 import { UsagePage } from './pages/UsagePage';
@@ -164,6 +165,18 @@ export default function App() {
           }}
         />
       )}
+      {activePage === 'confirm' && activeSession && (
+        <ConfirmReadingsPage
+          packageId={activeSession}
+          onDone={() => {
+            // The packages list, not a findings view: confirming a reading does not run the
+            // checks, and a findings page opened straight afterwards would read as an empty result
+            // rather than as work not yet asked for.
+            setActivePage('documents');
+          }}
+        />
+      )}
+
       {activePage === 'rulebook' && <RulebookPage />}
 
       {activePage === 'usage' && <UsagePage />}

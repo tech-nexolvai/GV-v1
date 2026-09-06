@@ -589,13 +589,25 @@ def test_importing_the_worker_module_needs_no_token() -> None:
     assert worker.workflow_name() == WORKFLOW_NAME
 
 
-def test_building_a_client_without_a_token_fails_loudly() -> None:
+def test_building_a_client_without_a_token_fails_loudly(tmp_path: Path) -> None:
     """And it should. A worker that cannot reach the engine must fail on the way up, not on the first
-    package."""
+    package.
+
+    `_env_file` points at an empty file in `tmp_path`, so the test asks about a settings object with
+    no token rather than about the developer's machine. Without it this passed or failed depending on
+    whether a `.env` existed beside the repository — `make demo-env` writes one with a token in it —
+    and a test that reads the ambient environment is one that says nothing on the machine where it
+    matters. `tests/test_env_example.py` already builds its own `.env` for the same reason.
+    """
     from workflow.hatchet_app import hatchet_client
 
+    empty = tmp_path / ".env"
+    empty.write_text("", encoding="utf-8")
+
     with pytest.raises(Exception, match="[Tt]oken"):
-        hatchet_client(Settings(database_url=DATABASE_URL))  # type: ignore[call-arg]
+        hatchet_client(
+            Settings(database_url=DATABASE_URL, _env_file=str(empty))  # type: ignore[call-arg]
+        )
 
 
 class RecordingClient:

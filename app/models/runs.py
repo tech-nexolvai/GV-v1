@@ -106,10 +106,23 @@ class ExtractionRun(Base, TimestampedUUID):
     extractor_version: Mapped[str] = mapped_column(String(200))
     config_hash: Mapped[str] = mapped_column(String(200))
 
+    dpi: Mapped[int | None] = mapped_column(default=None)
+    """The resolution this run read at, which is the frame its candidates' polygons are in (#530).
+
+    On the run rather than the page, because it is a property of the reading and not of the drawing:
+    the same page read at 150 and at 300 produces candidates in two different image spaces, and a
+    transform rebuilt with the wrong one lands every polygon in the wrong place. `config_hash`
+    already carries it as text, and parsing `dpi=150` back out of an identity string would be
+    reading a value out of a fingerprint.
+
+    Null for runs recorded before #530.
+    """
+
     __table_args__ = (
         CheckConstraint("extractor <> ''", name="extraction_run_extractor"),
         CheckConstraint("extractor_version <> ''", name="extraction_run_extractor_version"),
         CheckConstraint("config_hash <> ''", name="extraction_run_config_hash"),
+        CheckConstraint("dpi IS NULL OR dpi > 0", name="extraction_run_dpi"),
     )
 
 

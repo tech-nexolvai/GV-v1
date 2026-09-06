@@ -222,6 +222,23 @@ class Page(Base, TimestampedUUID, Immutable):
     rotation: Mapped[int]
     has_vector_text: Mapped[bool]
     render_failed: Mapped[bool] = mapped_column(default=False)
+
+    media_box: Mapped[list[str] | None] = mapped_column(JSONB, default=None)
+    crop_box: Mapped[list[str] | None] = mapped_column(JSONB, default=None)
+    """The page's own boxes, as four exact decimal strings each (#530).
+
+    Kept so the transform that read this page can be rebuilt. Converting a candidate's image-space
+    polygon back to stored geometry normalises by the crop box, and `evidence/normalize.py` needs
+    that conversion to turn a reading into a canonical observation — so without these the reading
+    half and the deciding half cannot be joined at all.
+
+    Strings rather than numbers, for the reason every other exact value in this schema is:
+    `Decimal("612.0")` survives a round trip and `612.0` as a JSON float does not.
+
+    Null for every page recorded before #530, and for a page whose reader could not open it. Null
+    means *unknown* — never `(0, 0, width, height)`, which is right for most PDFs and silently wrong
+    for the rest, and being silently wrong here puts evidence on a region nobody wrote.
+    """
     sheet_number: Mapped[str | None] = mapped_column(String(100), default=None)
     page_type: Mapped[str | None] = mapped_column(String(32), default=None)
     revision_label: Mapped[str | None] = mapped_column(String(100), default=None)

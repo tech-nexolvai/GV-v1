@@ -68,7 +68,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Final
 from uuid import UUID
 
-from evidence.coordinates import SUPPORTED_ROTATIONS
+from evidence.coordinates import SUPPORTED_ROTATIONS, PageBox
 from vocabulary.page_types import PageType
 
 SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
@@ -181,6 +181,22 @@ class RawPage:
     vector_character_count: int
     unreadable_reason: str | None = None
 
+    media_box: PageBox | None = None
+    crop_box: PageBox | None = None
+    """The page's own boxes, kept so the transform that read it can be rebuilt later (#530).
+
+    Without them a candidate's image-space polygon cannot be converted back to stored geometry after
+    extraction, because the conversion normalises by the crop box — and `evidence/normalize.py`
+    needs exactly that to turn a reading into a canonical observation. `width_pt` and `height_pt`
+    are not a substitute: they are the visible page's size, which says nothing about where the crop
+    box sits inside the media box.
+
+    Optional because a reader that could not open the page has no boxes to report, and because every
+    page recorded before #530 has none. `None` means unknown, never `(0, 0, width, height)` — that
+    guess is right for most PDFs and silently wrong for the rest, which would put evidence on a
+    region of the drawing nobody wrote.
+    """
+
     def __post_init__(self) -> None:
         _require_index(self.index, "index")
         if not isinstance(self.content, bytes):
@@ -225,6 +241,10 @@ class PageRecord:
     rotation: int
     has_vector_text: bool
     render_failed: bool
+    media_box: PageBox | None = None
+    crop_box: PageBox | None = None
+    """Carried through from `RawPage`, for the reason given there."""
+
     sheet_number: str | None = None
     sheet_title: str | None = None
     page_type: PageType | None = None
@@ -424,6 +444,8 @@ def build_manifest(
             rotation=page.rotation,
             has_vector_text=page.vector_character_count >= minimum_vector_characters,
             render_failed=page.unreadable_reason is not None,
+            media_box=page.media_box,
+            crop_box=page.crop_box,
         )
         for page in pages
     )

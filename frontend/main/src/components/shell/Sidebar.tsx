@@ -6,6 +6,7 @@ import {
   Plus,
   ChevronRight,
   Ruler,
+  ScanLine,
 } from 'lucide-react';
 import { listReviewSessions } from '../../api/client';
 import { projectId } from '../../api/config';
@@ -28,6 +29,10 @@ const NAV_ITEMS = [
   // The reviewer enters the dimensions here. No AI and no drawing is involved — Q7 blesses a person
   // doing the reading, and the engine decides from what they type.
   { id: 'measure',   label: 'Measure',   icon: Ruler },
+  // What the extractor read, waiting for a person to say what each reading is. The other half of
+  // 'Measure': there a reviewer supplies the number, here they confirm one already read off the
+  // drawing — which is what lets the machine's reading reach a verdict at all (#530).
+  { id: 'confirm',   label: 'Confirm',   icon: ScanLine },
   { id: 'rulebook',  label: 'Rulebook',  icon: BookOpen },
   { id: 'usage',     label: 'Usage',     icon: BarChart2 },
 ];
