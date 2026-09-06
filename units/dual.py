@@ -22,7 +22,13 @@ class DualDimension:
     alternate: Measurement | None
 
 
-_DUAL_RE = re.compile(r"(?P<primary>\d+)\s*\[\s*(?P<alternate>[^\[\]]+)\s*\]")
+#: A dimension stated twice: a millimetre number and a bracketed imperial reading.
+#:
+#: Public because the reader needs the same definition to find one inside a line of text, and two
+#: regexes for one token shape is how they come to disagree about what a dual dimension is.
+DUAL_TOKEN_RE = re.compile(r"(?P<primary>\d+)\s*\[\s*(?P<alternate>[^\[\]]+)\s*\]")
+
+_DUAL_RE = DUAL_TOKEN_RE
 _SINGLE_RE = re.compile(r"\d+")
 
 
