@@ -342,3 +342,71 @@ def test_a_re_run_produces_a_new_finding_rather_than_editing_one(postgres_engine
             session.add(_finding_for(_run(session), outcome))
     with unit_of_work(factory) as session:
         assert {f.outcome for f in session.scalars(select(Finding))} == {"FAIL", "PASS"}
+
+
+# ---------------------------------------------------------------------------
+# What a finding carries about itself (#521)
+# ---------------------------------------------------------------------------
+
+
+def test_a_delta_survives_storage_exactly(postgres_engine: Engine) -> None:
+    """A sixteenth stays a sixteenth. Never `0.0625`, at any point.
+
+    Stored as numerator, denominator and unit — the shape `verdict_inputs` uses — so the rational the
+    engine produced is the rational a reviewer reads. A decimal column would answer "how far out?"
+    with a number the arithmetic never produced, and this is the column somebody triaging failures
+    sorts by. ADR-0001.
+    """
+    Base.metadata.create_all(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        run = _run(session)
+        finding = _finding_for(run, Outcome.FAIL)
+        finding.delta_numerator = 1
+        finding.delta_denominator = 16
+        finding.delta_unit = Unit.INCH.value
+        finding.reason = "the shop drawing is a sixteenth deeper than the architect's"
+        finding.variant = "back_left_right"
+        finding.notes = ["company standard overridden for this project"]
+        session.add(finding)
+        session.flush()
+
+        stored = session.execute(select(Finding)).scalars().one()
+        assert Fraction(stored.delta_numerator, stored.delta_denominator) == Fraction(1, 16)
+        assert stored.delta_unit == "in"
+        assert stored.variant == "back_left_right"
+        assert stored.notes == ["company standard overridden for this project"]
+
+
+@pytest.mark.parametrize(
+    ("changes", "constraint"),
+    [
+        ({"delta_numerator": 1}, "finding_delta_complete"),
+        ({"delta_numerator": 1, "delta_denominator": 16}, "finding_delta_complete"),
+        (
+            {"delta_numerator": 1, "delta_denominator": 0, "delta_unit": "in"},
+            "finding_delta_denominator",
+        ),
+        (
+            {"delta_numerator": 1, "delta_denominator": 16, "delta_unit": "furlong"},
+            "finding_delta_unit",
+        ),
+        ({"reason": ""}, "finding_reason"),
+        ({"variant": ""}, "finding_variant"),
+    ],
+)
+def test_a_half_written_delta_is_refused(
+    postgres_engine: Engine, changes: dict[str, object], constraint: str
+) -> None:
+    """A numerator with no unit is a number nobody can interpret; a unit with no numerator claims a
+    measurement that was never made. Empty text asserts the engine produced an empty string, where
+    `NULL` says nobody recorded one — which for every finding written before #521 is the truth."""
+    Base.metadata.create_all(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError, match=constraint), unit_of_work(factory) as session:
+        run = _run(session)
+        finding = _finding_for(run, Outcome.FAIL)
+        for field, value in changes.items():
+            setattr(finding, field, value)
+        session.add(finding)
+        session.flush()

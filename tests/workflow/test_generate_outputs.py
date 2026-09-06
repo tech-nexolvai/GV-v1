@@ -211,24 +211,30 @@ def test_every_value_is_written_as_text(session: Session, store: LocalStore) -> 
             assert cell.value is None or isinstance(cell.value, str)
 
 
-def test_the_columns_storage_never_kept_say_so_rather_than_being_blank(
+def test_a_decision_carries_its_reason_into_the_workbook(
     session: Session, store: LocalStore
 ) -> None:
-    """`findings` does not store a decision's prose reason, its delta, its variant or its notes.
+    """The sentence the engine wrote, in the file (#521).
 
-    Those live on the engine's value type and `record_finding` does not persist them. An empty cell
-    would read as "there was nothing to say"; here there was something to say and nobody wrote it
-    down, and a reader deciding whether to trust the column needs to be able to tell those apart.
+    Before those columns existed the export could explain why a check did *not* decide — an
+    abstention's reason was inside its trace — and could not explain why it did. A PASS nobody can
+    account for is the thing this system exists to prevent, so the decision's own words are the ones
+    that most needed storing.
     """
     revision = _checked(session, store)
     DatabaseStages(store).generate_outputs(session, revision.id)
     sheet = _sheet(store, _artifacts(session, revision.id)[0], FINDINGS_SHEET)
 
-    difference = sheet.cell(row=2, column=FINDING_COLUMNS.index("difference") + 1).value
-    variant = sheet.cell(row=2, column=FINDING_COLUMNS.index("variant") + 1).value
+    reasons = {
+        sheet.cell(row=index, column=1)
+        .value: sheet.cell(row=index, column=FINDING_COLUMNS.index("reason") + 1)
+        .value
+        for index in range(2, sheet.max_row + 1)
+    }
 
-    assert difference == NOT_RECORDED
-    assert variant == NOT_RECORDED
+    depth = str(reasons["CT-DEPTH-001"])
+    assert depth != NOT_RECORDED, "a decision's reason is a stored column now"
+    assert depth.strip(), "the reason cell is empty"
 
 
 # ---------------------------------------------------------------------------
