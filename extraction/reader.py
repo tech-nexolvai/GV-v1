@@ -231,6 +231,11 @@ def read_pages(data: bytes) -> tuple[RawPage, ...]:
                         rotation=_rotation(page.rotation),
                         vector_character_count=characters,
                         unreadable_reason=None if characters else _NO_TEXT_REASON,
+                        # Read here because here is where the page dictionary is open. Rebuilding
+                        # the transform later needs both boxes, and nothing downstream can recover
+                        # them from the page's size alone (#530).
+                        media_box=_box(page.mediabox),
+                        crop_box=_box(page.cropbox),
                     )
                 )
     except UnreadablePdf:
