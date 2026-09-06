@@ -34,11 +34,13 @@ from enum import Enum, StrEnum
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -205,6 +207,47 @@ class Finding(Base, TimestampedUUID, Immutable):
     """Which project parameters were in force. A tolerance that changed between runs moves a result
     without any drawing changing, and a finding that did not record them cannot be attributed."""
 
+    # **The four fields the engine's own value type carries and this table did not (#521).**
+    #
+    # Every one is nullable, and `NULL` means "this row predates the column" rather than "there was
+    # nothing to say". The distinction is the point: a finding written before #521 genuinely has no
+    # recorded reason, and storing `''` would assert that the engine produced an empty one. For
+    # `notes` the two are further apart still — `NULL` is unknown, `[]` is "the check ran and had
+    # nothing to add".
+
+    reason: Mapped[str | None] = mapped_column(Text, default=None)
+    """The sentence a reviewer reads. Says what was compared and why it came out this way.
+
+    An abstention's reason was already stored inside its trace; a decision's was lost. So the export
+    could explain why a check did not decide and could not explain why it did, which is the wrong way
+    round — a PASS nobody can account for is the thing this system exists to prevent.
+    """
+
+    delta_numerator: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    delta_denominator: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    delta_unit: Mapped[str | None] = mapped_column(String(16), default=None)
+    """How far out the check was, as an exact rational and its unit — never a float (ADR-0001).
+
+    Three columns rather than one, the same shape `verdict_inputs` uses for an operand. A reviewer
+    triaging twenty failures needs to know which is a sixteenth of an inch and which is two inches,
+    and a decimal column would answer that question with a number the arithmetic never produced.
+    """
+
+    variant: Mapped[str | None] = mapped_column(String(100), default=None)
+    """Which applicability branch applied, e.g. `back_left_right`.
+
+    Two findings from the same rule under different variants are not comparable — the field-cut
+    arithmetic differs — and without this nothing said which was which.
+    """
+
+    notes: Mapped[list[str] | None] = mapped_column(JSONB, default=None)
+    """Things that did not change the outcome but a reviewer should see.
+
+    An overridden company standard, a requirement that was not exercised, a declared cross-unit
+    allowance. They do not move the verdict, which is exactly why they are easy to drop and worth
+    keeping.
+    """
+
     __table_args__ = (
         ForeignKeyConstraint(
             ["check_run_id", "package_revision_id"],
@@ -214,6 +257,24 @@ class Finding(Base, TimestampedUUID, Immutable):
         ),
         UniqueConstraint("id", "package_revision_id", name="uq_findings_id_revision"),
         CheckConstraint(f"outcome IN ({OUTCOME_VALUES})", name="finding_outcome"),
+        # All three of the delta columns or none. A numerator without a unit is a number nobody can
+        # interpret, and a unit without a numerator claims a measurement that was never made.
+        CheckConstraint(
+            "(delta_numerator IS NULL AND delta_denominator IS NULL AND delta_unit IS NULL) OR "
+            "(delta_numerator IS NOT NULL AND delta_denominator IS NOT NULL "
+            "AND delta_unit IS NOT NULL)",
+            name="finding_delta_complete",
+        ),
+        CheckConstraint(
+            "delta_denominator IS NULL OR delta_denominator > 0", name="finding_delta_denominator"
+        ),
+        CheckConstraint(
+            f"delta_unit IS NULL OR delta_unit IN ({UNIT_VALUES})", name="finding_delta_unit"
+        ),
+        # Empty text would assert the engine produced an empty reason. `NULL` says nobody recorded
+        # one, which for every row written before #521 is the truth.
+        CheckConstraint("reason IS NULL OR reason <> ''", name="finding_reason"),
+        CheckConstraint("variant IS NULL OR variant <> ''", name="finding_variant"),
         CheckConstraint(f"severity IN ({SEVERITY_VALUES})", name="finding_severity"),
         Index("ix_findings_outcome_severity", "outcome", "severity"),
     )

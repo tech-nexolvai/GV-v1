@@ -28,7 +28,9 @@ from openpyxl import load_workbook
 from reports.spreadsheet import (
     FINDING_COLUMNS,
     FINDINGS_SHEET,
+    NONE_DECLARED,
     NOT_APPLICABLE,
+    NOT_RECORDED,
     OPERAND_COLUMNS,
     OPERANDS_SHEET,
     TEXT_FORMAT,
@@ -568,3 +570,51 @@ def test_the_two_writers_agree_on_their_columns() -> None:
     stored = load_workbook(BytesIO(write_stored_workbook([_stored()])))
     assert [cell.value for cell in stored[FINDINGS_SHEET][1]] == list(FINDING_COLUMNS)
     assert [cell.value for cell in stored[OPERANDS_SHEET][1]] == list(OPERAND_COLUMNS)
+
+
+def test_a_finding_written_before_the_provenance_columns_says_so() -> None:
+    """`NOT_RECORDED` still has a job (#521): telling an old row from a value that is genuinely absent.
+
+    A finding written before those columns existed has nulls in all four. A new finding can also have
+    nulls in three of them — a PASS has no delta, a rule without a discriminator has no variant — and
+    those mean something different. `notes` is the discriminator, because `record_finding` writes `[]`
+    for a check with nothing to add, so a null there can only mean the row predates the column.
+
+    Without that, an old finding and a clean PASS would print the same thing and only one of them is
+    missing something.
+    """
+    old = _stored(reason=None, delta=None, variant=None, notes=None)
+
+    sheet = load_workbook(BytesIO(write_stored_workbook([old])))[FINDINGS_SHEET]
+
+    for column in ("difference", "variant", "notes", "reason"):
+        assert sheet.cell(row=2, column=FINDING_COLUMNS.index(column) + 1).value == NOT_RECORDED
+
+
+def test_a_recorded_finding_with_no_delta_is_not_reported_as_unrecorded() -> None:
+    """The other side of the same distinction, and the one that would fail silently.
+
+    A PASS has nothing to report as a difference; the check ran and declared none. Printing
+    `not recorded in the database` there would send a reader looking for a storage bug that is not
+    there — and would quietly undo the point of the marker by making it mean two things.
+    """
+    passed = _stored(delta=None, variant=None, notes=())
+
+    sheet = load_workbook(BytesIO(write_stored_workbook([passed])))[FINDINGS_SHEET]
+
+    difference = sheet.cell(row=2, column=FINDING_COLUMNS.index("difference") + 1).value
+    assert difference != NOT_RECORDED
+    assert difference == NONE_DECLARED
+
+
+def test_a_stored_delta_and_variant_reach_their_columns() -> None:
+    """The values #521 added, in the file rather than in the database only."""
+    finding = _stored(delta="1/16 in", variant="back_left_right", notes=("overhang overridden",))
+
+    sheet = load_workbook(BytesIO(write_stored_workbook([finding])))[FINDINGS_SHEET]
+
+    assert sheet.cell(row=2, column=FINDING_COLUMNS.index("difference") + 1).value == "1/16 in"
+    assert sheet.cell(row=2, column=FINDING_COLUMNS.index("variant") + 1).value == "back_left_right"
+    assert (
+        sheet.cell(row=2, column=FINDING_COLUMNS.index("notes") + 1).value == "overhang overridden"
+    )

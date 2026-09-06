@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
+from fractions import Fraction
 from io import BytesIO
 from uuid import UUID
 
@@ -92,6 +93,7 @@ from rules.semantic_types import ProductType
 from rules.snapshot import RuleSnapshot
 from storage.hashing import content_key, sha256_stream
 from storage.store import ArtifactStore
+from units.imperial import format_inches
 from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
@@ -826,6 +828,13 @@ class DatabaseStages:
                     snapshot_id=snapshot.snapshot_id,
                     engine_version=run.engine_version,
                     trace=finding.trace,
+                    reason=finding.reason,
+                    # Rendered here rather than in the writer, because the exact rational lives in
+                    # three columns and reassembling it is this layer's job. `format_inches` writes
+                    # `1 1/2`, the way a drawing does — a reviewer is comparing this against a sheet.
+                    delta=_delta_text(finding),
+                    variant=finding.variant,
+                    notes=None if finding.notes is None else tuple(finding.notes),
                 )
                 for finding, run, snapshot, definition in rows
             ]
@@ -1101,6 +1110,19 @@ def _documents_for(session: Session, package_revision_id: UUID) -> list[tuple[UU
         .order_by(DocumentVersion.created_at)
     ).all()
     return [(version_id, storage_key(document_id, sha)) for version_id, document_id, sha in rows]
+
+
+def _delta_text(finding: FindingRow) -> str | None:
+    """A finding's stored delta as exact text, or `None` when it has none.
+
+    The three columns are all-present or all-absent, enforced by `finding_delta_complete`, so testing
+    the numerator answers for all three. `Fraction` keeps it exact through the reassembly — building
+    a float here would undo the reason it was stored as a rational in the first place (ADR-0001).
+    """
+    if finding.delta_numerator is None or finding.delta_denominator is None:
+        return None
+    exact = Fraction(finding.delta_numerator, finding.delta_denominator)
+    return f"{format_inches(exact)} {finding.delta_unit}"
 
 
 def _document_records_for(

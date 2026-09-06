@@ -330,6 +330,17 @@ class StoredFinding:
     trace: Mapping[str, object]
     """`findings.trace` verbatim — a calculation trace, or an abstention's cause and reason."""
 
+    # Four columns `findings` gained in #521. Each is `None` for a finding written before that
+    # migration, and the workbook says `NOT_RECORDED` rather than leaving the cell empty: an old
+    # finding genuinely has no recorded reason, and a blank would read as "there was nothing to say".
+    reason: str | None = None
+    delta: str | None = None
+    """Already exact text — the caller renders the stored rational, so this module does not have a
+    second opinion about how a number looks."""
+
+    variant: str | None = None
+    notes: tuple[str, ...] | None = None
+
 
 def _text(value: object) -> str:
     """One stored JSON value as text, without asserting a shape the database does not enforce.
@@ -347,6 +358,37 @@ def _stored_operands(trace: Mapping[str, object]) -> list[Mapping[str, object]]:
     if not isinstance(operands, list):
         return []
     return [operand for operand in operands if isinstance(operand, Mapping)]
+
+
+def _column(value: str | None, *, old: bool, abstained: bool) -> str:
+    """One of the #521 columns as a cell: the value, or which kind of absence this is."""
+    if value is not None:
+        return value
+    return NOT_RECORDED if old else _absent(abstained)
+
+
+def _predates_provenance(finding: StoredFinding) -> bool:
+    """Whether this row was written before `findings` gained its four columns (#521).
+
+    Told by `notes`, which is the only one of the four that is never null on a row written since:
+    `record_finding` writes `[]` for a check that produced no notes. The other three are legitimately
+    null on a new row — a PASS has no delta, a rule without a discriminator has no variant — so none
+    of them can distinguish "nothing to record" from "recorded before the column existed".
+
+    That distinction is the whole point of the marker. Without it a finding from last week and a
+    finding from before the migration would print the same thing, and only one of them is missing
+    something.
+    """
+    return finding.notes is None
+
+
+def _absent(abstained: bool) -> str:
+    """What a value column says when a *recorded* finding carries no value for it.
+
+    A check that abstained has no delta to report; a decision with no delta declared none. Neither is
+    the same as never having been recorded, which `_predates_provenance` answers.
+    """
+    return NOT_APPLICABLE if abstained else NONE_DECLARED
 
 
 def _stored_finding_row(finding: StoredFinding) -> tuple[object, ...]:
@@ -369,8 +411,10 @@ def _stored_finding_row(finding: StoredFinding) -> tuple[object, ...]:
         tolerance = _text(trace.get("tolerance")) or NONE_DECLARED
         unit = _text(trace.get("arithmetic_unit")) or NONE_DECLARED
 
-    # An abstention's reason is stored; a decision's is not. Both are stated rather than blank.
-    reason = _text(trace.get("reason")) or NOT_RECORDED
+    # A decision's reason is a column since #521; an abstention's has always been in its trace. The
+    # column is preferred when both are present, because it is what the engine actually said.
+    old = _predates_provenance(finding)
+    reason = finding.reason or _text(trace.get("reason")) or NOT_RECORDED
 
     pages = [
         _evidence_parts(_text(operand.get("evidence_ref")) or None)[0]
@@ -382,16 +426,15 @@ def _stored_finding_row(finding: StoredFinding) -> tuple[object, ...]:
         finding.outcome,
         finding.severity,
         comparison,
-        # Delta, variant and notes are not columns storage has. See `NOT_RECORDED`.
-        NOT_RECORDED,
+        _column(finding.delta, old=old, abstained=abstained),
         tolerance,
         unit,
-        NOT_RECORDED,
+        _column(finding.variant, old=old, abstained=abstained),
         finding.snapshot_id,
         finding.engine_version,
         ", ".join(page for page in pages if page),
         reason,
-        NOT_RECORDED,
+        NOT_RECORDED if finding.notes is None else " | ".join(finding.notes),
     )
 
 

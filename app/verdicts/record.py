@@ -171,6 +171,21 @@ def record_finding(
             )
         ),
         parameter_set_versions=dict(parameter_set_ids),
+        # **The four the engine carried and this table used to drop (#521).**
+        #
+        # `finding.reason` is written for a decision as well as an abstention. The abstention path
+        # also puts its reason inside the trace, which is where it has always been read from; this
+        # column is what makes a decision's reason readable at all.
+        reason=finding.reason or None,
+        # Exact, in three columns, never a float. A delta is a measurement and ADR-0001 applies to it
+        # exactly as it does to an operand.
+        delta_numerator=None if finding.delta is None else finding.delta.exact.numerator,
+        delta_denominator=None if finding.delta is None else finding.delta.exact.denominator,
+        delta_unit=None if finding.delta is None else finding.delta.unit.value,
+        variant=finding.variant or None,
+        # `[]` where the check produced no notes, not `NULL`. The null means "written before this
+        # column existed", and a check that ran and had nothing to add is a different fact.
+        notes=list(finding.notes),
     )
     session.add(row)
     session.flush()
