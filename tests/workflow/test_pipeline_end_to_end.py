@@ -50,6 +50,7 @@ from app.models.evidence import EvidenceArtifact
 from app.models.matching import MatchCandidate as MatchCandidateRow
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from extraction.reader import read_pages
+from storage.hashing import ArtifactCorrupt
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import _pdf
@@ -209,7 +210,6 @@ def test_a_real_pdf_runs_the_whole_mechanical_pipeline(
     ingested = stages.ingest(session, revision.id)
     assert ingested["ran"] is True
     assert ingested["verified"] == 1
-    assert ingested["digest_mismatched"] == []
     assert ingested["unreadable"] == []
     assert ingested["page_count_changed"] == []
 
@@ -315,27 +315,26 @@ def test_match_finds_nothing_and_says_why_rather_than_reporting_success(
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_reports_a_digest_mismatch_rather_than_raising(
+def test_ingest_halts_the_package_when_a_document_is_not_the_one_uploaded(
     session: Session, store: LocalStore, pdf_bytes: bytes
 ) -> None:
-    """A document whose stored bytes are not the bytes that were uploaded.
+    """A document whose stored bytes are not the bytes that were uploaded stops the package (#532).
 
-    Reported and not raised: a corrupt artifact is not transient, and raising would roll the claim
-    back and retry the same broken file for ever (#491). The mismatch names the version so a person
-    can act on it.
+    It used to be reported in the payload while the pipeline carried on, which meant a review could
+    be produced of a document nobody submitted — the one failure that looks entirely normal on the
+    way out.
+
+    `ArtifactCorrupt` rather than a bare error, because that class is classified `PERMANENT`: the
+    package enters `FAILED_PERMANENT`, which does not resume, so this raises once instead of
+    retrying the same broken file for ever. That was #491's objection to raising here and it is what
+    the classification answers.
     """
     revision = _revision(
         session, store, data=pdf_bytes, stored=pdf_bytes.replace(b"%PDF-1.", b"%PDF-9.", 1)
     )
 
-    result = DatabaseStages(store).ingest(session, revision.id)
-
-    assert result["ran"] is True
-    assert result["verified"] == 0
-    assert len(list(result["digest_mismatched"])) == 1
-    # The unreadable list stays empty: a file that fails its digest is not read at all, because
-    # counting the pages of a file that is not the one under review describes the wrong document.
-    assert result["unreadable"] == []
+    with pytest.raises(ArtifactCorrupt, match="not the one that was submitted"):
+        DatabaseStages(store).ingest(session, revision.id)
 
 
 def test_ingest_reports_an_unreadable_document(session: Session, store: LocalStore) -> None:
@@ -387,7 +386,6 @@ def test_ingest_reports_an_unreadable_document(session: Session, store: LocalSto
     result = DatabaseStages(store).ingest(session, revision.id)
 
     assert result["verified"] == 0
-    assert result["digest_mismatched"] == []
     assert len(list(result["unreadable"])) == 1
 
 

@@ -40,6 +40,7 @@ from app.models import (
     TaskRun,
     WorkflowRun,
 )
+from storage.hashing import ArtifactCorrupt
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.conftest import kill_at
 from workflow.durability import (
@@ -678,3 +679,82 @@ def test_starting_a_package_by_hand_is_not_a_recovery(factory: sessionmaker[Sess
         assert (
             recovery_interventions(session, timedelta(hours=1)) == 0
         ), "starting work is not recovering it"
+
+
+class Corrupting:
+    """Stages whose `ingest` finds a document that is not the one that was uploaded.
+
+    The real `DatabaseStages.ingest` raises `ArtifactCorrupt` for this; the rest of the pipeline is
+    irrelevant to what is being asserted, so it is stubbed out. What matters is where the machine puts
+    a package when that specific exception escapes the first stage.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def ingest(self, session: Session, package_revision_id: UUID) -> dict[str, object]:
+        del session, package_revision_id
+        self.calls.append("ingest")
+        raise ArtifactCorrupt(
+            "document version 0 does not match the digest recorded when it was uploaded, so this "
+            "package is not the one that was submitted"
+        )
+
+    def extract_pages(self, session: Session, package_revision_id: UUID) -> tuple[()]:
+        del session, package_revision_id
+        self.calls.append("extract_pages")
+        return ()
+
+    def match(self, session: Session, package_revision_id: UUID) -> dict[str, object]:
+        del session, package_revision_id
+        self.calls.append("match")
+        return {}
+
+    def validate_evidence(self, session: Session, package_revision_id: UUID) -> dict[str, object]:
+        del session, package_revision_id
+        self.calls.append("validate_evidence")
+        return {}
+
+    def run_checks(self, session: Session, package_revision_id: UUID) -> dict[str, object]:
+        del session, package_revision_id
+        self.calls.append("run_checks")
+        return {}
+
+    def generate_outputs(self, session: Session, package_revision_id: UUID) -> dict[str, object]:
+        del session, package_revision_id
+        self.calls.append("generate_outputs")
+        return {}
+
+
+def test_a_corrupt_document_stops_the_package_permanently(
+    factory: sessionmaker[Session],
+) -> None:
+    """**The entry-condition gap `PIPELINE_SPINE.md` flagged, closed (#532).**
+
+    A document whose stored bytes are not the ones that were uploaded used to be reported while the
+    pipeline carried on, so a review could be produced of a package nobody submitted. That is the
+    failure that looks entirely normal on the way out: every finding is well-formed and every one of
+    them is about the wrong drawing.
+
+    Two things are asserted, and the second is the one that answers #491's objection to raising here.
+    The package stops — no stage after `ingest` runs at all. And it stops in `FAILED_PERMANENT`, not
+    `FAILED_RETRYABLE`, so it is not picked up and retried against the same broken file for ever.
+    """
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _uploaded_revision(session)
+
+    stages = Corrupting()
+    with pytest.raises(ArtifactCorrupt):
+        run_all(
+            factory,
+            package_revision_id=revision_id,
+            workflow_run_id=run_id,
+            stages=stages,
+        )
+
+    assert stages.calls == ["ingest"], "the pipeline carried on past a document it could not trust"
+
+    with unit_of_work(factory) as session:
+        revision = session.get(PackageRevision, revision_id)
+        assert revision is not None
+        assert PackageState(revision.state) is PackageState.FAILED_PERMANENT

@@ -91,7 +91,7 @@ from rules.parameters import ParameterSet, resolve_all
 from rules.project import ProjectScope
 from rules.semantic_types import ProductType
 from rules.snapshot import RuleSnapshot
-from storage.hashing import content_key, sha256_stream
+from storage.hashing import ArtifactCorrupt, content_key, sha256_stream
 from storage.store import ArtifactStore
 from units.imperial import format_inches
 from verdict.engine import execute
@@ -233,12 +233,19 @@ class DatabaseStages:
         invented here. The bytes hash to `DocumentVersion.sha256`; the file still parses as a PDF;
         it still has `DocumentVersion.page_count` pages.
 
-        **It reports; it does not gate.** A mismatch is returned in the payload rather than raised,
-        for the reason #491 gave: a corrupt artifact is not transient, so raising would roll the
-        claim back and retry the same broken file for ever. What *should* happen — a revision with a
-        failed digest never reaching `extract_pages` — is an entry condition on the next stage, and
-        no such condition exists yet. That is a real gap and it is stated here rather than papered
-        over: today this makes the failure visible, and a human acts on it.
+        **A failed digest halts the package (#532).** It used to be reported in the payload and the
+        pipeline carried on, so a review could be produced of a document nobody submitted — and
+        nothing about that result would look wrong.
+
+        Reporting was right when it was decided, for the reason #491 gave: raising would roll the
+        claim back and retry the same broken file for ever. What changed is where the raise lands.
+        `ArtifactCorrupt` is classified `PERMANENT`, so the failure machinery enters
+        `FAILED_PERMANENT` — the one failure state that does not resume. The package stops once,
+        with a reason on it, instead of looping.
+
+        The other two findings are still reported rather than raised. A document that will not parse
+        is #491's own case and is recorded per page by `extract_pages`; a page count that has moved
+        is a fact a person should see, and neither means the package is a different package.
         """
         if self._store is None:
             # The same answer `extract_pages` gives, and for the same reason: no store is a fact
@@ -252,16 +259,28 @@ class DatabaseStages:
 
         records = _document_records_for(session, package_revision_id)
         verified = 0
-        mismatched: list[str] = []
         unreadable: list[str] = []
         miscounted: list[str] = []
         for version_id, key, sha256, page_count in records:
             data = _fetch(self._store, key)
             if hashlib.sha256(data).hexdigest() != sha256:
-                # Recorded and not read further. Counting its pages would be describing a file that
-                # is not the one under review.
-                mismatched.append(str(version_id))
-                continue
+                # **Raised, which halts the package (#532).** This used to be reported and the
+                # pipeline carried on, so a review could be produced of a document that is not the
+                # one anybody submitted — and nothing about that result looks wrong.
+                #
+                # Reporting was the right call when it was made, for the reason #491 gave: raising
+                # would roll the claim back and retry the same broken file for ever. That is no
+                # longer the consequence. `ArtifactCorrupt` is classified `PERMANENT`, so
+                # `enter_failure` puts the revision in `FAILED_PERMANENT`, which is the one failure
+                # state that does not resume — the package stops, once, with a reason on it.
+                #
+                # Everything read so far in this stage rolls back with the raise, which is correct:
+                # a partial verification of a package that is going no further is not a fact worth
+                # keeping.
+                raise ArtifactCorrupt(
+                    f"document version {version_id} does not match the digest recorded when it was "
+                    "uploaded, so this package is not the one that was submitted"
+                )
             try:
                 pages = read_pages(data)
             except UnreadablePdf as error:
@@ -277,7 +296,6 @@ class DatabaseStages:
             "ran": True,
             "documents": len(records),
             "verified": verified,
-            "digest_mismatched": mismatched,
             "unreadable": unreadable,
             "page_count_changed": miscounted,
         }

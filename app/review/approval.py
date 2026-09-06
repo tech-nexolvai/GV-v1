@@ -27,7 +27,7 @@ from app.auth.roles import Action, Principal
 from app.lifecycle.states import transition
 from app.models.package import PackageState, PackageStateEvent
 from app.models.review import Approval, ApprovedFinding, ReviewAction, ReviewSession
-from app.models.verdicts import Finding
+from app.models.verdicts import CheckRun, Finding
 from app.review.session import complete_session
 
 REVIEW_REQUIRED = "REVIEW_REQUIRED"
@@ -110,10 +110,32 @@ def _review(db: Session, review_session_id: UUID) -> ReviewSession:
 
 
 def _findings(db: Session, package_revision_id: UUID) -> tuple[Finding, ...]:
+    """The findings in force for this revision — the live run's, not every run's ever.
+
+    **Superseded runs are excluded, and leaving them in was a real defect (#532).** `run_checks`
+    supersedes its previous run rather than deleting it, because a finding cites the run that judged
+    it. Re-running is ordinary: it is what happens the moment a reviewer confirms a reading and the
+    checks can decide from evidence rather than abstaining.
+
+    Without the filter, approval read both runs at once. Two consequences, and the second is worse
+    than the first. A reviewer who addressed every abstention on screen was refused, because the
+    superseded run's abstentions were unaddressed and invisible — the list, the summary and the
+    export all show only the live run. And once approved, `ApprovedFinding` rows were written for
+    superseded findings too, so the record of what GV signed for included verdicts that had already
+    been replaced.
+
+    The same filter `app/api/findings.py` applies, and for the reason stated there: the list, the
+    summary and the export must not disagree about which run is current. Approval is the fourth
+    reader of that question and was answering it differently.
+    """
     return tuple(
         db.scalars(
             select(Finding)
-            .where(Finding.package_revision_id == package_revision_id)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .where(
+                Finding.package_revision_id == package_revision_id,
+                CheckRun.superseded_at.is_(None),
+            )
             .order_by(Finding.created_at, Finding.id)
         ).all()
     )

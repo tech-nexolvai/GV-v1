@@ -169,6 +169,42 @@
         "title": "ApplicabilityVariantOut",
         "type": "object"
       },
+      "ApprovalOut": {
+        "description": "What a sign-off produced.",
+        "properties": {
+          "approval_id": {
+            "format": "uuid",
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "approved_by": {
+            "title": "Approved By",
+            "type": "string"
+          },
+          "findings_approved": {
+            "title": "Findings Approved",
+            "type": "integer"
+          },
+          "package_revision_id": {
+            "format": "uuid",
+            "title": "Package Revision Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approval_id",
+          "package_revision_id",
+          "approved_by",
+          "findings_approved",
+          "state"
+        ],
+        "title": "ApprovalOut",
+        "type": "object"
+      },
       "AwaitingToleranceOut": {
         "additionalProperties": false,
         "description": "One rule that cannot be released, and how much of it is still a guess.",
@@ -3329,6 +3365,53 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/report": {
+      "get": {
+        "description": "The findings workbook for this revision, once somebody has signed for it.\n\n**Approval is the gate, not the file's existence.** `generate_outputs` writes the workbook as soon\nas the checks have run, which is before anybody has read a finding. Serving it then would let a\nreview leave in a state nobody signed for, which is what ADR-0010 forbids \u2014 no computed dimension\nreaches a vendor without reviewer sign-off.\n\nThe bytes are streamed from the artifact store rather than rebuilt. Regenerating on download would\nproduce a file that could differ from the one the approval covers, and the approval is the record\nof what was agreed.",
+        "operationId": "download_report_api_v1_projects__project_id__packages__package_id__report_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download the signed-off review as a workbook",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/required-inputs": {
       "get": {
         "description": "The fields a reviewer must fill, derived from the rules themselves.\n\n**This exists so a form cannot omit a field.** A hand-written list is right the day it is written\nand silently wrong the first time a rule gains an input \u2014 and the check then abstains for a reason\nthe reviewer cannot act on, which looks exactly like a genuine missing dimension.\n\nGrouped by physical quantity rather than by rule input, because three rules read the sink's front\noffset and one of them calls the same measurement by a different name. A reviewer measures it\nonce and is asked once; the `consumers` say which inputs the value feeds.\n\nReads the published rulebook from the database, which is what `run_checks` reads. Nothing\npublished means an empty form and `rules_published: 0` \u2014 a different situation from a rulebook\nthat wants nothing, and the caller can tell them apart.",
@@ -3562,6 +3645,60 @@
         "summary": "Record what the reviewer did to one finding",
         "tags": [
           "review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve": {
+      "post": {
+        "description": "Approve every finding of the revision this sitting is reviewing.\n\nThe finding set is chosen by the server, not sent by the caller. A client naming the findings it\napproves is a client that can approve a subset and leave the rest looking reviewed \u2014 and the\napproval is the record GV stands behind when a vendor disputes a dimension.\n\nRefuses while any `REVIEW_REQUIRED` finding is unaddressed. That is not a formality: an abstention\nnobody acted on is a check that did not happen, and approving around it would put a package's name\nto a question nobody answered.",
+        "operationId": "approve_api_v1_projects__project_id__review_sessions__review_session_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "review_session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Review Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sign off a package, so its review can leave the building",
+        "tags": [
+          "approvals"
         ]
       }
     },
