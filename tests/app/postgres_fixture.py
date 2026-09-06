@@ -49,7 +49,11 @@ def postgres_engine() -> Iterator[Engine]:
         with admin_engine.connect() as connection:
             connection.execute(text(f'CREATE SCHEMA "{schema}"'))
 
-        schema_url = url.update_query_dict({"options": f"-csearch_path={schema}"})
+        # **`public` on the path as well as the test's own schema (#513).** Production's default
+        # search path is `"$user", public`, and pg_trgm's operator class and `similarity()` live in
+        # public — so a path of only the test schema is both unlike production and unable to resolve
+        # them. The test schema comes first, so nothing it defines is shadowed.
+        schema_url = url.update_query_dict({"options": f"-csearch_path={schema},public"})
         engine = create_engine(schema_url)
         try:
             yield engine

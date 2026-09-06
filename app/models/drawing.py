@@ -33,6 +33,7 @@ Verification: `tests/db/test_drawing_models.py`
 
 from __future__ import annotations
 
+from typing import Final
 from uuid import UUID
 
 from pgvector.sqlalchemy import VECTOR
@@ -55,6 +56,15 @@ from app.db.base import Base, Immutable, TimestampedUUID
 from vocabulary.dense_content import DenseContentKind
 
 DENSE_CONTENT_KIND_VALUES = ", ".join(f"'{kind.value}'" for kind in DenseContentKind)
+
+
+#: The one schema every database-wide extension is created in and referenced through.
+#:
+#: `public` because it is the schema that exists in every PostgreSQL database without being created,
+#: including the throwaway ones tests build. What matters is not which schema it is but that it is
+#: always the same one and always named: an extension installed by whoever got there first is an
+#: extension the next session cannot find (#513).
+EXTENSION_SCHEMA: Final = "public"
 
 
 class DrawingView(Base, TimestampedUUID):
@@ -152,11 +162,17 @@ class ItemIdentifier(Base, TimestampedUUID):
         Index("ix_item_identifiers_kind_value", "kind", "value_as_printed"),
         # Lane 5 searches OCR variants through pg_trgm. The ordinary B-tree remains useful for exact
         # identifiers; this GIN operator class serves similarity queries without replacing it.
+        #
+        # **Schema-qualified, and that is the whole of #513.** An extension is a database-wide object
+        # living in one schema, but `gin_trgm_ops` is resolved through `search_path` like any other
+        # name. Unqualified, this index can only be created by a session whose search path happens to
+        # contain the schema the extension landed in — which, with a schema per test, is whichever
+        # test ran first and has since dropped it.
         Index(
             "ix_item_identifiers_value_trigram",
             "value_as_printed",
             postgresql_using="gin",
-            postgresql_ops={"value_as_printed": "gin_trgm_ops"},
+            postgresql_ops={"value_as_printed": f"{EXTENSION_SCHEMA}.gin_trgm_ops"},
         ),
     )
 
@@ -168,9 +184,9 @@ class ItemIdentifier(Base, TimestampedUUID):
 event.listen(
     ItemIdentifier.__table__,
     "before_create",
-    DDL("CREATE EXTENSION IF NOT EXISTS pg_trgm").execute_if(  # type: ignore[no-untyped-call]
-        dialect="postgresql"
-    ),
+    DDL(  # type: ignore[no-untyped-call]
+        f"CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA {EXTENSION_SCHEMA}"
+    ).execute_if(dialect="postgresql"),
 )
 
 
@@ -231,9 +247,9 @@ class DenseEmbedding(Base, TimestampedUUID):
 event.listen(
     DenseEmbedding.__table__,
     "before_create",
-    DDL("CREATE EXTENSION IF NOT EXISTS vector").execute_if(  # type: ignore[no-untyped-call]
-        dialect="postgresql"
-    ),
+    DDL(  # type: ignore[no-untyped-call]
+        f"CREATE EXTENSION IF NOT EXISTS vector SCHEMA {EXTENSION_SCHEMA}"
+    ).execute_if(dialect="postgresql"),
 )
 
 
