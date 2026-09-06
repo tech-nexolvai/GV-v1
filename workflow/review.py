@@ -41,7 +41,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.session import unit_of_work
 from app.lifecycle.side_states import FailureClass, classify, enter_failure
-from app.lifecycle.states import ASSEMBLY_STATES, TRANSITIONS, transition
+from app.lifecycle.states import (
+    ASSEMBLY_STATES,
+    TRANSITIONS,
+    EntryConditionUnmet,
+    transition,
+)
 from app.models import PackageRevision, PackageState
 from workflow.idempotency import CLAIMED, claim, stage_idempotency_key
 
@@ -400,6 +405,37 @@ def run_all(
                 stage_state=state,
             )
             raise
+
+    # **The hand-over, which nothing performed (#532).** The pipeline ended at
+    # `GENERATING_OUTPUTS` and stopped. `AWAITING_REVIEW` is the only state `APPROVED` is reachable
+    # from, so a package that finished every stage could never be signed off — the last edge of the
+    # machine had no code that walked it, and the loop dead-ended one step from the reviewer.
+    #
+    # Its own transaction, after the stages: the work is done and committed, and a hand-over that
+    # shared a transaction with the last stage would roll the stage back if the move were refused.
+    #
+    # `CHECKS_HAVE_RUN` guards the move, which is what that condition was written for — a package
+    # arriving at review with no checks shows a reviewer no failures, which reads as none.
+    try:
+        with unit_of_work(factory) as session:
+            transition(
+                session,
+                package_revision_id,
+                PackageState.AWAITING_REVIEW,
+                actor="the pipeline",
+                reason=f"every stage completed: {', '.join(name for name, _ in STAGES)}",
+            )
+    except EntryConditionUnmet:
+        # **Left where it is, and this is not swallowing.** The only condition on `AWAITING_REVIEW`
+        # is that checks have run, and it is a statement about the *package* rather than about this
+        # run: a package with no checks shows a reviewer no failures, which reads as none. The
+        # stages' own work succeeded and is committed, so raising here would report a pipeline
+        # failure — a different claim, and a wronger one.
+        #
+        # After a real `run_checks` the condition always holds, because that stage records a finding
+        # for every applicable rule including the ones that abstained. It fails when the stages did
+        # no work, which is what a caller passing stubs is asking for.
+        pass
     return tuple(outcomes)
 
 
