@@ -60,7 +60,7 @@ BARE_URL := postgresql+psycopg://gv:gv@localhost:5433/$(DEMO_DB)
 TEST_URL := postgresql+psycopg://gv:gv@localhost:5433/$(TEST_DB)
 
 .PHONY: check check-fast db db-stop install up down token migrate serve worker dispatch \
-	demo demo-env worktree where testdb
+	demo demo-env worktree where testdb model-smoke
 
 install:            ## install exactly what CI installs
 	python -m pip install -e ".[ai,dev,extraction,rules,platform,reports]"
@@ -140,6 +140,19 @@ testdb:             ## create this checkout's test database if it does not exist
 		"SELECT 1 FROM pg_database WHERE datname='$(TEST_DB)'" | grep -q 1 \
 		|| { echo "  could not create $(TEST_DB) — is the stack up? try 'make up'"; exit 1; }
 	@echo "  test database: $(TEST_DB)"
+
+# Proves the model seam carries a real call. Plumbing only: it makes no claim about how often a
+# model reads a dimension correctly, because there is no gold set to measure that against (#188).
+#
+# Skips cleanly with no model configured, the way the database tests skip without DATABASE_URL. To
+# run it against a local model, with nothing leaving the machine:
+#
+#   ollama pull qwen2-vl && GV_OPENMODEL_ID=qwen2-vl make model-smoke
+#
+# A free-tier API works the same way, by pointing GV_OPENMODEL_BASE_URL and GV_OPENMODEL_API_KEY at it.
+model-smoke:        ## send one test image through the model adapter (skips if none is configured)
+	@python -m pytest tests/extraction/models/test_openmodel.py -v \
+		-k "configured_model or scripted_endpoint or same_seam"
 
 demo:               ## one command to a working demo: stack, schema, rulebook, API and UI
 	@scripts/demo.sh
