@@ -98,6 +98,7 @@ from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
+from workflow.evidence_operands import operands_from_evidence
 from workflow.idempotency import stage_idempotency_key
 from workflow.measurements import run_parameters_for
 from workflow.review import ENGINE_VERSION, PageResult
@@ -311,6 +312,7 @@ class DatabaseStages:
             extractor=EXTRACTOR,
             extractor_version=EXTRACTOR_VERSION,
             config_hash=f"dpi={self._dpi}",
+            dpi=self._dpi,
         )
 
         results: list[PageResult] = []
@@ -483,6 +485,7 @@ class DatabaseStages:
                 extractor=engine.name,
                 extractor_version=engine.version,
                 config_hash=f"dpi={self._dpi}",
+                dpi=self._dpi,
             )
             return len(
                 record_ocr_candidates(
@@ -1000,8 +1003,27 @@ class DatabaseStages:
                 )
                 written += 1
 
+            # **Sealed evidence, before anything a caller supplied (#530).** This is the link that
+            # was missing: until now the only way a rule got an operand was for somebody to type the
+            # number into a form, so a drawing could be read and confirmed and the checks would still
+            # be judged on a reviewer's transcription.
+            #
+            # A caller's operand still wins where both exist. Supplying one is a deliberate act — the
+            # reviewer entered that number for this run — and evidence is derived, so overriding the
+            # explicit thing with the derived one would take an answer away from the person who gave
+            # it. It also keeps the Q7 form path behaving exactly as it did.
+            from_evidence = operands_from_evidence(
+                session,
+                package_revision_id,
+                [applicable.snapshot.rule for applicable in resolution.applicable],
+            )
+
             for applicable in resolution.applicable:
-                supplied = self._operands.get(applicable.snapshot.rule.id, {})
+                rule_id = applicable.snapshot.rule.id
+                supplied = {
+                    **from_evidence.get(rule_id, {}),
+                    **self._operands.get(rule_id, {}),
+                }
                 finding = execute(
                     applicable.snapshot,
                     supplied,

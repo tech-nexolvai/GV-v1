@@ -41,7 +41,7 @@ from app.models.document import Page
 from app.models.evidence import ObservationCandidate
 from app.models.runs import ExtractionFailure, ExtractionRun
 from evidence.candidate import ObservationCandidate as DomainCandidate
-from evidence.coordinates import ImagePoint
+from evidence.coordinates import ImagePoint, PageBox
 from evidence.corroborate import corroborate
 from extraction.manifest import PageManifest
 from extraction.ocr import OcrItem
@@ -87,6 +87,7 @@ def open_extraction_run(
     extractor: str,
     extractor_version: str,
     config_hash: str,
+    dpi: int | None = None,
 ) -> ExtractionRun:
     """The run a set of candidates came from, created once per stage execution.
 
@@ -121,10 +122,20 @@ def open_extraction_run(
         extractor=extractor,
         extractor_version=extractor_version,
         config_hash=config_hash,
+        dpi=dpi,
     )
     session.add(run)
     session.flush()
     return run
+
+
+def _box_text(box: PageBox | None) -> list[str] | None:
+    """A page box as four exact decimal strings, or `None` when the reader had none.
+
+    Text, because a JSON float loses the exactness the whole units layer exists to keep — and this
+    box is the denominator of every coordinate conversion made from it afterwards.
+    """
+    return None if box is None else [str(value) for value in box]
 
 
 def record_candidates(
@@ -574,6 +585,10 @@ def persist_manifest(session: Session, manifest: PageManifest) -> list[Page]:
             rotation=record.rotation,
             has_vector_text=record.has_vector_text,
             render_failed=record.render_failed,
+            # Four exact decimal strings each, or null when the reader could not report them. What
+            # rebuilds the transform a candidate's polygon is expressed in (#530).
+            media_box=_box_text(record.media_box),
+            crop_box=_box_text(record.crop_box),
             sheet_number=record.sheet_number,
             # `None` is a real answer — nobody could classify it — and the column is nullable for
             # that reason rather than awaiting a default.
