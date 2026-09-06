@@ -79,11 +79,18 @@ deliberately gives neither a default because both are judgements about how real 
 dimensioned. Choosing numbers without a real sheet would be inventing exactly the drawing-specific
 tuning this spine avoids. There is also nowhere to put the answer: no table records an association.
 
-## The one thing this made visible
+## The gap this made visible, since closed
 
-`ingest` reports a failed digest; it does not stop the pipeline. A revision whose document no longer
-matches its recorded hash should never reach `extract_pages`, and that belongs in an entry condition
-on the next stage — which does not exist. Raising instead was rejected for the reason #491 gave: a
-corrupt artifact is not transient, so raising would roll the claim back and retry the same broken file
-for ever. Today the failure is visible and a human acts on it. That is a real gap, named here rather
-than papered over.
+`ingest` reported a failed digest and the pipeline read the document anyway — the check that would
+catch a corrupted drawing had already run and already knew. #523 closed it in `extract_pages`, which
+verifies the bytes against the recorded SHA-256 before reading them and records a
+`document_digest_mismatch` failure instead. Checking there rather than trusting the earlier report
+also closes the window between the two stages: the artifact could change in between, and the place
+that reads a document is the right place to establish it is the right document.
+
+Still recorded rather than raised, for the reason #491 gave: a corrupt artifact is not transient, so
+raising would roll the claim back and retry the same broken file for ever. The row is what keeps a
+refused document from looking like a document with nothing on it.
+
+`ingest` still reports rather than gates, and that is now redundancy rather than a gap — it tells a
+human early, and `extract_pages` is what actually refuses.

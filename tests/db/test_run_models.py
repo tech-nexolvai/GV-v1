@@ -565,3 +565,63 @@ def test_both_valid_shapes_are_accepted(postgres_engine: Engine) -> None:
 
         stored = session.execute(select(ExtractionFailure)).scalars().all()
         assert sorted(row.reason for row in stored) == ["document_unreadable", "page_unreadable"]
+
+
+def test_a_digest_mismatch_is_recorded_as_a_document_level_failure(
+    postgres_engine: Engine,
+) -> None:
+    """The third reason (#523): the file reads perfectly and is not the file that was uploaded.
+
+    It sits beside the other two rather than in a table of its own, so one query answers "which
+    drawings did this run decline to read, and why". Like `document_unreadable` it is a fact about
+    the whole document, so it carries no page.
+    """
+    Base.metadata.create_all(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        extraction = _persist_run_chain(session)
+        task = session.get(TaskRun, extraction.task_run_id)
+        assert task is not None
+        workflow = session.get(WorkflowRun, task.workflow_run_id)
+        assert workflow is not None
+        revision = session.get(PackageRevision, workflow.package_revision_id)
+        assert revision is not None
+        version_id = _persist_document_version(session, revision.package_id)
+        session.add(
+            _failure(
+                extraction,
+                version_id,
+                reason="document_digest_mismatch",
+                page_index=None,
+                error_type="DigestMismatch",
+            )
+        )
+        session.flush()
+
+        stored = session.execute(select(ExtractionFailure)).scalars().one()
+        assert stored.reason == "document_digest_mismatch"
+
+
+def test_a_digest_mismatch_may_not_claim_a_page(postgres_engine: Engine) -> None:
+    """The scope constraint has to cover the new reason too.
+
+    Widening the reason list without widening the scope check is the shape of bug
+    `ModelInvocationOutcome.FAILED` was: a value one constraint permits and another refuses. Here the
+    failure would be the reverse — a document-level fact filed against a page — so it is asserted
+    directly rather than assumed from the reason list passing.
+    """
+    Base.metadata.create_all(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        extraction = _persist_run_chain(session)
+        task = session.get(TaskRun, extraction.task_run_id)
+        assert task is not None
+        workflow = session.get(WorkflowRun, task.workflow_run_id)
+        assert workflow is not None
+        revision = session.get(PackageRevision, workflow.package_revision_id)
+        assert revision is not None
+        version_id = _persist_document_version(session, revision.package_id)
+        session.add(
+            _failure(extraction, version_id, reason="document_digest_mismatch", page_index=0)
+        )
+        session.flush()
