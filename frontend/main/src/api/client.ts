@@ -284,13 +284,13 @@ export function completeReviewSession(projectId: string, reviewSessionId: string
  */
 export function listCandidates(projectId: string, packageId: string) {
   return request<CandidatesOut>(
-    `/api/v1/projects/${projectId}/packages/${packageId}/candidates`,
+    `/projects/${projectId}/packages/${packageId}/candidates`,
   );
 }
 
 /** The vocabulary a reviewer may choose from, read from the rulebook rather than hard-coded here. */
 export function listSemanticTypes() {
-  return request<string[]>('/api/v1/semantic-types');
+  return request<string[]>('/semantic-types');
 }
 
 /**
@@ -306,7 +306,7 @@ export function confirmCandidate(
   semanticType: string,
 ) {
   return request<ConfirmedOut>(
-    `/api/v1/projects/${projectId}/packages/${packageId}/candidates/${candidateId}/confirm`,
+    `/projects/${projectId}/packages/${packageId}/candidates/${candidateId}/confirm`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -327,3 +327,55 @@ export type CandidatesOut = Get<'/api/v1/projects/{project_id}/packages/{package
 export type CandidateOut = CandidatesOut['candidates'][number];
 export type ConfirmedOut =
   paths['/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm']['post']['responses'][201]['content']['application/json'];
+
+/**
+ * Sign a package off: approve every finding of the revision this sitting reviewed.
+ *
+ * The finding set is chosen by the server. A client naming what it approves could approve a subset
+ * and leave the rest looking reviewed, and this is the record GV stands behind when a vendor
+ * disputes a dimension.
+ *
+ * Refused while any REVIEW REQUIRED finding is unaddressed — an abstention nobody acted on is a
+ * check that did not happen.
+ */
+export function approvePackage(projectId: string, reviewSessionId: string) {
+  return request<ApprovalOut>(
+    `/projects/${projectId}/review-sessions/${reviewSessionId}/approve`,
+    { method: 'POST' },
+  );
+}
+
+/**
+ * The signed-off review, as workbook bytes.
+ *
+ * Not `request`, which parses JSON: this is a file. The blob is handed to the browser by the caller
+ * rather than fetched into a link here, so a failure is an error the page can show instead of a
+ * download that silently does nothing.
+ */
+export async function downloadReport(
+  projectId: string,
+  packageId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/report`,
+  );
+  if (!response.ok) {
+    // The same envelope every other route returns, and the same fallback when a proxy or a crash
+    // sends something else — see `request`.
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The report could not be downloaded (HTTP ${response.status}).`,
+        request_id: '',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
+export type ApprovalOut =
+  paths['/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve']['post']['responses'][201]['content']['application/json'];

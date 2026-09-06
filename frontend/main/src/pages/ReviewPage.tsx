@@ -9,13 +9,14 @@ import {
   listReviewSessions,
   openReviewSession,
   recordReviewAction,
-  completeReviewSession,
+  approvePackage,
+  downloadReport,
 } from '../api/client';
 import type { ReviewSession } from '../api/client';
 import { loadFindings } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
-import { FileText, CheckSquare } from 'lucide-react';
+import { FileText, CheckSquare, Download } from 'lucide-react';
 import './ReviewPage.css';
 
 interface ReviewPageProps {
@@ -54,6 +55,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
   const [session, setSession] = useState<ReviewSession | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSigningOff, setIsSigningOff] = useState(false);
+  const [approved, setApproved] = useState(false);
   const isLoading = remote.status === 'loading';
 
   // The fetched findings are the starting point; reviewer actions below are applied on top, so they
@@ -207,20 +209,66 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     }
   }
 
-  /** Close the sitting. Refused server-side if it is already complete, so this does not guess. */
+  /**
+   * Sign the package off.
+   *
+   * **This used to close the sitting and nothing else** — no approval, no state change, no check
+   * that anything had been addressed — while the button said "Sign off this package". The approval
+   * is what everything downstream depends on: `reports/publication.py:sign_off` refuses to release a
+   * report without one, so a package could be "signed off" in the interface and unable to leave the
+   * building.
+   *
+   * `approvePackage` closes the sitting too, as part of the same transaction. It refuses while any
+   * REVIEW REQUIRED finding is unaddressed, which the button's own disabled state already reflects —
+   * the server check is what makes that a rule rather than a hint.
+   */
   async function handleSignOff() {
     if (session === null || isSigningOff) return;
     setActionError(null);
     setIsSigningOff(true);
     try {
-      const completed = await completeReviewSession(projectId(), session.id);
-      setSession(completed);
+      await approvePackage(projectId(), session.id);
+      // Re-read rather than assume: approval completes the sitting server-side, and the package
+      // state a moment ago is not the one the download button should be reading.
+      setSession(await completeSessionState(session.id));
+      setApproved(true);
     } catch (error) {
       setActionError(
         `Sign-off did not complete — ${error instanceof Error ? error.message : String(error)}`,
       );
     } finally {
       setIsSigningOff(false);
+    }
+  }
+
+  /** The sitting as it now stands. Approval closed it; this reads back what was written. */
+  async function completeSessionState(reviewSessionId: string) {
+    const sessions = await listReviewSessions(projectId());
+    const found = sessions.items.find((item) => item.id === reviewSessionId);
+    return found ?? session;
+  }
+
+  /**
+   * Hand the reviewer the workbook.
+   *
+   * The blob is turned into a click here rather than linking straight at the endpoint, so a refusal
+   * — not approved, no report generated — surfaces as a message instead of a download that silently
+   * does nothing.
+   */
+  async function handleDownload() {
+    setActionError(null);
+    try {
+      const blob = await downloadReport(projectId(), packageId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `gv-review-${packageId}.xlsx`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setActionError(
+        `The report could not be downloaded — ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -306,6 +354,21 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
             <CheckSquare size={14} />
             {session?.completed_at != null ? 'Signed off' : isSigningOff ? 'Signing off…' : 'Sign Off'}
           </button>
+
+          {/* The handoff. Shown once the package is approved, because that is what the endpoint
+              requires — a review that left the building unsigned is one nobody stands behind
+              (ADR-0010). Before then the workbook exists and is deliberately unreachable. */}
+          {(approved || pkg.status === 'APPROVED') && (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => void handleDownload()}
+              data-tooltip="Download the signed-off review as a workbook"
+            >
+              <Download size={14} />
+              Download report
+            </button>
+          )}
         </div>
       </div>
 

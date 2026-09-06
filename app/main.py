@@ -131,6 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # `create_app` — including the isolation tests, whose whole job is to prove what does not import
     # what.
     from app.api import (
+        approvals,
         background,
         confirmations,
         documents,
@@ -151,6 +152,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # code that does — see the module docstring and tests/api/test_no_heavy_work.py.
     app.include_router(measurements.router, prefix=API_PREFIX)
     app.include_router(confirmations.router, prefix=API_PREFIX)
+    app.include_router(approvals.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(finding_chain.router, prefix=API_PREFIX)
     # The versioned export downstream consumers read (#224, D1.3). Same prefix as the rest, so the shape a

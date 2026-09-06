@@ -437,6 +437,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the signed-off review as a workbook
+         * @description The findings workbook for this revision, once somebody has signed for it.
+         *
+         *     **Approval is the gate, not the file's existence.** `generate_outputs` writes the workbook as soon
+         *     as the checks have run, which is before anybody has read a finding. Serving it then would let a
+         *     review leave in a state nobody signed for, which is what ADR-0010 forbids — no computed dimension
+         *     reaches a vendor without reviewer sign-off.
+         *
+         *     The bytes are streamed from the artifact store rather than rebuilt. Regenerating on download would
+         *     produce a file that could differ from the one the approval covers, and the approval is the record
+         *     of what was agreed.
+         */
+        get: operations["download_report_api_v1_projects__project_id__packages__package_id__report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/required-inputs": {
         parameters: {
             query?: never;
@@ -533,6 +562,34 @@ export interface paths {
          *     means in code rather than in a comment.
          */
         post: operations["record_review_action_api_v1_projects__project_id__review_sessions__review_session_id__actions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sign off a package, so its review can leave the building
+         * @description Approve every finding of the revision this sitting is reviewing.
+         *
+         *     The finding set is chosen by the server, not sent by the caller. A client naming the findings it
+         *     approves is a client that can approve a subset and leave the rest looking reviewed — and the
+         *     approval is the record GV stands behind when a vendor disputes a dimension.
+         *
+         *     Refuses while any `REVIEW_REQUIRED` finding is unaddressed. That is not a formality: an abstention
+         *     nobody acted on is a check that did not happen, and approving around it would put a package's name
+         *     to a question nobody answered.
+         */
+        post: operations["approve_api_v1_projects__project_id__review_sessions__review_session_id__approve_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -893,6 +950,28 @@ export interface components {
             tolerance_confirmed: boolean | null;
             /** When */
             when: string;
+        };
+        /**
+         * ApprovalOut
+         * @description What a sign-off produced.
+         */
+        ApprovalOut: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /** Approved By */
+            approved_by: string;
+            /** Findings Approved */
+            findings_approved: number;
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
+            /** State */
+            state: string;
         };
         /**
          * AwaitingToleranceOut
@@ -2619,6 +2698,36 @@ export interface operations {
             };
         };
     };
+    download_report_api_v1_projects__project_id__packages__package_id__report_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_required_inputs_api_v1_projects__project_id__packages__package_id__required_inputs_get: {
         parameters: {
             query?: never;
@@ -2743,6 +2852,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewActionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_api_v1_projects__project_id__review_sessions__review_session_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                review_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalOut"];
                 };
             };
             /** @description Validation Error */
