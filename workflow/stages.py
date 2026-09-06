@@ -418,6 +418,7 @@ class DatabaseStages:
                                 document_version_id=version_id,
                                 page_id=page.id,
                                 extraction_run_id=run.id,
+                                page_index=page.index,
                             )
                         )
             results.append(
@@ -490,6 +491,7 @@ class DatabaseStages:
                     document_version_id=version_id,
                     page_id=page.id,
                     extraction_run_id=ocr_run.id,
+                    page_index=page.index,
                 )
             )
 

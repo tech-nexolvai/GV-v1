@@ -96,8 +96,35 @@ class ObservationCandidate(Base, TimestampedUUID, Immutable):
     confidence: Mapped[Decimal | None] = mapped_column(Numeric(), default=None)
     ambiguity_flags: Mapped[list[str]] = mapped_column(JSONB)
 
+    # **What a corroboration lane made of this reading, if any lane applied (#528).**
+    #
+    # On the candidate rather than on a canonical observation, because that is where the fact
+    # belongs: the dual-unit lane compares two readings *inside one token* — `984 [38 3/4]` — and
+    # says whether the drawing agrees with itself. That is a statement about a raw reading and needs
+    # no meaning attached to it. `evidence_corroboration_lanes` is the other thing, a lane that
+    # qualified an observation which already has a semantic type, and it hangs off that observation.
+    #
+    # Both are null when no lane applied, which is every candidate whose token states one reading.
+    corroboration_status: Mapped[str | None] = mapped_column(String(32), default=None)
+    corroboration_lane: Mapped[str | None] = mapped_column(String(32), default=None)
+
     __table_args__ = (
         CheckConstraint(EXACT_OPTIONAL_VALUE, name="observation_candidate_exact_value"),
+        CheckConstraint(
+            f"corroboration_status IS NULL OR corroboration_status IN ({EVIDENCE_STATUS_VALUES})",
+            name="candidate_corroboration_status",
+        ),
+        CheckConstraint(
+            f"corroboration_lane IS NULL OR corroboration_lane IN ({CORROBORATION_LANE_VALUES})",
+            name="candidate_corroboration_lane",
+        ),
+        # A lane without a finding, or a finding from no lane, is a row nobody can interpret. They
+        # are written together by `record_candidates` or not at all, and the database says so.
+        CheckConstraint(
+            "(corroboration_status IS NULL AND corroboration_lane IS NULL) OR "
+            "(corroboration_status IS NOT NULL AND corroboration_lane IS NOT NULL)",
+            name="candidate_corroboration_paired",
+        ),
         CheckConstraint(
             "value_denominator IS NULL OR value_denominator > 0",
             name="observation_candidate_denominator",

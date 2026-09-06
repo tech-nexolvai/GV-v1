@@ -40,11 +40,15 @@ from sqlalchemy.orm import Session
 from app.models.document import Page
 from app.models.evidence import ObservationCandidate
 from app.models.runs import ExtractionFailure, ExtractionRun
+from evidence.candidate import ObservationCandidate as DomainCandidate
+from evidence.coordinates import ImagePoint
+from evidence.corroborate import corroborate
 from extraction.manifest import PageManifest
 from extraction.ocr import OcrItem
 from extraction.reader import TextItem
+from units.dual import DualDimension, DualDimensionParseError, parse_dual
 from units.imperial import ImperialParseError, parse_imperial
-from units.measurement import Measurement
+from units.measurement import Measurement, Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
 
 __all__ = [
@@ -130,6 +134,7 @@ def record_candidates(
     document_version_id: UUID,
     page_id: UUID,
     extraction_run_id: UUID,
+    page_index: int,
 ) -> list[ObservationCandidate]:
     """Persist every text run the reader found on one page.
 
@@ -170,9 +175,15 @@ def record_candidates(
     if already:
         return already
 
+    run = session.get(ExtractionRun, extraction_run_id)
+    if run is None:
+        raise ValueError(
+            f"no extraction run {extraction_run_id}: a candidate must name what read it"
+        )
+
     written: list[ObservationCandidate] = []
     for item in texts:
-        measurement, flags = _parse(item.text)
+        measurement, flags, dual = _parse(item.text)
         row = ObservationCandidate(
             document_version_id=document_version_id,
             page_id=page_id,
@@ -194,6 +205,13 @@ def record_candidates(
             confidence=None,
             ambiguity_flags=list(flags),
         )
+        # **Set before the insert, never after.** `observation_candidates` is append-only and 0013
+        # enforces it with a trigger, so assigning these once the row exists would be an UPDATE the
+        # database refuses. The lane's answer is available here because it compares two readings
+        # inside one token: no other row has to exist first.
+        row.corroboration_status, row.corroboration_lane = _corroboration(
+            row, dual=dual, run=run, page_index=page_index
+        )
         session.add(row)
         written.append(row)
 
@@ -208,6 +226,7 @@ def record_ocr_candidates(
     document_version_id: UUID,
     page_id: UUID,
     extraction_run_id: UUID,
+    page_index: int,
 ) -> list[ObservationCandidate]:
     """The same rows, from the other reading route.
 
@@ -239,9 +258,15 @@ def record_ocr_candidates(
     if already:
         return already
 
+    run = session.get(ExtractionRun, extraction_run_id)
+    if run is None:
+        raise ValueError(
+            f"no extraction run {extraction_run_id}: a candidate must name what read it"
+        )
+
     written: list[ObservationCandidate] = []
     for item in items:
-        measurement, flags = _parse(item.text)
+        measurement, flags, dual = _parse(item.text)
         row = ObservationCandidate(
             document_version_id=document_version_id,
             page_id=page_id,
@@ -257,6 +282,13 @@ def record_ocr_candidates(
             confidence=item.confidence,
             ambiguity_flags=list(flags),
         )
+        # **Set before the insert, never after.** `observation_candidates` is append-only and 0013
+        # enforces it with a trigger, so assigning these once the row exists would be an UPDATE the
+        # database refuses. The lane's answer is available here because it compares two readings
+        # inside one token: no other row has to exist first.
+        row.corroboration_status, row.corroboration_lane = _corroboration(
+            row, dual=dual, run=run, page_index=page_index
+        )
         session.add(row)
         written.append(row)
 
@@ -264,7 +296,82 @@ def record_ocr_candidates(
     return written
 
 
-def _parse(text: str) -> tuple[Measurement | None, tuple[str, ...]]:
+def _corroboration(
+    row: ObservationCandidate,
+    *,
+    dual: DualDimension | None,
+    run: ExtractionRun,
+    page_index: int,
+) -> tuple[str | None, str | None]:
+    """What the dual-unit lane made of this reading, as (status, lane) for the row.
+
+    **The decision is not made here.** `evidence/corroborate.py` owns what agreement means, and
+    `units/policy.py:check_dual` owns the rounding band beneath it — an extraction module that
+    decided agreement for itself would be a second opinion about evidence, which is the thing
+    `DESIGN_PLATFORM.md` forbids. This assembles the reading into the shape that module takes and
+    records its answer.
+
+    **Agreement cannot promote past `RAW_CANDIDATE` today, and that is correct.** `corroborate`
+    returns `CORROBORATED` only when a semantic type is known, and candidates are deliberately
+    untyped until the real drawings (#274) and the vocabulary Q20 defers. So a consistent pair is
+    recorded as `RAW_CANDIDATE` with the lane named — the lane ran, and the promotion is waiting on
+    meaning rather than on evidence. **Disagreement is `CONFLICTING` now**, which is the half that is
+    useful today: a drawing whose own two readings contradict each other is something a reviewer
+    needs to see, and nothing about that needs to know what the dimension is.
+    """
+    if dual is None:
+        return None, None
+
+    result = corroborate(
+        [
+            DomainCandidate(
+                candidate_id=str(row.id),
+                extractor=run.extractor,
+                extractor_version=run.extractor_version,
+                raw_text=row.raw_text,
+                # **The primary — the millimetre half — is the reading being corroborated.**
+                # `corroborate` refuses a candidate whose measurement is not the dual's primary, and
+                # it is right to: the alternate is the second opinion, not the subject. The row
+                # itself keeps the inch reading as its value, because Q12 makes inches the only unit
+                # a verdict may ever operate on. So the two differ on purpose — one is what the
+                # lane examined, the other is what a rule could one day use.
+                parsed_value=dual.primary,
+                unit_guess=None if row.unit_guess is None else Unit(row.unit_guess),
+                # Never inferred. The whole point of this lane is that it qualifies a *reading*
+                # without knowing what the reading is of.
+                semantic_guess=None,
+                page=page_index,
+                polygon=tuple(ImagePoint(x=int(x), y=int(y)) for x, y in row.polygon),
+                confidence=row.confidence,
+                ambiguity_flags=tuple(row.ambiguity_flags),
+            )
+        ],
+        dual_dimension=dual,
+    )
+    if result.lane is None:
+        # `NOT_CORROBORATED`: the token had no alternate after all, so no lane applied. `_dual`
+        # already refuses those, and this is the belt to that braces.
+        return None, None
+    return result.status.value, result.lane.value
+
+
+def _dual(text: str) -> DualDimension | None:
+    """A token that states one dimension twice, in two units — or `None`.
+
+    **Only a bracketed pair counts**, which is why `alternate` is tested rather than trusting that
+    `parse_dual` succeeded. `parse_dual` also accepts a lone millimetre number, and using that here
+    would make a bare `984` parse as 984 mm — reintroducing precisely the bug `UNKNOWN_UNIT_FLAG`
+    documents, where a number separated from its unit marker by tokenisation was recorded in the
+    wrong system. A bare number keeps meaning "unit unknown".
+    """
+    try:
+        dual = parse_dual(text)
+    except DualDimensionParseError:
+        return None
+    return dual if dual.alternate is not None else None
+
+
+def _parse(text: str) -> tuple[Measurement | None, tuple[str, ...], DualDimension | None]:
     """A text run as an exact measurement, or nothing and a reason.
 
     `normalise_to_inches` reads a token that names its own unit — `984 mm`, `3'-6 1/2"`, `38 3/4"` —
@@ -276,13 +383,23 @@ def _parse(text: str) -> tuple[Measurement | None, tuple[str, ...]]:
     distinction that decides whether anybody should look.
 
     A failure is not an error either way. Most text on a drawing is not a dimension.
+
+    **A dual token is read first, and its inch half is the value.** `984 [38 3/4]` states the same
+    dimension in both units, and Q12 makes the inch reading the governing one: millimetres on a GV
+    drawing are the vendor's machine reference and never a verdict operand. Until now
+    `normalise_to_inches` could not read the token at all, so the whole reading — both halves of it —
+    was stored with no value and an `unparsed` flag. The millimetre half is not discarded either; it
+    is handed back for the corroboration lane, which is the one thing it is good for.
     """
+    dual = _dual(text)
+    if dual is not None and dual.alternate is not None:
+        return dual.alternate, (), dual
     try:
-        return normalise_to_inches(text), ()
+        return normalise_to_inches(text), (), None
     except UnitNormalisationError:
         # No value, and the flag says which kind of nothing this is. Both branches abstain; neither
         # swallows, because a reading that produced no measurement still has to say why.
-        return None, (_unvalued_reason(text),)
+        return None, (_unvalued_reason(text),), None
 
 
 def _unvalued_reason(text: str) -> str:

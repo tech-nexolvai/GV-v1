@@ -63,6 +63,7 @@ from evidence.coordinates import (
 from evidence.polygon import Polygon
 from extraction.geometry.containment import DimensionExtent
 from extraction.manifest import RawPage
+from units.dual import DUAL_TOKEN_RE
 
 __all__ = [
     "PageContents",
@@ -287,14 +288,22 @@ def read_page_contents(
             )
             height = _decimal(page.height)
 
+            words = page.extract_words(return_chars=True, char_dir_rotated=_ROTATED_CHAR_DIRECTION)
+            # **Dual tokens are read whole, before the words they are made of.** `984 [38 3/4]` is
+            # one reading of one dimension, and `extract_words` splits it at the spaces into `984`,
+            # `[38` and `3/4]` — three fragments, none of which is a dimension. That splitting is the
+            # same behaviour that once recorded `984 mm` as 984 inches. Recovering the token here
+            # means the corroboration lane sees the drawing's own second reading (#528); leaving the
+            # fragments in as well would record one dimension four times.
+            dual = _dual_tokens(page, words, transform, height, document_version_id, page_index)
             texts = tuple(
                 item
-                for word in page.extract_words(
-                    return_chars=True, char_dir_rotated=_ROTATED_CHAR_DIRECTION
-                )
-                if (item := _text_item(word, transform, height, document_version_id, page_index))
+                for word in words
+                if not _inside_any(word, dual)
+                and (item := _text_item(word, transform, height, document_version_id, page_index))
                 is not None
             )
+            texts = tuple(item for item, _ in dual) + texts
             segments = _segments(page, transform, height, document_version_id, page_index)
     except UnreadablePdf:
         raise
@@ -332,6 +341,99 @@ def _stored(x: object, top: object, transform: PageTransform, height: Decimal) -
     of stored coordinates.
     """
     return transform.to_stored(_image(x, top, transform, height))
+
+
+#: The most words a dual token can be split into.
+#:
+#: `984 [38 3/4]` is three; the regex forbids nested brackets, so a token cannot run long. A bound is
+#: needed because the search tries consecutive runs, and without one a line of forty words would try
+#: every span of it for a shape that is never more than a few words wide.
+_MAXIMUM_TOKEN_WORDS = 6
+
+#: The (left, top, right, bottom) a token occupies in PDF space, before any conversion.
+_Box = tuple[Decimal, Decimal, Decimal, Decimal]
+
+
+def _dual_tokens(
+    page: Any,
+    words: list[dict[str, Any]],
+    transform: PageTransform,
+    height: Decimal,
+    document_version_id: UUID,
+    page_index: int,
+) -> tuple[tuple[TextItem, _Box], ...]:
+    """Every `984 [38 3/4]` on the page, as one text run each, with the box it occupies.
+
+    **Rebuilt from the words, not from character offsets.** The first version matched the regex
+    against a line's text and sliced its characters by the match offsets, which is wrong in a way
+    that looks right: `extract_text_lines` puts a space between words that have a gap, and those
+    spaces are not characters — a line reading `DEPTH 984 [38 3/4] TYP` has 22 text positions and 18
+    characters, so every offset after the first space points at the wrong glyph.
+
+    So the line is used only to say which words share it, by exact box containment, and the token is
+    found by joining consecutive words back together. The box that comes out is the union of real
+    word boxes, which is what the drawing actually says.
+    """
+    found: list[tuple[TextItem, _Box]] = []
+    for line in page.extract_text_lines(return_chars=True):
+        line_box = (line["x0"], line["top"], line["x1"], line["bottom"])
+        members = sorted(
+            (word for word in words if _inside(word, line_box)), key=lambda word: word["x0"]
+        )
+        index = 0
+        while index < len(members):
+            for size in range(min(_MAXIMUM_TOKEN_WORDS, len(members) - index), 0, -1):
+                run = members[index : index + size]
+                if not DUAL_TOKEN_RE.fullmatch(" ".join(str(word["text"]) for word in run)):
+                    continue
+                box = (
+                    min(word["x0"] for word in run),
+                    min(word["top"] for word in run),
+                    max(word["x1"] for word in run),
+                    max(word["bottom"] for word in run),
+                )
+                merged = {
+                    "text": " ".join(str(word["text"]) for word in run),
+                    "chars": [char for word in run for char in (word.get("chars") or ())],
+                    "x0": box[0],
+                    "top": box[1],
+                    "x1": box[2],
+                    "bottom": box[3],
+                }
+                item = _text_item(merged, transform, height, document_version_id, page_index)
+                if item is not None:
+                    found.append((item, box))
+                index += size
+                break
+            else:
+                index += 1
+    return tuple(found)
+
+
+def _inside(word: dict[str, Any], box: _Box) -> bool:
+    """Whether a word's box lies within another, compared exactly rather than within a tolerance."""
+    left, top, right, bottom = box
+    return bool(
+        word["x0"] >= left
+        and word["x1"] <= right
+        and word["top"] >= top
+        and word["bottom"] <= bottom
+    )
+
+
+def _inside_any(word: dict[str, Any], dual: tuple[tuple[TextItem, _Box], ...]) -> bool:
+    """Whether this word is a fragment of a dual token already read whole.
+
+    Exact comparison, not a tolerance: the token's box is the union of the very characters the word
+    is made of, so a fragment's edges cannot fall outside it.
+    """
+    return any(
+        word["x0"] >= left
+        and word["x1"] <= right
+        and word["top"] >= top
+        and word["bottom"] <= bottom
+        for _, (left, top, right, bottom) in dual
+    )
 
 
 def _text_item(
