@@ -182,6 +182,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the extractor read, waiting for somebody to say what it is
+         * @description Every reading of this package that carries a value, with its crop.
+         *
+         *     **Only readings that carry a value.** A token with no unit was recorded without one — deliberately,
+         *     because a bare `38` is a dimension whose unit is unknown — and there is nothing for a reviewer to
+         *     confirm about it. They are still in the database, and a reviewer who wants to see what was thrown
+         *     away is asking a different question than this one.
+         *
+         *     Ordered by page and then by when it was read, so the list follows the drawing rather than the
+         *     database's insertion order, and two loads put the same reading in the same place.
+         */
+        get: operations["list_candidates_api_v1_projects__project_id__packages__package_id__candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say what an extracted reading is, so the rules can use it
+         * @description Turn one reading into evidence a rule may be run against.
+         *
+         *     The value is not in the request, and that is the point of the whole story: the reviewer is
+         *     confirming the number the extractor read, not supplying one. A body carrying a value would be the
+         *     old form path wearing a new name.
+         *
+         *     Runs in the request rather than a background task because it is one row's worth of work and a
+         *     reviewer is waiting on the answer — and because the audit event naming them has to commit with it.
+         */
+        post: operations["confirm_candidate_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/checks": {
         parameters: {
             query?: never;
@@ -665,6 +720,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/semantic-types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The vocabulary a reviewer may choose from
+         * @description Read from `rules/semantic_types.py` rather than listed here.
+         *
+         *     A hand-kept copy is right the day it is written and wrong the first time the vocabulary changes —
+         *     and the reviewer would then be offered a type no rule reads, or denied one every rule needs.
+         */
+        get: operations["list_semantic_types_api_v1_semantic_types_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -881,6 +959,45 @@ export interface components {
             tolerance?: string | null;
         };
         /**
+         * CandidateOut
+         * @description One extracted reading, as a reviewer needs to see it before naming it.
+         */
+        CandidateOut: {
+            /**
+             * Candidate Id
+             * Format: uuid
+             */
+            candidate_id: string;
+            /** Corroboration Lane */
+            corroboration_lane?: string | null;
+            /** Corroboration Status */
+            corroboration_status?: string | null;
+            /**
+             * Crop Key
+             * @description Storage key of the crop of this reading's region, when one was cut.
+             */
+            crop_key?: string | null;
+            /** Page Index */
+            page_index: number;
+            /** Raw Text */
+            raw_text: string;
+            /**
+             * Value
+             * @description The reading as exact text, `25 1/2 in`. Null when the token carried no unit and was recorded without a value, which is most text on a drawing.
+             */
+            value?: string | null;
+        };
+        /**
+         * CandidatesOut
+         * @description Everything read for this package that nobody has yet said the meaning of.
+         */
+        CandidatesOut: {
+            /** Candidates */
+            candidates: components["schemas"]["CandidateOut"][];
+            /** Total */
+            total: number;
+        };
+        /**
          * CheckRequest
          * @description Asking for the checks, and what the reviewer says about the layout.
          *
@@ -894,6 +1011,32 @@ export interface components {
             discriminators?: {
                 [key: string]: string;
             };
+        };
+        /**
+         * ConfirmIn
+         * @description A reviewer naming what a reading is.
+         */
+        ConfirmIn: {
+            /**
+             * Semantic Type
+             * @description A member of the rulebook's vocabulary, e.g. `CT010`. Free text is refused.
+             */
+            semantic_type: string;
+        };
+        /**
+         * ConfirmedOut
+         * @description The evidence a confirmation produced.
+         */
+        ConfirmedOut: {
+            /**
+             * Canonical Observation Id
+             * Format: uuid
+             */
+            canonical_observation_id: string;
+            /** Semantic Type */
+            semantic_type: string;
+            /** Status */
+            status: string;
         };
         /**
          * DiscriminatorOut
@@ -2156,6 +2299,75 @@ export interface operations {
             };
         };
     };
+    list_candidates_api_v1_projects__project_id__packages__package_id__candidates_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidatesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_candidate_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfirmedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     request_checks_api_v1_projects__project_id__packages__package_id__checks_post: {
         parameters: {
             query?: never;
@@ -2700,6 +2912,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RuleSnapshotOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_semantic_types_api_v1_semantic_types_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
                 };
             };
             /** @description Validation Error */

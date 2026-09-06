@@ -315,23 +315,15 @@ export function confirmCandidate(
   );
 }
 
-export interface CandidateOut {
-  candidate_id: string;
-  page_index: number;
-  raw_text: string;
-  value: string | null;
-  crop_key: string | null;
-  corroboration_status: string | null;
-  corroboration_lane: string | null;
-}
-
-export interface CandidatesOut {
-  candidates: CandidateOut[];
-  total: number;
-}
-
-export interface ConfirmedOut {
-  canonical_observation_id: string;
-  semantic_type: string;
-  status: string;
-}
+/**
+ * The shapes above, taken from the generated schema rather than written out here.
+ *
+ * A hand-written copy is right the day it is written and silently wrong the first time the endpoint
+ * changes — and the compiler would go on agreeing with it. `npm run api:check` regenerates these from
+ * the running app's OpenAPI and fails if the checked-in file has drifted, which is what caught the
+ * first version of this file.
+ */
+export type CandidatesOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/candidates'>;
+export type CandidateOut = CandidatesOut['candidates'][number];
+export type ConfirmedOut =
+  paths['/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm']['post']['responses'][201]['content']['application/json'];

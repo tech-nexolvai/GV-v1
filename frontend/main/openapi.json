@@ -287,6 +287,99 @@
         "title": "CalculationTraceOut",
         "type": "object"
       },
+      "CandidateOut": {
+        "description": "One extracted reading, as a reviewer needs to see it before naming it.",
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "corroboration_lane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corroboration Lane"
+          },
+          "corroboration_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corroboration Status"
+          },
+          "crop_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Storage key of the crop of this reading's region, when one was cut.",
+            "title": "Crop Key"
+          },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "raw_text": {
+            "title": "Raw Text",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reading as exact text, `25 1/2 in`. Null when the token carried no unit and was recorded without a value, which is most text on a drawing.",
+            "title": "Value"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "page_index",
+          "raw_text"
+        ],
+        "title": "CandidateOut",
+        "type": "object"
+      },
+      "CandidatesOut": {
+        "description": "Everything read for this package that nobody has yet said the meaning of.",
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateOut"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "candidates",
+          "total"
+        ],
+        "title": "CandidatesOut",
+        "type": "object"
+      },
       "CheckRequest": {
         "additionalProperties": false,
         "description": "Asking for the checks, and what the reviewer says about the layout.\n\n**Discriminators travel with the request rather than being stored as evidence**, because that is\nwhat they are: a statement about how to read this package on this run. A rule with a discriminator\nnobody stated abstains with REVIEW_REQUIRED however complete the measurements are, so without\nthese two `CT-WIDTH-001` and `CAB-FILLER-001` could never reach a verdict.",
@@ -300,6 +393,46 @@
           }
         },
         "title": "CheckRequest",
+        "type": "object"
+      },
+      "ConfirmIn": {
+        "description": "A reviewer naming what a reading is.",
+        "properties": {
+          "semantic_type": {
+            "description": "A member of the rulebook's vocabulary, e.g. `CT010`. Free text is refused.",
+            "title": "Semantic Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "semantic_type"
+        ],
+        "title": "ConfirmIn",
+        "type": "object"
+      },
+      "ConfirmedOut": {
+        "description": "The evidence a confirmation produced.",
+        "properties": {
+          "canonical_observation_id": {
+            "format": "uuid",
+            "title": "Canonical Observation Id",
+            "type": "string"
+          },
+          "semantic_type": {
+            "title": "Semantic Type",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_observation_id",
+          "semantic_type",
+          "status"
+        ],
+        "title": "ConfirmedOut",
         "type": "object"
       },
       "DiscriminatorOut": {
@@ -2525,6 +2658,134 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates": {
+      "get": {
+        "description": "Every reading of this package that carries a value, with its crop.\n\n**Only readings that carry a value.** A token with no unit was recorded without one \u2014 deliberately,\nbecause a bare `38` is a dimension whose unit is unknown \u2014 and there is nothing for a reviewer to\nconfirm about it. They are still in the database, and a reviewer who wants to see what was thrown\naway is asking a different question than this one.\n\nOrdered by page and then by when it was read, so the list follows the drawing rather than the\ndatabase's insertion order, and two loads put the same reading in the same place.",
+        "operationId": "list_candidates_api_v1_projects__project_id__packages__package_id__candidates_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidatesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What the extractor read, waiting for somebody to say what it is",
+        "tags": [
+          "confirmations"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm": {
+      "post": {
+        "description": "Turn one reading into evidence a rule may be run against.\n\nThe value is not in the request, and that is the point of the whole story: the reviewer is\nconfirming the number the extractor read, not supplying one. A body carrying a value would be the\nold form path wearing a new name.\n\nRuns in the request rather than a background task because it is one row's worth of work and a\nreviewer is waiting on the answer \u2014 and because the audit event naming them has to commit with it.",
+        "operationId": "confirm_candidate_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfirmedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Say what an extracted reading is, so the rules can use it",
+        "tags": [
+          "confirmations"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/checks": {
       "post": {
         "description": "Record the intent to run the checks. Starts nothing, and cannot.\n\n**202, not 200**, and the body carries an `accepted` id rather than a run id. Nothing has started:\n`workflow/outbox.py:enqueue` says the id \"names the enqueued work, not a workflow run\", and\ncalling it a run id here would have a client poll for something that does not exist yet.\n\nThe reason this is not simply `run_checks(...)` is a guard, not a preference.\n`tests/api/test_no_heavy_work.py` walks every import under `app/api/` and refuses any path to\nextraction or rendering \u2014 and `workflow/stages.py` reaches `extraction.reader` since the OCR\nroute landed. So this module may not import the thing that does the work, which is exactly the\nseparation `DESIGN_PLATFORM.md` \u00a74.2 asks for.",
@@ -3546,6 +3807,54 @@
         "summary": "Every published version of one rule, newest first",
         "tags": [
           "rules"
+        ]
+      }
+    },
+    "/api/v1/semantic-types": {
+      "get": {
+        "description": "Read from `rules/semantic_types.py` rather than listed here.\n\nA hand-kept copy is right the day it is written and wrong the first time the vocabulary changes \u2014\nand the reviewer would then be offered a type no rule reads, or denied one every rule needs.",
+        "operationId": "list_semantic_types_api_v1_semantic_types_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Response List Semantic Types Api V1 Semantic Types Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The vocabulary a reviewer may choose from",
+        "tags": [
+          "confirmations"
         ]
       }
     },
