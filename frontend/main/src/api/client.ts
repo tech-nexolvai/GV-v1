@@ -275,3 +275,63 @@ export function completeReviewSession(projectId: string, reviewSessionId: string
     {},
   );
 }
+
+/**
+ * What the extractor read for this package, waiting for somebody to say what it is.
+ *
+ * Only readings that carry a value: a token with no unit was recorded without one, deliberately, and
+ * there is nothing for a reviewer to confirm about a bare number.
+ */
+export function listCandidates(projectId: string, packageId: string) {
+  return request<CandidatesOut>(
+    `/api/v1/projects/${projectId}/packages/${packageId}/candidates`,
+  );
+}
+
+/** The vocabulary a reviewer may choose from, read from the rulebook rather than hard-coded here. */
+export function listSemanticTypes() {
+  return request<string[]>('/api/v1/semantic-types');
+}
+
+/**
+ * Say what one extracted reading is.
+ *
+ * **No value is sent.** The reviewer is confirming the number the extractor read, not supplying one;
+ * a body carrying a value would be the old form path wearing a new name.
+ */
+export function confirmCandidate(
+  projectId: string,
+  packageId: string,
+  candidateId: string,
+  semanticType: string,
+) {
+  return request<ConfirmedOut>(
+    `/api/v1/projects/${projectId}/packages/${packageId}/candidates/${candidateId}/confirm`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ semantic_type: semanticType }),
+    },
+  );
+}
+
+export interface CandidateOut {
+  candidate_id: string;
+  page_index: number;
+  raw_text: string;
+  value: string | null;
+  crop_key: string | null;
+  corroboration_status: string | null;
+  corroboration_lane: string | null;
+}
+
+export interface CandidatesOut {
+  candidates: CandidateOut[];
+  total: number;
+}
+
+export interface ConfirmedOut {
+  canonical_observation_id: string;
+  semantic_type: string;
+  status: string;
+}
