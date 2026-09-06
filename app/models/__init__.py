@@ -88,6 +88,8 @@ from app.models.verdicts import (
     CheckRun,
     Finding,
     FindingEvidence,
+    OutputArtifact,
+    OutputArtifactKind,
     VerdictInput,
 )
 
@@ -132,6 +134,8 @@ __all__ = [
     "ModelInvocationOutcome",
     "ObservationCandidate",
     "OutboxEntry",
+    "OutputArtifact",
+    "OutputArtifactKind",
     "Package",
     "PackageRevision",
     "PackageRevisionDocument",

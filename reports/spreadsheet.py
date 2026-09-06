@@ -46,7 +46,8 @@ Verification: ``tests/reports/test_spreadsheet.py``
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from fractions import Fraction
 from io import BytesIO
 from typing import Final
@@ -60,16 +61,19 @@ from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
 
 from units.measurement import Measurement
 from verdict.finding import Finding
-from verdict.outcomes import is_abstention
+from verdict.outcomes import Outcome, is_abstention
 
 __all__ = [
     "FINDINGS_SHEET",
     "FINDING_COLUMNS",
+    "NOT_RECORDED",
     "OPERANDS_SHEET",
     "OPERAND_COLUMNS",
     "TEXT_FORMAT",
     "UNREADABLE_REFERENCE",
+    "StoredFinding",
     "exact_text",
+    "write_stored_workbook",
     "write_value",
     "write_workbook",
 ]
@@ -120,6 +124,18 @@ NONE_DECLARED: Final = "none declared"
 
 #: What a value column says when a reference could not be read as a complete citation.
 UNREADABLE_REFERENCE: Final = "unreadable reference"
+
+#: What a value column says when the database never kept this field.
+#:
+#: `findings` stores the outcome, the severity, the trace and the parameter versions. It does **not**
+#: store the finding's prose reason, its delta, its applicability variant or its notes — those live on
+#: `verdict.finding.Finding`, which is the engine's value type, and `record_finding` does not persist
+#: them. A workbook built from stored rows therefore cannot fill those columns, and says so.
+#:
+#: A word rather than a blank, for the same reason as `NOT_APPLICABLE`: an empty cell reads as "there
+#: was nothing to say", and here there was something to say and nobody wrote it down. Distinguishing
+#: the two is the difference between a reader trusting the column and a reader checking it.
+NOT_RECORDED: Final = "not recorded in the database"
 
 
 def exact_text(value: object) -> str:
@@ -288,6 +304,144 @@ def _write_sheet(
 
     # Headings stay visible while scrolling, and the header row cannot be sorted into the data.
     sheet.freeze_panes = "A2"
+
+
+@dataclass(frozen=True, slots=True)
+class StoredFinding:
+    """One finding exactly as the database holds it, for the export a worker produces.
+
+    **Why this exists rather than rebuilding a `Finding`.** The engine's own value type is the
+    natural input, and it cannot be recovered from storage: `app/verdicts/trace.py:render_value`
+    writes operand values as display text — a tuple of measurements becomes the single string
+    `24, 24, 30` — so reconstructing one would mean re-parsing presentation output back into exact
+    arithmetic. That is precisely how `984 mm` once became 984 inches, and it is not a mistake worth
+    making twice for the sake of type symmetry.
+
+    So the workbook a worker writes is built from what was stored. The columns are the same ones
+    `write_workbook` uses, so the two files are directly comparable; the fields storage never kept
+    are marked `NOT_RECORDED` rather than left blank.
+    """
+
+    rule_id: str
+    outcome: str
+    severity: str
+    snapshot_id: str
+    engine_version: str
+    trace: Mapping[str, object]
+    """`findings.trace` verbatim — a calculation trace, or an abstention's cause and reason."""
+
+
+def _text(value: object) -> str:
+    """One stored JSON value as text, without asserting a shape the database does not enforce.
+
+    `trace` is `JSONB`, so nothing stops a row written by an older version of the writer from having
+    a field this reader did not expect. Rendering whatever is there beats raising: the export's job
+    is to show a reviewer what was recorded.
+    """
+    return "" if value is None else str(value)
+
+
+def _stored_operands(trace: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """The trace's operand list, or nothing when it is an abstention or an unfamiliar shape."""
+    operands = trace.get("operands")
+    if not isinstance(operands, list):
+        return []
+    return [operand for operand in operands if isinstance(operand, Mapping)]
+
+
+def _stored_finding_row(finding: StoredFinding) -> tuple[object, ...]:
+    """One stored finding as a row, in `FINDING_COLUMNS` order.
+
+    Keyed on whether a calculation was recorded, the same way `_finding_row` is keyed on whether one
+    happened: an abstention trace carries a `reason` and no arithmetic, and a calculation trace
+    carries the comparison and no prose.
+    """
+    trace = finding.trace
+    abstained = is_abstention(Outcome(finding.outcome))
+    comparison_value = trace.get("comparison")
+
+    if comparison_value is None:
+        comparison: str = NOT_APPLICABLE if abstained else NONE_DECLARED
+        tolerance: str = comparison
+        unit: str = comparison
+    else:
+        comparison = _text(comparison_value)
+        tolerance = _text(trace.get("tolerance")) or NONE_DECLARED
+        unit = _text(trace.get("arithmetic_unit")) or NONE_DECLARED
+
+    # An abstention's reason is stored; a decision's is not. Both are stated rather than blank.
+    reason = _text(trace.get("reason")) or NOT_RECORDED
+
+    pages = [
+        _evidence_parts(_text(operand.get("evidence_ref")) or None)[0]
+        for operand in _stored_operands(trace)
+    ]
+
+    return (
+        finding.rule_id,
+        finding.outcome,
+        finding.severity,
+        comparison,
+        # Delta, variant and notes are not columns storage has. See `NOT_RECORDED`.
+        NOT_RECORDED,
+        tolerance,
+        unit,
+        NOT_RECORDED,
+        finding.snapshot_id,
+        finding.engine_version,
+        ", ".join(page for page in pages if page),
+        reason,
+        NOT_RECORDED,
+    )
+
+
+def _stored_operand_rows(finding: StoredFinding) -> list[tuple[object, ...]]:
+    """One row per operand the stored trace recorded, in `OPERAND_COLUMNS` order."""
+    rows: list[tuple[object, ...]] = []
+    for operand in _stored_operands(finding.trace):
+        page, document = _evidence_parts(_text(operand.get("evidence_ref")) or None)
+        rows.append(
+            (
+                finding.rule_id,
+                _text(operand.get("name")),
+                # Already exact text: `render_value` wrote it, and re-rendering it here would be a
+                # second opinion about how a number looks.
+                _text(operand.get("value")),
+                _text(operand.get("source")),
+                page,
+                document,
+            )
+        )
+    return rows
+
+
+def write_stored_workbook(findings: Sequence[StoredFinding]) -> bytes:
+    """The same workbook, built from stored rows instead of engine values.
+
+    Same sheets, same columns, same text-cell discipline — `_write_sheet` is shared, so the two
+    cannot drift in how they write a cell. The order given is the order written, as above.
+    """
+    if isinstance(findings, str) or not isinstance(findings, Sequence):
+        raise TypeError("findings must be a sequence of StoredFinding values")
+    for finding in findings:
+        if not isinstance(finding, StoredFinding):
+            raise TypeError("findings must contain only StoredFinding values")
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    _write_sheet(
+        workbook, FINDINGS_SHEET, FINDING_COLUMNS, [_stored_finding_row(f) for f in findings]
+    )
+    _write_sheet(
+        workbook,
+        OPERANDS_SHEET,
+        OPERAND_COLUMNS,
+        [row for finding in findings for row in _stored_operand_rows(finding)],
+    )
+
+    out = BytesIO()
+    workbook.save(out)
+    return out.getvalue()
 
 
 def write_workbook(findings: Sequence[Finding]) -> bytes:

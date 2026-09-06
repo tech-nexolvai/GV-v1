@@ -460,24 +460,30 @@ def test_a_missing_revision_is_reported_rather_than_raising(session: Session) ->
 
 
 # ---------------------------------------------------------------------------
-# The stage that is still not built
+# Every stage is built; none may quietly stop saying so
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("stage", ["generate_outputs"])
-def test_the_unbuilt_stages_still_say_they_are_unbuilt(session: Session, stage: str) -> None:
-    """`NoStages`' answer, kept verbatim. A stage that started returning `{}` because it was
-    inherited rather than written would let a package look processed.
+@pytest.mark.parametrize(
+    "stage",
+    ["ingest", "extract_pages", "match", "validate_evidence", "run_checks", "generate_outputs"],
+)
+def test_no_stage_answers_that_it_is_unbuilt(session: Session, stage: str) -> None:
+    """All six do work now — #517 wired three and #519 the last one.
 
-    Down to one from four: `ingest`, `validate_evidence` and `match` are wired (#517) and now report
-    what they did. `generate_outputs` is the last one still saying it did nothing.
+    This replaces the test that asserted the opposite, and it is the more useful direction to guard:
+    `NoStages` still answers `{"implemented": False}` for everything, and a stage that regressed to
+    that answer — by being deleted, or by an inherited catch-all — would let a package walk the whole
+    pipeline and arrive at review looking processed. `extract_pages` returns a sequence rather than a
+    mapping, which is itself the shape assertion `test_extract_pages_returns_no_pages_rather_than_a_mapping`
+    makes; here it simply must not be the not-built mapping.
     """
     result = getattr(DatabaseStages(), stage)(session, uuid4())
 
-    assert result == {"implemented": False, "stage": stage}
+    assert result != {"implemented": False, "stage": stage}
 
 
-@pytest.mark.parametrize("stage", ["ingest", "validate_evidence"])
+@pytest.mark.parametrize("stage", ["ingest", "validate_evidence", "generate_outputs"])
 def test_a_wired_stage_without_a_store_says_so_rather_than_claiming_it_ran(
     session: Session, stage: str
 ) -> None:

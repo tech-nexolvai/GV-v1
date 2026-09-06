@@ -1,11 +1,11 @@
 """The pipeline stages: what each one actually does, and where the work stops.
 
-Five of the six are built. `ingest` checks a document is still the one that was uploaded;
-`extract_pages` reads its pages and records what was on them; `validate_evidence` cuts a picture of
-every reading; `match` proposes which architectural item is which shop item; `run_checks` runs the
-rules. `generate_outputs` still answers `{"implemented": False}`, the way `NoStages` answers
-everything — deliberately loud, because a default returning `{}` would let a package walk the whole
-pipeline and arrive at review looking processed.
+All six do work. `ingest` checks a document is still the one that was uploaded; `extract_pages`
+reads its pages and records what was on them; `validate_evidence` cuts a picture of every reading;
+`match` proposes which architectural item is which shop item; `run_checks` runs the rules;
+`generate_outputs` turns the findings into a workbook somebody can be handed. `NoStages` still
+answers `{"implemented": False}` to all six and is deliberately loud about it — a default returning
+`{}` would let a package walk the whole pipeline and arrive at review looking processed.
 
 **The stages were wired in the opposite order to the one the data flows in**, and that was
 deliberate. `run_checks` came first, when extraction did not exist, because the engine had been
@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
+from io import BytesIO
 from uuid import UUID
 
 from opentelemetry.trace import Status, StatusCode
@@ -65,7 +66,11 @@ from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind, Observat
 from app.models.matching import MatchCandidate as MatchCandidateRow
 from app.models.package import Package, PackageRevision
 from app.models.parameters import declared_defaults, load_parameter_sets
+from app.models.rules import RuleDefinition
+from app.models.rules import RuleSnapshot as RuleSnapshotRow
 from app.models.runs import ExtractionRun, TaskRun
+from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
+from app.models.verdicts import Finding as FindingRow
 from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
@@ -76,6 +81,7 @@ from extraction.manifest import build_manifest
 from extraction.ocr import OcrEngine, RapidOcrEngine, read_page
 from extraction.rasterise import PageTooLarge, render_page
 from extraction.reader import UnreadablePdf, read_page_contents, read_pages
+from reports.spreadsheet import StoredFinding, write_stored_workbook
 from retrieval.identifiers import NormalizedIdentifier, normalize_identifier
 from retrieval.matching import MatchableItem, MatchDocumentRole, exact_match
 from rules.applicability import Abstention, CheckContext, resolve
@@ -83,6 +89,7 @@ from rules.parameters import ParameterSet, resolve_all
 from rules.project import ProjectScope
 from rules.semantic_types import ProductType
 from rules.snapshot import RuleSnapshot
+from storage.hashing import content_key, sha256_stream
 from storage.store import ArtifactStore
 from verdict.engine import execute
 from verdict.finding import Finding
@@ -125,6 +132,13 @@ CROP_CONTEXT_MARGIN_PT = Decimal(9)
 #: refusal per candidate — thousands of near-identical sentences — and a reviewer reads the first few
 #: or none at all. The exact number is always reported alongside.
 REPORTED_REFUSALS = 20
+
+#: The media type of an `.xlsx` workbook, spelled out once.
+#:
+#: The long OOXML name rather than a friendly alias, because it is what a browser and a mail client
+#: dispatch on: `application/octet-stream` makes the client's own spreadsheet tool decline to open
+#: the file it is meant to open.
+WORKBOOK_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 #: The identifier kinds that can say two drawn items are the same item.
 #:
@@ -727,8 +741,116 @@ class DatabaseStages:
         }
 
     def generate_outputs(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
-        del session, package_revision_id
-        return self._not_built("generate_outputs")
+        """Turn this revision's findings into a workbook somebody can be handed.
+
+        The last stage, and the one that closes the loop: until now checks ran, findings were
+        recorded, and nothing produced a file. `reports/spreadsheet.py` had been finished and tested
+        for months with no production caller — the same gap #517 closed for crops and matching.
+
+        **Live findings only.** `run_checks` supersedes previous runs before writing new ones, and a
+        workbook containing both would show a reviewer two verdicts for one rule with nothing saying
+        which is in force. The join filters on `superseded_at IS NULL`, which is the same question
+        the findings list asks.
+
+        **Built from stored rows, not from rebuilt engine values.** `StoredFinding` carries the
+        reason in full: the stored trace renders operand values as display text, so reconstructing a
+        `verdict.finding.Finding` would mean parsing presentation output back into exact arithmetic.
+        Four columns the engine's value type carries are not in the database at all — the prose
+        reason of a decision, the delta, the variant and the notes — and the workbook marks them
+        `not recorded in the database` rather than leaving them blank.
+
+        **No redline, and not for want of a renderer.** `reports/redline.py` exists. An annotated
+        drawing needs each finding tied to the region of the sheet it is about, and that needs a
+        candidate to have a meaning — which is exactly what this pipeline does not do, and will not
+        until the real drawings (#274) and the vocabulary Q20 defers. A redline drawn from untyped
+        candidates would put boxes on a drawing with nothing behind their placement, which is worse
+        than no redline: it looks like evidence.
+        """
+        if self._store is None:
+            return {
+                "implemented": True,
+                "ran": False,
+                "reason": "no artifact store is configured",
+                "outputs": 0,
+            }
+
+        rows = session.execute(
+            select(FindingRow, CheckRun, RuleSnapshotRow, RuleDefinition)
+            .join(CheckRun, FindingRow.check_run_id == CheckRun.id)
+            .join(RuleSnapshotRow, CheckRun.rule_snapshot_id == RuleSnapshotRow.id)
+            .join(RuleDefinition, RuleSnapshotRow.rule_definition_id == RuleDefinition.id)
+            .where(
+                FindingRow.package_revision_id == package_revision_id,
+                CheckRun.superseded_at.is_(None),
+            )
+            # Ordered so regenerating an unchanged revision produces the same bytes, which is what
+            # makes the content-addressed key below mean anything.
+            .order_by(FindingRow.created_at, FindingRow.id)
+        ).all()
+
+        if not rows:
+            # No file. An empty workbook would be a deliverable asserting a package was checked and
+            # found clean, when in fact nothing ran.
+            return {
+                "implemented": True,
+                "ran": True,
+                "findings": 0,
+                "outputs": 0,
+                "reason": "this revision has no live findings, so there is nothing to report on",
+            }
+
+        workbook = write_stored_workbook(
+            [
+                StoredFinding(
+                    rule_id=definition.rule_id,
+                    outcome=finding.outcome,
+                    severity=finding.severity,
+                    snapshot_id=snapshot.snapshot_id,
+                    engine_version=run.engine_version,
+                    trace=finding.trace,
+                )
+                for finding, run, snapshot, definition in rows
+            ]
+        )
+
+        digest, _ = sha256_stream(BytesIO(workbook))
+        key = content_key(f"outputs/{package_revision_id}", digest, suffix=".xlsx")
+        existing = session.execute(
+            select(OutputArtifact.id).where(
+                OutputArtifact.storage_key == key, OutputArtifact.sha256 == digest
+            )
+        ).first()
+        if existing is not None:
+            # Byte-identical to one already recorded, which is what regenerating an unchanged
+            # revision produces. The table is append-only and unique on (key, digest); recording it
+            # twice would claim two deliverables where there is one.
+            return {
+                "implemented": True,
+                "ran": True,
+                "findings": len(rows),
+                "outputs": 0,
+                "already_recorded": True,
+            }
+
+        stored = self._store.put(key, BytesIO(workbook), content_type=WORKBOOK_MEDIA_TYPE)
+        session.add(
+            OutputArtifact(
+                package_revision_id=package_revision_id,
+                kind=OutputArtifactKind.FINDINGS_WORKBOOK.value,
+                storage_key=stored.key,
+                sha256=stored.sha256,
+                media_type=WORKBOOK_MEDIA_TYPE,
+                findings=len(rows),
+            )
+        )
+        session.flush()
+        return {
+            "implemented": True,
+            "ran": True,
+            "findings": len(rows),
+            "outputs": 1,
+            "storage_key": stored.key,
+        }
 
     def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
         """Run every applicable rule against this revision and record what each decided.

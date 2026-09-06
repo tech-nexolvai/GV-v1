@@ -28,10 +28,13 @@ from openpyxl import load_workbook
 from reports.spreadsheet import (
     FINDING_COLUMNS,
     FINDINGS_SHEET,
+    NOT_APPLICABLE,
     OPERAND_COLUMNS,
     OPERANDS_SHEET,
     TEXT_FORMAT,
+    StoredFinding,
     exact_text,
+    write_stored_workbook,
     write_workbook,
 )
 from units.measurement import Measurement, Unit
@@ -454,3 +457,114 @@ def test_an_abstention_that_carries_a_trace_shows_what_it_computed() -> None:
     assert "abstained" not in str(finding_row[FINDING_COLUMNS.index("comparison")])
 
     assert len(_sheet(data, OPERANDS_SHEET)) == 2, "its operands were read, so they are listed"
+
+
+# ---------------------------------------------------------------------------
+# The workbook a worker writes, from stored rows
+# ---------------------------------------------------------------------------
+
+
+def _stored(**overrides: object) -> StoredFinding:
+    """A stored finding with a real calculation trace, in the shape `app/verdicts/trace.py` writes."""
+    defaults: dict[str, object] = {
+        "rule_id": "CT-DEPTH-001",
+        "outcome": "PASS",
+        "severity": "CRITICAL",
+        "snapshot_id": "a" * 64,
+        "engine_version": "verdict/1",
+        "trace": {
+            "operation": "sum_within_tolerance",
+            "operands": [
+                {
+                    "name": "countertop_depth",
+                    "value": "25 1/2 in",
+                    "source": "USER_INPUT",
+                    "evidence_ref": None,
+                }
+            ],
+            "intermediates": [],
+            "comparison": "25 1/2 == 25 1/2",
+            "tolerance": None,
+            "arithmetic_unit": "in",
+            "outcome": "PASS",
+            "engine_version": "verdict/1",
+            "operation_version": 1,
+        },
+    }
+    defaults.update(overrides)
+    return StoredFinding(**defaults)  # type: ignore[arg-type]
+
+
+def test_a_stored_fraction_survives_as_the_text_it_was_written_as() -> None:
+    """`25 1/2` reaches the cell as `25 1/2`, not as `25.5`.
+
+    The stored value is already exact text — `render_value` produced it — so the only way to lose it
+    here is to let openpyxl decide the cell is numeric. This is the same guarantee
+    `test_every_measurement_is_a_text_cell` makes for the engine-value path, asserted separately
+    because the two writers reach the cell by different routes.
+    """
+    sheet = load_workbook(BytesIO(write_stored_workbook([_stored()])))[OPERANDS_SHEET]
+
+    value = sheet.cell(row=2, column=OPERAND_COLUMNS.index("value") + 1)
+
+    assert value.value == "25 1/2 in"
+    assert value.number_format == TEXT_FORMAT
+
+
+def test_an_abstention_carries_its_stored_reason() -> None:
+    """The reason an abstention records is the one thing storage does keep, and it must appear.
+
+    "No dimension was read for `cutout_width`" sends somebody to the drawing. Dropping it in the
+    export sends them to us.
+    """
+    finding = _stored(
+        outcome="NOT_FOUND",
+        trace={
+            "cause": "missing_operand",
+            "reason": "no dimension was read for cutout_width",
+            "outcome": "NOT_FOUND",
+        },
+    )
+
+    sheet = load_workbook(BytesIO(write_stored_workbook([finding])))[FINDINGS_SHEET]
+
+    assert sheet.cell(row=2, column=FINDING_COLUMNS.index("reason") + 1).value == (
+        "no dimension was read for cutout_width"
+    )
+    assert sheet.cell(row=2, column=FINDING_COLUMNS.index("comparison") + 1).value == NOT_APPLICABLE
+
+
+def test_a_stored_abstention_contributes_no_operand_rows() -> None:
+    """Nothing was read, and a row of blanks would suggest an operand was found and had no value."""
+    finding = _stored(
+        outcome="NOT_FOUND",
+        trace={"cause": "missing_operand", "reason": "nothing was read", "outcome": "NOT_FOUND"},
+    )
+
+    sheet = load_workbook(BytesIO(write_stored_workbook([finding])))[OPERANDS_SHEET]
+
+    assert sheet.max_row == 1, "only the heading row"
+
+
+def test_a_trace_of_an_unexpected_shape_is_rendered_rather_than_raising() -> None:
+    """`trace` is `JSONB`, so an older writer's row can carry fields this reader did not expect.
+
+    The export's job is to show a reviewer what was recorded. Raising would make one unfamiliar row
+    withhold the whole deliverable, including the rows that are fine.
+    """
+    finding = _stored(trace={"operands": "not a list", "comparison": 7})
+
+    sheet = load_workbook(BytesIO(write_stored_workbook([finding])))[FINDINGS_SHEET]
+
+    assert sheet.cell(row=2, column=FINDING_COLUMNS.index("comparison") + 1).value == "7"
+
+
+def test_the_two_writers_agree_on_their_columns() -> None:
+    """Both sheets are written through `_write_sheet` with the same column tuples.
+
+    Asserted so the stored-row export and the engine-value export stay comparable: a reader diffing
+    one against the other is entitled to assume column five means the same thing in both.
+    """
+    stored = load_workbook(BytesIO(write_stored_workbook([_stored()])))
+    assert [cell.value for cell in stored[FINDINGS_SHEET][1]] == list(FINDING_COLUMNS)
+    assert [cell.value for cell in stored[OPERANDS_SHEET][1]] == list(OPERAND_COLUMNS)

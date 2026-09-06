@@ -1,10 +1,11 @@
 # The mechanical spine: what runs today, and what it is waiting for
 
-The pipeline reads a PDF, records what was on its pages, and cuts a picture of every reading. It does
-not say what any of it means. This records where that boundary falls and why it is where it is, so the
-next person to work on `workflow/stages.py` does not mistake a deliberate stop for an unfinished one.
+The pipeline reads a PDF, records what was on its pages, cuts a picture of every reading, runs the
+rules and writes the results out as a workbook. It does not say what any of the readings mean. This
+records where that boundary falls and why it is where it is, so the next person to work on
+`workflow/stages.py` does not mistake a deliberate stop for an unfinished one.
 
-Written 2026-09-06 alongside #517.
+Written 2026-09-06 alongside #517; extended for #519, which wired the last stage.
 
 ## What is wired
 
@@ -15,7 +16,10 @@ Written 2026-09-06 alongside #517.
 | `validate_evidence` | Renders each page that produced candidates and cuts a real crop per candidate through `evidence/crop.py`, persisting an `evidence_artifacts` row. |
 | `match` | Runs the real exact lane over the revision's drawing items and persists `match_candidates`. |
 | `run_checks` | Runs the rules and records findings. |
-| `generate_outputs` | Still a stub. |
+| `generate_outputs` | Builds a findings workbook for the revision — outcome, rule, comparison, operands, snapshot — stores it and records an `output_artifacts` row. |
+
+All six stages now do work. The loop closes: a package is verified, read, evidenced, matched,
+checked, and turned into a file somebody can be handed.
 
 **This is drawing-agnostic on purpose, and it is tested that way.** The end-to-end test runs on a real
 PDF committed to this repository — our own design document, not a drawing — because the client's
@@ -43,6 +47,23 @@ page. `extraction/model/` reasons about items it is *given* — `view_containing
 `resolve_assembly` — and does not find them. Both missing pieces are semantic, so the stage is wired
 to the real matcher and returns an honest zero with the reason. When item detection exists this runs
 unchanged.
+
+**No redline, and not for want of a renderer.** `reports/redline.py` exists and is tested. An
+annotated drawing needs each finding tied to the region of the sheet it is about, and that needs a
+candidate to have a meaning — which is exactly what this pipeline does not do. A redline drawn from
+untyped candidates would put boxes on a drawing with nothing behind their placement, which is worse
+than no redline: it looks like evidence, and evidence is the one thing a reviewer is entitled to
+take at face value. `OutputArtifactKind` has a single member for the same reason — the enum gains
+`redline` on the day something can honestly write one, and a test asserts it has not.
+
+**The workbook cannot fill four of its columns**, and says so in each cell rather than leaving them
+blank. `findings` stores the outcome, severity, trace and parameter versions; it does **not** store
+a decision's prose reason, its delta, its applicability variant or its notes. Those live on
+`verdict.finding.Finding`, the engine's value type, and `record_finding` has never persisted them.
+Rebuilding that value type from storage is not an option either: `render_value` writes operand
+values as display text, so a tuple of measurements comes back as the single string `24, 24, 30`, and
+parsing presentation output into exact arithmetic is how `984 mm` once became 984 inches. Making
+those four fields storable is a schema change worth doing deliberately, not a gap to paper over.
 
 **Page classification is not wired, though the classifier is built.** `extraction/page_type.py:classify`
 takes a `PageText` whose `title_block` and `view_tags` are *separate* fields, and its precedence rule
