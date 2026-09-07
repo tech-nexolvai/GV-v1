@@ -37,6 +37,7 @@ from extraction.models.openmodel import (
     ChatCompletionsClient,
     OpenModelAdapter,
     OpenModelConfig,
+    OpenModelEndpointError,
     OpenModelInvocation,
     OpenModelInvocationOutcome,
     OpenModelPayloadRejectedError,
@@ -44,6 +45,7 @@ from extraction.models.openmodel import (
     OpenModelRefusalError,
     OpenModelRequest,
     OpenModelRetryExhaustedError,
+    OpenModelServiceError,
 )
 from extraction.models.validation import ValidationRejection
 
@@ -362,6 +364,19 @@ def test_a_configured_model_returns_a_validated_reading() -> None:
 
     try:
         candidate = adapter.extract(_request())
+    except OpenModelServiceError as error:
+        # **A model that cannot hold a tool schema is a skip, not a failure.** Ollama answers
+        # `400 ... does not support tools` before the model sees the image, so nothing about this
+        # seam was exercised and nothing about it is broken — the configured model simply lacks a
+        # capability the contract requires. Measured, not guessed: `minicpm-v` answers exactly that,
+        # while reading the same crop correctly when asked in prose.
+        #
+        # Every other endpoint error still fails, because a request we built wrongly also arrives as
+        # a 400 and only the body tells them apart.
+        cause = error.__cause__
+        if isinstance(cause, OpenModelEndpointError) and cause.lacks_tool_support:
+            pytest.skip(f"{config.model_id} cannot use tools: {cause.body.strip()}")
+        raise
     except (OpenModelRefusalError, OpenModelProtocolError, OpenModelPayloadRejectedError):
         # The seam carried a refusal or an unusable answer, recorded it, and raised. That is the
         # contract working. A small local model often cannot hold a tool schema, and this test is

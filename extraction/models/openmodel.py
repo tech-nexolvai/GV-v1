@@ -201,6 +201,30 @@ class OpenModelRefusalError(OpenModelAdapterError):
     """The model declined to answer."""
 
 
+class OpenModelEndpointError(OpenModelAdapterError):
+    """The endpoint answered with an HTTP error, carrying its own explanation.
+
+    Its own class because the body distinguishes cases a caller must tell apart: a model that cannot
+    hold a tool schema is a fact about that model, where a malformed request is a fact about us. Both
+    arrive as a 400, and only the message separates them.
+    """
+
+    def __init__(self, message: str, *, status: int, body: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.body = body
+
+    @property
+    def lacks_tool_support(self) -> bool:
+        """Whether the endpoint said this model cannot use tools.
+
+        Read from the endpoint's own words rather than inferred from the status, because a 400 covers
+        both that and a request we built wrongly — and those call for opposite responses: choose a
+        different model, or fix the adapter.
+        """
+        return "does not support tools" in self.body.casefold()
+
+
 class OpenModelServiceError(OpenModelAdapterError):
     """The endpoint failed in a way retrying cannot help."""
 
@@ -477,8 +501,26 @@ class _UrllibChatClient:
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self._config.read_timeout_seconds) as response:
-            decoded = json.loads(response.read().decode("utf-8"), parse_float=Decimal)
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self._config.read_timeout_seconds
+            ) as response:
+                decoded = json.loads(response.read().decode("utf-8"), parse_float=Decimal)
+        except urllib.error.HTTPError as error:
+            # **The body is where the reason is, and discarding it loses the diagnosis.** Ollama
+            # answers `400 {"error":{"message":"... does not support tools"}}` for a model that
+            # cannot hold a tool schema — a fact about that model, and unrecoverable from the status
+            # alone, which says only that something about the request was wrong.
+            try:
+                detail = error.read().decode("utf-8", errors="replace")[:500]
+            except Exception:  # noqa: BLE001 - a body we cannot read must not replace the error
+                detail = ""
+            raise OpenModelEndpointError(
+                f"the endpoint refused the request with HTTP {error.code}"
+                + (f": {detail}" if detail else ""),
+                status=error.code,
+                body=detail,
+            ) from error
         if not isinstance(decoded, Mapping):
             raise OpenModelProtocolError("the endpoint did not return a JSON object")
         return cast(Mapping[str, Any], decoded)
