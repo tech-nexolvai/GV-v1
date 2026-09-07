@@ -298,6 +298,11 @@ answer:  Meaning confirmed — the sum (cutout width + the two clearances) is th
          width, and the clearances belong to the cutout-vs-cabinet geometry Raj confirmed. The "width
          of countertop" wording is a label slip on Raj's sheet, going in the highlighted list for him
          to correct.
+         NOT the same quantity as CT004. The 2026-09-07 deck's CT004 is the OVERALL, outside-to-outside
+         sink-cabinet width — this three-term interior sum PLUS a side panel at each end
+         (CAB_SIDE_THK + CT011 + CT012 + CT013 + CAB_SIDE_THK). Authored that way in
+         ct_sink_cabinet_width_001. Reading CT004 as the interior width drops both panels, so the
+         check would compare the opening against a number two panel thicknesses larger.
 source:  Call 2026-08-25. Raj confirmed the CT011/CT012/CT013 clearance geometry earlier (email 3.8)
          and, on the call, that contradictory labels should be highlighted and sent back for him to
          fix. Geometry settled; only the label wording is Raj's to correct.
