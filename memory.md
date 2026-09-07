@@ -60,6 +60,14 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
   `cabinet_width`, `filler_width`, `wall_config`, `field_dimension`, materials, etc.
 - **How `wall_config` is established** — read from the plan (walls on which sides) or reviewer input;
   if neither → REVIEW.
+- **CT007 — exact value or minimum? RAJ TO CONFIRM.** The 2026-09-07 countertop deck says both: its
+  variable table gives CT007's acquisition as "Global **minimum**", its prose and Q5 call it a global
+  **constant** (U.N.O). `>= 4"` passes a sink held six inches back; `= 4"` fails it.
+  `ct_sink_offset_front_001` deliberately stays EXACT and `Acquisition` for CT007 is left unset until
+  he answers — do not reconcile this from the deck (#537).
+- **Back-offset shortfall — warn or fail? OURS to decide.** That deck says "warn" when the remainder
+  falls below the vendor minimum; the shipped `ct_back_offset_min_001` is `severity: CRITICAL`
+  (pre-dates the deck). Not changed either way yet.
 - **Cabinet-filler "distribute across adjustable cabinets"** logic + which cabinets are non-adjustable
   (sink / equipment) — needs a typed representation; the on-site field dimension is a USER_INPUT.
 
@@ -67,9 +75,15 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
 - **Waiting on Raj:** full countertop + cabinet rules (with tolerance + severity), one complete real
   project (shop + arch set with a countertop-on-cabinets example), global rules per item type, and a
   5–10 case gold-set of past reviewed drawings with mark-ups. All "will send."
+- **Received 2026-09-07 — the countertop deck** (`C_Tops_Checks_New.pptx` →
+  `docs/decisions/CT_CHECKS_FORMAT.md`): final CT0xx vocabulary + acquisition types for the
+  THREE-SIDED layout, the five-term depth decomposition, and the CT004 sink-cabinet width relation.
+  Authored into the rulebook in #537. Back-only and island layouts, and the back-offset minimum
+  VALUE, are still owed.
 - **Confirmed by Raj:** tolerance depends on wall layout; checklist targets vanity tops (reusable for
   kitchen if same layout); review is by category but must cross-check compatibility (countertop vs
-  cabinet); dimensions live on dimension lines; inch & mm always agree (mm canonical); build against
+  cabinet); dimensions live on dimension lines; inch & mm always agree (but Q12 settled that INCHES govern —
+  mm is the vendor's machine reference and never a verdict operand); build against
   FINAL sets; items can carry a **vendor-supplied unique ID in the drawing tag** → prefer exact-ID
   matching; VIF in a final set is a flag.
 

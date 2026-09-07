@@ -5,10 +5,36 @@ check_type: global
 severity: CRITICAL
 arithmetic_unit: in
 
+# ---------------------------------------------------------------------------------------------
+# OPEN QUESTION FOR RAJ — this rule is deliberately unchanged while it stands (#537).
+#
+# `C_Tops_Checks_New.pptx` (2026-09-07) says two different things about CT007:
+#
+#   * the slide-8 variable table gives its acquisition as **"Global minimum"**;
+#   * the same deck's own prose, and Q5, call it a **"global constant / standard hold dimension
+#     (U.N.O)"** — an exact value.
+#
+# Those are different verdicts, not different wordings. `>= minimum` passes a sink set six inches
+# back when four was intended; `= exact` fails it. On the countertop's front edge that is the
+# visible error a reviewer is meant to catch, so picking one to make the deck self-consistent
+# would be choosing a verdict on the client's behalf.
+#
+# The rule therefore stays exact, as authored from Q5, and the contradiction is recorded here and
+# in `docs/decisions/CT_CHECKS_FORMAT.md` rather than resolved. `vocabulary/semantic_types.py`
+# leaves CT007's acquisition unset for the same reason.
+# ---------------------------------------------------------------------------------------------
+
 name: Sink front offset
 description: >
-  Check the drawn front offset — the countertop in front of the sink cutout — against the
-  required value, by exact equality.
+  Check the drawn front offset — the strip of countertop between the front of the cabinet and the
+  front of the sink cutout — against the required value, by exact equality.
+
+  It does NOT include the overhang. The deck decomposes the depth front-to-back as
+  `CT010 = C.T_OH + CT007 + CT008 + CT009 + B.S_THK`, so the overhang sits in front of this
+  segment and is counted once, by itself. Reading CT007 from the countertop's own front edge
+  instead of the cabinet's would double-count the overhang here and again in CT-BACK-OFFSET-MIN-001,
+  which subtracts both from the same depth — the four-inch check would then quietly be asking for
+  four inches minus the overhang.
 
   Exact, not a minimum. The client's words were "typical value is 4 inches, varies rarely",
   and Q2 settled exact matching for V1, so the check is equality rather than a lower bound

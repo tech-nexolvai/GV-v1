@@ -76,9 +76,34 @@ MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
     "CAB-FILLER-001:design_width": '94"',
     "CAB-FILLER-001:design_fillers": FILLERS,
     "CAB-FILLER-001:proposed_fillers": FILLERS,
+    # The sink cabinet, from the deck's own relation (#537). **It is the 36" cabinet in `CABINETS`,
+    # not a fourth cabinet from nowhere.** The first version of this row said 35", which added up
+    # inside its own rule and described a run that did not contain the cabinet it had just checked —
+    # and a 29 1/2" cutout does not fit a 30" cabinet at all. Two CRITICAL checks would both have
+    # passed on a package no fabricator could build, which is the false-PASS shape this file exists
+    # to catch rather than to contain. Found in review on #537.
+    #
+    #   3/4 panel + 2 1/2 clearance + 29 1/2 cutout + 2 1/2 clearance + 3/4 panel = 36
+    #
+    # The cutout is the same measurement `CT-SINK-CUTOUT-WIDTH-001` reads — one quantity a reviewer
+    # measures once, which is why `required-inputs` groups the form by quantity, not by rule.
+    "CT-SINK-CABINET-WIDTH-001:sink_cabinet_width": '36"',
+    "CT-SINK-CABINET-WIDTH-001:clearance_left": '2 1/2"',
+    "CT-SINK-CABINET-WIDTH-001:cutout_width": '29 1/2"',
+    "CT-SINK-CABINET-WIDTH-001:clearance_right": '2 1/2"',
 }
 
-PROJECT_PARAMETERS = {"cabinet_depth": '24"', "countertop_overhang": '1 1/2"', "field_cut": '0"'}
+PROJECT_PARAMETERS = {
+    "cabinet_depth": '24"',
+    "countertop_overhang": '1 1/2"',
+    "field_cut": '0"',
+    # Both `Specified` in the countertop deck's acquisition column — the client gives them per
+    # project, so they are form fields with no default (#537). Without them the back-offset rule
+    # abstains on the backsplash before it ever reaches the value the client still owes, which is
+    # how this test caught them being missing.
+    "backsplash_thickness": '3/4"',
+    "cabinet_side_thickness": '3/4"',
+}
 
 #: Off the sink's cut sheet, true for this review only.
 RUN_PARAMETERS = {"sink_interior_depth": '16"', "sink_interior_width": '30"'}
@@ -205,9 +230,14 @@ def filled(session: Session) -> PackageRevision:
 def test_every_check_that_can_decide_does(session: Session, filled: PackageRevision) -> None:
     """**The acceptance property: nothing abstains for want of a field.**
 
-    Six of eight reach PASS or FAIL. The other two are waiting on the client, and this asserts the
+    Seven of nine reach PASS or FAIL. The other two are waiting on the client, and this asserts the
     membership of that set rather than its size — a third rule joining it would otherwise pass here
     while a reviewer stared at an abstention they could have fixed.
+
+    The count comes from the rulebook rather than a literal, because a literal is a number somebody
+    has to remember to change: authoring `CT-SINK-CABINET-WIDTH-001` from the countertop deck (#537)
+    made this fail at `9 == 8` while the rule itself was working correctly. What matters is that
+    every published rule produced a finding, which is the same property either way.
     """
     operands = operands_for(session, filled.id)
     DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(session, filled.id)
@@ -219,7 +249,13 @@ def test_every_check_that_can_decide_does(session: Session, filled: PackageRevis
         "the set of checks that cannot decide has changed. Every member must be waiting on a client "
         f"value, not on a form field: {sorted(undecided)}"
     )
-    assert len(outcomes) == 8
+    # The same glob `_publish_rulebook` iterates, so the two cannot disagree about how many rules
+    # there are.
+    published = len(list(RULEBOOK.glob("*.yaml")))
+    assert len(outcomes) == published, (
+        f"{published} rules are published but {len(outcomes)} produced a finding. A rule that "
+        "produced no row is a check the reviewer cannot tell did not run."
+    )
 
 
 def test_the_two_that_cannot_decide_say_why_in_client_terms(
