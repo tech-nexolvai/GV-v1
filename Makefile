@@ -144,15 +144,20 @@ testdb:             ## create this checkout's test database if it does not exist
 # Proves the model seam carries a real call. Plumbing only: it makes no claim about how often a
 # model reads a dimension correctly, because there is no gold set to measure that against (#188).
 #
-# Skips cleanly with no model configured, the way the database tests skip without DATABASE_URL. To
-# run it against a local model, with nothing leaving the machine:
+# Defaults to minicpm-v, which is validated: it reads `24 1/2"` off a crop correctly and reports
+# `capabilities: ['completion', 'vision']` — vision without tools. The adapter sees that and answers
+# with the JSON-schema route, so this RUNS rather than skipping.
 #
-#   ollama pull qwen2-vl && GV_OPENMODEL_ID=qwen2-vl make model-smoke
+#   ollama pull minicpm-v && make model-smoke
 #
-# A free-tier API works the same way, by pointing GV_OPENMODEL_BASE_URL and GV_OPENMODEL_API_KEY at it.
-model-smoke:        ## send one test image through the model adapter (skips if none is configured)
-	@python -m pytest tests/extraction/models/test_openmodel.py -v \
-		-k "configured_model or scripted_endpoint or same_seam"
+# Override GV_OPENMODEL_ID for another model; a free-tier API works the same way through
+# GV_OPENMODEL_BASE_URL and GV_OPENMODEL_API_KEY. It skips only when nothing is reachable, and for a
+# model that supports neither tools nor schema output — the skip quotes the endpoint's own words.
+model-smoke:        ## send one test image through the model adapter (skips if none is reachable)
+	@GV_OPENMODEL_ID="$${GV_OPENMODEL_ID:-minicpm-v:latest}" \
+	 GV_OPENMODEL_READ_TIMEOUT="$${GV_OPENMODEL_READ_TIMEOUT:-600}" \
+	 python -m pytest tests/extraction/models/test_openmodel.py -v -rs \
+		-k "configured_model or scripted_endpoint or same_seam or strategy"
 
 demo:               ## one command to a working demo: stack, schema, rulebook, API and UI
 	@scripts/demo.sh
