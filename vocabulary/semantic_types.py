@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 
 #: The vocabulary is **provisional** until Q20 (#16) confirms the codes are final.
 #:
@@ -91,19 +91,52 @@ class SemanticType(str, Enum):
         return described.description if described else self.value.replace("_", " ")
 
 
+class Acquisition(StrEnum):
+    """How a value for one code is obtained, in the client's own four words.
+
+    From the slide-8 variable table of `C_Tops_Checks_New.pptx` (2026-09-07). It is recorded because
+    it decides *where the value comes from in this system*, and getting that wrong is not a cosmetic
+    error — a number the client specifies per project must not be read off a drawing, and a number
+    the system derives must not be entered by hand where it could disagree with its own formula.
+
+    The mapping to our layers:
+
+    | Client's word | Here |
+    |---|---|
+    | `MEASURED` | an operand read from the drawing or the site — a rule input, `source: SHOP` or field |
+    | `CALCULATED` | derived by the engine — a `derivations` entry, never entered |
+    | `SPECIFIED` | the client gives it per project — a reviewer input at the `project` parameter layer |
+    | `GLOBAL` | one company-wide constant — a `global` parameter, owed once |
+
+    **Provisional across layouts.** The deck covers the three-sided layout only, and back-only and
+    island layouts may acquire the same code differently — an island has no wall to hold a
+    backsplash against. `CLIENT_FACTS` Q20 stays open for those.
+    """
+
+    MEASURED = "measured"
+    CALCULATED = "calculated"
+    SPECIFIED = "specified"
+    GLOBAL = "global"
+
+
 @dataclass(frozen=True, slots=True)
 class ClientCode:
-    """One client code, what it measures, and where that is defined.
+    """One client code, what it measures, where that is defined, and how it is obtained.
 
     `anchor` matters as much as `description`. Every one of these is defined **positionally on a
     drawing**, not in prose, and the anchor is what a reviewer opens to check a rule against the
     thing it is supposed to measure.
+
+    `acquisition` is `None` where the client has not said. Two codes are in that position — `CT011`
+    and `CT013` appear on the diagram and in a formula but have no row in the variable table — and
+    `None` records that rather than filling it with the likeliest of four answers.
     """
 
     code: str
     description: str
     descriptive_alias: str | None
     anchor: str
+    acquisition: Acquisition | None = None
 
 
 #: Every code the client's workbook uses, with the diagram that defines it.
@@ -113,33 +146,114 @@ class ClientCode:
 #: was **wrong**: the diagram defines them as clearly as the rest. Reading the summary instead of
 #: the image is the recurring failure with this client's material.
 CLIENT_CODES: dict[str, ClientCode] = {
-    "CT001": ClientCode("CT001", "wall to wall dimension", "wall_to_wall_dimension", "CT_image10"),
-    "CT002": ClientCode("CT002", "cabinet filler, left", "filler_width (left)", "CT_image10"),
-    "CT003": ClientCode("CT003", "cabinet 1 width, left cabinet underneath", None, "CT_image10"),
-    "CT004": ClientCode("CT004", "cabinet 2 width, sink cabinet underneath", None, "CT_image10"),
-    "CT005": ClientCode("CT005", "cabinet 3 width, right cabinet underneath", None, "CT_image10"),
-    "CT006": ClientCode("CT006", "cabinet filler, right", "filler_width (right)", "CT_image10"),
+    "CT001": ClientCode(
+        "CT001",
+        "wall to wall dimension",
+        "wall_to_wall_dimension",
+        "CT_image10",
+        Acquisition.MEASURED,
+    ),
+    "CT002": ClientCode(
+        "CT002",
+        "cabinet filler, left",
+        "filler_width (left)",
+        "CT_image10",
+        Acquisition.CALCULATED,
+    ),
+    "CT003": ClientCode(
+        "CT003",
+        "cabinet 1 width, left cabinet underneath",
+        None,
+        "CT_image10",
+        Acquisition.CALCULATED,
+    ),
+    "CT004": ClientCode(
+        "CT004",
+        "cabinet 2 width, sink cabinet underneath",
+        None,
+        "CT_image10",
+        Acquisition.CALCULATED,
+    ),
+    "CT005": ClientCode(
+        "CT005",
+        "cabinet 3 width, right cabinet underneath",
+        None,
+        "CT_image10",
+        Acquisition.CALCULATED,
+    ),
+    "CT006": ClientCode(
+        "CT006",
+        "cabinet filler, right",
+        "filler_width (right)",
+        "CT_image10",
+        Acquisition.CALCULATED,
+    ),
+    # **`CT007` carries no acquisition, and that is the flag rather than an omission.** The deck's
+    # table says `Global minimum`; the same deck's prose, and Q5, call it a "global constant /
+    # standard hold dimension (U.N.O)" — an exact value. Those are different verdicts: `≥ minimum`
+    # passes anything deeper than the bound, `= exact` fails a sink half an inch forward of it.
+    # Recording either would settle by guess a question only Raj can answer, so it stays unset and
+    # `ct_sink_offset_front_001` stays exactly as authored. See `docs/decisions/CT_CHECKS_FORMAT.md`.
     "CT007": ClientCode("CT007", "sink front offset", "sink_offset_front", "CT_image10"),
-    "CT008": ClientCode("CT008", "sink hole depth", "sink_cutout_depth", "CT_image10"),
-    "CT009": ClientCode("CT009", "sink back offset", "sink_offset_back", "CT_image10"),
-    "CT010": ClientCode("CT010", "countertop depth", "countertop_depth", "CT_image10"),
+    "CT008": ClientCode(
+        "CT008",
+        "sink hole depth",
+        "sink_cutout_depth",
+        "CT_image10",
+        Acquisition.SPECIFIED,
+    ),
+    "CT009": ClientCode(
+        "CT009",
+        "sink back offset",
+        "sink_offset_back",
+        "CT_image10",
+        Acquisition.CALCULATED,
+    ),
+    "CT010": ClientCode(
+        "CT010",
+        "countertop depth",
+        "countertop_depth",
+        "CT_image10",
+        Acquisition.CALCULATED,
+    ),
     "CT011": ClientCode(
         "CT011",
         "clearance from the sink cabinet's left interior face to the cutout",
         None,
         "CT_image10",
     ),
-    "CT012": ClientCode("CT012", "sink hole width", "sink_cutout_width", "CT_image10"),
+    "CT012": ClientCode(
+        "CT012",
+        "sink hole width",
+        "sink_cutout_width",
+        "CT_image10",
+    ),
     "CT013": ClientCode(
         "CT013",
         "clearance from the sink cabinet's right interior face to the cutout",
         None,
         "CT_image10",
     ),
-    "B.S_THK": ClientCode("B.S_THK", "backsplash thickness", "backsplash_thickness", "workbook"),
-    "C.T_OH": ClientCode("C.T_OH", "countertop overhang", "countertop_overhang", "workbook"),
+    "B.S_THK": ClientCode(
+        "B.S_THK",
+        "backsplash thickness",
+        "backsplash_thickness",
+        "C_Tops_Checks_New slide 8",
+        Acquisition.SPECIFIED,
+    ),
+    "C.T_OH": ClientCode(
+        "C.T_OH",
+        "countertop overhang",
+        "countertop_overhang",
+        "C_Tops_Checks_New slide 8",
+        Acquisition.SPECIFIED,
+    ),
     "CAB_SIDE_THK": ClientCode(
-        "CAB_SIDE_THK", "cabinet side panel thickness", "cabinet_side_thickness", "workbook"
+        "CAB_SIDE_THK",
+        "cabinet side panel thickness",
+        "cabinet_side_thickness",
+        "C_Tops_Checks_New slide 8",
+        Acquisition.SPECIFIED,
     ),
 }
 

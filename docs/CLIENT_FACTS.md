@@ -113,10 +113,12 @@ blocks:  formula
 issue:   #14
 answer:  CT010 (countertop depth) is primary — set from cabinet depth + overhang. The offset sum
          CT007+CT008+CT009 is checked against it; if it EXCEEDS CT010 the program flags (sink hole
-         too big → reviewer changes the sink). CT009 (back offset) is the constrained REMAINDER —
-         whatever is left after front offset + sink depth — and carries a global MINIMUM (below it
-         the faucet hole will not fit). That minimum value is STILL PENDING — on the call (2026-08-25)
-         Raj said he had overlooked it and will email the vendor for the number.
+         too big → reviewer changes the sink). CT009 (back offset) is the constrained REMAINDER. The
+         2026-09-07 countertop deck gives the full decomposition CT010 = C.T_OH + CT007 + CT008 + CT009
+         + B.S_THK, so back offset = CT010 − overhang − front offset − sink depth − backsplash, carrying
+         a Global MIN Constant: warn when the remainder falls below it. That minimum VALUE is STILL
+         PENDING (Raj to get it from the vendor). The deck adds two terms our authored rule omits —
+         overhang (C.T_OH) and backsplash (B.S_THK); see docs/decisions/CT_CHECKS_FORMAT.md.
 source:  Raj email reply (3.6): "CT010 Should be equal to CT007 + CT008 + CT009. If the value
          exceeds, then the program should throw a flag." 2nd reply (follow-up 1): "after the front
          offset and depth of the sink taken care of, whatever left will become the back offset… never
@@ -213,12 +215,16 @@ source:  Raj 2nd email reply: "Ignore the metric dimensions, U.S construction wo
 status:  ANSWERED
 blocks:  formula
 issue:   #15
-answer:  Cross-check. CT010 (from cabinet depth + overhang) is primary, and the offset sum
-         CT007+CT008+CT009 is checked against it — flag if the offset sum EXCEEDS CT010. The
-         offset expression is a constraint on the primary depth, not an independent formula.
+answer:  Cross-check. CT010 (from cabinet depth + overhang) is primary, and the offset decomposition
+         is checked against it. The 2026-09-07 countertop deck gives the full decomposition —
+         CT010 = C.T_OH + CT007 + CT008 + CT009 + B.S_THK (overhang + front offset + sink depth +
+         back offset + backsplash) — so the offset sum is a constraint on the primary depth, not an
+         independent formula. Note the deck's five terms include overhang and backsplash, which the
+         email's shorter "CT007+CT008+CT009" omitted.
 source:  Raj email reply (3.6): "CT010 Should be equal to CT007 + CT008 + CT009. If the value
-         exceeds, then the program should throw a flag." Same answer as Q6, resolving whether the
-         depth expressions reconcile.
+         exceeds, then the program should throw a flag." Superseded in detail by the 2026-09-07
+         countertop deck's five-term CT010 decomposition — see docs/decisions/CT_CHECKS_FORMAT.md.
+         Same reconciliation as Q6.
 
 ## Q14 — Are non-three-wall layouts (island / two-wall / back-only) in V1 scope?
 status:  ANSWERED
@@ -308,8 +314,11 @@ source:  Sheet1 rules use letters (A cutout width, B front offset, C back offset
          The A–G ↔ CT0xx letter mapping remains our inference, unconfirmed by Raj. Cabinet deck
          (2026-09-04): for CABINETS Raj now supplies a clean named vocabulary (W2W_DIM_ARCH/SITE,
          FILLER_WIDTH_MIN/MAX, CAB_REGULAR/CAB_EQUIP, per-type cabinet bounds) that supersedes the
-         letters — see docs/decisions/CAB_CHECKS_FORMAT.md. This stays OPEN because the COUNTERTOP
-         final tags are still deferred until the countertop deck + finalized layouts arrive.
+         letters — see docs/decisions/CAB_CHECKS_FORMAT.md. Countertop deck (2026-09-07): Raj now
+         supplies the final COUNTERTOP vocabulary too — CT001–CT013 plus B.S_THK, C.T_OH, CAB_SIDE_THK,
+         each with acquisition/source/formula (docs/decisions/CT_CHECKS_FORMAT.md). So the vocabulary is
+         now settled for the THREE-SIDED layout on both sides. This stays OPEN only for the remaining
+         scope: the back-only and island layouts, whose tags may differ, are not yet provided.
 
 ## Q21 — Calculate or check: does the system derive filler/cabinet sizes or only verify them?
 status:  ANSWERED

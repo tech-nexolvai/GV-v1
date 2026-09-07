@@ -1,0 +1,79 @@
+id: CT-SINK-CABINET-WIDTH-001
+version: 1.0.0
+product_type: countertop
+check_type: internal
+severity: CRITICAL
+arithmetic_unit: in
+
+name: Sink cabinet width against its cutout and clearances
+description: >
+  Check the sink cabinet's width against what it has to contain: two side panels, the
+  sink cutout, and the clearance either side of it. The relation is the client's own,
+  from the countertop deck: CT004 = CAB_SIDE_THK + CT011 + CT012 + CT013 + CAB_SIDE_THK.
+
+# Three-sided layouts only, which is the whole scope of the deck this comes from. Back-only and
+# island layouts may name these parts differently or add others, and that vocabulary has not been
+# sent (`CLIENT_FACTS` Q20). `scope: global` here means "every countertop package this rulebook is
+# applied to", and the rulebook is authored for the layout the client has specified.
+applicability:
+  scope: global
+
+inputs:
+  # `CT004` is the sink cabinet's own width as drawn — the thing being checked, not derived.
+  sink_cabinet_width:
+    source: SHOP
+    semantic_type: CT004
+    scope: same_assembly
+    cardinality: one
+  # The three horizontal segments inside it. `CT011` and `CT013` are the clearances from the
+  # cabinet's interior faces to the cutout, left and right; they are separate codes because they are
+  # separately measurable and a sink is not always centred.
+  clearance_left:
+    source: SHOP
+    semantic_type: CT011
+    scope: same_assembly
+    cardinality: one
+  cutout_width:
+    source: SHOP
+    semantic_type: CT012
+    scope: same_assembly
+    cardinality: one
+  clearance_right:
+    source: SHOP
+    semantic_type: CT013
+    scope: same_assembly
+    cardinality: one
+
+parameters:
+  # `Specified` in the deck's acquisition column: the client gives it, so it is a reviewer input at
+  # the project layer with no default. A thickness guessed here would be a guess about joinery that
+  # arrives inside a critical width.
+  cabinet_side_thickness:
+    scope: project
+
+derivations:
+  # Both side panels, counted twice on purpose: the deck writes `CAB_SIDE_THK` at each end, and one
+  # panel doubled by a `scale` operation would read as an assumption that they match. They do match
+  # today because one parameter supplies both — but the rule says what the drawing says.
+  - name: contained_width
+    operation: sum
+    operands:
+      values:
+        - cabinet_side_thickness
+        - clearance_left
+        - cutout_width
+        - clearance_right
+        - cabinet_side_thickness
+
+operation:
+  # Exact, with no tolerance band. Q2: V1 compares exactly, and an unset tolerance is not zero — so
+  # this is `equals` rather than `within_tolerance` with a nil bound, which would read as a
+  # confirmed tolerance of nothing. If the client later gives a fabrication allowance for this
+  # relation, it becomes `within_tolerance` and the allowance is authored beside it.
+  type: equals
+  operands:
+    actual: sink_cabinet_width
+    expected: contained_width
+
+on_missing: NOT_FOUND
+on_ambiguous: REVIEW_REQUIRED

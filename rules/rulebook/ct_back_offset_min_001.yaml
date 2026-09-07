@@ -7,9 +7,10 @@ arithmetic_unit: in
 
 name: Countertop back-offset minimum
 description: >
-  Derive the sink back offset as the exact remainder after the front offset and sink
-  cutout depth, then compare it with the required project minimum. The minimum has no
-  default because the vendor value is still pending.
+  Derive the sink back offset as the exact remainder of the countertop depth after the
+  overhang, the front offset, the sink cutout and the backsplash, then compare it with
+  the required global minimum. The minimum has no default because the vendor value is
+  still pending.
 
 applicability:
   scope: global
@@ -32,6 +33,18 @@ inputs:
     cardinality: one
 
 parameters:
+  # **The two terms the deck has that this rule was missing.** `C_Tops_Checks_New.pptx` slide 8
+  # decomposes the depth front-to-back as `CT010 = C.T_OH + CT007 + CT008 + CT009 + B.S_THK`, so the
+  # remainder that is the back offset has four things taken off it, not two. Subtracting only the
+  # front offset and the sink left the overhang and the backsplash inside the remainder — which
+  # overstates the back offset by their sum and would pass a sink set too far back.
+  #
+  # Both are `Specified` in the deck's own acquisition column: the client gives them per project, so
+  # they are reviewer inputs at the project layer with no default. `docs/decisions/CT_CHECKS_FORMAT.md`.
+  countertop_overhang:
+    scope: project
+  backsplash_thickness:
+    scope: project
   # Global, not per-project: the client said "I will give a global minimum for that variable after
   # checking with the vendor" (Q6). One number, owed once — so a rule needing it is held from
   # production until it arrives, which rules/publication.py now enforces.
@@ -39,16 +52,21 @@ parameters:
     scope: global
 
 derivations:
-  - name: depth_after_front_offset
-    operation: difference_between
+  # Summed first, then taken off once. Four chained subtractions would compute the same number and
+  # read as four separate facts; the deck states one decomposition, and this is it.
+  - name: segments_before_the_back_offset
+    operation: sum
     operands:
-      a: countertop_depth
-      b: front_offset
+      values:
+        - countertop_overhang
+        - front_offset
+        - sink_depth
+        - backsplash_thickness
   - name: back_offset
     operation: difference_between
     operands:
-      a: depth_after_front_offset
-      b: sink_depth
+      a: countertop_depth
+      b: segments_before_the_back_offset
 
 operation:
   type: minimum

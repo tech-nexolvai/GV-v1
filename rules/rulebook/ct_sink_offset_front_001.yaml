@@ -5,6 +5,25 @@ check_type: global
 severity: CRITICAL
 arithmetic_unit: in
 
+# ---------------------------------------------------------------------------------------------
+# OPEN QUESTION FOR RAJ — this rule is deliberately unchanged while it stands (#537).
+#
+# `C_Tops_Checks_New.pptx` (2026-09-07) says two different things about CT007:
+#
+#   * the slide-8 variable table gives its acquisition as **"Global minimum"**;
+#   * the same deck's own prose, and Q5, call it a **"global constant / standard hold dimension
+#     (U.N.O)"** — an exact value.
+#
+# Those are different verdicts, not different wordings. `>= minimum` passes a sink set six inches
+# back when four was intended; `= exact` fails it. On the countertop's front edge that is the
+# visible error a reviewer is meant to catch, so picking one to make the deck self-consistent
+# would be choosing a verdict on the client's behalf.
+#
+# The rule therefore stays exact, as authored from Q5, and the contradiction is recorded here and
+# in `docs/decisions/CT_CHECKS_FORMAT.md` rather than resolved. `vocabulary/semantic_types.py`
+# leaves CT007's acquisition unset for the same reason.
+# ---------------------------------------------------------------------------------------------
+
 name: Sink front offset
 description: >
   Check the drawn front offset — the countertop in front of the sink cutout — against the
