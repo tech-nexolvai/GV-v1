@@ -99,14 +99,26 @@ class Acquisition(StrEnum):
     error — a number the client specifies per project must not be read off a drawing, and a number
     the system derives must not be entered by hand where it could disagree with its own formula.
 
-    The mapping to our layers:
+    **It describes how the client obtains the value, not where this system reads it from**, and the
+    difference is easy to lose. A code the client `CALCULATED` is still a rule *input* here, because
+    checking the drawn value against our own derivation is the entire point — `CT010` is calculated
+    by the client and read from the drawing by `ct_depth_001`, which then compares the two. Reading
+    the table as an instruction about placement would move `CT010` out of `inputs` and leave the
+    depth check comparing a derivation with itself.
 
-    | Client's word | Here |
-    |---|---|
-    | `MEASURED` | an operand read from the drawing or the site — a rule input, `source: SHOP` or field |
-    | `CALCULATED` | derived by the engine — a `derivations` entry, never entered |
-    | `SPECIFIED` | the client gives it per project — a reviewer input at the `project` parameter layer |
-    | `GLOBAL` | one company-wide constant — a `global` parameter, owed once |
+    So the mapping is to what the acquisition *implies about a value's authority*, and where a value
+    of that kind is expected to come from when this system needs one of its own:
+
+    | Client's word | What it says | Where a value of our own comes from |
+    |---|---|---|
+    | `MEASURED` | read off the drawing or at the site | a rule input — `source: SHOP`, or a field measurement |
+    | `CALCULATED` | the client derives it | a `derivations` entry *and*, where it is drawn, an input to check against it |
+    | `SPECIFIED` | the client states it per job | a reviewer input; `project` layer, or `run` where it is true of one review only |
+    | `GLOBAL` | one company-wide constant | a `global` parameter, owed once |
+
+    The `SPECIFIED` row is deliberately not "the `project` layer" alone: `CT008` is specified by the
+    client from a sink's cut sheet, and the value that satisfies it here — `sink_interior_depth` — is
+    `run`-scoped, because a different sink on the next review is a different number.
 
     **Provisional across layouts.** The deck covers the three-sided layout only, and back-only and
     island layouts may acquire the same code differently — an island has no wall to hold a
@@ -127,9 +139,18 @@ class ClientCode:
     drawing**, not in prose, and the anchor is what a reviewer opens to check a rule against the
     thing it is supposed to measure.
 
-    `acquisition` is `None` where the client has not said. Two codes are in that position — `CT011`
-    and `CT013` appear on the diagram and in a formula but have no row in the variable table — and
-    `None` records that rather than filling it with the likeliest of four answers.
+    `acquisition` is `None` where the client has not said, and **four codes are in that position for
+    three different reasons** — worth separating, because a reader who assumes one reason will
+    "complete" the others by guessing:
+
+    * `CT011` and `CT013` are on the diagram and in a formula, with no row in the variable table.
+    * `CT012` has a row, and the deck leaves its acquisition cell blank.
+    * `CT007` has a row that contradicts the deck's own prose, so leaving it unset is the record of
+      an open question rather than a gap — see its entry below.
+
+    `None` in every case records that the client has not said, rather than filling it with the
+    likeliest of four answers. `test_ct0xx_vocabulary.py` pins which codes are unset, so completing
+    one is a deliberate act rather than a tidy-up.
     """
 
     code: str
@@ -457,6 +478,7 @@ __all__ = [
     "CLIENT_CODES",
     "DOCUMENT_BACKED_SOURCES",
     "VOCABULARY_STATUS",
+    "Acquisition",
     "ClientCode",
     "DocumentName",
     "DocumentRole",

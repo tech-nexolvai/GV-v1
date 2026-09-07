@@ -117,8 +117,11 @@ answer:  CT010 (countertop depth) is primary — set from cabinet depth + overha
          2026-09-07 countertop deck gives the full decomposition CT010 = C.T_OH + CT007 + CT008 + CT009
          + B.S_THK, so back offset = CT010 − overhang − front offset − sink depth − backsplash, carrying
          a Global MIN Constant: warn when the remainder falls below it. That minimum VALUE is STILL
-         PENDING (Raj to get it from the vendor). The deck adds two terms our authored rule omits —
-         overhang (C.T_OH) and backsplash (B.S_THK); see docs/decisions/CT_CHECKS_FORMAT.md.
+         PENDING (Raj to get it from the vendor). The deck added two terms the authored rule had been
+         omitting — overhang (C.T_OH) and backsplash (B.S_THK); both are now subtracted in
+         ct_back_offset_min_001 as project-scope reviewer inputs (#537). One residual question is
+         OURS: the deck says "warn", the shipped rule says CRITICAL — unresolved, see
+         docs/decisions/CT_CHECKS_FORMAT.md.
 source:  Raj email reply (3.6): "CT010 Should be equal to CT007 + CT008 + CT009. If the value
          exceeds, then the program should throw a flag." 2nd reply (follow-up 1): "after the front
          offset and depth of the sink taken care of, whatever left will become the back offset… never
@@ -303,7 +306,8 @@ source:  Call 2026-08-25. Raj confirmed the CT011/CT012/CT013 clearance geometry
 status:  OPEN
 blocks:  formula
 issue:   #16
-answer:  — (vocabulary NOT final; provisional for the demo only, per Raj)
+answer:  PARTIAL — final for the THREE-SIDED countertop layout and for cabinets; still provisional
+         for the back-only and island layouts, whose tags Raj has not given.
 source:  Sheet1 rules use letters (A cutout width, B front offset, C back offset, D cutout
          depth, E sink interior dim, F/G interior-face clearances); the variable sheet and
          master diagram image10.png use CT001–CT013. Raj email reply (3.8) confirms our
@@ -368,6 +372,8 @@ Q13 are now ANSWERED from Raj directly, and Q21 records a real scope expansion �
 question (Q12) and the real drawings / gold-set were not answered, so nothing yet moves off "Needs
 Review". Q3.9 also confirms the `CT0xx` vocabulary is **not final** (final tags follow the layouts),
 which reinforces keeping `rules/semantic_types.py` provisional — ADR-0017's aliases stay soft.
+*(Superseded in part: the 2026-09-07 countertop deck makes the tags final for the three-sided
+layout — see Q20. Back-only and island are still unnamed, so the aliases stay soft.)*
 
 **2nd reply (2026-08-16) — the two blockers ARE now resolved for V1.** Tolerance (Q2): **exact match**
 for iteration 1, reviewer clears false flags — so rules use exact equality, not `within_tolerance`,

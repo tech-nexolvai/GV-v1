@@ -161,6 +161,25 @@ def test_back_offset_is_derived_as_a_remainder_and_passes_at_the_minimum() -> No
     # left rather than three chained differences a reviewer would have to re-add.
     subtracted = _trace_derivation(finding, "segments_before_the_back_offset")
     assert subtracted["result"] == _inch(Fraction(95, 4))
+    # The operand bindings, not just the arithmetic: four addends in the deck's own front-to-back
+    # order, and the remainder taken off the depth rather than the depth off the remainder. A
+    # result-only assertion would still hold if a segment were dropped and another double-counted,
+    # or if `a` and `b` were swapped into a negative clearance that no minimum could catch.
+    assert subtracted["inputs"] == (
+        (
+            "values",
+            (
+                _inch(Fraction(3, 4)),
+                _inch(4, "4"),
+                _inch(18, "18"),
+                _inch(1),
+            ),
+        ),
+    )
+    assert back_offset["inputs"] == (
+        ("a", _inch(Fraction(107, 4), "107/4")),
+        ("b", _inch(Fraction(95, 4))),
+    )
 
 
 def test_back_offset_below_the_required_minimum_fails() -> None:
@@ -258,17 +277,19 @@ def test_offset_sum_is_not_authored_as_a_tautological_check() -> None:
     assert all(derivation.name != "offset_sum" for derivation in back_rule.derivations)
 
 
-def test_the_two_new_specified_parameters_have_no_invented_defaults() -> None:
-    """The client gives these per project, so nothing here may supply one.
+def test_the_three_back_offset_parameters_have_no_invented_defaults() -> None:
+    """The client gives all three per project, so nothing here may supply one.
 
-    `B.S_THK` and `CAB_SIDE_THK` are `Specified` in the deck's own acquisition column. A default
-    would be this system deciding a joinery dimension on the client's behalf, and both of these
-    arrive inside a CRITICAL check — the backsplash in the sink's back clearance, the side panel in
-    the sink cabinet's width.
+    `B.S_THK` and `C.T_OH` are `Specified` in the deck's own acquisition column, and the deck gives
+    no figure for the back-offset minimum either. A default would be this system deciding a joinery
+    dimension on the client's behalf inside a CRITICAL check — and a generous one would turn the
+    clearance FAIL above back into a PASS.
+
+    `CAB_SIDE_THK`, the other new `Specified` parameter, belongs to CT-4 and is covered in
+    ``test_ct4_sink_cabinet_width.py``.
     """
     back_rule = _load(BACK_OFFSET_RULE_PATH)
-    width_rule = _load(BACK_OFFSET_RULE_PATH.parent / "ct_sink_cabinet_width_001.yaml")
 
     assert back_rule.parameters["backsplash_thickness"].default is None
     assert back_rule.parameters["countertop_overhang"].default is None
-    assert width_rule.parameters["cabinet_side_thickness"].default is None
+    assert back_rule.parameters["back_offset_minimum"].default is None

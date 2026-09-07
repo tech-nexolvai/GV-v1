@@ -17,6 +17,7 @@ import pytest
 from rules.semantic_types import (
     CLIENT_CODES,
     VOCABULARY_STATUS,
+    Acquisition,
     ClientCode,
     SemanticType,
     UnknownVocabularyError,
@@ -164,3 +165,51 @@ def test_the_sink_geometry_reads_consistently_with_his_own_formula() -> None:
     assert SemanticType.CT009.label() == "sink back offset"
     assert CLIENT_CODES["C.T_OH"].description == "countertop overhang"
     assert CLIENT_CODES["B.S_THK"].description == "backsplash thickness"
+
+
+# ---------------------------------------------------------------------------
+# The acquisition column, and the one cell deliberately left empty (#537)
+# ---------------------------------------------------------------------------
+
+
+def test_the_acquisition_column_matches_the_deck() -> None:
+    """How the client obtains each value, from the countertop deck's slide-8 table.
+
+    Pinned because it is not decoration: it says whether a number is read off a drawing, derived,
+    stated per job, or a company constant, and placing one wrongly means asking a reviewer for a
+    value the system should derive — or deriving one only the client can state.
+    """
+    assert CLIENT_CODES["CT001"].acquisition is Acquisition.MEASURED
+    for calculated in ("CT002", "CT003", "CT004", "CT005", "CT006", "CT009", "CT010"):
+        assert CLIENT_CODES[calculated].acquisition is Acquisition.CALCULATED, calculated
+    for specified in ("CT008", "B.S_THK", "C.T_OH", "CAB_SIDE_THK"):
+        assert CLIENT_CODES[specified].acquisition is Acquisition.SPECIFIED, specified
+
+
+def test_ct007_has_no_acquisition_because_the_deck_contradicts_itself() -> None:
+    """**This absence is a recorded open question, not an omission — and this is what protects it.**
+
+    The deck's variable table gives `CT007` the acquisition `Global minimum`. The same deck's prose,
+    and `CLIENT_FACTS` Q5, call it a "global constant / standard hold dimension (U.N.O)" — an exact
+    value. Those are different verdicts: `>= minimum` passes a sink six inches back where four was
+    intended, and `= exact` fails it.
+
+    Until #537 the flag existed only in three comments, so the obvious tidy-up — setting it to
+    `Acquisition.GLOBAL`, which is the word the deck's table literally prints — would have broken
+    nothing and quietly converted an open question into an answered one, inviting
+    `ct_sink_offset_front_001` to be relaxed from `equals` to `minimum`. Raj has to answer this, not
+    a contributor reconciling a table.
+    """
+    assert CLIENT_CODES["CT007"].acquisition is None
+
+
+def test_exactly_four_codes_have_no_acquisition_and_the_docstring_says_why() -> None:
+    """Counted, because `ClientCode`'s docstring explains four absences for three different reasons.
+
+    A reader auditing the table against that docstring must find the same four. When the deck for
+    another layout arrives and fills one in, this fails and sends them to the explanation rather than
+    letting the count drift away from the prose.
+    """
+    unset = sorted(code for code, entry in CLIENT_CODES.items() if entry.acquisition is None)
+
+    assert unset == ["CT007", "CT011", "CT012", "CT013"]

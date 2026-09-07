@@ -76,14 +76,21 @@ MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
     "CAB-FILLER-001:design_width": '94"',
     "CAB-FILLER-001:design_fillers": FILLERS,
     "CAB-FILLER-001:proposed_fillers": FILLERS,
-    # The sink cabinet, from the deck's own relation (#537): two 3/4 panels, 2" of clearance either
-    # side of the 29 1/2" cutout, in a 35" cabinet. The cutout is the same measurement
-    # `CT-SINK-CUTOUT-WIDTH-001` reads — one quantity a reviewer measures once, which is why
-    # `required-inputs` groups the form by quantity rather than by rule.
-    "CT-SINK-CABINET-WIDTH-001:sink_cabinet_width": '35"',
-    "CT-SINK-CABINET-WIDTH-001:clearance_left": '2"',
+    # The sink cabinet, from the deck's own relation (#537). **It is the 36" cabinet in `CABINETS`,
+    # not a fourth cabinet from nowhere.** The first version of this row said 35", which added up
+    # inside its own rule and described a run that did not contain the cabinet it had just checked —
+    # and a 29 1/2" cutout does not fit a 30" cabinet at all. Two CRITICAL checks would both have
+    # passed on a package no fabricator could build, which is the false-PASS shape this file exists
+    # to catch rather than to contain. Found in review on #537.
+    #
+    #   3/4 panel + 2 1/2 clearance + 29 1/2 cutout + 2 1/2 clearance + 3/4 panel = 36
+    #
+    # The cutout is the same measurement `CT-SINK-CUTOUT-WIDTH-001` reads — one quantity a reviewer
+    # measures once, which is why `required-inputs` groups the form by quantity, not by rule.
+    "CT-SINK-CABINET-WIDTH-001:sink_cabinet_width": '36"',
+    "CT-SINK-CABINET-WIDTH-001:clearance_left": '2 1/2"',
     "CT-SINK-CABINET-WIDTH-001:cutout_width": '29 1/2"',
-    "CT-SINK-CABINET-WIDTH-001:clearance_right": '2"',
+    "CT-SINK-CABINET-WIDTH-001:clearance_right": '2 1/2"',
 }
 
 PROJECT_PARAMETERS = {

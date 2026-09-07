@@ -26,8 +26,15 @@ arithmetic_unit: in
 
 name: Sink front offset
 description: >
-  Check the drawn front offset — the countertop in front of the sink cutout — against the
-  required value, by exact equality.
+  Check the drawn front offset — the strip of countertop between the front of the cabinet and the
+  front of the sink cutout — against the required value, by exact equality.
+
+  It does NOT include the overhang. The deck decomposes the depth front-to-back as
+  `CT010 = C.T_OH + CT007 + CT008 + CT009 + B.S_THK`, so the overhang sits in front of this
+  segment and is counted once, by itself. Reading CT007 from the countertop's own front edge
+  instead of the cabinet's would double-count the overhang here and again in CT-BACK-OFFSET-MIN-001,
+  which subtracts both from the same depth — the four-inch check would then quietly be asking for
+  four inches minus the overhang.
 
   Exact, not a minimum. The client's words were "typical value is 4 inches, varies rarely",
   and Q2 settled exact matching for V1, so the check is equality rather than a lower bound
