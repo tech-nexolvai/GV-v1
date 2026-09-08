@@ -64,6 +64,11 @@ type Get<P extends keyof paths> = paths[P] extends { get: { responses: { 200: { 
   ? R
   : never;
 
+/** A 201 body, for the routes that create something. Same idea as `Get`, one status code along. */
+type Created<P extends keyof paths> = paths[P] extends { post: { responses: { 201: { content: { 'application/json': infer R } } } } }
+  ? R
+  : never;
+
 // ---------------------------------------------------------------------------
 // Resources
 //
@@ -82,6 +87,10 @@ export type ReviewSessionPage = Get<'/api/v1/projects/{project_id}/review-sessio
 export type RuleList = Get<'/api/v1/rules'>;
 export type Rule = RuleList[number];
 export type ReviewSession = ReviewSessionPage['items'][number];
+export type DecidedEvidence =
+  Created<'/api/v1/projects/{project_id}/review-sessions/{review_session_id}/evidence'>;
+export type GrantedException =
+  Created<'/api/v1/projects/{project_id}/review-sessions/{review_session_id}/exceptions'>;
 
 export function listPackages(projectId: string, query?: { cursor?: string; limit?: number }) {
   const search = new URLSearchParams();
@@ -265,6 +274,59 @@ export function recordReviewAction(
   return send<unknown>(
     `/projects/${projectId}/review-sessions/${reviewSessionId}/actions`,
     action,
+  );
+}
+
+/**
+ * Confirm or correct one reading behind a finding.
+ *
+ * **This is the only way into the correction ledger.** `recordReviewAction` takes a kind and a note
+ * and has nowhere for a value, so sending `correct` there recorded that something was corrected
+ * without saying to what — and the ledger stayed empty, which made the reviewer correction rate read
+ * as "no corrections were needed".
+ *
+ * The value goes up **as typed**, with its unit. The server parses it, so `25.5"` and `25 1/2"` are
+ * the same correction and a reviewer does not have to know which spelling this accepts. A bare
+ * number is refused, deliberately: one whose `mm` had been lost was once stored as inches.
+ */
+export function decideEvidence(
+  projectId: string,
+  reviewSessionId: string,
+  decision: {
+    finding_id: string;
+    observation_id: string;
+    action: 'confirm' | 'correct';
+    corrected_value?: string;
+  },
+) {
+  return send<DecidedEvidence>(
+    `/projects/${projectId}/review-sessions/${reviewSessionId}/evidence`,
+    decision,
+  );
+}
+
+/**
+ * Accept one specific deviation, until a date.
+ *
+ * Every field is required and the expiry most of all: a permanent silent exception is not
+ * representable anywhere in this system, because the date is what forces somebody to look again.
+ * There is no `approved_by` — the approver is whoever is signed in, and a client-supplied one would
+ * answer "who says so?" with "whoever was asked".
+ */
+export function grantException(
+  projectId: string,
+  reviewSessionId: string,
+  grant: {
+    finding_id: string;
+    scope: 'finding' | 'item' | 'package';
+    scope_id: string;
+    reason: string;
+    expires_at: string;
+  },
+) {
+  return send<GrantedException>(
+    `/projects/${projectId}/review-sessions/${reviewSessionId}/exceptions`,
+    grant,
   );
 }
 
