@@ -10,12 +10,16 @@ from typing import Any
 
 import pytest
 
+from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.nova import (
+    DEFAULT_MODEL_ID,
+    DEFAULT_REGION,
     TOOL_NAME,
     BedrockRuntimeClient,
     NovaAdapter,
+    NovaAdapterError,
     NovaConfig,
     NovaInvocation,
     NovaInvocationOutcome,
@@ -24,6 +28,7 @@ from extraction.models.nova import (
     NovaRequest,
     NovaServiceError,
     NovaTimeoutError,
+    config_from_environment,
 )
 from extraction.models.validation import ValidationRejection
 from units.measurement import Unit
@@ -330,3 +335,145 @@ def test_bedrock_sdk_is_reachable_only_through_the_nova_adapter() -> None:
                 sdk_importers.add(source.relative_to(repository))
 
     assert sdk_importers == {Path("extraction/models/nova.py")}
+
+
+# ---------------------------------------------------------------------------
+# Configuration a deployment states, and the one fallback AWS makes necessary (#549)
+# ---------------------------------------------------------------------------
+
+
+#: The shape a valid tool call carries. Spelled here because this file builds its payloads inline
+#: elsewhere and a fallback test needs one that validates.
+_VALID_PAYLOAD = {
+    "reading": '24 1/2"',
+    "unit_guess": "in",
+    "polygon": [[10, 20], [30, 20], [30, 40]],
+}
+
+
+def _client_error(code: str, message: str) -> Exception:
+    """A botocore-shaped error, built by hand so this test needs no AWS call.
+
+    `_error_code` reads `error.response["Error"]["Code"]`, which is the shape botocore raises; a
+    `Mock` with a `response` attribute would satisfy the reader while proving nothing about the real
+    exception, so the structure is spelled out.
+    """
+
+    class _ClientError(Exception):
+        def __init__(self) -> None:
+            super().__init__(message)
+            self.response = {"Error": {"Code": code, "Message": message}}
+
+    return _ClientError()
+
+
+def test_the_model_and_region_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outcome: a provider swap is a configuration change, not a code change.
+
+    Both have defaults because both are operational facts with a known right answer, unlike the
+    empirical thresholds elsewhere in this project which must never acquire one.
+    """
+    monkeypatch.delenv("GV_BEDROCK_MODEL", raising=False)
+    monkeypatch.delenv("GV_BEDROCK_REGION", raising=False)
+
+    default = config_from_environment()
+    assert default.model_id == DEFAULT_MODEL_ID
+    assert default.region_name == DEFAULT_REGION
+
+    monkeypatch.setenv("GV_BEDROCK_MODEL", "us.amazon.nova-lite-v1:0")
+    monkeypatch.setenv("GV_BEDROCK_REGION", "eu-west-1")
+    stated = config_from_environment()
+    assert stated.model_id == "us.amazon.nova-lite-v1:0"
+    assert stated.region_name == "eu-west-1"
+
+
+def test_no_credential_is_read_from_this_project_s_configuration() -> None:
+    """**Asserted on the fields**, because a key that never exists cannot be committed or logged.
+
+    Credentials come from boto3's provider chain inside `from_environment`. A `NovaConfig` with a
+    key field would be a place for one to be passed in, defaulted, printed in a traceback, or
+    written into a test fixture — so the absence is the control, and this is what keeps it.
+    """
+    fields = set(NovaConfig.__dataclass_fields__)
+
+    assert not {name for name in fields if "key" in name or "secret" in name or "token" in name}
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        # Both measured against this account and its documentation. Different codes, different
+        # words, one operational meaning: invoke the profile instead.
+        ("AccessDeniedException", "Your account is currently being verified."),
+        ("ValidationException", "on-demand throughput isn't supported for this model"),
+    ],
+)
+def test_a_model_that_needs_its_inference_profile_is_retried_once(code: str, message: str) -> None:
+    """Input: the plain id refused, the prefixed id accepted. Outcome: one validated reading.
+
+    The operator should not have to read a permissions error and guess a prefix. `us.` is what turns
+    a foundation-model id into its cross-region inference profile, and the two errors AWS uses for
+    "not directly invocable" are the only trigger.
+    """
+    client = FakeBedrock(_client_error(code, message), _tool_response(_VALID_PAYLOAD))
+    adapter, sink = _adapter(client)
+
+    candidate = adapter.extract(_request())
+
+    assert isinstance(candidate, ObservationCandidate)
+    assert [request["modelId"] for request in client.requests] == [
+        "amazon.nova-2-lite-v1:0",
+        "us.amazon.nova-2-lite-v1:0",
+    ]
+    # The refused attempt is still recorded: it happened, it cost time, and a record showing only
+    # the id that worked would hide from the next operator that the configured id needs changing.
+    assert [record.model_id for record in sink.items] == [
+        "amazon.nova-2-lite-v1:0",
+        "us.amazon.nova-2-lite-v1:0",
+    ]
+    assert sink.items[0].outcome is NovaInvocationOutcome.ERROR
+    assert sink.items[1].outcome is NovaInvocationOutcome.OK
+
+
+def test_an_id_that_already_names_a_profile_is_not_prefixed_twice() -> None:
+    """Input: `us.` already there, and refused. Outcome: raised, not retried as `us.us.…`.
+
+    A second prefix would fail for a new reason that looked like the old one, and the operator would
+    be debugging a string this code invented.
+    """
+    config = NovaConfig(
+        model_id="us.amazon.nova-2-lite-v1:0",
+        prompt_id="dimension-reader-v1",
+        template_id="bounded-crop-v1",
+        connect_timeout_seconds=2,
+        read_timeout_seconds=8,
+        max_attempts=1,
+    )
+    client = FakeBedrock(_client_error("AccessDeniedException", "no."))
+    sink = RecordingSink()
+
+    with pytest.raises(NovaServiceError):
+        NovaAdapter(config, client, sink).extract(_request())
+
+    assert [request["modelId"] for request in client.requests] == ["us.amazon.nova-2-lite-v1:0"]
+
+
+def test_an_unrelated_failure_is_not_retried_against_another_model() -> None:
+    """Input: a throttle. Outcome: raised without a second model id.
+
+    The fallback exists for one operational fact. Retrying every failure against a different model
+    would make a transient error look like a configuration one, and would spend a second call on it.
+    """
+    client = FakeBedrock(
+        _client_error("ThrottlingException", "slow down"),
+        _client_error("ThrottlingException", "slow down"),
+    )
+    adapter, _sink = _adapter(client)
+
+    with pytest.raises(NovaAdapterError):
+        adapter.extract(_request())
+
+    # Two calls, because a throttle *is* retryable and `max_attempts` is two — but both against the
+    # configured id. What must not happen is a second *model*: that would make a transient error
+    # look like a configuration one.
+    assert {request["modelId"] for request in client.requests} == {"amazon.nova-2-lite-v1:0"}

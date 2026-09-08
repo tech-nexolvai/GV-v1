@@ -60,7 +60,7 @@ BARE_URL := postgresql+psycopg://gv:gv@localhost:5433/$(DEMO_DB)
 TEST_URL := postgresql+psycopg://gv:gv@localhost:5433/$(TEST_DB)
 
 .PHONY: check check-fast db db-stop install up down token migrate serve worker dispatch \
-	demo demo-env worktree where testdb model-smoke
+	demo demo-env worktree where testdb model-smoke bedrock-smoke
 
 install:            ## install exactly what CI installs
 	python -m pip install -e ".[ai,dev,extraction,rules,platform,reports]"
@@ -158,6 +158,25 @@ model-smoke:        ## send one test image through the model adapter (skips if n
 	 GV_OPENMODEL_READ_TIMEOUT="$${GV_OPENMODEL_READ_TIMEOUT:-600}" \
 	 python -m pytest tests/extraction/models/test_openmodel.py -v -rs \
 		-k "configured_model or scripted_endpoint or same_seam or strategy"
+
+# The same proof for the production provider, against Amazon Bedrock. Two live calls, each printing
+# its token usage, because this one costs real money.
+#
+# **Skips cleanly with no credentials**, the way `model-smoke` skips with nothing reachable: the gate
+# asks boto3's provider chain, so `~/.aws/credentials` counts and not only environment variables. It
+# needs a database as well — the acceptance is that the call lands in `model_invocations`, and that
+# is a row rather than an assertion about memory.
+#
+# Model and region are configuration:
+#
+#   GV_BEDROCK_MODEL=us.amazon.nova-lite-v1:0 make bedrock-smoke
+#
+# Both have defaults. If the plain id is refused — `AccessDeniedException` on an account still being
+# verified, or `ValidationException: on-demand throughput isn't supported` — the adapter retries once
+# through the `us.` inference profile and records both attempts, so an operator sees which id
+# answered instead of a permissions error to guess at.
+bedrock-smoke: testdb  ## send one test image through Bedrock/Nova (skips with no AWS credentials)
+	@DATABASE_URL="$(TEST_URL)" python -m pytest tests/extraction/models/test_nova_live.py -v -s -rs
 
 demo:               ## one command to a working demo: stack, schema, rulebook, API and UI
 	@scripts/demo.sh

@@ -15,6 +15,19 @@ strategy (#536). A tool-capable endpoint takes the same path through the forced-
 `--strategy` flag pins either explicitly. Any OpenAI-compatible endpoint works through
 `GV_OPENMODEL_BASE_URL` and `GV_OPENMODEL_API_KEY`.
 
+**Or the production provider, on the same crops:**
+
+    GV_BEDROCK_MODEL=amazon.nova-lite-v1:0 python scripts/explore_reader.py REGIONS.json \
+        --provider bedrock
+
+`--provider` is the whole difference. Both adapters take a crop and return a validated
+`ObservationCandidate`, so the comparison is between two models rather than between two pipelines —
+which is the point of the seam, and the only way "Nova versus minicpm-v" means anything. Bedrock
+credentials come from boto3's provider chain and never from this repository.
+
+**Bedrock costs money per call.** `--limit` bounds the run and the token counts are printed and
+saved per reading, so spend is visible rather than inferred from an invoice later.
+
 **No drawing content is in this file and none belongs here.** The PDF path, the crop boxes, the human
 readings and the render resolution all come from the manifest, which lives under `data/` and is not
 tracked. So do the results.
@@ -43,7 +56,7 @@ import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -79,6 +92,22 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--out", type=Path, help="write the readings here as JSON")
     parser.add_argument("--only", help="run one region by id")
     parser.add_argument(
+        "--provider",
+        choices=("openmodel", "bedrock"),
+        default="openmodel",
+        help=(
+            "which adapter to read through. `openmodel` is any OpenAI-compatible endpoint, local or "
+            "hosted; `bedrock` is Amazon Bedrock through the forced tool call. The interface is the "
+            "same, which is what makes the two comparable"
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="read at most this many regions. Bounds spend on a paid provider",
+    )
+    parser.add_argument(
         "--strategy",
         choices=[member.value for member in StructuredOutputStrategy],
         default=StructuredOutputStrategy.AUTO.value,
@@ -112,21 +141,74 @@ def _config(arguments: argparse.Namespace) -> OpenModelConfig:
     )
 
 
+class Reader(Protocol):
+    """The one thing both adapters do, which is the whole reason a comparison is meaningful.
+
+    Written as a protocol rather than a union so that adding a third provider is a config value and
+    not another branch in this file. `NovaAdapter.extract` and `OpenModelAdapter.extract` already
+    have identical signatures — `tests/extraction/models/test_openmodel.py` asserts it on the
+    signatures themselves — so this names a contract that is already true.
+    """
+
+    def extract(self, request: Any) -> Any:
+        """One crop in, one validated `ObservationCandidate` out, or an explicit failure."""
+
+
+def _reader(arguments: argparse.Namespace, sink: Sink) -> tuple[Reader, str, type[Exception]]:
+    """The adapter, the model it will invoke, and the error family its failures belong to.
+
+    The error family is returned rather than caught broadly because the two adapters raise different
+    hierarchies, and `except Exception` around a model call is how a bug in this script would come to
+    look like a bad reading from the model.
+    """
+    if arguments.provider == "bedrock":
+        from extraction.models.nova import (
+            NovaAdapter,
+            NovaAdapterError,
+        )
+        from extraction.models.nova import (
+            config_from_environment as bedrock_config,
+        )
+
+        bedrock = bedrock_config()
+        return NovaAdapter.from_environment(bedrock, sink), bedrock.model_id, NovaAdapterError
+
+    # Named separately rather than reusing one variable: the two configs are different types, and
+    # mypy is right to say so — they are two providers' settings, not one shape with two spellings.
+    open_model = _config(arguments)
+    return (
+        OpenModelAdapter.from_environment(open_model, sink),
+        open_model.model_id,
+        OpenModelAdapterError,
+    )
+
+
+def _request_for(arguments: argparse.Namespace, **fields: Any) -> Any:
+    """The request type the chosen adapter takes. Same fields either way, deliberately."""
+    if arguments.provider == "bedrock":
+        from extraction.models.nova import NovaRequest
+
+        return NovaRequest(**fields)
+    return OpenModelRequest(**fields)
+
+
 def main() -> int:
     arguments = _arguments()
     manifest = json.loads(arguments.manifest.read_text(encoding="utf-8"))
     data = Path(manifest["pdf"]).read_bytes()
     page_index = int(manifest["page"]) - 1
     dpi = int(manifest.get("render_dpi", VISION_CROP_DPI))
-    config = _config(arguments)
 
     regions = [
         region
         for region in manifest["regions"]
         if arguments.only is None or region["id"] == arguments.only
     ]
+    if arguments.limit:
+        regions = regions[: arguments.limit]
+    _, model_id, _failures = _reader(arguments, Sink())
     print(
-        f"model={config.model_id} strategy={arguments.strategy} page={manifest['page']} dpi={dpi} "
+        f"provider={arguments.provider} model={model_id} page={manifest['page']} dpi={dpi} "
         f"regions={len(regions)}",
         flush=True,
     )
@@ -142,8 +224,9 @@ def main() -> int:
             include_markup=arguments.include_markup,
         )
         sink = Sink()
-        adapter = OpenModelAdapter.from_environment(config, sink)
-        request = OpenModelRequest(
+        adapter, _model, failures = _reader(arguments, sink)
+        request = _request_for(
+            arguments,
             candidate_id=f"explore-{region['id']}",
             page=page_index,
             crop=crop,
@@ -169,7 +252,7 @@ def main() -> int:
                 "semantic_guess": candidate.semantic_guess,
                 "outcome": "ok",
             }
-        except OpenModelAdapterError as error:
+        except failures as error:
             row |= {
                 "reading": None,
                 "outcome": type(error).__name__,
@@ -180,6 +263,11 @@ def main() -> int:
                 ),
             }
         row["seconds"] = round(time.monotonic() - started, 1)
+        # From the provider's own usage report, not estimated. On a paid provider this is the spend,
+        # and spend nobody can see is spend nobody controls.
+        row["input_tokens"] = sum(item.input_tokens for item in sink.invocations)
+        row["output_tokens"] = sum(item.output_tokens for item in sink.invocations)
+        row["attempts"] = [item.model_id for item in sink.invocations]
         readings.append(row)
         print(json.dumps(row, ensure_ascii=False), flush=True)
 
@@ -192,7 +280,8 @@ def main() -> int:
                         "readings against what a person read off the same crop. No rule ran, "
                         "nothing is scored, and no reading carries a semantic type."
                     ),
-                    "model": config.model_id,
+                    "provider": arguments.provider,
+                    "model": model_id,
                     "strategy": arguments.strategy,
                     "render_dpi": dpi,
                     "include_markup": arguments.include_markup,

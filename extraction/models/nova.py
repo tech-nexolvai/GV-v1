@@ -29,6 +29,38 @@ from extraction.models.validation import (
 
 TOOL_NAME = "report_drawing_reading"
 
+#: The region Nova is invoked in unless a deployment says otherwise.
+#:
+#: Not a guess: it is where this account's models are enabled, and Bedrock model access is granted
+#: per region — a model enabled in one is `AccessDenied` in another, with an error that reads like a
+#: permissions problem rather than a geography one.
+DEFAULT_REGION = "us-east-1"
+
+#: The model invoked unless a deployment says otherwise, and the one whose behaviour is recorded in
+#: `data/exploration/`. Named in full, version included: "which model said this" is not answerable
+#: from a family name once the family has moved on.
+DEFAULT_MODEL_ID = "amazon.nova-lite-v1:0"
+
+#: What turns a foundation-model id into a cross-region inference profile id.
+#:
+#: **Measured, not read off a document.** On this account the plain `amazon.nova-lite-v1:0` is
+#: refused — `AccessDeniedException: Your account is currently being verified` — while
+#: `us.amazon.nova-lite-v1:0` answers normally. AWS also documents a second way to reach the same
+#: wall, `ValidationException: on-demand throughput isn't supported for this model`, which is what a
+#: model published only as an inference profile returns.
+#:
+#: The two errors have different codes and different messages and mean the same operational thing:
+#: *invoke this through the profile instead*. So the adapter tries the id it was given and falls back
+#: once, rather than making an operator read a permissions error and guess a prefix.
+INFERENCE_PROFILE_PREFIX = "us."
+
+#: Error codes that can mean "not directly invocable — use the inference profile".
+#:
+#: `AccessDeniedException` is deliberately included even though it is ambiguous: it is also what a
+#: genuine permissions failure returns. Retrying once costs one refused call, which is recorded, and
+#: the alternative is an operator staring at "access denied" for a model they were told they had.
+_PROFILE_HINT_CODES = frozenset({"AccessDeniedException", "ValidationException"})
+
 
 @dataclass(frozen=True, slots=True)
 class NovaConfig:
@@ -55,6 +87,55 @@ class NovaConfig:
             not isinstance(self.region_name, str) or not self.region_name.strip()
         ):
             raise ValueError("region_name must be a non-empty string or None")
+
+
+def config_from_environment(
+    *,
+    prompt_id: str = "dimension-reader-v1",
+    template_id: str = "bounded-crop-v1",
+) -> NovaConfig:
+    """The Bedrock configuration a deployment states, read from the environment.
+
+    `GV_BEDROCK_MODEL` and `GV_BEDROCK_REGION` are how a provider swap stays a configuration change:
+    the adapter interface does not move, and nothing about the model identity is compiled in. Both
+    have defaults because both are operational facts with a known right answer for this account,
+    unlike the empirical numbers elsewhere in this project that must never acquire one.
+
+    **No credentials are read here, ever.** `NovaAdapter.from_environment` builds a boto3 client,
+    which resolves the provider chain — environment, shared config, instance role — so a key never
+    passes through this repository's own configuration and cannot be logged by it.
+
+    The timeouts are bounded and small on purpose. A vision call that has not answered in two minutes
+    is not going to, and an unbounded read timeout turns one slow region into a stalled worker.
+    """
+    import os
+
+    return NovaConfig(
+        model_id=os.environ.get("GV_BEDROCK_MODEL", DEFAULT_MODEL_ID),
+        prompt_id=prompt_id,
+        template_id=template_id,
+        connect_timeout_seconds=int(os.environ.get("GV_BEDROCK_CONNECT_TIMEOUT", "10")),
+        read_timeout_seconds=int(os.environ.get("GV_BEDROCK_READ_TIMEOUT", "120")),
+        max_attempts=1,
+        region_name=os.environ.get("GV_BEDROCK_REGION", DEFAULT_REGION),
+    )
+
+
+def _needs_inference_profile(error: BaseException, model_id: str) -> bool:
+    """Whether this failure means "invoke the inference profile instead".
+
+    Two different AWS errors mean it — see `INFERENCE_PROFILE_PREFIX` — and neither says so in words
+    an operator can act on. A model id that already carries the prefix is never a candidate: a second
+    prefix would produce `us.us.amazon…`, and the retry would fail for a new reason that looked like
+    the old one.
+    """
+    if model_id.startswith(INFERENCE_PROFILE_PREFIX):
+        return False
+    # `__cause__` is typed `BaseException | None`, so the narrowing happens here rather than at the
+    # call site: a `KeyboardInterrupt` is not a Bedrock error and must not be read as one.
+    if not isinstance(error, Exception):
+        return False
+    return _error_code(error) in _PROFILE_HINT_CODES
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,7 +334,28 @@ class NovaAdapter:
         return cls(config, cast(BedrockRuntimeClient, client), recorder)
 
     def extract(self, request: NovaRequest) -> ObservationCandidate:
-        """Call the required tool, validating locally and failing explicitly."""
+        """Call the required tool, validating locally and failing explicitly.
+
+        One fallback, and only for the case AWS reports two different ways: a model id that cannot be
+        invoked directly and must be reached through its cross-region inference profile. See
+        `INFERENCE_PROFILE_PREFIX` for the two errors and why the retry exists — measured on this
+        account, where the plain id answers `AccessDeniedException` and the prefixed one answers
+        normally.
+
+        **The refused attempt stays recorded.** It happened, it took time, and a record showing only
+        the id that worked would misstate what this call did — and hide from the next operator that
+        the configured id needs changing.
+        """
+        try:
+            return self._attempt(request, self._config.model_id)
+        except NovaServiceError as error:
+            cause = error.__cause__
+            if cause is None or not _needs_inference_profile(cause, self._config.model_id):
+                raise
+            return self._attempt(request, f"{INFERENCE_PROFILE_PREFIX}{self._config.model_id}")
+
+    def _attempt(self, request: NovaRequest, model_id: str) -> ObservationCandidate:
+        """One model id, with its own bounded retry loop and its own records."""
 
         last_error: Exception | None = None
         prepared = prepare_prompt(request.context)
@@ -262,7 +364,7 @@ class NovaAdapter:
             response: Mapping[str, Any] | None = None
             outcome = NovaInvocationOutcome.ERROR
             try:
-                response = self._client.converse(**self._request(request))
+                response = self._client.converse(**self._request(request, model_id))
                 candidate = self._candidate(response, request)
                 outcome = NovaInvocationOutcome.OK
                 return candidate
@@ -294,7 +396,9 @@ class NovaAdapter:
                 input_tokens, output_tokens = _usage(response)
                 self._recorder.record(
                     NovaInvocation(
-                        model_id=self._config.model_id,
+                        # The id actually invoked, not the one configured. When the fallback fires
+                        # these differ, and the record has to say which model answered.
+                        model_id=model_id,
                         prompt_id=self._config.prompt_id,
                         template_id=self._config.template_id,
                         attempt=attempt,
@@ -310,11 +414,11 @@ class NovaAdapter:
                 )
         raise NovaRetryExhaustedError("Nova retry loop ended unexpectedly") from last_error
 
-    def _request(self, request: NovaRequest) -> dict[str, object]:
+    def _request(self, request: NovaRequest, model_id: str) -> dict[str, object]:
         schema = NovaToolPayload.model_json_schema()
         prepared = prepare_prompt(request.context)
         return {
-            "modelId": self._config.model_id,
+            "modelId": model_id,
             "system": [{"text": prepared.system_instruction}],
             "messages": [
                 {
