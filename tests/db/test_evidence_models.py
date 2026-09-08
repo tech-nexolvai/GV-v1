@@ -384,3 +384,62 @@ def test_non_normalized_rational_is_rejected_before_insert(postgres_engine: Engi
         candidate.value_denominator = 8
         session.add(candidate)
         session.flush()
+
+
+# ---------------------------------------------------------------------------
+# Who wrote the annotation a candidate was read from (#543)
+# ---------------------------------------------------------------------------
+
+
+def test_the_annotation_author_round_trips(postgres_engine: Engine) -> None:
+    """Input: a candidate read from a reviewer's annotation. Outcome: the author survives.
+
+    `/T` is the only place the file records who corrected a drawing, and a reviewer's correction of a
+    vendor's dimension outranks it partly by virtue of who wrote it.
+    """
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    candidate_id: UUID
+    with unit_of_work(factory) as session:
+        version_id, page_id, extraction_id = _persist_context(session)
+        candidate = _candidate(version_id, page_id, extraction_id, '185 1/4"')
+        candidate.source_author = "GVI-007"
+        candidate_id = candidate.id
+        session.add(candidate)
+    with unit_of_work(factory) as session:
+        restored = session.get(ObservationCandidate, candidate_id)
+        assert restored is not None
+        assert restored.source_author == "GVI-007"
+
+
+def test_a_reading_with_no_author_stores_null(postgres_engine: Engine) -> None:
+    """Outcome: null, which is the ordinary case — a number read off a drawing has no author."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    candidate_id: UUID
+    with unit_of_work(factory) as session:
+        version_id, page_id, extraction_id = _persist_context(session)
+        candidate = _candidate(version_id, page_id, extraction_id, '38 3/4"')
+        candidate_id = candidate.id
+        session.add(candidate)
+    with unit_of_work(factory) as session:
+        restored = session.get(ObservationCandidate, candidate_id)
+        assert restored is not None
+        assert restored.source_author is None
+
+
+@pytest.mark.parametrize("author", ["", "   ", "\t"])
+def test_a_blank_author_is_refused(postgres_engine: Engine, author: str) -> None:
+    """Input: an author that is present but empty. Outcome: the database refuses it.
+
+    A `/T` written without a value is a tool filling in a key, not a person. Stored as `''` it would
+    make "nobody said" and "somebody said nothing" the same row — and the second reads as an
+    attribution.
+    """
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError, match="source_author"), unit_of_work(factory) as session:
+        version_id, page_id, extraction_id = _persist_context(session)
+        candidate = _candidate(version_id, page_id, extraction_id, '185 1/4"')
+        candidate.source_author = author
+        session.add(candidate)

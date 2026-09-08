@@ -43,6 +43,7 @@ from app.models.runs import ExtractionFailure, ExtractionRun
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.coordinates import ImagePoint, PageBox
 from evidence.corroborate import corroborate
+from extraction.annotations import MarkupNote
 from extraction.manifest import PageManifest
 from extraction.ocr import OcrItem
 from extraction.reader import TextItem
@@ -57,6 +58,7 @@ __all__ = [
     "open_extraction_run",
     "persist_manifest",
     "record_candidates",
+    "record_markup_candidates",
     "record_ocr_candidates",
     "record_unreadable_document",
     "record_unreadable_page",
@@ -297,6 +299,97 @@ def record_ocr_candidates(
         # enforces it with a trigger, so assigning these once the row exists would be an UPDATE the
         # database refuses. The lane's answer is available here because it compares two readings
         # inside one token: no other row has to exist first.
+        row.corroboration_status, row.corroboration_lane = _corroboration(
+            row, dual=dual, run=run, page_index=page_index
+        )
+        session.add(row)
+        written.append(row)
+
+    session.flush()
+    return written
+
+
+def record_markup_candidates(
+    session: Session,
+    notes: Sequence[MarkupNote],
+    *,
+    document_version_id: UUID,
+    page_id: UUID,
+    extraction_run_id: UUID,
+    page_index: int,
+) -> list[ObservationCandidate]:
+    """The same rows, from the layer that needed no reading at all.
+
+    A `/FreeText` annotation holds its text as a dictionary value. There is no engine between the
+    file and the string, so unlike the vector and OCR routes this one cannot misread anything — and
+    that is the reason it exists. On the first real client set every page routes to OCR because none
+    has vector text, and the reviewer's twenty corrections on page 3 were being rasterised and
+    guessed at while sitting in the file as exact strings.
+
+    Three things differ from the other two writers, and the third is the one to notice.
+
+    **The author is kept.** `/T` names who wrote the note, and a reviewer's correction of a vendor's
+    dimension outranks it partly by virtue of who wrote it. Nothing else on a candidate can hold
+    that, because no other route has one.
+
+    **Confidence is `None`, like the vector route and unlike OCR.** Not because there is nothing to
+    report but because there is nothing to doubt: `1.0` would be a claim about certainty, and the
+    honest statement is that certainty is not the axis this row varies on.
+
+    **Every note is recorded, including the ones that are plainly not dimensions.** The titles, the
+    `LA-002-CUST` tag callouts and a note reading `Scribe to fit (5"filler to field cut as required
+    on site)` all become candidates with no value. `record_candidates` states the rule and the
+    reason: which text on a drawing is a dimension is decided later, and a reader that pre-filtered
+    would make that decision by guess and make it invisibly. It applies with more force here — a
+    vendor tag is what the alias layer is for (#167), and a note is what a reviewer needs to see.
+
+    **The parsing rule does not soften.** A token carrying its own unit gets a value; `185 1/4"`
+    does and a bare `102` would not. Exact text is not the same thing as a known unit.
+
+    Idempotent per run and page, for the reason `record_candidates` gives. The markup route opens its
+    own `ExtractionRun`, so this guard and the other two never see each other's rows — which is what
+    makes recording both routes for one page additive rather than a collision.
+    """
+    already = list(
+        session.execute(
+            select(ObservationCandidate).where(
+                ObservationCandidate.extraction_run_id == extraction_run_id,
+                ObservationCandidate.page_id == page_id,
+            )
+        ).scalars()
+    )
+    if already:
+        return already
+
+    run = session.get(ExtractionRun, extraction_run_id)
+    if run is None:
+        raise ValueError(
+            f"no extraction run {extraction_run_id}: a candidate must name what read it"
+        )
+
+    written: list[ObservationCandidate] = []
+    for note in notes:
+        measurement, flags, dual = _parse(note.text)
+        author = (note.author or "").strip() or None
+        row = ObservationCandidate(
+            document_version_id=document_version_id,
+            page_id=page_id,
+            extraction_run_id=extraction_run_id,
+            raw_text=note.text,
+            value_numerator=None if measurement is None else measurement.exact.numerator,
+            value_denominator=None if measurement is None else measurement.exact.denominator,
+            unit=None if measurement is None else measurement.unit.value,
+            unit_guess=None if measurement is None else measurement.unit.value,
+            # No semantic type, and none inferred. A note that reads like a width is still a note.
+            semantic_guess=None,
+            polygon=[[point.x, point.y] for point in note.image_extent],
+            coordinate_space="image",
+            confidence=None,
+            ambiguity_flags=list(flags),
+            source_author=author,
+        )
+        # Set before the insert, never after: the table is append-only and 0013 enforces it with a
+        # trigger, so assigning after the row exists would be an UPDATE the database refuses.
         row.corroboration_status, row.corroboration_lane = _corroboration(
             row, dual=dual, run=run, page_index=page_index
         )

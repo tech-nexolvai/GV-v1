@@ -18,6 +18,7 @@ failure that produced plausible geometry a third of a page out of place, and
 
 from __future__ import annotations
 
+import inspect
 import zlib
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -27,6 +28,7 @@ import pytest
 from extraction.annotations import (
     DrawingLayer,
     read_annotation_layers,
+    read_markup_layer,
 )
 from extraction.reader import UnreadablePdf
 
@@ -440,3 +442,52 @@ def test_geometry_is_tied_to_the_document_version_it_was_read_from() -> None:
     assert layers.markup[0].extent.document_version_id == version
     assert layers.drawing_segments[0].document_version_id == version
     assert layers.outlined_regions[0].extent.document_version_id == version
+
+
+# ---------------------------------------------------------------------------
+# The markup-only entry point, which the pipeline uses (#543)
+# ---------------------------------------------------------------------------
+
+
+def test_the_markup_only_read_needs_no_empirical_lengths() -> None:
+    """**Asserted on the signature**, because that is the property the pipeline depends on.
+
+    `read_annotation_layers` cannot be called without the three lengths that classify the vendor's
+    path geometry, and those are open questions (#179). Reading a `/FreeText` is not: the text and
+    the rectangle are dictionary values. If a length ever appears here, a threshold has acquired a
+    value inside the pipeline, which is the one place it must not.
+    """
+    parameters = inspect.signature(read_markup_layer).parameters
+
+    assert set(parameters) == {"data", "page_index", "document_version_id", "dpi"}
+
+
+def test_the_markup_only_read_returns_the_notes_and_no_geometry() -> None:
+    """Input: a sheet with both layers. Outcome: the markup, and empty geometry marked as unread."""
+    layers = read_markup_layer(BOTH_LAYERS, 0, document_version_id=DOCUMENT, dpi=DPI)
+
+    assert [note.text for note in layers.markup] == [KNOWN_MARKUP]
+    assert layers.drawing_segments == ()
+    assert layers.outlined_regions == ()
+    assert layers.geometry_read is False
+
+
+def test_unread_geometry_is_distinguishable_from_absent_geometry() -> None:
+    """**Opposite facts that would otherwise look identical.**
+
+    Empty `drawing_segments` from a markup-only read means *nobody looked*. Empty segments from a
+    full read means *there is no line-work on this sheet*. A caller that could not tell them apart
+    would report a drawing as having no dimensions on the strength of a read that never examined it.
+    """
+    markup_only = read_markup_layer(BOTH_LAYERS, 0, document_version_id=DOCUMENT, dpi=DPI)
+    looked = _layers(_pdf(annotations=[_free_text()]))
+
+    assert markup_only.drawing_segments == looked.drawing_segments == ()
+    assert markup_only.geometry_read is False
+    assert looked.geometry_read is True
+
+
+def test_the_markup_only_read_refuses_a_page_that_is_not_there() -> None:
+    """Input: page 9 of a one-page file. Outcome: `UnreadablePdf`, the same as the full read."""
+    with pytest.raises(UnreadablePdf, match="beyond"):
+        read_markup_layer(BOTH_LAYERS, 9, document_version_id=DOCUMENT, dpi=DPI)
