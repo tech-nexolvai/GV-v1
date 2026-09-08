@@ -1576,7 +1576,7 @@ export interface components {
             next_cursor?: string | null;
             /**
              * Ordering
-             * @default Critical first, and within one severity the failures before the abstentions and the abstentions before the passes. Ties are broken by oldest first, then by id, so the order is total and a page boundary always falls in the same place. Full key: severity (CRITICAL, MAJOR, MINOR, ADVISORY), then outcome (FAIL, REVIEW_REQUIRED, NOT_FOUND, NO_APPLICABLE_RULE, PASS), then created_at ascending, then id ascending.
+             * @default V1 flags first, then later severity tiers; within one severity failures before the abstentions and the abstentions before the passes. Ties are broken by oldest first, then by id, so the order is total and a page boundary always falls in the same place. Full key: severity (FLAG, CRITICAL, MAJOR, MINOR, ADVISORY), then outcome (FAIL, REVIEW_REQUIRED, NOT_FOUND, NO_APPLICABLE_RULE, PASS), then created_at ascending, then id ascending.
              */
             ordering: string;
         };
@@ -2254,13 +2254,14 @@ export interface components {
         };
         /**
          * Severity
-         * @description How much a wrong answer on this check costs.
+         * @description How a finding is presented to the reviewer.
          *
-         *     The primary release metric is the *critical* false-PASS rate, so without this the metric
-         *     cannot be computed at all — nothing else records which checks are critical (D3).
+         *     V1 uses one uniform reviewer flag.  The later tiers remain part of the persisted contract for
+         *     the release where GV and its reviewers deliberately classify them; they must not be used to
+         *     invent that judgement in V1.
          * @enum {string}
          */
-        Severity: "CRITICAL" | "MAJOR" | "MINOR" | "ADVISORY";
+        Severity: "FLAG" | "CRITICAL" | "MAJOR" | "MINOR" | "ADVISORY";
         /**
          * StoredList
          * @description One many-valued input as stored, in layout order.
