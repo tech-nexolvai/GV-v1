@@ -315,3 +315,84 @@ def _canonical_fraction_is_normalized(
 
     del mapper, connection
     _require_normalized_rational(target.value_numerator, target.value_denominator)
+
+
+class ObservationAssociation(Base, TimestampedUUID, Immutable):
+    """Which dimension line one reading annotates — or why that could not be decided.
+
+    `984` printed on a sheet is not evidence of anything until it is attached to the line it
+    annotates. `extraction/geometry/text_association.py` makes that attachment and has never had
+    anywhere to put its answer; this is that place.
+
+    **A refusal is a row, not an absence.** That module is explicit that *"refusing is the
+    deliverable, not the fallback"*: two lines equally close to one number is the ordinary case on a
+    dimensioned elevation, and an unattached number is the list a reviewer has to look at. A schema
+    that could only record successes would turn "we could not tell" into silence, which reads
+    downstream as "this drawing has no dimensions".
+
+    **The line is inlined, and that is deliberate.** There is no `dimension_lines` table and these
+    endpoints are not an identity. Deciding which vector primitives *are* dimension lines is a
+    detector (#179), correct only against this vendor's real CAD output, and `associate` takes a
+    `DimensionExtent` rather than that detector's type precisely so it does not have to wait for it.
+    A row here says "this reading was attached to the segment running from A to B", which is a
+    measurement, not a claim about what that segment is.
+
+    Stored coordinates as text, for the reason `Page.media_box` gives: a JSON float loses the
+    exactness the units layer exists to keep, and these numbers decide which line a dimension belongs
+    to.
+    """
+
+    __tablename__ = "observation_associations"
+
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), index=True
+    )
+    extraction_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), index=True
+    )
+    """Which run associated it, and therefore under which thresholds. `open_extraction_run` keys a
+    run on its configuration, so a re-association at a different proximity limit is a different run
+    rather than the same one quietly meaning something else (#487)."""
+
+    start_x: Mapped[str | None] = mapped_column(String(64), default=None)
+    start_y: Mapped[str | None] = mapped_column(String(64), default=None)
+    end_x: Mapped[str | None] = mapped_column(String(64), default=None)
+    end_y: Mapped[str | None] = mapped_column(String(64), default=None)
+
+    signals: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    """Why this pairing, in plain English, one entry per signal that contributed — the module refuses
+    to build an association without them, because *"an association nobody can audit is
+    indistinguishable from a guess"*. Empty on a refusal, where `refusal_reason` carries the why."""
+
+    refusal_reason: Mapped[str | None] = mapped_column(String(1000), default=None)
+    candidate_lines: Mapped[list[list[str]] | None] = mapped_column(JSONB, default=None)
+    """What the choice was between, when there was one. A reviewer told only that an association
+    could not be made cannot check the geometry; shown the candidates, they can."""
+
+    __table_args__ = (
+        # Attached or refused, never both and never neither. A row with endpoints *and* a reason
+        # would be two answers to one question, and a row with neither would be a decision nobody
+        # can read — the same pairing rule `candidate_corroboration_paired` applies one table over.
+        CheckConstraint(
+            "(refusal_reason IS NULL"
+            " AND start_x IS NOT NULL AND start_y IS NOT NULL"
+            " AND end_x IS NOT NULL AND end_y IS NOT NULL"
+            " AND jsonb_array_length(signals) > 0)"
+            " OR (refusal_reason IS NOT NULL"
+            " AND start_x IS NULL AND start_y IS NULL"
+            " AND end_x IS NULL AND end_y IS NULL"
+            " AND jsonb_array_length(signals) = 0)",
+            name="attached_or_refused",
+        ),
+        # A reason that is blank says nothing, and reads as though something was recorded. The
+        # regex rather than `btrim`, which strips spaces and nothing else (0035).
+        CheckConstraint(
+            "refusal_reason IS NULL OR refusal_reason !~ '^[[:space:]]*$'",
+            name="refusal_reason_not_blank",
+        ),
+        # One answer per candidate per run. A second row for the same pair would be two associations
+        # for one reading, and nothing downstream could tell which was meant.
+        UniqueConstraint(
+            "candidate_id", "extraction_run_id", name="uq_observation_associations_candidate_run"
+        ),
+    )
