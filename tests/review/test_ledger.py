@@ -229,6 +229,8 @@ class Scenario:
     rule_id: str
     check_type: str
     vendor: str | None
+    page_id: UUID
+    document_version_id: UUID
     observation_id: UUID
     finding_id: UUID
     package_revision_id: UUID
@@ -241,6 +243,8 @@ def _scenario(
     rule_id: str | None = None,
     check_type: str = "internal",
     vendor: str | None = None,
+    media_box: list[str] | None = None,
+    crop_box: list[str] | None = None,
 ) -> Scenario:
     """Build the whole chain, in dependency order: a package from a vendor, a rule, a check run, a
     finding, a reading that passed the evidence gate, and a reviewer sitting down with it.
@@ -291,6 +295,12 @@ def _scenario(
         rotation=0,
         has_vector_text=True,
         render_failed=False,
+        # Both default to `None`, which is what a page rendered before migration `0037` looks like.
+        # `pages` is append-only, so a caller that needs the boxes has to ask for them here — there
+        # is no `UPDATE` route to add them afterwards. `tests/eval/test_promotion.py` needs them
+        # because converting a stored polygon to image pixels is impossible without them.
+        media_box=media_box,
+        crop_box=crop_box,
     )
     session.add(page)
     session.flush()
@@ -348,6 +358,8 @@ def _scenario(
         rule_id=authored_rule_id,
         check_type=check_type,
         vendor=vendor,
+        page_id=page.id,
+        document_version_id=version.id,
         observation_id=observation.id,
         finding_id=finding.id,
         package_revision_id=revision.id,

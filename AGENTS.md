@@ -197,6 +197,7 @@ evidence localization, numeric/unit accuracy and match precision pass.**
   model, state machine, security). **Primary reference.**
 - `docs/GV_V1_Agentic_systemDesign.pdf` — the V1 architecture + stack + cost.
 - `docs/RULE_ENGINE_SPEC.md` — the extended operations/schema for CT-1 (fold into Phase 3).
+- `docs/GOLD_SET_FORMAT.md` — the answer-key format and the scorecard that reads it (Phase 0).
 - `memory.md` — locked decisions, open questions, client status.
 
 ## 12. Mini-glossary

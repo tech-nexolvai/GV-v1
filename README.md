@@ -25,6 +25,8 @@ never designs them. A human always signs off.
    - `GV_Backend_Architecture_Proposal.pdf` — primary backend design.
    - `GV_V1_Agentic_systemDesign.pdf` — V1 architecture + stack + cost.
    - `RULE_ENGINE_SPEC.md` — extended rule operations/schema (needed for the real first rules).
+   - `GOLD_SET_FORMAT.md` — how a reviewed drawing becomes an answer key, and how a run is
+     scored against one. Read this before annotating the first package.
 
 ## Build order (risk-first — see `AGENTS.md` §8)
 `0 gold-set → 1 core loop → 2 canonical evidence → 3 gate + rules → 4 bounded agent →
