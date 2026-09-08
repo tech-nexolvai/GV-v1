@@ -49,6 +49,7 @@ __all__ = [
     "RegionToRead",
     "SetAsideRegion",
     "VectorFirstPage",
+    "crop_box_pt",
     "plan_reads",
     "region_crop",
 ]
@@ -237,6 +238,58 @@ def _drop_other_layers(page: Any) -> int:
     return removed
 
 
+def crop_box_pt(
+    data: bytes,
+    page_index: int,
+    box: tuple[Decimal, Decimal, Decimal, Decimal],
+    *,
+    dpi: int = VISION_CROP_DPI,
+    include_markup: bool = False,
+) -> bytes:
+    """PNG bytes for one `(left, bottom, right, top)` PDF-point box of a page.
+
+    The rendering half of `region_crop`, public because the exploratory scripts crop boxes a person
+    chose rather than regions the planner found, and a second renderer would be a second answer to
+    "what does this part of the sheet look like".
+
+    **Only the box is rendered.** A whole A3 sheet at `VISION_CROP_DPI` is over 200 MB of RGB and
+    `extraction/rasterise.render_page` refuses that against any budget this system has, correctly. A
+    dimension label is a fraction of an inch across.
+    """
+    if isinstance(dpi, bool) or not isinstance(dpi, int) or dpi <= 0:
+        raise ValueError("dpi must be a positive integer")
+    left, bottom, right, top = box
+    if right <= left or top <= bottom:
+        raise UnreadablePdf("a box with no area on the page cannot be cropped")
+
+    document = pdfium.PdfDocument(data)
+    try:
+        try:
+            page = document[page_index]
+        except Exception as error:
+            # pypdfium2 raises its own `PdfiumError` for a page that is not there, not `IndexError`,
+            # so this catches by behaviour rather than by the type one library happens to use.
+            raise UnreadablePdf(f"page {page_index} is not in this document: {error}") from error
+        if not include_markup:
+            _drop_other_layers(page)
+        width_pt, height_pt = (Decimal(str(value)) for value in page.get_size())
+        bitmap = page.render(
+            scale=float(Decimal(dpi) / _POINTS_PER_INCH),
+            # pypdfium2 states a crop as how much to take off each edge, anticlockwise from the
+            # left, rather than as a box.
+            crop=(
+                float(max(Decimal(0), left)),
+                float(max(Decimal(0), bottom)),
+                float(max(Decimal(0), width_pt - right)),
+                float(max(Decimal(0), height_pt - top)),
+            ),
+            rev_byteorder=True,
+        )
+        return _png_from(bitmap)
+    finally:
+        document.close()
+
+
 def region_crop(
     data: bytes,
     page_index: int,
@@ -281,30 +334,18 @@ def region_crop(
         try:
             page = document[page_index]
         except Exception as error:
-            # pypdfium2 raises its own `PdfiumError` for a page that is not there, not `IndexError`,
-            # so this catches by behaviour rather than by the type one library happens to use.
             raise UnreadablePdf(f"page {page_index} is not in this document: {error}") from error
-        if not include_markup:
-            _drop_other_layers(page)
         width_pt, height_pt = (Decimal(str(value)) for value in page.get_size())
-        left, bottom, right, top = _region_box_pt(region, width_pt, height_pt, margin_pt)
-        if right <= left or top <= bottom:
-            raise UnreadablePdf("a region with no area on the page cannot be cropped")
-        bitmap = page.render(
-            scale=float(Decimal(dpi) / _POINTS_PER_INCH),
-            # pypdfium2 states a crop as how much to take off each edge, anticlockwise from the
-            # left, rather than as a box.
-            crop=(
-                float(left),
-                float(bottom),
-                float(width_pt - right),
-                float(height_pt - top),
-            ),
-            rev_byteorder=True,
-        )
-        return _png_from(bitmap)
     finally:
         document.close()
+
+    return crop_box_pt(
+        data,
+        page_index,
+        _region_box_pt(region, width_pt, height_pt, margin_pt),
+        dpi=dpi,
+        include_markup=include_markup,
+    )
 
 
 def _png_from(bitmap: Any) -> bytes:
