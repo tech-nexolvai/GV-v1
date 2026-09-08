@@ -331,3 +331,24 @@ def test_an_unpadded_bitmap_is_handed_over_whole() -> None:
 
     assert len(packed) == 36
     assert packed[0:12] == bytes([1]) * 12
+
+
+def test_the_vision_crop_resolution_is_named_and_is_not_a_render_default() -> None:
+    """`VISION_CROP_DPI` is a stated resolution for crops, not a default for whole pages (#539).
+
+    600 dpi is measured: the same rotated feet-and-inches label read as `10.8` from a 150 dpi render
+    upscaled four times and as `8'-6''` rendered natively at 600, and these sheets are vector so
+    there is no scan resolution to be limited by.
+
+    It must not leak into `render_page`, whose `dpi` and `maximum_pixels` are required precisely
+    because a D-size sheet at this resolution is hundreds of megabytes in one allocation. Asserted
+    on the signature rather than described in a comment.
+    """
+    import inspect
+
+    from extraction.rasterise import VISION_CROP_DPI, render_page
+
+    assert VISION_CROP_DPI == 600
+    parameters = inspect.signature(render_page).parameters
+    assert parameters["dpi"].default is inspect.Parameter.empty
+    assert parameters["maximum_pixels"].default is inspect.Parameter.empty

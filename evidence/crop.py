@@ -151,8 +151,15 @@ def _chunk(kind: bytes, payload: bytes) -> bytes:
     return struct.pack(">I", len(payload)) + body + struct.pack(">I", binascii.crc32(body))
 
 
-def _encode_png(width: int, height: int, rgb: bytes) -> bytes:
-    """Encode deterministic eight-bit RGB PNG bytes using only the standard library."""
+def encode_png(width: int, height: int, rgb: bytes) -> bytes:
+    """Encode deterministic eight-bit RGB PNG bytes using only the standard library.
+
+    Public because a second PNG encoder is worse than an exported one. `extraction/vector_first.py`
+    cuts crops for the model seam and needs the same bytes for the same pixels — Pillow is not a
+    declared dependency of this project, it arrives only under the `reports` extra, and a
+    hand-rolled copy in the extraction package would be a second definition of "the crop" that
+    could differ from the one evidence stores.
+    """
 
     stride = width * 3
     scanlines = b"".join(b"\x00" + rgb[row * stride : (row + 1) * stride] for row in range(height))
@@ -227,7 +234,7 @@ def generate_crop(
 
         left, top, right, bottom = _crop_box(rendered, spec)
         rgb = _crop_rgb(rendered, (left, top, right, bottom))
-        png = _encode_png(right - left, bottom - top, rgb)
+        png = encode_png(right - left, bottom - top, rgb)
         stream = BytesIO(png)
         digest, _ = sha256_stream(stream)
         key = content_key(

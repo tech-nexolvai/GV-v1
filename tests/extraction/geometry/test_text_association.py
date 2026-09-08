@@ -31,6 +31,7 @@ from extraction.geometry.text_association import (
     DimensionText,
     TextAssociation,
     associate,
+    lines_within,
 )
 
 DOCUMENT = uuid4()
@@ -588,3 +589,55 @@ def test_a_float_leader_endpoint_is_refused() -> None:
             rotation_degrees=0,
             leader_endpoint=StoredPoint(0.6, 0.3),  # type: ignore[arg-type]
         )
+
+
+# ---------------------------------------------------------------------------
+# Proximity for region selection, which is not association (#539)
+# ---------------------------------------------------------------------------
+
+
+def test_lines_within_returns_every_line_in_range_nearest_first() -> None:
+    """Input: a region with two lines near it. Outcome: both, ordered by distance.
+
+    `associate` refuses when two candidates are equally good, because attaching a *number* to the
+    wrong line is a finding about the wrong thing. Choosing which region to *read* is a different
+    question — nothing has been read yet, so nothing can be attached to anything — and for that,
+    every line in range is the answer.
+    """
+    region = _box("0.20", "0.30", "0.20", "0.24")
+    near = _horizontal("0.26", "0.10", "0.40")
+    far = _horizontal("0.40", "0.10", "0.40")
+
+    found = lines_within(region, (far, near), proximity_limit=Decimal("0.5"))
+
+    assert found == (near, far)
+
+
+def test_lines_within_excludes_what_is_out_of_range() -> None:
+    """Input: a limit smaller than the gap. Outcome: nothing.
+
+    This is what makes a cluster of hatching cheap to set aside instead of expensive to read.
+    """
+    region = _box("0.20", "0.30", "0.20", "0.24")
+
+    assert lines_within(region, (_horizontal("0.90"),), proximity_limit=Decimal("0.01")) == ()
+
+
+def test_lines_within_refuses_geometry_from_another_page() -> None:
+    """Input: a region from a different page. Outcome: `PolygonSpaceMismatchError`.
+
+    Stored coordinates from two sheets are not comparable, and the distance between them would be
+    arithmetic on unrelated numbers — the same refusal `associate` makes.
+    """
+    elsewhere = _box("0.20", "0.30", "0.20", "0.24", page=PAGE + 1)
+
+    with pytest.raises(PolygonSpaceMismatchError):
+        lines_within(elsewhere, (_horizontal("0.26"),), proximity_limit=Decimal("0.5"))
+
+
+def test_lines_within_refuses_a_float_limit() -> None:
+    """Input: a float. Outcome: `TypeError`, through the same check `associate` uses."""
+    region = _box("0.20", "0.30", "0.20", "0.24")
+
+    with pytest.raises(TypeError, match="Decimal"):
+        lines_within(region, (), proximity_limit=0.5)  # type: ignore[arg-type]
