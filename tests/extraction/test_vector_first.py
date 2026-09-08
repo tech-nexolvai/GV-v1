@@ -344,3 +344,34 @@ def test_a_float_span_bound_is_refused() -> None:
     """Input: a float. Outcome: `TypeError`, for the reason every other length here has one."""
     with pytest.raises(TypeError, match="never a float"):
         _plan(maximum_span=0.5)  # type: ignore[arg-type]
+
+
+def test_a_vendor_region_crop_leaves_the_reviewer_markup_out() -> None:
+    """**Reading the layers apart is worth nothing if the crop puts them back together.**
+
+    The vendor's drawing on these sheets *is* an annotation, so a renderer cannot be told to leave
+    annotations out — it would produce a blank page. The other annotations are removed first
+    instead. Measured: a crop of the vendor's own label came out with a corner of the reviewer's
+    overlay in frame, and the crop where the drawing's width and the markup's correction of it sit
+    on top of each other produced a reading that was neither of them.
+
+    Asserted by bytes: the same region with the markup left in is a different picture.
+    """
+    region = _plan().to_read[0].region
+
+    vendor_only = region_crop(BOTH_LAYERS, 0, region, margin_pt=Decimal(30))
+    flattened = region_crop(BOTH_LAYERS, 0, region, margin_pt=Decimal(30), include_markup=True)
+
+    assert vendor_only != flattened, "the markup annotation is still in the vendor's crop"
+    assert _png_size(vendor_only) == _png_size(flattened)
+
+
+def test_the_flattened_view_is_still_available_to_a_caller_that_asks() -> None:
+    """Outcome: `include_markup=True` renders what a person looking at the sheet sees.
+
+    Kept because the flattened picture is the right thing to *show* a reviewer — it is only the
+    wrong thing to ask a model to read.
+    """
+    region = _plan().to_read[0].region
+
+    assert region_crop(BOTH_LAYERS, 0, region, margin_pt=Decimal(30), include_markup=True)

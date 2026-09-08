@@ -311,3 +311,38 @@ def test_the_dimension_check_produces_no_value() -> None:
 
     assert isinstance(outcome, ObservationCandidate)
     assert outcome.parsed_value is None
+
+
+@pytest.mark.parametrize("reading", ["0", "00", '0"', "0 mm", "0.0"])
+def test_a_reading_that_measures_zero_is_refused(reading: str) -> None:
+    """Input: zero, in the spellings a model produces. Outcome: abstention.
+
+    `00` came back from a real crop and was accepted, because zero parses as a dimension. A
+    dimension line of no length is not a dimension and nobody draws one — and a zero is the
+    quietest possible way to satisfy a sum, so accepting it would put a reading that failed into
+    arithmetic that then succeeds.
+    """
+    payload = _valid_payload() | {"reading": reading}
+    recorder = RecordingRejections()
+
+    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == "reading_not_a_dimension"
+    assert "measures zero" in outcome.errors[0]
+    assert recorder.items == [outcome]
+
+
+def test_a_small_reading_is_not_mistaken_for_zero() -> None:
+    """Input: a sixteenth of an inch. Outcome: accepted.
+
+    The zero refusal is about zero, not about smallness. `1/16"` is a real dimension and the check
+    is exact — a float comparison here could have made a small value round into a refusal.
+    """
+    outcome = validate_payload(
+        _valid_payload() | {"reading": '1 1/16"'},
+        context=_context(),
+        recorder=RecordingRejections(),
+    )
+
+    assert isinstance(outcome, ObservationCandidate)

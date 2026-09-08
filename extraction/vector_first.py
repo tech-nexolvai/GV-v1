@@ -36,6 +36,7 @@ from decimal import Decimal
 from typing import Any
 
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
+import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
 from evidence.crop import encode_png
 from extraction.annotations import MarkupNote, OutlinedTextRegion, PageLayers
@@ -208,6 +209,34 @@ def _region_box_pt(
     )
 
 
+def _drop_other_layers(page: Any) -> int:
+    """Remove every annotation that is not the vendor's drawing, and say how many.
+
+    **Because rendering flattens the layers even when the reader has kept them apart.** The vendor's
+    drawing on these sheets *is* an annotation, so a renderer cannot simply be told to leave
+    annotations out — it would produce a blank page. What it can do is remove the other ones first.
+
+    Measured on the first real sheet: a crop of the vendor's own `28 3/4"` label came out with a
+    corner of the reviewer's yellow `102"` overlay in frame, and the crop containing the drawing's
+    overall width and the markup's correction of it produced `1811 1"(4"QEQQ)` — a garbled blend of
+    two labels a model was asked to read as one. Removing the markup first is the difference between
+    asking about the vendor's number and asking about a picture of two numbers.
+
+    In memory only: the caller's bytes are untouched, and the document this mutates is one this
+    function opened and closes.
+    """
+    removed = 0
+    for index in range(pdfium_raw.FPDFPage_GetAnnotCount(page) - 1, -1, -1):
+        annotation = pdfium_raw.FPDFPage_GetAnnot(page, index)
+        if not annotation:
+            continue
+        subtype = pdfium_raw.FPDFAnnot_GetSubtype(annotation)
+        pdfium_raw.FPDFPage_CloseAnnot(annotation)
+        if subtype != pdfium_raw.FPDF_ANNOT_STAMP and pdfium_raw.FPDFPage_RemoveAnnot(page, index):
+            removed += 1
+    return removed
+
+
 def region_crop(
     data: bytes,
     page_index: int,
@@ -215,8 +244,14 @@ def region_crop(
     *,
     dpi: int = VISION_CROP_DPI,
     margin_pt: Decimal,
+    include_markup: bool = False,
 ) -> bytes:
-    """PNG bytes for one region, rendered from the vector page at `dpi`.
+    """PNG bytes for one region of the vendor's drawing, rendered from the vector page at `dpi`.
+
+    `include_markup` is `False` because a crop of the vendor's drawing should contain the vendor's
+    drawing. The reviewer's annotations are read exactly and separately; rendering them into the same
+    pixels asks a model to read two authorities at once, which is what produced a blend of two
+    labels that was neither. A caller wanting the flattened view a person sees can ask for it.
 
     **Only the region is rendered, which is what makes 600 dpi affordable.** A whole A3 sheet at 600
     dpi is 9922×7016 pixels — over 200 MB of RGB — and `extraction/rasterise.render_page` refuses
@@ -249,6 +284,8 @@ def region_crop(
             # pypdfium2 raises its own `PdfiumError` for a page that is not there, not `IndexError`,
             # so this catches by behaviour rather than by the type one library happens to use.
             raise UnreadablePdf(f"page {page_index} is not in this document: {error}") from error
+        if not include_markup:
+            _drop_other_layers(page)
         width_pt, height_pt = (Decimal(str(value)) for value in page.get_size())
         left, bottom, right, top = _region_box_pt(region, width_pt, height_pt, margin_pt)
         if right <= left or top <= bottom:

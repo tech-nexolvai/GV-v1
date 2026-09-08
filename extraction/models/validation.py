@@ -187,9 +187,15 @@ def _reading_refusal(reading: str) -> str | None:
     business, and `evidence/normalize.py` already refuses a candidate that has none.
     """
     try:
-        normalise_to_inches(_probe_text(reading), unmarked_unit=Unit.INCH)
+        measured = normalise_to_inches(_probe_text(reading), unmarked_unit=Unit.INCH)
     except UnitNormalisationError as error:
         return f"reading {reading!r} is not a dimension token: {error}"
+    if measured.exact == 0:
+        # `00` came back from a real crop and was accepted, because zero parses. A dimension line of
+        # no length is not a dimension, nobody draws one, and a zero operand in a rule is a silent
+        # way to satisfy a sum — so this is the one magnitude that says the reading failed rather
+        # than that the drawing is unusual.
+        return f"reading {reading!r} measures zero, which is not a dimension anything drew"
     if _BARE_FRACTION_RE.match(reading):
         return (
             f"reading {reading!r} is a fraction with no whole number. A dropped whole number reads "
