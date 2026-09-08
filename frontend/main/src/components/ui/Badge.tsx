@@ -71,6 +71,7 @@ export function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
 import type { Severity } from '../../data/types';
 
 const SEVERITY_COLOR: Record<Severity, string> = {
+  FLAG:     'var(--status-review)',
   CRITICAL: 'var(--status-fail)',
   MAJOR:    'var(--status-review)',
   MINOR:    'var(--status-missing)',

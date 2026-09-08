@@ -113,10 +113,10 @@ def _trace_derivation(finding: object, name: str) -> dict[str, object]:
 
 
 def test_rule_authors_exact_inch_equality_without_a_tolerance() -> None:
-    """Input: CT-1 YAML. Output: a CRITICAL exact-equality rule ready for production."""
+    """Input: CT-1 YAML. Output: a V1 FLAG exact-equality rule ready for production."""
     rule = _load_rule()
 
-    assert rule.severity is Severity.CRITICAL
+    assert rule.severity is Severity.FLAG
     assert rule.arithmetic_unit is Unit.INCH
     assert rule.operation.type == "equals"
     assert tolerances_of(rule) == ()

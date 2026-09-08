@@ -172,7 +172,7 @@ class Outcome(StrEnum):
     NO_APPLICABLE_RULE = "NO_APPLICABLE_RULE"   # D7 — never renders as clean
 
 class Severity(StrEnum):                        # D3
-    CRITICAL = "CRITICAL"; MAJOR = "MAJOR"; MINOR = "MINOR"; ADVISORY = "ADVISORY"
+    FLAG = "FLAG"; CRITICAL = "CRITICAL"; MAJOR = "MAJOR"; MINOR = "MINOR"; ADVISORY = "ADVISORY"
 ```
 
 `NO_APPLICABLE_RULE` is a distinct outcome, not a flavour of PASS. Silence is the most dangerous
@@ -647,26 +647,14 @@ is not.
 
 ### What Q4 decided, and why the metric still reports nothing
 
-`Q4` (#12) is **answered**. On the 2026-08-25 call the client chose to flag every deviation with no
-severity split for the reviewer, deferring tiers until 10–50 projects have run. Severity remains a
-property of the rule and this module reads `Finding.severity` rather than classifying anything.
+`Q4` (#12) is **answered**. The client chose one reviewer flag for every V1 deviation, with no
+severity split until 10–50 projects have run. The rulebook therefore declares `FLAG`, not
+`CRITICAL`, and the deterministic PASS/FAIL calculation remains unchanged: `FLAG` is neither an
+advisory warning nor an automatic reviewer decision.
 
-The rulebook **does** declare `CRITICAL` — on the checks whose wrong PASS gets stone cut to the wrong
-size, which is what the designation is for. Under exact match the label changes no behaviour, since
-every mismatch flags regardless; what it changes is whether the primary safety metric has a
-denominator.
-
-`critical_false_pass_rate` still reports **not measured**, and for a different reason than this
-section used to give. It said the metric was unmeasured because Q4 was unanswered and no rule was
-classified. Neither half holds now. The denominator is zero because **`eval/gold_set/cases/` is
-empty** (#274): there is no reviewed drawing on which a `CRITICAL` check should have failed, so there
-is nothing the system could have got wrong yet.
-
-That distinction decides who fixes it. "Nothing is classified" was ours, and classifying was the fix.
-"No gold set" is fixed only by the client sending drawings and somebody reviewing them — no work in
-this repository shortens it, and a stale sentence blaming an unanswered question sends the next reader
-to the wrong task. It is also exactly why the `None` case above is not a detail: the release gate
-refuses an unmeasured primary metric rather than reading it as a clean one.
+`critical_false_pass_rate` reports **not measured** by design in V1: there are no critical rules to
+form its denominator. A later release may classify tiers only after the client and reviewers make
+that decision; until then a zero value would falsely suggest that critical safety was measured.
 
 ---
 

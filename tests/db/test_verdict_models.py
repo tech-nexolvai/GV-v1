@@ -9,6 +9,7 @@ be an operand, and that an operand is an exact rational rather than a rounded on
 from __future__ import annotations
 
 from fractions import Fraction
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -168,15 +169,26 @@ def test_only_qualified_evidence_may_be_an_operand() -> None:
         assert f"'{excluded.value}'" not in expression
 
 
-def test_the_migration_vocabularies_match_the_live_enums() -> None:
-    """The migration spells the values out so it keeps saying what it said. This catches drift."""
-    from pathlib import Path
-
+def test_the_original_migration_keeps_its_historical_closed_vocabularies() -> None:
+    """A migration says what it said when it ran; newer values belong in newer migrations."""
     migration = (
         Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0011_verdict_plane.py"
     ).read_text(encoding="utf-8")
-    for member in (*Outcome, *Severity, *Unit, *QUALIFIED_STATUSES):
+    original_severities = tuple(member for member in Severity if member is not Severity.FLAG)
+    for member in (*Outcome, *original_severities, *Unit, *QUALIFIED_STATUSES):
         assert f"'{member.value}'" in migration, f"{member.value} missing from the migration"
+
+
+def test_the_v1_flag_migration_extends_the_finding_severity_constraint() -> None:
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "alembic"
+        / "versions"
+        / "0040_v1_uniform_flag_severity.py"
+    ).read_text(encoding="utf-8")
+
+    assert "finding_severity" in migration
+    assert "'FLAG'" in migration
 
 
 # ---------------------------------------------------------------------------

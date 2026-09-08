@@ -1,16 +1,16 @@
 id: CT-BACK-OFFSET-MIN-001
-version: 1.0.0
+version: 1.0.1
 product_type: countertop
 check_type: internal
-severity: CRITICAL
+severity: FLAG
 arithmetic_unit: in
 
 name: Countertop back-offset minimum
 description: >
   Derive the sink back offset as the exact remainder of the countertop depth after the
   overhang, the front offset, the sink cutout and the backsplash, then compare it with
-  the required global minimum. The minimum has no default because the vendor value is
-  still pending.
+  the required global minimum. The vendor supplied a 2.375"–2.5" range; the global 2.5"
+  standard is project-overridable down to 2.375".
 
 applicability:
   scope: global
@@ -45,10 +45,12 @@ parameters:
     scope: project
   backsplash_thickness:
     scope: project
-  # Global, not per-project: the client said "I will give a global minimum for that variable after
-  # checking with the vendor" (Q6). One number, owed once — so a rule needing it is held from
-  # production until it arrives, which rules/publication.py now enforces.
+  # Raj/vendor supplied 2.375"–2.5" (Q6). The 2.5" default is the false-PASS-safe end of the
+  # range; a reviewer may override it for a project as low as 2.375".
   back_offset_minimum:
+    default:
+      value: "2.5"
+      unit: in
     scope: global
 
 derivations:

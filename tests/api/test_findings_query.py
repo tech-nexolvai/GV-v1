@@ -131,8 +131,8 @@ def test_failures_rank_above_abstentions_and_abstentions_above_passes() -> None:
         assert position[abstention] < position[Outcome.PASS]
 
 
-def test_critical_ranks_first_among_severities() -> None:
-    assert SEVERITY_ORDER[0] is Severity.CRITICAL
+def test_v1_flags_rank_first_among_severities() -> None:
+    assert SEVERITY_ORDER[0] is Severity.FLAG
 
 
 # ---------------------------------------------------------------------------

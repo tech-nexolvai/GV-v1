@@ -83,12 +83,12 @@ def _trace_derivation(finding: object, name: str) -> dict[str, object]:
     raise AssertionError(f"trace did not contain derivation {name!r}")
 
 
-def test_depth_rule_is_an_exact_critical_inch_check() -> None:
-    """Input: depth-rule YAML. Outcome: one CRITICAL equality check with no tolerance."""
+def test_depth_rule_is_an_exact_v1_flag_inch_check() -> None:
+    """Input: depth-rule YAML. Outcome: one FLAG equality check with no tolerance."""
     rule = _load(DEPTH_RULE_PATH)
 
     assert rule.id == "CT-DEPTH-001"
-    assert rule.severity is Severity.CRITICAL
+    assert rule.severity is Severity.FLAG
     assert rule.arithmetic_unit is Unit.INCH
     assert rule.operation.type == "equals"
     assert rule.inputs["countertop_depth"].semantic_type is SemanticType.CT010
@@ -182,17 +182,17 @@ def test_back_offset_is_derived_as_a_remainder_and_passes_at_the_minimum() -> No
     )
 
 
-def test_back_offset_below_the_required_minimum_fails() -> None:
-    """Input: a sixteenth shallower than the boundary above. Outcome: actionable FAIL."""
+def test_back_offset_below_the_25_inch_default_flags() -> None:
+    """A 2 7/16-inch remainder is below the default 2.5-inch vendor standard."""
     finding = execute(
         publish(_load(BACK_OFFSET_RULE_PATH)),
         {
-            "countertop_depth": _operand("countertop_depth", Fraction(427, 16)),
+            "countertop_depth": _operand("countertop_depth", Fraction(419, 16)),
             "front_offset": _operand("front_offset", 4),
             "sink_depth": _operand("sink_depth", 18),
         },
         {
-            "back_offset_minimum": _parameter("back_offset_minimum", 3),
+            "back_offset_minimum": _parameter("back_offset_minimum", Fraction(5, 2)),
             "countertop_overhang": _parameter("countertop_overhang", Fraction(3, 4)),
             "backsplash_thickness": _parameter("backsplash_thickness", 1),
         },
@@ -240,25 +240,34 @@ def test_the_backsplash_and_overhang_are_not_credited_to_the_back_offset() -> No
     assert as_measured.outcome is Outcome.FAIL
 
 
-def test_missing_back_offset_minimum_abstains_instead_of_assuming_2375_inches() -> None:
-    """Input: no vendor minimum. Outcome: NOT_FOUND; the rejected 2.375-inch guess is unused."""
+def test_back_offset_default_is_25_inches_and_is_releasable() -> None:
+    """Raj supplied a range; 2.5 inches is the false-PASS-safe V1 default."""
     rule = _load(BACK_OFFSET_RULE_PATH)
+
+    default = rule.parameters["back_offset_minimum"].default
+    assert default is not None
+    assert default.exact_value == Fraction(5, 2)
+    assert default.unit is Unit.INCH
+    assert is_production_ready(rule)
+
+
+def test_back_offset_may_be_overridden_to_the_vendor_floor_per_project() -> None:
+    """The reviewer may set the supplied lower end, 2.375 inches, for a project."""
     finding = execute(
-        publish(rule),
+        publish(_load(BACK_OFFSET_RULE_PATH)),
         {
-            "countertop_depth": _operand("countertop_depth", 25),
+            "countertop_depth": _operand("countertop_depth", Fraction(419, 16)),
             "front_offset": _operand("front_offset", 4),
             "sink_depth": _operand("sink_depth", 18),
         },
         {
+            "back_offset_minimum": _parameter("back_offset_minimum", Fraction(19, 8)),
             "countertop_overhang": _parameter("countertop_overhang", Fraction(3, 4)),
             "backsplash_thickness": _parameter("backsplash_thickness", 1),
         },
     )
 
-    assert rule.parameters["back_offset_minimum"].default is None
-    assert finding.outcome is Outcome.NOT_FOUND
-    assert "back_offset_minimum" in finding.reason
+    assert finding.outcome is Outcome.PASS
 
 
 def test_offset_sum_is_not_authored_as_a_tautological_check() -> None:
@@ -277,13 +286,12 @@ def test_offset_sum_is_not_authored_as_a_tautological_check() -> None:
     assert all(derivation.name != "offset_sum" for derivation in back_rule.derivations)
 
 
-def test_the_three_back_offset_parameters_have_no_invented_defaults() -> None:
-    """The client gives all three per project, so nothing here may supply one.
+def test_only_the_confirmed_back_offset_standard_has_a_default() -> None:
+    """The vendor supplied only the back-offset range; the two specified dimensions stay required.
 
     `B.S_THK` and `C.T_OH` are `Specified` in the deck's own acquisition column, and the deck gives
-    no figure for the back-offset minimum either. A default would be this system deciding a joinery
-    dimension on the client's behalf inside a CRITICAL check — and a generous one would turn the
-    clearance FAIL above back into a PASS.
+    no figure for those dimensions. Their absence must remain NOT_FOUND rather than quietly
+    substituting a plausible joinery value.
 
     `CAB_SIDE_THK`, the other new `Specified` parameter, belongs to CT-4 and is covered in
     ``test_ct4_sink_cabinet_width.py``.
@@ -292,4 +300,6 @@ def test_the_three_back_offset_parameters_have_no_invented_defaults() -> None:
 
     assert back_rule.parameters["backsplash_thickness"].default is None
     assert back_rule.parameters["countertop_overhang"].default is None
-    assert back_rule.parameters["back_offset_minimum"].default is None
+    assert back_rule.parameters["back_offset_minimum"].default == Quantity(
+        value=Fraction(5, 2), unit=Unit.INCH
+    )

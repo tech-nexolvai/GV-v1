@@ -168,7 +168,7 @@ def test_the_sink_geometry_reads_consistently_with_his_own_formula() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The acquisition column, and the one cell deliberately left empty (#537)
+# The acquisition column, including the CT007 answer (2026-09-09)
 # ---------------------------------------------------------------------------
 
 
@@ -180,31 +180,24 @@ def test_the_acquisition_column_matches_the_deck() -> None:
     value the system should derive — or deriving one only the client can state.
     """
     assert CLIENT_CODES["CT001"].acquisition is Acquisition.MEASURED
+    assert CLIENT_CODES["CT007"].acquisition is Acquisition.GLOBAL
     for calculated in ("CT002", "CT003", "CT004", "CT005", "CT006", "CT009", "CT010"):
         assert CLIENT_CODES[calculated].acquisition is Acquisition.CALCULATED, calculated
     for specified in ("CT008", "B.S_THK", "C.T_OH", "CAB_SIDE_THK"):
         assert CLIENT_CODES[specified].acquisition is Acquisition.SPECIFIED, specified
 
 
-def test_ct007_has_no_acquisition_because_the_deck_contradicts_itself() -> None:
-    """**This absence is a recorded open question, not an omission — and this is what protects it.**
+def test_ct007_is_the_confirmed_global_standard_hold_dimension() -> None:
+    """Raj's 2026-09-09 answer resolves the deck contradiction without changing equality.
 
-    The deck's variable table gives `CT007` the acquisition `Global minimum`. The same deck's prose,
-    and `CLIENT_FACTS` Q5, call it a "global constant / standard hold dimension (U.N.O)" — an exact
-    value. Those are different verdicts: `>= minimum` passes a sink six inches back where four was
-    intended, and `= exact` fails it.
-
-    Until #537 the flag existed only in three comments, so the obvious tidy-up — setting it to
-    `Acquisition.GLOBAL`, which is the word the deck's table literally prints — would have broken
-    nothing and quietly converted an open question into an answered one, inviting
-    `ct_sink_offset_front_001` to be relaxed from `equals` to `minimum`. Raj has to answer this, not
-    a contributor reconciling a table.
+    The global acquisition records a reviewer-overridable company standard, not a minimum: more
+    than four inches invokes ADA, so the front-offset rule remains exact (CLIENT_FACTS Q5, Q11).
     """
-    assert CLIENT_CODES["CT007"].acquisition is None
+    assert CLIENT_CODES["CT007"].acquisition is Acquisition.GLOBAL
 
 
-def test_exactly_four_codes_have_no_acquisition_and_the_docstring_says_why() -> None:
-    """Counted, because `ClientCode`'s docstring explains four absences for three different reasons.
+def test_exactly_three_codes_have_no_acquisition_and_the_docstring_says_why() -> None:
+    """Counted, because `ClientCode`'s docstring explains three absences for two reasons.
 
     A reader auditing the table against that docstring must find the same four. When the deck for
     another layout arrives and fills one in, this fails and sends them to the explanation rather than
@@ -212,4 +205,4 @@ def test_exactly_four_codes_have_no_acquisition_and_the_docstring_says_why() -> 
     """
     unset = sorted(code for code, entry in CLIENT_CODES.items() if entry.acquisition is None)
 
-    assert unset == ["CT007", "CT011", "CT012", "CT013"]
+    assert unset == ["CT011", "CT012", "CT013"]

@@ -319,17 +319,12 @@ def test_the_refusal_names_the_parameter_and_who_owes_it() -> None:
     assert "NOT FOUND" in message
 
 
-def test_the_back_offset_rule_is_held_until_the_vendor_minimum_arrives() -> None:
-    """The rule this check was written for, asserted against the real rulebook.
-
-    Raj committed to the number — *"I will give a global minimum for that variable after checking
-    with the vendor"* — so the rule is authored and waiting rather than unwritten, and the gate is
-    what stops it reaching production in the meantime.
-    """
+def test_the_back_offset_rule_is_releasable_after_the_vendor_minimum_arrives() -> None:
+    """Raj supplied the vendor range; the default is an attributable global standard."""
     rule = _load_rulebook_rule("ct_back_offset_min_001.yaml")
 
-    assert unresolved_client_parameters(rule) == ("back_offset_minimum",)
-    assert not is_production_ready(rule)
+    assert unresolved_client_parameters(rule) == ()
+    assert is_production_ready(rule)
 
 
 def test_the_rules_that_only_need_project_configuration_are_still_releasable() -> None:

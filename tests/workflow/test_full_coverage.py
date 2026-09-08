@@ -1,8 +1,8 @@
 """A reviewer fills in everything the rulebook asks for, and the checks decide.
 
 **The property under test is negative and it is the point:** no check may abstain because of a field
-nothing offered. Two do abstain, and both are waiting on the client rather than on the form — this
-file asserts *which* two and *why*, so that a third joining them is a failure rather than a shrug.
+nothing offered. One abstains because it is waiting on the client rather than on the form — this
+file asserts *which* one and *why*, so that another joining it is a failure rather than a shrug.
 """
 
 from __future__ import annotations
@@ -110,12 +110,11 @@ RUN_PARAMETERS = {"sink_interior_depth": '16"', "sink_interior_width": '30"'}
 
 DISCRIMINATORS = {"wall_config": "back_only", "filler_symmetry": "equal_unless_noted"}
 
-#: The two checks that cannot decide, and the reason each is waiting on somebody outside this repo.
+#: The check that cannot decide, and the reason it is waiting on somebody outside this repo.
 #:
-#: Named individually rather than counted, because "two abstain" would stay true if a different two
-#: abstained — including a pair that abstained for a reason the form could have fixed.
+#: Named individually rather than counted, because an unchanged count could conceal a different rule
+#: abstaining for a reason the form could have fixed.
 CLIENT_BLOCKED = {
-    "CT-BACK-OFFSET-MIN-001": "back_offset_minimum",
     "CAB-ARCH-VS-SHOP-001": "tolerance",
 }
 
@@ -230,8 +229,8 @@ def filled(session: Session) -> PackageRevision:
 def test_every_check_that_can_decide_does(session: Session, filled: PackageRevision) -> None:
     """**The acceptance property: nothing abstains for want of a field.**
 
-    Seven of nine reach PASS or FAIL. The other two are waiting on the client, and this asserts the
-    membership of that set rather than its size — a third rule joining it would otherwise pass here
+    Eight of nine reach PASS or FAIL. The other one is waiting on the client, and this asserts the
+    membership of that set rather than its size — another rule joining it would otherwise pass here
     while a reviewer stared at an abstention they could have fixed.
 
     The count comes from the rulebook rather than a literal, because a literal is a number somebody
@@ -249,7 +248,7 @@ def test_every_check_that_can_decide_does(session: Session, filled: PackageRevis
         "the set of checks that cannot decide has changed. Every member must be waiting on a client "
         f"value, not on a form field: {sorted(undecided)}"
     )
-    # The same glob `_publish_rulebook` iterates, so the two cannot disagree about how many rules
+    # The same glob `_publish_rulebook` iterates, so the test cannot disagree about how many rules
     # there are.
     published = len(list(RULEBOOK.glob("*.yaml")))
     assert len(outcomes) == published, (
@@ -258,14 +257,14 @@ def test_every_check_that_can_decide_does(session: Session, filled: PackageRevis
     )
 
 
-def test_the_two_that_cannot_decide_say_why_in_client_terms(
+def test_the_check_that_cannot_decide_says_why_in_client_terms(
     session: Session, filled: PackageRevision
 ) -> None:
     """Each abstention names the missing client value, not a system fault.
 
-    `CT-BACK-OFFSET-MIN-001` wants a vendor minimum nobody has given; `CAB-ARCH-VS-SHOP-001` wants a
-    tolerance the client has not set, and *"an unset tolerance is not zero"*. Both messages tell a
-    reviewer who to ask, which is the difference between a useful abstention and a dead end.
+    `CT-BACK-OFFSET-MIN-001` uses its V1 default; `CAB-ARCH-VS-SHOP-001` wants a tolerance the client
+    has not set, and *"an unset tolerance is not zero"*. The message tells a reviewer who to ask,
+    which is the difference between a useful abstention and a dead end.
     """
     operands = operands_for(session, filled.id)
     DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(session, filled.id)

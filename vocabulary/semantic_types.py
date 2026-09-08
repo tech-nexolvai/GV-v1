@@ -139,14 +139,12 @@ class ClientCode:
     drawing**, not in prose, and the anchor is what a reviewer opens to check a rule against the
     thing it is supposed to measure.
 
-    `acquisition` is `None` where the client has not said, and **four codes are in that position for
-    three different reasons** — worth separating, because a reader who assumes one reason will
+    `acquisition` is `None` where the client has not said, and **three codes are in that position for
+    two different reasons** — worth separating, because a reader who assumes one reason will
     "complete" the others by guessing:
 
     * `CT011` and `CT013` are on the diagram and in a formula, with no row in the variable table.
     * `CT012` has a row, and the deck leaves its acquisition cell blank.
-    * `CT007` has a row that contradicts the deck's own prose, so leaving it unset is the record of
-      an open question rather than a gap — see its entry below.
 
     `None` in every case records that the client has not said, rather than filling it with the
     likeliest of four answers. `test_ct0xx_vocabulary.py` pins which codes are unset, so completing
@@ -209,13 +207,14 @@ CLIENT_CODES: dict[str, ClientCode] = {
         "CT_image10",
         Acquisition.CALCULATED,
     ),
-    # **`CT007` carries no acquisition, and that is the flag rather than an omission.** The deck's
-    # table says `Global minimum`; the same deck's prose, and Q5, call it a "global constant /
-    # standard hold dimension (U.N.O)" — an exact value. Those are different verdicts: `≥ minimum`
-    # passes anything deeper than the bound, `= exact` fails a sink half an inch forward of it.
-    # Recording either would settle by guess a question only Raj can answer, so it stays unset and
-    # `ct_sink_offset_front_001` stays exactly as authored. See `docs/decisions/CT_CHECKS_FORMAT.md`.
-    "CT007": ClientCode("CT007", "sink front offset", "sink_offset_front", "CT_image10"),
+    # Exact because an offset over 4 inches invokes ADA (CLIENT_FACTS Q5, Q11).
+    "CT007": ClientCode(
+        "CT007",
+        "sink front offset",
+        "sink_offset_front",
+        "CT_image10",
+        Acquisition.GLOBAL,
+    ),
     "CT008": ClientCode(
         "CT008",
         "sink hole depth",

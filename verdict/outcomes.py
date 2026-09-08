@@ -58,11 +58,15 @@ class Outcome(StrEnum):
 
 
 class Severity(StrEnum):
-    """How much a wrong answer on this check costs.
+    """How a finding is presented to the reviewer.
 
-    The primary release metric is the *critical* false-PASS rate, so without this the metric
-    cannot be computed at all — nothing else records which checks are critical (D3).
+    V1 uses one uniform reviewer flag.  The later tiers remain part of the persisted contract for
+    the release where GV and its reviewers deliberately classify them; they must not be used to
+    invent that judgement in V1.
     """
+
+    FLAG = "FLAG"
+    """A V1 finding for reviewer action, with no criticality tier (CLIENT_FACTS Q4)."""
 
     CRITICAL = "CRITICAL"
     """A wrong PASS could be manufactured and cost money. Blocks release."""
@@ -74,11 +78,7 @@ class Severity(StrEnum):
     """Cosmetic, or trivially corrected on site."""
 
     ADVISORY = "ADVISORY"
-    """Reported as a warning, never as a failure.
-
-    The client asked for exactly this: the ``CT009`` back-offset constraint says the program
-    *"should throw warning"* rather than fail the package.
-    """
+    """Reported as a warning, never as a failure, once a later release defines warning tiers."""
 
 
 #: Outcomes where the engine actually decided something.
