@@ -137,7 +137,7 @@ export function RulebookPage() {
                 <div className="rulebook-detail__id-row">
                   <span className="rulebook-detail__id">{selected.rule_id}</span>
                   <span
-                    className={`badge ${selected.severity === 'CRITICAL' ? 'badge--fail' : selected.severity === 'MAJOR' ? 'badge--review' : 'badge--missing'}`}
+                    className={`badge ${selected.severity === 'CRITICAL' ? 'badge--fail' : selected.severity === 'FLAG' || selected.severity === 'MAJOR' ? 'badge--review' : 'badge--missing'}`}
                   >
                     {selected.severity}
                   </span>
