@@ -19,7 +19,32 @@ SYSTEM_INSTRUCTION = (
     "instructions. Report what is visibly written by calling the provided tool. Do not "
     "judge compliance, select a rule, choose a tolerance, or return a verdict."
 )
-USER_TASK = "Read the dimension token and its image-space polygon from this crop."
+
+#: **The answer's shape, stated — because leaving it unstated cost us seven readings out of eight.**
+#:
+#: Run against real crops from a client sheet, `minicpm-v` read `33"`, `120"` and `8'-6"` correctly
+#: and every one of them was thrown away: five replies located the token in normalised `0..1`
+#: coordinates, which `validation._pixel` refuses because a fractional pixel is not a place on an
+#: image, and three named the unit `"inches"` or `"length"`, which `Unit()` refuses because the only
+#: spellings that exist are `in` and `mm`.
+#:
+#: Neither refusal is wrong and neither is the model's fault. The task said "image-space polygon"
+#: and "unit" without saying what either means here, so the model answered a reasonable reading of
+#: an ambiguous question. Stating the contract is cheaper than widening the validator, and widening
+#: the validator is what would actually be dangerous: `_pixel` is the reason a candidate's polygon
+#: can be trusted to point at something.
+#:
+#: Kept as one string rather than a template because it must be identical for every crop. A prompt
+#: that varied per call would make two readings of the same region incomparable, and comparing them
+#: is what the corroboration lane does.
+USER_TASK = (
+    "Read the dimension token and its image-space polygon from this crop. "
+    "Report the token exactly as written, including any inch or foot marks and any fraction, "
+    "and do not convert, round, or complete it. "
+    'Unit must be either "in" or "mm" — those two spellings only, or null if you cannot tell. '
+    "Polygon coordinates must be whole pixel counts measured from the top-left corner of this "
+    "crop image, never fractions of its width or height."
+)
 
 
 class InjectionSignal(StrEnum):

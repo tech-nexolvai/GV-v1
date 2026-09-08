@@ -522,3 +522,49 @@ def _require_same_page(
             "version. Stored coordinates are normalised per page, so a distance measured between "
             "two sheets is arithmetic on unrelated numbers, not a wrong answer."
         )
+
+
+def lines_within(
+    region: Polygon,
+    lines: tuple[DimensionExtent, ...],
+    *,
+    proximity_limit: Decimal,
+) -> tuple[DimensionExtent, ...]:
+    """Every line passing within `proximity_limit` of the centre of `region`, nearest first.
+
+    **This is proximity, not association.** `associate` needs a `DimensionText` — a number somebody
+    has read, with an identity and a direction — and refuses when two lines are equally good or when
+    a line's axis disagrees with the way the text runs. None of that is possible before the region
+    has been read, and none of it is answered here: this returns everything in range and decides
+    nothing.
+
+    It exists so that a caller choosing *which regions are worth reading* can ask whether a cluster
+    of glyph outlines sits on the drawing's line-work, and get the same answer `associate` would
+    later compute distances from. A second distance function in another module is the failure
+    `text_association`'s own docstring names: two geometry modules disagreeing about what they are
+    measuring, where the disagreement looks exactly like a correct answer.
+
+    Choosing a region to read assigns no meaning to it, which is why proximity alone is enough for
+    that job and is not enough for an association.
+    """
+    _check_measure("proximity_limit", proximity_limit)
+    if not isinstance(region, Polygon):
+        raise TypeError("region must be a Polygon in stored space")
+    if not isinstance(lines, tuple) or any(not isinstance(line, DimensionExtent) for line in lines):
+        raise TypeError("lines must be a tuple of DimensionExtent values")
+    for line in lines:
+        if line.document_version_id != region.document_version_id or line.page != region.page:
+            raise PolygonSpaceMismatchError(
+                "a region and a dimension line from different pages are not comparable; the "
+                "distance between them would be arithmetic on unrelated numbers"
+            )
+
+    limit = Fraction(proximity_limit)
+    anchor = _centre(region)
+    in_range = [
+        (line, _distance_squared(anchor, line))
+        for line in lines
+        if _distance_squared(anchor, line) <= limit * limit
+    ]
+    in_range.sort(key=lambda pair: pair[1])
+    return tuple(line for line, _ in in_range)

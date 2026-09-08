@@ -11,6 +11,7 @@ Verification: ``tests/extraction/models/test_validation.py``.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -21,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
 from units.measurement import Unit
+from units.normalise import UnitNormalisationError, normalise_to_inches
 
 
 class NovaToolPayload(BaseModel):
@@ -127,6 +129,75 @@ def _record_rejection(
     return rejection
 
 
+#: A fraction with no whole number in front of it: `1/2`, `3/4`, `15/16`, with an optional inch mark.
+#: Deliberately not narrowed to "suspicious-looking" fractions — every bare fraction matches.
+_BARE_FRACTION_RE = re.compile(r'^\s*\d+\s*/\s*\d+\s*"?\s*$')
+
+#: Typewriter and typographic spellings of the inch and foot marks, as a model tends to emit them.
+_MARK_SPELLINGS = (("\u2033", '"'), ("\u2032", "'"), ("''", '"'))
+
+
+def _probe_text(reading: str) -> str:
+    """The reading with the inch mark spelled the way the parser knows it.
+
+    Asked for `8' - 6"` at 600 dpi, `minicpm-v` answered `8'-6''` — the same dimension with the inch
+    double-prime typed as two apostrophes, which is how it has been written on typewriters and in
+    plain ASCII for a century. `normalise_to_inches` refuses it, so a correct reading was being
+    thrown away over a character.
+
+    This is a transcription equivalence, not a value guess: `''` and `\u2033` mean inches and nothing
+    else, and no number changes. **Only this probe sees the substitution.** The candidate keeps
+    exactly the characters the model produced, because a reviewer comparing a reading with a crop
+    must see what was actually returned.
+    """
+    probed = reading
+    for spelling, canonical in _MARK_SPELLINGS:
+        probed = probed.replace(spelling, canonical)
+    return probed
+
+
+def _reading_refusal(reading: str) -> str | None:
+    """Why this reading is not usable as a dimension, or `None` if it is.
+
+    **The validator used to check the polygon and say nothing about the reading.** On real crops that
+    inverted its job: it refused `33"`, `120"` and `8'-6''` over their polygons, and accepted `1/2` —
+    which was the model's reading of a label that says `28 1/2"`. A dropped whole number is the worst
+    failure available to this seam, because `1/2"` is a dimension a fabricator could plausibly be
+    given, so nothing downstream has cause to question it.
+
+    Two refusals:
+
+    **It must be a dimension token.** Judged by `units.normalise.normalise_to_inches`, the same
+    reader the deterministic vector lane uses, so "is this a dimension" has one answer in this
+    codebase instead of one per caller. Prose, `189 1 1/4` and `abc` fail here.
+
+    **A bare fraction abstains.** `1/2"` parses perfectly and is a legitimate thing to write on a
+    drawing — a 3/4" side panel is in the rulebook — so this refuses readings that are probably
+    right. That is the trade, made deliberately: a false abstention costs a reviewer one look at a
+    crop, and the alternative cost a 28½-inch dimension becoming a half-inch one in silence. It
+    applies to the model lane only; text read from the PDF itself never comes through here.
+
+    **What this does not do.** It does not check that the reading is *correct* — `10.8` is a
+    well-formed dimension token and was a misreading of `8' - 6"`. No validator can catch that, and
+    claiming otherwise would be worse than not checking.
+
+    `unmarked_unit=Unit.INCH` is passed unconditionally because this asks about **shape**, not
+    meaning: the parse result is discarded, nothing here produces a value, and the candidate's
+    `parsed_value` stays `None`. Which unit the number is in remains the `unit_guess` field's
+    business, and `evidence/normalize.py` already refuses a candidate that has none.
+    """
+    try:
+        normalise_to_inches(_probe_text(reading), unmarked_unit=Unit.INCH)
+    except UnitNormalisationError as error:
+        return f"reading {reading!r} is not a dimension token: {error}"
+    if _BARE_FRACTION_RE.match(reading):
+        return (
+            f"reading {reading!r} is a fraction with no whole number. A dropped whole number reads "
+            "as a valid dimension, so this abstains rather than accepting it"
+        )
+    return None
+
+
 def _pixel(value: Decimal) -> int:
     integral = value.to_integral_value()
     if value != integral:
@@ -174,6 +245,17 @@ def validate_payload(
             recorder=recorder,
             reason="candidate_conversion_failed",
             errors=(str(error),),
+        )
+
+    # Before the candidate exists, because a candidate is a reading somebody may act on.
+    refusal = _reading_refusal(validated.reading)
+    if refusal is not None:
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason="reading_not_a_dimension",
+            errors=(refusal,),
         )
 
     return ObservationCandidate(

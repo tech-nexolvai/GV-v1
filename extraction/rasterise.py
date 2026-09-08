@@ -41,10 +41,25 @@ from evidence.coordinates import SUPPORTED_ROTATIONS
 from evidence.crop import RenderedPage
 from extraction.reader import UnreadablePdf
 
-__all__ = ["PageTooLarge", "render_page"]
+__all__ = ["VISION_CROP_DPI", "PageTooLarge", "render_page"]
 
 #: PDF user space is 72 units to the inch. Not a tunable.
 _POINTS_PER_INCH: Final = 72
+
+#: The resolution to render at when a crop is going to a vision model. **Measured, not chosen.**
+#:
+#: On real crops from a client sheet, `minicpm-v` read a rotated `8' - 6"` as `10.8` from a 150 dpi
+#: render upscaled four times, and as `8'-6''` from the same region rendered natively at 600 — and
+#: added the inch marks it had been dropping on `33` and `120`. Interpolating a 40-pixel-tall label
+#: invents no detail; rendering the page again does, because these sheets are **vector** (`/Stamp`
+#: annotations of path geometry, no image XObject anywhere in the file), so there is no scan
+#: resolution to be limited by. The only cost is time and memory.
+#:
+#: Not a default anywhere. `render_page` still requires `dpi` and `maximum_pixels` from its caller,
+#: because a whole D-size sheet at 600 dpi is far past any budget this system has — this is the
+#: resolution for a **crop-sized region**, which is what the vector-first path renders. A caller
+#: rendering a full page still has to say what it can afford.
+VISION_CROP_DPI: Final = 600
 
 
 class PageTooLarge(ValueError):
