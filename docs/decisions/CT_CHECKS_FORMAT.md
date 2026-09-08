@@ -67,10 +67,10 @@ layouts (CLIENT_FACTS Q20).
    panels written out and no default thickness.
 3. The **final CT0xx vocabulary + acquisition types** (Measured / Calculated / Specified / Global) — the
    countertop answer to Q20 for this layout; maps onto our operand sources + parameter layers.
-   **RECORDED (#537):** `Acquisition` in `vocabulary/semantic_types.py`, per code — except `CT007`,
-   see the open question below.
+   **RECORDED (#537):** `Acquisition` in `vocabulary/semantic_types.py`, per code, including `CT007`
+   after Raj's 2026-09-09 confirmation.
 
-## Still pending (this deck does NOT close everything)
+## Resolved since this deck
 
 - **`CT007`: exact value or minimum? — RESOLVED 2026-09-09: EXACT.** Raj settled the slide-8 "Global
   minimum" vs prose "global constant" split in favour of a **standard hold dimension**: "Keep 4" as
@@ -81,11 +81,14 @@ layouts (CLIENT_FACTS Q20).
 - **The back-offset remainder: warn or fail? — RESOLVED via Q4: a uniform FLAG.** Q4 (client choice,
   Raj + Abhishek) is that V1 flags everything with no severity split, so below-minimum is REVIEW
   REQUIRED like every other check — neither the deck's "warn" tier nor `severity: CRITICAL`. The
-  shipped `ct_back_offset_min_001` should drop CRITICAL to the V1 uniform-flag model; severity tiers
-  stay deferred (Q4) until 10–50 projects.
+  shipped `ct_back_offset_min_001` uses the V1 uniform-flag model; severity tiers stay deferred (Q4)
+  until 10–50 projects.
 - **The back-offset Global MIN Constant VALUE — SUPPLIED 2026-09-09: 2.375"–2.5"** (Raj, from the
   vendor). A range, not one number: recorded as a project-configurable parameter, V1 default **2.5"**
   (the false-PASS-safe end, per Q2), reviewer-adjustable down to 2.375" per project.
+
+## Still pending (this deck does NOT close everything)
+
 - **Layout scope** — three-sided only; back-only and island vocabularies still to come (Q20 not fully
   final).
 - **The drawings themselves (#274).** This is the *spec*, not the drawings — semantic typing still needs
