@@ -129,6 +129,17 @@ class MarkupNote:
 
     extent: Polygon
     image_extent: tuple[ImagePoint, ...]
+    rotation_degrees: int
+    """Which way the note reads, from the annotation's own `/Rotation`. **Read, never inferred.**
+
+    `text_association.associate` filters candidate lines by whether they run the way the text does,
+    so this decides which line a note can be attached to. On the first real sheet exactly two notes
+    carry `270` and the rest carry nothing — and inferring it from the box would be worse than
+    useless: a box around `102"` is taller than it is wide, and so is a box around `2"` that is not
+    rotated at all. `DimensionText` refuses an inferred rotation for the same reason.
+
+    Zero when the file does not say, which is the ordinary case and is what a viewer draws."""
+
     annotation_index: int
     """Where in `/Annots` it came from, so a reader can go back to the file and check."""
 
@@ -231,6 +242,43 @@ def _text(value: object) -> str | None:
             return value.decode("utf-16-be", "replace")[1:]
         return value.decode("latin-1", "replace")
     return str(value)
+
+
+#: The four rotations text can be set at. Anything else has no representation here — the same closed
+#: set `text_association.TEXT_ROTATIONS` holds, and for the same reason: rounding an angle to the
+#: nearest axis would decide which line a number belongs to.
+_ROTATIONS: Final = (0, 90, 180, 270)
+
+
+def _rotation_degrees(annotation: dict[str, Any]) -> int:
+    """The annotation's stated rotation, normalised to 0, 90, 180 or 270.
+
+    `/Rotation` is what Acrobat and its imitators write on a rotated `/FreeText`; `/Rotate` is the
+    page-level spelling and is accepted here because some tools use it on annotations too. A negative
+    or over-turn value is brought into range — `-90` and `270` are the same quarter turn — because
+    that is arithmetic on a stated value, not a guess about an unstated one.
+
+    **An angle that is not a quarter turn is refused, not rounded.** A note set at 45 degrees reads
+    along no axis, and rounding it to the nearest one would pick which dimension line it belongs to.
+    """
+    stated = annotation.get("Rotation")
+    if stated is None:
+        stated = annotation.get("Rotate")
+    if stated is None:
+        return 0
+    try:
+        degrees = int(_decimal(stated))
+    except (TypeError, ValueError, ArithmeticError) as error:
+        raise UnreadablePdf(
+            f"an annotation states a rotation that is not a number: {stated!r}"
+        ) from error
+    degrees %= 360
+    if degrees not in _ROTATIONS:
+        raise UnreadablePdf(
+            f"an annotation is rotated {degrees} degrees, which reads along no axis. Rounding it to "
+            "the nearest one would decide which dimension line its text belongs to."
+        )
+    return degrees
 
 
 def _subtype(annotation: dict[str, Any]) -> str:
@@ -707,6 +755,11 @@ def _read_layers(
                         )
                     continue
 
+                try:
+                    rotation = _rotation_degrees(annotation)
+                except UnreadablePdf as error:
+                    refusals.append(LayerRefusal(index, subtype, str(error)))
+                    continue
                 note = MarkupNote(
                     layer=layer,
                     subtype=subtype,
@@ -714,6 +767,7 @@ def _read_layers(
                     author=_text(annotation.get("T")),
                     extent=extent,
                     image_extent=image_extent,
+                    rotation_degrees=rotation,
                     annotation_index=index,
                 )
                 (markup if layer is DrawingLayer.REVIEWER_MARKUP else other).append(note)

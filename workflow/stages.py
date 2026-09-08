@@ -50,6 +50,7 @@ from app.db.base import utc_now
 from app.evidence.record import (
     open_extraction_run,
     persist_manifest,
+    record_associations,
     record_candidates,
     record_digest_mismatch,
     record_markup_candidates,
@@ -80,11 +81,13 @@ from app.verdicts.rulebook import snapshot_store
 from evidence.coordinates import StoredPoint
 from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
 from evidence.polygon import Polygon
-from extraction.annotations import read_markup_layer
+from extraction.annotations import PageLayers, read_annotation_layers, read_markup_layer
+from extraction.geometry.containment import DimensionExtent
+from extraction.geometry.text_association import DimensionText, associate
 from extraction.manifest import build_manifest
 from extraction.ocr import OcrEngine, RapidOcrEngine, read_page
 from extraction.rasterise import PageTooLarge, render_page
-from extraction.reader import UnreadablePdf, read_page_contents, read_pages
+from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
 from reports.spreadsheet import StoredFinding, write_stored_workbook
 from retrieval.identifiers import NormalizedIdentifier, normalize_identifier
 from retrieval.matching import MatchableItem, MatchDocumentRole, exact_match
@@ -100,6 +103,7 @@ from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
+from workflow.association import AssociationSettings, ReadItem, dimension_texts
 from workflow.evidence_operands import operands_from_evidence
 from workflow.idempotency import stage_idempotency_key
 from workflow.measurements import run_parameters_for
@@ -118,6 +122,15 @@ EXTRACTOR_VERSION = "extraction.reader/1"
 #: idempotency guard in each writer only ever sees its own route's rows.
 MARKUP_EXTRACTOR = "extraction.annotations"
 MARKUP_EXTRACTOR_VERSION = "extraction.annotations/1"
+
+#: The association step's own identity, so its thresholds are part of a run's identity (#545).
+#:
+#: A third run per page, and for the same reason as the second: `open_extraction_run` keys a run on
+#: extractor, version and configuration. The five lengths go into the configuration, which is what
+#: makes a re-association under different numbers a different run rather than the same one quietly
+#: meaning something else.
+ASSOCIATION_EXTRACTOR = "extraction.geometry.text_association"
+ASSOCIATION_EXTRACTOR_VERSION = "extraction.geometry.text_association/1"
 
 #: One character is enough to call a page text-bearing. `build_manifest` requires the threshold from
 #: its caller and gives it no default, because "enough text to be worth reading" is a judgement about
@@ -194,6 +207,7 @@ class DatabaseStages:
         ocr_engine: OcrEngine | None = None,
         operands: Mapping[str, Mapping[str, VerdictOperand]] | None = None,
         discriminators: Mapping[str, str] | None = None,
+        association: AssociationSettings | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -205,6 +219,12 @@ class DatabaseStages:
         """
         self._store = store
         self._dpi = dpi
+        # **`None` means the association step does not run, and that is recorded as not run.**
+        # Association is inherently thresholded — unlike reading a `/FreeText`, there is no
+        # threshold-free version of it — so the five lengths are a deployment's to state. A default
+        # here would be this module choosing which line a dimension belongs to on every drawing
+        # anybody ever runs, which is the guess `text_association` refuses to make for itself.
+        self._association = association
         # Injected so a test can pass a stub: building the real one loads ONNX models, and a suite
         # that loaded them to test row-writing would be paying for a model it is not testing.
         self._ocr_engine = ocr_engine
@@ -404,6 +424,8 @@ class DatabaseStages:
         for page in pages:
             written = 0
             route = "vector"
+            vector_rows: list[ObservationCandidate] = []
+            read: PageContents | None = None
             if not page.has_vector_text:
                 # **A scanned page, which the vector reader cannot see at all.** Until this, such a
                 # page produced no candidates and was indistinguishable from a page with nothing on
@@ -443,16 +465,16 @@ class DatabaseStages:
                         )
                         span.set_status(Status(StatusCode.ERROR, "page did not parse"))
                     if contents is not None:
-                        written = len(
-                            record_candidates(
-                                session,
-                                contents.texts,
-                                document_version_id=version_id,
-                                page_id=page.id,
-                                extraction_run_id=run.id,
-                                page_index=page.index,
-                            )
+                        vector_rows = record_candidates(
+                            session,
+                            contents.texts,
+                            document_version_id=version_id,
+                            page_id=page.id,
+                            extraction_run_id=run.id,
+                            page_index=page.index,
                         )
+                        written = len(vector_rows)
+                        read = contents
             # **The reviewer's own corrections, which no route above can see.** They are `/FreeText`
             # annotations: text in the file, not marks on a picture of it. Every page of the first
             # real client set reaches here having been sent to OCR, because none of them has vector
@@ -463,19 +485,41 @@ class DatabaseStages:
             # read them; this reads what was written on top, and both are recorded. Where the two
             # disagree — the vendor's own overall width against the reviewer's correction of it —
             # that disagreement is the review signal and neither row is allowed to replace the other.
-            markup_written = self._read_page_markup(
+            markup_rows, layers = self._read_page_markup(
                 session,
                 version_id=version_id,
                 data=data,
                 page=page,
                 task_run_id=run.task_run_id,
             )
+
+            # **Both routes' readings against all of the page's lines, in one pass.** A reviewer's
+            # correction labels a line the vendor drew, so judging the two layers against separate
+            # sets of geometry would refuse exactly the associations that matter most.
+            # `associate` neither knows nor needs to know which layer a line came from: keeping the
+            # layers apart is about the authority of a *value*, not about what is near it.
+            associated = self._associate_page(
+                session,
+                page=page,
+                task_run_id=run.task_run_id,
+                readings=(
+                    (read.texts if read is not None else (), vector_rows),
+                    ((layers.markup if layers is not None else ()), markup_rows),
+                ),
+                lines=(
+                    (read.segments if read is not None else ())
+                    + (layers.drawing_segments if layers is not None else ())
+                ),
+            )
             results.append(
                 PageResult(
                     index=page.index,
                     payload={
                         "candidates": written,
-                        "markup_candidates": markup_written,
+                        "markup_candidates": len(markup_rows),
+                        # `None` when no thresholds were configured: the step did not run, which is
+                        # not the same fact as its having found nothing.
+                        "associations": associated,
                         "has_vector_text": page.has_vector_text,
                         # Which route read this page. Two readings of the same page by different
                         # routes are the basis of corroboration, so the route has to be visible.
@@ -485,6 +529,65 @@ class DatabaseStages:
             )
         return results
 
+    def _associate_page(
+        self,
+        session: Session,
+        *,
+        page: Page,
+        task_run_id: UUID,
+        readings: Sequence[tuple[Sequence[ReadItem], Sequence[ObservationCandidate]]],
+        lines: tuple[DimensionExtent, ...],
+    ) -> int | None:
+        """Attach each of a page's readings to the line it annotates, or record why not.
+
+        Returns the number of decisions recorded, or `None` when no thresholds were configured —
+        which is a different fact from zero. Zero means the step ran and had nothing to decide; `None`
+        means nobody asked it to run, and a caller that could not tell them apart would read an
+        unconfigured pipeline as a page with no readings on it.
+
+        **Its own extraction run, carrying the thresholds.** The third per page, for the same reason
+        as the second: a run is keyed on its configuration, so a re-association under a different
+        proximity limit is a different run and its rows cannot be confused with the first's.
+
+        **Every reading gets a row, attached or refused.** `AssociationResult` refuses to be built if
+        one goes missing from both halves, and the refusals are the half that matters today: two
+        lines equally close to one number is the ordinary case on a dimensioned elevation, and an
+        unattached number is what a reviewer has to look at.
+        """
+        settings = self._association
+        if settings is None:
+            return None
+
+        texts: list[DimensionText] = []
+        for items, rows in readings:
+            if not items:
+                continue
+            texts.extend(dimension_texts(items, [row.id for row in rows]))
+        if not texts:
+            return 0
+
+        with traced(
+            "extraction.page.association",
+            document_version_id=str(page.document_version_id),
+            page_index=page.index,
+            extractor_version=ASSOCIATION_EXTRACTOR_VERSION,
+        ):
+            result = associate(
+                tuple(texts),
+                lines,
+                proximity_limit=settings.proximity_limit,
+                ambiguity_margin=settings.ambiguity_margin,
+            )
+            association_run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=ASSOCIATION_EXTRACTOR,
+                extractor_version=ASSOCIATION_EXTRACTOR_VERSION,
+                config_hash=f"dpi={self._dpi};{settings.config_hash}",
+                dpi=self._dpi,
+            )
+            return len(record_associations(session, result, extraction_run_id=association_run.id))
+
     def _read_page_markup(
         self,
         session: Session,
@@ -493,8 +596,12 @@ class DatabaseStages:
         data: bytes,
         page: Page,
         task_run_id: UUID,
-    ) -> int:
-        """Record one page's reviewer annotations as candidates, and say how many.
+    ) -> tuple[list[ObservationCandidate], PageLayers | None]:
+        """Record one page's reviewer annotations as candidates, and return them with the layers.
+
+        The layers come back because the association step needs them: the notes it will attach and,
+        when the thresholds are configured, the vendor line-work to attach them to. `None` means the
+        page's annotations could not be read at all, which is not the same as a page with none.
 
         **Reads only the markup half**, through `read_markup_layer`. The other half of that module
         classifies the vendor's path geometry and cannot be called without three empirical lengths
@@ -510,12 +617,27 @@ class DatabaseStages:
         stop for the routes above.
         """
         try:
-            layers = read_markup_layer(
-                data,
-                page.index,
-                document_version_id=version_id,
-                dpi=self._dpi,
-            )
+            if self._association is None:
+                layers = read_markup_layer(
+                    data,
+                    page.index,
+                    document_version_id=version_id,
+                    dpi=self._dpi,
+                )
+            else:
+                # **The full read, because the association step needs the vendor's line-work too.**
+                # `read_markup_layer` skips it deliberately: it needs no thresholds and the pipeline
+                # must not invent any. When a deployment has stated them, there is nothing to invent
+                # and the geometry is exactly what a reading has to be attached to.
+                layers = read_annotation_layers(
+                    data,
+                    page.index,
+                    document_version_id=version_id,
+                    dpi=self._dpi,
+                    line_minimum_pt=self._association.line_minimum_pt,
+                    glyph_maximum_pt=self._association.glyph_maximum_pt,
+                    glyph_gap_pt=self._association.glyph_gap_pt,
+                )
         except UnreadablePdf as error:
             # The run is opened here rather than before the read, because a run is a record of work
             # and most pages have no markup to do any on. A *failed* attempt is work: the failure
@@ -536,12 +658,12 @@ class DatabaseStages:
                 page_index=page.index,
                 error=error,
             )
-            return 0
+            return [], None
         if not layers.markup:
             # Nothing to record and nothing wrong: most sheets in most sets carry no markup at all,
             # and a run opened for a page with no notes would be a row claiming work that did not
             # happen.
-            return 0
+            return [], layers
 
         with traced(
             "extraction.page.markup",
@@ -557,7 +679,7 @@ class DatabaseStages:
                 config_hash=f"dpi={self._dpi}",
                 dpi=self._dpi,
             )
-            return len(
+            return (
                 record_markup_candidates(
                     session,
                     layers.markup,
@@ -565,7 +687,8 @@ class DatabaseStages:
                     page_id=page.id,
                     extraction_run_id=markup_run.id,
                     page_index=page.index,
-                )
+                ),
+                layers,
             )
 
     def _read_page_by_ocr(

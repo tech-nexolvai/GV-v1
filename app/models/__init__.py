@@ -47,6 +47,7 @@ from app.models.evidence import (
     EvidenceCandidateRole,
     EvidenceCorroborationLane,
     EvidenceSupportingCandidate,
+    ObservationAssociation,
     ObservationCandidate,
 )
 from app.models.matching import (
@@ -132,6 +133,7 @@ __all__ = [
     "MetricResult",
     "ModelInvocation",
     "ModelInvocationOutcome",
+    "ObservationAssociation",
     "ObservationCandidate",
     "OutboxEntry",
     "OutputArtifact",

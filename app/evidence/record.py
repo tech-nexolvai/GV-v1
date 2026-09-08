@@ -38,12 +38,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.document import Page
-from app.models.evidence import ObservationCandidate
+from app.models.evidence import ObservationAssociation, ObservationCandidate
 from app.models.runs import ExtractionFailure, ExtractionRun
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.coordinates import ImagePoint, PageBox
 from evidence.corroborate import corroborate
 from extraction.annotations import MarkupNote
+from extraction.geometry.text_association import AssociationResult
 from extraction.manifest import PageManifest
 from extraction.ocr import OcrItem
 from extraction.reader import TextItem
@@ -57,6 +58,7 @@ __all__ = [
     "UNPARSED_FLAG",
     "open_extraction_run",
     "persist_manifest",
+    "record_associations",
     "record_candidates",
     "record_markup_candidates",
     "record_ocr_candidates",
@@ -396,6 +398,93 @@ def record_markup_candidates(
         session.add(row)
         written.append(row)
 
+    session.flush()
+    return written
+
+
+def record_associations(
+    session: Session,
+    result: AssociationResult,
+    *,
+    extraction_run_id: UUID,
+) -> list[ObservationAssociation]:
+    """Persist what the association step decided about each reading — attachment or refusal.
+
+    `AssociationResult` holds both halves and its type refuses to be built if a reading went missing
+    from both, so this writes every reading it was given. **The refusals are the half to notice.**
+    Two lines equally close to one number is the ordinary case on a dimensioned elevation, and an
+    unattached number is the list a reviewer has to look at: recording only the attachments would
+    turn "we could not tell" into silence, and silence reads downstream as a drawing with no
+    dimensions on it.
+
+    Coordinates go in as text. A JSON float would lose the exactness the units layer exists to keep,
+    and these numbers are what decided which line a dimension belongs to — the same choice
+    `pages.media_box` makes.
+
+    **`observation_id` is the candidate's own id.** `associate` needs an identity per reading and
+    `workflow/association.py:dimension_texts` gives it the row's, so the answer comes back already
+    keyed to the row it is about. No lookup, and nothing to mismatch.
+
+    **Idempotent per run and per reading, not per run.** One extraction run covers every page of
+    every document in a stage execution, so a guard on the run alone answers "has anything been
+    associated yet" — and on a seventeen-page set that meant page one's four decisions were written
+    and every later page was handed those four back instead of recording its own. The guard is on
+    the readings actually in hand, which is exactly what the unique constraint on
+    `(candidate_id, extraction_run_id)` protects. Found by running it over a real document; a
+    single-page test cannot see it.
+    """
+    candidate_ids = [entry.text.observation_id for entry in result.associated]
+    candidate_ids += [entry.text.observation_id for entry in result.unassociated]
+    if not candidate_ids:
+        return []
+
+    already = list(
+        session.execute(
+            select(ObservationAssociation).where(
+                ObservationAssociation.extraction_run_id == extraction_run_id,
+                ObservationAssociation.candidate_id.in_(candidate_ids),
+            )
+        ).scalars()
+    )
+    if already:
+        return already
+
+    if session.get(ExtractionRun, extraction_run_id) is None:
+        raise ValueError(
+            f"no extraction run {extraction_run_id}: an association must name what decided it"
+        )
+
+    written: list[ObservationAssociation] = []
+    for attached in result.associated:
+        written.append(
+            ObservationAssociation(
+                candidate_id=attached.text.observation_id,
+                extraction_run_id=extraction_run_id,
+                start_x=str(attached.line.start.x),
+                start_y=str(attached.line.start.y),
+                end_x=str(attached.line.end.x),
+                end_y=str(attached.line.end.y),
+                signals=list(attached.signals),
+            )
+        )
+    for refused in result.unassociated:
+        written.append(
+            ObservationAssociation(
+                candidate_id=refused.text.observation_id,
+                extraction_run_id=extraction_run_id,
+                signals=[],
+                refusal_reason=refused.reason,
+                # What the choice was between. A reviewer told only that an association could not be
+                # made cannot check the geometry; shown the candidates, they can.
+                candidate_lines=[
+                    [str(line.start.x), str(line.start.y), str(line.end.x), str(line.end.y)]
+                    for line in refused.candidates
+                ]
+                or None,
+            )
+        )
+    for row in written:
+        session.add(row)
     session.flush()
     return written
 

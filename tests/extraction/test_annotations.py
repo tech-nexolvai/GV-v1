@@ -96,10 +96,14 @@ def _pdf(
     return bytes(out)
 
 
-def _free_text(text: str = KNOWN_MARKUP, rect: bytes = b"[40 40 120 60]") -> bytes:
+def _free_text(
+    text: str = KNOWN_MARKUP, rect: bytes = b"[40 40 120 60]", rotation: bytes = b""
+) -> bytes:
+    """One reviewer note. `rotation` writes the `/Rotation` a rotated note carries in a real file."""
     return (
         b"<< /Type /Annot /Subtype /FreeText /Rect "
         + rect
+        + rotation
         + b" /Contents ("
         + text.encode("latin-1")
         + b") /T ("
@@ -491,3 +495,56 @@ def test_the_markup_only_read_refuses_a_page_that_is_not_there() -> None:
     """Input: page 9 of a one-page file. Outcome: `UnreadablePdf`, the same as the full read."""
     with pytest.raises(UnreadablePdf, match="beyond"):
         read_markup_layer(BOTH_LAYERS, 9, document_version_id=DOCUMENT, dpi=DPI)
+
+
+def test_a_stated_rotation_is_read_from_the_annotation() -> None:
+    """Input: a note carrying `/Rotation 270`. Outcome: 270, from the file.
+
+    `associate` filters candidate lines by whether they run the way the text does, so this decides
+    which line a note can be attached to at all. On the first real sheet exactly two notes carry it.
+    """
+    rotated = _pdf(annotations=[_free_text(rect=b"[40 40 60 120]", rotation=b" /Rotation 270")])
+
+    assert _layers(rotated).markup[0].rotation_degrees == 270
+
+
+def test_an_unstated_rotation_is_zero_and_not_guessed_from_the_box() -> None:
+    """**Input: a note in a tall, narrow box and no `/Rotation`. Outcome: 0.**
+
+    The box is the wrong evidence and this is the case that proves it: a tall box holds a rotated
+    `102"` and an unrotated `2"` equally well. `DimensionText` refuses an inferred rotation for the
+    same reason, and a wrong one attaches a number to a line running the wrong way — a well-formed
+    row that is about the wrong dimension.
+    """
+    tall = _pdf(annotations=[_free_text(rect=b"[40 40 55 200]")])
+
+    assert _layers(tall).markup[0].rotation_degrees == 0
+
+
+@pytest.mark.parametrize(
+    ("stated", "expected"),
+    [(b" /Rotation -90", 270), (b" /Rotation 450", 90), (b" /Rotate 180", 180)],
+)
+def test_a_rotation_is_brought_into_range(stated: bytes, expected: int) -> None:
+    """Input: a negative, an over-turn, and the page-level spelling. Outcome: the same quarter turn.
+
+    Arithmetic on a stated value, not a guess about an unstated one: `-90` and `270` are the same
+    rotation, and some tools write `/Rotate` on an annotation where others write `/Rotation`.
+    """
+    turned = _pdf(annotations=[_free_text(rotation=stated)])
+
+    assert _layers(turned).markup[0].rotation_degrees == expected
+
+
+def test_an_angle_that_is_not_a_quarter_turn_is_refused_not_rounded() -> None:
+    """Input: a note at 45 degrees. Outcome: a refusal naming it.
+
+    Text at 45 degrees reads along no axis. Rounding it to the nearest one would pick which
+    dimension line the note belongs to, which is precisely the decision that must not be made by
+    rounding — `DimensionText` refuses the same value for the same reason.
+    """
+    skewed = _pdf(annotations=[_free_text(rotation=b" /Rotation 45")])
+    layers = _layers(skewed)
+
+    assert layers.markup == ()
+    assert any("reads along no axis" in item.reason for item in layers.refusals)
