@@ -18,6 +18,17 @@ interface FindingCardProps {
   isSelected: boolean;
   onViewEvidence: (finding: Finding) => void;
   onAction: (findingId: string, action: 'confirm' | 'correct' | 'except' | 'dismiss', note?: string) => void;
+  /**
+   * Correct a reading, with what it should say.
+   *
+   * Separate from `onAction` because a correction is not a kind — it is a kind *and a value*, and
+   * the two go to a different endpoint. Sending `correct` as a bare kind recorded that something had
+   * been corrected without saying to what, and the ledger stayed empty.
+   */
+  onCorrect: (findingId: string, correctedValue: string) => void;
+  /** Grant an exception, with the reason and the date it runs out. Both required — a permanent
+   *  silent exception is how a check gets switched off and nobody remembers. */
+  onExcept: (findingId: string, reason: string, expiresAt: string) => void;
   animationDelay?: number;
 }
 
@@ -26,10 +37,18 @@ export function FindingCard({
   isSelected,
   onViewEvidence,
   onAction,
+  onCorrect,
+  onExcept,
   animationDelay = 0,
 }: FindingCardProps) {
   const [expanded, setExpanded] = useState(finding.outcome === 'FAIL');
   const [showTrace, setShowTrace] = useState(false);
+  // Which payload the reviewer is filling in, if either. `null` is the ordinary state: the buttons
+  // that need nothing more still act on one click.
+  const [pending, setPending] = useState<'correct' | 'except' | null>(null);
+  const [correctedValue, setCorrectedValue] = useState('');
+  const [reason, setReason] = useState('');
+  const [expiresAt, setExpiresAt] = useState('');
 
   useEffect(() => {
     if (isSelected) {
@@ -188,17 +207,97 @@ export function FindingCard({
                   )}
                   <button
                     className="btn btn--reviewer"
-                    onClick={() => onAction(finding.id, 'correct')}
+                    onClick={() => setPending(pending === 'correct' ? null : 'correct')}
+                    aria-expanded={pending === 'correct'}
                   >Correct</button>
                   <button
                     className="btn btn--reviewer"
-                    onClick={() => onAction(finding.id, 'except')}
+                    onClick={() => setPending(pending === 'except' ? null : 'except')}
+                    aria-expanded={pending === 'except'}
                   >Exception</button>
                   <button
                     className="btn btn--reviewer btn--reviewer--dismiss"
                     onClick={() => onAction(finding.id, 'dismiss')}
                   >Dismiss</button>
                 </div>
+              )}
+
+              {pending === 'correct' && (
+                <form
+                  className="finding-card__decision"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!correctedValue.trim()) return;
+                    onCorrect(finding.id, correctedValue.trim());
+                    setPending(null);
+                    setCorrectedValue('');
+                  }}
+                >
+                  <label className="finding-card__decision-label" htmlFor={`c-${finding.id}`}>
+                    What should it say?
+                  </label>
+                  <input
+                    id={`c-${finding.id}`}
+                    className="value-input"
+                    /* With its unit, and the server parses it: `25.5"` and `25 1/2"` are the same
+                       correction. A bare number is refused rather than assumed to be inches. */
+                    placeholder={'e.g. 25 1/2"'}
+                    value={correctedValue}
+                    onChange={(e) => setCorrectedValue(e.target.value)}
+                    autoFocus
+                  />
+                  <button className="btn btn--reviewer" type="submit" disabled={!correctedValue.trim()}>
+                    Record correction
+                  </button>
+                </form>
+              )}
+
+              {pending === 'except' && (
+                <form
+                  className="finding-card__decision"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!reason.trim() || !expiresAt) return;
+                    // Midday rather than midnight: a date input gives no time, and an exception
+                    // stamped 00:00 in a browser east of UTC expires the day before it was granted.
+                    onExcept(finding.id, reason.trim(), new Date(`${expiresAt}T12:00:00Z`).toISOString());
+                    setPending(null);
+                    setReason('');
+                    setExpiresAt('');
+                  }}
+                >
+                  <label className="finding-card__decision-label" htmlFor={`r-${finding.id}`}>
+                    Why is this acceptable?
+                  </label>
+                  <input
+                    id={`r-${finding.id}`}
+                    className="value-input"
+                    placeholder="e.g. the vendor confirmed the site dimension by phone"
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    autoFocus
+                  />
+                  <label className="finding-card__decision-label" htmlFor={`e-${finding.id}`}>
+                    Until when?
+                  </label>
+                  <input
+                    id={`e-${finding.id}`}
+                    className="value-input"
+                    type="date"
+                    /* Required, and there is no "never". The date is the control: it is what forces
+                       somebody to look again, and the person who looks again is usually not the
+                       person who granted it. */
+                    value={expiresAt}
+                    onChange={(e) => setExpiresAt(e.target.value)}
+                  />
+                  <button
+                    className="btn btn--reviewer"
+                    type="submit"
+                    disabled={!reason.trim() || !expiresAt}
+                  >
+                    Grant until this date
+                  </button>
+                </form>
               )}
 
               {hasAction && (

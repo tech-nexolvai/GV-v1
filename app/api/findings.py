@@ -44,7 +44,7 @@ import binascii
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -64,9 +64,12 @@ from app.models import (
     RuleDefinition,
     RuleSnapshot,
 )
+from app.review.exceptions import ExceptionGrant, FindingRef, decide
+from app.review.session import exceptions_for_revision
 from app.schemas.findings import (
     OUTCOME_ORDER,
     SEVERITY_ORDER,
+    ExceptionOut,
     FindingCounts,
     FindingOut,
     FindingPage,
@@ -324,6 +327,62 @@ def _as_finding(row: Row[Any]) -> dict[str, Any]:
     return data
 
 
+def _exception_annotations(
+    session: Session, items: Sequence[FindingOut], *, when: datetime
+) -> None:
+    """Decide every listed finding against this revision's exceptions, in place.
+
+    **The call `apply_exceptions` never had.** That module was written to be asked this question and
+    nothing asked it, so a granted exception changed nothing anywhere. This is the asking.
+
+    Nothing is filtered. The module is explicit that an excepted finding stays in the report
+    carrying who accepted it, why and when the acceptance runs out, because a finding that vanished
+    would be indistinguishable from a check that never ran. So a suppressed finding is annotated,
+    and a client that ignores the annotation shows it — which is the safe direction.
+
+    `item_id` is `None` for every finding here, so an item-scoped exception covers nothing yet:
+    `finding_evidence` links a finding to observations rather than to a drawing item, and inventing
+    the link would let an exception cover findings nobody granted it for. Finding and package scopes
+    both work today, and `FindingRef` documents that an absent item id falls back to nothing rather
+    than to something broader.
+    """
+    if not items:
+        return
+    revisions = {item.package_revision_id for item in items}
+    grants: dict[UUID, tuple[ExceptionGrant, ...]] = {
+        revision: tuple(
+            ExceptionGrant.from_stored(row)
+            for row in exceptions_for_revision(session, package_revision_id=revision)
+        )
+        for revision in revisions
+    }
+    for item in items:
+        held = grants[item.package_revision_id]
+        if not held:
+            continue
+        decision = decide(
+            FindingRef(
+                finding_id=item.id,
+                package_revision_id=item.package_revision_id,
+                item_id=None,
+            ),
+            held,
+            when=when,
+        )
+        applied = decision.applied or (decision.expired[0] if decision.expired else None)
+        if applied is None:
+            continue
+        item.exception = ExceptionOut(
+            in_force=decision.is_excepted,
+            scope=applied.scope.value,
+            scope_id=applied.scope_id,
+            reason=applied.reason,
+            approved_by=applied.approved_by,
+            expires_at=applied.expires_at,
+            explanation=decision.explain(),
+        )
+
+
 def _package_is_in_project(session: Session, project_id: UUID, package_id: UUID) -> bool:
     """Whether this package exists *and* belongs to this project — the two are one question here.
 
@@ -432,6 +491,9 @@ def list_findings(
     # model that expects named fields is the sort of thing that works until a library decides to
     # treat the tuple half first. The mapping is unambiguous.
     items = [FindingOut.model_validate(_as_finding(row)) for row in page]
+    # Decided here rather than in SQL: whether an exception still applies depends on the clock, and
+    # `app/review/exceptions.py` enforces expiry at the moment of reading for exactly that reason.
+    _exception_annotations(session, items, when=datetime.now(UTC))
 
     next_cursor = None
     if len(rows) > limit and items:

@@ -9,6 +9,9 @@ import {
   listReviewSessions,
   openReviewSession,
   recordReviewAction,
+  decideEvidence,
+  grantException,
+  getFindingChain,
   approvePackage,
   downloadReport,
 } from '../api/client';
@@ -210,6 +213,82 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
   }
 
   /**
+   * Correct a reading, and write the ledger.
+   *
+   * **This is what `correct` did not do.** The actions route takes a kind and a note, so a
+   * correction recorded that something had been corrected without saying to what — and the
+   * correction ledger, which `AGENTS.md` §2.6 makes the record of what we got wrong, stayed empty.
+   * `D5.4` counts the reviewer correction rate off that table, so an empty one reads as "no
+   * corrections were needed".
+   *
+   * The observation is the one the finding was decided from. A finding may rest on several, and
+   * this corrects the first authoritative one — which is honest for a single-operand check and
+   * wrong for a multi-operand one, so a finding with more than one is left to the evidence view
+   * rather than guessed at here.
+   */
+  async function handleCorrect(findingId: string, correctedValue: string) {
+    setActionError(null);
+    try {
+      const current = await ensureSession();
+      const chain = await getFindingChain(projectId(), packageId, findingId);
+      // Through `evidence`, which is where the chain puts the observation an operand came from —
+      // and `null` there is meaningful: an operand a reviewer supplied has no observation behind it,
+      // so there is nothing to correct rather than something to correct blindly.
+      const observationId =
+        chain.operands?.find(operand => operand.evidence !== null)?.evidence
+          ?.canonical_observation_id ?? null;
+      if (observationId === null) {
+        setActionError(
+          'This finding does not name a reading that can be corrected — it has no authoritative ' +
+            'observation behind it, so there is nothing to correct.',
+        );
+        return;
+      }
+      await decideEvidence(projectId(), current.id, {
+        finding_id: findingId,
+        observation_id: observationId,
+        action: 'correct',
+        corrected_value: correctedValue,
+      });
+      setFindings(prev =>
+        prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'correct' } : f)),
+      );
+    } catch (error) {
+      setActionError(
+        `That correction was not recorded — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Accept one deviation, until a date.
+   *
+   * The scope is this finding and nothing wider. A reviewer saying "this one is acceptable" is not
+   * the same as saying the rule should stop firing, and the second is a rule change that goes
+   * through the rulebook where somebody reviews it.
+   */
+  async function handleExcept(findingId: string, reason: string, expiresAt: string) {
+    setActionError(null);
+    try {
+      const current = await ensureSession();
+      await grantException(projectId(), current.id, {
+        finding_id: findingId,
+        scope: 'finding',
+        scope_id: findingId,
+        reason,
+        expires_at: expiresAt,
+      });
+      setFindings(prev =>
+        prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'except' } : f)),
+      );
+    } catch (error) {
+      setActionError(
+        `That exception was not granted — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
    * Sign the package off.
    *
    * **This used to close the sitting and nothing else** — no approval, no state change, no check
@@ -391,6 +470,8 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
         selectedFinding={selectedFindingId}
         onViewEvidence={handleViewEvidence}
         onAction={handleAction}
+        onCorrect={handleCorrect}
+        onExcept={handleExcept}
       />
 
       {/* Input */}
