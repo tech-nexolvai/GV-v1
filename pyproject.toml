@@ -123,5 +123,16 @@ strict = true
 # Extra-strict in the safety-critical zones:
 # verdict/, rules/, evidence/ must type-check clean before merge.
 
+# **An optional, experiment-only import.** `easyocr` is not a dependency of this project — it is
+# installed by hand for the OCR comparison in `scripts/local_ocr_probe.py` (#551) and absent in CI.
+#
+# An override rather than a `# type: ignore` on the import line, because the right ignore code
+# depends on whether the package happens to be installed: mypy says `import-not-found` where it is
+# missing and `import-untyped` where it is present, and `warn_unused_ignores` then fails whichever
+# one is written. A per-module override is true in both environments.
+[[tool.mypy.overrides]]
+module = ["easyocr.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
