@@ -187,5 +187,9 @@ def validate_payload(
         page=context.page,
         polygon=polygon,
         confidence=None,
-        ambiguity_flags=("nova_model_reading",),
+        # Derived from the extractor rather than hardcoded, because this validator serves more than
+        # one adapter now and a reading from a local model was being flagged `nova_model_reading`.
+        # Nova's own value is unchanged — its context defaults `extractor` to "nova" — so this
+        # corrects the misnomer without moving anything that already depended on it.
+        ambiguity_flags=(f"{context.extractor}_model_reading",),
     )

@@ -56,6 +56,29 @@ TOOL_NAME = "report_drawing_reading"
 DEFAULT_BASE_URL = "http://localhost:11434/v1"
 
 
+class StructuredOutputStrategy(StrEnum):
+    """How the model is made to answer in a shape the validator can read.
+
+    **The adapter's contract is a validated structured reading, not a tool call.** Bedrock's Nova is
+    made to answer by forcing one function; many vision models cannot hold a tool schema at all, and
+    those are exactly the self-hosted open-source ones a privacy-conscious deployment would prefer —
+    `minicpm-v` reads a dimension correctly and reports `capabilities: ['completion', 'vision']`.
+
+    So the shape is a strategy behind the interface. Both routes end at `validate_payload` with the
+    same schema and produce the same `ObservationCandidate`; nothing outside this module can tell
+    which was used, which is the point.
+    """
+
+    TOOL = "tool"
+    """Force one function call. What Nova does, and what a tool-capable endpoint should do."""
+
+    SCHEMA = "schema"
+    """Constrain the reply to a JSON schema. For a model with vision and no tools."""
+
+    AUTO = "auto"
+    """Ask the endpoint what the model can do, and fall back on what it says when it refuses."""
+
+
 @dataclass(frozen=True, slots=True)
 class OpenModelConfig:
     """Explicit model identity and transport bounds; no guessed defaults except the local address.
@@ -73,6 +96,8 @@ class OpenModelConfig:
     max_attempts: int
     base_url: str = DEFAULT_BASE_URL
     api_key: str | None = None
+    strategy: StructuredOutputStrategy = StructuredOutputStrategy.AUTO
+    """Left to `AUTO` unless an operator knows better than the endpoint does."""
 
     def __post_init__(self) -> None:
         for name in ("model_id", "prompt_id", "template_id", "base_url"):
@@ -172,6 +197,14 @@ class ChatCompletionsClient(Protocol):
     def complete(self, **kwargs: object) -> Mapping[str, Any]:
         """Invoke a messages-capable model and return its decoded response."""
 
+    def capabilities(self, model_id: str) -> frozenset[str]:
+        """What the endpoint says this model can do, or an empty set when it will not say.
+
+        Empty means *unknown*, never *nothing*: an endpoint that does not publish capabilities is
+        not an endpoint whose models have none, and the difference decides whether the adapter may
+        pick a strategy from the answer or has to find out by being refused.
+        """
+
 
 class OpenModelAdapterError(Exception):
     """Base class for every failure this adapter raises."""
@@ -199,6 +232,30 @@ class OpenModelPayloadRejectedError(OpenModelAdapterError):
 
 class OpenModelRefusalError(OpenModelAdapterError):
     """The model declined to answer."""
+
+
+class OpenModelEndpointError(OpenModelAdapterError):
+    """The endpoint answered with an HTTP error, carrying its own explanation.
+
+    Its own class because the body distinguishes cases a caller must tell apart: a model that cannot
+    hold a tool schema is a fact about that model, where a malformed request is a fact about us. Both
+    arrive as a 400, and only the message separates them.
+    """
+
+    def __init__(self, message: str, *, status: int, body: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.body = body
+
+    @property
+    def lacks_tool_support(self) -> bool:
+        """Whether the endpoint said this model cannot use tools.
+
+        Read from the endpoint's own words rather than inferred from the status, because a 400 covers
+        both that and a request we built wrongly — and those call for opposite responses: choose a
+        different model, or fix the adapter.
+        """
+        return "does not support tools" in self.body.casefold()
 
 
 class OpenModelServiceError(OpenModelAdapterError):
@@ -282,11 +339,57 @@ class OpenModelAdapter:
         return cls(config, _UrllibChatClient(config), recorder)
 
     def extract(self, request: OpenModelRequest) -> ObservationCandidate:
-        """Call the required tool, validating locally and failing explicitly.
+        """Return one validated candidate, whichever way this model can be made to answer.
 
-        The structure mirrors `NovaAdapter.extract` exactly, including which outcome each failure
-        records and which exceptions are re-raised rather than retried.
+        The structure mirrors `NovaAdapter.extract`, including which outcome each failure records and
+        which exceptions are re-raised rather than retried. What it adds is the choice of strategy —
+        and one fallback, for the case the endpoint only reveals by refusing.
         """
+        strategy = self._strategy()
+        try:
+            return self._attempt(request, strategy)
+        except OpenModelServiceError as error:
+            cause = error.__cause__
+            if (
+                strategy is not StructuredOutputStrategy.TOOL
+                or not isinstance(cause, OpenModelEndpointError)
+                or not cause.lacks_tool_support
+            ):
+                raise
+            # **The endpoint just told us what it could not tell us before.** An endpoint that
+            # publishes no capabilities gets the stricter contract first, and a model that cannot
+            # hold a tool schema says so in the body of a 400. Retrying once with the schema route
+            # is not a guess: it is the answer we were given.
+            #
+            # The refused attempt stays recorded. It happened, it cost something, and a record that
+            # showed only the successful shape would misstate what this call did.
+            return self._attempt(request, StructuredOutputStrategy.SCHEMA)
+
+    def _strategy(self) -> StructuredOutputStrategy:
+        """The configured strategy, or the one the endpoint's own answer implies.
+
+        An operator's choice wins: a non-Ollama endpoint may know its model's abilities better than
+        any probe of ours. Otherwise the capabilities decide, and silence means the stricter contract
+        is tried first — being refused is more informative than assuming the weaker one.
+        """
+        if self._config.strategy is not StructuredOutputStrategy.AUTO:
+            return self._config.strategy
+        try:
+            published = self._client.capabilities(self._config.model_id)
+        except Exception:  # noqa: BLE001 - a probe that fails must not stop the call it precedes
+            published = frozenset()
+        if not published:
+            return StructuredOutputStrategy.TOOL
+        return (
+            StructuredOutputStrategy.TOOL
+            if "tools" in published
+            else StructuredOutputStrategy.SCHEMA
+        )
+
+    def _attempt(
+        self, request: OpenModelRequest, strategy: StructuredOutputStrategy
+    ) -> ObservationCandidate:
+        """One strategy, with its own bounded retry loop and its own records."""
         last_error: Exception | None = None
         prepared = prepare_prompt(request.context)
         for attempt in range(1, self._config.max_attempts + 1):
@@ -294,8 +397,8 @@ class OpenModelAdapter:
             response: Mapping[str, Any] | None = None
             outcome = OpenModelInvocationOutcome.ERROR
             try:
-                response = self._client.complete(**self._request(request))
-                candidate = self._candidate(response, request)
+                response = self._client.complete(**self._request(request, strategy))
+                candidate = self._candidate(response, request, strategy)
                 outcome = OpenModelInvocationOutcome.OK
                 return candidate
             except OpenModelRefusalError:
@@ -344,7 +447,9 @@ class OpenModelAdapter:
                 )
         raise OpenModelRetryExhaustedError("the retry loop ended unexpectedly") from last_error
 
-    def _request(self, request: OpenModelRequest) -> dict[str, object]:
+    def _request(
+        self, request: OpenModelRequest, strategy: StructuredOutputStrategy
+    ) -> dict[str, object]:
         """The chat-completions body, with the tool forced and the schema the validator enforces.
 
         The image is a data URL because that is what the OpenAI-compatible shape takes, where Bedrock
@@ -374,6 +479,29 @@ class OpenModelAdapter:
                     ],
                 },
             ],
+            # Zero, because the same crop should produce the same reading twice. A model that varies
+            # its answer between identical calls is one nothing downstream could corroborate.
+            "temperature": 0,
+            **self._constraint(schema, strategy),
+        }
+
+    def _constraint(
+        self, schema: Mapping[str, object], strategy: StructuredOutputStrategy
+    ) -> dict[str, object]:
+        """The part of the body that forces a shape, which is all the two strategies differ by.
+
+        One schema, two ways of insisting on it. `strict` is set on the schema route because a
+        schema the endpoint treats as advice is not a constraint, and an unconstrained reply is the
+        free text this adapter refuses.
+        """
+        if strategy is StructuredOutputStrategy.SCHEMA:
+            return {
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": TOOL_NAME, "schema": schema, "strict": True},
+                }
+            }
+        return {
             "tools": [
                 {
                     "type": "function",
@@ -385,13 +513,13 @@ class OpenModelAdapter:
                 }
             ],
             "tool_choice": {"type": "function", "function": {"name": TOOL_NAME}},
-            # Zero, because the same crop should produce the same reading twice. A model that varies
-            # its answer between identical calls is one nothing downstream could corroborate.
-            "temperature": 0,
         }
 
     def _candidate(
-        self, response: Mapping[str, Any], request: OpenModelRequest
+        self,
+        response: Mapping[str, Any],
+        request: OpenModelRequest,
+        strategy: StructuredOutputStrategy,
     ) -> ObservationCandidate:
         """The one tool call, validated — or an explicit failure.
 
@@ -417,28 +545,11 @@ class OpenModelAdapter:
         if message.get("refusal"):
             raise OpenModelRefusalError("the model returned a refusal")
 
-        calls = message.get("tool_calls")
-        if not isinstance(calls, list) or len(calls) != 1:
-            raise OpenModelProtocolError("the model must return exactly one tool call and no prose")
-        call = calls[0]
-        function = call.get("function") if isinstance(call, Mapping) else None
-        if not isinstance(function, Mapping):
-            raise OpenModelProtocolError("the tool call has no function")
-        if function.get("name") != TOOL_NAME:
-            raise OpenModelProtocolError(
-                f"the model called an unexpected tool: {function.get('name')!r}"
-            )
-
-        arguments = function.get("arguments")
-        if isinstance(arguments, str):
-            # The compatible shape sends arguments as a JSON string; Bedrock sends an object.
-            # `parse_float=Decimal` matters: the validator rejects floats outright, and letting
-            # `json` produce one here would turn a valid reading into a rejection.
-            try:
-                arguments = json.loads(arguments, parse_float=Decimal)
-            except json.JSONDecodeError as error:
-                raise OpenModelProtocolError("the tool arguments are not valid JSON") from error
-
+        arguments = (
+            self._from_content(message)
+            if strategy is StructuredOutputStrategy.SCHEMA
+            else self._from_tool_call(message)
+        )
         outcome = validate_payload(
             arguments,
             context=CandidateContext(
@@ -455,12 +566,91 @@ class OpenModelAdapter:
             raise OpenModelPayloadRejectedError(outcome)
         return outcome
 
+    def _from_content(self, message: Mapping[str, Any]) -> object:
+        """The schema route's payload: the reply itself, which must be JSON.
+
+        **`parse_float=Decimal`, and it is not optional.** A JSON number without a decimal point is
+        an `int`, but `112.0` is a `float`, and `validate_payload` rejects floats outright — a
+        dimension that went through binary floating point is one the units layer can no longer call
+        exact (ADR-0001). Measured, not anticipated: `minicpm-v` returns its polygon as `112.0`.
+
+        Prose is a protocol error, not something to salvage. A model describing the dimension in a
+        sentence has not produced a reading, and reading a number out of that sentence is the guess
+        this whole layer exists to refuse.
+        """
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise OpenModelProtocolError("the schema route returned no content to validate")
+        try:
+            return json.loads(content, parse_float=Decimal)
+        except json.JSONDecodeError as error:
+            raise OpenModelProtocolError(
+                "the model answered with text rather than the requested JSON"
+            ) from error
+
+    def _from_tool_call(self, message: Mapping[str, Any]) -> object:
+        """The tool route's payload: exactly one forced call, and no prose beside it."""
+        calls = message.get("tool_calls")
+        if not isinstance(calls, list) or len(calls) != 1:
+            raise OpenModelProtocolError("the model must return exactly one tool call and no prose")
+        call = calls[0]
+        function = call.get("function") if isinstance(call, Mapping) else None
+        if not isinstance(function, Mapping):
+            raise OpenModelProtocolError("the tool call has no function")
+        if function.get("name") != TOOL_NAME:
+            raise OpenModelProtocolError(
+                f"the model called an unexpected tool: {function.get('name')!r}"
+            )
+
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            # The compatible shape sends arguments as a JSON string; Bedrock sends an object.
+            # `parse_float=Decimal` for the reason `_from_content` gives at length.
+            try:
+                return json.loads(arguments, parse_float=Decimal)
+            except json.JSONDecodeError as error:
+                raise OpenModelProtocolError("the tool arguments are not valid JSON") from error
+        return arguments
+
 
 class _UrllibChatClient:
     """The default transport: one POST, standard library only."""
 
     def __init__(self, config: OpenModelConfig) -> None:
         self._config = config
+
+    def capabilities(self, model_id: str) -> frozenset[str]:
+        """What Ollama says this model can do, from `/api/show`.
+
+        An empty set for anything that is not an Ollama — the endpoint is asked, and one that does
+        not answer that question has not said its models can do nothing. `AUTO` reads the difference:
+        a published list decides the strategy, silence means try the stricter contract and learn
+        from the refusal.
+
+        The URL drops the `/v1` the chat route carries, because `/api/show` is Ollama's own surface
+        rather than the compatibility one.
+        """
+        import urllib.error
+        import urllib.request
+
+        root = self._config.base_url.rstrip("/").removesuffix("/v1")
+        request = urllib.request.Request(
+            f"{root}/api/show",
+            data=json.dumps({"model": model_id}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self._config.connect_timeout_seconds
+            ) as response:
+                decoded = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+            return frozenset()
+        published = decoded.get("capabilities") if isinstance(decoded, Mapping) else None
+        if not isinstance(published, list):
+            return frozenset()
+        return frozenset(item for item in published if isinstance(item, str))
 
     def complete(self, **kwargs: object) -> Mapping[str, Any]:
         import urllib.error
@@ -477,8 +667,26 @@ class _UrllibChatClient:
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self._config.read_timeout_seconds) as response:
-            decoded = json.loads(response.read().decode("utf-8"), parse_float=Decimal)
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self._config.read_timeout_seconds
+            ) as response:
+                decoded = json.loads(response.read().decode("utf-8"), parse_float=Decimal)
+        except urllib.error.HTTPError as error:
+            # **The body is where the reason is, and discarding it loses the diagnosis.** Ollama
+            # answers `400 {"error":{"message":"... does not support tools"}}` for a model that
+            # cannot hold a tool schema — a fact about that model, and unrecoverable from the status
+            # alone, which says only that something about the request was wrong.
+            try:
+                detail = error.read().decode("utf-8", errors="replace")[:500]
+            except Exception:  # noqa: BLE001 - a body we cannot read must not replace the error
+                detail = ""
+            raise OpenModelEndpointError(
+                f"the endpoint refused the request with HTTP {error.code}"
+                + (f": {detail}" if detail else ""),
+                status=error.code,
+                body=detail,
+            ) from error
         if not isinstance(decoded, Mapping):
             raise OpenModelProtocolError("the endpoint did not return a JSON object")
         return cast(Mapping[str, Any], decoded)

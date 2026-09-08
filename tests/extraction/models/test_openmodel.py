@@ -37,6 +37,7 @@ from extraction.models.openmodel import (
     ChatCompletionsClient,
     OpenModelAdapter,
     OpenModelConfig,
+    OpenModelEndpointError,
     OpenModelInvocation,
     OpenModelInvocationOutcome,
     OpenModelPayloadRejectedError,
@@ -44,6 +45,8 @@ from extraction.models.openmodel import (
     OpenModelRefusalError,
     OpenModelRequest,
     OpenModelRetryExhaustedError,
+    OpenModelServiceError,
+    StructuredOutputStrategy,
 )
 from extraction.models.validation import ValidationRejection
 
@@ -68,9 +71,19 @@ class RecordingSink:
 class FakeEndpoint:
     """Return or raise scripted values while retaining submitted requests."""
 
-    def __init__(self, *results: Mapping[str, Any] | BaseException) -> None:
+    def __init__(
+        self,
+        *results: Mapping[str, Any] | BaseException,
+        published: frozenset[str] = frozenset({"completion", "vision", "tools"}),
+    ) -> None:
         self.results = list(results)
         self.requests: list[dict[str, object]] = []
+        self.published = published
+
+    def capabilities(self, model_id: str) -> frozenset[str]:
+        """Tool-capable by default, so the existing tests exercise the forced-tool route."""
+        del model_id
+        return self.published
 
     def complete(self, **kwargs: object) -> Mapping[str, Any]:
         self.requests.append(kwargs)
@@ -362,6 +375,19 @@ def test_a_configured_model_returns_a_validated_reading() -> None:
 
     try:
         candidate = adapter.extract(_request())
+    except OpenModelServiceError as error:
+        # **A model that cannot hold a tool schema is a skip, not a failure.** Ollama answers
+        # `400 ... does not support tools` before the model sees the image, so nothing about this
+        # seam was exercised and nothing about it is broken — the configured model simply lacks a
+        # capability the contract requires. Measured, not guessed: `minicpm-v` answers exactly that,
+        # while reading the same crop correctly when asked in prose.
+        #
+        # Every other endpoint error still fails, because a request we built wrongly also arrives as
+        # a 400 and only the body tells them apart.
+        cause = error.__cause__
+        if isinstance(cause, OpenModelEndpointError) and cause.lacks_tool_support:
+            pytest.skip(f"{config.model_id} cannot use tools: {cause.body.strip()}")
+        raise
     except (OpenModelRefusalError, OpenModelProtocolError, OpenModelPayloadRejectedError):
         # The seam carried a refusal or an unusable answer, recorded it, and raised. That is the
         # contract working. A small local model often cannot hold a tool schema, and this test is
@@ -496,3 +522,179 @@ def test_no_key_is_sent_when_none_is_configured() -> None:
         server.server_close()
 
     assert seen["authorization"] is None
+
+
+# ---------------------------------------------------------------------------
+# Which strategy, and why
+# ---------------------------------------------------------------------------
+
+
+def test_the_strategy_follows_what_the_endpoint_says_the_model_can_do() -> None:
+    """**The adapter's contract is a validated reading, not a tool call.**
+
+    A model with vision and no tools is not a model this seam cannot use — it is one that has to be
+    asked differently. `minicpm-v` is exactly that case in the real world: it reads a dimension
+    correctly and reports `capabilities: ['completion', 'vision']`.
+    """
+    for published, expected in (
+        (frozenset({"completion", "vision", "tools"}), StructuredOutputStrategy.TOOL),
+        (frozenset({"completion", "vision"}), StructuredOutputStrategy.SCHEMA),
+        # Silence is not "no capabilities". An endpoint that does not publish them gets the stricter
+        # contract, and learns from being refused — see the fallback test below.
+        (frozenset(), StructuredOutputStrategy.TOOL),
+    ):
+        adapter = OpenModelAdapter(_config(), FakeEndpoint(published=published), RecordingSink())
+        assert adapter._strategy() is expected, published
+
+
+def test_an_operators_choice_beats_the_probe() -> None:
+    """A non-Ollama endpoint may know its model better than any probe of ours."""
+    config = OpenModelConfig(
+        model_id="qwen2-vl",
+        prompt_id="dimension-reader-v1",
+        template_id="bounded-crop-v1",
+        connect_timeout_seconds=2,
+        read_timeout_seconds=8,
+        max_attempts=1,
+        strategy=StructuredOutputStrategy.SCHEMA,
+    )
+    adapter = OpenModelAdapter(
+        config,
+        FakeEndpoint(published=frozenset({"completion", "vision", "tools"})),
+        RecordingSink(),
+    )
+
+    assert adapter._strategy() is StructuredOutputStrategy.SCHEMA
+
+
+def test_the_schema_route_asks_for_a_constrained_reply_and_validates_it() -> None:
+    """The other half of the seam: one schema, insisted on a different way, same candidate out."""
+    sink = RecordingSink()
+    endpoint = FakeEndpoint(
+        {
+            "id": "chatcmpl-schema",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": json.dumps(_payload())},
+                }
+            ],
+        },
+        published=frozenset({"completion", "vision"}),
+    )
+    adapter = OpenModelAdapter(_config(max_attempts=1), endpoint, sink)
+
+    candidate = adapter.extract(_request())
+
+    assert candidate.raw_text == KNOWN_READING
+    body = endpoint.requests[0]
+    assert body["response_format"]["json_schema"]["strict"] is True  # type: ignore[index]
+    assert "tools" not in body, "the schema route must not also force a tool"
+    assert [record.outcome for record in sink.items] == [OpenModelInvocationOutcome.OK]
+
+
+def test_a_float_in_a_schema_reply_survives_as_an_exact_decimal() -> None:
+    """**Measured, not anticipated.** `minicpm-v` returns its polygon as `112.0`.
+
+    A JSON number with a decimal point is a `float`, and the validator rejects floats outright —
+    a dimension that passed through binary floating point is one the units layer can no longer call
+    exact (ADR-0001). Parsing with `parse_float=Decimal` is what keeps a real model's reply usable,
+    and without it this seam would reject the very model it was built to prove.
+    """
+    sink = RecordingSink()
+    endpoint = FakeEndpoint(
+        {
+            "id": "chatcmpl-floats",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        # Written as a literal so the floats are real, the way the model sends them.
+                        "content": '{"reading": "24 1/2\\"", "unit_guess": "in", '
+                        '"polygon": [[112.0, 112.0], [140.0, 112.0], [140.0, 130.0]]}',
+                    },
+                }
+            ],
+        },
+        published=frozenset({"completion", "vision"}),
+    )
+    adapter = OpenModelAdapter(_config(max_attempts=1), endpoint, sink)
+
+    candidate = adapter.extract(_request())
+
+    assert candidate.raw_text == KNOWN_READING
+    assert sink.rejections == [], "a float in the reply was rejected instead of parsed exactly"
+
+
+def test_prose_on_the_schema_route_is_still_a_protocol_error() -> None:
+    """The discipline does not soften for the weaker route.
+
+    A model that answers in a sentence has not produced a reading either way, and reading a number
+    out of that sentence is the guess this layer exists to refuse.
+    """
+    sink = RecordingSink()
+    endpoint = FakeEndpoint(
+        {
+            "id": "chatcmpl-prose-schema",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": "It looks like twenty-four and a half inches.",
+                    },
+                }
+            ],
+        },
+        published=frozenset({"completion", "vision"}),
+    )
+    adapter = OpenModelAdapter(_config(max_attempts=1), endpoint, sink)
+
+    with pytest.raises(OpenModelProtocolError, match="text rather than the requested JSON"):
+        adapter.extract(_request())
+
+    assert [record.outcome for record in sink.items] == [OpenModelInvocationOutcome.REJECTED]
+
+
+def test_an_endpoint_that_refuses_tools_is_retried_once_on_the_schema_route() -> None:
+    """The fallback for an endpoint that only reveals its limits by refusing.
+
+    Both attempts stay recorded. The refused one happened and cost something, and a record showing
+    only the shape that worked would misstate what the call did.
+    """
+    sink = RecordingSink()
+    # What the real transport raises: `_UrllibChatClient` turns a 400 into this, and `_attempt`
+    # wraps it in a service error. Building the wrapper here instead put the endpoint's reason two
+    # levels deep, where production has it one — which is how this test found its own mistake rather
+    # than the code's.
+    refusal = OpenModelEndpointError(
+        "the endpoint refused the request with HTTP 400",
+        status=400,
+        body='{"error":{"message":"model does not support tools"}}',
+    )
+    endpoint = FakeEndpoint(
+        refusal,
+        {
+            "id": "chatcmpl-after-fallback",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": json.dumps(_payload())},
+                }
+            ],
+        },
+        # Empty: the endpoint publishes nothing, so the tool route is tried first.
+        published=frozenset(),
+    )
+    adapter = OpenModelAdapter(_config(max_attempts=1), endpoint, sink)
+
+    candidate = adapter.extract(_request())
+
+    assert candidate.raw_text == KNOWN_READING
+    assert "tools" in endpoint.requests[0]
+    assert "response_format" in endpoint.requests[1]
+    assert [record.outcome for record in sink.items] == [
+        OpenModelInvocationOutcome.ERROR,
+        OpenModelInvocationOutcome.OK,
+    ]
