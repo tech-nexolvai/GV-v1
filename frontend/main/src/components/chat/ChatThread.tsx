@@ -9,9 +9,18 @@ interface ChatThreadProps {
   selectedFinding: string | null;
   onViewEvidence: (finding: Finding) => void;
   onAction: (findingId: string, action: 'confirm' | 'correct' | 'except' | 'dismiss', note?: string) => void;
+  onCorrect: (findingId: string, correctedValue: string) => void;
+  onExcept: (findingId: string, reason: string, expiresAt: string) => void;
 }
 
-export function ChatThread({ messages, selectedFinding, onViewEvidence, onAction }: ChatThreadProps) {
+export function ChatThread({
+  messages,
+  selectedFinding,
+  onViewEvidence,
+  onAction,
+  onCorrect,
+  onExcept,
+}: ChatThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,6 +76,8 @@ export function ChatThread({ messages, selectedFinding, onViewEvidence, onAction
                       isSelected={selectedFinding === finding.id}
                       onViewEvidence={onViewEvidence}
                       onAction={onAction}
+                      onCorrect={onCorrect}
+                      onExcept={onExcept}
                       animationDelay={i * 80}
                     />
                   ))}

@@ -471,6 +471,81 @@
         "title": "ConfirmedOut",
         "type": "object"
       },
+      "DecideEvidence": {
+        "additionalProperties": false,
+        "description": "Confirm or correct one observation behind one finding.\n\n**`correct` carries the corrected value; `confirm` must not.** A confirmation that accepted a\nvalue would be indistinguishable from a correction that happened to agree, and the correction\nrate (`D5.4`) counts the difference. The pairing is validated here rather than trusted.\n\nThe value is **as typed**, with its unit, exactly as `MeasurementEntry` takes a reviewer's\nreading. The server parses it \u2014 `25.5\"` and `25 1/2\"` are the same value, and the reviewer\nshould not have to know which spelling this accepts.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ReviewActionKind"
+          },
+          "corrected_value": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The corrected value as typed, with its unit. Required for `correct` only.",
+            "title": "Corrected Value"
+          },
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "observation_id": {
+            "format": "uuid",
+            "title": "Observation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "observation_id",
+          "action"
+        ],
+        "title": "DecideEvidence",
+        "type": "object"
+      },
+      "DecidedEvidenceOut": {
+        "description": "What was recorded: the action, and the observation the reviewer's decision produced.\n\nTwo observation ids, because a correction never edits the original. The reading the system made\nstays exactly as it was and a new `HUMAN_CONFIRMED` one is written beside it \u2014 which is what\nmakes \"what did we get wrong?\" answerable at all.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ReviewActionOut"
+          },
+          "original_observation_id": {
+            "format": "uuid",
+            "title": "Original Observation Id",
+            "type": "string"
+          },
+          "original_value": {
+            "title": "Original Value",
+            "type": "string"
+          },
+          "resulting_observation_id": {
+            "format": "uuid",
+            "title": "Resulting Observation Id",
+            "type": "string"
+          },
+          "resulting_value": {
+            "title": "Resulting Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "original_observation_id",
+          "resulting_observation_id",
+          "original_value",
+          "resulting_value"
+        ],
+        "title": "DecidedEvidenceOut",
+        "type": "object"
+      },
       "DiscriminatorOut": {
         "description": "A judgement about the drawing that decides which variant of a rule applies.",
         "properties": {
@@ -707,6 +782,62 @@
         "title": "ExactOperand",
         "type": "object"
       },
+      "ExceptionOut": {
+        "description": "What the exceptions say about one finding, right now.\n\nNot a boolean. A report that knew only \"suppressed: yes\" could not tell a reviewer who accepted\nit, why, or when it comes back; and one that knew only \"suppressed: no\" could not tell them that\ncover has lapsed. Both halves are what `ExceptionDecision` was built to carry, and this is that\ndecision on the wire.",
+        "properties": {
+          "approved_by": {
+            "title": "Approved By",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "explanation": {
+            "title": "Explanation",
+            "type": "string"
+          },
+          "in_force": {
+            "title": "In Force",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "scope_id": {
+            "format": "uuid",
+            "title": "Scope Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "in_force",
+          "scope",
+          "scope_id",
+          "reason",
+          "approved_by",
+          "expires_at",
+          "explanation"
+        ],
+        "title": "ExceptionOut",
+        "type": "object"
+      },
+      "ExceptionScope": {
+        "description": "How far an exception reaches. Never \"this rule, everywhere\".\n\nA rule that should not fire is a rule change, and it goes through the rulebook where somebody\nreviews it. An exception is a reviewer saying *this one* is acceptable, on this drawing, until a\ndate \u2014 so the scope names one thing.",
+        "enum": [
+          "finding",
+          "item",
+          "package"
+        ],
+        "title": "ExceptionScope",
+        "type": "string"
+      },
       "ExportSummary": {
         "description": "Counts, so a consumer that ignores every flag still cannot report a clean package.\n\nThe per-finding label can be filtered out of a view. A total sitting at the top of the payload is\nharder to lose, and \"42 findings, 39 of which abstained\" is a sentence that stops somebody saying the\ndrawings passed.",
         "properties": {
@@ -941,6 +1072,16 @@
             "title": "Engine Version",
             "type": "string"
           },
+          "exception": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExceptionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -1056,6 +1197,45 @@
           "limit"
         ],
         "title": "FindingPage",
+        "type": "object"
+      },
+      "GrantException": {
+        "additionalProperties": false,
+        "description": "Accept one specific deviation, until one specific moment.\n\n**Every field is required, and `expires_at` most of all.** A permanent silent exception is not\nrepresentable anywhere in this system: the column is `NOT NULL`, `ExceptionGrant` has no default\nfor it, and this schema will not accept its absence. An exception with no end date is how a check\ngets switched off and nobody remembers.\n\nNo `approved_by`. The approver is the authenticated caller \u2014 `AGENTS.md` \u00a72.6 calls an anonymous\nexception nobody's decision, and a client-supplied approver answers \"who says so?\" with \"whoever\nwas asked\".",
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ExceptionScope"
+          },
+          "scope_id": {
+            "format": "uuid",
+            "title": "Scope Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "scope",
+          "scope_id",
+          "reason",
+          "expires_at"
+        ],
+        "title": "GrantException",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1725,6 +1905,59 @@
           "created_at"
         ],
         "title": "ReviewActionOut",
+        "type": "object"
+      },
+      "ReviewExceptionOut": {
+        "description": "A granted exception, with the terms a later reader needs.",
+        "properties": {
+          "approved_by": {
+            "title": "Approved By",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "review_action_id": {
+            "format": "uuid",
+            "title": "Review Action Id",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ExceptionScope"
+          },
+          "scope_id": {
+            "format": "uuid",
+            "title": "Scope Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "review_action_id",
+          "scope",
+          "scope_id",
+          "reason",
+          "approved_by",
+          "expires_at",
+          "created_at"
+        ],
+        "title": "ReviewExceptionOut",
         "type": "object"
       },
       "ReviewSessionOut": {
@@ -3751,6 +3984,134 @@
           }
         },
         "summary": "Finish a review session",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/evidence": {
+      "post": {
+        "description": "**The way into the correction ledger, which had none.**\n\n`correct_evidence` writes a `correction_ledger` entry in the same transaction as its action row,\nexactly as `AGENTS.md` \u00a72.6 requires \u2014 and it had no route, so no reviewer could ever create\none and `D5.4`'s correction rate measured an empty table. That reads as \"no corrections were\nneeded\", which is the most flattering possible account of a system nobody can correct.\n\nA correction never edits the reading the system made. The original observation stays and a new\n`HUMAN_CONFIRMED` one is written beside it, which is what keeps \"what did we get wrong?\"\nanswerable.\n\n**The corrected value is parsed, not trusted.** It arrives as typed, with its unit, and\n`normalise_to_inches` refuses a bare number \u2014 the same refusal `app/api/measurements.py`\ninherits deliberately, because a `984` whose `mm` was lost once became 984 inches.",
+        "operationId": "decide_evidence_api_v1_projects__project_id__review_sessions__review_session_id__evidence_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "review_session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Review Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideEvidence"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecidedEvidenceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm or correct one reading behind a finding",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/exceptions": {
+      "post": {
+        "description": "**The way into the exceptions table, which had none.**\n\n`ReviewException` appeared only in the models and the tests: nothing granted one and\n`apply_exceptions` had no caller, so the whole control was inert in both directions.\n\nThe expiry is required at every layer and this is the last of them \u2014 the column is `NOT NULL`,\n`ExceptionGrant` has no default for it, the schema refuses its absence, and `grant_exception`\nrefuses one already past. A permanent silent exception is not representable, which is the\ncontrol: somebody has to look again.\n\nThe approver is the caller. Never a field.",
+        "operationId": "grant_review_exception_api_v1_projects__project_id__review_sessions__review_session_id__exceptions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "review_session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Review Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantException"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewExceptionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept one specific deviation, until a date",
         "tags": [
           "review"
         ]

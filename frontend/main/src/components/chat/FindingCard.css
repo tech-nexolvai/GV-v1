@@ -265,3 +265,29 @@
   color: var(--status-pass);
   text-transform: capitalize;
 }
+
+/* The two decisions that carry a payload.
+ *
+ * Inline rather than a modal: a reviewer works down a list, and a dialog that has to be dismissed
+ * per row makes that unusable. The form sits under the buttons it belongs to, so what is being
+ * corrected or excepted stays on screen while the reason is typed. */
+.finding-card__decision {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  padding: var(--space-2);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  max-width: 32rem;
+}
+
+.finding-card__decision-label {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.finding-card__decision .btn {
+  align-self: flex-start;
+}

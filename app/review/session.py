@@ -40,6 +40,7 @@ Verification: `tests/review/test_session.py`
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -47,12 +48,21 @@ from sqlalchemy.orm import Session
 
 from app.db.base import utc_now
 from app.models.package import PackageRevision, PackageState
-from app.models.review import ReviewAction, ReviewActionKind, ReviewSession
+from app.models.review import (
+    ExceptionScope,
+    ReviewAction,
+    ReviewActionKind,
+    ReviewException,
+    ReviewSession,
+)
 from app.models.verdicts import Finding
 
 __all__ = [
     "ActionOutsideTheSession",
     "ActorNotNamed",
+    "ExceptionAlreadyOver",
+    "ExceptionNeedsAReason",
+    "ExceptionScopeMismatch",
     "NoSuchFinding",
     "NoSuchPackageRevision",
     "NoSuchReviewSession",
@@ -63,6 +73,8 @@ __all__ = [
     "UnknownReviewAction",
     "action_history",
     "complete_session",
+    "exceptions_for_revision",
+    "grant_exception",
     "open_session",
     "record_action",
 ]
@@ -104,6 +116,33 @@ class SessionAlreadyComplete(ReviewRefused):
 
 class NoSuchFinding(ReviewRefused):
     """No finding with that id."""
+
+
+class ExceptionNeedsAReason(ReviewRefused):
+    """An exception with no explanation. Refused, because it is unreviewable.
+
+    `app/review/exceptions.py` says it plainly — an exception nobody explained is one nobody can
+    review, and the reason is the sentence a future reader needs most. The database refuses an empty
+    string; this refuses whitespace too, and says why rather than raising an integrity error.
+    """
+
+
+class ExceptionAlreadyOver(ReviewRefused):
+    """The expiry has already passed, so the exception would cover nothing.
+
+    The database can only check `expires_at > created_at` — a clock comparison in a CHECK is not
+    immutable and PostgreSQL refuses it — so "already over" is enforced here, where a clock is
+    allowed. Accepting it would let a reviewer believe they had granted cover they had not.
+    """
+
+
+class ExceptionScopeMismatch(ReviewRefused):
+    """A finding-scoped exception naming a different finding.
+
+    The one scope where naming something else is certainly a mistake rather than a wider decision.
+    Item and package scopes are *meant* to name something larger, so they are not checked here —
+    `decide` refuses to widen at read time instead, by matching scope and id exactly.
+    """
 
 
 class ActionOutsideTheSession(ReviewRefused):
@@ -276,6 +315,116 @@ def record_action(
     db.add(recorded)
     db.flush()
     return recorded
+
+
+def grant_exception(
+    db: Session,
+    *,
+    review_session_id: UUID,
+    finding_id: UUID,
+    actor: str,
+    scope: ExceptionScope,
+    scope_id: UUID,
+    reason: str,
+    expires_at: datetime,
+    now: datetime | None = None,
+) -> tuple[ReviewAction, ReviewException]:
+    """Record one exception and the action that authorised it, in one transaction.
+
+    **Nothing has ever written one of these.** The table, its required expiry, the exact scope
+    matching and `apply_exceptions` were all built and left with no way in, so the control existed
+    and did nothing: no exception could be granted, and no finding was ever checked against one.
+
+    Two rows, and both are needed for the record to mean anything. The action says a reviewer did
+    something to a finding; the exception says what they accepted, how far it reaches and when it
+    runs out. `review_exceptions` resolves `(review_action_id, action)` against `review_actions`, so
+    an exception cannot hang off a `confirm` — which would be a check switched off by a record
+    saying the reviewer agreed with it.
+
+    The action row comes from `record_action`, so every refusal it makes applies here too: a closed
+    sitting, an unknown finding, a finding from another revision, an unnamed actor. Duplicating
+    those checks would be a second answer to "may this be recorded".
+
+    **`approved_by` is the actor, not a field.** `AGENTS.md` §2.6 calls an anonymous exception
+    nobody's decision, and the reason lands on the action's `note` as well so that the action
+    history reads on its own — `action_history` is what a later reader walks, and an action saying
+    only "except" would send them hunting for the terms.
+
+    `scope_id` is not checked to exist. It cannot be: the three scopes name rows in three different
+    tables, which is why the column is not a foreign key. A finding-scoped exception naming a
+    different finding *is* checked, because that one is certainly a mistake.
+    """
+    if not reason.strip():
+        raise ExceptionNeedsAReason(
+            "an exception needs a reason. One nobody explained is one nobody can review, and it is "
+            "the sentence a future reader needs most."
+        )
+    if not isinstance(expires_at, datetime) or expires_at.tzinfo is None:
+        raise ExceptionAlreadyOver(
+            "expires_at must be timezone-aware. A naive datetime is how an exception ends up living "
+            "hours longer than it was granted for."
+        )
+    at = now if now is not None else datetime.now(UTC)
+    if at.tzinfo is None:
+        raise ExceptionAlreadyOver("now must be timezone-aware")
+    if expires_at <= at:
+        raise ExceptionAlreadyOver(
+            f"an exception expiring at {expires_at.isoformat()} is already over at "
+            f"{at.isoformat()}, so it would cover nothing. Granting cover that never applies "
+            "records a decision nobody can act on."
+        )
+    try:
+        kind = ExceptionScope(scope)
+    except ValueError as unknown:
+        raise ExceptionScopeMismatch(
+            f"{scope!r} is not an exception scope. There are three — "
+            f"{', '.join(sorted(member.value for member in ExceptionScope))} — and no 'this rule, "
+            "everywhere': a rule that should not fire is a rule change and goes through the rulebook."
+        ) from unknown
+    if kind is ExceptionScope.FINDING and scope_id != finding_id:
+        raise ExceptionScopeMismatch(
+            f"a finding-scoped exception must name the finding it was granted on. This one names "
+            f"{scope_id} while the reviewer was looking at {finding_id}."
+        )
+
+    action = record_action(
+        db,
+        review_session_id=review_session_id,
+        finding_id=finding_id,
+        action=ReviewActionKind.EXCEPT,
+        actor=actor,
+        note=reason.strip(),
+    )
+    granted = ReviewException(
+        review_action_id=action.id,
+        action=ReviewActionKind.EXCEPT.value,
+        scope=kind.value,
+        scope_id=scope_id,
+        reason=reason.strip(),
+        approved_by=actor.strip(),
+        expires_at=expires_at,
+    )
+    db.add(granted)
+    db.flush()
+    return action, granted
+
+
+def exceptions_for_revision(
+    db: Session, *, package_revision_id: UUID
+) -> tuple[ReviewException, ...]:
+    """Every exception granted anywhere in this revision's reviews, oldest first.
+
+    **Expired ones included, deliberately.** `decide` needs them in order to say "this was excepted
+    and the cover has run out", which is the moment a finding most needs looking at again. Filtering
+    them here would make that report impossible while looking like tidiness.
+    """
+    rows = db.scalars(
+        select(ReviewException)
+        .join(ReviewAction, ReviewException.review_action_id == ReviewAction.id)
+        .where(ReviewAction.package_revision_id == package_revision_id)
+        .order_by(ReviewException.created_at, ReviewException.id)
+    ).all()
+    return tuple(rows)
 
 
 def action_history(db: Session, *, finding_id: UUID) -> tuple[ReviewAction, ...]:

@@ -120,6 +120,28 @@ class ReviewerActionOut(BaseModel):
     note: str | None = None
 
 
+class ExceptionOut(BaseModel):
+    """What the exceptions say about one finding, right now.
+
+    Not a boolean. A report that knew only "suppressed: yes" could not tell a reviewer who accepted
+    it, why, or when it comes back; and one that knew only "suppressed: no" could not tell them that
+    cover has lapsed. Both halves are what `ExceptionDecision` was built to carry, and this is that
+    decision on the wire.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    in_force: bool
+    scope: str
+    scope_id: UUID
+    reason: str
+    approved_by: str
+    expires_at: datetime
+    explanation: str
+    """The module's own plain-English sentence, so every surface says the same thing about the same
+    exception rather than each one composing its own."""
+
+
 class FindingOut(BaseModel):
     """One finding, with enough version information to go and reconstruct it.
 
@@ -164,6 +186,18 @@ class FindingOut(BaseModel):
     `None` means untouched, and it is the honest default: a finding nobody has acted on and a finding
     whose actions could not be read must not look alike, so this is populated by the same query that
     returns the finding rather than by a second call that could quietly fail.
+    """
+
+    exception: ExceptionOut | None = None
+    """The exception covering this finding, if one is in force — or one that has run out.
+
+    **The finding is still here either way.** `app/review/exceptions.py` guarantees it: *"a finding
+    that vanished because somebody excepted it would be indistinguishable from a check that was
+    never run"*. So this annotates rather than filters, and a client that ignores it shows the
+    finding, which is the safe direction.
+
+    `None` means no exception has ever covered this finding. An expired one is reported with
+    `in_force: false`, because that is the moment the finding most needs looking at again.
     """
 
 

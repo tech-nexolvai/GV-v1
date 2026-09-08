@@ -617,6 +617,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm or correct one reading behind a finding
+         * @description **The way into the correction ledger, which had none.**
+         *
+         *     `correct_evidence` writes a `correction_ledger` entry in the same transaction as its action row,
+         *     exactly as `AGENTS.md` §2.6 requires — and it had no route, so no reviewer could ever create
+         *     one and `D5.4`'s correction rate measured an empty table. That reads as "no corrections were
+         *     needed", which is the most flattering possible account of a system nobody can correct.
+         *
+         *     A correction never edits the reading the system made. The original observation stays and a new
+         *     `HUMAN_CONFIRMED` one is written beside it, which is what keeps "what did we get wrong?"
+         *     answerable.
+         *
+         *     **The corrected value is parsed, not trusted.** It arrives as typed, with its unit, and
+         *     `normalise_to_inches` refuses a bare number — the same refusal `app/api/measurements.py`
+         *     inherits deliberately, because a `984` whose `mm` was lost once became 984 inches.
+         */
+        post: operations["decide_evidence_api_v1_projects__project_id__review_sessions__review_session_id__evidence_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/exceptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept one specific deviation, until a date
+         * @description **The way into the exceptions table, which had none.**
+         *
+         *     `ReviewException` appeared only in the models and the tests: nothing granted one and
+         *     `apply_exceptions` had no caller, so the whole control was inert in both directions.
+         *
+         *     The expiry is required at every layer and this is the last of them — the column is `NOT NULL`,
+         *     `ExceptionGrant` has no default for it, the schema refuses its absence, and `grant_exception`
+         *     refuses one already past. A permanent silent exception is not representable, which is the
+         *     control: somebody has to look again.
+         *
+         *     The approver is the caller. Never a field.
+         */
+        post: operations["grant_review_exception_api_v1_projects__project_id__review_sessions__review_session_id__exceptions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rules": {
         parameters: {
             query?: never;
@@ -1118,6 +1181,61 @@ export interface components {
             status: string;
         };
         /**
+         * DecideEvidence
+         * @description Confirm or correct one observation behind one finding.
+         *
+         *     **`correct` carries the corrected value; `confirm` must not.** A confirmation that accepted a
+         *     value would be indistinguishable from a correction that happened to agree, and the correction
+         *     rate (`D5.4`) counts the difference. The pairing is validated here rather than trusted.
+         *
+         *     The value is **as typed**, with its unit, exactly as `MeasurementEntry` takes a reviewer's
+         *     reading. The server parses it — `25.5"` and `25 1/2"` are the same value, and the reviewer
+         *     should not have to know which spelling this accepts.
+         */
+        DecideEvidence: {
+            action: components["schemas"]["ReviewActionKind"];
+            /**
+             * Corrected Value
+             * @description The corrected value as typed, with its unit. Required for `correct` only.
+             */
+            corrected_value?: string | null;
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /**
+             * Observation Id
+             * Format: uuid
+             */
+            observation_id: string;
+        };
+        /**
+         * DecidedEvidenceOut
+         * @description What was recorded: the action, and the observation the reviewer's decision produced.
+         *
+         *     Two observation ids, because a correction never edits the original. The reading the system made
+         *     stays exactly as it was and a new `HUMAN_CONFIRMED` one is written beside it — which is what
+         *     makes "what did we get wrong?" answerable at all.
+         */
+        DecidedEvidenceOut: {
+            action: components["schemas"]["ReviewActionOut"];
+            /**
+             * Original Observation Id
+             * Format: uuid
+             */
+            original_observation_id: string;
+            /** Original Value */
+            original_value: string;
+            /**
+             * Resulting Observation Id
+             * Format: uuid
+             */
+            resulting_observation_id: string;
+            /** Resulting Value */
+            resulting_value: string;
+        };
+        /**
          * DiscriminatorOut
          * @description A judgement about the drawing that decides which variant of a rule applies.
          */
@@ -1239,6 +1357,47 @@ export interface components {
             /** Unit */
             unit: string;
         };
+        /**
+         * ExceptionOut
+         * @description What the exceptions say about one finding, right now.
+         *
+         *     Not a boolean. A report that knew only "suppressed: yes" could not tell a reviewer who accepted
+         *     it, why, or when it comes back; and one that knew only "suppressed: no" could not tell them that
+         *     cover has lapsed. Both halves are what `ExceptionDecision` was built to carry, and this is that
+         *     decision on the wire.
+         */
+        ExceptionOut: {
+            /** Approved By */
+            approved_by: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Explanation */
+            explanation: string;
+            /** In Force */
+            in_force: boolean;
+            /** Reason */
+            reason: string;
+            /** Scope */
+            scope: string;
+            /**
+             * Scope Id
+             * Format: uuid
+             */
+            scope_id: string;
+        };
+        /**
+         * ExceptionScope
+         * @description How far an exception reaches. Never "this rule, everywhere".
+         *
+         *     A rule that should not fire is a rule change, and it goes through the rulebook where somebody
+         *     reviews it. An exception is a reviewer saying *this one* is acceptable, on this drawing, until a
+         *     date — so the scope names one thing.
+         * @enum {string}
+         */
+        ExceptionScope: "finding" | "item" | "package";
         /**
          * ExportSummary
          * @description Counts, so a consumer that ignores every flag still cannot report a clean package.
@@ -1366,6 +1525,7 @@ export interface components {
             created_at: string;
             /** Engine Version */
             engine_version: string;
+            exception?: components["schemas"]["ExceptionOut"] | null;
             /**
              * Id
              * Format: uuid
@@ -1419,6 +1579,39 @@ export interface components {
              * @default Critical first, and within one severity the failures before the abstentions and the abstentions before the passes. Ties are broken by oldest first, then by id, so the order is total and a page boundary always falls in the same place. Full key: severity (CRITICAL, MAJOR, MINOR, ADVISORY), then outcome (FAIL, REVIEW_REQUIRED, NOT_FOUND, NO_APPLICABLE_RULE, PASS), then created_at ascending, then id ascending.
              */
             ordering: string;
+        };
+        /**
+         * GrantException
+         * @description Accept one specific deviation, until one specific moment.
+         *
+         *     **Every field is required, and `expires_at` most of all.** A permanent silent exception is not
+         *     representable anywhere in this system: the column is `NOT NULL`, `ExceptionGrant` has no default
+         *     for it, and this schema will not accept its absence. An exception with no end date is how a check
+         *     gets switched off and nobody remembers.
+         *
+         *     No `approved_by`. The approver is the authenticated caller — `AGENTS.md` §2.6 calls an anonymous
+         *     exception nobody's decision, and a client-supplied approver answers "who says so?" with "whoever
+         *     was asked".
+         */
+        GrantException: {
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /** Reason */
+            reason: string;
+            scope: components["schemas"]["ExceptionScope"];
+            /**
+             * Scope Id
+             * Format: uuid
+             */
+            scope_id: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1820,6 +2013,42 @@ export interface components {
              * Format: uuid
              */
             review_session_id: string;
+        };
+        /**
+         * ReviewExceptionOut
+         * @description A granted exception, with the terms a later reader needs.
+         */
+        ReviewExceptionOut: {
+            /** Approved By */
+            approved_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Review Action Id
+             * Format: uuid
+             */
+            review_action_id: string;
+            scope: components["schemas"]["ExceptionScope"];
+            /**
+             * Scope Id
+             * Format: uuid
+             */
+            scope_id: string;
         };
         /**
          * ReviewSessionOut
@@ -2916,6 +3145,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewSessionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_evidence_api_v1_projects__project_id__review_sessions__review_session_id__evidence_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                review_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecideEvidence"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecidedEvidenceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grant_review_exception_api_v1_projects__project_id__review_sessions__review_session_id__exceptions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                review_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GrantException"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewExceptionOut"];
                 };
             };
             /** @description Validation Error */
