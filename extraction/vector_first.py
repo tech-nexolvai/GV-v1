@@ -104,6 +104,7 @@ def plan_reads(
     *,
     proximity_limit: Decimal,
     minimum_paths: int,
+    maximum_span: Decimal,
 ) -> VectorFirstPage:
     """Choose which of a page's outlined regions to read, and keep the rest with a reason.
 
@@ -115,15 +116,40 @@ def plan_reads(
     `minimum_paths` drops clusters too small to be a legible label. A single path is a dot in a
     hatch pattern far more often than it is a digit — but not always, so this is the caller's number
     too, and every region it removes is named in `set_aside` rather than vanishing.
+
+    `maximum_span` drops clusters too *large* to be one label, in stored units, and it is here
+    because of what happened without it. The gap that merges `120"` into one region on the first real
+    sheet also merges that sheet's whole dimension chain — a cluster 4572 paths wide, spanning two
+    thirds of the page — and `minicpm-v` answered it with `3' - 3`, the first label in the chain.
+    That reading **passed every guard**: it is a well-formed feet-and-inches dimension, so the seam
+    accepted a partial reading of a merged chain as though it were a label. Nothing downstream could
+    have caught it. A region wider than a label is not a label, and the cheap fix is to refuse to ask.
     """
     if not isinstance(layers, PageLayers):
         raise TypeError("layers must be a PageLayers")
     if isinstance(minimum_paths, bool) or not isinstance(minimum_paths, int) or minimum_paths < 1:
         raise ValueError("minimum_paths must be a positive integer")
+    if isinstance(maximum_span, float):
+        raise TypeError("maximum_span must be a Decimal, never a float")
+    if not isinstance(maximum_span, Decimal) or not maximum_span.is_finite() or maximum_span <= 0:
+        raise ValueError("maximum_span must be a finite positive Decimal")
 
     to_read: list[RegionToRead] = []
     set_aside: list[SetAsideRegion] = []
     for region in layers.outlined_regions:
+        xs = [Decimal(point.x) for point in region.extent.points]
+        ys = [Decimal(point.y) for point in region.extent.points]
+        span = max(max(xs) - min(xs), max(ys) - min(ys))
+        if span > maximum_span:
+            set_aside.append(
+                SetAsideRegion(
+                    region,
+                    f"spans {span} of the page, past the {maximum_span} this run treats as the "
+                    "largest a single label can be. Probably several labels clustered together, and "
+                    "a model asked for one reading would answer with one of them",
+                )
+            )
+            continue
         if region.path_count < minimum_paths:
             set_aside.append(
                 SetAsideRegion(

@@ -95,6 +95,16 @@ def _arguments() -> argparse.Namespace:
         help="clusters with fewer paths than this are set aside (2 on AI_Set 2)",
     )
     parser.add_argument(
+        "--maximum-span",
+        type=Decimal,
+        required=True,
+        help=(
+            "stored units; clusters wider than this are several labels, not one, and are set aside "
+            "(0.05 on AI_Set 2 — its dimension chain merges into one cluster two thirds of a page "
+            "wide, and a model asked for one reading answers with the first label in it)"
+        ),
+    )
+    parser.add_argument(
         "--margin-pt",
         type=Decimal,
         default=Decimal(2),
@@ -226,6 +236,7 @@ def main() -> int:
         layers,
         proximity_limit=arguments.proximity_limit,
         minimum_paths=arguments.minimum_paths,
+        maximum_span=arguments.maximum_span,
     )
 
     print(
@@ -250,6 +261,7 @@ def main() -> int:
             "glyph_gap_pt": str(arguments.glyph_gap_pt),
             "proximity_limit": str(arguments.proximity_limit),
             "minimum_paths": arguments.minimum_paths,
+            "maximum_span": str(arguments.maximum_span),
             "margin_pt": str(arguments.margin_pt),
             "order": arguments.order,
             "limit": arguments.limit,

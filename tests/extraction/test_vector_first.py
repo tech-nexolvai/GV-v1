@@ -66,12 +66,14 @@ def _plan(
     *,
     proximity_limit: Decimal = Decimal("0.2"),
     minimum_paths: int = 1,
+    maximum_span: Decimal = Decimal("0.5"),
     glyph_gap_pt: Decimal = Decimal(4),
 ):
     return plan_reads(
         _layers(data, glyph_gap_pt=glyph_gap_pt),
         proximity_limit=proximity_limit,
         minimum_paths=minimum_paths,
+        maximum_span=maximum_span,
     )
 
 
@@ -140,7 +142,12 @@ def test_every_region_is_either_read_or_set_aside_exactly_once() -> None:
     appears twice, and this is the case that would have found it.
     """
     layers = _layers()
-    plan = plan_reads(layers, proximity_limit=Decimal("0.2"), minimum_paths=1)
+    plan = plan_reads(
+        layers,
+        proximity_limit=Decimal("0.2"),
+        minimum_paths=1,
+        maximum_span=Decimal("0.5"),
+    )
 
     assert len(plan.to_read) + len(plan.set_aside) == len(layers.outlined_regions)
 
@@ -292,8 +299,48 @@ def test_a_markup_only_page_plans_no_reading_at_all() -> None:
         ),
         proximity_limit=Decimal("0.2"),
         minimum_paths=1,
+        maximum_span=Decimal("0.5"),
     )
 
     assert [note.text for note in plan.markup] == [KNOWN_MARKUP]
     assert plan.to_read == ()
     assert plan.set_aside == ()
+
+
+def test_a_cluster_too_wide_to_be_one_label_is_set_aside() -> None:
+    """**The false accept this exists to prevent.** Input: a cluster wider than one label.
+
+    On the first real sheet, the clustering gap that merges `120"` into one region also merges that
+    sheet's whole dimension chain — 4572 paths, two thirds of the page wide. `minicpm-v` answered
+    that region with `3' - 3`, the first label in the chain, and **every guard passed it**: it is a
+    well-formed feet-and-inches dimension, so the seam recorded a partial reading of a chain as
+    though it were a label. No validator can catch that, because there is nothing wrong with the
+    string. Refusing to ask is the fix.
+    """
+    plan = _plan(maximum_span=Decimal("0.01"))
+
+    assert plan.to_read == ()
+    assert len(plan.set_aside) == 1
+    assert "largest a single label can be" in plan.set_aside[0].reason
+    assert "several labels clustered together" in plan.set_aside[0].reason
+
+
+def test_the_span_bound_lets_a_label_sized_region_through() -> None:
+    """Input: the same region against a generous bound. Outcome: it is read.
+
+    A bound that refused everything would be safe and useless, so both directions are asserted.
+    """
+    assert len(_plan(maximum_span=Decimal("0.5")).to_read) == 1
+
+
+@pytest.mark.parametrize("maximum_span", [Decimal(0), Decimal(-1)])
+def test_a_span_bound_that_admits_nothing_is_refused(maximum_span: Decimal) -> None:
+    """Input: zero or negative. Outcome: `ValueError` rather than a plan that reads nothing."""
+    with pytest.raises(ValueError, match="maximum_span"):
+        _plan(maximum_span=maximum_span)
+
+
+def test_a_float_span_bound_is_refused() -> None:
+    """Input: a float. Outcome: `TypeError`, for the reason every other length here has one."""
+    with pytest.raises(TypeError, match="never a float"):
+        _plan(maximum_span=0.5)  # type: ignore[arg-type]
