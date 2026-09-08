@@ -113,21 +113,14 @@ def test_the_multi_valued_quantities_are_marked_as_lists(key: str) -> None:
     assert quantity.many, f"{key} is a list in the rulebook and is not marked as one"
 
 
-def test_the_vendor_value_nobody_has_is_reported_as_blocked() -> None:
-    """`back_offset_minimum` must not appear as a field somebody can fill in.
-
-    `CT-BACK-OFFSET-MIN-001` says in its own text that the minimum has no default because the vendor
-    value is pending. A form offering it would invite an invented safety threshold, and the check
-    abstaining is the correct outcome rather than a gap to close.
-    """
+def test_the_vendor_back_offset_range_is_offered_as_a_confirmed_project_override() -> None:
+    """Raj supplied the vendor range, so reviewers may override the 2.5-inch standard to 2.375."""
     needs = required_inputs(_rules())
 
-    blocked = next(p for p in needs.parameters if p.name == "back_offset_minimum")
-    assert blocked.blocked
-    assert blocked.declared_default is None, "a blocked parameter must not carry a value to accept"
-    assert BLOCKED_PARAMETERS == {
-        "back_offset_minimum"
-    }, "the blocked set changed; every member is a value nobody may invent and needs its own reason"
+    back_offset = next(p for p in needs.parameters if p.name == "back_offset_minimum")
+    assert not back_offset.blocked
+    assert back_offset.declared_default == "5/2 in"
+    assert BLOCKED_PARAMETERS == frozenset()
 
 
 def test_a_declared_default_is_reported_but_not_treated_as_confirmed() -> None:

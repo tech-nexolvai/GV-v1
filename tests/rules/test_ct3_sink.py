@@ -130,17 +130,7 @@ def test_the_three_equality_sink_rules_have_no_tolerance() -> None:
 
 
 def test_every_sink_rule_declares_the_same_severity() -> None:
-    """**A rulebook that disagrees with itself about the same family of checks.**
-
-    The width rule was authored MAJOR while its three siblings said CRITICAL, on the reading that
-    Q4's "flag everything, no severity split" meant no rule should claim CRITICAL at all. Anant ruled
-    otherwise: the CRITICAL designation stays, on the checks whose wrong PASS gets stone cut to the
-    wrong size. The cut-out width is the clearest instance of that, so it matches its siblings.
-
-    Asserted as *agreement across the family* rather than against the literal CRITICAL, because the
-    defect worth catching is one of these four drifting away from the others — which is what
-    happened, and which no test then noticed.
-    """
+    """Q4's V1 policy applies to the whole sink family, not only the new CT009 value."""
     severities = {
         _load(path).severity
         for path in (
@@ -152,18 +142,14 @@ def test_every_sink_rule_declares_the_same_severity() -> None:
     }
 
     assert len(severities) == 1, f"the sink rules disagree about severity: {severities}"
+    assert severities == {Severity.FLAG}
 
 
-def test_the_cutout_checks_are_critical_because_a_wrong_pass_cuts_stone() -> None:
-    """The ruling, pinned to the reason for it rather than to the word.
-
-    Under exact match the label changes no behaviour — every mismatch flags regardless of severity —
-    so what it decides is whether the check counts toward `critical_false_pass_rate`. A hole cut to a
-    dimension nobody verified is precisely what that metric exists to catch, so excluding these from
-    it would leave the primary safety measure blind to the family most able to cost money.
-    """
-    assert _load(WIDTH_RULE_PATH).severity is Severity.CRITICAL
-    assert _load(DEPTH_RULE_PATH).severity is Severity.CRITICAL
+def test_v1_rulebook_has_no_declared_criticality_tier() -> None:
+    """Q4: every mismatch is a reviewer flag; severity tiers wait for 10–50 projects."""
+    rule_paths = sorted(RULEBOOK.glob("*.yaml"))
+    assert rule_paths
+    assert {_load(path).severity for path in rule_paths} == {Severity.FLAG}
 
 
 def test_the_four_sink_rules_have_distinct_ids() -> None:

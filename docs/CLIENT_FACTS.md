@@ -99,8 +99,12 @@ status:  ANSWERED
 blocks:  formula
 issue:   #13
 answer:  A configurable global default of 4", checked by EXACT equality now that Q2 is settled
-         (exact-match for V1). Not a hard minimum. The BACK offset is a different animal — it is
-         calculated, not a global constant (see Q6).
+         (exact-match for V1). Not a hard minimum. RE-CONFIRMED 2026-09-09 against the 2026-09-07
+         deck's slide-8 "Global minimum" wording, which had reopened this: Raj — "Keep 4" as standard
+         value (user can change based on project)... if it is more than 4", ADA will come. So lets keep
+         4" for now." So EXACT 4" (a standard hold dimension, U.N.O), reviewer-configurable per project
+         — NOT a minimum; closes the CT007 exact-vs-minimum item in docs/decisions/CT_CHECKS_FORMAT.md.
+         The BACK offset is a different animal — it is calculated, not a global constant (see Q6).
 source:  Raj email reply (3.3): "Typical value is 4". Vary rarely is changes. Keep a global
          variable as 4" that can be changed if required under special circumstances." Q2's 2nd-reply
          exact-match decision fixes the operator — check the offset equals the configured 4" exactly.
@@ -116,12 +120,16 @@ answer:  CT010 (countertop depth) is primary — set from cabinet depth + overha
          too big → reviewer changes the sink). CT009 (back offset) is the constrained REMAINDER. The
          2026-09-07 countertop deck gives the full decomposition CT010 = C.T_OH + CT007 + CT008 + CT009
          + B.S_THK, so back offset = CT010 − overhang − front offset − sink depth − backsplash, carrying
-         a Global MIN Constant: warn when the remainder falls below it. That minimum VALUE is STILL
-         PENDING (Raj to get it from the vendor). The deck added two terms the authored rule had been
+         a Global MIN Constant: flag when the remainder falls below it. That minimum VALUE is now
+         SUPPLIED (Raj, 2026-09-09, from the vendor): 2.375" to 2.5" — a RANGE, not a single number.
+         Recorded as a project-configurable parameter; V1 default 2.5" (the false-PASS-safe end, per
+         Q2's flag-and-review posture), reviewer-adjustable down to 2.375" per project. The deck added
+         two terms the authored rule had been
          omitting — overhang (C.T_OH) and backsplash (B.S_THK); both are now subtracted in
-         ct_back_offset_min_001 as project-scope reviewer inputs (#537). One residual question is
-         OURS: the deck says "warn", the shipped rule says CRITICAL — unresolved, see
-         docs/decisions/CT_CHECKS_FORMAT.md.
+         ct_back_offset_min_001 as project-scope reviewer inputs (#537). The warn-vs-CRITICAL question
+         is settled by Q4: V1 flags EVERYTHING with no severity split, so below-minimum is a uniform
+         flag (REVIEW REQUIRED), not a CRITICAL verdict and not a separate "warn" tier — severity tiers
+         stay deferred (Q4). See docs/decisions/CT_CHECKS_FORMAT.md.
 source:  Raj email reply (3.6): "CT010 Should be equal to CT007 + CT008 + CT009. If the value
          exceeds, then the program should throw a flag." 2nd reply (follow-up 1): "after the front
          offset and depth of the sink taken care of, whatever left will become the back offset… never
@@ -389,5 +397,5 @@ problem is gone. Field-smaller (Q8), the filler bounds (Q21: MIN 1" / MAX 2"), a
 (Fraction), flag every mismatch, reviewer finalises** — a deliberately review-heavy, false-PASS-safe
 posture, not tolerance bands. Neither ADR-0011's cross-unit allowance nor the `TOLERANCE_UNCONFIRMED`
 sentinel is exercised in V1 (rationale in `docs/decisions/V1_VERDICT_MODEL.md`).
-Two small residuals remain: the **back-offset global minimum** (Q6 — Raj checking the vendor) and the
-checklist typos (Q15–Q19 — our separate list). A clarification meeting was offered.
+One small residual remains: the checklist typos (Q15–Q19 — our separate list). The back-offset global
+minimum (Q6) is now supplied by the vendor — 2.375"–2.5" (2026-09-09). A clarification meeting was offered.

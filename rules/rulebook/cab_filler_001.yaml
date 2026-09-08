@@ -1,8 +1,8 @@
 id: CAB-FILLER-001
-version: 1.0.0
+version: 1.0.1
 product_type: cabinet
 check_type: arch_vs_shop
-severity: CRITICAL
+severity: FLAG
 arithmetic_unit: in
 
 name: Cabinet filler distribution

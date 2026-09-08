@@ -96,7 +96,7 @@ def _inputs(cabinet: int | Fraction = CABINET) -> dict[str, VerdictOperand]:
     }
 
 
-def test_the_rule_is_an_exact_critical_inch_check() -> None:
+def test_the_rule_is_an_exact_v1_flag_inch_check() -> None:
     """Q2: V1 compares exactly, so this is `equals` and carries no tolerance band.
 
     `is_production_ready` matters here: unlike `CAB-ARCH-VS-SHOP-001`, this relation needs no value
@@ -105,7 +105,7 @@ def test_the_rule_is_an_exact_critical_inch_check() -> None:
     rule = _load()
 
     assert rule.id == "CT-SINK-CABINET-WIDTH-001"
-    assert rule.severity is Severity.CRITICAL
+    assert rule.severity is Severity.FLAG
     assert rule.arithmetic_unit is Unit.INCH
     assert rule.operation.type == "equals"
     assert tolerances_of(rule) == ()

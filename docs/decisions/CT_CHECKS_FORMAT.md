@@ -72,18 +72,20 @@ layouts (CLIENT_FACTS Q20).
 
 ## Still pending (this deck does NOT close everything)
 
-- **`CT007`: exact value or minimum? — RAJ TO CONFIRM.** The slide-8 variable table gives its
-  acquisition as "Global **minimum**"; the deck's prose and Q5 call it a "global **constant** / standard
-  hold dimension (U.N.O)". Those are two different verdicts — `>= 4"` passes a sink held six inches
-  back, `= 4"` fails it. `ct_sink_offset_front_001` stays **exact** (as authored from Q5) and
-  `CT007`'s acquisition is deliberately left unset until Raj answers; nobody should reconcile this
-  from the deck alone.
-- **The back-offset remainder: warn or fail? — OURS TO DECIDE.** This deck says "warn" when the
-  remainder falls below the minimum; the shipped `ct_back_offset_min_001` carries `severity: CRITICAL`
-  (pre-dating this deck). Not changed here, because which one is right is a product call about how a
-  short back clearance should reach the reviewer, not a reading of the deck.
-- **The back-offset Global MIN Constant VALUE** — named, not numbered. Same vendor value Raj still owes
-  (Q6 residual).
+- **`CT007`: exact value or minimum? — RESOLVED 2026-09-09: EXACT.** Raj settled the slide-8 "Global
+  minimum" vs prose "global constant" split in favour of a **standard hold dimension**: "Keep 4" as
+  standard value (user can change based on project)... if it is more than 4", ADA will come." So
+  `ct_sink_offset_front_001` stays **exact** against a reviewer-configurable default of 4" (U.N.O), and
+  `CT007`'s acquisition is now set to that global-constant/standard type — not a minimum. The ADA note
+  is why it is held exactly rather than `>= 4"`.
+- **The back-offset remainder: warn or fail? — RESOLVED via Q4: a uniform FLAG.** Q4 (client choice,
+  Raj + Abhishek) is that V1 flags everything with no severity split, so below-minimum is REVIEW
+  REQUIRED like every other check — neither the deck's "warn" tier nor `severity: CRITICAL`. The
+  shipped `ct_back_offset_min_001` should drop CRITICAL to the V1 uniform-flag model; severity tiers
+  stay deferred (Q4) until 10–50 projects.
+- **The back-offset Global MIN Constant VALUE — SUPPLIED 2026-09-09: 2.375"–2.5"** (Raj, from the
+  vendor). A range, not one number: recorded as a project-configurable parameter, V1 default **2.5"**
+  (the false-PASS-safe end, per Q2), reviewer-adjustable down to 2.375" per project.
 - **Layout scope** — three-sided only; back-only and island vocabularies still to come (Q20 not fully
   final).
 - **The drawings themselves (#274).** This is the *spec*, not the drawings — semantic typing still needs

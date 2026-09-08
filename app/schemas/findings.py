@@ -30,8 +30,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models.review import ReviewActionKind
 from verdict.outcomes import Outcome, Severity
 
-#: Severities, worst first. The list a reviewer works down.
+#: V1's uniform action flag comes first; later severity tiers follow when the client adopts them.
 SEVERITY_ORDER: tuple[Severity, ...] = (
+    Severity.FLAG,
     Severity.CRITICAL,
     Severity.MAJOR,
     Severity.MINOR,
@@ -40,9 +41,9 @@ SEVERITY_ORDER: tuple[Severity, ...] = (
 
 #: Outcomes, most in need of attention first, applied *within* a severity.
 #:
-#: `FAIL` first is the acceptance criterion — "critical failures first". Severity alone does not
-#: deliver it: a critical `PASS` and a critical `FAIL` tie on severity, and the tie-break would then
-#: be whichever happened to be written first.
+#: `FAIL` first is the acceptance criterion — reviewer-actionable failures first. Severity alone
+#: does not deliver it: a V1 flag `PASS` and a V1 flag `FAIL` tie on severity, and the tie-break
+#: would then be whichever happened to be written first.
 #:
 #: The three abstentions come next and `PASS` comes last, which is the §3.2 rule applied to a list
 #: rather than to a redline. A `REVIEW REQUIRED` sitting below the passes is a check nobody reads.
@@ -56,10 +57,10 @@ OUTCOME_ORDER: tuple[Outcome, ...] = (
 
 #: The ordering in plain English, returned with every page.
 ORDERING_DESCRIPTION = (
-    "Critical first, and within one severity the failures before the abstentions and the "
+    "V1 flags first, then later severity tiers; within one severity failures before the abstentions and the "
     "abstentions before the passes. Ties are broken by oldest first, then by id, so the order is "
     "total and a page boundary always falls in the same place. Full key: severity "
-    "(CRITICAL, MAJOR, MINOR, ADVISORY), then outcome (FAIL, REVIEW_REQUIRED, NOT_FOUND, "
+    "(FLAG, CRITICAL, MAJOR, MINOR, ADVISORY), then outcome (FAIL, REVIEW_REQUIRED, NOT_FOUND, "
     "NO_APPLICABLE_RULE, PASS), then created_at ascending, then id ascending."
 )
 
@@ -233,5 +234,5 @@ class FindingCounts(BaseModel):
     not_found: int = Field(ge=0)
     no_applicable_rule: int = Field(ge=0)
     critical_failed: int = Field(ge=0)
-    """Failures on a CRITICAL rule. The primary safety metric counts these, so the reviewer's list
-    should lead with them rather than leaving them to be spotted among the rest."""
+    """Failures on a CRITICAL rule. The metric remains available for a later tiered release; V1
+    uses FLAG and therefore reports this count as zero rather than inventing criticality."""

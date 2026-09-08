@@ -28,8 +28,8 @@ def test_outcome_has_exactly_the_five_specified_values() -> None:
     }
 
 
-def test_severity_has_exactly_the_four_specified_values() -> None:
-    assert {s.value for s in Severity} == {"CRITICAL", "MAJOR", "MINOR", "ADVISORY"}
+def test_severity_has_the_v1_uniform_flag_and_the_deferred_tiers() -> None:
+    assert {s.value for s in Severity} == {"FLAG", "CRITICAL", "MAJOR", "MINOR", "ADVISORY"}
 
 
 def test_no_applicable_rule_is_distinct_from_pass_and_not_found() -> None:
@@ -68,6 +68,7 @@ def test_values_are_stable_strings_suitable_for_persistence() -> None:
     """StrEnum members compare equal to their stored string, so a finding read back from
     the database round-trips without a lookup table."""
     assert Outcome.PASS == "PASS"
+    assert Severity.FLAG == "FLAG"
     assert Severity.CRITICAL == "CRITICAL"
     assert Outcome("NO_APPLICABLE_RULE") is Outcome.NO_APPLICABLE_RULE
     assert Severity("ADVISORY") is Severity.ADVISORY

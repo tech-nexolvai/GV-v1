@@ -113,10 +113,10 @@ def _intermediate(finding: object, name: str) -> object:
 
 
 def test_rule_declares_the_client_sources_bounds_and_exact_operation() -> None:
-    """Input: authored YAML. Output: exact CRITICAL rule with USER_INPUT field width and two fillers."""
+    """Input: authored YAML. Output: exact V1 FLAG rule with USER_INPUT field width and two fillers."""
     rule = _load_rule()
 
-    assert rule.severity is Severity.CRITICAL
+    assert rule.severity is Severity.FLAG
     assert rule.arithmetic_unit is Unit.INCH
     assert rule.operation.type == "filler_distribution"
     assert rule.inputs["field_width"].source.value == "USER_INPUT"

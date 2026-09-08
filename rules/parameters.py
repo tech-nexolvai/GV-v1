@@ -70,7 +70,7 @@ class Provenance(StrEnum):
     """The general contractor or the client chose it — e.g. countertop overhang."""
 
     COMPANY_STANDARD = "Company standard"
-    """GV's own standard — e.g. the 4 inch sink front offset minimum."""
+    """GV's own standard — e.g. the exact 4-inch sink front offset."""
 
     MEASURED = "Measured"
     """Someone measured it on site — e.g. the field wall-to-wall dimension."""

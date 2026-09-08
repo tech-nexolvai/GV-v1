@@ -67,8 +67,8 @@ class ParameterNeed:
     """One setting a reviewer supplies or confirms.
 
     `declared_default` is the rulebook's own stand-in where it has one, rendered as the authored text
-    so nothing here converts it. `blocked` marks a parameter no default exists for and no reviewer can
-    supply — today only `back_offset_minimum`, which is a vendor value nobody has given.
+    so nothing here converts it. `blocked` marks a parameter no reviewer may supply because its
+    authority is still unresolved.
     """
 
     name: str
@@ -106,13 +106,9 @@ class RequiredInputs:
     discriminators: tuple[DiscriminatorNeed, ...]
 
 
-#: Parameters that no reviewer may supply, and why.
-#:
-#: `back_offset_minimum` is `scope: global` and has no declared default: `CT-BACK-OFFSET-MIN-001` says
-#: in its own text that "the minimum has no default because the vendor value is still pending". A form
-#: that offered it would invite somebody to invent a safety threshold, so it is reported as blocked and
-#: the check goes on abstaining, which is the correct outcome rather than a gap.
-BLOCKED_PARAMETERS = frozenset({"back_offset_minimum"})
+#: Parameters that no reviewer may supply while their authority remains unresolved. Raj supplied
+#: CT009's vendor range on 2026-09-09, so V1 currently has none.
+BLOCKED_PARAMETERS: frozenset[str] = frozenset()
 
 
 def _default_text(spec: object) -> str | None:
