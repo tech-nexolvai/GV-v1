@@ -74,6 +74,7 @@ __all__ = [
     "OutlinedTextRegion",
     "PageLayers",
     "read_annotation_layers",
+    "read_markup_layer",
 ]
 
 #: How far pdfium's page-space rect for an annotation may differ from the dictionary's `/Rect`
@@ -180,6 +181,13 @@ class PageLayers:
     other_layer_notes: tuple[MarkupNote, ...]
     refusals: tuple[LayerRefusal, ...]
     unreadable_reason: str | None = None
+    geometry_read: bool = True
+    """Whether the vendor's path geometry was looked at at all.
+
+    `read_markup_layer` leaves it `False`, and the distinction is not cosmetic: empty
+    `drawing_segments` from a markup-only read means *nobody looked*, while empty segments from
+    `read_annotation_layers` means *there is no line-work on this sheet*. Those are opposite facts
+    and a caller that could not tell them apart would report a drawing as having no dimensions."""
 
     @property
     def readable(self) -> bool:
@@ -499,6 +507,35 @@ def _clusters(
     return [grouped[key] for key in sorted(grouped)]
 
 
+def read_markup_layer(
+    data: bytes,
+    page_index: int,
+    *,
+    document_version_id: UUID,
+    dpi: int,
+) -> PageLayers:
+    """One page's reviewer markup, and nothing else. The half that needs no empirical numbers.
+
+    **This is the entry point the pipeline uses**, and the reason it exists is that
+    `read_annotation_layers` cannot be called without the three lengths that classify the vendor's
+    path geometry — and those are open questions (#179). Reading `/FreeText` is not: the text is a
+    dictionary value, the rectangle is a dictionary value, and nothing about either is a threshold.
+    Requiring the pipeline to supply numbers it has no basis for would make it the place they got
+    invented.
+
+    The result is a `PageLayers` with `drawing_segments` and `outlined_regions` empty, because
+    nothing looked at the stamps. That is a report, not a claim that the sheet has no line-work:
+    `read_annotation_layers` is what looks.
+    """
+    return _read_layers(
+        data,
+        page_index,
+        document_version_id=document_version_id,
+        dpi=dpi,
+        geometry=None,
+    )
+
+
 def read_annotation_layers(
     data: bytes,
     page_index: int,
@@ -531,8 +568,6 @@ def read_annotation_layers(
     the refusals and used for nothing. Hatching and arrowheads live there, and naming them rather
     than forcing them into one of the two answers is the point.
     """
-    if isinstance(dpi, bool) or not isinstance(dpi, int) or dpi <= 0:
-        raise ValueError("dpi must be a positive integer; stored coordinates depend on it")
     for name, value in (
         ("line_minimum_pt", line_minimum_pt),
         ("glyph_maximum_pt", glyph_maximum_pt),
@@ -542,6 +577,33 @@ def read_annotation_layers(
             raise TypeError(f"{name} must be a Decimal, never a float")
         if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
             raise ValueError(f"{name} must be a finite positive Decimal")
+
+    return _read_layers(
+        data,
+        page_index,
+        document_version_id=document_version_id,
+        dpi=dpi,
+        geometry=(line_minimum_pt, glyph_maximum_pt, glyph_gap_pt),
+    )
+
+
+def _read_layers(
+    data: bytes,
+    page_index: int,
+    *,
+    document_version_id: UUID,
+    dpi: int,
+    geometry: tuple[Decimal, Decimal, Decimal] | None,
+) -> PageLayers:
+    """The annotation walk both entry points share.
+
+    `geometry` carries the three lengths, or `None` to skip the vendor's path geometry entirely. One
+    walk rather than two, because the markup half and the geometry half read the same `/Annots` array
+    and must agree about which annotation is which — two walks could drift apart, and a drift here
+    attributes one annotation's geometry to another's text.
+    """
+    if isinstance(dpi, bool) or not isinstance(dpi, int) or dpi <= 0:
+        raise ValueError("dpi must be a positive integer; stored coordinates depend on it")
 
     markup: list[MarkupNote] = []
     other: list[MarkupNote] = []
@@ -590,6 +652,9 @@ def read_annotation_layers(
                     continue
 
                 if layer is DrawingLayer.VENDOR_DRAWING:
+                    if geometry is None:
+                        continue
+                    line_minimum_pt, glyph_maximum_pt, glyph_gap_pt = geometry
                     try:
                         placement = _appearance_transform(annotation, rect)
                         paths = tuple(
@@ -671,6 +736,7 @@ def read_annotation_layers(
             if (markup or segments or regions or other)
             else "this page carries no annotation layers to read"
         ),
+        geometry_read=geometry is not None,
     )
 
 

@@ -52,6 +52,7 @@ from app.evidence.record import (
     persist_manifest,
     record_candidates,
     record_digest_mismatch,
+    record_markup_candidates,
     record_ocr_candidates,
     record_unreadable_document,
     record_unreadable_page,
@@ -79,6 +80,7 @@ from app.verdicts.rulebook import snapshot_store
 from evidence.coordinates import StoredPoint
 from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
 from evidence.polygon import Polygon
+from extraction.annotations import read_markup_layer
 from extraction.manifest import build_manifest
 from extraction.ocr import OcrEngine, RapidOcrEngine, read_page
 from extraction.rasterise import PageTooLarge, render_page
@@ -106,6 +108,16 @@ from workflow.review import ENGINE_VERSION, PageResult
 #: What produced these readings, recorded on the extraction run so a candidate can say what read it.
 EXTRACTOR = "pdfplumber"
 EXTRACTOR_VERSION = "extraction.reader/1"
+
+#: The markup route's own identity, so its rows are distinguishable from the pixel routes' (#543).
+#:
+#: A separate run rather than a column, following the OCR route: `open_extraction_run` keys a run on
+#: extractor, version and configuration, and `_read_page_by_ocr` opens its own precisely so a
+#: reviewer can tell one route's reading from another's without inspecting the text. Two routes
+#: reading one page is now the ordinary case rather than a collision, because the `(run, page)`
+#: idempotency guard in each writer only ever sees its own route's rows.
+MARKUP_EXTRACTOR = "extraction.annotations"
+MARKUP_EXTRACTOR_VERSION = "extraction.annotations/1"
 
 #: One character is enough to call a page text-bearing. `build_manifest` requires the threshold from
 #: its caller and gives it no default, because "enough text to be worth reading" is a judgement about
@@ -441,11 +453,29 @@ class DatabaseStages:
                                 page_index=page.index,
                             )
                         )
+            # **The reviewer's own corrections, which no route above can see.** They are `/FreeText`
+            # annotations: text in the file, not marks on a picture of it. Every page of the first
+            # real client set reaches here having been sent to OCR, because none of them has vector
+            # text — and the twenty corrections on one of those pages were being rasterised and
+            # guessed at while sitting in the file as exact strings (#543).
+            #
+            # Additive, not a third branch of the route decision. Whatever read the page's pixels
+            # read them; this reads what was written on top, and both are recorded. Where the two
+            # disagree — the vendor's own overall width against the reviewer's correction of it —
+            # that disagreement is the review signal and neither row is allowed to replace the other.
+            markup_written = self._read_page_markup(
+                session,
+                version_id=version_id,
+                data=data,
+                page=page,
+                task_run_id=run.task_run_id,
+            )
             results.append(
                 PageResult(
                     index=page.index,
                     payload={
                         "candidates": written,
+                        "markup_candidates": markup_written,
                         "has_vector_text": page.has_vector_text,
                         # Which route read this page. Two readings of the same page by different
                         # routes are the basis of corroboration, so the route has to be visible.
@@ -454,6 +484,89 @@ class DatabaseStages:
                 )
             )
         return results
+
+    def _read_page_markup(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        task_run_id: UUID,
+    ) -> int:
+        """Record one page's reviewer annotations as candidates, and say how many.
+
+        **Reads only the markup half**, through `read_markup_layer`. The other half of that module
+        classifies the vendor's path geometry and cannot be called without three empirical lengths
+        that #179 gates on real drawings — and a pipeline is the last place a threshold should
+        acquire a value. Reading a `/FreeText` needs none: the text and the rectangle are dictionary
+        values.
+
+        **Its own extraction run**, for the reason the OCR route gives, with the same `dpi` in the
+        configuration because the same dpi decides the stored geometry these rows carry.
+
+        **A page whose annotations will not parse is recorded, not skipped.** Returning zero would be
+        indistinguishable from a page nobody had annotated, which is the failure `#491` exists to
+        stop for the routes above.
+        """
+        try:
+            layers = read_markup_layer(
+                data,
+                page.index,
+                document_version_id=version_id,
+                dpi=self._dpi,
+            )
+        except UnreadablePdf as error:
+            # The run is opened here rather than before the read, because a run is a record of work
+            # and most pages have no markup to do any on. A *failed* attempt is work: the failure
+            # points at the run that attempted it, and attributing it to the vector or OCR run would
+            # blame the wrong route for it.
+            failed_run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=MARKUP_EXTRACTOR,
+                extractor_version=MARKUP_EXTRACTOR_VERSION,
+                config_hash=f"dpi={self._dpi}",
+                dpi=self._dpi,
+            )
+            record_unreadable_page(
+                session,
+                extraction_run_id=failed_run.id,
+                document_version_id=version_id,
+                page_index=page.index,
+                error=error,
+            )
+            return 0
+        if not layers.markup:
+            # Nothing to record and nothing wrong: most sheets in most sets carry no markup at all,
+            # and a run opened for a page with no notes would be a row claiming work that did not
+            # happen.
+            return 0
+
+        with traced(
+            "extraction.page.markup",
+            document_version_id=str(version_id),
+            page_index=page.index,
+            extractor_version=MARKUP_EXTRACTOR_VERSION,
+        ):
+            markup_run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=MARKUP_EXTRACTOR,
+                extractor_version=MARKUP_EXTRACTOR_VERSION,
+                config_hash=f"dpi={self._dpi}",
+                dpi=self._dpi,
+            )
+            return len(
+                record_markup_candidates(
+                    session,
+                    layers.markup,
+                    document_version_id=version_id,
+                    page_id=page.id,
+                    extraction_run_id=markup_run.id,
+                    page_index=page.index,
+                )
+            )
 
     def _read_page_by_ocr(
         self,

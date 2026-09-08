@@ -108,6 +108,18 @@ class ObservationCandidate(Base, TimestampedUUID, Immutable):
     corroboration_status: Mapped[str | None] = mapped_column(String(32), default=None)
     corroboration_lane: Mapped[str | None] = mapped_column(String(32), default=None)
 
+    # **Who wrote the annotation this was read from, when it was read from one (#543).**
+    #
+    # Null for every number read off a drawing, which is most of them: a dimension has no author.
+    # It is set by the markup route, where the file names one — `/T` on a `/FreeText` annotation —
+    # and where it matters, because a reviewer's correction of a vendor's dimension outranks it
+    # partly by virtue of who wrote it.
+    #
+    # Which *route* read a candidate is not here. That is the run's job: `open_extraction_run` keys a
+    # run on extractor, version and configuration, and each route opens its own. A column here would
+    # be a second answer to the same question, free to disagree with the first.
+    source_author: Mapped[str | None] = mapped_column(String(200), default=None)
+
     __table_args__ = (
         CheckConstraint(EXACT_OPTIONAL_VALUE, name="observation_candidate_exact_value"),
         CheckConstraint(
@@ -117,6 +129,15 @@ class ObservationCandidate(Base, TimestampedUUID, Immutable):
         CheckConstraint(
             f"corroboration_lane IS NULL OR corroboration_lane IN ({CORROBORATION_LANE_VALUES})",
             name="candidate_corroboration_lane",
+        ),
+        # Empty is not a name: a `/T` present but blank is a tool filling in a key, not a person,
+        # and storing it would make "nobody said" and "somebody said nothing" the same row.
+        #
+        # The regex rather than `btrim`, which strips spaces and nothing else — 0035 fixed exactly
+        # that in `audit_events`, where a tab-only actor had passed since 0023.
+        CheckConstraint(
+            "source_author IS NULL OR source_author !~ '^[[:space:]]*$'",
+            name="candidate_source_author_not_blank",
         ),
         # A lane without a finding, or a finding from no lane, is a row nobody can interpret. They
         # are written together by `record_candidates` or not at all, and the database says so.
