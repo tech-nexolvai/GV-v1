@@ -16,15 +16,23 @@ confidence**. That is a mechanism the vision-model path does not have. So the qu
 is not only "does it read better" but "would a threshold have let it *abstain* on the reading that
 was dangerous", which is a question about safety rather than accuracy.
 
-**What it needs.** EasyOCR in the environment. It is not a runtime dependency of this project and
-nothing here adds one:
+**What it needs: either engine, neither of them a dependency of this project.**
 
+    # Tesseract — a small binary and a thin wrapper. Gives per-word confidence and OSD orientation.
+    brew install tesseract && .venv/bin/pip install pytesseract
+    python scripts/local_ocr_probe.py REGIONS.json --engine tesseract
+
+    # EasyOCR — a neural reader that handles rotation natively. Pulls PyTorch, ~1 GB installed.
     .venv/bin/pip install easyocr
-    python scripts/local_ocr_probe.py REGIONS.json --out data/exploration/easyocr.json
+    python scripts/local_ocr_probe.py REGIONS.json --engine easyocr
 
-The first run downloads detection and recognition models to `~/.EasyOCR` (about 100 MB) and takes a
-minute or two; later runs reuse them. With the engine absent the probe says so and exits without
-pretending — the same stance the Bedrock smoke test takes when no credential resolves.
+Two engines because the first attempt at the second one **stalled**: the 127 MB PyTorch wheel came
+down at 56 kB/s and then stopped, on a machine already at 96% disk. Tesseract is two orders of
+magnitude smaller and answers the same question — it reports a confidence per word and can detect
+page orientation — so the experiment does not depend on which one installs.
+
+With neither engine present the probe says so and exits without pretending, the same stance the
+Bedrock smoke test takes when no credential resolves.
 
 **No drawing content is in this file.** The PDF path, the crop boxes, the human readings and the
 render resolution all come from the manifest, which lives under `data/` and is not tracked. So do the
@@ -64,6 +72,16 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--out", type=Path, help="write the readings here as JSON")
     parser.add_argument("--only", help="run one region by id")
     parser.add_argument(
+        "--engine",
+        choices=("tesseract", "easyocr"),
+        default="tesseract",
+        help=(
+            "which local reader to use. Both report a per-detection confidence, which is the point "
+            "of the experiment; `tesseract` is a small binary, `easyocr` is a neural reader that "
+            "pulls PyTorch"
+        ),
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=8,
@@ -94,11 +112,11 @@ def _arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _engine() -> Any:
-    """The OCR reader, or an explanation of why there is none.
+def _easyocr() -> Any:
+    """The EasyOCR reader, or an explanation of why there is none.
 
-    Imported here rather than at module scope so that `--help` works, and the comparison table can
-    be reprinted from saved results, on a machine where the engine was never installed.
+    Imported inside the function so that `--help` works, and the comparison table can be reprinted
+    from saved results, on a machine where the engine was never installed.
 
     `gpu=False` explicitly: this is a laptop, the crops are small, and a silent fallback to CPU with
     a warning buried in the output is worse than saying which device did the work.
@@ -109,12 +127,124 @@ def _engine() -> Any:
         sys.exit(
             "easyocr is not installed in this environment, and this probe will not pretend to have "
             "read anything without it.\n"
-            "  .venv/bin/pip install easyocr\n"
-            "It is not a runtime dependency of this project — see the module docstring."
+            "  .venv/bin/pip install easyocr   (pulls PyTorch, ~1 GB installed)\n"
+            "Or use the smaller engine: --engine tesseract. Neither is a runtime dependency of this "
+            "project — see the module docstring."
         )
     # English only. A language list is a real choice on drawings that carry two, and adding one
     # "just in case" changes the recognition model rather than merely widening it.
     return easyocr.Reader(["en"], gpu=False, verbose=False)
+
+
+def _tesseract() -> Any:
+    """The pytesseract module, having checked the binary it shells out to actually exists.
+
+    Both halves are needed and they fail differently: the wrapper is a pip install and the engine is
+    a system binary. `pytesseract` raises `TesseractNotFoundError` deep inside a call, which reads
+    like a bug in this script rather than a missing `brew install`, so the check is up front.
+    """
+    try:
+        import pytesseract
+    except ImportError:
+        sys.exit(
+            "pytesseract is not installed in this environment.\n"
+            "  brew install tesseract && .venv/bin/pip install pytesseract"
+        )
+    try:
+        pytesseract.get_tesseract_version()
+    except Exception as error:  # noqa: BLE001 - any failure here means the binary is unusable
+        sys.exit(
+            f"the tesseract binary is not usable ({error}).\n"
+            "  brew install tesseract\n"
+            "The pip package is only a wrapper; the reader itself is a system binary."
+        )
+    return pytesseract
+
+
+def _read_with_tesseract(engine: Any, crop: bytes, *, abstain_below: float) -> list[dict[str, Any]]:
+    """Every word tesseract found, with its confidence and box — and a second look if rotated.
+
+    **Two passes, because one of them is the experiment.** The first reads the crop as it stands. The
+    second asks the `osd` model which way the page is turned and, if it says the text is rotated,
+    reads it again turned back. That is the case both vision models got wrong, and an engine that
+    *detects* the rotation before reading is doing something neither of them did.
+
+    Confidence comes from `image_to_data`, which reports one per word. Words tesseract scores at -1
+    are its own marker for "no text here" and are dropped rather than recorded as a reading with an
+    impossible confidence.
+
+    Every detection says which pass produced it, so a reading that only appears after de-rotation
+    cannot be mistaken for one the engine managed unaided.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    image = Image.open(BytesIO(crop))
+    passes: list[tuple[str, Any]] = [("as-rendered", image)]
+
+    orientation: dict[str, Any] = {}
+    try:
+        osd = engine.image_to_osd(image, output_type=engine.Output.DICT)
+        orientation = {
+            "rotate": int(osd.get("rotate", 0)),
+            "confidence": osd.get("orientation_conf"),
+        }
+        if orientation["rotate"]:
+            # `rotate` is how far the page must be turned to be upright, which is what `Image.rotate`
+            # takes directly. `expand=True` because a quarter turn changes the extent.
+            passes.append(
+                (
+                    f"osd-derotated-{orientation['rotate']}",
+                    image.rotate(-orientation["rotate"], expand=True),
+                )
+            )
+    except Exception:  # noqa: BLE001 - osd fails on images with too little text to judge
+        orientation = {"rotate": None, "confidence": None, "note": "osd could not judge this crop"}
+
+    if orientation.get("rotate") is None:
+        # **OSD needs a paragraph and these crops are one label.** It could not judge a single one of
+        # the eight, so on the rotated crops the de-rotated pass never ran — and reporting "cannot
+        # read rotated text" on the strength of a pass that never happened would be measuring this
+        # script rather than the engine.
+        #
+        # So when OSD abstains, the crop is tried at all four quarter turns. That is not clever, and
+        # it is honest: each pass is labelled with the turn that produced it, so a reading that only
+        # appears at 90° is visibly one the engine needed help to get.
+        passes.extend(
+            (f"turned-{angle}", image.rotate(-angle, expand=True)) for angle in (90, 180, 270)
+        )
+
+    found: list[dict[str, Any]] = []
+    for label, candidate in passes:
+        data = engine.image_to_data(candidate, output_type=engine.Output.DICT)
+        for index, text in enumerate(data["text"]):
+            if not text.strip():
+                continue
+            score = float(data["conf"][index])
+            if score < 0:
+                # Tesseract's own "nothing here" marker. Recording it as a reading with a negative
+                # confidence would put an impossible number in the comparison.
+                continue
+            confidence = score / 100
+            found.append(
+                {
+                    "text": text,
+                    "confidence": round(confidence, 4),
+                    "runs": "across" if data["width"][index] >= data["height"][index] else "up",
+                    "box": [
+                        [float(data["left"][index]), float(data["top"][index])],
+                        [
+                            float(data["left"][index] + data["width"][index]),
+                            float(data["top"][index] + data["height"][index]),
+                        ],
+                    ],
+                    "would_abstain": confidence < abstain_below,
+                    "pass": label,
+                    "orientation": orientation,
+                }
+            )
+    return found
 
 
 def _rotation_of(box: list[list[float]]) -> str:
@@ -131,28 +261,35 @@ def _rotation_of(box: list[list[float]]) -> str:
     return "across" if abs(x1 - x0) >= abs(y1 - y0) else "up"
 
 
-def _read_region(reader: Any, crop: bytes, *, abstain_below: float) -> dict[str, Any]:
-    """Every detection in one crop, with its text, confidence and box.
+def _read_with_easyocr(reader: Any, crop: bytes, *, abstain_below: float) -> list[dict[str, Any]]:
+    """Every detection EasyOCR found, with its text, confidence and box.
 
     `readtext` is given the PNG bytes directly — EasyOCR accepts them — so the image the engine sees
     is byte-identical to the one the vision models were sent. Comparing two readers on two different
     renders of the same region would be comparing the renders.
     """
+    return [
+        {
+            "text": text,
+            "confidence": round(float(confidence), 4),
+            "runs": _rotation_of([[float(x), float(y)] for x, y in box]),
+            "box": [[round(float(x), 1), round(float(y), 1)] for x, y in box],
+            "would_abstain": float(confidence) < abstain_below,
+            "pass": "as-rendered",
+        }
+        for box, text, confidence in reader.readtext(crop)
+    ]
+
+
+def _read_region(reader: Any, crop: bytes, *, engine: str, abstain_below: float) -> dict[str, Any]:
+    """One crop, read by whichever engine was chosen, with timing."""
     started = time.monotonic()
-    detections = reader.readtext(crop)
+    if engine == "easyocr":
+        found = _read_with_easyocr(reader, crop, abstain_below=abstain_below)
+    else:
+        found = _read_with_tesseract(reader, crop, abstain_below=abstain_below)
     seconds = round(time.monotonic() - started, 2)
 
-    found = []
-    for box, text, confidence in detections:
-        found.append(
-            {
-                "text": text,
-                "confidence": round(float(confidence), 4),
-                "runs": _rotation_of([[float(x), float(y)] for x, y in box]),
-                "box": [[round(float(x), 1), round(float(y), 1)] for x, y in box],
-                "would_abstain": float(confidence) < abstain_below,
-            }
-        )
     return {
         "detections": found,
         "seconds": seconds,
@@ -164,7 +301,11 @@ def _read_region(reader: Any, crop: bytes, *, abstain_below: float) -> dict[str,
 
 
 def _comparison(
-    ocr: list[dict[str, Any]], others: tuple[Path, ...], *, abstain_below: float
+    ocr: list[dict[str, Any]],
+    others: tuple[Path, ...],
+    *,
+    abstain_below: float,
+    label: str = "ocr",
 ) -> None:
     """Print the side-by-side table, so the acceptance is reproducible rather than transcribed."""
     columns: list[tuple[str, dict[str, dict[str, Any]]]] = []
@@ -190,7 +331,7 @@ def _comparison(
             flag = " WOULD ABSTAIN" if best["would_abstain"] else ""
             ocr_cell = f"{best['text']!r} conf={best['confidence']:.2f}{flag}"
         print(f"\n{entry['id']}  (truth {entry['truth']!r}, {entry.get('difficulty', '')})")
-        print(f"    easyocr      {ocr_cell}")
+        print(f"    {label:12} {ocr_cell}")
         for name, rows in columns:
             print(f"    {name[:12]:12} {other(rows.get(entry['id']))}")
     print(f"\n(abstention line for this report: confidence < {abstain_below})")
@@ -211,8 +352,11 @@ def main() -> int:
     if arguments.limit:
         regions = regions[: arguments.limit]
 
-    reader = _engine()
-    print(f"engine=easyocr(en, cpu) page={manifest['page']} dpi={dpi} regions={len(regions)}")
+    reader = _easyocr() if arguments.engine == "easyocr" else _tesseract()
+    print(
+        f"engine={arguments.engine} page={manifest['page']} dpi={dpi} regions={len(regions)}",
+        flush=True,
+    )
 
     readings: list[dict[str, Any]] = []
     for region in regions:
@@ -224,7 +368,9 @@ def main() -> int:
             dpi=dpi,
             include_markup=arguments.include_markup,
         )
-        result = _read_region(reader, crop, abstain_below=arguments.abstain_below)
+        result = _read_region(
+            reader, crop, engine=arguments.engine, abstain_below=arguments.abstain_below
+        )
         row = {
             "id": region["id"],
             "truth": region.get("truth", ""),
@@ -246,7 +392,12 @@ def main() -> int:
         )
 
     if arguments.compare_with:
-        _comparison(readings, tuple(arguments.compare_with), abstain_below=arguments.abstain_below)
+        _comparison(
+            readings,
+            tuple(arguments.compare_with),
+            abstain_below=arguments.abstain_below,
+            label=arguments.engine,
+        )
 
     if arguments.out:
         arguments.out.parent.mkdir(parents=True, exist_ok=True)
@@ -257,9 +408,8 @@ def main() -> int:
                         "readings and confidences against what a person read off the same crop. No "
                         "rule ran, nothing is scored, and no reading carries a semantic type."
                     ),
-                    "engine": "easyocr",
+                    "engine": arguments.engine,
                     "languages": ["en"],
-                    "device": "cpu",
                     "render_dpi": dpi,
                     "abstain_below": arguments.abstain_below,
                     "readings": readings,
