@@ -163,6 +163,9 @@ def test_authored_cases_are_reading_only_and_mark_the_type_unconfirmed(tmp_path:
 
     metadata = json.loads((written[0] / "case_metadata.json").read_text(encoding="utf-8"))
     assert metadata["semantic_type_status"] == TYPE_STATUS
+    assert metadata["semantic_type_basis"].startswith(
+        "upstream proposal label records a mid-run segment position"
+    )
     assert TYPE_STATUS in metadata["semantic_type_basis"]
     assert metadata["expected_finding"] == "ABSENT - reading accuracy only"
 
