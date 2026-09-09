@@ -26,11 +26,12 @@ PDF committed to this repository — our own design document, not a drawing — 
 drawings are proprietary and #274 has not landed. Nothing in the mechanism asks what the document is
 about, which is exactly the property that test demonstrates.
 
-**Expect to tune it against the real GV drawings when #274 lands.** Two things in particular are
-starting points rather than measured values: `CROP_CONTEXT_MARGIN_PT` (how much page a crop keeps
-around a reading — an eighth of an inch, chosen to show a dimension line either side of its text) and
-the 150 dpi the reader and the rasteriser share. Neither is wrong; neither has been checked against a
-sheet a fabricator actually sent.
+**The reader and rasteriser now share a measured 300 dpi setting.** The original 150 dpi starting
+point missed all five PM-confirmed vendor dual-notation dimensions on Board Room 1 page 13; at 300
+dpi the OCR detector sees four full-page labels. The 40-megapixel render ceiling remains the safety
+boundary: this sheet fits, while very large sheets are refused rather than allocated at an unsafe
+size. `CROP_CONTEXT_MARGIN_PT` remains a starting point (an eighth of an inch, chosen to show a
+dimension line either side of its text) and still needs broader drawing coverage.
 
 ## Where it stops, and why each stop is where it is
 

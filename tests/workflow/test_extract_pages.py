@@ -55,6 +55,7 @@ from storage.hashing import ArtifactCorrupt
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import _pdf
+from workflow.config import READER_RASTER_DPI
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import EXTRACTOR_VERSION, DatabaseStages
@@ -341,6 +342,8 @@ def test_a_page_manifest_and_an_extraction_run_are_written(
     assert pages[0].width_pt == Decimal(200)
     assert len(runs) == 1
     assert runs[0].extractor == "pdfplumber"
+    assert runs[0].dpi == READER_RASTER_DPI == 300
+    assert runs[0].config_hash == "dpi=300"
 
 
 def test_running_twice_writes_nothing_the_second_time(session: Session, store: LocalStore) -> None:

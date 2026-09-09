@@ -39,6 +39,7 @@ from extraction.geometry.containment import DimensionExtent
 from scripts.evaluate_goldset import (
     ANSWER_KEY,
     AssociatedCandidate,
+    _arguments,
     _candidate_for_answer,
     _pdf,
     _private_schema,
@@ -49,10 +50,16 @@ from scripts.evaluate_goldset import (
     make_fixture,
 )
 from workflow.association import AssociationSettings
+from workflow.config import READER_RASTER_DPI
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
 ASSOCIATION_ARGUMENTS = [
+    # This synthetic fixture's answer boxes were authored in 150-DPI image coordinates. Keep that
+    # explicit: it tests grader plumbing, while the separate assertion below guards production's
+    # shared default.
+    "--dpi",
+    "150",
     "--line-minimum-pt",
     "1",
     "--glyph-maximum-pt",
@@ -64,6 +71,16 @@ ASSOCIATION_ARGUMENTS = [
     "--ambiguity-margin",
     "0.01",
 ]
+
+
+def test_the_grader_defaults_to_the_production_reader_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sys.argv", ["evaluate_goldset.py"])
+
+    arguments = _arguments()
+
+    assert arguments.dpi == READER_RASTER_DPI == 300
 
 
 def main_with(argv: list[str]) -> int:

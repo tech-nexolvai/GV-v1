@@ -104,6 +104,7 @@ from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from workflow.association import AssociationSettings, ReadItem, dimension_texts
+from workflow.config import READER_RASTER_DPI
 from workflow.evidence_operands import operands_from_evidence
 from workflow.idempotency import stage_idempotency_key
 from workflow.measurements import run_parameters_for
@@ -140,9 +141,10 @@ MINIMUM_VECTOR_CHARACTERS = 1
 
 #: The pixel ceiling for one rendered page, used only by the OCR route.
 #:
-#: 40 megapixels is roughly an ANSI E sheet at 150 dpi with room to spare, and 120 MB of RGB in one
-#: allocation. Above it `render_page` raises `PageTooLarge` rather than shrinking, because a page
-#: quietly rendered smaller is a page read at a resolution nobody chose.
+#: 40 megapixels is about 120 MB of raw RGB. The 300-DPI reader fits the measured Board Room sheet,
+#: while an ANSI E sheet at 300 DPI exceeds this ceiling and is refused instead of risking a roughly
+#: 400-MB raw RGB allocation. Above it `render_page` raises `PageTooLarge` rather than shrinking,
+#: because a page quietly rendered smaller is a page read at a resolution nobody chose.
 MAXIMUM_RENDER_PIXELS = 40_000_000
 
 #: How much page to keep around an evidence crop, in PDF points (72 to the inch).
@@ -203,7 +205,7 @@ class DatabaseStages:
         self,
         store: ArtifactStore | None = None,
         *,
-        dpi: int = 150,
+        dpi: int = READER_RASTER_DPI,
         ocr_engine: OcrEngine | None = None,
         operands: Mapping[str, Mapping[str, VerdictOperand]] | None = None,
         discriminators: Mapping[str, str] | None = None,
