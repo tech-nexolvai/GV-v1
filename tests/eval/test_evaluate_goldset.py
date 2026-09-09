@@ -386,6 +386,46 @@ def test_no_arguments_asks_for_a_package_rather_than_guessing(
     assert "--make-fixture" in capsys.readouterr().err
 
 
+def test_pending_candidate_scaffolds_load_without_applying_a_semantic_type(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A dry-run measures no pending candidate and never reaches the typing pipeline."""
+    from scripts.scaffold_reviewed_goldset_candidates import PENDING, UNVERIFIED
+
+    candidates = tmp_path / "candidates"
+    candidates.mkdir()
+    (candidates / "one.candidate.json").write_text(
+        json.dumps(
+            {
+                "schema": "reviewed-goldset-candidate/v1",
+                "status": PENDING,
+                "reviewer_markup_candidate": {"status": UNVERIFIED, "raw_text": '4"'},
+                "gold_set_answer_key_fields": {
+                    "semantic_type": PENDING,
+                    "authoritative_correct_value": PENDING,
+                    "source": PENDING,
+                    "item_id": PENDING,
+                    "arch_shop_match": PENDING,
+                    "provenance_human_annotator": PENDING,
+                    "expected_finding": {
+                        "check": PENDING,
+                        "outcome": PENDING,
+                        "reason": PENDING,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main_with(["--candidate-scaffold-dir", str(candidates)]) == 0
+
+    printed = capsys.readouterr().out
+    assert "Loaded 1 candidate scaffold file" in printed
+    assert "Eligible real GoldCase answer keys: 0" in printed
+    assert "not measured" in printed
+
+
 def test_the_tool_is_not_wired_to_any_live_configuration() -> None:
     """**Outcome: the grader never reads the application's own database URL.**
 
