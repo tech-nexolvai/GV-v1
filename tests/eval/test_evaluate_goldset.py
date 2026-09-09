@@ -39,7 +39,9 @@ from scripts.evaluate_goldset import (
     ANSWER_KEY,
     AssociatedCandidate,
     _candidate_for_answer,
+    _pdf,
     _private_schema,
+    _vendor_only_pdf,
     load_package,
     main,
     make_fixture,
@@ -86,6 +88,78 @@ def evaluation_args(database_url: str, directory: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 # The fixture and the format
 # ---------------------------------------------------------------------------
+
+
+def _annotation_subtypes(data: bytes) -> list[str]:
+    """The annotation subtypes on the first page, for the layer-boundary assertions below."""
+    import io
+
+    from pypdf import PdfReader
+
+    page = PdfReader(io.BytesIO(data)).pages[0]
+    return [str(reference.get_object().get("/Subtype")) for reference in page.get("/Annots", ())]
+
+
+def test_vendor_only_input_keeps_stamps_and_removes_every_answer_layer() -> None:
+    """Reviewed markup is an answer, never a reader input; only drawing stamps survive."""
+    import io
+
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.annotations import FreeText, Line, Rectangle
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=100)
+    writer.add_annotation(
+        page_number=0,
+        annotation={
+            "/Type": "/Annot",
+            "/Subtype": "/Stamp",
+            "/Rect": [0, 0, 200, 100],
+            "/Contents": "vendor drawing",
+        },
+    )
+    writer.add_annotation(
+        page_number=0,
+        annotation=FreeText(text='17-1/4"', rect=(20, 20, 80, 40)),
+    )
+    writer.add_annotation(
+        page_number=0,
+        annotation=Line(p1=(20, 50), p2=(80, 50), rect=(20, 45, 80, 55)),
+    )
+    writer.add_annotation(
+        page_number=0,
+        annotation=Rectangle(rect=(10, 10, 90, 90)),
+    )
+    source = io.BytesIO()
+    writer.write(source)
+
+    vendor_only, removed = _vendor_only_pdf(source.getvalue())
+
+    assert removed == 3
+    assert _annotation_subtypes(vendor_only) == ["/Stamp"]
+    assert len(PdfReader(io.BytesIO(vendor_only)).pages) == 1
+
+
+def test_an_unannotated_drawing_is_not_rewritten() -> None:
+    """Ordinary production and synthetic PDFs retain their exact bytes and provenance hash."""
+    drawing = _pdf('3"')
+
+    vendor_only, removed = _vendor_only_pdf(drawing)
+
+    assert removed == 0
+    assert vendor_only is drawing
+
+
+def test_vendor_only_input_is_an_explicit_grader_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A reviewed overlay needs an explicit layer choice; ordinary packages are not rewritten."""
+    directory = make_fixture(tmp_path / "package")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    main_with(["--vendor-stamps-only", str(directory)])
+
+    assert "no database" in capsys.readouterr().err
 
 
 def test_the_generated_package_is_one_the_loader_accepts(tmp_path: Path) -> None:

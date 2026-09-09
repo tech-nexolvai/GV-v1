@@ -18,6 +18,12 @@ through the same `eval/metrics.py`, so neither has its own idea of what a metric
       --line-minimum-pt 1 --glyph-maximum-pt 1 --glyph-gap-pt 1 \
       --proximity-limit 0.1 --ambiguity-margin 0.01
 
+    # A reviewed package whose production/vendor drawing is carried by /Stamp annotations:
+    python scripts/evaluate_goldset.py data/goldset/reviewed-case \
+      --vendor-stamps-only \
+      --line-minimum-pt 12 --glyph-maximum-pt 12 --glyph-gap-pt 2.5 \
+      --proximity-limit 0.01 --ambiguity-margin 0.005
+
 **It is offline and it cannot change a verdict.** It creates a schema of its own, migrates it, runs
 the stages, reads what they wrote, reports, and drops the schema. Nothing it does touches a live
 package: the revision it creates is its own, and the scorecard is printed rather than stored.
@@ -80,6 +86,42 @@ PROJECT_GOLDSET_DIRECTORY = Path("data/goldset")
 
 #: The file inside a package directory that holds the answer key.
 ANSWER_KEY = "answer_key.json"
+
+
+def _vendor_only_pdf(data: bytes) -> tuple[bytes, int]:
+    """Return PDF bytes with every non-stamp annotation removed, in memory.
+
+    The reviewed sets carry the vendor drawing in ``/Stamp`` annotations and GVI-007's answer
+    layer in ``/FreeText``, ``/Line``, ``/Square`` and related annotations.  A reading-accuracy
+    evaluation must show the reader what an unreviewed production drawing contains: the stamps,
+    never the reviewer overlay.  This is the document-level equivalent of
+    ``extraction.vector_first._drop_other_layers``; doing it before the real stages run also keeps
+    exact annotation strings out of the candidate table instead of merely hiding their pixels.
+
+    PDFs without a non-stamp annotation are returned byte-for-byte.  That preserves the synthetic
+    fixture's provenance and avoids rewriting ordinary unannotated production inputs for no reason.
+    """
+    import pikepdf
+
+    removable = 0
+    output = io.BytesIO()
+    with pikepdf.open(io.BytesIO(data)) as document:
+        for page in document.pages:
+            annotations = page.obj.get("/Annots", ())
+            kept = pikepdf.Array()
+            for annotation in annotations:
+                if annotation.get("/Subtype") == pikepdf.Name("/Stamp"):
+                    kept.append(annotation)
+                else:
+                    removable += 1
+            if kept:
+                page.obj["/Annots"] = kept
+            elif "/Annots" in page.obj:
+                del page.obj["/Annots"]
+        if removable == 0:
+            return data, 0
+        document.save(output)
+    return output.getvalue(), removable
 
 
 def _pdf(text: str, *, box: bytes = b"[0 0 200 100]") -> bytes:
@@ -268,6 +310,14 @@ def _arguments() -> argparse.Namespace:
         help="the reader's resolution. Stated, because stored coordinates depend on it",
     )
     parser.add_argument(
+        "--vendor-stamps-only",
+        action="store_true",
+        help=(
+            "for a reviewed-overlay package whose vendor drawing is in /Stamp annotations: remove "
+            "every non-stamp annotation in memory before extraction"
+        ),
+    )
+    parser.add_argument(
         "--line-minimum-pt",
         type=Decimal,
         help="required for evaluation: production annotation line-work threshold in PDF points",
@@ -365,6 +415,7 @@ def _run_pipeline(
     *,
     dpi: int,
     association: AssociationSettings,
+    vendor_stamps_only: bool,
 ) -> Any:
     """Put the package's shop drawing through the real stages and return what they wrote.
 
@@ -411,7 +462,11 @@ def _run_pipeline(
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 
-    data = (directory / case.shop).read_bytes()
+    source_data = (directory / case.shop).read_bytes()
+    if vendor_stamps_only:
+        data, stripped_annotations = _vendor_only_pdf(source_data)
+    else:
+        data, stripped_annotations = source_data, 0
     digest = hashlib.sha256(data).hexdigest()
     session = session_factory(engine)()
     with tempfile.TemporaryDirectory() as root:
@@ -568,7 +623,7 @@ def _run_pipeline(
                 )
             ).scalars()
         )
-        return findings, observations, typed, published, session
+        return findings, observations, typed, published, stripped_annotations, session
 
 
 @dataclass(frozen=True, slots=True)
@@ -748,17 +803,25 @@ def main() -> int:
     # Scoring happens inside the `with`: `_as_gold` reads the page transform back out of the rows
     # the run wrote, so the schema has to outlive the pipeline call itself.
     with _private_schema(database_url) as scoped_url:
-        findings, observations, typed, published, session = _run_pipeline(
+        findings, observations, typed, published, stripped_annotations, session = _run_pipeline(
             case,
             arguments.package,
             scoped_url,
             dpi=arguments.dpi,
             association=association,
+            vendor_stamps_only=arguments.vendor_stamps_only,
         )
         print(
             f"ran the pipeline: {published} rule(s) published, {typed} answer-key label(s) "
             f"applied, {len(observations)} confirmed observation(s), {len(findings)} finding(s)\n"
         )
+        if arguments.vendor_stamps_only:
+            print(
+                "reader input: vendor stamp annotations only; "
+                f"{stripped_annotations} non-stamp annotation(s) removed in memory\n"
+            )
+        else:
+            print("reader input: source drawing unchanged; 0 annotations removed\n")
         scorecard = score_package(
             case, _as_domain(findings), observations=_as_gold(session, observations, case)
         )
