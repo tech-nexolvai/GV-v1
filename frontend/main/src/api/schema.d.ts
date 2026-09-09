@@ -237,6 +237,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask about one deterministic review run
+         * @description Narrate the package's current findings without changing, calculating, or extending them.
+         */
+        post: operations["reviewer_chat_api_v1_projects__project_id__packages__package_id__chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/checks": {
         parameters: {
             query?: never;
@@ -2155,6 +2175,41 @@ export interface components {
             note?: string | null;
         };
         /**
+         * ReviewerChatNarrative
+         * @description One answer fragment and the deterministic finding that backs it.
+         */
+        ReviewerChatNarrative: {
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * ReviewerChatOut
+         * @description Bounded chat response; every narrative has a finding id from this exact run.
+         */
+        ReviewerChatOut: {
+            /** Answer */
+            answer: string;
+            /** Fallback Reason */
+            fallback_reason?: string | null;
+            /** Findings */
+            findings: components["schemas"]["ReviewerChatNarrative"][];
+            /** Mode */
+            mode: string;
+        };
+        /**
+         * ReviewerChatRequest
+         * @description A reviewer question; it cannot carry findings, values, rules, or verdicts.
+         */
+        ReviewerChatRequest: {
+            /** Question */
+            question: string;
+        };
+        /**
          * ReviewerEntry
          * @description Everything one reviewer submission carries.
          *
@@ -2705,6 +2760,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConfirmedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reviewer_chat_api_v1_projects__project_id__packages__package_id__chat_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewerChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewerChatOut"];
                 };
             };
             /** @description Validation Error */

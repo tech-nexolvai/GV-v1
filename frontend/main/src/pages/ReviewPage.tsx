@@ -6,6 +6,7 @@ import { StatusBadge } from '../components/ui/Badge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
   getPackage,
+  askReviewerChat,
   listReviewSessions,
   openReviewSession,
   recordReviewAction,
@@ -103,7 +104,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
   // slow render, it is the screen stating something false about the package.
   useEffect(() => {
     if (remote.status === 'ready' && initialMessage) {
-      handleSend(initialMessage, remote.data.found);
+      void handleSend(initialMessage, remote.data.found);
       onMessageConsumed?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -127,7 +128,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     );
   }
 
-  function handleSend(text: string, source: readonly Finding[] = findings) {
+  async function handleSend(text: string, source: readonly Finding[] = findings) {
     if (isProcessing) return;
 
     // Add user message
@@ -150,28 +151,44 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     setMessages(prev => [...prev, userMsg, typingMsg]);
     setIsProcessing(true);
 
-    // Resolved from the findings already fetched for this package — no request, so no delay to
-    // stage. The previous version waited 1400 ms to imitate thinking, which dressed a local array
-    // filter up as a system doing work.
-    const filter = filterFor(text);
-    const matched =
-      filter === 'FAIL'
-        ? source.filter(f => f.outcome === 'FAIL')
-        : filter === 'REVIEW_REQUIRED'
-        ? source.filter(f => f.outcome === 'REVIEW_REQUIRED')
-        : filter === 'ALL'
-        ? [...source]
-        : undefined;
-
-    const replyMsg: ChatMessage = {
-      id: `msg-a-${Date.now()}`,
-      role: 'assistant',
-      content: describeFilter(filter, matched?.length ?? 0, source.length),
-      timestamp: new Date().toISOString(),
-      findings: matched,
-    };
-    setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
-    setIsProcessing(false);
+    try {
+      const response = await askReviewerChat(projectId(), packageId, text);
+      // The backend's ids are the authoritative run scope.  Map them back to the already-loaded
+      // cards so evidence/actions remain the same grounded objects the rest of the reviewer loop uses.
+      const byId = new Map(source.map((finding) => [finding.id, finding]));
+      const matched = response.findings.flatMap((item) => {
+        const finding = byId.get(item.finding_id);
+        return finding ? [finding] : [];
+      });
+      const narratives = response.findings.map((item) => item.text).join('\n\n');
+      const fallback = response.mode === 'structured_fallback'
+        ? 'The language model is unavailable or returned an unsafe reply. Showing plain deterministic findings.\n\n'
+        : '';
+      const replyMsg: ChatMessage = {
+        id: `msg-a-${Date.now()}`,
+        role: 'assistant',
+        content: narratives
+          ? `${fallback}${response.answer}\n\n${narratives}`
+          : `${fallback}${response.answer}`,
+        timestamp: new Date().toISOString(),
+        findings: matched,
+      };
+      setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
+    } catch (error) {
+      // A chat outage must not hide the already-fetched deterministic review. The page keeps its
+      // ordinary finding cards and says clearly that it is showing that plain fallback.
+      const message = error instanceof Error ? error.message : String(error);
+      const replyMsg: ChatMessage = {
+        id: `msg-a-${Date.now()}`,
+        role: 'assistant',
+        content: `The chat service is unavailable. Showing the plain deterministic findings instead — ${message}`,
+        timestamp: new Date().toISOString(),
+        findings: [...source],
+      };
+      setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
+    } finally {
+      setIsProcessing(false);
+    }
   }
 
   async function handleViewEvidence(finding: Finding) {
@@ -555,56 +572,6 @@ function ReviewProgress({ status }: { status: PackageStatus }) {
       </ol>
     </div>
   );
-}
-
-/**
- * What the app actually did with a typed message.
- *
- * This replaced `getSimulatedReply`, which invented verdicts: it would answer "explain CT-1" with
- * *"shop 5980 mm vs arch 6012 mm, tolerance ±3.175 mm, verdict FAIL"* — numbers no drawing produced,
- * a rule nobody published, and a tolerance band that V1 does not have, since Raj settled on exact
- * match. Under **the AI reads, deterministic Python decides**, a screen that composes its own verdict
- * is the exact failure the architecture exists to prevent, and it is worse here than anywhere else
- * because this panel is where a reviewer signs off.
- *
- * There is no conversational endpoint yet. So this says only what it can defend: which filter it
- * applied, and how many of the package's real findings matched.
- */
-function describeFilter(filter: FindingFilter, matched: number, total: number): string {
-  const of = `${matched} of ${total} finding${total === 1 ? '' : 's'}`;
-
-  switch (filter) {
-    case 'FAIL':
-      return `Showing the ${of} that failed. The verdicts come from the engine — nothing on this screen recomputes them.`;
-    case 'REVIEW_REQUIRED':
-      return `Showing the ${of} the engine could not decide, which are the ones needing your judgement.`;
-    case 'ALL':
-      return `Showing all ${total} finding${total === 1 ? '' : 's'} recorded for this package.`;
-    case 'NONE':
-      return (
-        'Conversational review is not wired up yet — there is no endpoint behind this box, so nothing ' +
-        'here can answer a question about a drawing. The findings below are the real ones for this ' +
-        'package. Try "fail" or "review" to filter them.'
-      );
-  }
-}
-
-type FindingFilter = 'FAIL' | 'REVIEW_REQUIRED' | 'ALL' | 'NONE';
-
-/**
- * Read off the text, so the message and the list it produces can never disagree.
- *
- * **Order matters, and the obvious order was wrong.** "run full review" contains the word `review`,
- * so testing that first classified a request for *everything* as a request for the abstentions —
- * quietly dropping the failures, which are the findings somebody asking for a full review most needs
- * to see. The whole-set phrases are checked before the single-outcome words for that reason.
- */
-function filterFor(text: string): FindingFilter {
-  const t = text.toLowerCase();
-  if (t.includes('full') || t.includes('everything') || t.includes('all')) return 'ALL';
-  if (t.includes('fail')) return 'FAIL';
-  if (t.includes('review')) return 'REVIEW_REQUIRED';
-  return 'NONE';
 }
 
 function ReviewSkeleton() {

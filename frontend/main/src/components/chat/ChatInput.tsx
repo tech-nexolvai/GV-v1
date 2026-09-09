@@ -9,24 +9,15 @@ interface ChatInputProps {
 }
 
 /**
- * The only three things this box can actually do.
- *
- * It used to suggest "Explain CT-1 result" and "Generate vendor report". There is no rule called
- * CT-1, nothing here explains a verdict, and no report is generated anywhere in this app — so two of
- * the four suggestions were instructions to ask for something that does not exist, and the reply
- * would have been the "not wired up" message. A suggestion chip is a promise about what the software
- * does; these are the ones it can keep.
- *
- * "Run full review" is gone for a narrower reason: it filters findings, it does not run anything.
- *
- * Each of these maps onto a branch of `filterFor` in `ReviewPage`. If that gains a filter, this gains
- * a chip — and if it loses one, a chip here starts falling through to "not wired up", which is
- * visible rather than silent.
+ * Grounded prompts for the run-scoped chat. The server supplies only stored deterministic findings
+ * and evidence pages to its language layer; these never ask it to run a check or make a verdict.
  */
 const QUICK_PROMPTS = [
   'Show all findings',
   'Show FAIL findings',
   'Show findings needing review',
+  'Which sheet has the failure?',
+  'Why did this fail?',
 ];
 
 export function ChatInput({ onSend, disabled, placeholder = 'Ask about this package…' }: ChatInputProps) {
@@ -97,7 +88,7 @@ export function ChatInput({ onSend, disabled, placeholder = 'Ask about this pack
       </div>
 
       <p className="chat-input-area__hint">
-        GV Review uses deterministic rules. AI extracts values; Python decides.
+        Graniti + Nexolv chat explains recorded findings. Deterministic rules decide every verdict.
       </p>
     </div>
   );

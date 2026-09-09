@@ -39,14 +39,14 @@
   width: 28px;
   height: 28px;
   border-radius: var(--radius-md);
-  background: var(--gv-crimson);
+  background: var(--text-primary);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .chat-message__avatar-gv span {
-  font-family: var(--font-heading);
+  font-family: var(--font-mono);
   font-size: 9px;
   font-weight: var(--weight-bold);
   color: #fff;
@@ -89,6 +89,7 @@
 }
 
 .chat-message__sender {
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   font-weight: var(--weight-semi);
   color: var(--text-muted);
@@ -173,10 +174,10 @@
   font-weight: var(--weight-medium);
 }
 
-.findings-summary__count--pass    { color: var(--status-pass); }
-.findings-summary__count--fail    { color: var(--status-fail); }
-.findings-summary__count--review  { color: var(--status-review); }
-.findings-summary__count--missing { color: var(--status-missing); }
+.findings-summary__count--pass,
+.findings-summary__count--fail,
+.findings-summary__count--review,
+.findings-summary__count--missing { color: var(--text-primary); }
 
 /* ── Typing indicator ─────────────────────────────────────── */
 .typing-indicator {
