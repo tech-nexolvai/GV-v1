@@ -1,8 +1,9 @@
 """Prepare unverified gold-set candidates from reviewed-PDF FreeText markup.
 
-This is an exploratory annotation aid, not a gold-case author.  It copies no drawings and
-does not create an ``answer_key.json``: the real evaluator would apply the answer key's human
-semantic labels to extracted candidates, and these annotations are not human-confirmed truth.
+This is an exploratory annotation aid, not a gold-case author. It does not copy the source PDF or
+create an ``answer_key.json``. Instead, it writes a rendered page and mechanical candidate crops to
+configured ignored directories; the real evaluator would apply an answer key's human semantic labels
+to extracted candidates, and these annotations are not human-confirmed truth.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ class Candidate:
 
 
 def _read_candidates(csv_path: Path, *, page: int) -> list[Candidate]:
+    """Select dimension-shaped reviewer annotations without assigning semantics."""
     candidates: list[Candidate] = []
     with csv_path.open(encoding="utf-8", newline="") as stream:
         rows = csv.DictReader(stream)
@@ -98,8 +100,9 @@ def _read_ppm(path: Path) -> tuple[int, int, bytes]:
     width, height, max_value = (int(token()) for _ in range(3))
     if max_value != 255:
         raise ValueError(f"expected an 8-bit PPM, got max value {max_value}")
-    while cursor < len(data) and data[cursor] in b" \t\r\n":
-        cursor += 1
+    if cursor >= len(data) or data[cursor] not in b" \t\r\n":
+        raise ValueError("PPM header is not separated from its raster by whitespace")
+    cursor += 1
     rgb = data[cursor:]
     if len(rgb) != width * height * 3:
         raise ValueError("PPM pixel length does not match its declared size")
@@ -148,18 +151,24 @@ def _crop_box(
     left, bottom, right, top = rect
     crop_left, crop_bottom, crop_right, crop_top = crop_box
     scale = dpi / 72
-    x0 = max(0, math.floor((min(left, right) - margin_pt - crop_left) * scale))
-    x1 = min(width, math.ceil((max(left, right) + margin_pt - crop_left) * scale))
-    y0 = max(0, math.floor((crop_top - max(bottom, top) - margin_pt) * scale))
-    y1 = min(height, math.ceil((crop_top - min(bottom, top) + margin_pt) * scale))
-    if x1 <= x0 or y1 <= y0:
-        raise ValueError(f"annotation /Rect {rect!r} produces an empty crop")
     if crop_right <= crop_left or crop_top <= crop_bottom:
         raise ValueError("PDF crop box does not describe a visible page")
+    x0 = math.floor((min(left, right) - margin_pt - crop_left) * scale)
+    x1 = math.ceil((max(left, right) + margin_pt - crop_left) * scale)
+    y0 = math.floor((crop_top - max(bottom, top) - margin_pt) * scale)
+    y1 = math.ceil((crop_top - min(bottom, top) + margin_pt) * scale)
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError(f"annotation /Rect {rect!r} produces an empty crop")
+    if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
+        raise ValueError(
+            f"annotation /Rect {rect!r} plus {margin_pt}-point context extends outside the page; "
+            "refusing to silently clamp evidence"
+        )
     return x0, y0, x1, y1
 
 
 def _crop_rgb(rgb: bytes, *, width: int, box: tuple[int, int, int, int]) -> tuple[int, int, bytes]:
+    """Copy one validated pixel box from a row-major RGB page image."""
     left, top, right, bottom = box
     row_stride = width * 3
     start, stop = left * 3, right * 3
@@ -176,6 +185,7 @@ def _candidate_payload(
     sheet_number: str,
     crop_file: str,
 ) -> dict[str, Any]:
+    """Build a candidate-only record with every gold-answer field explicitly pending."""
     return {
         "schema": "reviewed-goldset-candidate/v1",
         "schema_version": SCHEMA_VERSION,
@@ -193,7 +203,7 @@ def _candidate_payload(
             "comment": "from reviewer markup, confirm against the drawing",
             "author_T": candidate.author,
             "rect_pdf_points": list(candidate.rect),
-            "evidence_crop": crop_file,
+            "evidence_crop_relative_to_exploration_dir": crop_file,
         },
         "gold_set_answer_key_fields": {
             "semantic_type": PENDING,
@@ -216,8 +226,14 @@ def _candidate_payload(
 
 
 def _write_checklist(
-    candidates: list[Candidate], *, output_path: Path, sheet_title: str, sheet_number: str
+    candidates: list[Candidate],
+    *,
+    crop_files: dict[str, str],
+    output_path: Path,
+    sheet_title: str,
+    sheet_number: str,
 ) -> None:
+    """Write a human checklist using the crop references recorded in candidate JSON."""
     lines = [
         "# Gold-set candidate annotation checklist",
         "",
@@ -248,7 +264,7 @@ def _write_checklist(
         rect = "[" + ", ".join(f"{coordinate:g}" for coordinate in candidate.rect) + "]"
         lines.append(
             f"| {candidate.candidate_id} | {UNVERIFIED} | `{rect}` | "
-            f"`crops/{candidate.candidate_id}.png` | all PENDING human confirmation |"
+            f"`{crop_files[candidate.candidate_id]}` | all PENDING human confirmation |"
         )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -265,7 +281,14 @@ def _load_candidate_scaffold(path: Path) -> dict[str, Any]:
     if candidate.get("status") != UNVERIFIED or not isinstance(candidate.get("raw_text"), str):
         raise ValueError(f"{path} does not retain an unverified, verbatim reviewer candidate")
     fields = payload.get("gold_set_answer_key_fields", {})
-    required = ("semantic_type", "authoritative_correct_value", "source", "item_id")
+    required = (
+        "semantic_type",
+        "authoritative_correct_value",
+        "source",
+        "item_id",
+        "arch_shop_match",
+        "provenance_human_annotator",
+    )
     if any(fields.get(name) != PENDING for name in required):
         raise ValueError(f"{path} contains a non-pending gold-set answer field")
     expected = fields.get("expected_finding", {})
@@ -306,6 +329,7 @@ def _write_dry_run(candidate_paths: list[Path], output_path: Path) -> None:
 
 
 def _arguments() -> argparse.Namespace:
+    """Parse explicit user-supplied metadata and ignored output locations."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pdf", type=Path, help="Reviewed drawing PDF; it remains in place")
     parser.add_argument("csv", type=Path, help="FreeText extraction CSV from the reviewed PDF")
@@ -332,6 +356,7 @@ def _arguments() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Render one reviewed page, emit pending candidates, and run the safe scorecard dry run."""
     args = _arguments()
     if args.page < 1 or args.dpi < 1 or args.margin_pt < 1:
         raise ValueError("page, dpi, and crop margin must be positive")
@@ -354,6 +379,7 @@ def main() -> None:
     candidate_dir = args.goldset_dir / "candidates"
     candidate_dir.mkdir(parents=True, exist_ok=True)
     candidate_paths: list[Path] = []
+    crop_files: dict[str, str] = {}
     for candidate in candidates:
         crop = _crop_box(
             candidate.rect,
@@ -367,11 +393,13 @@ def main() -> None:
         crop_path = crop_dir / f"{candidate.candidate_id}.png"
         crop_path.parent.mkdir(parents=True, exist_ok=True)
         crop_path.write_bytes(encode_png(crop_width, crop_height, crop_rgb))
+        crop_file = crop_path.relative_to(args.exploration_dir).as_posix()
+        crop_files[candidate.candidate_id] = crop_file
         payload = _candidate_payload(
             candidate,
             sheet_title=args.sheet_title,
             sheet_number=args.sheet_number,
-            crop_file=str(crop_path),
+            crop_file=crop_file,
         )
         candidate_path = candidate_dir / f"{candidate.candidate_id}.candidate.json"
         candidate_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -379,6 +407,7 @@ def main() -> None:
 
     _write_checklist(
         candidates,
+        crop_files=crop_files,
         output_path=args.exploration_dir / "annotation_checklist.md",
         sheet_title=args.sheet_title,
         sheet_number=args.sheet_number,
