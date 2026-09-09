@@ -10,10 +10,11 @@ confirms the two authored values agree. The bracketed inch value becomes the rea
 inches govern (CLIENT_FACTS Q12). No finding/verdict is authored.
 
 Semantic labels are required by GOLD_SET_FORMAT even for a reading-only case. Here they are explicitly
-*not* human-confirmed: a deterministic position heuristic suggests filler width at the two ends of a
-horizontal row, cabinet width in its interior, and the neutral field-dimension type when the position
-does not establish either. The unconfirmed status and basis are recorded both in provenance and in an
-adjacent ``case_metadata.json``; none of this enters the production typing path.
+*not* human-confirmed. A proposal's existing positional label wins when present; otherwise a
+deterministic bbox heuristic suggests filler width at the two ends of a horizontal row, cabinet width
+in its interior, and the neutral field-dimension type when the position does not establish either. The
+unconfirmed status and basis are recorded both in provenance and in an adjacent ``case_metadata.json``;
+none of this enters the production typing path.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
@@ -45,6 +47,7 @@ DEFAULT_PROPOSAL_ROOT = Path("data/exploration/all_projects_vendor_dimension_pro
 DEFAULT_SOURCE = Path("data/drawings/aiset2_reviewed/AI_Set_2_reviewed.pdf")
 DEFAULT_CASE_ROOT = Path("data/goldset/aiset2-self-verified-vendor-readings")
 DEFAULT_PENDING_REPORT = DEFAULT_PROPOSAL_ROOT / "PENDING_FOR_TRUE_REPRESENTATIVE_NUMBER.md"
+_CASE_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,14 +59,17 @@ class Proposal:
 
     @property
     def page(self) -> int:
+        """One-based reviewed-set page number."""
         return int(self.row["page"])
 
     @property
     def proposal_id(self) -> str:
+        """Source proposal identifier, validated before it becomes a path component."""
         return str(self.row["id"])
 
     @property
     def bbox(self) -> tuple[int, int, int, int]:
+        """Validated 300 dpi image-pixel location from the proposal."""
         values = tuple(self.row["bbox_300dpi"])
         if len(values) != 4 or any(
             isinstance(value, bool) or not isinstance(value, int) for value in values
@@ -77,7 +83,7 @@ class Proposal:
 
 @dataclass(frozen=True, slots=True)
 class TypeSuggestion:
-    """A vocabulary value plus the explicit positional basis for its unconfirmed use."""
+    """A vocabulary value plus its unconfirmed input-label or bbox-selection basis."""
 
     semantic_type: SemanticType
     basis: str
@@ -130,7 +136,7 @@ def _vertical_overlap(first: Proposal, second: Proposal) -> bool:
 
 
 def suggest_types(proposals: Sequence[Proposal]) -> dict[tuple[str, str], TypeSuggestion]:
-    """Suggest types from position only, retaining a neutral fallback for unclear positions."""
+    """Keep existing positional labels, then use bbox position with a neutral unclear fallback."""
     suggestions: dict[tuple[str, str], TypeSuggestion] = {}
     unresolved: list[Proposal] = []
     for proposal in proposals:
@@ -139,12 +145,14 @@ def suggest_types(proposals: Sequence[Proposal]) -> dict[tuple[str, str], TypeSu
         if existing.startswith(SemanticType.FILLER_WIDTH.value):
             suggestions[key] = TypeSuggestion(
                 SemanticType.FILLER_WIDTH,
-                "proposal records an end-of-run position; not human-confirmed for this case",
+                "upstream proposal label records an end-of-run position; "
+                "heuristic-unconfirmed for this case",
             )
         elif existing.startswith(SemanticType.CABINET_WIDTH.value):
             suggestions[key] = TypeSuggestion(
                 SemanticType.CABINET_WIDTH,
-                "proposal records a mid-run segment position; not human-confirmed for this case",
+                "upstream proposal label records a mid-run segment position; "
+                "heuristic-unconfirmed for this case",
             )
         else:
             unresolved.append(proposal)
@@ -192,13 +200,20 @@ def suggest_types(proposals: Sequence[Proposal]) -> dict[tuple[str, str], TypeSu
 
 
 def _exact_text(value: Fraction) -> str:
+    """Serialize an exact rational without rounding it through a float."""
     return (
         str(value.numerator) if value.denominator == 1 else f"{value.numerator}/{value.denominator}"
     )
 
 
 def _case_id(proposal: Proposal) -> str:
-    return f"aiset2-{proposal.project.replace('_', '-')}-{proposal.proposal_id}"
+    """Return one safe path component or refuse untrusted proposal identifiers."""
+    case_id = f"aiset2-{proposal.project.replace('_', '-')}-{proposal.proposal_id}"
+    if _CASE_ID_RE.fullmatch(case_id) is None:
+        raise ValueError(
+            f"unsafe case id {case_id!r} derived from {proposal.project!r}/{proposal.proposal_id!r}"
+        )
+    return case_id
 
 
 def case_payload(
@@ -211,7 +226,11 @@ def case_payload(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build schema-valid reading truth and adjacent status metadata from one corroborated token."""
     dual = parse_dual(str(proposal.row["raw"]))
-    assert dual.alternate is not None
+    if dual.alternate is None or check_dual(dual) is not Consistency.CONSISTENT_WITHIN_ROUNDING:
+        raise ValueError(
+            f"{proposal.project}/{proposal.proposal_id} cannot be authored: its authored "
+            "mm/in values do not independently corroborate"
+        )
     case_id = _case_id(proposal)
     source_description = f"vendor dual notation, AI_Set_2_reviewed vendor-only p{proposal.page}"
     payload: dict[str, Any] = {
@@ -270,6 +289,7 @@ def case_payload(
 
 
 def _link_or_verify(source: Path, destination: Path, source_hash: str) -> None:
+    """Hard-link one immutable source, or verify an idempotent rerun's existing bytes."""
     if destination.exists():
         actual = "sha256:" + hashlib.sha256(destination.read_bytes()).hexdigest()
         if actual != source_hash:
@@ -281,6 +301,15 @@ def _link_or_verify(source: Path, destination: Path, source_hash: str) -> None:
         shutil.copy2(source, destination)
 
 
+def _write_or_verify(path: Path, content: str) -> None:
+    """Write a new case artifact, refusing to overwrite a different prior artifact."""
+    if path.exists():
+        if path.read_text(encoding="utf-8") != content:
+            raise ValueError(f"refusing to overwrite changed authored artifact {path}")
+        return
+    path.write_text(content, encoding="utf-8")
+
+
 def author_cases(
     proposals: Sequence[Proposal],
     *,
@@ -289,10 +318,15 @@ def author_cases(
     annotated_on: date,
 ) -> list[Path]:
     """Write one independently loadable, reading-only package per eligible proposal."""
+    case_ids = [_case_id(proposal) for proposal in proposals]
+    if len(case_ids) != len(set(case_ids)):
+        duplicate = next(case_id for case_id in case_ids if case_ids.count(case_id) > 1)
+        raise ValueError(f"duplicate case id {duplicate!r}; refusing to author any packages")
+
     source_hash = "sha256:" + hashlib.sha256(source_pdf.read_bytes()).hexdigest()
     suggestions = suggest_types(proposals)
     written: list[Path] = []
-    for proposal in proposals:
+    for proposal, case_id in zip(proposals, case_ids, strict=True):
         suggestion = suggestions[(proposal.project, proposal.proposal_id)]
         payload, metadata = case_payload(
             proposal,
@@ -301,15 +335,13 @@ def author_cases(
             source_hash=source_hash,
             annotated_on=annotated_on,
         )
-        case_dir = output_root / str(payload["id"])
+        if payload["id"] != case_id:
+            raise AssertionError("validated case id changed while constructing the payload")
+        case_dir = output_root / case_id
         case_dir.mkdir(parents=True, exist_ok=True)
         _link_or_verify(source_pdf, case_dir / source_pdf.name, source_hash)
-        (case_dir / "answer_key.json").write_text(
-            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
-        )
-        (case_dir / "case_metadata.json").write_text(
-            json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
-        )
+        _write_or_verify(case_dir / "answer_key.json", json.dumps(payload, indent=2) + "\n")
+        _write_or_verify(case_dir / "case_metadata.json", json.dumps(metadata, indent=2) + "\n")
         written.append(case_dir)
     return written
 
@@ -321,8 +353,9 @@ def write_pending_report(proposals: Sequence[Proposal], output: Path) -> None:
         "# Pending dimensions for the representative reading-accuracy number",
         "",
         (
-            "These 33 proposals were deliberately excluded from answer-key authoring. No crop was "
-            "read by Codex or the reader to invent an answer. A human must establish the value first."
+            f"These {len(pending)} proposals were deliberately excluded from answer-key authoring. "
+            "No crop was read by Codex or the reader to invent an answer. A human must establish "
+            "the value first."
         ),
         "",
         "| Project | Proposal | Page | OCR proposal | Location @300dpi | Why pending |",
@@ -341,6 +374,7 @@ def write_pending_report(proposals: Sequence[Proposal], output: Path) -> None:
 
 
 def main() -> int:
+    """Validate the fixed selection, author cases, and preserve every excluded proposal."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--proposal-root", type=Path, default=DEFAULT_PROPOSAL_ROOT)
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
