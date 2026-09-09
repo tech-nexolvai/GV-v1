@@ -40,6 +40,7 @@ __all__ = [
 _DIGIT_NUMBER = re.compile(
     r"(?<![A-Za-z0-9_])[-+]?(?:\d+/\d+|\d+(?:,\d{3})*(?:\.\d+)?)(?![A-Za-z0-9_])"
 )
+_OUTCOME_PHRASES = frozenset({"PASS", "FAIL", "REVIEW REQUIRED", "NOT FOUND", "NO APPLICABLE RULE"})
 _NUMBER_WORDS = frozenset(
     {
         "zero",
@@ -259,6 +260,15 @@ def _number_words(text: str) -> frozenset[str]:
     return frozenset(word for word in words if word in _NUMBER_WORDS)
 
 
+def _outcomes(text: str) -> frozenset[str]:
+    folded = re.sub(r"[_-]+", " ", text.upper())
+    return frozenset(
+        outcome
+        for outcome in _OUTCOME_PHRASES
+        if re.search(rf"(?<![A-Z]){re.escape(outcome)}(?![A-Z])", folded)
+    )
+
+
 def _guard_one(finding: ComposerFinding, text: str) -> None:
     required_prefix = f"{finding.check}: {finding.outcome}."
     if not text.startswith(required_prefix):
@@ -291,6 +301,10 @@ def _guard_one(finding: ComposerFinding, text: str) -> None:
         raise NarrativeGuardError(
             f"{finding.key}: prose omitted deterministic fact(s) {missing_fragments}"
         )
+
+    invented_outcomes = sorted(_outcomes(text) - _outcomes(finding.guarded_text()))
+    if invented_outcomes:
+        raise NarrativeGuardError(f"{finding.key}: prose introduced verdict(s) {invented_outcomes}")
 
     fact_text = finding.guarded_text()
     permitted_digits = _digit_numbers(fact_text)

@@ -149,6 +149,20 @@ def test_a_rejudged_verdict_in_model_prose_falls_back() -> None:
     assert "exact deterministic check and outcome" in str(result.fallback_reason)
 
 
+def test_a_second_conflicting_verdict_cannot_hide_behind_the_correct_prefix() -> None:
+    finding = _finding()
+    proposed = _faithful(finding)
+    changed = ProposedNarrative(
+        finding_key=finding.key,
+        text=f"{proposed.text} The reviewer should PASS it.",
+    )
+
+    result = compose_findings((finding,), _StaticModel((changed,)))
+
+    assert result.mode is CompositionMode.FALLBACK
+    assert "introduced verdict" in str(result.fallback_reason)
+
+
 def test_a_spelled_out_invented_number_cannot_evade_the_guard() -> None:
     finding = _finding()
     proposed = _faithful(finding)
