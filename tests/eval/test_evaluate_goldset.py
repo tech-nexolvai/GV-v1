@@ -23,15 +23,22 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
+from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import Engine, create_engine, text
 
 from eval.gold_set.schema import ManifestLoadError
+from evidence.coordinates import StoredPoint
+from evidence.polygon import Polygon
+from extraction.geometry.containment import DimensionExtent
 from scripts.evaluate_goldset import (
     ANSWER_KEY,
+    AssociatedCandidate,
+    _candidate_for_answer,
     _private_schema,
     load_package,
     main,
@@ -39,6 +46,19 @@ from scripts.evaluate_goldset import (
 )
 
 pytest_plugins = ("tests.app.postgres_fixture",)
+
+ASSOCIATION_ARGUMENTS = [
+    "--line-minimum-pt",
+    "1",
+    "--glyph-maximum-pt",
+    "1",
+    "--glyph-gap-pt",
+    "1",
+    "--proximity-limit",
+    "0.1",
+    "--ambiguity-margin",
+    "0.01",
+]
 
 
 def main_with(argv: list[str]) -> int:
@@ -56,6 +76,11 @@ def main_with(argv: list[str]) -> int:
         return main()
     finally:
         sys.argv = original
+
+
+def evaluation_args(database_url: str, directory: Path) -> list[str]:
+    """The generated fixture's explicit association configuration."""
+    return ["--database-url", database_url, *ASSOCIATION_ARGUMENTS, str(directory)]
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +300,7 @@ def test_the_grader_leaves_the_database_exactly_as_it_found_it(
     with _sandbox(postgres_engine) as (scoped_url, sandbox):
         assert _tables_in(postgres_engine, sandbox) == 0, "the sandbox should start empty"
 
-        exit_code = main_with(["--database-url", scoped_url, str(directory)])
+        exit_code = main_with(evaluation_args(scoped_url, directory))
 
         assert exit_code == 0, "no critical false PASS on the synthetic package"
         assert (
@@ -285,6 +310,111 @@ def test_the_grader_leaves_the_database_exactly_as_it_found_it(
     assert _public_tables(postgres_engine) == public_before, "the grader wrote into public"
     assert _schemas(postgres_engine, "gv_eval_%") == [], "the grader left its schema behind"
     assert "Answer-key scorecard" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Page-scoped, production-associated answer locations
+# ---------------------------------------------------------------------------
+
+
+def _region(*, version: UUID, page: int = 12) -> Polygon:
+    return Polygon(
+        points=(
+            StoredPoint(Decimal("0.45"), Decimal("0.45")),
+            StoredPoint(Decimal("0.55"), Decimal("0.45")),
+            StoredPoint(Decimal("0.55"), Decimal("0.55")),
+            StoredPoint(Decimal("0.45"), Decimal("0.55")),
+        ),
+        space="stored",
+        document_version_id=version,
+        page=page,
+    )
+
+
+def _line(*, version: UUID, page: int = 12, y: str = "0.50") -> DimensionExtent:
+    return DimensionExtent(
+        start=StoredPoint(Decimal("0.40"), Decimal(y)),
+        end=StoredPoint(Decimal("0.60"), Decimal(y)),
+        document_version_id=version,
+        page=page,
+    )
+
+
+def _entry(*, version: UUID, page: int = 12, y: str = "0.50") -> AssociatedCandidate:
+    return AssociatedCandidate(
+        candidate=SimpleNamespace(id=uuid4()),
+        page_index=page,
+        line=_line(version=version, page=page, y=y),
+    )
+
+
+def test_a_candidate_on_another_page_can_never_match() -> None:
+    """The regression: identical coordinates on page 11 are unrelated to an answer on page 13."""
+    version = uuid4()
+    answer = SimpleNamespace(page=13)
+    cross_page = _entry(version=version, page=10)
+
+    selected = _candidate_for_answer(
+        answer,
+        _region(version=version),
+        [cross_page],
+        proximity_limit=Decimal("0.05"),
+        used=set(),
+    )
+
+    assert selected is None
+
+
+def test_a_same_page_candidate_outside_the_proximity_limit_abstains() -> None:
+    """A far-off number is no reading at this location, even when it is the page's only number."""
+    version = uuid4()
+    answer = SimpleNamespace(page=13)
+    far = _entry(version=version, y="0.90")
+
+    selected = _candidate_for_answer(
+        answer,
+        _region(version=version),
+        [far],
+        proximity_limit=Decimal("0.05"),
+        used=set(),
+    )
+
+    assert selected is None
+
+
+def test_two_associated_lines_at_the_answer_location_abstain() -> None:
+    """The grader never ranks two plausible production associations by nearest centre."""
+    version = uuid4()
+    answer = SimpleNamespace(page=13)
+    first = _entry(version=version, y="0.49")
+    second = _entry(version=version, y="0.51")
+
+    selected = _candidate_for_answer(
+        answer,
+        _region(version=version),
+        [first, second],
+        proximity_limit=Decimal("0.05"),
+        used=set(),
+    )
+
+    assert selected is None
+
+
+def test_one_production_association_at_the_answer_location_is_used() -> None:
+    """One same-page attached reading in range is the only non-abstaining shape."""
+    version = uuid4()
+    answer = SimpleNamespace(page=13)
+    attached = _entry(version=version)
+
+    selected = _candidate_for_answer(
+        answer,
+        _region(version=version),
+        [attached],
+        proximity_limit=Decimal("0.05"),
+        used=set(),
+    )
+
+    assert selected is attached.candidate
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +438,7 @@ def test_a_wrong_reading_is_reported_as_wrong(
     directory = make_fixture(tmp_path / "package")
     url = postgres_engine.url.render_as_string(hide_password=False)
 
-    main_with(["--database-url", url, str(directory)])
+    main_with(evaluation_args(url, directory))
 
     printed = capsys.readouterr().out
     assert "reading accuracy      50.0%" in printed
@@ -328,7 +458,7 @@ def test_an_abstention_is_printed_as_the_honest_path(
     directory = make_fixture(tmp_path / "package")
     url = postgres_engine.url.render_as_string(hide_password=False)
 
-    main_with(["--database-url", url, str(directory)])
+    main_with(evaluation_args(url, directory))
 
     printed = capsys.readouterr().out
     assert "abstention rate" in printed
@@ -347,7 +477,7 @@ def test_the_safety_number_is_printed_first(
     directory = make_fixture(tmp_path / "package")
     url = postgres_engine.url.render_as_string(hide_password=False)
 
-    main_with(["--database-url", url, str(directory)])
+    main_with(evaluation_args(url, directory))
 
     printed = capsys.readouterr().out
     body = printed[printed.index("Answer-key scorecard") :]
@@ -375,6 +505,20 @@ def test_the_grader_refuses_to_run_with_no_database(
     assert main_with([str(directory)]) == 2
 
     assert "no database" in capsys.readouterr().err
+
+
+def test_the_grader_refuses_to_guess_association_settings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A package run without production thresholds stops instead of inventing grader defaults."""
+    directory = make_fixture(tmp_path / "package")
+
+    assert main_with(["--database-url", "postgresql://unused", str(directory)]) == 2
+
+    error = capsys.readouterr().err
+    assert "association settings are required" in error
+    assert "--proximity-limit" in error
+    assert "--ambiguity-margin" in error
 
 
 def test_no_arguments_asks_for_a_package_rather_than_guessing(
