@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
@@ -47,6 +47,12 @@ from tests.workflow.test_stages import (
     _project_depth_parameters,
     _publish_rulebook,
     _revision,
+)
+from workflow.findings_composer import (
+    ComposerFinding,
+    ModelComposition,
+    ProposedNarrative,
+    deterministic_summary,
 )
 from workflow.stages import WORKBOOK_MEDIA_TYPE, DatabaseStages
 
@@ -106,6 +112,36 @@ def _sheet(store: LocalStore, artifact: OutputArtifact, name: str):
     return workbook[name]
 
 
+class _PlainLanguageModel:
+    """A deterministic test double standing at the configured provider seam."""
+
+    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+        narratives: list[ProposedNarrative] = []
+        for finding in findings:
+            summary = deterministic_summary(finding)
+            prefix = f"{finding.check}: {finding.outcome}."
+            narratives.append(
+                ProposedNarrative(
+                    finding_key=finding.key,
+                    text=summary.replace(prefix, f"{prefix} Reviewer summary:", 1),
+                )
+            )
+        return ModelComposition(
+            narratives=tuple(narratives),
+            model_id="configured-test-model",
+            prompt_id="findings-composer-v1",
+            template_id="deterministic-findings-v1",
+        )
+
+
+class _BrokenLanguageModel:
+    """The provider boundary failing after deterministic findings already exist."""
+
+    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+        del findings
+        raise TimeoutError("provider unavailable")
+
+
 # ---------------------------------------------------------------------------
 # The stage produces a real file
 # ---------------------------------------------------------------------------
@@ -139,6 +175,65 @@ def test_a_reviewed_package_yields_a_persisted_findings_workbook(
     content = store.get(artifact.storage_key).read()
     assert content.startswith(ZIP_SIGNATURE), "the stored bytes are not a workbook"
     assert artifact.sha256 == hashlib.sha256(content).hexdigest()
+
+
+def test_composed_findings_are_wired_1_to_1_into_the_end_to_end_workbook(
+    session: Session, store: LocalStore
+) -> None:
+    """Checks -> stored facts -> bounded language -> the file a reviewer receives.
+
+    This is the sample composed output on the real output path.  The fake is used because CI has no
+    provider credential; the provider adapter is tested separately at its forced-tool boundary.
+    """
+    revision = _checked(session, store)
+
+    result = DatabaseStages(store, findings_composer=_PlainLanguageModel()).generate_outputs(
+        session, revision.id
+    )
+
+    composition = result["findings_composition"]
+    assert isinstance(composition, dict)
+    assert composition == {
+        "mode": "llm",
+        "model_id": "configured-test-model",
+        "prompt_id": "findings-composer-v1",
+        "template_id": "deterministic-findings-v1",
+    }
+    sheet = _sheet(store, _artifacts(session, revision.id)[0], FINDINGS_SHEET)
+    summary_column = FINDING_COLUMNS.index("reviewer_summary") + 1
+    for row in range(2, sheet.max_row + 1):
+        check = sheet.cell(row=row, column=FINDING_COLUMNS.index("check") + 1).value
+        outcome = sheet.cell(row=row, column=FINDING_COLUMNS.index("outcome") + 1).value
+        summary = sheet.cell(row=row, column=summary_column).value
+        assert isinstance(summary, str)
+        assert summary.startswith(f"{check}: {outcome}.")
+        assert "Reviewer summary:" in summary
+
+
+def test_a_failed_provider_still_yields_the_complete_deterministic_workbook(
+    session: Session, store: LocalStore
+) -> None:
+    revision = _checked(session, store)
+
+    result = DatabaseStages(store, findings_composer=_BrokenLanguageModel()).generate_outputs(
+        session, revision.id
+    )
+
+    composition = result["findings_composition"]
+    assert isinstance(composition, dict)
+    assert composition["mode"] == "structured_fallback"
+    assert "TimeoutError" in str(composition["fallback_reason"])
+    assert result["outputs"] == 1
+    sheet = _sheet(store, _artifacts(session, revision.id)[0], FINDINGS_SHEET)
+    assert sheet.max_row == len(_live_findings(session, revision.id)) + 1
+    summary_column = FINDING_COLUMNS.index("reviewer_summary") + 1
+    for row in range(2, sheet.max_row + 1):
+        check = sheet.cell(row=row, column=FINDING_COLUMNS.index("check") + 1).value
+        outcome = sheet.cell(row=row, column=FINDING_COLUMNS.index("outcome") + 1).value
+        summary = sheet.cell(row=row, column=summary_column).value
+        assert isinstance(summary, str)
+        assert summary.startswith(f"{check}: {outcome}.")
+        assert "Reviewer summary:" not in summary
 
 
 def test_the_workbook_has_a_row_for_every_live_finding(session: Session, store: LocalStore) -> None:

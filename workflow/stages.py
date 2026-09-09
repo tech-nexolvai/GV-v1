@@ -35,8 +35,9 @@ and the domain layers side by side (`workflow/retry.py`), which is exactly what 
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
 from io import BytesIO
@@ -89,7 +90,7 @@ from extraction.manifest import build_manifest
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, read_page
 from extraction.rasterise import PageTooLarge, render_page
 from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
-from reports.spreadsheet import StoredFinding, write_stored_workbook
+from reports.spreadsheet import StoredFinding, decode_reference, write_stored_workbook
 from retrieval.identifiers import NormalizedIdentifier, normalize_identifier
 from retrieval.matching import MatchableItem, MatchDocumentRole, exact_match
 from rules.applicability import Abstention, CheckContext, resolve
@@ -107,6 +108,12 @@ from verdict.operations import register_all
 from workflow.association import AssociationSettings, ReadItem, dimension_texts
 from workflow.config import READER_RASTER_DPI
 from workflow.evidence_operands import operands_from_evidence
+from workflow.findings_composer import (
+    ComposerFinding,
+    ComposerOperand,
+    FindingsLanguageModel,
+    compose_findings,
+)
 from workflow.idempotency import stage_idempotency_key
 from workflow.measurements import run_parameters_for
 from workflow.review import ENGINE_VERSION, PageResult
@@ -219,6 +226,7 @@ class DatabaseStages:
         operands: Mapping[str, Mapping[str, VerdictOperand]] | None = None,
         discriminators: Mapping[str, str] | None = None,
         association: AssociationSettings | None = None,
+        findings_composer: FindingsLanguageModel | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -236,6 +244,10 @@ class DatabaseStages:
         # here would be this module choosing which line a dimension belongs to on every drawing
         # anybody ever runs, which is the guess `text_association` refuses to make for itself.
         self._association = association
+        # Post-verdict presentation only. The composer receives frozen stored findings in
+        # ``generate_outputs``; it is unreachable from ``run_checks`` and an error falls back to a
+        # complete deterministic summary rather than delaying or changing a verdict.
+        self._findings_composer = findings_composer
         # Injected so a test can pass a stub: building the real one loads ONNX models, and a suite
         # that loaded them to test row-writing would be paying for a model it is not testing.
         self._ocr_engine = ocr_engine
@@ -1142,26 +1154,57 @@ class DatabaseStages:
                 "reason": "this revision has no live findings, so there is nothing to report on",
             }
 
+        stored_findings: list[StoredFinding] = []
+        composition_facts: list[ComposerFinding] = []
+        for finding, run, snapshot, definition in rows:
+            stored_finding = StoredFinding(
+                rule_id=definition.rule_id,
+                outcome=finding.outcome,
+                severity=finding.severity,
+                snapshot_id=snapshot.snapshot_id,
+                engine_version=run.engine_version,
+                trace=finding.trace,
+                reason=finding.reason,
+                # Rendered here rather than in the writer, because the exact rational lives in
+                # three columns and reassembling it is this layer's job. `format_inches` writes
+                # `1 1/2`, the way a drawing does — a reviewer is comparing this against a sheet.
+                delta=_delta_text(finding),
+                variant=finding.variant,
+                notes=None if finding.notes is None else tuple(finding.notes),
+            )
+            stored_findings.append(stored_finding)
+            try:
+                snapshot_data = json.loads(snapshot.canonical_json)
+                check_name_value = (
+                    snapshot_data.get("name") if isinstance(snapshot_data, Mapping) else None
+                )
+            except (TypeError, ValueError):
+                check_name_value = None
+            check_name = (
+                check_name_value
+                if isinstance(check_name_value, str) and check_name_value.strip()
+                else definition.rule_id
+            )
+            composition_facts.append(
+                _finding_facts(key=str(finding.id), check_name=check_name, finding=stored_finding)
+            )
+
+        composition = compose_findings(composition_facts, self._findings_composer)
+        narratives = {narrative.finding_key: narrative.text for narrative in composition.narratives}
         workbook = write_stored_workbook(
             [
-                StoredFinding(
-                    rule_id=definition.rule_id,
-                    outcome=finding.outcome,
-                    severity=finding.severity,
-                    snapshot_id=snapshot.snapshot_id,
-                    engine_version=run.engine_version,
-                    trace=finding.trace,
-                    reason=finding.reason,
-                    # Rendered here rather than in the writer, because the exact rational lives in
-                    # three columns and reassembling it is this layer's job. `format_inches` writes
-                    # `1 1/2`, the way a drawing does — a reviewer is comparing this against a sheet.
-                    delta=_delta_text(finding),
-                    variant=finding.variant,
-                    notes=None if finding.notes is None else tuple(finding.notes),
-                )
-                for finding, run, snapshot, definition in rows
+                replace(finding, reviewer_summary=narratives[facts.key])
+                for finding, facts in zip(stored_findings, composition_facts, strict=True)
             ]
         )
+        composition_status: dict[str, object] = {
+            "mode": composition.mode.value,
+            "model_id": composition.model_id,
+            "prompt_id": composition.prompt_id,
+            "template_id": composition.template_id,
+        }
+        if composition.fallback_reason is not None:
+            composition_status["fallback_reason"] = composition.fallback_reason
 
         digest, _ = sha256_stream(BytesIO(workbook))
         key = content_key(f"outputs/{package_revision_id}", digest, suffix=".xlsx")
@@ -1180,6 +1223,7 @@ class DatabaseStages:
                 "findings": len(rows),
                 "outputs": 0,
                 "already_recorded": True,
+                "findings_composition": composition_status,
             }
 
         stored = self._store.put(key, BytesIO(workbook), content_type=WORKBOOK_MEDIA_TYPE)
@@ -1200,6 +1244,7 @@ class DatabaseStages:
             "findings": len(rows),
             "outputs": 1,
             "storage_key": stored.key,
+            "findings_composition": composition_status,
         }
 
     def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
@@ -1465,6 +1510,61 @@ def _delta_text(finding: FindingRow) -> str | None:
         return None
     exact = Fraction(finding.delta_numerator, finding.delta_denominator)
     return f"{format_inches(exact)} {finding.delta_unit}"
+
+
+def _composer_text(value: object) -> str:
+    return "" if value is None else str(value)
+
+
+def _composer_evidence_page(reference: object) -> str | None:
+    """A human page number for narration, without document ids or hash fragments."""
+    if not isinstance(reference, str) or not reference:
+        return None
+    decoded = decode_reference(reference)
+    return None if decoded is None else decoded[0]
+
+
+def _composer_operands(trace: Mapping[str, object]) -> tuple[ComposerOperand, ...]:
+    raw = trace.get("operands")
+    if not isinstance(raw, list):
+        return ()
+    result: list[ComposerOperand] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        result.append(
+            ComposerOperand(
+                name=_composer_text(item.get("name")),
+                value=_composer_text(item.get("value")),
+                source=_composer_text(item.get("source")),
+                evidence_page=_composer_evidence_page(item.get("evidence_ref")),
+            )
+        )
+    return tuple(result)
+
+
+def _finding_facts(*, key: str, check_name: str, finding: StoredFinding) -> ComposerFinding:
+    """Build narration facts without re-parsing any value or re-running any rule."""
+    trace = finding.trace
+    operands = _composer_operands(trace)
+    pages = tuple(
+        dict.fromkeys(op.evidence_page for op in operands if op.evidence_page is not None)
+    )
+    return ComposerFinding(
+        key=key,
+        check=finding.rule_id,
+        check_name=check_name or finding.rule_id,
+        outcome=finding.outcome,
+        severity=finding.severity,
+        reason=(finding.reason or _composer_text(trace.get("reason")) or "No reason was recorded."),
+        comparison=_composer_text(trace.get("comparison")) or None,
+        difference=finding.delta,
+        tolerance=_composer_text(trace.get("tolerance")) or None,
+        arithmetic_unit=_composer_text(trace.get("arithmetic_unit")) or None,
+        operands=operands,
+        evidence_pages=pages,
+        notes=() if finding.notes is None else finding.notes,
+    )
 
 
 def _document_records_for(

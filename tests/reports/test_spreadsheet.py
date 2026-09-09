@@ -645,3 +645,21 @@ def test_a_stored_delta_and_variant_reach_their_columns() -> None:
     assert (
         sheet.cell(row=2, column=FINDING_COLUMNS.index("notes") + 1).value == "overhang overridden"
     )
+
+
+def test_reviewer_narration_is_appended_without_replacing_the_engine_reason() -> None:
+    """Language is presentation beside deterministic truth, never a rewrite of it."""
+    finding = _stored(
+        reason="The deterministic engine reason.",
+        reviewer_summary="CT-DEPTH-001: PASS. Reviewer-facing language.",
+        notes=(),
+    )
+
+    sheet = load_workbook(BytesIO(write_stored_workbook([finding])))[FINDINGS_SHEET]
+
+    assert sheet.cell(row=2, column=FINDING_COLUMNS.index("reason") + 1).value == (
+        "The deterministic engine reason."
+    )
+    assert sheet.cell(row=2, column=FINDING_COLUMNS.index("reviewer_summary") + 1).value == (
+        "CT-DEPTH-001: PASS. Reviewer-facing language."
+    )

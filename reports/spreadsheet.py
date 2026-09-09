@@ -74,6 +74,7 @@ __all__ = [
     "UNREADABLE_REFERENCE",
     "StoredFinding",
     "WorkbookSignoff",
+    "decode_reference",
     "exact_text",
     "write_stored_workbook",
     "write_value",
@@ -108,6 +109,7 @@ FINDING_COLUMNS: Final = (
     "evidence_pages",
     "reason",
     "notes",
+    "reviewer_summary",
 )
 
 #: One row per operand the calculation used. Frozen for the same reason.
@@ -176,7 +178,7 @@ def write_value(cell: Cell, value: object) -> None:
     cell.number_format = TEXT_FORMAT
 
 
-def _decode_reference(reference: str) -> tuple[str, str] | None:
+def decode_reference(reference: str) -> tuple[str, str] | None:
     """(page, document version) for one evidence reference, or `None` if it is not a citation.
 
     **Both fields or neither.** A reference carrying `page` and no `document_version_id` decodes
@@ -217,7 +219,7 @@ def _evidence_pages(finding: Finding) -> str:
     not decode is a fact about the export, and dropping it would leave the row looking like a
     finding with no evidence.
     """
-    decoded = [_decode_reference(reference) for reference in finding.evidence_refs]
+    decoded = [decode_reference(reference) for reference in finding.evidence_refs]
     return ", ".join(UNREADABLE_REFERENCE if parts is None else parts[0] for parts in decoded)
 
 
@@ -230,7 +232,7 @@ def _evidence_parts(reference: str | None) -> tuple[str, str]:
     """
     if not reference:
         return ("", "")
-    decoded = _decode_reference(reference)
+    decoded = decode_reference(reference)
     return decoded if decoded is not None else (UNREADABLE_REFERENCE, reference)
 
 
@@ -270,6 +272,7 @@ def _finding_row(finding: Finding) -> tuple[object, ...]:
         _evidence_pages(finding),
         finding.reason,
         " | ".join(finding.notes),
+        finding.reason,
     )
 
 
@@ -416,6 +419,12 @@ class StoredFinding:
 
     variant: str | None = None
     notes: tuple[str, ...] | None = None
+    reviewer_summary: str | None = None
+    """Post-verdict prose after fidelity validation, or ``None`` for the deterministic reason.
+
+    This is presentation only.  It is appended to the frozen findings sheet rather than replacing
+    ``reason``, so a reviewer can always compare the narration with the engine's exact words.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,6 +537,7 @@ def _stored_finding_row(finding: StoredFinding) -> tuple[object, ...]:
         ", ".join(page for page in pages if page),
         reason,
         NOT_RECORDED if finding.notes is None else " | ".join(finding.notes),
+        finding.reviewer_summary or reason,
     )
 
 
