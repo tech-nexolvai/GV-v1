@@ -86,6 +86,7 @@ from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import lines_within
 from verdict.outcomes import Outcome, Severity
 from workflow.association import AssociationSettings
+from workflow.config import READER_RASTER_DPI
 
 #: Where a project's reviewed packages live. Git-ignored, because they are client material: the
 #: format and the loader are tracked code and the answers never are (`AGENTS.md` §9).
@@ -330,8 +331,11 @@ def _arguments() -> Arguments:
     parser.add_argument(
         "--dpi",
         type=int,
-        default=150,
-        help="the reader's resolution. Stated, because stored coordinates depend on it",
+        default=READER_RASTER_DPI,
+        help=(
+            "the reader's resolution. Defaults to the production reader/rasteriser setting "
+            f"({READER_RASTER_DPI}); stored coordinates depend on it"
+        ),
     )
     parser.add_argument(
         "--vendor-stamps-only",
