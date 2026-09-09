@@ -9,7 +9,7 @@
 
 import { getFindingChain, listFindings } from './client';
 import { formatExact } from './fractions';
-import type { Finding, Outcome, ReviewerAction, Severity, Trace } from '../data/types';
+import type { Evidence, Finding, Outcome, ReviewerAction, Severity, Trace } from '../data/types';
 
 type Listed = Awaited<ReturnType<typeof listFindings>>['items'][number];
 type Chain = Awaited<ReturnType<typeof getFindingChain>>;
@@ -41,6 +41,9 @@ export function toFinding(listed: Listed): Finding {
 /** The arithmetic behind one verdict, folded into the card the reviewer already has open. */
 export function withChain(finding: Finding, chain: Chain): Finding {
   const operands = chain.operands ?? [];
+  const evidence = operands
+    .map((operand) => operand.evidence)
+    .filter((item): item is NonNullable<typeof item> => item !== null);
 
   // `trace` is a discriminated union now, so this narrows instead of guessing. It used to be a
   // free-form dict and this function read fields out of it with a string guard — the one place the
@@ -76,7 +79,32 @@ export function withChain(finding: Finding, chain: Chain): Finding {
               : 'This trace was not recognised and is shown as stored.',
         };
 
-  return { ...finding, trace };
+  return {
+    ...finding,
+    trace,
+    arch_evidence: _evidenceFor(evidence, 'ARCH'),
+    shop_evidence: _evidenceFor(evidence, 'SHOP'),
+  };
+}
+
+/** Evidence is carried by the finding chain, never inferred from a card or its rule id. */
+function _evidenceFor(
+  evidence: readonly NonNullable<Chain['operands'][number]['evidence']>[],
+  role: 'ARCH' | 'SHOP',
+): Evidence | null {
+  const located = evidence.find((item) => item.document_role === role);
+  if (!located) return null;
+
+  const polygon = located.polygon.map(([x, y]) => [Number(x), Number(y)] as [number, number]);
+  if (polygon.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y))) return null;
+
+  return {
+    canonical_observation_id: located.canonical_observation_id,
+    // The API persists page indexes from zero; people holding a PDF count pages from one.
+    page: located.page_index + 1,
+    polygon,
+    semantic_type: located.semantic_type,
+  };
 }
 
 /** Every finding for a package, in the order the API ranks them. */

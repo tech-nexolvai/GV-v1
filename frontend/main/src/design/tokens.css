@@ -249,3 +249,71 @@
   --status-review-border:  rgba(217, 119, 6, 0.22);
   --evidence-review:       rgba(217, 119, 6, 0.18);
 }
+
+/* Demo system: one deliberate, neutral visual language across the human-operated loop. */
+:root,
+[data-theme="dark"] {
+  color-scheme: light;
+  --gv-crimson: #000000;
+  --gv-crimson-hover: #222222;
+  --gv-crimson-light: #000000;
+  --gv-crimson-dim: rgba(0, 0, 0, 0.06);
+  --gv-crimson-dim-2: rgba(0, 0, 0, 0.03);
+  --gv-crimson-border: rgba(0, 0, 0, 0.22);
+  --color-primary: #000000;
+  --color-primary-hover: #222222;
+  --color-primary-dim: rgba(0, 0, 0, 0.08);
+  --color-primary-border: rgba(0, 0, 0, 0.3);
+  --shadow-primary: 0 0 0 1px rgba(0, 0, 0, 0.3);
+  --status-pass: #111111;
+  --status-pass-bg: #ffffff;
+  --status-pass-border: #111111;
+  --status-fail: #111111;
+  --status-fail-bg: #e8e8e8;
+  --status-fail-border: #111111;
+  --status-review: #111111;
+  --status-review-bg: #f1f1f1;
+  --status-review-border: #111111;
+  --status-missing: #555555;
+  --status-missing-bg: #fafafa;
+  --status-missing-border: #888888;
+  --status-none: #666666;
+  --status-none-bg: #fafafa;
+  --status-none-border: #999999;
+  --role-arch: #111111;
+  --role-arch-bg: #f1f1f1;
+  --role-arch-border: #111111;
+  --role-shop: #111111;
+  --role-shop-bg: #ffffff;
+  --role-shop-border: #111111;
+  --font-sans: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-heading: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --bg-base: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-input: #ffffff;
+  --bg-hover: #f2f2f2;
+  --bg-active: #e8e8e8;
+  --bg-overlay: rgba(0, 0, 0, 0.45);
+  --bg-glass: rgba(255, 255, 255, 0.96);
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-default: rgba(0, 0, 0, 0.16);
+  --border-strong: rgba(0, 0, 0, 0.34);
+  --border-focus: #000000;
+  --text-primary: #000000;
+  --text-body: #242424;
+  --text-muted: #555555;
+  --text-faint: #9a9a9a;
+  --text-inverse: #ffffff;
+  --text-brand: #000000;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-brand: none;
+  --shadow-topbar: 0 1px 0 rgba(0, 0, 0, 0.12);
+  --pdf-bg: #ffffff;
+  --pdf-lines: #d0d0d0;
+  --pdf-text: #111111;
+  --pdf-footer: #f5f5f5;
+}

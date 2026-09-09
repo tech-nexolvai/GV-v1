@@ -26,6 +26,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from openpyxl import load_workbook
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
@@ -240,6 +241,27 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     outcomes = {item["rule_id"]: item["outcome"] for item in findings.json()["items"]}
     assert outcomes["CT-DEPTH-001"] == "PASS", outcomes
 
+    # The re-run finding retains the confirmed observation identity.  Its viewer path returns the
+    # same candidate-sized PNG the reviewer inspected — never a page render or redline.
+    depth_finding = next(
+        item for item in findings.json()["items"] if item["rule_id"] == "CT-DEPTH-001"
+    )
+    chain = client.get(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}/findings/{depth_finding['id']}/chain"
+    )
+    assert chain.status_code == 200, chain.text
+    evidence = chain.json()["operands"][0]["evidence"]
+    assert evidence["canonical_observation_id"] == confirmed.json()["canonical_observation_id"]
+
+    crop = client.get(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}/evidence/"
+        f"{evidence['canonical_observation_id']}/crop"
+    )
+    assert crop.status_code == 200, crop.text
+    assert crop.headers["content-type"] == "image/png"
+    assert crop.content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert b"%PDF" not in crop.content
+
     # 5. The report exists and is deliberately out of reach until somebody signs for it.
     early = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report")
     assert early.status_code == 409, early.text
@@ -253,6 +275,9 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     assert report.status_code == 200, report.text
     assert report.content.startswith(b"PK\x03\x04"), "the report is not a workbook"
     assert "attachment" in report.headers["content-disposition"]
+    summary = load_workbook(io.BytesIO(report.content))["Review Summary"]
+    assert summary["B11"].value == "AWAITING REVIEWER SIGN-OFF — download remains blocked"
+    assert summary["B12"].value == "not yet recorded"
 
     # The newest, which is what the endpoint serves. Two reports exist here and both are real: the
     # pipeline wrote one before the reading had a meaning, and the reviewer's confirmation made the

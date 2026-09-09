@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useRef, useState } from 'react';
 import { AppShell } from './components/shell/AppShell';
 import { ReviewPage } from './pages/ReviewPage';
 import { PackagesPage } from './pages/PackagesPage';
@@ -10,17 +10,8 @@ import { UsagePage } from './pages/UsagePage';
 import { createPackage } from './api/upload';
 import type { UploadProgress } from './api/upload';
 import { projectId } from './api/config';
-import { X, UploadCloud, Loader2, CheckCircle2 } from 'lucide-react';
+import { X, UploadCloud, Loader2 } from 'lucide-react';
 import './design/components.css';
-
-const SIMULATION_STEPS = [
-  { label: 'Uploading drawings to S3 vault...', meta: 'Generating SHA-256...' },
-  { label: 'Registering metadata in PostgreSQL...', meta: 'Triggering Hatchet outbox event...' },
-  { label: 'Running class check & PaddleOCR layout analysis...', meta: 'PaddleOCR + docTR active...' },
-  { label: 'Extracting digital vector lines with pdfplumber...', meta: 'Parallel lanes running...' },
-  { label: 'Normalizing shapes & loading rulebook snapshot...', meta: 'Resolving CT-v1.2 active rules...' },
-  { label: 'Evaluating operands inside isolated Verdict engine...', meta: 'Exact Fraction math sealed...' }
-];
 
 export default function App() {
   const [activePage, setActivePage] = useState<string>('review');
@@ -28,23 +19,9 @@ export default function App() {
   const [evidencePanel, setEvidencePanel] = useState<React.ReactNode>(null);
   const [pendingMessage, setPendingMessage] = useState<string>('');
 
-  const [designStyle, setDesignStyle] = useState<'stone' | 'ide'>(() => {
-    const saved = localStorage.getItem('gv-design-style');
-    if (saved === 'ide') return 'ide';
-    return 'stone';
-  });
-
-  useEffect(() => {
-    document.documentElement.setAttribute('data-style', designStyle);
-    localStorage.setItem('gv-design-style', designStyle);
-  }, [designStyle]);
-
   // New package form states
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [vendor, setVendor] = useState('Apex Glass & Stone');
-  const [project, setProject] = useState('Westin Towers — Double Countertops');
-  const [category, setCategory] = useState<'countertop' | 'cabinet'>('countertop');
-  const [rulebook, setRulebook] = useState('CT-v1.2');
   const [archFile, setArchFile] = useState<File | null>(null);
   const [shopFile, setShopFile] = useState<File | null>(null);
   const archInputRef = useRef<HTMLInputElement>(null);
@@ -52,9 +29,7 @@ export default function App() {
   const [uploadStep, setUploadStep] = useState('');
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  // Simulation steps states
   const [isSimulating, setIsSimulating] = useState(false);
-  const [simulationStep, setSimulationStep] = useState(0);
 
   function handleNavigate(page: string) {
     setActivePage(page);
@@ -89,7 +64,6 @@ export default function App() {
   async function triggerSubmitPipeline() {
     setIsSimulating(true);
     setUploadError(null);
-    setSimulationStep(0);
 
     try {
       // The real thing: create the package, hash each file in the browser, register it, PUT the
@@ -127,8 +101,6 @@ export default function App() {
       onSelectSession={handleSelectSession}
       evidencePanel={evidencePanel}
       onNewPackage={() => setIsModalOpen(true)}
-      designStyle={designStyle}
-      onStyleChange={setDesignStyle}
     >
       {activePage === 'review' && !activeSession && (
         <WelcomePage
@@ -187,7 +159,7 @@ export default function App() {
           <div className="modal">
             <div className="modal__header">
               <span className="modal__title">
-                {isSimulating ? 'Processing Ingestion Pipeline' : 'Submit New Document'}
+                {isSimulating ? 'Submitting document set' : 'Submit New Document'}
               </span>
               {!isSimulating && (
                 <button
@@ -210,37 +182,11 @@ export default function App() {
               </div>
             )}
             {isSimulating ? (
-              /* Simulated Pipeline status screen */
+              /* The actual transfer state, supplied by the upload path — never a staged imitation. */
               <div className="modal__body pipeline-overlay">
                 <Loader2 className="pipeline-loader" size={32} />
-                {/* What is actually happening, rather than a fixed script. The old version stepped
-                    through a timed list whatever the server was doing; this says which file is
-                    being hashed, uploaded or confirmed. */}
-                <p className="pipeline-step-live">{uploadStep || 'Starting…'}</p>
-                <div className="pipeline-steps">
-                  {SIMULATION_STEPS.map((step, idx) => {
-                    const isCompleted = idx < simulationStep;
-                    const isActive = idx === simulationStep;
-                    return (
-                      <div
-                        key={idx}
-                        className={`pipeline-step ${isCompleted ? 'pipeline-step--completed' : ''} ${isActive ? 'pipeline-step--active' : ''}`}
-                      >
-                        <div className="pipeline-step__status">
-                          {isCompleted ? (
-                            <CheckCircle2 size={15} />
-                          ) : isActive ? (
-                            <Loader2 size={13} className="animate-spin" />
-                          ) : (
-                            <div style={{ width: 13, height: 13, border: '1px solid var(--border-default)', borderRadius: '50%' }} />
-                          )}
-                        </div>
-                        <span className="pipeline-step__label">{step.label}</span>
-                        <span className="pipeline-step__meta">{isCompleted ? 'Done' : isActive ? step.meta : 'Waiting'}</span>
-                      </div>
-                    );
-                  })}
-                </div>
+                <p className="pipeline-step-live">{uploadStep || 'Starting document submission…'}</p>
+                <p className="pipeline-step__meta">The review opens when both uploaded PDFs are confirmed.</p>
               </div>
             ) : (
               /* Package Submission Form */
@@ -256,50 +202,7 @@ export default function App() {
                         placeholder="e.g. Apex Glass & Stone"
                       />
                     </div>
-                    <div className="form-group">
-                      <label className="form-group__label">Rulebook snapshot</label>
-                      <select
-                        className="input"
-                        value={rulebook}
-                        onChange={e => setRulebook(e.target.value)}
-                      >
-                        <option value="CT-v1.2">Countertop CT-v1.2</option>
-                        <option value="CAB-v1.0">Cabinet CAB-v1.0</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-group__label">Project Context</label>
-                    <input
-                      className="input"
-                      value={project}
-                      onChange={e => setProject(e.target.value)}
-                      placeholder="e.g. Westin Towers — Vanity Counters"
-                    />
-                  </div>
-
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label className="form-group__label">Category Scope</label>
-                      <select
-                        className="input"
-                        value={category}
-                        onChange={e => setCategory(e.target.value as any)}
-                      >
-                        <option value="countertop">Countertop</option>
-                        <option value="cabinet">Cabinet</option>
-                      </select>
-                    </div>
-                    <div className="form-group">
-                      <label className="form-group__label">Upload Target Environment</label>
-                      <input
-                        className="input"
-                        disabled
-                        value="Immutable S3 (gv-vault)"
-                      />
-                    </div>
-                  </div>
+                </div>
 
                   <div className="form-group">
                     <label className="form-group__label">Upload Drawings (PDF only)</label>
@@ -367,7 +270,7 @@ export default function App() {
                   </button>
                   <button
                     className="btn btn--action"
-                    disabled={!vendor || !project || !archFile?.name || !shopFile?.name}
+                    disabled={!vendor || !archFile?.name || !shopFile?.name}
                     onClick={triggerSubmitPipeline}
                   >
                     Run Review Pipeline

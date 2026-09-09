@@ -79,6 +79,7 @@ def approve(
     principal: Annotated[Principal, Depends(require_project_access)],
     _: Annotated[Principal, Depends(require_action(Action.APPROVE_PACKAGE))],
     session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     project_id: UUID,
     review_session_id: UUID,
 ) -> ApprovalOut:

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ChatThread } from '../components/chat/ChatThread';
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
@@ -16,7 +16,7 @@ import {
   downloadReport,
 } from '../api/client';
 import type { ReviewSession } from '../api/client';
-import { loadFindings } from '../api/findings';
+import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
 import { FileText, CheckSquare, Download } from 'lucide-react';
@@ -53,6 +53,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
+  const selectedFindingRef = useRef<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [session, setSession] = useState<ReviewSession | null>(null);
@@ -65,6 +66,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
   // are not thrown away every time this re-renders.
   useEffect(() => {
     if (remote.status === 'ready') {
+      // This copies a freshly fetched package into locally editable review state.  Actions below
+      // optimistically update it, so deriving it directly from `remote` would erase reviewer work.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setFindings(remote.data.found);
       setSession(remote.data.session);
     }
@@ -169,17 +173,56 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     setIsProcessing(false);
   }
 
-  function handleViewEvidence(finding: Finding) {
+  async function handleViewEvidence(finding: Finding) {
+    selectedFindingRef.current = finding.id;
     setSelectedFindingId(finding.id);
     onEvidenceChange(
       <EvidencePanel
         finding={finding}
+        projectId={projectId()}
+        packageId={packageId}
+        loading
         onClose={() => {
+          selectedFindingRef.current = null;
           setSelectedFindingId(null);
           onEvidenceChange(null);
         }}
       />
     );
+    try {
+      const chain = await getFindingChain(projectId(), packageId, finding.id);
+      const enriched = withChain(finding, chain);
+      setFindings((current) => current.map((item) => (item.id === finding.id ? enriched : item)));
+      if (selectedFindingRef.current !== finding.id) return;
+      onEvidenceChange(
+        <EvidencePanel
+          finding={enriched}
+          projectId={projectId()}
+          packageId={packageId}
+          onClose={() => {
+            selectedFindingRef.current = null;
+            setSelectedFindingId(null);
+            onEvidenceChange(null);
+          }}
+        />,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (selectedFindingRef.current !== finding.id) return;
+      onEvidenceChange(
+        <EvidencePanel
+          finding={finding}
+          projectId={projectId()}
+          packageId={packageId}
+          error={`Evidence could not be loaded — ${message}`}
+          onClose={() => {
+            selectedFindingRef.current = null;
+            setSelectedFindingId(null);
+            onEvidenceChange(null);
+          }}
+        />,
+      );
+    }
   }
 
   /**
@@ -384,6 +427,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
             </div>
           </div>
           <StatusBadge status={pkg.status} />
+          <ReviewProgress status={pkg.status} />
         </div>
 
         <div className="review-page__header-right">
@@ -476,6 +520,25 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
 
       {/* Input */}
       <ChatInput onSend={handleSend} disabled={isProcessing} />
+    </div>
+  );
+}
+
+const REVIEW_STEPS = ['Upload', 'Confirm / type', 'Run checks', 'Review', 'Sign off', 'Download'] as const;
+
+function ReviewProgress({ status }: { status: PackageStatus }) {
+  const completed = status === 'APPROVED' ? 5 : status === 'AWAITING_REVIEW' ? 3 : 0;
+  const failed = status === 'FAILED_PERMANENT' || status === 'FAILED_RETRYABLE';
+  return (
+    <div className="review-path" aria-label="Human-operated review progress">
+      <span className="review-path__label">{failed ? 'Workflow needs attention' : 'Human-operated path'}</span>
+      <ol className="review-path__steps">
+        {REVIEW_STEPS.map((step, index) => (
+          <li key={step} className={index < completed ? 'review-path__step review-path__step--done' : index === completed && !failed ? 'review-path__step review-path__step--current' : 'review-path__step'}>
+            {step}
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

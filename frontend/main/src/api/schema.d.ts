@@ -295,6 +295,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/evidence/{canonical_observation_id}/crop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the stored mechanical crop behind one confirmed reading
+         * @description Return one stored crop, never a reconstructed page or an annotated redline.
+         *
+         *     A crop is the immutable pixel region mechanically cut for the candidate a reviewer confirmed.
+         *     It gives the reviewer the evidence they can inspect without claiming where that value belongs on
+         *     a full drawing. The row must be reachable through this package's current revision and through a
+         *     supporting candidate (or be a canonical-owned crop), so an observation id cannot become a
+         *     cross-package artifact lookup.
+         *
+         *     The stored digest is checked before bytes are shown. A missing or mismatched artifact returns an
+         *     explicit refusal instead of a plausible image; displaying pixels that are not the stored evidence
+         *     would be worse than displaying nothing.
+         */
+        get: operations["evidence_crop_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__crop_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/findings": {
         parameters: {
             query?: never;
@@ -2738,6 +2768,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PresignedUpload"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    evidence_crop_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__crop_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                canonical_observation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored mechanical evidence crop. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
                 };
             };
             /** @description Validation Error */
