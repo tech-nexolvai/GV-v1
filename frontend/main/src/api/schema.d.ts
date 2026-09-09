@@ -476,18 +476,29 @@ export interface paths {
         };
         /**
          * Download the signed-off review as a workbook
-         * @description The findings workbook for this revision, once somebody has signed for it.
-         *
-         *     **Approval is the gate, not the file's existence.** `generate_outputs` writes the workbook as soon
-         *     as the checks have run, which is before anybody has read a finding. Serving it then would let a
-         *     review leave in a state nobody signed for, which is what ADR-0010 forbids — no computed dimension
-         *     reaches a vendor without reviewer sign-off.
-         *
-         *     The bytes are streamed from the artifact store rather than rebuilt. Regenerating on download would
-         *     produce a file that could differ from the one the approval covers, and the approval is the record
-         *     of what was agreed.
+         * @description The signed-off workbook: the tabular audit handoff.
          */
         get: operations["download_report_api_v1_projects__project_id__packages__package_id__report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/report.pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the signed-off review as a PDF
+         * @description The branded signed-off PDF: the readable reviewer handoff.
+         */
+        get: operations["download_pdf_report_api_v1_projects__project_id__packages__package_id__report_pdf_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2992,6 +3003,36 @@ export interface operations {
         };
     };
     download_report_api_v1_projects__project_id__packages__package_id__report_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_pdf_report_api_v1_projects__project_id__packages__package_id__report_pdf_get: {
         parameters: {
             query?: never;
             header?: never;

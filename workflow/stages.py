@@ -90,6 +90,7 @@ from extraction.manifest import build_manifest
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, read_page
 from extraction.rasterise import PageTooLarge, render_page
 from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
+from reports.findings_pdf import FINDINGS_PDF_MEDIA_TYPE, FindingsPdfInput, write_findings_pdf
 from reports.spreadsheet import StoredFinding, decode_reference, write_stored_workbook
 from retrieval.identifiers import NormalizedIdentifier, normalize_identifier
 from retrieval.matching import MatchableItem, MatchDocumentRole, exact_match
@@ -1096,14 +1097,14 @@ class DatabaseStages:
         }
 
     def generate_outputs(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
-        """Turn this revision's findings into a workbook somebody can be handed.
+        """Turn this revision's findings into a workbook and branded PDF somebody can be handed.
 
         The last stage, and the one that closes the loop: until now checks ran, findings were
         recorded, and nothing produced a file. `reports/spreadsheet.py` had been finished and tested
         for months with no production caller — the same gap #517 closed for crops and matching.
 
         **Live findings only.** `run_checks` supersedes previous runs before writing new ones, and a
-        workbook containing both would show a reviewer two verdicts for one rule with nothing saying
+        handoff containing both would show a reviewer two verdicts for one rule with nothing saying
         which is in force. The join filters on `superseded_at IS NULL`, which is the same question
         the findings list asks.
 
@@ -1191,11 +1192,24 @@ class DatabaseStages:
 
         composition = compose_findings(composition_facts, self._findings_composer)
         narratives = {narrative.finding_key: narrative.text for narrative in composition.narratives}
-        workbook = write_stored_workbook(
-            [
-                replace(finding, reviewer_summary=narratives[facts.key])
-                for finding, facts in zip(stored_findings, composition_facts, strict=True)
-            ]
+        rendered_findings = [
+            replace(finding, reviewer_summary=narratives[facts.key])
+            for finding, facts in zip(stored_findings, composition_facts, strict=True)
+        ]
+        workbook = write_stored_workbook(rendered_findings)
+        revision = session.get(PackageRevision, package_revision_id)
+        if revision is None:
+            raise ValueError(f"package revision {package_revision_id} does not exist")
+        package = session.get(Package, revision.package_id)
+        if package is None:
+            raise ValueError(f"package {revision.package_id} does not exist")
+        findings_pdf = write_findings_pdf(
+            FindingsPdfInput(
+                package_revision_id=revision.id,
+                revision_number=revision.revision_number,
+                vendor=package.vendor,
+                findings=tuple(rendered_findings),
+            )
         )
         composition_status: dict[str, object] = {
             "mode": composition.mode.value,
@@ -1206,44 +1220,41 @@ class DatabaseStages:
         if composition.fallback_reason is not None:
             composition_status["fallback_reason"] = composition.fallback_reason
 
-        digest, _ = sha256_stream(BytesIO(workbook))
-        key = content_key(f"outputs/{package_revision_id}", digest, suffix=".xlsx")
-        existing = session.execute(
-            select(OutputArtifact.id).where(
-                OutputArtifact.storage_key == key, OutputArtifact.sha256 == digest
-            )
-        ).first()
-        if existing is not None:
-            # Byte-identical to one already recorded, which is what regenerating an unchanged
-            # revision produces. The table is append-only and unique on (key, digest); recording it
-            # twice would claim two deliverables where there is one.
-            return {
-                "implemented": True,
-                "ran": True,
-                "findings": len(rows),
-                "outputs": 0,
-                "already_recorded": True,
-                "findings_composition": composition_status,
-            }
-
-        stored = self._store.put(key, BytesIO(workbook), content_type=WORKBOOK_MEDIA_TYPE)
-        session.add(
-            OutputArtifact(
-                package_revision_id=package_revision_id,
-                kind=OutputArtifactKind.FINDINGS_WORKBOOK.value,
-                storage_key=stored.key,
-                sha256=stored.sha256,
-                media_type=WORKBOOK_MEDIA_TYPE,
-                findings=len(rows),
-            )
+        outputs = (
+            (OutputArtifactKind.FINDINGS_WORKBOOK, workbook, WORKBOOK_MEDIA_TYPE, ".xlsx"),
+            (OutputArtifactKind.FINDINGS_PDF, findings_pdf, FINDINGS_PDF_MEDIA_TYPE, ".pdf"),
         )
+        written: dict[str, str] = {}
+        for kind, document, media_type, suffix in outputs:
+            digest, _ = sha256_stream(BytesIO(document))
+            key = content_key(f"outputs/{package_revision_id}", digest, suffix=suffix)
+            existing = session.execute(
+                select(OutputArtifact.id).where(
+                    OutputArtifact.storage_key == key, OutputArtifact.sha256 == digest
+                )
+            ).first()
+            if existing is not None:
+                continue
+            stored = self._store.put(key, BytesIO(document), content_type=media_type)
+            session.add(
+                OutputArtifact(
+                    package_revision_id=package_revision_id,
+                    kind=kind.value,
+                    storage_key=stored.key,
+                    sha256=stored.sha256,
+                    media_type=media_type,
+                    findings=len(rows),
+                )
+            )
+            written[kind.value] = stored.key
         session.flush()
         return {
             "implemented": True,
             "ran": True,
             "findings": len(rows),
-            "outputs": 1,
-            "storage_key": stored.key,
+            "outputs": len(written),
+            "already_recorded": not written,
+            "storage_keys": written,
             "findings_composition": composition_status,
         }
 

@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_artifact_store, get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models.package import Package, PackageRevision, PackageState
-from app.models.verdicts import OutputArtifact
+from app.models.verdicts import OutputArtifact, OutputArtifactKind
 from app.review.approval import (
     ApprovalNotAuthorised,
     ApprovalRefused,
@@ -40,9 +40,6 @@ from storage.store import ArtifactStore
 router = APIRouter(tags=["approvals"])
 
 NOT_FOUND_DETAIL: Final = "Not found"
-
-#: The workbook's media type, so a browser hands it to a spreadsheet rather than to a text viewer.
-WORKBOOK_MEDIA_TYPE: Final = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 class ApprovalOut(BaseModel):
@@ -121,22 +118,21 @@ def approve(
     )
 
 
-@router.get(
-    "/projects/{project_id}/packages/{package_id}/report",
-    response_class=Response,
-    summary="Download the signed-off review as a workbook",
-)
-def download_report(
+def _download_artifact(
     _access: Annotated[Principal, Depends(require_project_access)],
     session: Annotated[Session, Depends(get_session)],
     store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     project_id: UUID,
     package_id: UUID,
+    *,
+    kind: OutputArtifactKind,
+    extension: str,
+    label: str,
 ) -> Response:
-    """The findings workbook for this revision, once somebody has signed for it.
+    """One signed-off output artifact, streamed as the immutable recorded bytes.
 
-    **Approval is the gate, not the file's existence.** `generate_outputs` writes the workbook as soon
-    as the checks have run, which is before anybody has read a finding. Serving it then would let a
+    **Approval is the gate, not the artifact's existence.** `generate_outputs` writes both reports as
+    soon as the checks have run, which is before anybody has read a finding. Serving either then would let a
     review leave in a state nobody signed for, which is what ADR-0010 forbids — no computed dimension
     reaches a vendor without reviewer sign-off.
 
@@ -158,7 +154,10 @@ def download_report(
 
     artifact = session.execute(
         select(OutputArtifact)
-        .where(OutputArtifact.package_revision_id == revision.id)
+        .where(
+            OutputArtifact.package_revision_id == revision.id,
+            OutputArtifact.kind == kind.value,
+        )
         .order_by(OutputArtifact.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
@@ -166,7 +165,7 @@ def download_report(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
-                "no report has been generated for this package. The checks produce it, so a package "
+                f"no {label} has been generated for this package. The checks produce it, so a package "
                 "with none has not finished running them."
             ),
         )
@@ -185,10 +184,60 @@ def download_report(
 
     return Response(
         content=content,
-        media_type=WORKBOOK_MEDIA_TYPE,
+        media_type=artifact.media_type,
         headers={
             "Content-Disposition": (
-                f'attachment; filename="gv-review-{package_id}-r{revision.revision_number}.xlsx"'
+                f'attachment; filename="gv-review-{package_id}-r{revision.revision_number}.{extension}"'
             )
         },
+    )
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/report",
+    response_class=Response,
+    summary="Download the signed-off review as a workbook",
+)
+def download_report(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+    project_id: UUID,
+    package_id: UUID,
+) -> Response:
+    """The signed-off workbook: the tabular audit handoff."""
+    return _download_artifact(
+        _access,
+        session,
+        store,
+        project_id,
+        package_id,
+        kind=OutputArtifactKind.FINDINGS_WORKBOOK,
+        extension="xlsx",
+        label="findings workbook",
+    )
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/report.pdf",
+    response_class=Response,
+    summary="Download the signed-off review as a PDF",
+)
+def download_pdf_report(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+    project_id: UUID,
+    package_id: UUID,
+) -> Response:
+    """The branded signed-off PDF: the readable reviewer handoff."""
+    return _download_artifact(
+        _access,
+        session,
+        store,
+        project_id,
+        package_id,
+        kind=OutputArtifactKind.FINDINGS_PDF,
+        extension="pdf",
+        label="findings PDF",
     )

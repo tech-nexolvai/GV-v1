@@ -41,6 +41,7 @@ from app.models import (
     DocumentVersion,
     ObservationCandidate,
     OutputArtifact,
+    OutputArtifactKind,
     Package,
     PackageRevision,
     PackageRevisionDocument,
@@ -266,6 +267,8 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     early = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report")
     assert early.status_code == 409, early.text
     assert "not been signed off" in early.text
+    early_pdf = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report.pdf")
+    assert early_pdf.status_code == 409, early_pdf.text
 
     # 6. The reviewer addresses every abstention and signs off.
     _address_every_abstention(client, session, package_id, revision)
@@ -279,18 +282,40 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     assert summary["B11"].value == "AWAITING REVIEWER SIGN-OFF — download remains blocked"
     assert summary["B12"].value == "not yet recorded"
 
+    pdf = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report.pdf")
+    assert pdf.status_code == 200, pdf.text
+    assert pdf.headers["content-type"] == "application/pdf"
+    assert pdf.content.startswith(b"%PDF-"), "the branded handoff is not a PDF"
+    assert "attachment" in pdf.headers["content-disposition"]
+
     # The newest, which is what the endpoint serves. Two reports exist here and both are real: the
     # pipeline wrote one before the reading had a meaning, and the reviewer's confirmation made the
     # checks decidable, so re-running produced a second. `output_artifacts` is append-only, so the
     # first is not overwritten — it is simply no longer the current one.
     stored = (
-        session.execute(select(OutputArtifact).order_by(OutputArtifact.created_at.desc()).limit(1))
+        session.execute(
+            select(OutputArtifact)
+            .where(OutputArtifact.kind == OutputArtifactKind.FINDINGS_WORKBOOK.value)
+            .order_by(OutputArtifact.created_at.desc())
+            .limit(1)
+        )
         .scalars()
         .one()
     )
     assert (
         hashlib.sha256(report.content).hexdigest() == stored.sha256
     ), "the bytes served are not the ones the approval covers"
+    stored_pdf = (
+        session.execute(
+            select(OutputArtifact)
+            .where(OutputArtifact.kind == OutputArtifactKind.FINDINGS_PDF.value)
+            .order_by(OutputArtifact.created_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .one()
+    )
+    assert hashlib.sha256(pdf.content).hexdigest() == stored_pdf.sha256
 
 
 def _address_every_abstention(

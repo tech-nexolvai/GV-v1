@@ -13,6 +13,7 @@ import {
   grantException,
   getFindingChain,
   approvePackage,
+  downloadPdfReport,
   downloadReport,
 } from '../api/client';
 import type { ReviewSession } from '../api/client';
@@ -371,20 +372,22 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
   }
 
   /**
-   * Hand the reviewer the workbook.
+   * Hand the reviewer either signed-off handoff artifact.
    *
    * The blob is turned into a click here rather than linking straight at the endpoint, so a refusal
    * — not approved, no report generated — surfaces as a message instead of a download that silently
    * does nothing.
    */
-  async function handleDownload() {
+  async function handleDownload(format: 'pdf' | 'workbook') {
     setActionError(null);
     try {
-      const blob = await downloadReport(projectId(), packageId);
+      const blob = format === 'pdf'
+        ? await downloadPdfReport(projectId(), packageId)
+        : await downloadReport(projectId(), packageId);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `gv-review-${packageId}.xlsx`;
+      link.download = `gv-review-${packageId}.${format === 'pdf' ? 'pdf' : 'xlsx'}`;
       link.click();
       URL.revokeObjectURL(url);
     } catch (error) {
@@ -482,15 +485,26 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
               requires — a review that left the building unsigned is one nobody stands behind
               (ADR-0010). Before then the workbook exists and is deliberately unreachable. */}
           {(approved || pkg.status === 'APPROVED') && (
-            <button
-              type="button"
-              className="btn btn--ghost"
-              onClick={() => void handleDownload()}
-              data-tooltip="Download the signed-off review as a workbook"
-            >
-              <Download size={14} />
-              Download report
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => void handleDownload('pdf')}
+                data-tooltip="Download the signed-off review as a PDF"
+              >
+                <Download size={14} />
+                Download PDF
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => void handleDownload('workbook')}
+                data-tooltip="Download the signed-off review as a workbook"
+              >
+                <Download size={14} />
+                Download workbook
+              </button>
+            </>
           )}
         </div>
       </div>

@@ -320,13 +320,15 @@ class FindingEvidence(Base, TimestampedUUID, Immutable):
 class OutputArtifactKind(StrEnum):
     """What kind of deliverable an output artifact holds.
 
-    One member, deliberately. A `REDLINE` member would be a promise the code does not keep: an
+    The workbook is the tabular audit handoff; the PDF is its reviewer-readable counterpart. A
+    `REDLINE` member remains absent deliberately: an
     annotated drawing needs each finding tied to the region of the sheet it is about, which needs
     semantic typing, and candidates are untyped until the real drawings (#274) and the vocabulary
-    Q20 defers. The enum gains the member on the day something writes one.
+    Q20 defers. The `REDLINE` member waits for the day something can write one honestly.
     """
 
     FINDINGS_WORKBOOK = "findings_workbook"
+    FINDINGS_PDF = "findings_pdf"
 
 
 OUTPUT_ARTIFACT_KIND_VALUES = _sql_values(OutputArtifactKind)
