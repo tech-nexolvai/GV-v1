@@ -79,9 +79,10 @@ WORKFLOW_NAME: Final = "process_package_revision"
 
 #: The version of *this* code, inside every stage's idempotency key. A changed engine is a different
 #: task rather than a cache hit (`AGENTS.md` §2.7), so bumping this reruns stages instead of reusing
-#: answers computed by code that no longer exists. Version 1.1.0 invalidates claims made with the
-#: former 150-DPI reader; otherwise an `already_done` extraction would never see the 300-DPI input.
-ENGINE_VERSION: Final = "1.1.0"
+#: answers computed by code that no longer exists. Version 1.2.0 invalidates claims made before split
+#: vendor dual-unit OCR tokens were combined and associated; otherwise an `already_done` extraction
+#: would keep the old abstentions even though the reader now produces one usable reading.
+ENGINE_VERSION: Final = "1.2.0"
 
 #: Each stage, and the state a package reaches when it finishes. Data, in one place, so the graph and
 #: the state machine cannot disagree — the same reason `app/lifecycle/states.py` holds its table as data.
