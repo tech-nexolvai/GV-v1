@@ -121,7 +121,7 @@ def config_from_environment(
     )
 
 
-def _needs_inference_profile(error: BaseException, model_id: str) -> bool:
+def needs_inference_profile(error: BaseException, model_id: str) -> bool:
     """Whether this failure means "invoke the inference profile instead".
 
     Two different AWS errors mean it — see `INFERENCE_PROFILE_PREFIX` — and neither says so in words
@@ -350,7 +350,7 @@ class NovaAdapter:
             return self._attempt(request, self._config.model_id)
         except NovaServiceError as error:
             cause = error.__cause__
-            if cause is None or not _needs_inference_profile(cause, self._config.model_id):
+            if cause is None or not needs_inference_profile(cause, self._config.model_id):
                 raise
             return self._attempt(request, f"{INFERENCE_PROFILE_PREFIX}{self._config.model_id}")
 

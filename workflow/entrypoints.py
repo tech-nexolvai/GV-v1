@@ -252,6 +252,7 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
         )
         return EXIT_MISCONFIGURED
 
+    from workflow.findings_bedrock import configured_findings_composer
     from workflow.hatchet_app import build_worker
     from workflow.stages import DatabaseStages
 
@@ -259,7 +260,11 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
     # ever passed — so a deployed worker ran the whole pipeline and recorded that it had implemented
     # none of it. `DatabaseStages` implements one stage for real and keeps `NoStages`' answer for the
     # other five, so what is built runs and what is not still says so.
-    worker = build_worker(settings, factory=factory, stages=DatabaseStages())
+    worker = build_worker(
+        settings,
+        factory=factory,
+        stages=DatabaseStages(findings_composer=configured_findings_composer()),
+    )
     logger.info("worker starting")
     worker.start()
     logger.info("worker stopped")

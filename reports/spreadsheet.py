@@ -108,6 +108,7 @@ FINDING_COLUMNS: Final = (
     "evidence_pages",
     "reason",
     "notes",
+    "reviewer_summary",
 )
 
 #: One row per operand the calculation used. Frozen for the same reason.
@@ -270,6 +271,7 @@ def _finding_row(finding: Finding) -> tuple[object, ...]:
         _evidence_pages(finding),
         finding.reason,
         " | ".join(finding.notes),
+        finding.reason,
     )
 
 
@@ -416,6 +418,12 @@ class StoredFinding:
 
     variant: str | None = None
     notes: tuple[str, ...] | None = None
+    reviewer_summary: str | None = None
+    """Post-verdict prose after fidelity validation, or ``None`` for the deterministic reason.
+
+    This is presentation only.  It is appended to the frozen findings sheet rather than replacing
+    ``reason``, so a reviewer can always compare the narration with the engine's exact words.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,6 +536,7 @@ def _stored_finding_row(finding: StoredFinding) -> tuple[object, ...]:
         ", ".join(page for page in pages if page),
         reason,
         NOT_RECORDED if finding.notes is None else " | ".join(finding.notes),
+        finding.reviewer_summary or reason,
     )
 
 
