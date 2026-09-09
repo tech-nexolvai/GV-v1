@@ -206,6 +206,25 @@ def test_unsafe_and_duplicate_case_ids_are_refused_before_writes(tmp_path: Path)
     assert not output.exists()
 
 
+def test_invalid_later_proposal_cannot_leave_a_partial_batch(tmp_path: Path) -> None:
+    """Every payload is validated before the authoring transaction makes its first directory."""
+    source = tmp_path / "synthetic.pdf"
+    source.write_bytes(b"synthetic PDF bytes, not a drawing")
+    output = tmp_path / "cases"
+    valid = _proposal("p02-d001", "762 [30]")
+    inconsistent = _proposal("p02-d002", "100 [100]")
+
+    with pytest.raises(ValueError, match="do not independently corroborate"):
+        author_cases(
+            [valid, inconsistent],
+            source_pdf=source,
+            output_root=output,
+            annotated_on=date(2026, 9, 10),
+        )
+
+    assert not output.exists()
+
+
 def test_pending_report_lists_only_non_agree_rows(tmp_path: Path) -> None:
     """The pending artifact is complete, dynamically counted, and excludes authored rows."""
     agreeing = _proposal("p02-d001", "762 [30]")

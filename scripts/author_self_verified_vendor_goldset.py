@@ -325,7 +325,7 @@ def author_cases(
 
     source_hash = "sha256:" + hashlib.sha256(source_pdf.read_bytes()).hexdigest()
     suggestions = suggest_types(proposals)
-    written: list[Path] = []
+    prepared: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for proposal, case_id in zip(proposals, case_ids, strict=True):
         suggestion = suggestions[(proposal.project, proposal.proposal_id)]
         payload, metadata = case_payload(
@@ -337,6 +337,10 @@ def author_cases(
         )
         if payload["id"] != case_id:
             raise AssertionError("validated case id changed while constructing the payload")
+        prepared.append((case_id, payload, metadata))
+
+    written: list[Path] = []
+    for case_id, payload, metadata in prepared:
         case_dir = output_root / case_id
         case_dir.mkdir(parents=True, exist_ok=True)
         _link_or_verify(source_pdf, case_dir / source_pdf.name, source_hash)
