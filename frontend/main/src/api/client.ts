@@ -439,5 +439,37 @@ export async function downloadReport(
   return response.blob();
 }
 
+/**
+ * The immutable crop mechanically cut around a confirmed reading.
+ *
+ * This is deliberately a blob rather than a URL stored on a finding. The server re-establishes the
+ * project boundary and verifies the crop's recorded digest immediately before returning it; a crop
+ * is evidence, not a decorative preview that may be cached or guessed from a drawing coordinate.
+ */
+export async function downloadEvidenceCrop(
+  projectId: string,
+  packageId: string,
+  canonicalObservationId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/evidence/${canonicalObservationId}/crop`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The evidence crop could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
 export type ApprovalOut =
   paths['/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve']['post']['responses'][201]['content']['application/json'];

@@ -56,17 +56,15 @@ export type PackageStatus =
 /** What the reviewer did with a finding — the four typed actions in `app/review/session.py`. */
 export type ReviewerAction = components['schemas']['ReviewActionKind'];
 
-/** One reading lifted off a drawing, with enough context for a reviewer to check it.
+/** One confirmed reading, with the immutable crop a reviewer may inspect.
  *
- *  `polygon` is in stored space (normalised 0..1, rotation applied) — see `evidence/coordinates.py`.
- *  It is what the evidence crop is drawn from, so the reviewer sees the number in place rather than a
- *  page reference to go and look up. */
+ * `polygon` remains stored provenance, not a drawing overlay. The crop endpoint returns only the
+ * mechanical region cut for this candidate; it never renders a full drawing or a redline. */
 export interface Evidence {
+  canonical_observation_id: string;
   page: number;
   polygon: Array<[number, number]>;
-  raw_text: string;
-  /** Which reader produced it. Two independent readers agreeing is what qualifies evidence. */
-  extractor: string;
+  semantic_type: string;
 }
 
 /** The arithmetic behind a verdict, so a reviewer can check the sum by hand.

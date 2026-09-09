@@ -30,6 +30,9 @@ export function useAsync<T>(load: () => Promise<T>, deps: readonly unknown[]): A
 
   useEffect(() => {
     let current = true;
+    // This state synchronizes the new request lifecycle; it intentionally happens before the
+    // promise callback so a prior package's result cannot remain visible during a refetch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setState({ status: 'loading' });
 
     // `Promise.resolve().then(load)` rather than `load()`, so a loader that throws *synchronously*

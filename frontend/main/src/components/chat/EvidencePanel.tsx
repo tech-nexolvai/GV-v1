@@ -1,25 +1,24 @@
-import { X, FileText, MapPin } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { X, FileImage, MapPin } from 'lucide-react';
 import type { Finding } from '../../data/types';
+import { downloadEvidenceCrop } from '../../api/client';
 import { OutcomeBadge } from '../ui/Badge';
 import './EvidencePanel.css';
 
 interface EvidencePanelProps {
   finding: Finding;
+  projectId: string;
+  packageId: string;
+  loading?: boolean;
+  error?: string;
   onClose: () => void;
 }
 
-export function EvidencePanel({ finding, onClose }: EvidencePanelProps) {
+export function EvidencePanel({ finding, projectId, packageId, loading = false, error, onClose }: EvidencePanelProps) {
   return (
     <div className="evidence-panel animate-slide-in-r" aria-label="Evidence viewer">
-      {/* Panel header — draggable to rearrange layout */}
       <div
         className="evidence-panel__header"
-        draggable
-        onDragStart={(e) => {
-          e.dataTransfer.setData('text/plain', 'evidence-panel');
-        }}
-        style={{ cursor: 'grab' }}
-        title="Drag drawing panel to swap column positions"
       >
         <div className="evidence-panel__title">
           <span className="evidence-panel__check-id">{finding.check_id}</span>
@@ -38,36 +37,46 @@ export function EvidencePanel({ finding, onClose }: EvidencePanelProps) {
       {/* Scrollable body */}
       <div className="evidence-panel__body">
 
+        {loading && (
+          <div className="evidence-panel__state" role="status">
+            Loading the finding's recorded evidence…
+          </div>
+        )}
+
+        {error && (
+          <div className="evidence-panel__state evidence-panel__state--error" role="alert">
+            {error}
+          </div>
+        )}
+
         {/* Arch set viewer */}
-        {finding.arch_evidence && (
+        {!loading && !error && finding.arch_evidence && (
           <PdfPane
+            key={finding.arch_evidence.canonical_observation_id}
             label="Architectural Set"
             role="ARCH"
-            page={finding.arch_evidence.page}
-            rawText={finding.arch_evidence.raw_text}
-            extractor={finding.arch_evidence.extractor}
-            outcome={finding.outcome}
-            polygon={finding.arch_evidence.polygon}
+            evidence={finding.arch_evidence}
+            projectId={projectId}
+            packageId={packageId}
           />
         )}
 
         {/* Shop drawing viewer */}
-        {finding.shop_evidence && (
+        {!loading && !error && finding.shop_evidence && (
           <PdfPane
+            key={finding.shop_evidence.canonical_observation_id}
             label="Shop Drawing"
             role="SHOP"
-            page={finding.shop_evidence.page}
-            rawText={finding.shop_evidence.raw_text}
-            extractor={finding.shop_evidence.extractor}
-            outcome={finding.outcome}
-            polygon={finding.shop_evidence.polygon}
+            evidence={finding.shop_evidence}
+            projectId={projectId}
+            packageId={packageId}
           />
         )}
 
         {/* No evidence */}
-        {!finding.arch_evidence && !finding.shop_evidence && (
+        {!loading && !error && !finding.arch_evidence && !finding.shop_evidence && (
           <div className="evidence-panel__no-evidence">
-            <FileText size={24} className="evidence-panel__no-evidence-icon" />
+            <FileImage size={24} className="evidence-panel__no-evidence-icon" />
             <p>No evidence located for this finding.</p>
             <p className="evidence-panel__no-evidence-sub">
               {finding.outcome === 'NOT_FOUND'
@@ -85,27 +94,40 @@ export function EvidencePanel({ finding, onClose }: EvidencePanelProps) {
 interface PdfPaneProps {
   label: string;
   role: 'ARCH' | 'SHOP';
-  page: number;
-  rawText: string;
-  extractor: string;
-  outcome: Finding['outcome'];
-  polygon: [number, number][];
+  evidence: NonNullable<Finding['arch_evidence']>;
+  projectId: string;
+  packageId: string;
 }
 
-function PdfPane({ label, role, page, rawText, extractor, outcome, polygon }: PdfPaneProps) {
-  const borderColor =
-    outcome === 'FAIL'            ? 'var(--status-fail)' :
-    outcome === 'REVIEW_REQUIRED' ? 'var(--status-review)' :
-    outcome === 'PASS'            ? 'var(--status-pass)' :
-    'var(--status-missing)';
+function PdfPane({ label, role, evidence, projectId, packageId }: PdfPaneProps) {
+  const [crop, setCrop] = useState<{ status: 'loading' } | { status: 'ready'; url: string } | { status: 'error'; message: string }>({ status: 'loading' });
 
-  // Compute bounding box from polygon for the overlay div
-  const xs = polygon.map(p => p[0]);
-  const ys = polygon.map(p => p[1]);
-  const x = Math.min(...xs);
-  const y = Math.min(...ys);
-  const w = Math.max(...xs) - x;
-  const h = Math.max(...ys) - y;
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    void downloadEvidenceCrop(projectId, packageId, evidence.canonical_observation_id).then(
+      (blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (active) {
+          setCrop({ status: 'ready', url: objectUrl });
+        } else {
+          URL.revokeObjectURL(objectUrl);
+        }
+      },
+      (cause: unknown) => {
+        if (active) {
+          setCrop({
+            status: 'error',
+            message: cause instanceof Error ? cause.message : 'The stored crop could not be loaded.',
+          });
+        }
+      },
+    );
+    return () => {
+      active = false;
+      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
+    };
+  }, [evidence.canonical_observation_id, packageId, projectId]);
 
   return (
     <div className="pdf-pane">
@@ -120,35 +142,27 @@ function PdfPane({ label, role, page, rawText, extractor, outcome, polygon }: Pd
         </div>
         <span className="pdf-pane__page">
           <MapPin size={11} />
-          Page {page}
+          Page {evidence.page}
         </span>
       </div>
 
-      {/* No page image. The overlay used to sit on a hand-drawn SVG of a title block reading
-          "MARRIOTT HOUSTON / PKG-2026-001" with a dimension of 6012 on it — a drawing that does not
-          exist, under a highlight box positioned from the finding's real polygon. A reviewer would
-          have been looking at genuine coordinates over invented paper and signing off on the result.
-
-          The page cannot be rendered yet: nothing serves document bytes back, so there is no image to
-          put here. Until there is, the panel shows the located region as numbers, which is true, and
-          says plainly that it is not showing the drawing. */}
-      <div className="pdf-pane__meta">
-        <span className="pdf-pane__meta-label">Located at</span>
-        <code className="pdf-pane__raw-value">
-          page {page} · x {Math.round(x)}–{Math.round(x + w)} · y {Math.round(y)}–{Math.round(y + h)}
-        </code>
-        <span className="pdf-pane__extractor" style={{ color: borderColor }}>
-          The drawing itself is not shown — the page image is not available to this app yet.
-        </span>
+      <div className="pdf-pane__crop">
+        {crop.status === 'loading' && <p className="pdf-pane__crop-state">Loading stored crop…</p>}
+        {crop.status === 'ready' && (
+          <img
+            className="pdf-pane__crop-image"
+            src={crop.url}
+            alt={`Mechanical evidence crop for ${evidence.semantic_type} on page ${evidence.page}`}
+          />
+        )}
+        {crop.status === 'error' && <p className="pdf-pane__crop-state pdf-pane__crop-state--error">{crop.message}</p>}
       </div>
 
-      {/* Raw text readout */}
       <div className="pdf-pane__meta">
-        <div className="pdf-pane__raw-text">
-          <span className="pdf-pane__meta-label">Extracted text</span>
-          <code className="pdf-pane__raw-value">"{rawText}"</code>
-        </div>
-        <span className="pdf-pane__extractor">via {extractor}</span>
+        <span className="pdf-pane__meta-label">Mechanical evidence crop</span>
+        <span className="pdf-pane__extractor">
+          Pixel region only — not a full drawing, placement claim, or redline.
+        </span>
       </div>
     </div>
   );

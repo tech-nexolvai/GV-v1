@@ -76,6 +76,13 @@ class VerdictOperand:
     """Where to look on the drawing — a page and polygon reference, or the parameter set id
     for a value that appears on no drawing."""
 
+    evidence_observation_id: str | None = None
+    """The stored canonical observation that supplied this operand, when it has one.
+
+    This remains an opaque provenance identifier in the verdict layer: resolving it to a database
+    row belongs to the persistence boundary, not to deterministic arithmetic.
+    """
+
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("a verdict operand must be named")

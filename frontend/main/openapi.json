@@ -3195,6 +3195,71 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/evidence/{canonical_observation_id}/crop": {
+      "get": {
+        "description": "Return one stored crop, never a reconstructed page or an annotated redline.\n\nA crop is the immutable pixel region mechanically cut for the candidate a reviewer confirmed.\nIt gives the reviewer the evidence they can inspect without claiming where that value belongs on\na full drawing. The row must be reachable through this package's current revision and through a\nsupporting candidate (or be a canonical-owned crop), so an observation id cannot become a\ncross-package artifact lookup.\n\nThe stored digest is checked before bytes are shown. A missing or mismatched artifact returns an\nexplicit refusal instead of a plausible image; displaying pixels that are not the stored evidence\nwould be worse than displaying nothing.",
+        "operationId": "evidence_crop_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__crop_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "canonical_observation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Canonical Observation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The stored mechanical evidence crop."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View the stored mechanical crop behind one confirmed reading",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/findings": {
       "get": {
         "description": "One page of this package's findings, worst first.\n\n**Every outcome is included unless you ask for fewer.** The abstentions \u2014 `NOT_FOUND`,\n`REVIEW_REQUIRED`, `NO_APPLICABLE_RULE` \u2014 are things the engine concluded, and a default that\nhid them would report a package as clean on the strength of checks nobody looked at.\n\n**Order:** severity worst-first, then outcome (failures, then abstentions, then passes), then\noldest first, then id. The full description comes back in `ordering` on every page.\n\n**Paging:** pass the `next_cursor` from the previous page. `next_cursor` is `null` on the last\npage. The cursor names the last row rather than counting rows, so findings written while you are\npaging cannot push a row across a page boundary and out of sight.\n\n**Scope:** a package in another project is reported as not found, in the same words as a package\nthat does not exist. That is deliberate \u2014 see `docs/DESIGN_PLATFORM.md` \u00a74.3.\n\nThe response carries identity and versions, not calculation traces. Reconstructing a finding\nfrom its own operands is a per-finding request (`docs/DESIGN_PRODUCT.md` \u00a73.1).",

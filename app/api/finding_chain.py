@@ -14,28 +14,34 @@ Verification: ``tests/api/test_finding_chain.py``.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_session
+from app.api.dependencies import get_artifact_store, get_session
 from app.auth import Principal, require_project_access
 from app.models import (
     CanonicalObservation,
     CheckRun,
+    DocumentVersion,
     Finding,
     Package,
     PackageRevision,
+    PackageRevisionDocument,
     Page,
     RuleDefinition,
     RuleSnapshot,
     VerdictInput,
 )
+from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind, EvidenceSupportingCandidate
+from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
+from storage.store import ArtifactStore
 
 router = APIRouter(tags=["findings"])
 NOT_FOUND_DETAIL = "Not found"
@@ -258,6 +264,113 @@ def finding_chain(
 
     finding, run, snapshot, definition = row
     return build_chain(session, finding, run, snapshot, definition)
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/evidence/{canonical_observation_id}/crop",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "The stored mechanical evidence crop.",
+        }
+    },
+    summary="View the stored mechanical crop behind one confirmed reading",
+)
+def evidence_crop(
+    project_id: UUID,
+    package_id: UUID,
+    canonical_observation_id: UUID,
+    principal: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+) -> Response:
+    """Return one stored crop, never a reconstructed page or an annotated redline.
+
+    A crop is the immutable pixel region mechanically cut for the candidate a reviewer confirmed.
+    It gives the reviewer the evidence they can inspect without claiming where that value belongs on
+    a full drawing. The row must be reachable through this package's current revision and through a
+    supporting candidate (or be a canonical-owned crop), so an observation id cannot become a
+    cross-package artifact lookup.
+
+    The stored digest is checked before bytes are shown. A missing or mismatched artifact returns an
+    explicit refusal instead of a plausible image; displaying pixels that are not the stored evidence
+    would be worse than displaying nothing.
+    """
+    del principal  # Access was established by the dependency; SQL establishes row ownership.
+    revision = _current_revision(session, project_id, package_id)
+    observation = session.execute(
+        select(CanonicalObservation)
+        .join(
+            DocumentVersion,
+            DocumentVersion.id == CanonicalObservation.document_version_id,
+        )
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(
+            CanonicalObservation.id == canonical_observation_id,
+            PackageRevisionDocument.package_revision_id == revision.id,
+        )
+    ).scalar_one_or_none()
+    if observation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+
+    artifact = session.execute(
+        select(EvidenceArtifact)
+        .outerjoin(
+            EvidenceSupportingCandidate,
+            EvidenceSupportingCandidate.candidate_id == EvidenceArtifact.candidate_id,
+        )
+        .where(
+            EvidenceArtifact.kind == EvidenceArtifactKind.CROP.value,
+            or_(
+                EvidenceArtifact.canonical_observation_id == observation.id,
+                EvidenceSupportingCandidate.canonical_observation_id == observation.id,
+            ),
+        )
+        .order_by(EvidenceArtifact.created_at, EvidenceArtifact.id)
+        .limit(1)
+    ).scalar_one_or_none()
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no mechanical evidence crop is available for this confirmed reading",
+        )
+
+    try:
+        content = store.get(artifact.storage_key).read()
+    except (ArtifactCorrupt, FileNotFoundError, IntegrityRecordMissing) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the stored evidence crop is unavailable, so it cannot be shown",
+        ) from error
+    if hashlib.sha256(content).hexdigest() != artifact.sha256:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the stored evidence crop does not match its recorded digest, so it cannot be shown",
+        )
+
+    return Response(
+        content=content,
+        media_type=artifact.media_type,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _current_revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRevision:
+    """Return the current revision inside the same project boundary as every finding route."""
+    revision = session.execute(
+        select(PackageRevision)
+        .join(Package, Package.id == PackageRevision.package_id)
+        .where(Package.id == package_id, Package.project_id == project_id)
+        .order_by(PackageRevision.revision_number.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if revision is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    return revision
 
 
 def build_chain(

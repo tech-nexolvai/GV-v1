@@ -18,6 +18,7 @@ something nobody has confirmed finds nothing rather than something approximate.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from decimal import Decimal
 from fractions import Fraction
 from uuid import UUID
@@ -97,12 +98,12 @@ def operands_from_evidence(
     ).all()
 
     # Grouped by what a rule asks for: the document's role and the quantity's semantic type.
-    by_need: dict[tuple[str, str], list[DomainObservation]] = {}
+    by_need: dict[tuple[str, str], list[tuple[DomainObservation, UUID]]] = {}
     for row, page_index in rows:
         observation = _domain(row, page_index)
         if observation is None:
             continue
-        by_need.setdefault((row.document_role, row.semantic_type), []).append(observation)
+        by_need.setdefault((row.document_role, row.semantic_type), []).append((observation, row.id))
 
     operands: dict[str, dict[str, VerdictOperand]] = {}
     for rule in rules:
@@ -114,7 +115,10 @@ def operands_from_evidence(
                 continue
 
             if selector.cardinality is Cardinality.MANY:
-                sealed = [seal(observation, name) for observation in found]
+                sealed = [
+                    _seal(observation, observation_id, name)
+                    for observation, observation_id in found
+                ]
                 if any(isinstance(item, GateRefusal) for item in sealed):
                     # One unqualified reading in a run makes the whole run unusable: a sum of the
                     # rest would be a smaller countertop, arrived at silently.
@@ -146,10 +150,26 @@ def operands_from_evidence(
                     # a question about the drawing, and answering it here — by position, by
                     # recency — would be inventing the answer.
                     continue
-                single = seal(found[0], name)
+                observation, observation_id = found[0]
+                single = _seal(observation, observation_id, name)
                 if isinstance(single, GateRefusal):
                     continue
                 operand = single
 
             operands.setdefault(rule.id, {})[name] = operand
     return operands
+
+
+def _seal(
+    observation: DomainObservation, observation_id: UUID, name: str
+) -> VerdictOperand | GateRefusal:
+    """Seal a reading and retain its immutable database identity for the verdict record.
+
+    The evidence gate still makes the qualification decision.  This adapter only carries the
+    identity of the already-selected canonical observation across the workflow boundary, so a
+    later finding can point to the actual crop rather than re-identifying a drawing region.
+    """
+    sealed = seal(observation, name)
+    if isinstance(sealed, GateRefusal):
+        return sealed
+    return replace(sealed, evidence_observation_id=str(observation_id))

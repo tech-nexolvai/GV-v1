@@ -79,7 +79,11 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
         semanticType,
       );
       setConfirmed((done) => ({ ...done, [candidate.candidate_id]: result.semantic_type }));
-      setFailed(({ [candidate.candidate_id]: _removed, ...rest }) => rest);
+      setFailed((problems) => {
+        const remaining = { ...problems };
+        delete remaining[candidate.candidate_id];
+        return remaining;
+      });
     } catch (cause: unknown) {
       // Shown against the row rather than as a banner: a refusal is about this reading — already
       // confirmed, or a page read before its transform was recorded — and a message at the top of

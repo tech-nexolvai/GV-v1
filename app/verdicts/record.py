@@ -151,7 +151,7 @@ def record_finding(
                 value_denominator=exact.denominator,
                 unit=_unit_of(operand.value),
                 evidence_status=operand.status.value,
-                canonical_observation_id=None,
+                canonical_observation_id=_observation_id(operand),
             )
         )
 
@@ -212,6 +212,23 @@ def _exact(value: object) -> Fraction | None:
     if isinstance(value, Fraction):
         return value
     return None
+
+
+def _observation_id(operand: VerdictOperand) -> UUID | None:
+    """Return the explicit evidence identity carried across the workflow boundary.
+
+    A reviewer-entered run parameter has no canonical observation and therefore returns ``None``.
+    Evidence-derived operands must carry a real UUID; accepting malformed provenance would create a
+    decisive finding that cannot be traced back to the reading it used.
+    """
+    if operand.evidence_observation_id is None:
+        return None
+    try:
+        return UUID(operand.evidence_observation_id)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise EvidenceMissing(
+            f"operand {operand.name!r} has an invalid canonical observation reference"
+        ) from error
 
 
 def _unit_of(value: object) -> str:

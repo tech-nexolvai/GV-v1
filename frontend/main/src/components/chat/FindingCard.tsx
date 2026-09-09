@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { ChevronDown, ChevronRight, FileSearch, ExternalLink, CheckCircle, XCircle, AlertTriangle, MinusCircle, TriangleAlert } from 'lucide-react';
 import type { Finding } from '../../data/types';
 import { OutcomeBadge, SeverityDot } from '../ui/Badge';
@@ -50,14 +50,7 @@ export function FindingCard({
   const [reason, setReason] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
 
-  useEffect(() => {
-    if (isSelected) {
-      setExpanded(true);
-    }
-  }, [isSelected]);
-
   const Icon = OUTCOME_ICON[finding.outcome];
-  const hasEvidence = finding.arch_evidence || finding.shop_evidence;
   const hasAction = finding.reviewer_action !== null;
 
   return (
@@ -185,17 +178,15 @@ export function FindingCard({
             </div>
 
             <div className="finding-card__actions">
-              {hasEvidence && (
-                <button
-                  className="btn btn--ghost btn--sm finding-card__evidence-btn"
-                  onClick={() => onViewEvidence(finding)}
-                  aria-label="View evidence in PDFs"
-                >
-                  <FileSearch size={12} />
-                  View Evidence
-                  <ExternalLink size={10} />
-                </button>
-              )}
+              <button
+                className="btn btn--ghost btn--sm finding-card__evidence-btn"
+                onClick={() => void onViewEvidence(finding)}
+                aria-label="View recorded evidence crop"
+              >
+                <FileSearch size={12} />
+                View Evidence
+                <ExternalLink size={10} />
+              </button>
 
               {!hasAction && finding.outcome !== 'PASS' && finding.outcome !== 'NO_APPLICABLE_RULE' && (
                 <div className="finding-card__reviewer-actions">

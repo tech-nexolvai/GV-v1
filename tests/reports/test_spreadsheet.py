@@ -33,8 +33,10 @@ from reports.spreadsheet import (
     NOT_RECORDED,
     OPERAND_COLUMNS,
     OPERANDS_SHEET,
+    SUMMARY_SHEET,
     TEXT_FORMAT,
     StoredFinding,
+    WorkbookSignoff,
     exact_text,
     write_stored_workbook,
     write_workbook,
@@ -185,6 +187,31 @@ def test_a_fraction_renders_as_a_fraction() -> None:
 
 def test_a_whole_number_does_not_acquire_a_denominator() -> None:
     assert exact_text(Fraction(6010)) == "6010"
+
+
+def test_summary_is_branded_and_records_only_the_signoff_supplied_to_the_writer() -> None:
+    data = write_stored_workbook(
+        [_stored()],
+        signoff=WorkbookSignoff(
+            approved_by="reviewer@example.com", approved_at="2026-09-09T12:00:00Z"
+        ),
+    )
+    rows = _sheet(data, SUMMARY_SHEET)
+
+    assert rows[0][0] == "GRANITI VICENTIA × NEXOLV"
+    assert rows[1][0] == "SHOP DRAWING REVIEW — HUMAN-OPERATED V1"
+    assert any(row[:2] == ["APPROVED BY", "reviewer@example.com"] for row in rows)
+    assert any(row[:2] == ["APPROVED AT", "2026-09-09T12:00:00Z"] for row in rows)
+
+
+def test_unsigned_summary_does_not_claim_a_reviewer_approved_it() -> None:
+    rows = _sheet(write_stored_workbook([_stored()]), SUMMARY_SHEET)
+
+    assert any(
+        row[:2] == ["STATUS", "AWAITING REVIEWER SIGN-OFF — download remains blocked"]
+        for row in rows
+    )
+    assert any(row[:2] == ["APPROVED BY", "not yet recorded"] for row in rows)
 
 
 # ---------------------------------------------------------------------------

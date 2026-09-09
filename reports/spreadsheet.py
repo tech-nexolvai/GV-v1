@@ -56,7 +56,7 @@ from typing import Final
 # per-import rather than repo-wide, so a genuinely untyped import somewhere else still surfaces.
 from openpyxl import Workbook  # type: ignore[import-untyped]
 from openpyxl.cell.cell import Cell  # type: ignore[import-untyped]
-from openpyxl.styles import Font  # type: ignore[import-untyped]
+from openpyxl.styles import Alignment, Font, PatternFill  # type: ignore[import-untyped]
 from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
 
 from units.measurement import Measurement
@@ -69,9 +69,11 @@ __all__ = [
     "NOT_RECORDED",
     "OPERANDS_SHEET",
     "OPERAND_COLUMNS",
+    "SUMMARY_SHEET",
     "TEXT_FORMAT",
     "UNREADABLE_REFERENCE",
     "StoredFinding",
+    "WorkbookSignoff",
     "exact_text",
     "write_stored_workbook",
     "write_value",
@@ -83,6 +85,11 @@ TEXT_FORMAT: Final = "@"
 
 FINDINGS_SHEET: Final = "Findings"
 OPERANDS_SHEET: Final = "Operands"
+SUMMARY_SHEET: Final = "Review Summary"
+
+_BLACK: Final = "000000"
+_WHITE: Final = "FFFFFF"
+_LIGHT_GRAY: Final = "F4F4F4"
 
 #: Frozen. Downstream consumers index by position, so inserting a column in the middle silently
 #: shifts every one after it — a reader would get tolerances under the severity heading and have no
@@ -286,13 +293,77 @@ def _operand_rows(finding: Finding) -> list[tuple[object, ...]]:
     return rows
 
 
+def _write_summary(
+    workbook: Workbook,
+    findings: Sequence[StoredFinding] | Sequence[Finding],
+    *,
+    signoff: WorkbookSignoff | None,
+) -> None:
+    """Write the human handoff sheet from stored outcome strings, never parsed display values."""
+    sheet = workbook.create_sheet(SUMMARY_SHEET)
+    sheet.sheet_view.showGridLines = False
+    sheet.merge_cells("A1:F1")
+    sheet.merge_cells("A2:F2")
+    title = sheet["A1"]
+    title.value = "GRANITI VICENTIA × NEXOLV"
+    title.font = Font(name="Courier New", bold=True, size=16, color=_WHITE)
+    title.fill = PatternFill("solid", fgColor=_BLACK)
+    title.alignment = Alignment(horizontal="left", vertical="center")
+    title.number_format = TEXT_FORMAT
+    subtitle = sheet["A2"]
+    subtitle.value = "SHOP DRAWING REVIEW — HUMAN-OPERATED V1"
+    subtitle.font = Font(name="Courier New", bold=True, size=11, color=_BLACK)
+    subtitle.alignment = Alignment(horizontal="left")
+    subtitle.number_format = TEXT_FORMAT
+    sheet.row_dimensions[1].height = 30
+    sheet.row_dimensions[2].height = 22
+
+    outcome_counts: dict[str, int] = {}
+    for finding in findings:
+        outcome_counts[finding.outcome] = outcome_counts.get(finding.outcome, 0) + 1
+    summary_rows = (
+        ("REVIEW SUMMARY", ""),
+        ("FINDINGS", str(len(findings))),
+        ("PASS", str(outcome_counts.get("PASS", 0))),
+        ("REVIEW REQUIRED", str(outcome_counts.get("REVIEW_REQUIRED", 0))),
+        ("NOT FOUND", str(outcome_counts.get("NOT_FOUND", 0))),
+        ("FAIL", str(outcome_counts.get("FAIL", 0))),
+        ("REVIEWER SIGN-OFF", ""),
+        (
+            "STATUS",
+            (
+                "SIGNED OFF — report released after approval"
+                if signoff is not None
+                else "AWAITING REVIEWER SIGN-OFF — download remains blocked"
+            ),
+        ),
+        ("APPROVED BY", signoff.approved_by if signoff is not None else "not yet recorded"),
+        ("APPROVED AT", signoff.approved_at if signoff is not None else "not yet recorded"),
+        ("WORKBOOK CONTENTS", "Findings and exact stored operands"),
+    )
+    for row_index, (label, value) in enumerate(summary_rows, start=4):
+        label_cell = sheet.cell(row=row_index, column=1, value=label)
+        label_cell.font = Font(name="Courier New", bold=True, color=_WHITE if not value else _BLACK)
+        label_cell.fill = PatternFill("solid", fgColor=_BLACK if not value else _LIGHT_GRAY)
+        label_cell.number_format = TEXT_FORMAT
+        value_cell = sheet.cell(row=row_index, column=2, value=value)
+        value_cell.font = Font(name="Courier New", color=_BLACK)
+        value_cell.number_format = TEXT_FORMAT
+        value_cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    for column, width in {"A": 26, "B": 55, "C": 18, "D": 18, "E": 18, "F": 18}.items():
+        sheet.column_dimensions[column].width = width
+    sheet.freeze_panes = "A4"
+
+
 def _write_sheet(
     workbook: Workbook, title: str, columns: Sequence[str], rows: Sequence[Sequence[object]]
 ) -> None:
     sheet = workbook.create_sheet(title)
     for index, name in enumerate(columns, start=1):
         heading = sheet.cell(row=1, column=index, value=name)
-        heading.font = Font(bold=True)
+        heading.font = Font(name="Courier New", bold=True, color=_WHITE)
+        heading.fill = PatternFill("solid", fgColor=_BLACK)
         heading.number_format = TEXT_FORMAT
         # Wide enough to read without the reader resizing thirteen columns first. A guess, but a
         # cosmetic one — nothing here depends on it.
@@ -300,7 +371,12 @@ def _write_sheet(
 
     for offset, row in enumerate(rows, start=2):
         for index, value in enumerate(row, start=1):
-            write_value(sheet.cell(row=offset, column=index), value)
+            cell = sheet.cell(row=offset, column=index)
+            write_value(cell, value)
+            cell.font = Font(name="Courier New")
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if offset % 2 == 0:
+                cell.fill = PatternFill("solid", fgColor=_LIGHT_GRAY)
 
     # Headings stay visible while scrolling, and the header row cannot be sorted into the data.
     sheet.freeze_panes = "A2"
@@ -340,6 +416,23 @@ class StoredFinding:
 
     variant: str | None = None
     notes: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkbookSignoff:
+    """An optional immutable approval record for a future publication-specific rendering.
+
+    V1's worker writes the review workbook before approval and the download endpoint enforces the
+    sign-off gate.  Keeping this input explicit means a future publication artifact cannot invent
+    an approver by deriving one from display text.
+    """
+
+    approved_by: str
+    approved_at: str
+
+    def __post_init__(self) -> None:
+        if not self.approved_by.strip() or not self.approved_at.strip():
+            raise ValueError("workbook sign-off requires an approver and recorded time")
 
 
 def _text(value: object) -> str:
@@ -458,7 +551,9 @@ def _stored_operand_rows(finding: StoredFinding) -> list[tuple[object, ...]]:
     return rows
 
 
-def write_stored_workbook(findings: Sequence[StoredFinding]) -> bytes:
+def write_stored_workbook(
+    findings: Sequence[StoredFinding], *, signoff: WorkbookSignoff | None = None
+) -> bytes:
     """The same workbook, built from stored rows instead of engine values.
 
     Same sheets, same columns, same text-cell discipline — `_write_sheet` is shared, so the two
@@ -472,6 +567,7 @@ def write_stored_workbook(findings: Sequence[StoredFinding]) -> bytes:
 
     workbook = Workbook()
     workbook.remove(workbook.active)
+    _write_summary(workbook, findings, signoff=signoff)
     _write_sheet(
         workbook, FINDINGS_SHEET, FINDING_COLUMNS, [_stored_finding_row(f) for f in findings]
     )
@@ -506,6 +602,7 @@ def write_workbook(findings: Sequence[Finding]) -> bytes:
     # A new Workbook comes with one sheet already; both sheets below are created explicitly, so the
     # default would otherwise sit at the front of the file as an empty "Sheet".
     workbook.remove(workbook.active)
+    _write_summary(workbook, findings, signoff=None)
 
     _write_sheet(workbook, FINDINGS_SHEET, FINDING_COLUMNS, [_finding_row(f) for f in findings])
     _write_sheet(

@@ -50,6 +50,22 @@
   gap: 0;
 }
 
+.evidence-panel__state {
+  margin: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  background: var(--bg-base);
+  color: var(--text-body);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.evidence-panel__state--error {
+  color: var(--status-fail);
+  border-color: var(--status-fail-border);
+  background: var(--status-fail-bg);
+}
+
 /* ── No evidence ──────────────────────────────────────────── */
 .evidence-panel__no-evidence {
   flex: 1;
@@ -132,6 +148,40 @@
   font-size: var(--text-xs);
   font-family: var(--font-mono);
   color: var(--text-muted);
+}
+
+/* The crop is the exact stored image for the confirmed candidate. It is intentionally presented
+   without a page-frame overlay or annotation: a crop is evidence of the pixels, not a claim that
+   the system knows where a quantity belongs on the full drawing. */
+.pdf-pane__crop {
+  display: grid;
+  min-height: 148px;
+  place-items: center;
+  margin: var(--space-3) var(--space-4);
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  background: var(--pdf-bg);
+}
+
+.pdf-pane__crop-image {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  image-rendering: auto;
+}
+
+.pdf-pane__crop-state {
+  margin: 0;
+  padding: var(--space-4);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+
+.pdf-pane__crop-state--error {
+  color: var(--status-fail);
 }
 
 /* ── Canvas ───────────────────────────────────────────────── */

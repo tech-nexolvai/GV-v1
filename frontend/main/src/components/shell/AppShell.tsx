@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
-import { FileText } from 'lucide-react';
 import './AppShell.css';
 
 interface AppShellProps {
@@ -12,8 +11,6 @@ interface AppShellProps {
   onSelectSession?: (id: string) => void;
   evidencePanel?: React.ReactNode;
   onNewPackage?: () => void;
-  designStyle: 'stone' | 'ide';
-  onStyleChange: (style: 'stone' | 'ide') => void;
 }
 
 export function AppShell({
@@ -24,8 +21,6 @@ export function AppShell({
   onSelectSession,
   evidencePanel,
   onNewPackage,
-  designStyle,
-  onStyleChange,
 }: AppShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const showEvidencePanel = Boolean(evidencePanel);
@@ -35,8 +30,6 @@ export function AppShell({
       <Topbar
         onToggleSidebar={() => setSidebarCollapsed(c => !c)}
         sidebarCollapsed={sidebarCollapsed}
-        designStyle={designStyle}
-        onStyleChange={onStyleChange}
       />
 
       <div className="shell__body">
@@ -53,12 +46,7 @@ export function AppShell({
           className="shell__main"
           id="main-content"
           onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            const data = e.dataTransfer.getData('text/plain');
-            if (data === 'evidence-panel') {
-              onStyleChange(designStyle === 'stone' ? 'ide' : 'stone');
-            }
-          }}
+          onDrop={(e) => e.preventDefault()}
         >
           {children}
         </main>
@@ -71,12 +59,7 @@ export function AppShell({
           {evidencePanel || (
             <div
               className="evidence-panel-placeholder"
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData('text/plain', 'evidence-panel');
-              }}
               style={{
-                cursor: 'grab',
                 padding: 'var(--space-8)',
                 color: 'var(--text-muted)',
                 fontSize: 'var(--text-sm)',
@@ -88,10 +71,8 @@ export function AppShell({
                 justifyContent: 'center',
                 gap: 'var(--space-3)'
               }}
-              title="Drag drawings panel to swap column positions"
             >
-              <FileText size={28} className="text-muted" style={{ opacity: 0.6 }} />
-              <span>Select a check card to load drawing evidence</span>
+              <span>Select a finding, then open its recorded evidence crop.</span>
             </div>
           )}
         </div>
