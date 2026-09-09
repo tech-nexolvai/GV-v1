@@ -14,7 +14,9 @@ through the same `eval/metrics.py`, so neither has its own idea of what a metric
 
     # A synthetic package, generated here so the tool is runnable today with no client data:
     python scripts/evaluate_goldset.py --make-fixture data/goldset/synthetic-01
-    python scripts/evaluate_goldset.py data/goldset/synthetic-01
+    python scripts/evaluate_goldset.py data/goldset/synthetic-01 \
+      --line-minimum-pt 1 --glyph-maximum-pt 1 --glyph-gap-pt 1 \
+      --proximity-limit 0.1 --ambiguity-margin 0.01
 
 **It is offline and it cannot change a verdict.** It creates a schema of its own, migrates it, runs
 the stages, reads what they wrote, reports, and drops the schema. Nothing it does touches a live
@@ -67,7 +69,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from eval.gold_set.schema import GoldCase, ManifestLoadError
 from eval.gold_set.store import content_hash
 from eval.scorecard import render, score_package
+from extraction.geometry.containment import DimensionExtent
+from extraction.geometry.text_association import lines_within
 from verdict.outcomes import Outcome, Severity
+from workflow.association import AssociationSettings
 
 #: Where a project's reviewed packages live. Git-ignored, because they are client material: the
 #: format and the loader are tracked code and the answers never are (`AGENTS.md` §9).
@@ -86,7 +91,10 @@ def _pdf(text: str, *, box: bytes = b"[0 0 200 100]") -> bytes:
     §9 forbids inventing a *drawing* to tune against, and this invents a document to prove plumbing.
     """
     lines = text.split("|")
-    content = b"".join(
+    # Two explicit dimension lines make the generated package exercise the same association path as
+    # a real drawing. Their y positions map to the centres of the two answer-key boxes at 150 dpi.
+    # These are fixture geometry, not production thresholds and not client-derived dimensions.
+    content = b"1 w 20 66 m 100 66 l S\n1 w 20 36 m 100 36 l S\n" + b"".join(
         f"BT /F1 12 Tf 1 0 0 1 20 {70 - index * 30} Tm ("
         f"{line.replace(chr(92), chr(92) * 2).replace('(', chr(92) + '(').replace(')', chr(92) + ')')}"
         ") Tj ET\n".encode("latin-1")
@@ -259,7 +267,61 @@ def _arguments() -> argparse.Namespace:
         default=150,
         help="the reader's resolution. Stated, because stored coordinates depend on it",
     )
+    parser.add_argument(
+        "--line-minimum-pt",
+        type=Decimal,
+        help="required for evaluation: production annotation line-work threshold in PDF points",
+    )
+    parser.add_argument(
+        "--glyph-maximum-pt",
+        type=Decimal,
+        help="required for evaluation: production outlined-glyph size threshold in PDF points",
+    )
+    parser.add_argument(
+        "--glyph-gap-pt",
+        type=Decimal,
+        help="required for evaluation: production outlined-glyph clustering gap in PDF points",
+    )
+    parser.add_argument(
+        "--proximity-limit",
+        type=Decimal,
+        help=(
+            "required for evaluation: production text-to-line and answer-location proximity in "
+            "stored page units"
+        ),
+    )
+    parser.add_argument(
+        "--ambiguity-margin",
+        type=Decimal,
+        help=(
+            "required for evaluation: production text-to-line abstention margin in stored page "
+            "units"
+        ),
+    )
     return parser.parse_args()
+
+
+def _association_settings(arguments: argparse.Namespace) -> AssociationSettings:
+    """Build the production settings explicitly supplied for this evaluated run.
+
+    The production association types deliberately have no defaults because these values describe
+    how one deployment's drawings are authored. The grader keeps that contract: a missing value is
+    a refused run, never an inline constant chosen to make a score move.
+    """
+    names = (
+        "line_minimum_pt",
+        "glyph_maximum_pt",
+        "glyph_gap_pt",
+        "proximity_limit",
+        "ambiguity_margin",
+    )
+    missing = [name.replace("_", "-") for name in names if getattr(arguments, name) is None]
+    if missing:
+        flags = ", ".join(f"--{name}" for name in missing)
+        raise ValueError(
+            f"association settings are required to measure the production path; missing {flags}"
+        )
+    return AssociationSettings(**{name: getattr(arguments, name) for name in names})
 
 
 @contextmanager
@@ -296,7 +358,14 @@ def _private_schema(database_url: str) -> Iterator[str]:
         admin.dispose()
 
 
-def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: int) -> Any:
+def _run_pipeline(
+    case: GoldCase,
+    directory: Path,
+    database_url: str,
+    *,
+    dpi: int,
+    association: AssociationSettings,
+) -> Any:
     """Put the package's shop drawing through the real stages and return what they wrote.
 
     Imported inside the function so `--make-fixture` and `--help` work without a database or the
@@ -320,7 +389,7 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
         PackageRevisionDocument,
         SourceArtifact,
     )
-    from app.models.evidence import CanonicalObservation, ObservationCandidate
+    from app.models.evidence import CanonicalObservation
     from app.models.package import Package, PackageRevision, PackageState, Project
     from app.models.rules import RuleDefinition
     from app.models.rules import RuleSnapshot as RuleSnapshotRow
@@ -428,7 +497,7 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
             published += 1
         session.commit()
 
-        stages = DatabaseStages(store=store, dpi=dpi)
+        stages = DatabaseStages(store=store, dpi=dpi, association=association)
         stages.extract_pages(session, revision.id)
         session.commit()
 
@@ -444,30 +513,26 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
         # One candidate per answer: a candidate already labelled is not offered again, because a
         # reviewer confirming two different quantities from one reading is not a thing that happens.
         typed = 0
-        candidates = [
-            candidate
-            for candidate in session.execute(
-                select(ObservationCandidate).where(
-                    ObservationCandidate.document_version_id == version.id
-                )
-            ).scalars()
-            # Only readings that carry a value. A bare number was recorded without one deliberately,
-            # and there is nothing for a reviewer to confirm about it.
-            if candidate.value_numerator is not None and candidate.polygon
-        ]
         used: set[UUID] = set()
         for answer in case.ground_truth.observations:
-            nearest = _nearest_candidate(answer, candidates, used)
-            if nearest is None:
+            candidate = _candidate_at_answer(
+                session,
+                answer,
+                document_version_id=version.id,
+                dpi=dpi,
+                proximity_limit=association.proximity_limit,
+                used=used,
+            )
+            if candidate is None:
                 continue
             result = confirm_candidate_type(
                 session,
-                candidate_id=nearest.id,
+                candidate_id=candidate.id,
                 semantic_type=answer.semantic_type.value,
                 confirmed_by="offline-grader",
             )
             if isinstance(result, CanonicalObservation):
-                used.add(nearest.id)
+                used.add(candidate.id)
                 typed += 1
         session.commit()
 
@@ -506,33 +571,137 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
         return findings, observations, typed, published, session
 
 
-def _nearest_candidate(answer: Any, candidates: Any, used: set[UUID]) -> Any:
-    """The unlabelled candidate whose box centre is nearest this answer's, or `None`.
+@dataclass(frozen=True, slots=True)
+class AssociatedCandidate:
+    """One extracted reading and the production-associated line it annotates."""
 
-    Distances are compared **squared**, so no square root and no float decides which reading gets a
-    reviewer's label — the same reason `extraction/geometry/text_association.py` keeps its distances
-    squared. Both boxes are in image pixels: a candidate's `polygon` column is image space by
-    construction, and `GoldObservation.polygon` is how an annotator boxed the region.
+    candidate: Any
+    page_index: int
+    line: DimensionExtent
 
-    No proximity limit. This is a grader with a stated answer per reading, not the association step
-    deciding which line a number belongs to — there is nothing here to abstain in favour of, and an
-    answer left unpaired is reported as a reading the system did not make.
+
+def _candidate_for_answer(
+    answer: Any,
+    answer_region: Any,
+    candidates: list[AssociatedCandidate],
+    *,
+    proximity_limit: Decimal,
+    used: set[UUID],
+) -> Any | None:
+    """Return one unambiguous, production-associated reading at the answer location.
+
+    Page identity is checked before any geometry is compared. The production proximity helper then
+    finds associated lines near the answer region. Zero lines means the reader made no comparable
+    reading; more than one line, or more than one reading attached to the sole line, is ambiguous.
+    Every one of those cases abstains. There is deliberately no nearest-centre fallback.
     """
-    left, top, right, bottom = answer.polygon
-    target = ((left + right) / 2, (top + bottom) / 2)
+    same_page = [
+        entry
+        for entry in candidates
+        if entry.page_index == answer.page - 1 and entry.candidate.id not in used
+    ]
+    if not same_page:
+        return None
 
-    best = None
-    best_distance = None
-    for candidate in candidates:
-        if candidate.id in used:
-            continue
-        xs = [int(point[0]) for point in candidate.polygon]
-        ys = [int(point[1]) for point in candidate.polygon]
-        centre = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
-        distance = (centre[0] - target[0]) ** 2 + (centre[1] - target[1]) ** 2
-        if best_distance is None or distance < best_distance:
-            best, best_distance = candidate, distance
-    return best
+    by_line: dict[DimensionExtent, list[Any]] = {}
+    for entry in same_page:
+        by_line.setdefault(entry.line, []).append(entry.candidate)
+    nearby = lines_within(
+        answer_region,
+        tuple(by_line),
+        proximity_limit=proximity_limit,
+    )
+    if len(nearby) != 1:
+        return None
+    readings = by_line[nearby[0]]
+    return readings[0] if len(readings) == 1 else None
+
+
+def _candidate_at_answer(
+    session: Any,
+    answer: Any,
+    *,
+    document_version_id: UUID,
+    dpi: int,
+    proximity_limit: Decimal,
+    used: set[UUID],
+) -> Any | None:
+    """Load page-scoped production associations and locate one reading, or abstain."""
+    from sqlalchemy import select
+
+    from app.models.document import Page
+    from app.models.evidence import ObservationAssociation, ObservationCandidate
+    from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
+    from evidence.polygon import Polygon
+
+    page = session.execute(
+        select(Page).where(
+            Page.document_version_id == document_version_id,
+            Page.index == answer.page - 1,
+        )
+    ).scalar_one_or_none()
+    if page is None or page.media_box is None or page.crop_box is None:
+        return None
+    media = [Decimal(value) for value in page.media_box]
+    crop = [Decimal(value) for value in page.crop_box]
+    if len(media) != 4 or len(crop) != 4:
+        return None
+    transform = PageTransform(
+        dpi=dpi,
+        rotation=page.rotation,
+        media_box=(media[0], media[1], media[2], media[3]),
+        crop_box=(crop[0], crop[1], crop[2], crop[3]),
+    )
+    left, top, right, bottom = answer.polygon
+    answer_region = Polygon(
+        points=tuple(
+            transform.to_stored(point)
+            for point in (
+                ImagePoint(left, top),
+                ImagePoint(right, top),
+                ImagePoint(right, bottom),
+                ImagePoint(left, bottom),
+            )
+        ),
+        space="stored",
+        document_version_id=document_version_id,
+        page=page.index,
+    )
+
+    rows = session.execute(
+        select(ObservationCandidate, ObservationAssociation)
+        .join(
+            ObservationAssociation,
+            ObservationAssociation.candidate_id == ObservationCandidate.id,
+        )
+        .where(
+            ObservationCandidate.document_version_id == document_version_id,
+            ObservationCandidate.page_id == page.id,
+            ObservationCandidate.value_numerator.isnot(None),
+            ObservationAssociation.refusal_reason.is_(None),
+        )
+    ).all()
+    associated = [
+        AssociatedCandidate(
+            candidate=candidate,
+            page_index=page.index,
+            line=DimensionExtent(
+                start=StoredPoint(Decimal(row.start_x), Decimal(row.start_y)),
+                end=StoredPoint(Decimal(row.end_x), Decimal(row.end_y)),
+                document_version_id=document_version_id,
+                page=page.index,
+            ),
+        )
+        for candidate, row in rows
+        if None not in (row.start_x, row.start_y, row.end_x, row.end_y)
+    ]
+    return _candidate_for_answer(
+        answer,
+        answer_region,
+        associated,
+        proximity_limit=proximity_limit,
+        used=used,
+    )
 
 
 def main() -> int:
@@ -542,7 +711,11 @@ def main() -> int:
         written = make_fixture(arguments.make_fixture)
         print(f"wrote a synthetic package to {written}")
         print(f"  {written / ANSWER_KEY} — the answer key, in the documented format")
-        print("  run it:  python scripts/evaluate_goldset.py " + str(written))
+        print(
+            "  run it:  python scripts/evaluate_goldset.py "
+            f"{written} --line-minimum-pt 1 --glyph-maximum-pt 1 --glyph-gap-pt 1 "
+            "--proximity-limit 0.1 --ambiguity-margin 0.01"
+        )
         return 0
 
     if arguments.package is None:
@@ -566,11 +739,21 @@ def main() -> int:
         print(f"the package was refused: {refused}", file=sys.stderr)
         return 2
 
+    try:
+        association = _association_settings(arguments)
+    except ValueError as refused:
+        print(f"the package was refused: {refused}", file=sys.stderr)
+        return 2
+
     # Scoring happens inside the `with`: `_as_gold` reads the page transform back out of the rows
     # the run wrote, so the schema has to outlive the pipeline call itself.
     with _private_schema(database_url) as scoped_url:
         findings, observations, typed, published, session = _run_pipeline(
-            case, arguments.package, scoped_url, dpi=arguments.dpi
+            case,
+            arguments.package,
+            scoped_url,
+            dpi=arguments.dpi,
+            association=association,
         )
         print(
             f"ran the pipeline: {published} rule(s) published, {typed} answer-key label(s) "
