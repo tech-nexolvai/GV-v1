@@ -90,6 +90,20 @@ def test_a_deliverable_records_what_was_produced(session: Session) -> None:
     assert stored.findings == 8
 
 
+def test_the_new_pdf_kind_is_accepted_only_because_the_code_produces_it(session: Session) -> None:
+    revision = _revision(session)
+    session.add(
+        _artifact(
+            revision,
+            kind=OutputArtifactKind.FINDINGS_PDF.value,
+            storage_key=f"outputs/{revision.id}/report.pdf",
+            media_type="application/pdf",
+        )
+    )
+
+    session.flush()
+
+
 def test_a_kind_the_code_cannot_produce_is_refused(session: Session) -> None:
     """`redline` is the one somebody will try, and it is exactly the one to refuse.
 

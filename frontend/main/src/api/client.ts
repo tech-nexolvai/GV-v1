@@ -439,6 +439,30 @@ export async function downloadReport(
   return response.blob();
 }
 
+/** The branded PDF counterpart to the workbook, generated from the same stored findings. */
+export async function downloadPdfReport(
+  projectId: string,
+  packageId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/report.pdf`,
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The PDF could not be downloaded (HTTP ${response.status}).`,
+        request_id: '',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
 /**
  * The immutable crop mechanically cut around a confirmed reading.
  *

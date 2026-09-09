@@ -26,12 +26,14 @@ from uuid import uuid4
 
 import pytest
 from openpyxl import load_workbook
+from pypdf import PdfReader
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from alembic import command
 from app.db.session import session_factory
 from app.models import OutputArtifact, OutputArtifactKind
+from reports.findings_pdf import FINDINGS_PDF_MEDIA_TYPE
 from reports.spreadsheet import (
     FINDING_COLUMNS,
     FINDINGS_SHEET,
@@ -61,6 +63,7 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 #: The first bytes of any `.xlsx`. A workbook is a zip archive, so this is what "a real file rather
 #: than a row claiming one" looks like from outside openpyxl.
 ZIP_SIGNATURE = b"PK\x03\x04"
+PDF_SIGNATURE = b"%PDF-"
 
 
 def _upgrade(engine: Engine) -> None:
@@ -107,6 +110,15 @@ def _artifacts(session: Session, revision_id) -> list[OutputArtifact]:
     )
 
 
+def _artifact(session: Session, revision_id, kind: OutputArtifactKind) -> OutputArtifact:
+    return session.execute(
+        select(OutputArtifact).where(
+            OutputArtifact.package_revision_id == revision_id,
+            OutputArtifact.kind == kind.value,
+        )
+    ).scalar_one()
+
+
 def _sheet(store: LocalStore, artifact: OutputArtifact, name: str):
     workbook = load_workbook(BytesIO(store.get(artifact.storage_key).read()))
     return workbook[name]
@@ -147,7 +159,7 @@ class _BrokenLanguageModel:
 # ---------------------------------------------------------------------------
 
 
-def test_a_reviewed_package_yields_a_persisted_findings_workbook(
+def test_a_reviewed_package_yields_a_persisted_workbook_and_branded_pdf(
     session: Session, store: LocalStore
 ) -> None:
     """The acceptance criterion: checks in, a deliverable out, recorded in the database.
@@ -162,19 +174,32 @@ def test_a_reviewed_package_yields_a_persisted_findings_workbook(
 
     assert result["implemented"] is True
     assert result["ran"] is True
-    assert result["outputs"] == 1
+    assert result["outputs"] == 2
     assert result["findings"] == live
 
     artifacts = _artifacts(session, revision.id)
-    assert len(artifacts) == 1
-    artifact = artifacts[0]
-    assert artifact.kind == OutputArtifactKind.FINDINGS_WORKBOOK.value
-    assert artifact.media_type == WORKBOOK_MEDIA_TYPE
-    assert artifact.findings == live
+    assert {artifact.kind for artifact in artifacts} == {
+        OutputArtifactKind.FINDINGS_WORKBOOK.value,
+        OutputArtifactKind.FINDINGS_PDF.value,
+    }
+    workbook = _artifact(session, revision.id, OutputArtifactKind.FINDINGS_WORKBOOK)
+    assert workbook.media_type == WORKBOOK_MEDIA_TYPE
+    assert workbook.findings == live
+    workbook_bytes = store.get(workbook.storage_key).read()
+    assert workbook_bytes.startswith(ZIP_SIGNATURE), "the stored bytes are not a workbook"
+    assert workbook.sha256 == hashlib.sha256(workbook_bytes).hexdigest()
 
-    content = store.get(artifact.storage_key).read()
-    assert content.startswith(ZIP_SIGNATURE), "the stored bytes are not a workbook"
-    assert artifact.sha256 == hashlib.sha256(content).hexdigest()
+    report = _artifact(session, revision.id, OutputArtifactKind.FINDINGS_PDF)
+    assert report.media_type == FINDINGS_PDF_MEDIA_TYPE
+    assert report.findings == live
+    report_bytes = store.get(report.storage_key).read()
+    assert report_bytes.startswith(PDF_SIGNATURE), "the stored bytes are not a PDF"
+    assert report.sha256 == hashlib.sha256(report_bytes).hexdigest()
+    report_text = "\n".join(
+        page.extract_text() or "" for page in PdfReader(BytesIO(report_bytes)).pages
+    )
+    assert "GRANITI + NEXOLV" in report_text
+    assert "CT-DEPTH-001" in report_text
 
 
 def test_composed_findings_are_wired_1_to_1_into_the_end_to_end_workbook(
@@ -199,7 +224,11 @@ def test_composed_findings_are_wired_1_to_1_into_the_end_to_end_workbook(
         "prompt_id": "findings-composer-v1",
         "template_id": "deterministic-findings-v1",
     }
-    sheet = _sheet(store, _artifacts(session, revision.id)[0], FINDINGS_SHEET)
+    sheet = _sheet(
+        store,
+        _artifact(session, revision.id, OutputArtifactKind.FINDINGS_WORKBOOK),
+        FINDINGS_SHEET,
+    )
     summary_column = FINDING_COLUMNS.index("reviewer_summary") + 1
     for row in range(2, sheet.max_row + 1):
         check = sheet.cell(row=row, column=FINDING_COLUMNS.index("check") + 1).value
@@ -223,8 +252,12 @@ def test_a_failed_provider_still_yields_the_complete_deterministic_workbook(
     assert isinstance(composition, dict)
     assert composition["mode"] == "structured_fallback"
     assert "TimeoutError" in str(composition["fallback_reason"])
-    assert result["outputs"] == 1
-    sheet = _sheet(store, _artifacts(session, revision.id)[0], FINDINGS_SHEET)
+    assert result["outputs"] == 2
+    sheet = _sheet(
+        store,
+        _artifact(session, revision.id, OutputArtifactKind.FINDINGS_WORKBOOK),
+        FINDINGS_SHEET,
+    )
     assert sheet.max_row == len(_live_findings(session, revision.id)) + 1
     summary_column = FINDING_COLUMNS.index("reviewer_summary") + 1
     for row in range(2, sheet.max_row + 1):
@@ -247,7 +280,11 @@ def test_the_workbook_has_a_row_for_every_live_finding(session: Session, store: 
     live = _live_findings(session, revision.id)
     DatabaseStages(store).generate_outputs(session, revision.id)
 
-    sheet = _sheet(store, _artifacts(session, revision.id)[0], FINDINGS_SHEET)
+    sheet = _sheet(
+        store,
+        _artifact(session, revision.id, OutputArtifactKind.FINDINGS_WORKBOOK),
+        FINDINGS_SHEET,
+    )
 
     assert sheet.max_row == len(live) + 1, "one heading row plus one row per finding"
     assert [cell.value for cell in sheet[1]] == list(FINDING_COLUMNS)
@@ -266,7 +303,7 @@ def test_a_decision_carries_its_comparison_and_operands_into_the_file(
     """
     revision = _checked(session, store)
     DatabaseStages(store).generate_outputs(session, revision.id)
-    artifact = _artifacts(session, revision.id)[0]
+    artifact = _artifact(session, revision.id, OutputArtifactKind.FINDINGS_WORKBOOK)
 
     findings = _sheet(store, artifact, FINDINGS_SHEET)
     rows = {
@@ -298,7 +335,11 @@ def test_every_value_is_written_as_text(session: Session, store: LocalStore) -> 
     """
     revision = _checked(session, store)
     DatabaseStages(store).generate_outputs(session, revision.id)
-    sheet = _sheet(store, _artifacts(session, revision.id)[0], FINDINGS_SHEET)
+    sheet = _sheet(
+        store,
+        _artifact(session, revision.id, OutputArtifactKind.FINDINGS_WORKBOOK),
+        FINDINGS_SHEET,
+    )
 
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
@@ -318,7 +359,11 @@ def test_a_decision_carries_its_reason_into_the_workbook(
     """
     revision = _checked(session, store)
     DatabaseStages(store).generate_outputs(session, revision.id)
-    sheet = _sheet(store, _artifacts(session, revision.id)[0], FINDINGS_SHEET)
+    sheet = _sheet(
+        store,
+        _artifact(session, revision.id, OutputArtifactKind.FINDINGS_WORKBOOK),
+        FINDINGS_SHEET,
+    )
 
     reasons = {
         sheet.cell(row=index, column=1)
@@ -357,13 +402,13 @@ def test_a_superseded_run_is_left_out_of_the_workbook(session: Session, store: L
         result["findings"] == live
     ), "the workbook counted superseded findings as well as live ones"
     total = session.execute(select(func.count()).select_from(OutputArtifact)).scalar_one()
-    assert total == 1
+    assert total == 2
 
 
 def test_no_redline_is_produced_and_the_vocabulary_has_no_word_for_one(
     session: Session, store: LocalStore
 ) -> None:
-    """**The hard stop.** Summary output only, and the schema cannot express anything else.
+    """**The hard stop.** Textual handoffs only; the schema cannot express a redline.
 
     An annotated drawing needs each finding tied to the region of the sheet it is about, which needs
     a candidate to have a meaning — and candidates are deliberately untyped until the real drawings
@@ -379,8 +424,12 @@ def test_no_redline_is_produced_and_the_vocabulary_has_no_word_for_one(
 
     kinds = {artifact.kind for artifact in _artifacts(session, revision.id)}
 
-    assert kinds == {OutputArtifactKind.FINDINGS_WORKBOOK.value}
-    assert [member.value for member in OutputArtifactKind] == ["findings_workbook"]
+    assert kinds == {
+        OutputArtifactKind.FINDINGS_WORKBOOK.value,
+        OutputArtifactKind.FINDINGS_PDF.value,
+    }
+    assert [member.value for member in OutputArtifactKind] == ["findings_workbook", "findings_pdf"]
+    assert "redline" not in {member.value for member in OutputArtifactKind}
 
 
 def test_a_revision_with_no_findings_produces_no_file(session: Session, store: LocalStore) -> None:
@@ -413,10 +462,10 @@ def test_regenerating_an_unchanged_revision_records_one_deliverable(
 
     second = DatabaseStages(store).generate_outputs(session, revision.id)
 
-    assert first["outputs"] == 1
+    assert first["outputs"] == 2
     assert second["outputs"] == 0
     assert second["already_recorded"] is True
-    assert len(_artifacts(session, revision.id)) == 1
+    assert len(_artifacts(session, revision.id)) == 2
 
 
 def test_without_a_store_it_says_so_rather_than_claiming_it_ran(session: Session) -> None:

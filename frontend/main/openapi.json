@@ -3666,7 +3666,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/report": {
       "get": {
-        "description": "The findings workbook for this revision, once somebody has signed for it.\n\n**Approval is the gate, not the file's existence.** `generate_outputs` writes the workbook as soon\nas the checks have run, which is before anybody has read a finding. Serving it then would let a\nreview leave in a state nobody signed for, which is what ADR-0010 forbids \u2014 no computed dimension\nreaches a vendor without reviewer sign-off.\n\nThe bytes are streamed from the artifact store rather than rebuilt. Regenerating on download would\nproduce a file that could differ from the one the approval covers, and the approval is the record\nof what was agreed.",
+        "description": "The signed-off workbook: the tabular audit handoff.",
         "operationId": "download_report_api_v1_projects__project_id__packages__package_id__report_get",
         "parameters": [
           {
@@ -3706,6 +3706,53 @@
           }
         },
         "summary": "Download the signed-off review as a workbook",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/report.pdf": {
+      "get": {
+        "description": "The branded signed-off PDF: the readable reviewer handoff.",
+        "operationId": "download_pdf_report_api_v1_projects__project_id__packages__package_id__report_pdf_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download the signed-off review as a PDF",
         "tags": [
           "approvals"
         ]
