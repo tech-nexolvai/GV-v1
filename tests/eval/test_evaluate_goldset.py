@@ -229,7 +229,7 @@ def test_the_extraction_stage_never_receives_the_reviewer_answer(
     url = postgres_engine.url.render_as_string(hide_password=False)
 
     with _private_schema(url) as scoped_url:
-        *_, stripped, session = _run_pipeline(
+        result = _run_pipeline(
             case,
             directory,
             scoped_url,
@@ -237,10 +237,10 @@ def test_the_extraction_stage_never_receives_the_reviewer_answer(
             association=association,
             vendor_stamps_only=True,
         )
-        candidates = list(session.scalars(select(ObservationCandidate)))
-        session.close()
+        candidates = list(result.session.scalars(select(ObservationCandidate)))
+        result.session.close()
 
-    assert stripped == 1
+    assert result.stripped_annotations == 1
     assert any("25.5" in candidate.raw_text for candidate in candidates)
     assert all("99" not in candidate.raw_text for candidate in candidates)
     assert all(candidate.source_author is None for candidate in candidates)

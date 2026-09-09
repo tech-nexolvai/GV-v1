@@ -67,8 +67,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
+
+from pydantic import BaseModel, ConfigDict
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+    from app.models.evidence import CanonicalObservation
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -285,7 +292,24 @@ def load_package(directory: Path) -> GoldCase:
     return case
 
 
-def _arguments() -> argparse.Namespace:
+class Arguments(BaseModel):
+    """Validated command-line boundary for one offline evaluation run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    package: Path | None
+    make_fixture: Path | None
+    database_url: str | None
+    dpi: int
+    vendor_stamps_only: bool
+    line_minimum_pt: Decimal | None
+    glyph_maximum_pt: Decimal | None
+    glyph_gap_pt: Decimal | None
+    proximity_limit: Decimal | None
+    ambiguity_margin: Decimal | None
+
+
+def _arguments() -> Arguments:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "package",
@@ -348,30 +372,41 @@ def _arguments() -> argparse.Namespace:
             "units"
         ),
     )
-    return parser.parse_args()
+    return Arguments.model_validate(vars(parser.parse_args()))
 
 
-def _association_settings(arguments: argparse.Namespace) -> AssociationSettings:
+def _association_settings(arguments: Arguments) -> AssociationSettings:
     """Build the production settings explicitly supplied for this evaluated run.
 
     The production association types deliberately have no defaults because these values describe
     how one deployment's drawings are authored. The grader keeps that contract: a missing value is
     a refused run, never an inline constant chosen to make a score move.
     """
-    names = (
-        "line_minimum_pt",
-        "glyph_maximum_pt",
-        "glyph_gap_pt",
-        "proximity_limit",
-        "ambiguity_margin",
-    )
-    missing = [name.replace("_", "-") for name in names if getattr(arguments, name) is None]
+    supplied = {
+        "line-minimum-pt": arguments.line_minimum_pt,
+        "glyph-maximum-pt": arguments.glyph_maximum_pt,
+        "glyph-gap-pt": arguments.glyph_gap_pt,
+        "proximity-limit": arguments.proximity_limit,
+        "ambiguity-margin": arguments.ambiguity_margin,
+    }
+    missing = [name for name, value in supplied.items() if value is None]
     if missing:
         flags = ", ".join(f"--{name}" for name in missing)
         raise ValueError(
             f"association settings are required to measure the production path; missing {flags}"
         )
-    return AssociationSettings(**{name: getattr(arguments, name) for name in names})
+    assert arguments.line_minimum_pt is not None
+    assert arguments.glyph_maximum_pt is not None
+    assert arguments.glyph_gap_pt is not None
+    assert arguments.proximity_limit is not None
+    assert arguments.ambiguity_margin is not None
+    return AssociationSettings(
+        line_minimum_pt=arguments.line_minimum_pt,
+        glyph_maximum_pt=arguments.glyph_maximum_pt,
+        glyph_gap_pt=arguments.glyph_gap_pt,
+        proximity_limit=arguments.proximity_limit,
+        ambiguity_margin=arguments.ambiguity_margin,
+    )
 
 
 @contextmanager
@@ -408,6 +443,28 @@ def _private_schema(database_url: str) -> Iterator[str]:
         admin.dispose()
 
 
+@dataclass(frozen=True, slots=True)
+class StoredFinding:
+    """One stored finding reduced to exactly the fields the scorecard reads."""
+
+    rule_id: str
+    outcome: Outcome
+    severity: Severity
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineResult:
+    """Typed outputs from the grader's production-stage run."""
+
+    findings: list[StoredFinding]
+    observations: list[CanonicalObservation]
+    typed: int
+    published: int
+    stripped_annotations: int
+    session: Session
+
+
 def _run_pipeline(
     case: GoldCase,
     directory: Path,
@@ -416,7 +473,7 @@ def _run_pipeline(
     dpi: int,
     association: AssociationSettings,
     vendor_stamps_only: bool,
-) -> Any:
+) -> PipelineResult:
     """Put the package's shop drawing through the real stages and return what they wrote.
 
     Imported inside the function so `--make-fixture` and `--help` work without a database or the
@@ -598,7 +655,7 @@ def _run_pipeline(
         # `check_run`, which names the published snapshot, which names the rule definition — the same
         # join `app/api/findings.py` makes. Reading a `rule_id` attribute off the row would be
         # inventing a column, and the answer key pairs its expectations on that id.
-        findings = list(
+        finding_rows = list(
             session.execute(
                 select(
                     RuleDefinition.rule_id,
@@ -616,6 +673,7 @@ def _run_pipeline(
                 .where(FindingRow.package_revision_id == revision.id)
             ).all()
         )
+        findings = _as_domain(finding_rows)
         observations = list(
             session.execute(
                 select(CanonicalObservation).where(
@@ -623,7 +681,14 @@ def _run_pipeline(
                 )
             ).scalars()
         )
-        return findings, observations, typed, published, stripped_annotations, session
+        return PipelineResult(
+            findings=findings,
+            observations=observations,
+            typed=typed,
+            published=published,
+            stripped_annotations=stripped_annotations,
+            session=session,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -803,7 +868,7 @@ def main() -> int:
     # Scoring happens inside the `with`: `_as_gold` reads the page transform back out of the rows
     # the run wrote, so the schema has to outlive the pipeline call itself.
     with _private_schema(database_url) as scoped_url:
-        findings, observations, typed, published, stripped_annotations, session = _run_pipeline(
+        result = _run_pipeline(
             case,
             arguments.package,
             scoped_url,
@@ -812,44 +877,31 @@ def main() -> int:
             vendor_stamps_only=arguments.vendor_stamps_only,
         )
         print(
-            f"ran the pipeline: {published} rule(s) published, {typed} answer-key label(s) "
-            f"applied, {len(observations)} confirmed observation(s), {len(findings)} finding(s)\n"
+            f"ran the pipeline: {result.published} rule(s) published, "
+            f"{result.typed} answer-key label(s) applied, "
+            f"{len(result.observations)} confirmed observation(s), "
+            f"{len(result.findings)} finding(s)\n"
         )
         if arguments.vendor_stamps_only:
             print(
                 "reader input: vendor stamp annotations only; "
-                f"{stripped_annotations} non-stamp annotation(s) removed in memory\n"
+                f"{result.stripped_annotations} non-stamp annotation(s) removed in memory\n"
             )
         else:
             print("reader input: source drawing unchanged; 0 annotations removed\n")
         scorecard = score_package(
-            case, _as_domain(findings), observations=_as_gold(session, observations, case)
+            case,
+            result.findings,
+            observations=_as_gold(result.session, result.observations, case),
         )
-        session.close()
+        result.session.close()
     print(render(scorecard))
     # Exit 1 on a critical false PASS — the one result that must stop something. Every other number
     # is information; this one is the ship gate.
     return 1 if scorecard.critical_false_passes else 0
 
 
-@dataclass(frozen=True, slots=True)
-class StoredFinding:
-    """One finding as the database holds it, carrying exactly what scoring reads.
-
-    Not a `verdict.finding.Finding`: that type refuses to exist without a `CalculationTrace` for any
-    non-abstention, and the stored trace is JSON with no inverse. Building one would mean inventing
-    operands and a comparison this code never performed — fabricating a calculation to satisfy a
-    type whose whole purpose is to prevent fabricated calculations. `eval.scorecard.ScoredFinding`
-    states the three fields the metrics read, and this satisfies it honestly.
-    """
-
-    rule_id: str
-    outcome: Outcome
-    severity: Severity
-    reason: str
-
-
-def _as_domain(rows: Any) -> Any:
+def _as_domain(rows: list[Any]) -> list[StoredFinding]:
     """Stored finding rows in the shape the scorer reads.
 
     The rule id, version and engine version came off the joined query rather than off the finding
