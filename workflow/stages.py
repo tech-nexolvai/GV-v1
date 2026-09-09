@@ -90,7 +90,7 @@ from extraction.manifest import build_manifest
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, read_page
 from extraction.rasterise import PageTooLarge, render_page
 from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
-from reports.spreadsheet import StoredFinding, write_stored_workbook
+from reports.spreadsheet import StoredFinding, decode_reference, write_stored_workbook
 from retrieval.identifiers import NormalizedIdentifier, normalize_identifier
 from retrieval.matching import MatchableItem, MatchDocumentRole, exact_match
 from rules.applicability import Abstention, CheckContext, resolve
@@ -1520,17 +1520,8 @@ def _composer_evidence_page(reference: object) -> str | None:
     """A human page number for narration, without document ids or hash fragments."""
     if not isinstance(reference, str) or not reference:
         return None
-    try:
-        decoded = json.loads(reference)
-        page = decoded["page"]
-        document = decoded["document_version_id"]
-    except (ValueError, TypeError, KeyError):
-        return None
-    if isinstance(page, bool) or not isinstance(page, int) or page < 0:
-        return None
-    if not isinstance(document, str) or not document.strip():
-        return None
-    return str(page + 1)
+    decoded = decode_reference(reference)
+    return None if decoded is None else decoded[0]
 
 
 def _composer_operands(trace: Mapping[str, object]) -> tuple[ComposerOperand, ...]:

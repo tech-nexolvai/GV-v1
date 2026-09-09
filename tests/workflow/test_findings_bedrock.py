@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
+import pytest
+
 from extraction.models.nova import NovaConfig
-from workflow.findings_bedrock import TOOL_NAME, BedrockFindingsComposer
+from workflow.findings_bedrock import (
+    TOOL_NAME,
+    BedrockFindingsComposer,
+    FindingsBedrockError,
+    configured_findings_composer,
+)
 from workflow.findings_composer import ComposerFinding
 
 
@@ -50,8 +58,8 @@ def _finding() -> ComposerFinding:
     )
 
 
-def test_the_configured_model_and_forced_tool_are_used_without_free_text() -> None:
-    response = {
+def _response() -> dict[str, object]:
+    return {
         "stopReason": "tool_use",
         "output": {
             "message": {
@@ -76,7 +84,10 @@ def test_the_configured_model_and_forced_tool_are_used_without_free_text() -> No
             }
         },
     }
-    client = _Client(response)
+
+
+def test_the_configured_model_and_forced_tool_are_used_without_free_text() -> None:
+    client = _Client(_response())
 
     result = BedrockFindingsComposer(_config(), client).compose((_finding(),))
 
@@ -91,3 +102,47 @@ def test_the_configured_model_and_forced_tool_are_used_without_free_text() -> No
     messages = request["messages"]
     assert isinstance(messages, list)
     assert all("text" in block for block in messages[0]["content"])
+
+
+def test_model_text_beside_the_tool_call_is_rejected() -> None:
+    response = _response()
+    output = response["output"]
+    assert isinstance(output, dict)
+    message = output["message"]
+    assert isinstance(message, dict)
+    content = message["content"]
+    assert isinstance(content, list)
+    content.append({"text": "unstructured model prose"})
+
+    with pytest.raises(FindingsBedrockError) as raised:
+        BedrockFindingsComposer(_config(), _Client(response)).compose((_finding(),))
+    assert raised.value.__cause__ is not None
+    assert "exactly one findings tool call" in str(raised.value.__cause__)
+
+
+def test_transport_honours_the_configured_total_attempt_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def client_factory(service: str, **kwargs: object) -> _Client:
+        captured["service"] = service
+        captured.update(kwargs)
+        return _Client(_response())
+
+    monkeypatch.setattr("boto3.client", client_factory)
+    composer = BedrockFindingsComposer.from_environment(replace(_config(), max_attempts=3))
+
+    composer.compose((_finding(),))
+
+    assert captured["service"] == "bedrock-runtime"
+    transport = captured["config"]
+    assert transport.retries == {"total_max_attempts": 3, "mode": "standard"}  # type: ignore[attr-defined]
+
+
+def test_invalid_optional_timeout_configuration_disables_only_narration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GV_BEDROCK_CONNECT_TIMEOUT", "not-a-number")
+
+    assert configured_findings_composer() is None

@@ -121,6 +121,32 @@ def test_an_omitted_number_in_model_prose_falls_back() -> None:
     assert "omitted deterministic fact" in str(result.fallback_reason)
 
 
+def test_an_omitted_numeric_token_reaches_the_numeric_guard() -> None:
+    finding = _finding()
+    proposed = _faithful(finding)
+    changed = ProposedNarrative(
+        finding_key=finding.key,
+        text=proposed.text.replace(" on evidence page 3", "").replace(
+            "Evidence pages: 3.", "Evidence pages were recorded."
+        ),
+    )
+
+    result = compose_findings((finding,), _StaticModel((changed,)))
+
+    assert result.mode is CompositionMode.FALLBACK
+    assert "omitted numeric token" in str(result.fallback_reason)
+
+
+def test_a_duplicate_composed_finding_key_rejects_the_batch() -> None:
+    finding = _finding()
+    proposed = _faithful(finding)
+
+    result = compose_findings((finding,), _StaticModel((proposed, proposed)))
+
+    assert result.mode is CompositionMode.FALLBACK
+    assert "duplicate composed finding" in str(result.fallback_reason)
+
+
 def test_a_non_numeric_reason_cannot_be_dropped() -> None:
     finding = _finding()
     proposed = _faithful(finding)

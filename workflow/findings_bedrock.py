@@ -8,6 +8,7 @@ causes output generation to use the structured fallback.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, cast
 
@@ -25,6 +26,8 @@ from workflow.findings_composer import (
 )
 
 __all__ = ["BedrockFindingsComposer", "configured_findings_composer"]
+
+logger = logging.getLogger("gv.workflow.findings_bedrock")
 
 TOOL_NAME: Final = "compose_review_findings"
 PROMPT_ID: Final = "findings-composer-v1"
@@ -76,7 +79,7 @@ class BedrockFindingsComposer:
         transport = Config(
             connect_timeout=self._config.connect_timeout_seconds,
             read_timeout=self._config.read_timeout_seconds,
-            retries={"max_attempts": 1, "mode": "standard"},
+            retries={"total_max_attempts": self._config.max_attempts, "mode": "standard"},
         )
         client = boto3.client(
             "bedrock-runtime", region_name=self._config.region_name, config=transport
@@ -163,7 +166,18 @@ class BedrockFindingsComposer:
         return NarrativeBatch.model_validate(tool_call.get("input"), strict=True)
 
 
-def configured_findings_composer() -> BedrockFindingsComposer:
-    """Use the project's existing provider configuration and centrally configured model id."""
-    config = config_from_environment(prompt_id=PROMPT_ID, template_id=TEMPLATE_ID)
+def configured_findings_composer() -> BedrockFindingsComposer | None:
+    """Use project configuration, or disable narration when its bounds are malformed.
+
+    A typo in an optional model timeout must not stop the worker that produces deterministic
+    verdicts. The stage receives ``None`` and records its ordinary structured-fallback reason.
+    """
+    try:
+        config = config_from_environment(prompt_id=PROMPT_ID, template_id=TEMPLATE_ID)
+    except (TypeError, ValueError) as error:
+        logger.warning(
+            "findings composition disabled because Bedrock configuration is invalid (%s)",
+            type(error).__name__,
+        )
+        return None
     return BedrockFindingsComposer.from_environment(config)

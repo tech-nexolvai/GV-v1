@@ -134,6 +134,14 @@ class _PlainLanguageModel:
         )
 
 
+class _BrokenLanguageModel:
+    """The provider boundary failing after deterministic findings already exist."""
+
+    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+        del findings
+        raise TimeoutError("provider unavailable")
+
+
 # ---------------------------------------------------------------------------
 # The stage produces a real file
 # ---------------------------------------------------------------------------
@@ -200,6 +208,32 @@ def test_composed_findings_are_wired_1_to_1_into_the_end_to_end_workbook(
         assert isinstance(summary, str)
         assert summary.startswith(f"{check}: {outcome}.")
         assert "Reviewer summary:" in summary
+
+
+def test_a_failed_provider_still_yields_the_complete_deterministic_workbook(
+    session: Session, store: LocalStore
+) -> None:
+    revision = _checked(session, store)
+
+    result = DatabaseStages(store, findings_composer=_BrokenLanguageModel()).generate_outputs(
+        session, revision.id
+    )
+
+    composition = result["findings_composition"]
+    assert isinstance(composition, dict)
+    assert composition["mode"] == "structured_fallback"
+    assert "TimeoutError" in str(composition["fallback_reason"])
+    assert result["outputs"] == 1
+    sheet = _sheet(store, _artifacts(session, revision.id)[0], FINDINGS_SHEET)
+    assert sheet.max_row == len(_live_findings(session, revision.id)) + 1
+    summary_column = FINDING_COLUMNS.index("reviewer_summary") + 1
+    for row in range(2, sheet.max_row + 1):
+        check = sheet.cell(row=row, column=FINDING_COLUMNS.index("check") + 1).value
+        outcome = sheet.cell(row=row, column=FINDING_COLUMNS.index("outcome") + 1).value
+        summary = sheet.cell(row=row, column=summary_column).value
+        assert isinstance(summary, str)
+        assert summary.startswith(f"{check}: {outcome}.")
+        assert "Reviewer summary:" not in summary
 
 
 def test_the_workbook_has_a_row_for_every_live_finding(session: Session, store: LocalStore) -> None:

@@ -74,6 +74,7 @@ __all__ = [
     "UNREADABLE_REFERENCE",
     "StoredFinding",
     "WorkbookSignoff",
+    "decode_reference",
     "exact_text",
     "write_stored_workbook",
     "write_value",
@@ -177,7 +178,7 @@ def write_value(cell: Cell, value: object) -> None:
     cell.number_format = TEXT_FORMAT
 
 
-def _decode_reference(reference: str) -> tuple[str, str] | None:
+def decode_reference(reference: str) -> tuple[str, str] | None:
     """(page, document version) for one evidence reference, or `None` if it is not a citation.
 
     **Both fields or neither.** A reference carrying `page` and no `document_version_id` decodes
@@ -218,7 +219,7 @@ def _evidence_pages(finding: Finding) -> str:
     not decode is a fact about the export, and dropping it would leave the row looking like a
     finding with no evidence.
     """
-    decoded = [_decode_reference(reference) for reference in finding.evidence_refs]
+    decoded = [decode_reference(reference) for reference in finding.evidence_refs]
     return ", ".join(UNREADABLE_REFERENCE if parts is None else parts[0] for parts in decoded)
 
 
@@ -231,7 +232,7 @@ def _evidence_parts(reference: str | None) -> tuple[str, str]:
     """
     if not reference:
         return ("", "")
-    decoded = _decode_reference(reference)
+    decoded = decode_reference(reference)
     return decoded if decoded is not None else (UNREADABLE_REFERENCE, reference)
 
 
