@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 from io import BytesIO
@@ -85,7 +86,7 @@ from extraction.annotations import PageLayers, read_annotation_layers, read_mark
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import DimensionText, associate
 from extraction.manifest import build_manifest
-from extraction.ocr import OcrEngine, RapidOcrEngine, read_page
+from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, read_page
 from extraction.rasterise import PageTooLarge, render_page
 from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
 from reports.spreadsheet import StoredFinding, write_stored_workbook
@@ -190,6 +191,14 @@ MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
 }
 
 __all__ = ["DatabaseStages"]
+
+
+@dataclass(frozen=True, slots=True)
+class _LocatedOcrReading:
+    """OCR geometry whose orientation was established by its token layout."""
+
+    extent: Polygon
+    rotation_degrees: int
 
 
 class DatabaseStages:
@@ -427,6 +436,8 @@ class DatabaseStages:
             written = 0
             route = "vector"
             vector_rows: list[ObservationCandidate] = []
+            ocr_items: tuple[OcrItem, ...] = ()
+            ocr_rows: list[ObservationCandidate] = []
             read: PageContents | None = None
             if not page.has_vector_text:
                 # **A scanned page, which the vector reader cannot see at all.** Until this, such a
@@ -434,13 +445,14 @@ class DatabaseStages:
                 # it. Scanned sheets are one of the six things #274 asks the client for, so this is
                 # not a hypothetical (#499).
                 route = "ocr"
-                written = self._read_page_by_ocr(
+                ocr_items, ocr_rows = self._read_page_by_ocr(
                     session,
                     version_id=version_id,
                     data=data,
                     page=page,
                     task_run_id=run.task_run_id,
                 )
+                written = len(ocr_rows)
             elif page.has_vector_text:
                 with traced(
                     "extraction.page",
@@ -506,6 +518,7 @@ class DatabaseStages:
                 task_run_id=run.task_run_id,
                 readings=(
                     (read.texts if read is not None else (), vector_rows),
+                    self._ocr_association_inputs(ocr_items, ocr_rows),
                     ((layers.markup if layers is not None else ()), markup_rows),
                 ),
                 lines=(
@@ -530,6 +543,56 @@ class DatabaseStages:
                 )
             )
         return results
+
+    @staticmethod
+    def _ocr_association_inputs(
+        items: tuple[OcrItem, ...], rows: list[ObservationCandidate]
+    ) -> tuple[tuple[_LocatedOcrReading, ...], tuple[ObservationCandidate, ...]]:
+        """Keep only OCR readings whose layout states an axis; retain row pairing exactly.
+
+        Arbitrary OCR boxes carry no declared rotation, and production association deliberately
+        refuses to infer one. The tightly recognised dual-unit layout does establish that its two
+        rows read horizontally, so those readings can use the same association machinery as vector
+        and markup text. Everything else remains recorded but unassociated.
+        """
+        located: list[_LocatedOcrReading] = []
+        located_rows: list[ObservationCandidate] = []
+        for item, row in zip(items, rows, strict=True):
+            if item.extent is None or item.rotation_degrees is None:
+                continue
+            located.append(_LocatedOcrReading(item.extent, item.rotation_degrees))
+            located_rows.append(row)
+        return tuple(located), tuple(located_rows)
+
+    @staticmethod
+    def _ordered_ocr_rows(
+        items: tuple[OcrItem, ...], rows: list[ObservationCandidate]
+    ) -> list[ObservationCandidate]:
+        """Match persisted rows to OCR items by stored content, never query return order."""
+        available: dict[
+            tuple[str, tuple[tuple[int, int], ...], Decimal], list[ObservationCandidate]
+        ] = {}
+        for row in rows:
+            if row.confidence is None:
+                raise ValueError("a persisted OCR row has no OCR confidence")
+            key = (
+                row.raw_text,
+                tuple((int(x), int(y)) for x, y in row.polygon),
+                row.confidence,
+            )
+            available.setdefault(key, []).append(row)
+        ordered: list[ObservationCandidate] = []
+        for item in items:
+            key = (
+                item.text,
+                tuple((point.x, point.y) for point in item.image_extent),
+                item.confidence,
+            )
+            matches = available.get(key, [])
+            if not matches:
+                raise ValueError("a persisted OCR row does not match the reading that produced it")
+            ordered.append(matches.pop())
+        return ordered
 
     def _associate_page(
         self,
@@ -701,7 +764,7 @@ class DatabaseStages:
         data: bytes,
         page: Page,
         task_run_id: UUID,
-    ) -> int:
+    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate]]:
         """Render one page and read it with the OCR engine, recording what it found.
 
         **A separate extraction run, not the vector one.** A candidate points at a run to say what
@@ -743,16 +806,15 @@ class DatabaseStages:
                 config_hash=f"dpi={self._dpi}",
                 dpi=self._dpi,
             )
-            return len(
-                record_ocr_candidates(
-                    session,
-                    read.items,
-                    document_version_id=version_id,
-                    page_id=page.id,
-                    extraction_run_id=ocr_run.id,
-                    page_index=page.index,
-                )
+            rows = record_ocr_candidates(
+                session,
+                read.items,
+                document_version_id=version_id,
+                page_id=page.id,
+                extraction_run_id=ocr_run.id,
+                page_index=page.index,
             )
+            return read.items, self._ordered_ocr_rows(read.items, rows)
 
     def _ocr(self) -> OcrEngine:
         """The OCR engine, built once and only when a page actually needs it.

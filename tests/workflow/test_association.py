@@ -46,6 +46,8 @@ from app.models import (
     SourceArtifact,
 )
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+from evidence.coordinates import ImagePoint
+from extraction.ocr import OcrItem
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
@@ -188,11 +190,16 @@ def _revision(session: Session, store: LocalStore, *, data: bytes) -> PackageRev
     return revision
 
 
-def _stages(store: LocalStore, *, association: AssociationSettings | None = SETTINGS):
+def _stages(
+    store: LocalStore,
+    *,
+    association: AssociationSettings | None = SETTINGS,
+    ocr_engine: object | None = None,
+):
     return DatabaseStages(
         store=store,
         dpi=150,
-        ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
+        ocr_engine=ocr_engine or _SilentOcr(),  # type: ignore[arg-type]
         association=association,
     )
 
@@ -245,6 +252,89 @@ def test_a_reading_on_a_line_is_attached_to_it(session: Session, store: LocalSto
     assert Decimal(attached[0].start_y or "0") == pytest.approx(
         Decimal("0.8333"), abs=Decimal("0.002")
     )
+
+
+def test_an_unambiguous_split_ocr_reading_uses_the_same_production_association(
+    session: Session, store: LocalStore
+) -> None:
+    """OCR normalization must not leave the product and gold-set association paths different."""
+
+    class _SplitDualOcr:
+        name = "split-dual-ocr"
+        version = "test/1"
+
+        def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+            del rgb, width, height
+            return (
+                OcrItem(
+                    text="76",
+                    confidence=Decimal("0.81"),
+                    image_extent=(
+                        ImagePoint(170, 500),
+                        ImagePoint(210, 500),
+                        ImagePoint(210, 522),
+                        ImagePoint(170, 522),
+                    ),
+                ),
+                OcrItem(
+                    text="[3]",
+                    confidence=Decimal("0.77"),
+                    image_extent=(
+                        ImagePoint(168, 518),
+                        ImagePoint(212, 518),
+                        ImagePoint(212, 542),
+                        ImagePoint(168, 542),
+                    ),
+                ),
+            )
+
+    revision = _revision(session, store, data=ONE_LINE)
+    session.commit()
+    _stages(store, ocr_engine=_SplitDualOcr()).extract_pages(session, revision.id)
+    session.commit()
+
+    candidates = list(session.execute(select(ObservationCandidate)).scalars())
+    ocr = next(candidate for candidate in candidates if candidate.raw_text == "76 [3]")
+    assert (ocr.value_numerator, ocr.value_denominator, ocr.unit) == (3, 1, "in")
+    assert ocr.semantic_guess is None
+    association = next(row for row in _associations(session) if row.candidate_id == ocr.id)
+    assert association.refusal_reason is None
+    assert len([row for row in _associations(session) if row.candidate_id == ocr.id]) == 1
+
+
+def test_an_unoriented_ocr_reading_is_recorded_and_left_unassociated(
+    session: Session, store: LocalStore
+) -> None:
+    class _PlainOcr:
+        name = "plain-ocr"
+        version = "test/1"
+
+        def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+            del rgb, width, height
+            return (
+                OcrItem(
+                    text="984 mm",
+                    confidence=Decimal("0.87"),
+                    image_extent=(
+                        ImagePoint(170, 500),
+                        ImagePoint(210, 500),
+                        ImagePoint(210, 522),
+                        ImagePoint(170, 522),
+                    ),
+                ),
+            )
+
+    revision = _revision(session, store, data=ONE_LINE)
+    session.commit()
+    _stages(store, ocr_engine=_PlainOcr()).extract_pages(session, revision.id)
+    session.commit()
+
+    ocr = next(
+        candidate
+        for candidate in session.execute(select(ObservationCandidate)).scalars()
+        if candidate.raw_text == "984 mm"
+    )
+    assert [row for row in _associations(session) if row.candidate_id == ocr.id] == []
 
 
 def test_an_attachment_records_why_it_was_made(session: Session, store: LocalStore) -> None:

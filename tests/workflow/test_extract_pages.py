@@ -722,6 +722,45 @@ def test_an_ocr_reading_keeps_its_confidence_where_a_vector_one_has_none(
     assert (row.value_numerator, row.value_denominator) == (4920, 127)
 
 
+def test_split_vendor_dual_notation_becomes_one_untyped_inch_reading(
+    session: Session, store: LocalStore
+) -> None:
+    """RapidOCR's two boxes are one reading only when their exact stacked pattern is clear."""
+    revision = _revision(session, store, data=SCANNED)
+    engine = _StubOcr(
+        (
+            OcrItem(
+                text="76",
+                confidence=Decimal("0.81"),
+                image_extent=(
+                    ImagePoint(10, 10),
+                    ImagePoint(50, 10),
+                    ImagePoint(50, 30),
+                    ImagePoint(10, 30),
+                ),
+            ),
+            OcrItem(
+                text="[3]",
+                confidence=Decimal("0.77"),
+                image_extent=(
+                    ImagePoint(8, 28),
+                    ImagePoint(52, 28),
+                    ImagePoint(52, 52),
+                    ImagePoint(8, 52),
+                ),
+            ),
+        )
+    )
+
+    results = DatabaseStages(store, ocr_engine=engine).extract_pages(session, revision.id)
+
+    assert [result.payload["candidates"] for result in results] == [1]
+    row = _candidates(session)["76 [3]"]
+    assert (row.value_numerator, row.value_denominator, row.unit) == (3, 1, "in")
+    assert row.confidence == Decimal("0.77")
+    assert row.semantic_guess is None
+
+
 def test_an_ocr_reading_is_recorded_under_its_own_extraction_run(
     session: Session, store: LocalStore
 ) -> None:

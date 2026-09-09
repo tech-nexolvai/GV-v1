@@ -13,8 +13,14 @@ from uuid import uuid4
 
 import pytest
 
-from evidence.coordinates import ImagePoint
-from extraction.ocr import OcrItem, RapidOcrEngine, _confidence, read_page
+from evidence.coordinates import ImagePoint, StoredPoint
+from extraction.ocr import (
+    OcrItem,
+    RapidOcrEngine,
+    _confidence,
+    combine_dual_notation,
+    read_page,
+)
 from extraction.rasterise import render_page
 from tests.extraction.test_reader import _pdf
 
@@ -59,6 +65,24 @@ def _rendered(dpi: int = 150):
     )
 
 
+def _item(text: str, box: tuple[int, int, int, int], confidence: str = "0.9") -> OcrItem:
+    left, top, right, bottom = box
+    return OcrItem(
+        text=text,
+        confidence=Decimal(confidence),
+        image_extent=(
+            ImagePoint(left, top),
+            ImagePoint(right, top),
+            ImagePoint(right, bottom),
+            ImagePoint(left, bottom),
+        ),
+    )
+
+
+def _quadrilateral(text: str, points: tuple[ImagePoint, ...]) -> OcrItem:
+    return OcrItem(text=text, confidence=Decimal("0.9"), image_extent=points)
+
+
 def test_a_reading_names_the_engine_that_produced_it() -> None:
     """A candidate points at a run to say what read it, and the run needs a name and a version.
 
@@ -97,6 +121,115 @@ def test_the_engine_is_handed_the_rendered_page_at_its_real_size() -> None:
     assert engine.calls == [(rendered.width_px, rendered.height_px)]
 
 
+def test_split_vendor_dual_notation_is_one_reading_with_the_conservative_confidence() -> None:
+    """The two OCR boxes state one dimension; inches govern only after the exact pair is present."""
+    items = (
+        _item("76", (100, 100, 140, 120), "0.81"),
+        _item("381", (200, 100, 250, 120), "0.92"),
+        # Engine order is not reading order on a full page; geometry, not list adjacency, pairs.
+        _item("[15]", (198, 118, 252, 142), "0.73"),
+        _item("[3]", (98, 118, 142, 142), "0.77"),
+    )
+
+    combined = combine_dual_notation(items)
+
+    assert [item.text for item in combined] == ["76 [3]", "381 [15]"]
+    assert [item.confidence for item in combined] == [Decimal("0.77"), Decimal("0.73")]
+    assert {item.rotation_degrees for item in combined} == {0}
+    assert combined[0].image_extent == (
+        ImagePoint(98, 100),
+        ImagePoint(142, 100),
+        ImagePoint(142, 142),
+        ImagePoint(98, 142),
+    )
+
+
+def test_split_tokens_that_are_not_spatially_adjacent_still_abstain() -> None:
+    """Matching strings elsewhere on a page must not be fuzzy-merged into a fabricated dimension."""
+    items = (
+        _item("76", (100, 100, 140, 120)),
+        _item("[3]", (100, 180, 140, 205)),
+        _item("TITLE", (200, 100, 250, 120)),
+    )
+
+    assert combine_dual_notation(items) == items
+
+
+def test_an_ambiguous_split_pair_still_abstains() -> None:
+    """Two plausible inch alternates are not resolved by nearest, confidence, or input order."""
+    items = (
+        _item("76", (100, 100, 140, 120)),
+        _item("[3]", (98, 118, 125, 142)),
+        _item("[4]", (115, 118, 142, 142)),
+    )
+
+    assert combine_dual_notation(items) == items
+
+
+def test_reverse_ambiguity_still_abstains() -> None:
+    items = (
+        _item("76", (100, 100, 140, 120)),
+        _item("77", (105, 100, 145, 120)),
+        _item("[3]", (98, 118, 142, 142)),
+    )
+    assert combine_dual_notation(items) == items
+
+
+def test_whitespace_limit_is_inclusive_and_one_pixel_past_abstains() -> None:
+    at_limit = (_item("76", (100, 100, 140, 120)), _item("[3]", (100, 140, 140, 160)))
+    past = (_item("76", (100, 100, 140, 120)), _item("[3]", (100, 141, 140, 161)))
+    assert [item.text for item in combine_dual_notation(at_limit)] == ["76 [3]"]
+    assert combine_dual_notation(past) == past
+
+
+def test_invalid_bracketed_text_and_empty_input_abstain() -> None:
+    invalid = (
+        _item("76", (100, 100, 140, 120)),
+        _item("[DETAIL]", (98, 118, 142, 142)),
+    )
+    assert combine_dual_notation(invalid) == invalid
+    assert combine_dual_notation(()) == ()
+
+
+def test_a_rotated_stacked_pair_is_not_declared_horizontal() -> None:
+    items = (
+        _quadrilateral(
+            "76",
+            (ImagePoint(100, 100), ImagePoint(140, 110), ImagePoint(135, 130), ImagePoint(95, 120)),
+        ),
+        _quadrilateral(
+            "[3]",
+            (ImagePoint(95, 120), ImagePoint(140, 130), ImagePoint(135, 155), ImagePoint(90, 145)),
+        ),
+    )
+    assert combine_dual_notation(items) == items
+
+
+def test_read_page_locates_a_combined_reading_in_stored_space() -> None:
+    rendered = _rendered()
+    engine = _StubEngine(
+        (
+            _item("76", (100, 100, 140, 120)),
+            _item("[3]", (98, 118, 142, 142)),
+        )
+    )
+
+    page = read_page(rendered, engine=engine)
+
+    assert [item.text for item in page.items] == ["76 [3]"]
+    reading = page.items[0]
+    assert reading.extent is not None
+    assert reading.extent.document_version_id == rendered.document_version_id
+    assert reading.extent.page == rendered.page_index
+    assert reading.extent.points == tuple(
+        StoredPoint(
+            Decimal(point.x) / Decimal(rendered.width_px),
+            Decimal(point.y) / Decimal(rendered.height_px),
+        )
+        for point in reading.image_extent
+    )
+
+
 def test_a_blank_reading_is_refused_rather_than_stored() -> None:
     """A row saying a reading happened that cannot say what it was is worse than no row."""
     with pytest.raises(ValueError, match="blank reading"):
@@ -118,6 +251,30 @@ def test_an_extent_that_is_not_four_corners_is_refused() -> None:
     """Four points, because that is what the engine reports and what the polygon column stores."""
     with pytest.raises(ValueError, match="four corner points"):
         OcrItem(text="984 mm", confidence=Decimal("0.9"), image_extent=CORNERS[:3])
+
+
+def test_boolean_rotation_is_refused() -> None:
+    with pytest.raises(ValueError, match="rotation_degrees"):
+        OcrItem(
+            text="76 [3]",
+            confidence=Decimal("0.9"),
+            image_extent=CORNERS,
+            rotation_degrees=True,  # type: ignore[arg-type]
+        )
+
+
+def test_out_of_page_combined_geometry_is_kept_but_left_unlocated() -> None:
+    rendered = _rendered()
+    engine = _StubEngine(
+        (
+            _item("76", (rendered.width_px - 20, 100, rendered.width_px + 20, 120)),
+            _item("[3]", (rendered.width_px - 22, 118, rendered.width_px + 22, 142)),
+        )
+    )
+    reading = read_page(rendered, engine=engine).items[0]
+    assert reading.text == "76 [3]"
+    assert reading.extent is None
+    assert reading.rotation_degrees is None
 
 
 # --------------------------------------------------------------------------------------
