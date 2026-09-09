@@ -2057,6 +2057,81 @@
         "title": "ReviewerActionOut",
         "type": "object"
       },
+      "ReviewerChatNarrative": {
+        "description": "One answer fragment and the deterministic finding that backs it.",
+        "properties": {
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "text"
+        ],
+        "title": "ReviewerChatNarrative",
+        "type": "object"
+      },
+      "ReviewerChatOut": {
+        "description": "Bounded chat response; every narrative has a finding id from this exact run.",
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewerChatNarrative"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer",
+          "mode",
+          "findings"
+        ],
+        "title": "ReviewerChatOut",
+        "type": "object"
+      },
+      "ReviewerChatRequest": {
+        "additionalProperties": false,
+        "description": "A reviewer question; it cannot carry findings, values, rules, or verdicts.",
+        "properties": {
+          "question": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "ReviewerChatRequest",
+        "type": "object"
+      },
       "ReviewerEntry": {
         "additionalProperties": false,
         "description": "Everything one reviewer submission carries.\n\nBoth halves are optional so a reviewer can set the project's parameters once and then enter\nmeasurements per package without resending them.",
@@ -3053,6 +3128,70 @@
         "summary": "Say what an extracted reading is, so the rules can use it",
         "tags": [
           "confirmations"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat": {
+      "post": {
+        "description": "Narrate the package's current findings without changing, calculating, or extending them.",
+        "operationId": "reviewer_chat_api_v1_projects__project_id__packages__package_id__chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewerChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewerChatOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask about one deterministic review run",
+        "tags": [
+          "reviewer chat"
         ]
       }
     },

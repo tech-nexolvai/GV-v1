@@ -91,6 +91,8 @@ export type DecidedEvidence =
   Created<'/api/v1/projects/{project_id}/review-sessions/{review_session_id}/evidence'>;
 export type GrantedException =
   Created<'/api/v1/projects/{project_id}/review-sessions/{review_session_id}/exceptions'>;
+export type ReviewerChatReply =
+  paths['/api/v1/projects/{project_id}/packages/{package_id}/chat']['post']['responses'][200]['content']['application/json'];
 
 export function listPackages(projectId: string, query?: { cursor?: string; limit?: number }) {
   const search = new URLSearchParams();
@@ -135,6 +137,18 @@ export function getFindingCounts(projectId: string, packageId: string) {
   return request<FindingCounts>(
     `/projects/${projectId}/packages/${packageId}/findings/summary`,
   );
+}
+
+/**
+ * Ask about the currently live deterministic run. The backend owns the finding scope and accepts
+ * only a question; it never accepts client-supplied values, finding ids, or verdicts.
+ */
+export function askReviewerChat(projectId: string, packageId: string, question: string) {
+  type Body =
+    paths['/api/v1/projects/{project_id}/packages/{package_id}/chat']['post']['requestBody']['content']['application/json'];
+  return send<ReviewerChatReply>(`/projects/${projectId}/packages/${packageId}/chat`, {
+    question,
+  } satisfies Body);
 }
 
 /**

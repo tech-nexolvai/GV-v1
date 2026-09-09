@@ -54,7 +54,9 @@ across every screen.
   green (`model_invocations = 0`, nothing types a candidate on its own).
 - The evidence viewer shows REAL mechanical crops of real candidates; it does NOT fabricate meaning or
   placement, and is NOT the redline.
-- No wiring the model or the agent into anything.
+- No model or agent wiring into extraction, semantic typing, evidence qualification, or verdicts.
+  The reviewer chat may narrate one completed run's immutable findings only when its response passes
+  the deterministic 1:1 fact-preservation guard; provider failure shows the plain findings view.
 - Proprietary data (drawings, crops, dimensions) stays under `data/` (gitignored) or the runtime store;
   nothing client is committed (repo-hygiene guard green). Demo/test content uses the committed
   non-drawing PDF or synthetic fixtures.
