@@ -329,6 +329,14 @@ def _arguments() -> Arguments:
         help="write a synthetic package there and exit. Generated, never a client drawing",
     )
     parser.add_argument(
+        "--candidate-scaffold-dir",
+        type=Path,
+        help=(
+            "load pending candidate scaffolds and render an unmeasured scorecard without running the "
+            "pipeline or applying semantic labels"
+        ),
+    )
+    parser.add_argument(
         "--database-url",
         help="where to run the pipeline. Defaults to $DATABASE_URL. A schema of its own, then dropped",
     )
@@ -898,6 +906,19 @@ def main() -> int:
             f"{written} --line-minimum-pt 1 --glyph-maximum-pt 1 --glyph-gap-pt 1 "
             "--proximity-limit 0.1 --ambiguity-margin 0.01"
         )
+        return 0
+
+    if arguments.candidate_scaffold_dir is not None:
+        if arguments.package is not None:
+            print("give either a package or --candidate-scaffold-dir, not both", file=sys.stderr)
+            return 2
+        from scripts.scaffold_reviewed_goldset_candidates import dry_run_candidate_scaffolds
+
+        try:
+            print(dry_run_candidate_scaffolds(arguments.candidate_scaffold_dir))
+        except (OSError, ValueError, json.JSONDecodeError) as refused:
+            print(f"the candidate scaffold was refused: {refused}", file=sys.stderr)
+            return 2
         return 0
 
     if arguments.package is None:
