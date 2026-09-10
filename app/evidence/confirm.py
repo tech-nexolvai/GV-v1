@@ -6,11 +6,10 @@ reviewer path typed values into a form from scratch without ever looking at what
 `evidence/normalize.py` and `evidence/gate.py` — the two modules that turn a reading into something a
 rule may use — had no production caller at all.
 
-**The type comes from a person, and only from a person.** Nothing here infers a semantic type from
-position, from the title block, or from anything else on the sheet. That inference is the one thing
-gated on the real drawings (#274) and the vocabulary Q20 defers, and `semantic_guess` is the seam it
-will fill when it exists. Filling that seam by hand now proves every link downstream of it, so that
-when the drawings arrive the only new thing is the guess.
+**The ordinary type comes from a person.** The separate automatic lane may qualify only an exact
+vector tag attached to the same resolved dimension line as the reading; it never writes
+`semantic_guess`, guesses from position, or admits an agent suggestion. Everything else remains a
+reviewer confirmation here. See `docs/decisions/SEMANTIC_TYPING_GATE.md`.
 
 **What a confirmation asserts.** `HUMAN_CONFIRMED` is a claim about the whole reading, not only its
 type: that the value shown is what the drawing says, *and* that it is this quantity. That is only

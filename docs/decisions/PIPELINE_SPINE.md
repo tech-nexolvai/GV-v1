@@ -41,12 +41,14 @@ broader drawing coverage.
 
 ## Where it stops, and why each stop is where it is
 
-**Candidates stay untyped.** Nothing assigns a `semantic_guess`, so nothing mints a canonical
-observation, so nothing becomes eligible as a verdict operand — `evidence/gate.py` takes a canonical
-observation and there are none. The value-to-meaning association needs the real drawings (#274) and
-the vocabulary Q20 defers, and `CLIENT_FACTS` Q20 records Raj's own words: the tags are provisional
-and final ones come after the layouts are settled. A heuristic here would look like progress and be a
-fabricated fact in a review. `test_nothing_in_the_pipeline_gives_a_candidate_a_meaning` is the guard.
+**Candidates remain raw and untyped.** Nothing writes `semantic_guess`.  A deployment may opt into
+the narrow semantic-typing gate only with an explicit layout vocabulary: an exact vector tag and a
+numeric reading must share the same already-resolved dimension line before a separate
+`CORROBORATED` observation is minted. OCR tags, position heuristics, conflicting tags and all agent
+suggestions are `REVIEW_REQUIRED`; they never become operands. Q20 is final only for the three-sided
+countertop layout, so there is no global tag configuration. `docs/decisions/SEMANTIC_TYPING_GATE.md`
+records the proof and the rollout metric. The drawing-agnostic default stays with zero canonical
+observations, and `test_nothing_in_the_pipeline_gives_a_candidate_a_meaning` still guards that state.
 
 **`match` finds nothing yet, and says so.** A `match_candidates` row needs two `drawing_items`; an
 item needs a view and a type from the `CT0xx` vocabulary; and nothing detects a view or an item on a

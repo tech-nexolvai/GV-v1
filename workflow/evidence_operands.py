@@ -27,8 +27,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.document import DocumentVersion, PackageRevisionDocument, Page
-from app.models.evidence import CanonicalObservation
-from evidence.canonical import Authority, EvidenceStatus
+from app.models.evidence import (
+    CanonicalObservation,
+    EvidenceCorroborationLane,
+    EvidenceSupportingCandidate,
+)
+from evidence.canonical import Authority, CorroborationLane, EvidenceStatus
 from evidence.canonical import CanonicalObservation as DomainObservation
 from evidence.coordinates import StoredPoint
 from evidence.gate import GateRefusal, seal
@@ -41,7 +45,13 @@ from verdict.operands import VerdictOperand
 __all__ = ["operands_from_evidence"]
 
 
-def _domain(row: CanonicalObservation, page_index: int) -> DomainObservation | None:
+def _domain(
+    row: CanonicalObservation,
+    page_index: int,
+    *,
+    supported_by: tuple[str, ...],
+    corroborated_by: tuple[CorroborationLane, ...],
+) -> DomainObservation | None:
     """One stored observation as the value type the gate takes, or `None` if it will not rebuild.
 
     `None` rather than a raise: a row that cannot be reconstituted is a fact about storage, and it
@@ -66,8 +76,8 @@ def _domain(row: CanonicalObservation, page_index: int) -> DomainObservation | N
             ),
             status=EvidenceStatus(row.status),
             authority=Authority(row.authority),
-            supported_by=(str(row.id),),
-            corroborated_by=(),
+            supported_by=supported_by,
+            corroborated_by=corroborated_by,
             conflicts_with=(),
             evidence_crop_uri=row.evidence_crop_uri,
         )
@@ -100,7 +110,36 @@ def operands_from_evidence(
     # Grouped by what a rule asks for: the document's role and the quantity's semantic type.
     by_need: dict[tuple[str, str], list[tuple[DomainObservation, UUID]]] = {}
     for row, page_index in rows:
-        observation = _domain(row, page_index)
+        # Rebuild the evidence provenance rather than treating a database id as synthetic support.
+        # In particular, the mechanical-tag lane has a numeric candidate plus its exact tag; without
+        # both this adapter would quietly turn qualified evidence back into an abstention.
+        supported_by = tuple(
+            str(candidate_id)
+            for candidate_id in session.scalars(
+                select(EvidenceSupportingCandidate.candidate_id).where(
+                    EvidenceSupportingCandidate.canonical_observation_id == row.id
+                )
+            ).all()
+        )
+        try:
+            corroborated_by = tuple(
+                CorroborationLane(lane)
+                for lane in session.scalars(
+                    select(EvidenceCorroborationLane.lane).where(
+                        EvidenceCorroborationLane.canonical_observation_id == row.id
+                    )
+                ).all()
+            )
+        except ValueError:
+            # A stored lane unknown to this code must cost the rule its operand.  Treating it as a
+            # known qualifier would let a newer database declaration bypass this older gate.
+            continue
+        observation = _domain(
+            row,
+            page_index,
+            supported_by=supported_by,
+            corroborated_by=corroborated_by,
+        )
         if observation is None:
             continue
         by_need.setdefault((row.document_role, row.semantic_type), []).append((observation, row.id))

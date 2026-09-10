@@ -36,11 +36,12 @@ def sessions(postgres_engine: object) -> sessionmaker[Session]:
 
 
 def test_the_audited_categories_are_all_declared() -> None:
-    """Backend §11 lists six; there are seven.
+    """Backend §11 lists six; there are eight.
 
     `ARTIFACT_DELETION` was added by #258, and it is the one category §11 does not name because
     deletion is the event whose own evidence is the thing being removed — without it the trail would
-    be complete about everything except its own gaps.
+    be complete about everything except its own gaps. `EVIDENCE_QUALIFICATION` separately records
+    a deterministic exact-tag promotion so it cannot masquerade as a human review action.
 
     The set is asserted exactly rather than by membership, so a category added without a migration
     fails here. The `CHECK` constraint hardcodes these values, which is how
@@ -51,6 +52,7 @@ def test_the_audited_categories_are_all_declared() -> None:
         "RULE_PUBLICATION",
         "FINDING",
         "REVIEW_ACTION",
+        "EVIDENCE_QUALIFICATION",
         "EXCEPTION",
         "ARTIFACT_DOWNLOAD",
         "ARTIFACT_DELETION",

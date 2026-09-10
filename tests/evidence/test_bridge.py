@@ -11,9 +11,9 @@ had no production caller at all.
 The test that matters is `test_a_confirmed_reading_becomes_a_verdict_without_anyone_retyping_it`.
 Everything else here guards a way of getting that wrong.
 
-**The type comes from a human.** Nothing in this file — or in the code it exercises — infers a
-semantic type from the drawing. That inference is gated on the real drawings (#274) and the vocabulary
-Q20 defers, and `test_nothing_types_a_candidate_on_its_own` is the guard that it stays absent.
+**A meaning is qualified, never guessed.** A reviewer confirmation remains the ordinary route.  The
+only automatic exception is an exact vector vocabulary tag that shares a deterministically resolved
+dimension line with the reading; agent/position guesses stay reviewer work.
 """
 
 from __future__ import annotations
@@ -32,13 +32,18 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 from app.api.documents import storage_key
-from app.audit.events import AuditEvent
+from app.audit.events import SYSTEM_ACTOR, AuditCategory, AuditEvent
 from app.db.session import session_factory
+from app.evidence.automatic_typing import (
+    AutomaticTypingSettings,
+    qualify_exact_tags_for_revision,
+)
 from app.evidence.confirm import ConfirmationRefused, RefusalReason, confirm_candidate_type
 from app.models import (
     CanonicalObservation,
     Document,
     DocumentVersion,
+    ObservationAssociation,
     ObservationCandidate,
     Package,
     PackageRevision,
@@ -47,7 +52,7 @@ from app.models import (
     Project,
     SourceArtifact,
 )
-from app.models.runs import TaskRun, WorkflowRun
+from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import _pdf
@@ -56,6 +61,7 @@ from tests.workflow.test_stages import (
     _project_depth_parameters,
     _publish_rulebook,
 )
+from vocabulary.semantic_types import SemanticType
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import DatabaseStages
@@ -166,9 +172,17 @@ def _extract(session: Session, store: LocalStore, *, token: str) -> tuple[Packag
     """Read the drawing and return the revision with the candidate carrying its dimension."""
     revision = _revision(session, store, token=token)
     DatabaseStages(store).extract_pages(session, revision.id)
+    version_id = session.execute(
+        select(PackageRevisionDocument.document_version_id).where(
+            PackageRevisionDocument.package_revision_id == revision.id
+        )
+    ).scalar_one()
     candidate = (
         session.execute(
-            select(ObservationCandidate).where(ObservationCandidate.value_numerator.is_not(None))
+            select(ObservationCandidate).where(
+                ObservationCandidate.document_version_id == version_id,
+                ObservationCandidate.value_numerator.is_not(None),
+            )
         )
         .scalars()
         .one()
@@ -245,6 +259,139 @@ def test_without_a_confirmation_the_check_still_abstains(
     assert _outcome_for(session, revision, "CT-DEPTH-001") != "PASS"
 
 
+def test_exact_vector_tag_on_same_line_becomes_operand_without_a_reviewer_typing(
+    session: Session, store: LocalStore
+) -> None:
+    """The narrow automatic lane is a tag binding, not an AI guess.
+
+    The numeric reading and `CT010` are separate immutable candidates, both attached to the same
+    line.  `run_checks` then qualifies the evidence and the unchanged deterministic depth rule
+    decides PASS.  No caller supplies an operand, and the raw candidate remains untyped.
+    """
+    revision, candidate_id = _extract(session, store, token=EXACT_DEPTH)
+    reading = session.get(ObservationCandidate, candidate_id)
+    assert reading is not None
+    source_run = session.get(ExtractionRun, reading.extraction_run_id)
+    assert source_run is not None
+    tag = ObservationCandidate(
+        document_version_id=reading.document_version_id,
+        page_id=reading.page_id,
+        extraction_run_id=source_run.id,
+        raw_text="CT010",
+        value_numerator=None,
+        value_denominator=None,
+        unit=None,
+        unit_guess=None,
+        semantic_guess=None,
+        polygon=[[40, 40], [60, 40], [60, 55]],
+        coordinate_space="image",
+        confidence=None,
+        ambiguity_flags=["not a numeric reading"],
+    )
+    association_run = ExtractionRun(
+        task_run_id=source_run.task_run_id,
+        extractor="extraction.geometry.text_association",
+        extractor_version="test/1",
+        config_hash="test-exact-tag-line",
+        dpi=source_run.dpi,
+    )
+    session.add_all((tag, association_run))
+    session.flush()
+    for row in (reading, tag):
+        session.add(
+            ObservationAssociation(
+                candidate_id=row.id,
+                extraction_run_id=association_run.id,
+                start_x="0.1",
+                start_y="0.2",
+                end_x="0.9",
+                end_y="0.2",
+                signals=["same resolved test dimension line"],
+            )
+        )
+    _publish_rulebook(session)
+    _project_depth_parameters(session, revision)
+
+    result = DatabaseStages(
+        store,
+        automatic_typing=AutomaticTypingSettings(frozenset({SemanticType.CT010})),
+    ).run_checks(session, revision.id)
+
+    assert result["automatic_types_qualified"] == 1
+    assert result["semantic_typing_review_required"] == 0
+    assert _outcome_for(session, revision, "CT-DEPTH-001") == "PASS"
+    session.expire_all()
+    assert session.get(ObservationCandidate, candidate_id).semantic_guess is None  # type: ignore[union-attr]
+    observation = session.execute(select(CanonicalObservation)).scalars().one()
+    assert observation.status == "CORROBORATED"
+    assert observation.semantic_type == SemanticType.CT010.value
+    event = session.execute(select(AuditEvent)).scalars().one()
+    assert event.category == AuditCategory.EVIDENCE_QUALIFICATION.value
+    assert event.actor == SYSTEM_ACTOR
+
+
+def test_conflicting_exact_tags_stay_review_required_and_cannot_create_an_operand(
+    session: Session, store: LocalStore
+) -> None:
+    """Two plausible tags are ambiguity, never first-found wins."""
+    revision, candidate_id = _extract(session, store, token=EXACT_DEPTH)
+    reading = session.get(ObservationCandidate, candidate_id)
+    assert reading is not None
+    source_run = session.get(ExtractionRun, reading.extraction_run_id)
+    assert source_run is not None
+    tags = tuple(
+        ObservationCandidate(
+            document_version_id=reading.document_version_id,
+            page_id=reading.page_id,
+            extraction_run_id=source_run.id,
+            raw_text=value,
+            value_numerator=None,
+            value_denominator=None,
+            unit=None,
+            unit_guess=None,
+            semantic_guess=None,
+            polygon=[[40, 40], [60, 40], [60, 55]],
+            coordinate_space="image",
+            confidence=None,
+            ambiguity_flags=["not a numeric reading"],
+        )
+        for value in ("CT007", "CT010")
+    )
+    association_run = ExtractionRun(
+        task_run_id=source_run.task_run_id,
+        extractor="extraction.geometry.text_association",
+        extractor_version="test/1",
+        config_hash="test-conflicting-tag-line",
+        dpi=source_run.dpi,
+    )
+    session.add_all((*tags, association_run))
+    session.flush()
+    for row in (reading, *tags):
+        session.add(
+            ObservationAssociation(
+                candidate_id=row.id,
+                extraction_run_id=association_run.id,
+                start_x="0.1",
+                start_y="0.2",
+                end_x="0.9",
+                end_y="0.2",
+                signals=["same resolved test dimension line"],
+            )
+        )
+    session.flush()
+
+    result = qualify_exact_tags_for_revision(
+        session,
+        package_revision_id=revision.id,
+        settings=AutomaticTypingSettings(frozenset({SemanticType.CT007, SemanticType.CT010})),
+    )
+
+    assert result.qualified == ()
+    assert len(result.review_required) == 1
+    assert "different semantic types" in result.review_required[0].reason
+    assert session.execute(select(CanonicalObservation)).scalars().all() == []
+
+
 def test_the_confirmation_names_who_made_it(session: Session, store: LocalStore) -> None:
     """A reading enters the verdict path because a person put their name to it.
 
@@ -284,11 +431,11 @@ def test_the_candidate_itself_is_never_edited(session: Session, store: LocalStor
 
 
 def test_nothing_types_a_candidate_on_its_own(session: Session, store: LocalStore) -> None:
-    """**The hard stop.** Reading a drawing produces no semantic types, ever.
+    """**The hard stop.** Reading a drawing never mutates a candidate with a semantic guess.
 
-    Auto-typing is the one thing gated on the real drawings (#274) and the vocabulary Q20 defers.
-    `semantic_guess` is the seam it will fill; until then the only thing that fills it is a person,
-    and a heuristic that quietly began guessing would look like the bridge working better.
+    The opt-in exact-tag gate mints separate canonical evidence only after its deterministic proof.
+    Position, OCR and agent suggestions remain reviewer work, so a heuristic cannot silently begin
+    writing meanings into the raw extraction record.
     """
     _extract(session, store, token=EXACT_DEPTH)
 
