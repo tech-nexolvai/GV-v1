@@ -111,8 +111,8 @@ serve:              ## run the API
 	# flag is not a workaround, it is the consequence.
 	uvicorn "app.main:create_app" --factory --reload --port $(API_PORT)
 
-worker:             ## run the worker: executes the review stages (#415)
-	python -m workflow.worker
+worker:             ## run the local review worker: drains upload/check requests into real stages
+	.venv/bin/python scripts/drain_outbox.py --watch
 
 dispatch:           ## run the dispatcher: drains the outbox into the engine (#415)
 	python -m workflow.dispatcher

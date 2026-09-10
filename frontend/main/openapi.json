@@ -331,6 +331,18 @@
             "title": "Candidate Id",
             "type": "string"
           },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The extractor confidence as recorded; it is not a semantic-type confidence.",
+            "title": "Confidence"
+          },
           "corroboration_lane": {
             "anyOf": [
               {
@@ -886,6 +898,27 @@
           "abstained"
         ],
         "title": "ExportedFinding",
+        "type": "object"
+      },
+      "ExtractionRequestOut": {
+        "description": "The durable request to read a completed two-drawing package.\n\nUpload confirmation proves that one file landed. It must not start a package review while its\ncounterpart may still be arriving; this handle exists only after the architectural and shop pair\nhave both been confirmed.",
+        "properties": {
+          "accepted_id": {
+            "format": "uuid",
+            "title": "Accepted Id",
+            "type": "string"
+          },
+          "package_revision_id": {
+            "format": "uuid",
+            "title": "Package Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "accepted_id",
+          "package_revision_id"
+        ],
+        "title": "ExtractionRequestOut",
         "type": "object"
       },
       "FindingChain": {
@@ -2708,7 +2741,7 @@
     },
     "/api/v1/projects/{project_id}/documents/{document_id}/confirm": {
       "post": {
-        "description": "Check the bytes, then write the version and the ingestion request in one transaction.\n\nIn order:\n\n1. The stored object for your declared hash must exist. Nothing there is `409` \u2014 there is no upload\n   to confirm, which is different from a bad request.\n2. It is read and hashed. If it does not hash to what you declared, the request is refused with\n   `422` and **nothing at all is written** \u2014 no artifact row, no version, no outbox row.\n3. The `SourceArtifact`, the `DocumentVersion` and the outbox row are written in one transaction.\n   Either all three land or none do.\n\nReturns `201` when a version was created and `200` when these exact bytes had already been\nconfirmed. The repeat is a genuine no-op: the same version comes back and no second outbox row is\nwritten, so ingestion does not run twice.\n\nReading the object to hash it is the one piece of real work here, and it is bounded by the size of\none drawing. It is also the only honest way to verify: `AGENTS.md` \u00a72.7 pins a document version to\nexact bytes, and taking the client's word for the hash would make that pin a restatement of their\nclaim. A backend that computes the checksum itself can answer this without a read; the local\nfilesystem cannot, and #221 is where that becomes worth optimising.",
+        "description": "Check the bytes, then write the version in one transaction.\n\nIn order:\n\n1. The stored object for your declared hash must exist. Nothing there is `409` \u2014 there is no upload\n   to confirm, which is different from a bad request.\n2. It is read and hashed. If it does not hash to what you declared, the request is refused with\n   `422` and **nothing at all is written** \u2014 no artifact row or version.\n3. The `SourceArtifact` and `DocumentVersion` are written in one transaction. Either both land or\n   neither does. Extraction is a separate package-level request after both PDFs are confirmed.\n\nReturns `201` when a version was created and `200` when these exact bytes had already been\nconfirmed. The repeat is a genuine no-op: the same version comes back and it does not start work.\n\nReading the object to hash it is the one piece of real work here, and it is bounded by the size of\none drawing. It is also the only honest way to verify: `AGENTS.md` \u00a72.7 pins a document version to\nexact bytes, and taking the client's word for the hash would make that pin a restatement of their\nclaim. A backend that computes the checksum itself can answer this without a read; the local\nfilesystem cannot, and #221 is where that becomes worth optimising.",
         "operationId": "confirm_upload_api_v1_projects__project_id__documents__document_id__confirm_post",
         "parameters": [
           {
@@ -2764,7 +2797,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Confirm an upload landed, and start ingestion",
+        "summary": "Confirm an upload landed",
         "tags": [
           "documents"
         ]
@@ -3142,6 +3175,71 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/crop": {
+      "get": {
+        "description": "Return the stored pixels a reviewer must inspect before naming a proposal.\n\nThis is deliberately candidate-scoped: the reading is still untyped, so it must not be exposed\nas a finding or redline.  The SQL path proves both the candidate and its crop belong to the\npackage's current revision, then the stored digest is checked before bytes leave the service.",
+        "operationId": "candidate_crop_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__crop_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The integrity-checked mechanical crop."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View the mechanical crop behind an untyped AI reading",
+        "tags": [
+          "confirmations"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/chat": {
       "post": {
         "description": "Narrate the package's current findings without changing, calculating, or extending them.",
@@ -3407,6 +3505,60 @@
         "summary": "View the stored mechanical crop behind one confirmed reading",
         "tags": [
           "findings"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/extract": {
+      "post": {
+        "description": "Freeze a completed drawing pair and enqueue its read-only extraction stages.\n\nThis is intentionally separate from confirming one document: a worker must never read and freeze\nan architectural PDF while the shop PDF is still in flight.  It performs no extraction itself;\nthe outbox record and state transition commit together, then the worker reads the two immutable\ndocuments.  It also does not run checks -- OCR proposals remain untyped until a reviewer confirms\nthem.",
+        "operationId": "start_extraction_api_v1_projects__project_id__packages__package_id__extract_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractionRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start AI reading after both drawing PDFs are confirmed",
+        "tags": [
+          "documents"
         ]
       }
     },
@@ -4622,18 +4774,6 @@
       "get": {
         "description": "Read from `rules/semantic_types.py` rather than listed here.\n\nA hand-kept copy is right the day it is written and wrong the first time the vocabulary changes \u2014\nand the reviewer would then be offered a type no rule reads, or denied one every rule needs.",
         "operationId": "list_semantic_types_api_v1_semantic_types_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -4648,16 +4788,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
           }
         },
         "summary": "The vocabulary a reviewer may choose from",

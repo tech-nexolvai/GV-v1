@@ -533,5 +533,31 @@ export async function downloadEvidenceCrop(
   return response.blob();
 }
 
+/** The immutable crop behind an untyped AI proposal, before a reviewer names its meaning. */
+export async function downloadCandidateCrop(
+  projectId: string,
+  packageId: string,
+  candidateId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/candidates/${candidateId}/crop`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The proposal crop could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
 export type ApprovalOut =
   paths['/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve']['post']['responses'][201]['content']['application/json'];

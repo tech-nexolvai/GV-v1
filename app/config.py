@@ -56,7 +56,9 @@ class Settings(BaseSettings):
     # configured Bedrock identity. An API without model credentials still serves the plain deterministic
     # findings view because provider construction and every call are behind the fallback boundary.
     bedrock_chat_enabled: bool = True
-    bedrock_model: str = Field(default="amazon.nova-lite-v1:0", min_length=1)
+    # Empty explicitly disables the optional presentation provider.  Deterministic checks, reports
+    # and grounded structured chat continue to work with this setting unset.
+    bedrock_model: str = Field(default="", min_length=0)
     bedrock_region: str = Field(default="us-east-1", min_length=1)
     bedrock_connect_timeout: int = Field(default=10, ge=1)
     bedrock_read_timeout: int = Field(default=120, ge=1)

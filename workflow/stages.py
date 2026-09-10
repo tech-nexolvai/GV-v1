@@ -286,7 +286,10 @@ class DatabaseStages:
         #
         # Empty by default, so the production path is unchanged and still abstains until evidence
         # exists. Nothing here invents a value: a caller that supplies none gets the old behaviour.
-        self._operands = dict(operands or {})
+        # `None` means load reviewer-confirmed operands at check time. An explicit mapping remains
+        # useful to isolated tests and evaluators. This prevents an untyped OCR proposal from ever
+        # becoming a verdict input while allowing the live worker to see a later human confirmation.
+        self._operands = None if operands is None else dict(operands)
         self._discriminators = dict(discriminators or {})
 
     def _not_built(self, stage: str) -> Mapping[str, object]:
@@ -437,7 +440,24 @@ class DatabaseStages:
                 task_run_id=str(task_run.id),
                 extractor_version=EXTRACTOR_VERSION,
             ):
-                results.extend(self._read_document(session, version_id=version, data=data, run=run))
+                # ``Page.index`` is scoped to one document.  The workflow join, however, receives
+                # every page in the package and requires a unique ordering key.  Preserve the
+                # drawing-local index in the payload and give the package fan-out a deterministic
+                # ordinal, so page 0 of the architectural PDF and page 0 of the shop PDF are two
+                # distinct work results rather than a false duplicate.
+                for document_page in self._read_document(
+                    session, version_id=version, data=data, run=run
+                ):
+                    results.append(
+                        PageResult(
+                            index=len(results),
+                            payload={
+                                **document_page.payload,
+                                "document_page_index": document_page.index,
+                                "document_version_id": str(version),
+                            },
+                        )
+                    )
         return tuple(results)
 
     def _read_document(
@@ -1445,6 +1465,12 @@ class DatabaseStages:
         reader ever sees two sets of findings for one revision.
         """
         register_all()
+        if self._operands is None:
+            from workflow.measurements import operands_for
+
+            reviewer_operands = operands_for(session, package_revision_id)
+        else:
+            reviewer_operands = self._operands
 
         revision = session.get(PackageRevision, package_revision_id)
         if revision is None:
@@ -1579,7 +1605,7 @@ class DatabaseStages:
                 rule_id = applicable.snapshot.rule.id
                 supplied = {
                     **from_evidence.get(rule_id, {}),
-                    **self._operands.get(rule_id, {}),
+                    **reviewer_operands.get(rule_id, {}),
                 }
                 finding = execute(
                     applicable.snapshot,
@@ -1690,7 +1716,7 @@ def _documents_for(session: Session, package_revision_id: UUID) -> list[tuple[UU
             DocumentVersion.id == PackageRevisionDocument.document_version_id,
         )
         .where(PackageRevisionDocument.package_revision_id == package_revision_id)
-        .order_by(DocumentVersion.created_at)
+        .order_by(DocumentVersion.created_at, DocumentVersion.id)
     ).all()
     return [(version_id, storage_key(document_id, sha)) for version_id, document_id, sha in rows]
 

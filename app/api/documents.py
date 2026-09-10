@@ -62,17 +62,21 @@ from app.api.dependencies import get_artifact_store, get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.db.base import utc_now
 from app.db.session import is_unique_violation
+from app.lifecycle.states import transition
 from app.models import (
     Document,
+    DocumentKind,
     DocumentVersion,
     Package,
     PackageRevision,
     PackageRevisionDocument,
+    PackageState,
     SourceArtifact,
 )
 from app.schemas.packages import (
     DocumentRegistration,
     DocumentVersionOut,
+    ExtractionRequestOut,
     PresignedUpload,
     UploadConfirmation,
     UploadRequest,
@@ -103,9 +107,10 @@ UPLOAD_TICKET_LIFETIME: Final = timedelta(minutes=15)
 CONTENT_TYPE: Final = "application/pdf"
 KEY_SUFFIX: Final = ".pdf"
 
-#: The workflow confirmation asks for. A name, resolved by whoever runs the dispatcher — nothing here
-#: imports the workflow engine, which is what keeps the outbox a seam (`workflow/outbox.py`).
-INGEST_WORKFLOW: Final = "ingest_document_version"
+#: A complete architectural + shop pair is read together.  Starting on each individual confirmation
+#: freezes a package while its second drawing is still uploading, so the UI explicitly finalises the
+#: pair after both confirmations before this work is enqueued.
+EXTRACT_PACKAGE_WORKFLOW: Final = "extract_package"
 
 #: Constraints whose violation means "these exact bytes are already confirmed for this document".
 #: Both spellings of the same fact: the version is unique on `(document_id, sha256)`, and the artifact
@@ -136,7 +141,9 @@ def storage_key(document_id: UUID, sha256: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _package_revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRevision:
+def _package_revision(
+    session: Session, project_id: UUID, package_id: UUID, *, lock: bool = False
+) -> PackageRevision:
     """The revision a document registered now attaches to, or a 404.
 
     The highest `revision_number`, which is the order `docs/DESIGN_PLATFORM.md` §5 gives revisions.
@@ -150,7 +157,7 @@ def _package_revision(session: Session, project_id: UUID, package_id: UUID) -> P
         .where(Package.id == package_id, Package.project_id == project_id)
         .scalar_subquery()
     )
-    revision = session.scalar(
+    statement = (
         select(PackageRevision)
         .join(Package, Package.id == PackageRevision.package_id)
         .where(
@@ -159,6 +166,9 @@ def _package_revision(session: Session, project_id: UUID, package_id: UUID) -> P
             PackageRevision.revision_number == latest,
         )
     )
+    if lock:
+        statement = statement.with_for_update()
+    revision = session.scalar(statement)
     if revision is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
     return revision
@@ -261,11 +271,24 @@ def register_document(
     leaves no half-registered document behind. Nothing is written to storage either — a ticket is an
     intention, and an intention that is never used leaves nothing to clean up.
     """
-    del principal
-
     # Still resolved, and still a 404 if it is not this project's: registering a document against a
-    # package with no revision would create an identity nothing can ever be uploaded into.
-    _package_revision(session, project_id, package_id)
+    # package with no revision would create an identity nothing can ever be uploaded into. The first
+    # drawing begins assembly; extraction is deliberately not queued here because its counterpart is
+    # still allowed to arrive.
+    revision = _package_revision(session, project_id, package_id)
+    if revision.state == PackageState.CREATED:
+        transition(
+            session,
+            revision.id,
+            PackageState.UPLOADING,
+            actor=principal.id,
+            reason="reviewer started uploading the drawing pair",
+        )
+    elif revision.state != PackageState.UPLOADING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This drawing package is no longer accepting uploads.",
+        )
     # Package-scoped since ADR-0018. A document is one drawing for the life of the package; which
     # revisions include which version of it is recorded when a version is confirmed, below.
     document = Document(package_id=package_id, kind=body.kind)
@@ -316,7 +339,7 @@ def request_upload(
     "/projects/{project_id}/documents/{document_id}/confirm",
     response_model=DocumentVersionOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Confirm an upload landed, and start ingestion",
+    summary="Confirm an upload landed",
 )
 def confirm_upload(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -328,20 +351,19 @@ def confirm_upload(
     document_id: UUID,
     body: UploadConfirmation,
 ) -> DocumentVersionOut:
-    """Check the bytes, then write the version and the ingestion request in one transaction.
+    """Check the bytes, then write the version in one transaction.
 
     In order:
 
     1. The stored object for your declared hash must exist. Nothing there is `409` — there is no upload
        to confirm, which is different from a bad request.
     2. It is read and hashed. If it does not hash to what you declared, the request is refused with
-       `422` and **nothing at all is written** — no artifact row, no version, no outbox row.
-    3. The `SourceArtifact`, the `DocumentVersion` and the outbox row are written in one transaction.
-       Either all three land or none do.
+       `422` and **nothing at all is written** — no artifact row or version.
+    3. The `SourceArtifact` and `DocumentVersion` are written in one transaction. Either both land or
+       neither does. Extraction is a separate package-level request after both PDFs are confirmed.
 
     Returns `201` when a version was created and `200` when these exact bytes had already been
-    confirmed. The repeat is a genuine no-op: the same version comes back and no second outbox row is
-    written, so ingestion does not run twice.
+    confirmed. The repeat is a genuine no-op: the same version comes back and it does not start work.
 
     Reading the object to hash it is the one piece of real work here, and it is bounded by the size of
     one drawing. It is also the only honest way to verify: `AGENTS.md` §2.7 pins a document version to
@@ -433,18 +455,6 @@ def confirm_upload(
         # ingestion request had already been recorded.
         session.flush()
 
-        enqueue(
-            session,
-            workflow=INGEST_WORKFLOW,
-            payload={
-                "document_version_id": str(version.id),
-                "document_id": str(document.id),
-                "package_revision_id": str(revision.id),
-                "project_id": str(project_id),
-                "storage_key": key,
-                "sha256": digest,
-            },
-        )
         session.commit()
     except IntegrityError as error:
         session.rollback()
@@ -473,3 +483,74 @@ def confirm_upload(
         size_bytes=artifact.size,
         created_at=version.created_at,
     )
+
+
+@router.post(
+    "/projects/{project_id}/packages/{package_id}/extract",
+    response_model=ExtractionRequestOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start AI reading after both drawing PDFs are confirmed",
+)
+def start_extraction(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    _: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> ExtractionRequestOut:
+    """Freeze a completed drawing pair and enqueue its read-only extraction stages.
+
+    This is intentionally separate from confirming one document: a worker must never read and freeze
+    an architectural PDF while the shop PDF is still in flight.  It performs no extraction itself;
+    the outbox record and state transition commit together, then the worker reads the two immutable
+    documents.  It also does not run checks -- OCR proposals remain untyped until a reviewer confirms
+    them.
+    """
+    revision = _package_revision(session, project_id, package_id, lock=True)
+    if revision.state != PackageState.UPLOADING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Both PDFs must be uploaded before AI reading can start.",
+        )
+
+    kind_counts = {
+        str(kind): count
+        for kind, count in session.execute(
+            select(Document.kind, func.count())
+            .join(PackageRevisionDocument, PackageRevisionDocument.document_id == Document.id)
+            .where(PackageRevisionDocument.package_revision_id == revision.id)
+            .group_by(Document.kind)
+        ).all()
+    }
+    required = {DocumentKind.ARCHITECTURAL.value, DocumentKind.SHOP.value}
+    if set(kind_counts) != required or any(kind_counts.get(kind) != 1 for kind in required):
+        missing = ", ".join(sorted(kind for kind in required if kind_counts.get(kind, 0) == 0))
+        duplicates = ", ".join(sorted(kind for kind, count in kind_counts.items() if count > 1))
+        detail = "Upload exactly one confirmed architectural PDF and one confirmed shop PDF before AI reading can start."
+        if missing:
+            detail += f" Missing: {missing}."
+        if duplicates:
+            detail += f" Duplicate kinds: {duplicates}."
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=detail,
+        )
+
+    transition(
+        session,
+        revision.id,
+        PackageState.UPLOADED,
+        actor=principal.id,
+        reason="architectural and shop PDFs confirmed; reviewer requested AI reading",
+    )
+    accepted = enqueue(
+        session,
+        workflow=EXTRACT_PACKAGE_WORKFLOW,
+        payload={"package_revision_id": str(revision.id), "project_id": str(project_id)},
+    )
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return ExtractionRequestOut(accepted_id=accepted, package_revision_id=revision.id)

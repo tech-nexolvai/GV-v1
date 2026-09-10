@@ -68,21 +68,20 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Confirm an upload landed, and start ingestion
-         * @description Check the bytes, then write the version and the ingestion request in one transaction.
+         * Confirm an upload landed
+         * @description Check the bytes, then write the version in one transaction.
          *
          *     In order:
          *
          *     1. The stored object for your declared hash must exist. Nothing there is `409` — there is no upload
          *        to confirm, which is different from a bad request.
          *     2. It is read and hashed. If it does not hash to what you declared, the request is refused with
-         *        `422` and **nothing at all is written** — no artifact row, no version, no outbox row.
-         *     3. The `SourceArtifact`, the `DocumentVersion` and the outbox row are written in one transaction.
-         *        Either all three land or none do.
+         *        `422` and **nothing at all is written** — no artifact row or version.
+         *     3. The `SourceArtifact` and `DocumentVersion` are written in one transaction. Either both land or
+         *        neither does. Extraction is a separate package-level request after both PDFs are confirmed.
          *
          *     Returns `201` when a version was created and `200` when these exact bytes had already been
-         *     confirmed. The repeat is a genuine no-op: the same version comes back and no second outbox row is
-         *     written, so ingestion does not run twice.
+         *     confirmed. The repeat is a genuine no-op: the same version comes back and it does not start work.
          *
          *     Reading the object to hash it is the one piece of real work here, and it is bounded by the size of
          *     one drawing. It is also the only honest way to verify: `AGENTS.md` §2.7 pins a document version to
@@ -237,6 +236,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/crop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the mechanical crop behind an untyped AI reading
+         * @description Return the stored pixels a reviewer must inspect before naming a proposal.
+         *
+         *     This is deliberately candidate-scoped: the reading is still untyped, so it must not be exposed
+         *     as a finding or redline.  The SQL path proves both the candidate and its crop belong to the
+         *     package's current revision, then the stored digest is checked before bytes leave the service.
+         */
+        get: operations["candidate_crop_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__crop_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/chat": {
         parameters: {
             query?: never;
@@ -339,6 +362,32 @@ export interface paths {
         get: operations["evidence_crop_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__crop_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/extract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start AI reading after both drawing PDFs are confirmed
+         * @description Freeze a completed drawing pair and enqueue its read-only extraction stages.
+         *
+         *     This is intentionally separate from confirming one document: a worker must never read and freeze
+         *     an architectural PDF while the shop PDF is still in flight.  It performs no extraction itself;
+         *     the outbox record and state transition commit together, then the worker reads the two immutable
+         *     documents.  It also does not run checks -- OCR proposals remain untyped until a reviewer confirms
+         *     them.
+         */
+        post: operations["start_extraction_api_v1_projects__project_id__packages__package_id__extract_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1191,6 +1240,11 @@ export interface components {
              * Format: uuid
              */
             candidate_id: string;
+            /**
+             * Confidence
+             * @description The extractor confidence as recorded; it is not a semantic-type confidence.
+             */
+            confidence?: string | null;
             /** Corroboration Lane */
             corroboration_lane?: string | null;
             /** Corroboration Status */
@@ -1507,6 +1561,26 @@ export interface components {
             /** Abstained */
             abstained: boolean;
             chain: components["schemas"]["FindingChain"];
+        };
+        /**
+         * ExtractionRequestOut
+         * @description The durable request to read a completed two-drawing package.
+         *
+         *     Upload confirmation proves that one file landed. It must not start a package review while its
+         *     counterpart may still be arriving; this handle exists only after the architectural and shop pair
+         *     have both been confirmed.
+         */
+        ExtractionRequestOut: {
+            /**
+             * Accepted Id
+             * Format: uuid
+             */
+            accepted_id: string;
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
         };
         /**
          * FindingChain
@@ -2795,6 +2869,39 @@ export interface operations {
             };
         };
     };
+    candidate_crop_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__crop_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The integrity-checked mechanical crop. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reviewer_chat_api_v1_projects__project_id__packages__package_id__chat_post: {
         parameters: {
             query?: never;
@@ -2925,6 +3032,38 @@ export interface operations {
                 };
                 content: {
                     "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_extraction_api_v1_projects__project_id__packages__package_id__extract_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtractionRequestOut"];
                 };
             };
             /** @description Validation Error */
@@ -3617,9 +3756,7 @@ export interface operations {
     };
     list_semantic_types_api_v1_semantic_types_get: {
         parameters: {
-            query: {
-                project_id: string;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -3633,15 +3770,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": string[];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
