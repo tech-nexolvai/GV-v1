@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, FileImage, MapPin } from 'lucide-react';
+import { ArrowLeft, X, FileImage, MapPin } from 'lucide-react';
 import type { Finding } from '../../data/types';
 import { downloadEvidenceCrop } from '../../api/client';
 import { OutcomeBadge } from '../ui/Badge';
@@ -25,6 +25,14 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
           <span className="evidence-panel__name">{finding.name}</span>
           <OutcomeBadge outcome={finding.outcome} size="sm" />
         </div>
+        <button
+          className="btn btn--ghost btn--sm evidence-panel__back"
+          onClick={onClose}
+          aria-label="Back to findings"
+        >
+          <ArrowLeft size={13} />
+          Findings
+        </button>
         <button
           className="btn btn--subtle btn--icon btn--sm"
           onClick={onClose}
@@ -87,6 +95,10 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
             <p className="evidence-panel__no-evidence-guidance">
               This is not visual drawing evidence. To inspect a real crop, upload the architectural and shop PDFs, then run the review.
             </p>
+            <button className="btn btn--action evidence-panel__empty-back" onClick={onClose}>
+              <ArrowLeft size={13} />
+              Back to findings
+            </button>
           </div>
         )}
       </div>

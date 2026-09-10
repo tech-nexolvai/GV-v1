@@ -65,6 +65,7 @@ def test_chat_only_returns_narratives_backed_by_the_selected_deterministic_run()
     result = answer_question("What failed and why?", (failed, passed), _Model((_faithful(failed),)))
 
     assert result.mode is ChatMode.LLM
+    assert result.model_id == "configured-model"
     assert [item.finding_key for item in result.narratives] == ["finding-fail"]
     assert "1 of 2 recorded findings" in result.text
 
@@ -79,6 +80,7 @@ def test_chat_rejects_a_provider_that_asserts_a_verdict_not_in_the_finding() -> 
     result = answer_question("Why did this fail?", (finding,), _Model((invented,)))
 
     assert result.mode is ChatMode.STRUCTURED_FALLBACK
+    assert result.model_id is None
     assert result.narratives[0].text == deterministic_summary(finding)
     assert "deterministic check and outcome" in str(result.fallback_reason)
 

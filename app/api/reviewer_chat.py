@@ -54,6 +54,7 @@ class ReviewerChatOut(BaseModel):
 
     answer: str
     mode: str
+    model_id: str | None = None
     fallback_reason: str | None = None
     findings: tuple[ReviewerChatNarrative, ...]
 
@@ -180,6 +181,7 @@ def reviewer_chat(
     return ReviewerChatOut(
         answer=reply.text,
         mode=reply.mode.value,
+        model_id=reply.model_id,
         fallback_reason=reply.fallback_reason,
         findings=tuple(
             ReviewerChatNarrative(finding_id=UUID(item.finding_key), text=item.text)

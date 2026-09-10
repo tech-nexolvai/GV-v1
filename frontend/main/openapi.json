@@ -2105,6 +2105,17 @@
           "mode": {
             "title": "Mode",
             "type": "string"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
           }
         },
         "required": [

@@ -109,6 +109,41 @@
   flex-wrap: wrap;
 }
 
+.review-page__pkg-summary {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.review-page__record-ids {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.review-page__record-ids summary { cursor: pointer; }
+.review-page__record-ids[open] { display: flex; flex-direction: column; gap: 3px; }
+.review-page__record-ids span { display: flex; align-items: center; gap: var(--space-1); }
+
+.review-page__method {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 280px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: var(--leading-normal);
+}
+
+.review-page__method-label {
+  color: var(--text-body);
+  font-size: 10px;
+  font-weight: var(--weight-semi);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
+
 /* Pkg ID — demoted to mono caption */
 .review-page__pkg-id {
   display: flex;
@@ -187,6 +222,8 @@
   padding-top: var(--space-3);
   gap: var(--space-3);
 }
+
+[data-style="ide"] .review-page__method { max-width: none; }
 
 [data-style="ide"] .review-page__progress {
   align-items: flex-start;

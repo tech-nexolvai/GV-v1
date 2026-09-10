@@ -59,6 +59,22 @@ export function ChatThread({
               {renderMarkdown(msg.content)}
             </div>
 
+            {msg.role === 'assistant' && msg.narration && (
+              <div className={`chat-message__provenance chat-message__provenance--${msg.narration.mode}`}>
+                {msg.narration.mode === 'llm' ? (
+                  <>
+                    <strong>AI narration used</strong>
+                    <span>Bedrock model <code>{msg.narration.modelId ?? 'configured model'}</code>; its prose passed the fact-preservation guard.</span>
+                  </>
+                ) : (
+                  <>
+                    <strong>Deterministic fallback</strong>
+                    <span>No AI prose was used for this response. The recorded findings below are unchanged.</span>
+                  </>
+                )}
+              </div>
+            )}
+
             {/* Inline findings */}
             {msg.findings && msg.findings.length > 0 && (
               <div className="chat-message__findings">

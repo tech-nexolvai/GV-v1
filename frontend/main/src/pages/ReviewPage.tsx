@@ -174,6 +174,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
           : `${fallback}${response.answer}`,
         timestamp: new Date().toISOString(),
         findings: matched,
+        narration: {
+          mode: response.mode === 'llm' ? 'llm' : 'structured_fallback',
+          modelId: response.model_id ?? undefined,
+        },
       };
       setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
     } catch (error) {
@@ -434,6 +438,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
     // The project id, until the API carries a human project name. An id a reviewer can quote beats
     // a friendly label that is not in any record.
     project: remote.status === 'ready' ? remote.data.detail.project_id : '',
+    revision: remote.status === 'ready' ? remote.data.detail.current_revision_number : null,
   };
   const actioned = findings.filter(f => f.reviewer_action !== null).length;
   const needsAction = findings.filter(f =>
@@ -459,11 +464,14 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
           <div className="review-page__pkg-info">
             <span className="review-page__pkg-vendor">{pkg.vendor}</span>
             <div className="review-page__pkg-meta">
-              <div className="review-page__pkg-id">
-                <FileText size={11} />
-                {pkg.id}
-              </div>
-              <span className="review-page__pkg-project">{pkg.project}</span>
+              <span className="review-page__pkg-summary">
+                Reviewer package{pkg.revision === null ? '' : ` · Revision ${pkg.revision}`}
+              </span>
+              <details className="review-page__record-ids">
+                <summary>Record IDs</summary>
+                <span><FileText size={11} /> Package {pkg.id}</span>
+                <span>Project {pkg.project}</span>
+              </details>
             </div>
           </div>
           <StatusBadge status={pkg.status} />
@@ -471,6 +479,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
         </div>
 
         <div className="review-page__header-right">
+          <div className="review-page__method" aria-label="Review method">
+            <span className="review-page__method-label">How this review works</span>
+            <span>Recorded values → deterministic checks → optional AI narration</span>
+          </div>
           <div className="review-page__progress">
             <span className="review-page__progress-text">
               {actioned} / {findings.filter(f => f.outcome !== 'PASS' && f.outcome !== 'NO_APPLICABLE_RULE').length} reviewed

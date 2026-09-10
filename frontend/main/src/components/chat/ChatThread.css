@@ -132,6 +132,26 @@
   box-shadow: var(--shadow-sm);
 }
 
+/* This is execution provenance, not a verdict. It makes it explicit whether the optional language
+   layer actually ran while keeping the deterministic record visibly separate. */
+.chat-message__provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  max-width: min(700px, 100%);
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-body);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.chat-message__provenance strong { color: var(--text-primary); }
+.chat-message__provenance code { color: var(--text-primary); font-family: var(--font-mono); }
+.chat-message__provenance--structured_fallback { border-left-color: var(--status-review); }
+
 /* ── Findings block ───────────────────────────────────────── */
 .chat-message__findings {
   display: flex;
