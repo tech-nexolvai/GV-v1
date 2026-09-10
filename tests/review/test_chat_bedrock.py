@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
 import pytest
 
 from app.review.chat_bedrock import TOOL_NAME, BedrockReviewerChat, _Config
-from workflow.findings_composer import ComposerFinding
+from workflow.findings_composer import ComposerFinding, NarrationFact
 
 
 class _Client:
@@ -93,3 +94,26 @@ def test_transport_refuses_model_free_text_alongside_a_tool_call() -> None:
 
     with pytest.raises(RuntimeError, match="no free text"):
         composer.compose((_finding(),))
+
+
+def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
+    request = BedrockReviewerChat(
+        _Config("configured-model", "us-east-1", 1, 2), _Client(_response())
+    )._request((_finding(),))
+    system = request["system"]
+    assert isinstance(system, list)
+    text = system[0]["text"]
+    assert isinstance(text, str)
+    assert "Never emit the placeholder words" in text
+    assert "CT-DEPTH-001: FAIL." in text
+    messages = request["messages"]
+    assert isinstance(messages, list)
+    user_text = messages[0]["content"][0]["text"]
+    assert isinstance(user_text, str)
+    assert "Copy that entire string character-for-character" in user_text
+    fact_payload = messages[0]["content"][1]["text"]
+    assert isinstance(fact_payload, str)
+    assert json.loads(fact_payload) == [
+        NarrationFact.from_finding(_finding()).model_dump(mode="json")
+    ]
+    assert request["inferenceConfig"] == {"temperature": 0, "maxTokens": 1024}

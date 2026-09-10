@@ -263,7 +263,7 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
     worker = build_worker(
         settings,
         factory=factory,
-        stages=DatabaseStages(findings_composer=configured_findings_composer()),
+        stages=DatabaseStages(findings_composer=configured_findings_composer(settings)),
     )
     logger.info("worker starting")
     worker.start()

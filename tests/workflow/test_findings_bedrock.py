@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
 import pytest
 
+from app.config import Settings
+from app.review.chat_bedrock import configured_reviewer_chat
 from extraction.models.nova import NovaConfig
 from workflow.findings_bedrock import (
     TOOL_NAME,
@@ -15,7 +18,7 @@ from workflow.findings_bedrock import (
     FindingsBedrockError,
     configured_findings_composer,
 )
-from workflow.findings_composer import ComposerFinding
+from workflow.findings_composer import ComposerFinding, NarrationFact
 
 
 class _Client:
@@ -146,3 +149,48 @@ def test_invalid_optional_timeout_configuration_disables_only_narration(
     monkeypatch.setenv("GV_BEDROCK_CONNECT_TIMEOUT", "not-a-number")
 
     assert configured_findings_composer() is None
+
+
+def test_settings_configure_the_same_model_and_region_as_reviewer_chat() -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://gv:gv@localhost:5433/gvtest",
+        bedrock_model="qwen.qwen3-next-80b-a3b",
+        bedrock_region="us-east-1",
+        bedrock_connect_timeout=7,
+        bedrock_read_timeout=19,
+    )
+
+    composer = configured_findings_composer(settings)
+    reviewer_chat = configured_reviewer_chat(settings)
+
+    assert composer is not None
+    assert reviewer_chat is not None
+    assert composer._config.model_id == "qwen.qwen3-next-80b-a3b"
+    assert composer._config.region_name == "us-east-1"
+    assert composer._config.connect_timeout_seconds == 7
+    assert composer._config.read_timeout_seconds == 19
+    assert reviewer_chat._config.model_id == composer._config.model_id
+    assert reviewer_chat._config.region_name == composer._config.region_name
+
+
+def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
+    request = BedrockFindingsComposer(_config(), _Client(_response()))._request(
+        (_finding(),), "operator-configured-model"
+    )
+    system = request["system"]
+    assert isinstance(system, list)
+    text = system[0]["text"]
+    assert isinstance(text, str)
+    assert "Never emit the placeholder words" in text
+    assert "CT-DEPTH-001: FAIL." in text
+    messages = request["messages"]
+    assert isinstance(messages, list)
+    user_text = messages[0]["content"][0]["text"]
+    assert isinstance(user_text, str)
+    assert "Copy that entire string character-for-character" in user_text
+    fact_payload = messages[0]["content"][1]["text"]
+    assert isinstance(fact_payload, str)
+    assert json.loads(fact_payload) == [
+        NarrationFact.from_finding(_finding()).model_dump(mode="json")
+    ]
+    assert request["inferenceConfig"] == {"temperature": 0, "maxTokens": 1024}
