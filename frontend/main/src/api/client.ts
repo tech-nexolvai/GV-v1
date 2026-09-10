@@ -477,6 +477,30 @@ export async function downloadPdfReport(
   return response.blob();
 }
 
+/** The evidence-grounded drawing redline, available only after sign-off. */
+export async function downloadRedline(
+  projectId: string,
+  packageId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/redline.pdf`,
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The evidence-grounded redline could not be downloaded (HTTP ${response.status}).`,
+        request_id: '',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
 /**
  * The immutable crop mechanically cut around a confirmed reading.
  *

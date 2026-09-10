@@ -90,7 +90,8 @@ from evidence.polygon import Polygon
 from storage.hashing import content_key, sha256_stream
 from storage.store import ArtifactStore, StoredArtifact
 from verdict.finding import Finding
-from verdict.outcomes import Outcome, is_abstention
+from verdict.outcomes import Outcome, Severity, is_abstention
+from verdict.trace import CalculationTrace
 
 PDF_CONTENT_TYPE: Final = "application/pdf"
 
@@ -131,6 +132,48 @@ class VendorApprovalUnavailable(RuntimeError):
     already has. That is `reports.publication.render_vendor_redline`, and refusing here is what
     makes it the only route rather than the recommended one.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class RedlineFinding:
+    """The stored facts needed to place a finding without recomputing its verdict.
+
+    ``Finding`` is the engine's in-memory value and normally carries a complete calculation trace.
+    The output stage, however, reads an immutable persisted finding after the decision has already
+    happened.  Rebuilding measurements by parsing its display trace would violate ADR-0001.  This
+    narrow presentation value therefore carries the stored verdict facts unchanged.  It is not an
+    alternate verdict representation: it cannot execute a check, and its only job is to label an
+    already-recorded mark and summary entry.
+    """
+
+    rule_id: str
+    outcome: Outcome
+    severity: Severity
+    reason: str
+    snapshot_id: str
+    engine_version: str
+    trace: CalculationTrace | None = None
+    calculation_available: bool = False
+    """The stored finding had deterministic calculation detail, kept in the findings report.
+
+    The redline's drawing labels deliberately do not reconstruct those display values.  This flag
+    prevents its summary from claiming no calculation happened when a persisted presentation value
+    intentionally omits the calculation trace.
+    """
+    evidence_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.rule_id.strip():
+            raise ValueError("a redline finding must name the rule that produced it")
+        if not self.snapshot_id.strip():
+            raise ValueError("a redline finding must record its rule snapshot")
+
+    def summary(self) -> str:
+        head = f"{self.rule_id}: {self.outcome.value} [{self.severity.value}] — {self.reason}"
+        return f"{head} ({self.snapshot_id[:15]}...)"
+
+
+type RenderableFinding = Finding | RedlineFinding
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,12 +294,12 @@ class Unplaced:
     is indistinguishable from dropping it.
     """
 
-    finding: Finding
+    finding: RenderableFinding
     reason: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.finding, Finding):
-            raise TypeError("finding must be a Finding")
+        if not isinstance(self.finding, (Finding, RedlineFinding)):
+            raise TypeError("finding must be a Finding or RedlineFinding")
         if not self.reason.strip():
             raise ValueError("an unplaced finding must say why it could not be marked")
 
@@ -303,7 +346,7 @@ class _Undecodable:
 class _Mark:
     """One finding, and the polygon it will be drawn at."""
 
-    finding: Finding
+    finding: RenderableFinding
     polygon: Polygon
 
 
@@ -362,7 +405,7 @@ def label_anchor(points: Sequence[PdfPoint], angle: int) -> PdfPoint:
 
 def render_redline(
     package: RedlinePackage,
-    findings: Sequence[Finding],
+    findings: Sequence[RenderableFinding],
     mode: ReportMode,
     store: ArtifactStore,
     *,
@@ -386,8 +429,8 @@ def render_redline(
     if isinstance(findings, str) or not isinstance(findings, Sequence):
         raise TypeError("findings must be a sequence of Finding values")
     for finding in findings:
-        if not isinstance(finding, Finding):
-            raise TypeError("findings must contain only Finding values")
+        if not isinstance(finding, (Finding, RedlineFinding)):
+            raise TypeError("findings must contain only Finding or RedlineFinding values")
     if not isinstance(mode, ReportMode):
         raise TypeError("mode must be a ReportMode")
     if not isinstance(store, ArtifactStore):
@@ -519,7 +562,7 @@ def _decode_reference(reference: str) -> _Located | _Undecodable:
 
 
 def _place(
-    package: RedlinePackage, findings: Sequence[Finding]
+    package: RedlinePackage, findings: Sequence[RenderableFinding]
 ) -> tuple[dict[int, list[_Mark]], list[Unplaced], int]:
     """Sort every finding into marks on pages and a list of what could not be marked.
 
@@ -597,7 +640,7 @@ def _compose(
     package: RedlinePackage,
     reader: PdfReader,
     marks: dict[int, list[_Mark]],
-    findings: Sequence[Finding],
+    findings: Sequence[RenderableFinding],
     marked: int,
     unplaced: Sequence[Unplaced],
     clearance: VendorClearance | None,
@@ -748,7 +791,7 @@ class DerivedExpectation:
     """Plain English: which operation, over which operands and their values."""
 
 
-def derived_expectations(finding: Finding) -> tuple[DerivedExpectation, ...]:
+def derived_expectations(finding: RenderableFinding) -> tuple[DerivedExpectation, ...]:
     """The values this finding's calculation produced, rather than read off a drawing.
 
     Read from `trace.intermediates`, which is where a derivation records what it computed. The
@@ -763,8 +806,8 @@ def derived_expectations(finding: Finding) -> tuple[DerivedExpectation, ...]:
     direction would be a cycle. `reports.publication` re-exports it, so the documented entry point
     for vendor publication stays one module.
     """
-    if not isinstance(finding, Finding):
-        raise TypeError("finding must be a Finding")
+    if not isinstance(finding, (Finding, RedlineFinding)):
+        raise TypeError("finding must be a Finding or RedlineFinding")
     if finding.trace is None:
         return ()
 
@@ -785,7 +828,7 @@ def derived_expectations(finding: Finding) -> tuple[DerivedExpectation, ...]:
 
 
 def _derived_section(
-    findings: Sequence[Finding],
+    findings: Sequence[RenderableFinding],
     line: Callable[..., None],
     paragraph: Callable[..., None],
 ) -> None:
@@ -805,7 +848,18 @@ def _derived_section(
     )
     line("")
     if not derived:
-        paragraph("None. No value in this report was calculated; every figure was read or given.")
+        if any(
+            isinstance(finding, RedlineFinding) and finding.calculation_available
+            for finding in findings
+        ):
+            paragraph(
+                "No calculated value is reproduced on this redline. Consult the immutable findings "
+                "report for the exact deterministic calculation."
+            )
+        else:
+            paragraph(
+                "None. No value in this report was calculated; every figure was read or given."
+            )
     for expectation in derived:
         paragraph(f"{expectation.rule_id} — {expectation.name} (DERIVED): {expectation.value}")
         paragraph(expectation.calculation, "    ")
@@ -814,7 +868,7 @@ def _derived_section(
 
 def _listing(
     package: RedlinePackage,
-    findings: Sequence[Finding],
+    findings: Sequence[RenderableFinding],
     marked: int,
     unplaced: Sequence[Unplaced],
     pages_with_marks: frozenset[int],

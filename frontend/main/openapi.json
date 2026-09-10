@@ -3803,6 +3803,53 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/redline.pdf": {
+      "get": {
+        "description": "The signed-off redline, available only for typed findings with real stored locations.",
+        "operationId": "download_redline_api_v1_projects__project_id__packages__package_id__redline_pdf_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download the signed-off evidence-grounded drawing redline",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/report": {
       "get": {
         "description": "The signed-off workbook: the tabular audit handoff.",

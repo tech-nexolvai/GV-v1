@@ -9,9 +9,8 @@ Until this, checks ran, findings were recorded, and nothing turned them into a d
 
 Two tests here are guards rather than demonstrations. `test_a_superseded_run_is_left_out_of_the_workbook`
 protects a reviewer from a file containing two verdicts for one rule, and
-`test_no_redline_is_produced_and_the_vocabulary_has_no_word_for_one` protects the boundary this
-pipeline stops at: an annotated drawing needs each finding tied to a region of the sheet, which needs
-semantic typing, which the pipeline deliberately does not do.
+`test_no_redline_is_produced_without_typed_located_evidence` protects the redline boundary: a
+manual/untyped value must never acquire a plausible-looking drawing location.
 """
 
 from __future__ import annotations
@@ -405,19 +404,14 @@ def test_a_superseded_run_is_left_out_of_the_workbook(session: Session, store: L
     assert total == 2
 
 
-def test_no_redline_is_produced_and_the_vocabulary_has_no_word_for_one(
+def test_no_redline_is_produced_without_typed_located_evidence(
     session: Session, store: LocalStore
 ) -> None:
-    """**The hard stop.** Textual handoffs only; the schema cannot express a redline.
+    """**The hard stop.** A redline cannot be made from untyped/manual-only inputs.
 
-    An annotated drawing needs each finding tied to the region of the sheet it is about, which needs
-    a candidate to have a meaning — and candidates are deliberately untyped until the real drawings
-    (#274) and the vocabulary Q20 defers. A redline drawn from untyped candidates would put boxes on
-    a drawing with nothing behind their placement, which is worse than no redline because it looks
-    like evidence.
-
-    Asserted on the enum as well as on the output, so adding a `redline` member is a deliberate act
-    that fails this test and makes somebody read this docstring.
+    The enum can now express a redline, but the output stage still needs a stored finding-evidence
+    link to a typed canonical observation with a recorded page region. These injected operands are
+    reviewer input, not a drawing location, so producing a box here would be fabricated placement.
     """
     revision = _checked(session, store)
     DatabaseStages(store).generate_outputs(session, revision.id)
@@ -428,8 +422,11 @@ def test_no_redline_is_produced_and_the_vocabulary_has_no_word_for_one(
         OutputArtifactKind.FINDINGS_WORKBOOK.value,
         OutputArtifactKind.FINDINGS_PDF.value,
     }
-    assert [member.value for member in OutputArtifactKind] == ["findings_workbook", "findings_pdf"]
-    assert "redline" not in {member.value for member in OutputArtifactKind}
+    assert [member.value for member in OutputArtifactKind] == [
+        "findings_workbook",
+        "findings_pdf",
+        "redline",
+    ]
 
 
 def test_a_revision_with_no_findings_produces_no_file(session: Session, store: LocalStore) -> None:

@@ -241,3 +241,28 @@ def download_pdf_report(
         extension="pdf",
         label="findings PDF",
     )
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/redline.pdf",
+    response_class=Response,
+    summary="Download the signed-off evidence-grounded drawing redline",
+)
+def download_redline(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+    project_id: UUID,
+    package_id: UUID,
+) -> Response:
+    """The signed-off redline, available only for typed findings with real stored locations."""
+    return _download_artifact(
+        _access,
+        session,
+        store,
+        project_id,
+        package_id,
+        kind=OutputArtifactKind.REDLINE,
+        extension="pdf",
+        label="evidence-grounded redline",
+    )

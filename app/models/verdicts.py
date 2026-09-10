@@ -320,15 +320,15 @@ class FindingEvidence(Base, TimestampedUUID, Immutable):
 class OutputArtifactKind(StrEnum):
     """What kind of deliverable an output artifact holds.
 
-    The workbook is the tabular audit handoff; the PDF is its reviewer-readable counterpart. A
-    `REDLINE` member remains absent deliberately: an
-    annotated drawing needs each finding tied to the region of the sheet it is about, which needs
-    semantic typing, and candidates are untyped until the real drawings (#274) and the vocabulary
-    Q20 defers. The `REDLINE` member waits for the day something can write one honestly.
+    The workbook is the tabular audit handoff; the PDF is its reviewer-readable counterpart.  The
+    redline is available only when a live finding links to a typed canonical observation with a
+    recorded page region.  Its renderer refuses to derive placement from raw candidates or display
+    text, so this enum is not permission to draw a box without evidence behind it.
     """
 
     FINDINGS_WORKBOOK = "findings_workbook"
     FINDINGS_PDF = "findings_pdf"
+    REDLINE = "redline"
 
 
 OUTPUT_ARTIFACT_KIND_VALUES = _sql_values(OutputArtifactKind)
