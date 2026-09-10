@@ -163,8 +163,10 @@ class RawPage:
     The seam between B2.1 (#123), which opens the PDF, and this module, which decides what the
     observation means. Everything here is measured or read; nothing here is a conclusion.
 
-    `unreadable_reason` is plain English for a reviewer — "the page object could not be decoded",
-    not an exception class name. Setting it is what makes the page's record `render_failed`.
+    `unreadable_reason` is plain English for a reviewer — for example, that the page has no text
+    objects and therefore needs OCR. It is not a rendering result: outlined text is deliberately
+    reported this way, while its pixels remain available to the OCR and evidence paths. The separate
+    `render_failed` observation is reserved for a page whose pixels cannot actually be rendered.
 
     **Dimensions are required even for an unreadable page**, because a page's size comes from the
     page dictionary while reading its content is a separate act that can fail on its own, and the
@@ -180,6 +182,7 @@ class RawPage:
     rotation: int
     vector_character_count: int
     unreadable_reason: str | None = None
+    render_failed: bool = False
 
     media_box: PageBox | None = None
     crop_box: PageBox | None = None
@@ -216,6 +219,7 @@ class RawPage:
         if self.vector_character_count < 0:
             raise ValueError("vector_character_count cannot be negative")
         _require_optional_text(self.unreadable_reason, "unreadable_reason")
+        _require_flag(self.render_failed, "render_failed")
         if self.unreadable_reason is not None and self.vector_character_count > 0:
             raise ValueError(
                 "a page recorded as unreadable cannot also report characters read from it. One of "
@@ -420,10 +424,9 @@ def build_manifest(
     page takes — see the module docstring for why there is no default and why a scanned page with a
     handful of stray characters is the case that matters.
 
-    Every page keeps its number. A page the reader could not read arrives with an
-    `unreadable_reason` and leaves as a record with `render_failed=True`, still in place; its
-    content hash is the hash of whatever was read, which for such a page may be nothing at all. That
-    is why `render_failed` and not the hash is the field a later stage must check.
+    Every page keeps its number. A page with no vector text arrives with an `unreadable_reason`, but
+    still proceeds to OCR and evidence rendering. Only an actual failed pixel render sets
+    `render_failed=True`; later stages must not treat an outlined-vector drawing as a broken page.
 
     No page is classified here, and no sheet number is read here. Both stay `None` until the stories
     that can honestly decide them (#161, #162) fill them in on a new record.
@@ -443,7 +446,7 @@ def build_manifest(
             height_pt=page.height_pt,
             rotation=page.rotation,
             has_vector_text=page.vector_character_count >= minimum_vector_characters,
-            render_failed=page.unreadable_reason is not None,
+            render_failed=page.render_failed,
             media_box=page.media_box,
             crop_box=page.crop_box,
         )

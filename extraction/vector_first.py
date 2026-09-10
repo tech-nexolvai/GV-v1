@@ -32,10 +32,12 @@ Source: issue #539. Verification: `tests/extraction/test_vector_first.py`.
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
+import pdfplumber
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
 import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
@@ -57,6 +59,11 @@ __all__ = [
 
 #: PDF user space is 72 units to the inch. The same definition `extraction/rasterise.py` states.
 _POINTS_PER_INCH = Decimal(72)
+
+#: A non-zero page box exposes a PDFium isolated-crop coordinate defect.  Rendering that visible
+#: page once and cutting the already-selected region is exact, but must stay bounded: a normal
+#: drawing sheet is still handled by the low-memory direct-region renderer below.
+_REFRAMED_VISIBLE_PAGE_MAX_PIXELS = 25_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,6 +298,120 @@ def crop_box_pt(
         document.close()
 
 
+def _declared_crop_box(data: bytes, page_index: int) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """Read the PDF-declared CropBox, before PDFium normalises its page origin.
+
+    PDFium's raw CropBox accessor returns its rendering-space box, which can already have a
+    translated origin. The region reader needs the original PDF-space box to reconcile a stored
+    polygon with that renderer's frame, so use the same parser that built the page transform.
+    """
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as document:
+            page = document.pages[page_index]
+            values = tuple(Decimal(str(value)) for value in page.cropbox)
+    except (IndexError, ValueError, TypeError) as error:
+        raise UnreadablePdf(
+            f"page {page_index} has no readable declared crop box: {error}"
+        ) from error
+    if len(values) != 4 or values[2] <= values[0] or values[3] <= values[1]:
+        raise UnreadablePdf("page crop box has no area for a localized render")
+    return values
+
+
+def _crop_from_visible_page(
+    page: Any,
+    region: OutlinedTextRegion,
+    *,
+    dpi: int,
+    margin_pt: Decimal,
+    raw_crop_box: tuple[Decimal, Decimal, Decimal, Decimal],
+) -> bytes:
+    """Render a bounded non-zero CropBox once, then cut its stored-coordinate region.
+
+    PDFium's ``Page.render(crop=...)`` takes a different coordinate frame for an isolated crop
+    when a page's CropBox has a non-zero origin.  The visual page itself renders correctly.  This
+    path therefore renders that *visible page*, never an uncropped sheet, and applies the same
+    stored ``0..1`` region that selected the OCR request.  Only the localized crop is returned to
+    OCR; no full-page OCR is introduced.
+    """
+    width_pt, height_pt = (Decimal(str(value)) for value in page.get_size())
+    width_px = int((width_pt * Decimal(dpi) / _POINTS_PER_INCH).to_integral_value(ROUND_CEILING))
+    height_px = int((height_pt * Decimal(dpi) / _POINTS_PER_INCH).to_integral_value(ROUND_CEILING))
+    if width_px * height_px > _REFRAMED_VISIBLE_PAGE_MAX_PIXELS:
+        raise UnreadablePdf(
+            "a non-zero CropBox needs a reframed localized render of "
+            f"{width_px}x{height_px} pixels, over the "
+            f"{_REFRAMED_VISIBLE_PAGE_MAX_PIXELS}-pixel safety bound"
+        )
+
+    bitmap = page.render(scale=float(Decimal(dpi) / _POINTS_PER_INCH), rev_byteorder=True)
+    width, height, channels, stride = (
+        int(bitmap.width),
+        int(bitmap.height),
+        int(bitmap.n_channels),
+        int(bitmap.stride),
+    )
+    # The annotation parser works in the PDF's declared CropBox frame. PDFium's rendered page
+    # reports its own bounding box, which can be translated for a non-zero (especially negative)
+    # page origin. Apply that *measured* translation before cutting pixels; treating the two origins
+    # as interchangeable is the isolated-crop bug this fallback exists to avoid.
+    bbox_left, _, _, bbox_top = (Decimal(str(value)) for value in page.get_bbox())
+    crop_left, _, _, crop_top = raw_crop_box
+    scale = Decimal(dpi) / _POINTS_PER_INCH
+    x_offset = (crop_left - bbox_left) * scale
+    y_offset = (bbox_top - crop_top) * scale
+    points = region.extent.points
+    margin_px = int((margin_pt * Decimal(dpi) / _POINTS_PER_INCH).to_integral_value(ROUND_CEILING))
+    left = max(
+        0,
+        int(
+            (min(point.x for point in points) * Decimal(width) + x_offset).to_integral_value(
+                ROUND_FLOOR
+            )
+        )
+        - margin_px,
+    )
+    top = max(
+        0,
+        int(
+            (min(point.y for point in points) * Decimal(height) + y_offset).to_integral_value(
+                ROUND_FLOOR
+            )
+        )
+        - margin_px,
+    )
+    right = min(
+        width,
+        int(
+            (max(point.x for point in points) * Decimal(width) + x_offset).to_integral_value(
+                ROUND_CEILING
+            )
+        )
+        + margin_px,
+    )
+    bottom = min(
+        height,
+        int(
+            (max(point.y for point in points) * Decimal(height) + y_offset).to_integral_value(
+                ROUND_CEILING
+            )
+        )
+        + margin_px,
+    )
+    if right <= left or bottom <= top:
+        raise UnreadablePdf("the selected region has no visible pixels to crop")
+
+    source = bytes(bitmap.buffer)
+    rows: list[bytes] = []
+    for y in range(top, bottom):
+        row = source[y * stride + left * channels : y * stride + right * channels]
+        if channels == 3:
+            rows.append(row)
+        else:
+            rows.append(b"".join(row[index : index + 3] for index in range(0, len(row), channels)))
+    return encode_png(right - left, bottom - top, b"".join(rows))
+
+
 def region_crop(
     data: bytes,
     page_index: int,
@@ -336,6 +457,14 @@ def region_crop(
             page = document[page_index]
         except Exception as error:
             raise UnreadablePdf(f"page {page_index} is not in this document: {error}") from error
+        raw_crop_box = _declared_crop_box(data, page_index)
+        crop_left, crop_bottom, _, _ = raw_crop_box
+        if crop_left != 0 or crop_bottom != 0:
+            if not include_markup:
+                _drop_other_layers(page)
+            return _crop_from_visible_page(
+                page, region, dpi=dpi, margin_pt=margin_pt, raw_crop_box=raw_crop_box
+            )
         width_pt, height_pt = (Decimal(str(value)) for value in page.get_size())
     finally:
         document.close()

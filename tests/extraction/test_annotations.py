@@ -232,6 +232,27 @@ def test_the_stamp_line_work_is_extracted_as_page_geometry() -> None:
     assert segment.axis == "horizontal"
 
 
+def test_a_stamp_partly_outside_a_tight_visible_page_is_clipped_not_discarded() -> None:
+    """A cropped upload still exposes the part of a vendor stamp a reviewer can see.
+
+    The page box is a tight, non-zero rectangle while the original stamp rectangle extends past
+    its right edge. PDF viewers clip that stamp; the reader must use its visible geometry rather
+    than reject it because the original rectangle is not wholly inside the new page box.
+    """
+    cropped = _pdf(
+        annotations=[_stamp(appearance_object=6)],
+        extra_objects=[_appearance()],
+        box=b"[50 50 300 250]",
+    )
+
+    layers = _layers(cropped)
+
+    assert layers.readable
+    assert len(layers.drawing_segments) == 1
+    assert len(layers.outlined_regions) == 1
+    assert not any("stored page bounds" in item.reason for item in layers.refusals)
+
+
 def test_the_appearance_matrix_places_the_geometry() -> None:
     """**The bug that produced plausible geometry in the wrong place.**
 

@@ -161,6 +161,22 @@ def test_a_rendered_page_is_not_marked_failed() -> None:
     assert _render().render_failed is False
 
 
+def test_a_nonzero_crop_box_is_reframed_to_the_declared_visible_origin() -> None:
+    """A stored polygon from a tightly cropped page must crop the pixels it actually names.
+
+    PDFium can render such a page with a translated origin.  The reader's transform is defined by
+    the PDF's declared CropBox, so the red square at PDF ``(60, 60)`` belongs at visible pixel
+    ``(10, 80)`` after a ``[50 50 250 150]`` crop, not at PDFium's translated location.
+    """
+    data = _pdf(b"1 0 0 rg 60 60 20 20 re f\n", box=b"[0 0 300 200]").replace(
+        b" /Resources", b" /CropBox [50 50 250 150] /Resources"
+    )
+    rendered = _render(data, dpi=72)
+
+    pixel = (80 * rendered.width_px + 10) * 3
+    assert tuple(rendered.rgb_bytes[pixel : pixel + 3]) == (255, 0, 0)
+
+
 # ---------------------------------------------------------------------------
 # What it refuses
 # ---------------------------------------------------------------------------

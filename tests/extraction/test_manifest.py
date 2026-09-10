@@ -41,6 +41,7 @@ def _raw(
     rotation: int = 0,
     characters: int = 500,
     unreadable_reason: str | None = None,
+    render_failed: bool = False,
     width_pt: Decimal = LETTER_WIDTH,
     height_pt: Decimal = LETTER_HEIGHT,
 ) -> RawPage:
@@ -52,6 +53,7 @@ def _raw(
         rotation=rotation,
         vector_character_count=characters,
         unreadable_reason=unreadable_reason,
+        render_failed=render_failed,
     )
 
 
@@ -87,7 +89,11 @@ def test_a_page_that_could_not_be_read_is_kept_and_marked() -> None:
     manifest = _manifest(
         _raw(0),
         _raw(
-            1, content=b"", characters=0, unreadable_reason="the page object could not be decoded"
+            1,
+            content=b"",
+            characters=0,
+            unreadable_reason="the page object could not be decoded",
+            render_failed=True,
         ),
         _raw(2),
     )
@@ -102,10 +108,22 @@ def test_a_page_that_could_not_be_read_is_kept_and_marked() -> None:
 def test_an_unreadable_page_is_never_reported_as_carrying_a_text_layer() -> None:
     """It would route the page to the vector lane, which finds nothing, while the manifest says the
     page was read. Both halves of that are wrong and neither is visible downstream."""
-    manifest = _manifest(_raw(0, content=b"", characters=0, unreadable_reason="render failed"))
+    manifest = _manifest(
+        _raw(0, content=b"", characters=0, unreadable_reason="render failed", render_failed=True)
+    )
 
     assert manifest.pages[0].has_vector_text is False
     assert manifest.pages[0].render_failed is True
+
+
+def test_an_outlined_page_needing_ocr_is_not_a_render_failure() -> None:
+    """Outlined vendor dimensions have no text objects, but their pixels remain usable evidence."""
+    manifest = _manifest(
+        _raw(0, content=b"", characters=0, unreadable_reason="no text objects; needs OCR")
+    )
+
+    assert manifest.pages[0].has_vector_text is False
+    assert manifest.pages[0].render_failed is False
 
 
 def test_a_reader_cannot_claim_characters_from_a_page_it_could_not_read() -> None:
