@@ -29,6 +29,8 @@ __all__ = [
     "CompositionResult",
     "FindingsLanguageModel",
     "ModelComposition",
+    "NarrationFact",
+    "NarrationOperand",
     "NarrativeBatch",
     "NarrativeGuardError",
     "ProposedNarrative",
@@ -141,6 +143,71 @@ class ComposerFinding:
         data = self.as_data()
         data.pop("finding_key")
         return json.dumps(data, sort_keys=True, separators=(",", ":"))
+
+
+class NarrationOperand(BaseModel):
+    """The validated operand shape exposed to the narration provider."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    name: str
+    value: str
+    source: str
+    evidence_page: str | None
+
+
+class NarrationFact(BaseModel):
+    """One immutable finding payload a language-only adapter may receive.
+
+    The provider gets the deterministic summary as ``required_text`` rather than reconstructing
+    facts from individual fields.  Both Bedrock adapters serialize this one strict contract so chat
+    and output narration cannot drift in what they consider grounded data.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    finding_key: str
+    check: str
+    check_name: str
+    deterministic_outcome: str
+    severity: str
+    reason: str
+    comparison: str | None
+    difference: str | None
+    tolerance: str | None
+    arithmetic_unit: str | None
+    operands: tuple[NarrationOperand, ...]
+    evidence_pages: tuple[str, ...]
+    notes: tuple[str, ...]
+    required_text: str
+
+    @classmethod
+    def from_finding(cls, finding: ComposerFinding) -> NarrationFact:
+        """Validate the exact provider facts for one stored deterministic finding."""
+        return cls(
+            finding_key=finding.key,
+            check=finding.check,
+            check_name=finding.check_name,
+            deterministic_outcome=finding.outcome,
+            severity=finding.severity,
+            reason=finding.reason,
+            comparison=finding.comparison,
+            difference=finding.difference,
+            tolerance=finding.tolerance,
+            arithmetic_unit=finding.arithmetic_unit,
+            operands=tuple(
+                NarrationOperand(
+                    name=operand.name,
+                    value=operand.value,
+                    source=operand.source,
+                    evidence_page=operand.evidence_page,
+                )
+                for operand in finding.operands
+            ),
+            evidence_pages=finding.evidence_pages,
+            notes=finding.notes,
+            required_text=deterministic_summary(finding),
+        )
 
 
 class ProposedNarrative(BaseModel):

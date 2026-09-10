@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import pytest
 
 from app.config import Settings
+from app.review.chat_bedrock import configured_reviewer_chat
 from extraction.models.nova import NovaConfig
 from workflow.findings_bedrock import (
     TOOL_NAME,
@@ -16,7 +18,7 @@ from workflow.findings_bedrock import (
     FindingsBedrockError,
     configured_findings_composer,
 )
-from workflow.findings_composer import ComposerFinding
+from workflow.findings_composer import ComposerFinding, NarrationFact
 
 
 class _Client:
@@ -159,12 +161,16 @@ def test_settings_configure_the_same_model_and_region_as_reviewer_chat() -> None
     )
 
     composer = configured_findings_composer(settings)
+    reviewer_chat = configured_reviewer_chat(settings)
 
     assert composer is not None
+    assert reviewer_chat is not None
     assert composer._config.model_id == "qwen.qwen3-next-80b-a3b"
     assert composer._config.region_name == "us-east-1"
     assert composer._config.connect_timeout_seconds == 7
     assert composer._config.read_timeout_seconds == 19
+    assert reviewer_chat._config.model_id == composer._config.model_id
+    assert reviewer_chat._config.region_name == composer._config.region_name
 
 
 def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
@@ -184,4 +190,7 @@ def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
     assert "Copy that entire string character-for-character" in user_text
     fact_payload = messages[0]["content"][1]["text"]
     assert isinstance(fact_payload, str)
-    assert '"required_text"' in fact_payload
+    assert json.loads(fact_payload) == [
+        NarrationFact.from_finding(_finding()).model_dump(mode="json")
+    ]
+    assert request["inferenceConfig"] == {"temperature": 0, "maxTokens": 1024}

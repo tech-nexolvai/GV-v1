@@ -17,8 +17,8 @@ from app.config import Settings
 from workflow.findings_composer import (
     ComposerFinding,
     ModelComposition,
+    NarrationFact,
     NarrativeBatch,
-    deterministic_summary,
 )
 
 __all__ = ["BedrockReviewerChat", "configured_reviewer_chat"]
@@ -103,10 +103,7 @@ class BedrockReviewerChat:
                         {
                             "text": json.dumps(
                                 [
-                                    {
-                                        **item.as_data(),
-                                        "required_text": deterministic_summary(item),
-                                    }
+                                    NarrationFact.from_finding(item).model_dump(mode="json")
                                     for item in findings
                                 ],
                                 sort_keys=True,

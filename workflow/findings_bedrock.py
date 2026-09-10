@@ -23,8 +23,8 @@ from extraction.models.nova import (
 from workflow.findings_composer import (
     ComposerFinding,
     ModelComposition,
+    NarrationFact,
     NarrativeBatch,
-    deterministic_summary,
 )
 
 __all__ = ["BedrockFindingsComposer", "configured_findings_composer"]
@@ -119,14 +119,7 @@ class BedrockFindingsComposer:
 
     def _request(self, findings: Sequence[ComposerFinding], model_id: str) -> dict[str, object]:
         facts = [
-            {
-                **finding.as_data(),
-                # The language model receives the exact deterministic render it must preserve.  It
-                # may add connective reviewer language after this text, but never has to recreate a
-                # number, outcome, or source label from a JSON field on its own.
-                "required_text": deterministic_summary(finding),
-            }
-            for finding in findings
+            NarrationFact.from_finding(finding).model_dump(mode="json") for finding in findings
         ]
         return {
             "modelId": model_id,
