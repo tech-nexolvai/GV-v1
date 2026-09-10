@@ -27,13 +27,57 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from fractions import Fraction
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+
+class _DemoStages(Protocol):
+    """The two real stages the seed deliberately demonstrates."""
+
+    def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]: ...
+
+    def generate_outputs(
+        self, session: Session, package_revision_id: UUID
+    ) -> Mapping[str, object]: ...
+
+
+def _finish_seeded_review(
+    session: Session, revision_id: UUID, stages: _DemoStages
+) -> tuple[Mapping[str, object], Mapping[str, object]]:
+    """Run the human-supplied demo through the same final hand-over as a real review.
+
+    The seed has no uploaded drawings, so it starts where the reviewer-input path becomes
+    deterministic checking. It must nonetheless record that checking and report generation ended
+    before the package is presented for review; otherwise a completed demo says "Running checks"
+    forever.
+    """
+    from app.lifecycle.states import transition
+    from app.models import PackageState
+
+    result = stages.run_checks(session, revision_id)
+    transition(
+        session,
+        revision_id,
+        PackageState.GENERATING_OUTPUTS,
+        actor="demo seed",
+        reason="the seeded reviewer inputs were checked",
+    )
+    outputs = stages.generate_outputs(session, revision_id)
+    transition(
+        session,
+        revision_id,
+        PackageState.AWAITING_REVIEW,
+        actor="demo seed",
+        reason="the seeded findings and handoff outputs are ready for reviewer sign-off",
+    )
+    return result, outputs
+
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -142,7 +186,14 @@ def main() -> int:
             }
         }
 
-        result = DatabaseStages(operands=operands).run_checks(session, revision.id)
+        # This seed enters at RUNNING_CHECKS because it deliberately demonstrates the
+        # human-operated path after the reviewer has supplied the inputs above.  It still has to
+        # walk the final two real lifecycle edges: leaving it at RUNNING_CHECKS once the findings
+        # and report exist tells the reviewer work is ongoing when there is nothing left to wait
+        # for.
+        result, outputs = _finish_seeded_review(
+            session, revision.id, DatabaseStages(operands=operands)
+        )
         session.commit()
 
         print(f"package  {package.id}")
@@ -152,6 +203,8 @@ def main() -> int:
             f"{COUNTERTOP_OVERHANG} = {CABINET_DEPTH + COUNTERTOP_OVERHANG})"
         )
         print(f"checks: {dict(result)}")
+        print(f"outputs: {dict(outputs)}")
+        print("status: ready for review")
         print()
         _print_findings(session, revision.id)
     return 0
