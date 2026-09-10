@@ -32,9 +32,12 @@ with for a crop's coordinates to land where the reviewer is looking.
 
 from __future__ import annotations
 
-from typing import Final
+import io
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Final
 from uuid import UUID
 
+import pdfplumber
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
 
 from evidence.coordinates import SUPPORTED_ROTATIONS
@@ -146,7 +149,12 @@ def render_page(
         # `rev_byteorder=True` is what makes this RGB. The default is BGR, and a reviewer shown a
         # channel-swapped crop would see a colour bug rather than a byte-order one.
         bitmap = page.render(scale=dpi / _POINTS_PER_INCH, rev_byteorder=True)
-        rgb = _packed_rgb(bitmap)
+        rgb = _reframe_visible_page(
+            bitmap,
+            page,
+            declared_crop_box=_declared_crop_box(data, page_index),
+            dpi=dpi,
+        )
     except (UnreadablePdf, PageTooLarge):
         raise
     except Exception as error:
@@ -166,6 +174,71 @@ def render_page(
         dpi=dpi,
         rgb_bytes=rgb,
     )
+
+
+def _declared_crop_box(data: bytes, page_index: int) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """Read the page's declared PDF-space CropBox before PDFium translates it.
+
+    ``PageTransform`` and localized OCR use the PDF-declared visible frame.  PDFium can expose the
+    same visible page through a translated rendering-space box, especially when a PDF has been
+    tightly cropped without translating its annotations.  Treating those origins as interchangeable
+    stores a real crop of the wrong drawing region.
+    """
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as document:
+            values = tuple(Decimal(str(value)) for value in document.pages[page_index].cropbox)
+    except (IndexError, TypeError, ValueError) as error:
+        raise UnreadablePdf(
+            f"page {page_index} has no readable declared crop box: {error}"
+        ) from error
+    if len(values) != 4 or values[2] <= values[0] or values[3] <= values[1]:
+        raise UnreadablePdf("page crop box has no area for rendering")
+    return values
+
+
+def _reframe_visible_page(
+    bitmap: Any,
+    page: Any,
+    *,
+    declared_crop_box: tuple[Decimal, Decimal, Decimal, Decimal],
+    dpi: int,
+) -> bytes:
+    """Return PDFium pixels in the declared visible-page frame used by stored polygons.
+
+    This normally returns the packed bitmap unchanged.  For a non-zero CropBox, PDFium's full-page
+    bitmap can be shifted relative to the declared origin.  Reframe the existing bounded bitmap,
+    never rerender or infer a location, so a candidate polygon continues to identify the exact
+    pixels OCR saw.  Missing edge pixels are white page background; no drawing pixels are invented.
+    """
+    raw = _packed_rgb(bitmap)
+    crop_left, crop_bottom, _, crop_top = declared_crop_box
+    if crop_left == 0 and crop_bottom == 0:
+        return raw
+
+    bbox_left, _, _, bbox_top = (Decimal(str(value)) for value in page.get_bbox())
+    scale = Decimal(dpi) / _POINTS_PER_INCH
+    x_offset = int(((crop_left - bbox_left) * scale).to_integral_value(ROUND_HALF_UP))
+    y_offset = int(((bbox_top - crop_top) * scale).to_integral_value(ROUND_HALF_UP))
+    if x_offset == 0 and y_offset == 0:
+        return raw
+
+    width = int(bitmap.width)
+    height = int(bitmap.height)
+    destination_left = max(0, -x_offset)
+    destination_right = min(width, width - x_offset)
+    destination_top = max(0, -y_offset)
+    destination_bottom = min(height, height - y_offset)
+    reframed = bytearray(b"\xff" * (width * height * 3))
+    if destination_right <= destination_left or destination_bottom <= destination_top:
+        return bytes(reframed)
+
+    row_bytes = (destination_right - destination_left) * 3
+    for destination_y in range(destination_top, destination_bottom):
+        source_y = destination_y + y_offset
+        source = (source_y * width + destination_left + x_offset) * 3
+        destination = (destination_y * width + destination_left) * 3
+        reframed[destination : destination + row_bytes] = raw[source : source + row_bytes]
+    return bytes(reframed)
 
 
 def _is_digest(value: object) -> bool:

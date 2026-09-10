@@ -384,6 +384,35 @@ def _polygon(
     )
 
 
+def _visible_annotation_rect(
+    rect: tuple[Decimal, Decimal, Decimal, Decimal], transform: PageTransform
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """Return the part of an annotation rectangle that is visible on this page.
+
+    A PDF page may use a non-zero, tight ``/CropBox`` without rewriting the page-space
+    rectangle of a stamp it clips. That is still a real drawing region: a viewer clips
+    the stamp at the page edge. Rejecting the entire annotation because one corner is
+    outside the visible box turns a valid cropped upload into a silent zero-reading
+    result.
+
+    This is deliberately an intersection, not a coordinate translation. The annotation
+    appearance still maps through its original ``/Rect``; only the part the reviewer can
+    see is admitted to the stored visible-page coordinate frame. A stamp with no visible
+    area remains unreadable rather than being moved onto the page.
+    """
+    left, bottom, right, top = rect
+    crop_left, crop_bottom, crop_right, crop_top = transform.crop_box
+    visible = (
+        max(left, crop_left),
+        max(bottom, crop_bottom),
+        min(right, crop_right),
+        min(top, crop_top),
+    )
+    if visible[2] <= visible[0] or visible[3] <= visible[1]:
+        raise UnreadablePdf("annotation rectangle does not intersect the visible crop box")
+    return visible
+
+
 def _stamp_paths(
     opened_pdf: Any, page_index: int, annotation_index: int
 ) -> tuple[tuple[tuple[Decimal, Decimal], ...], ...]:
@@ -692,8 +721,9 @@ def _read_layers(
                             f"({rect} against {seen}); their /Annots order does not agree, so "
                             "geometry cannot be attributed to text"
                         )
+                    visible_rect = _visible_annotation_rect(rect, transform)
                     extent, image_extent = _polygon(
-                        rect, transform, document_version_id, page_index
+                        visible_rect, transform, document_version_id, page_index
                     )
                 except (UnreadablePdf, TypeError, ValueError) as error:
                     refusals.append(LayerRefusal(index, subtype, str(error)))
@@ -712,16 +742,21 @@ def _read_layers(
                     except (UnreadablePdf, TypeError, ValueError) as error:
                         refusals.append(LayerRefusal(index, subtype, str(error)))
                         continue
-                    # **Clipped to the annotation's own rectangle, because a viewer clips too.**
+                    # **Clipped to the visible part of the annotation, because a viewer clips too.**
                     # An appearance stream may draw past its `/BBox`; PDF 32000-1 §12.5.5 says the
-                    # box clips it, so anything outside is not on the sheet a reviewer saw. Whole
-                    # paths are dropped rather than trimmed: a trimmed path would join two points
-                    # that were never adjacent, which is a line-work segment the drawing does not
-                    # have. Fourteen of stamp 22's 1310 paths on the first real sheet.
+                    # annotation box clips it, and a page's `/CropBox` can clip that box again.
+                    # Anything outside the visible intersection is not on the sheet a reviewer
+                    # saw. Whole paths are dropped rather than trimmed: a trimmed path would join
+                    # two points that were never adjacent, which is a line-work segment the drawing
+                    # does not have. Fourteen of stamp 22's 1310 paths on the first real sheet.
                     inside = tuple(
                         path
                         for path in paths
-                        if all(rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3] for x, y in path)
+                        if all(
+                            visible_rect[0] <= x <= visible_rect[2]
+                            and visible_rect[1] <= y <= visible_rect[3]
+                            for x, y in path
+                        )
                     )
                     if len(inside) != len(paths):
                         refusals.append(

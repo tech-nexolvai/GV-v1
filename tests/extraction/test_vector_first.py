@@ -225,6 +225,28 @@ def test_a_region_crop_is_a_png_of_that_region_at_the_vision_resolution() -> Non
     assert zlib.decompress(crop[41 : crop.rindex(b"IEND") - 8]), "the PNG has no image data"
 
 
+def test_a_region_crop_reframes_a_nonzero_visible_page_box() -> None:
+    """A tight crop with a non-zero PDF origin still yields the selected vendor region.
+
+    This models an upload trimmed around a stamp without translating that stamp's original
+    page-space rectangle. The region is first selected in the visible frame, then rendered from a
+    bounded visible-page bitmap rather than PDFium's misaligned isolated-crop frame.
+    """
+    cropped = _pdf(
+        annotations=[_stamp(appearance_object=6)],
+        extra_objects=[_appearance()],
+        box=b"[50 50 300 250]",
+    )
+    plan = _plan(cropped)
+
+    crop = region_crop(cropped, 0, plan.to_read[0].region, margin_pt=Decimal(2))
+    width, height = _png_size(crop)
+
+    assert 100 < width < 400
+    assert 50 < height < 400
+    assert zlib.decompress(crop[41 : crop.rindex(b"IEND") - 8]), "the PNG has no image data"
+
+
 def test_the_resolution_is_what_makes_the_crop_bigger() -> None:
     """Input: the same region at 150 and at 600 dpi. Outcome: four times the pixels each way.
 

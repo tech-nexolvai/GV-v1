@@ -130,6 +130,7 @@ def _run_checks(
     revision = session.get(PackageRevision, package_revision_id)  # type: ignore[arg-type]
     if revision is None:
         return {"implemented": True, "ran": False, "reason": "no such package revision"}
+    _resume_from_reviewer_input(session, revision)
     stages = _stages(discriminators=discriminators)
     workflow_run_id = UUID(idempotency_key)
     _ensure_workflow_run(session, package_revision_id, workflow_run_id, WorkflowRun)
@@ -159,6 +160,32 @@ def _run_checks(
     return {"checks": dict(outcome.payload), "outputs": dict(output.payload)}
 
 
+def _resume_from_reviewer_input(session: object, revision: object) -> None:
+    """Resume the exact stage that deliberately handed control to the reviewer.
+
+    Extraction ends in ``NEEDS_INPUT`` from ``VALIDATING_EVIDENCE`` so an empty proposal set has a
+    visible, actionable handoff.  Once the reviewer submits values, the lifecycle guard correctly
+    requires resumption at that same stage before checks may run; jumping straight to
+    ``RUNNING_CHECKS`` would bypass the invariant.  Validation's task has already been recorded, so
+    the subsequent idempotent ``run_stage`` does not repeat rendering — this transition records the
+    legal return from the human handoff.
+    """
+    from app.lifecycle.states import transition
+    from app.models import PackageRevision, PackageState
+
+    if not isinstance(revision, PackageRevision):
+        raise TypeError("revision must be a PackageRevision")
+    if PackageState(revision.state) is not PackageState.NEEDS_INPUT:
+        return
+    transition(
+        session,  # type: ignore[arg-type]
+        revision.id,
+        PackageState.VALIDATING_EVIDENCE,
+        actor="local review worker",
+        reason="reviewer supplied inputs; resuming from the evidence-validation handoff",
+    )
+
+
 def _ensure_workflow_run(
     session: object,
     package_revision_id: UUID,
@@ -186,6 +213,7 @@ def _extract_package(
     session: object, package_revision_id: UUID, idempotency_key: str
 ) -> Mapping[str, object]:
     """Run only the pre-verdict stages and leave OCR proposals waiting for human confirmation."""
+    from app.lifecycle.side_states import enter_needs_input
     from app.models import PackageState, WorkflowRun
     from workflow.review import run_stage
 
@@ -208,6 +236,19 @@ def _extract_package(
             stages=stages,  # type: ignore[arg-type]
         )
         results[stage] = dict(outcome.payload)
+    # Extraction is deliberately pre-verdict work. Whether it found many readings or none,
+    # the next actor is the reviewer: confirm the untyped proposals and supply the values the
+    # reader abstained on. Leaving a zero-result revision in VALIDATING_EVIDENCE makes that
+    # honest abstention indistinguishable from a worker that is still running.
+    enter_needs_input(
+        session,
+        package_revision_id,
+        actor="local review worker",
+        needed=(
+            "confirm any AI reading proposals, then provide the dimensions the reader abstained on "
+            "before running deterministic checks"
+        ),
+    )
     return results
 
 
