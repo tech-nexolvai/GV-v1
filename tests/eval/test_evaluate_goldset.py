@@ -252,6 +252,7 @@ def test_the_extraction_stage_never_receives_the_reviewer_answer(
             scoped_url,
             dpi=150,
             association=association,
+            localized_ocr=None,
             vendor_stamps_only=True,
         )
         candidates = list(result.session.scalars(select(ObservationCandidate)))

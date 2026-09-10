@@ -85,7 +85,7 @@ from eval.scorecard import render, score_package
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import lines_within
 from verdict.outcomes import Outcome, Severity
-from workflow.association import AssociationSettings
+from workflow.association import AssociationSettings, LocalizedOcrSettings
 from workflow.config import READER_RASTER_DPI
 
 #: Where a project's reviewed packages live. Git-ignored, because they are client material: the
@@ -303,6 +303,10 @@ class Arguments(BaseModel):
     database_url: str | None
     dpi: int
     vendor_stamps_only: bool
+    localized_ocr: bool
+    localized_minimum_paths: int | None
+    localized_maximum_span: Decimal | None
+    localized_crop_margin_pt: Decimal | None
     line_minimum_pt: Decimal | None
     glyph_maximum_pt: Decimal | None
     glyph_gap_pt: Decimal | None
@@ -344,6 +348,29 @@ def _arguments() -> Arguments:
             "for a reviewed-overlay package whose vendor drawing is in /Stamp annotations: remove "
             "every non-stamp annotation in memory before extraction"
         ),
+    )
+    parser.add_argument(
+        "--localized-ocr",
+        action="store_true",
+        help=(
+            "read configured vendor outlined-text regions as 600-DPI vendor-only OCR crops; requires "
+            "the three explicit localized-crop settings below"
+        ),
+    )
+    parser.add_argument(
+        "--localized-minimum-paths",
+        type=int,
+        help="required with --localized-ocr: smallest outlined-path cluster worth a crop",
+    )
+    parser.add_argument(
+        "--localized-maximum-span",
+        type=Decimal,
+        help="required with --localized-ocr: largest normalized candidate-region span",
+    )
+    parser.add_argument(
+        "--localized-crop-margin-pt",
+        type=Decimal,
+        help="required with --localized-ocr: vendor crop context in PDF points",
     )
     parser.add_argument(
         "--line-minimum-pt",
@@ -413,6 +440,31 @@ def _association_settings(arguments: Arguments) -> AssociationSettings:
     )
 
 
+def _localized_ocr_settings(arguments: Arguments) -> LocalizedOcrSettings | None:
+    """Build crop-selection settings only when the caller explicitly enables that reader route."""
+    if not arguments.localized_ocr:
+        return None
+    supplied = {
+        "localized-minimum-paths": arguments.localized_minimum_paths,
+        "localized-maximum-span": arguments.localized_maximum_span,
+        "localized-crop-margin-pt": arguments.localized_crop_margin_pt,
+    }
+    missing = [name for name, value in supplied.items() if value is None]
+    if missing:
+        raise ValueError(
+            "localized OCR settings are required to measure the production path; missing "
+            + ", ".join(f"--{name}" for name in missing)
+        )
+    assert arguments.localized_minimum_paths is not None
+    assert arguments.localized_maximum_span is not None
+    assert arguments.localized_crop_margin_pt is not None
+    return LocalizedOcrSettings(
+        minimum_paths=arguments.localized_minimum_paths,
+        maximum_span=arguments.localized_maximum_span,
+        crop_margin_pt=arguments.localized_crop_margin_pt,
+    )
+
+
 @contextmanager
 def _private_schema(database_url: str) -> Iterator[str]:
     """A migrated schema of this grader's own, dropped when it is done.
@@ -476,6 +528,7 @@ def _run_pipeline(
     *,
     dpi: int,
     association: AssociationSettings,
+    localized_ocr: LocalizedOcrSettings | None,
     vendor_stamps_only: bool,
 ) -> PipelineResult:
     """Put the package's shop drawing through the real stages and return what they wrote.
@@ -613,7 +666,12 @@ def _run_pipeline(
             published += 1
         session.commit()
 
-        stages = DatabaseStages(store=store, dpi=dpi, association=association)
+        stages = DatabaseStages(
+            store=store,
+            dpi=dpi,
+            association=association,
+            localized_ocr=localized_ocr,
+        )
         stages.extract_pages(session, revision.id)
         session.commit()
 
@@ -865,6 +923,7 @@ def main() -> int:
 
     try:
         association = _association_settings(arguments)
+        localized_ocr = _localized_ocr_settings(arguments)
     except ValueError as refused:
         print(f"the package was refused: {refused}", file=sys.stderr)
         return 2
@@ -878,6 +937,7 @@ def main() -> int:
             scoped_url,
             dpi=arguments.dpi,
             association=association,
+            localized_ocr=localized_ocr,
             vendor_stamps_only=arguments.vendor_stamps_only,
         )
         print(
@@ -893,12 +953,19 @@ def main() -> int:
             )
         else:
             print("reader input: source drawing unchanged; 0 annotations removed\n")
-        scorecard = score_package(
-            case,
-            result.findings,
-            observations=_as_gold(result.session, result.observations, case),
-        )
-        result.session.close()
+        try:
+            scorecard = score_package(
+                case,
+                result.findings,
+                observations=_as_gold(result.session, result.observations, case),
+            )
+        finally:
+            # A batch score reads many candidates after extraction. End its implicit read
+            # transaction even when score rendering fails, before `_private_schema` drops the
+            # isolated schema; otherwise PostgreSQL can retain a relation lock and hide the real
+            # scoring exception behind a hanging cleanup.
+            result.session.rollback()
+            result.session.close()
     print(render(scorecard))
     # Exit 1 on a critical false PASS — the one result that must stop something. Every other number
     # is information; this one is the ship gate.

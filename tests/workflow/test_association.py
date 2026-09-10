@@ -22,6 +22,7 @@ import hashlib
 import io
 import tempfile
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -50,9 +51,9 @@ from evidence.coordinates import ImagePoint
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
+from tests.extraction.test_annotations import BOTH_LAYERS, _appearance, _free_text, _pdf, _stamp
 from tests.workflow.test_markup_route import _SilentOcr
-from workflow.association import AssociationSettings, dimension_texts
+from workflow.association import AssociationSettings, LocalizedOcrSettings, dimension_texts
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION, PageResult
 from workflow.stages import ASSOCIATION_EXTRACTOR, DatabaseStages
@@ -77,6 +78,12 @@ SETTINGS = AssociationSettings(
     glyph_gap_pt=Decimal(4),
     proximity_limit=Decimal("0.05"),
     ambiguity_margin=Decimal("0.005"),
+)
+
+LOCALIZED = LocalizedOcrSettings(
+    minimum_paths=1,
+    maximum_span=Decimal("0.5"),
+    crop_margin_pt=Decimal(2),
 )
 
 #: One horizontal line at page y=50, running page x=50..150. The note below sits on it.
@@ -195,12 +202,14 @@ def _stages(
     *,
     association: AssociationSettings | None = SETTINGS,
     ocr_engine: object | None = None,
+    localized_ocr: LocalizedOcrSettings | None = None,
 ):
     return DatabaseStages(
         store=store,
         dpi=150,
         ocr_engine=ocr_engine or _SilentOcr(),  # type: ignore[arg-type]
         association=association,
+        localized_ocr=localized_ocr,
     )
 
 
@@ -300,6 +309,112 @@ def test_an_unambiguous_split_ocr_reading_uses_the_same_production_association(
     association = next(row for row in _associations(session) if row.candidate_id == ocr.id)
     assert association.refusal_reason is None
     assert len([row for row in _associations(session) if row.candidate_id == ocr.id]) == 1
+
+
+def test_a_stamp_only_vendor_region_uses_localized_ocr_and_the_same_association(
+    session: Session, store: LocalStore
+) -> None:
+    """A crop-local dual reading stays untyped and is associated only by the production path."""
+
+    class _SplitDualOcr:
+        name = "localized-split-dual-ocr"
+        version = "test/1"
+
+        def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+            # The fixture has reviewer markup, but the crop handed to OCR is vendor-only. Its real
+            # pixels must exist and be non-empty; this stub deliberately never receives note text.
+            assert rgb and width > 0 and height > 0
+            return (
+                OcrItem(
+                    text="76",
+                    confidence=Decimal("0.81"),
+                    image_extent=(
+                        ImagePoint(10, 10),
+                        ImagePoint(50, 10),
+                        ImagePoint(50, 30),
+                        ImagePoint(10, 30),
+                    ),
+                ),
+                OcrItem(
+                    text="[3]",
+                    confidence=Decimal("0.77"),
+                    image_extent=(
+                        ImagePoint(8, 28),
+                        ImagePoint(52, 28),
+                        ImagePoint(52, 52),
+                        ImagePoint(8, 52),
+                    ),
+                ),
+            )
+
+    revision = _revision(session, store, data=BOTH_LAYERS)
+    session.commit()
+    stages = _stages(
+        store,
+        association=replace(SETTINGS, proximity_limit=Decimal("0.9")),
+        ocr_engine=_SplitDualOcr(),
+        localized_ocr=LOCALIZED,
+    )
+    results = stages.extract_pages(session, revision.id)
+    session.commit()
+
+    assert [result.payload["route"] for result in results] == ["localized_ocr"]
+    ocr = next(
+        candidate
+        for candidate in session.execute(select(ObservationCandidate)).scalars()
+        if candidate.raw_text == "76 [3]"
+    )
+    assert (ocr.value_numerator, ocr.value_denominator, ocr.unit) == (3, 1, "in")
+    assert ocr.semantic_guess is None
+    assert any(row.candidate_id == ocr.id for row in _associations(session))
+
+
+def test_an_ambiguous_localized_crop_is_recorded_but_cannot_be_associated(
+    session: Session, store: LocalStore
+) -> None:
+    """Two recognised dimensions in one crop are not silently ranked into a reading."""
+
+    class _TwoDualsOcr:
+        name = "localized-two-duals-ocr"
+        version = "test/1"
+
+        def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+            del rgb, width, height
+
+            def box(left: int, top: int) -> tuple[ImagePoint, ...]:
+                return (
+                    ImagePoint(left, top),
+                    ImagePoint(left + 40, top),
+                    ImagePoint(left + 40, top + 16),
+                    ImagePoint(left, top + 16),
+                )
+
+            return (
+                OcrItem("76", Decimal("0.9"), box(10, 10)),
+                OcrItem("[3]", Decimal("0.9"), box(10, 28)),
+                OcrItem("102", Decimal("0.9"), box(70, 10)),
+                OcrItem("[4]", Decimal("0.9"), box(70, 28)),
+            )
+
+    revision = _revision(session, store, data=BOTH_LAYERS)
+    session.commit()
+    _stages(
+        store,
+        association=replace(SETTINGS, proximity_limit=Decimal("0.9")),
+        ocr_engine=_TwoDualsOcr(),
+        localized_ocr=LOCALIZED,
+    ).extract_pages(session, revision.id)
+    session.commit()
+
+    ambiguous = [
+        candidate
+        for candidate in session.execute(select(ObservationCandidate)).scalars()
+        if candidate.raw_text in {"76 [3]", "102 [4]"}
+    ]
+    assert len(ambiguous) == 2
+    associated_ids = {row.candidate_id for row in _associations(session)}
+    assert all(candidate.id not in associated_ids for candidate in ambiguous)
+    assert all(candidate.semantic_guess is None for candidate in ambiguous)
 
 
 def test_an_unoriented_ocr_reading_is_recorded_and_left_unassociated(

@@ -33,7 +33,7 @@ from uuid import UUID
 from evidence.polygon import Polygon
 from extraction.geometry.text_association import DimensionText
 
-__all__ = ["AssociationSettings", "ReadItem", "dimension_texts"]
+__all__ = ["AssociationSettings", "LocalizedOcrSettings", "ReadItem", "dimension_texts"]
 
 
 class ReadItem(Protocol):
@@ -130,6 +130,41 @@ class AssociationSettings:
             f"line>={self.line_minimum_pt};glyph<={self.glyph_maximum_pt};"
             f"gap<={self.glyph_gap_pt};near<={self.proximity_limit};"
             f"margin={self.ambiguity_margin}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LocalizedOcrSettings:
+    """Explicit geometry and crop bounds for vendor-region OCR.
+
+    These do not type or rank a reading. They only state which outlined path clusters are worth an
+    OCR crop; every other cluster remains a visible geometry refusal in ``plan_reads``. They have no
+    defaults because crop selection is drawing-specific in exactly the way association is.
+    """
+
+    minimum_paths: int
+    maximum_span: Decimal
+    crop_margin_pt: Decimal
+
+    def __post_init__(self) -> None:
+        if isinstance(self.minimum_paths, bool) or not isinstance(self.minimum_paths, int):
+            raise TypeError("minimum_paths must be an integer")
+        if self.minimum_paths < 1:
+            raise ValueError("minimum_paths must be greater than zero")
+        for name in ("maximum_span", "crop_margin_pt"):
+            value = getattr(self, name)
+            if isinstance(value, float):
+                raise TypeError(f"{name} must be a Decimal, never a float")
+            if not isinstance(value, Decimal) or not value.is_finite():
+                raise ValueError(f"{name} must be a finite Decimal")
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than zero")
+
+    @property
+    def config_hash(self) -> str:
+        return (
+            f"minimum_paths={self.minimum_paths};maximum_span={self.maximum_span};"
+            f"crop_margin_pt={self.crop_margin_pt}"
         )
 
 
