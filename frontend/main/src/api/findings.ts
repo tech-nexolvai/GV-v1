@@ -8,7 +8,6 @@
  */
 
 import { getFindingChain, listFindings } from './client';
-import { formatExact } from './fractions';
 import type { Evidence, Finding, Outcome, ReviewerAction, Severity, Trace } from '../data/types';
 
 type Listed = Awaited<ReturnType<typeof listFindings>>['items'][number];
@@ -57,16 +56,14 @@ export function withChain(finding: Finding, chain: Chain): Finding {
     source.kind === 'calculation'
       ? {
           operation: source.operation,
-          // Values are exact rationals and arrive as text. `formatExact` keeps them that way, using
-          // BigInt — under exact match a value shifted by binary rounding is a different verdict.
-          operands: operands.map((operand) => ({
+          // These strings come from the persisted deterministic calculation trace.  They are
+          // displayed verbatim: the UI never reconstructs an exact value from a display value or
+          // from floating point.  The chain operands contribute only review/evidence status.
+          operands: source.operands.map((operand) => ({
             name: operand.name,
-            value: formatExact({
-              numerator: operand.numerator,
-              denominator: operand.denominator,
-            }),
-            status: operand.evidence_status,
-            source: operand.unit,
+            value: operand.value,
+            status: operands.find((item) => item.name === operand.name)?.evidence_status ?? 'RECORDED',
+            source: operand.source,
           })),
           comparison: source.comparison ?? '',
         }

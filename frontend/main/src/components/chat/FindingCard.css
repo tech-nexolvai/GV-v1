@@ -179,6 +179,55 @@
 
 .finding-card--not-found .finding-card__reason { border-left-color: var(--status-missing); }
 
+/* Recorded facts are not a second verdict. They expose the exact values and source already used by
+   the deterministic engine, so the reviewer does not have to parse an implementation-style trace. */
+.finding-card__facts {
+  border: 1px solid var(--border-default);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.finding-card__facts-title {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-body);
+  font-size: 10px;
+  font-weight: var(--weight-semi);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
+
+.finding-card__facts-list { display: flex; flex-direction: column; }
+
+.finding-card__fact {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto minmax(150px, 1fr);
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.finding-card__fact-name { color: var(--text-body); font-size: var(--text-sm); text-transform: capitalize; }
+.finding-card__fact-value { color: var(--text-primary); font-family: var(--font-mono); font-size: var(--text-sm); font-weight: var(--weight-semi); }
+.finding-card__fact-meta { color: var(--text-muted); font-size: var(--text-xs); text-align: right; }
+
+.finding-card__facts-comparison {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-body);
+  font-size: var(--text-sm);
+}
+
+.finding-card__facts-comparison code { font-family: var(--font-mono); color: var(--text-primary); }
+
+@media (max-width: 620px) {
+  .finding-card__fact { grid-template-columns: 1fr auto; }
+  .finding-card__fact-meta { grid-column: 1 / -1; text-align: left; }
+}
+
 /* Trace */
 .finding-card__trace-section { display: flex; flex-direction: column; gap: var(--space-2); margin: var(--space-1) 0; }
 

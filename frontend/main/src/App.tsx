@@ -115,6 +115,10 @@ export default function App() {
           key={activeSession}
           sessionId={activeSession}
           onEvidenceChange={setEvidencePanel}
+          onBackToDocuments={() => {
+            setActiveSession('');
+            handleNavigate('documents');
+          }}
           initialMessage={pendingMessage}
           onMessageConsumed={() => setPendingMessage('')}
         />

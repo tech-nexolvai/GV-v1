@@ -73,15 +73,19 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
           />
         )}
 
-        {/* No evidence */}
+        {/* No crop is intentionally not rendered as a plausible stand-in. A reviewer must be able to
+            distinguish a rule result from visual drawing evidence. */}
         {!loading && !error && !finding.arch_evidence && !finding.shop_evidence && (
           <div className="evidence-panel__no-evidence">
             <FileImage size={24} className="evidence-panel__no-evidence-icon" />
-            <p>No evidence located for this finding.</p>
+            <p>No stored drawing crop is attached to this result.</p>
             <p className="evidence-panel__no-evidence-sub">
               {finding.outcome === 'NOT_FOUND'
-                ? 'The system searched all pages and found no matching dimension.'
-                : 'Evidence was not extracted for this check type.'}
+                ? 'This check did not produce a located drawing observation to show.'
+                : 'The recorded result may rely on a reviewer-entered value, or on a check without a located drawing observation.'}
+            </p>
+            <p className="evidence-panel__no-evidence-guidance">
+              This is not visual drawing evidence. To inspect a real crop, upload the architectural and shop PDFs, then run the review.
             </p>
           </div>
         )}
