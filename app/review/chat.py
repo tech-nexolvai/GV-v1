@@ -37,6 +37,9 @@ class ChatReply:
     text: str
     narratives: tuple[ProposedNarrative, ...]
     mode: ChatMode
+    # Published only when guarded provider prose was accepted. It is configuration identity, not a
+    # prompt, response, drawing, or finding value, so a reviewer can tell whether narration ran.
+    model_id: str | None = None
     fallback_reason: str | None = None
 
 
@@ -94,6 +97,7 @@ def answer_question(
             text=_intro(question, selected, len(findings)),
             narratives=(),
             mode=ChatMode.STRUCTURED_FALLBACK,
+            model_id=None,
             fallback_reason="no finding matched the deterministic outcome filter",
         )
     result = compose_findings(selected, model)
@@ -105,5 +109,6 @@ def answer_question(
             if result.mode.value == ChatMode.LLM.value
             else ChatMode.STRUCTURED_FALLBACK
         ),
+        model_id=(result.model_id if result.mode.value == ChatMode.LLM.value else None),
         fallback_reason=result.fallback_reason,
     )

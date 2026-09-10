@@ -2220,6 +2220,8 @@ export interface components {
             findings: components["schemas"]["ReviewerChatNarrative"][];
             /** Mode */
             mode: string;
+            /** Model Id */
+            model_id?: string | null;
         };
         /**
          * ReviewerChatRequest

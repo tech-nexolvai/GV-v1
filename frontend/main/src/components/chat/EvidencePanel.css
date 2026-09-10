@@ -17,6 +17,8 @@
   flex-shrink: 0;
 }
 
+.evidence-panel__back { display: inline-flex; align-items: center; gap: var(--space-1); }
+
 .evidence-panel__title {
   display: flex;
   flex-wrap: wrap;
@@ -98,6 +100,13 @@
   font-size: var(--text-xs);
   color: var(--text-body);
   line-height: var(--leading-normal);
+}
+
+.evidence-panel__empty-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
 }
 
 /* ── PDF Pane ─────────────────────────────────────────────── */

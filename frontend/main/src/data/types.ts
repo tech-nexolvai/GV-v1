@@ -123,6 +123,12 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   findings?: Finding[];
+  /** Explicit disclosure of whether Bedrock narration was accepted for this response. The
+   * deterministic findings and verdicts remain the backing record in either mode. */
+  narration?: {
+    mode: 'llm' | 'structured_fallback';
+    modelId?: string;
+  };
   is_typing?: boolean;
 }
 
