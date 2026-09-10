@@ -22,9 +22,10 @@ not enough for an association (`text_association.lines_within` says so at length
 with the reason. A dimension whose line was never detected would otherwise disappear silently, and
 silence is the one failure this project treats as worse than a refusal.
 
-**This is not wired into the pipeline.** Nothing in `workflow/` imports it, deliberately: the model
-lane produces untyped readings, and until semantic typing exists (#274, Q20) those cannot become
-operands. It is the reader mechanics, built and testable, waiting above the gate.
+**This is a reader seam, not a typing seam.** `workflow/` uses its vendor-only crop renderer for
+localized OCR. That yields untyped candidate readings only; until semantic typing exists (#274, Q20)
+they cannot become operands. The crop decision therefore improves what a reviewer can read without
+deciding what any number means.
 
 Source: issue #539. Verification: `tests/extraction/test_vector_first.py`.
 """

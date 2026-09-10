@@ -80,16 +80,23 @@ from app.models.verdicts import Finding as FindingRow
 from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
-from evidence.coordinates import StoredPoint
+from evidence.coordinates import PageTransform, StoredPoint
 from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
 from evidence.polygon import Polygon
-from extraction.annotations import PageLayers, read_annotation_layers, read_markup_layer
+from extraction.annotations import (
+    OutlinedTextRegion,
+    PageLayers,
+    read_annotation_layers,
+    read_markup_layer,
+)
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import DimensionText, associate
+from extraction.localized_ocr import read_localized_vendor_regions
 from extraction.manifest import build_manifest
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, read_page
-from extraction.rasterise import PageTooLarge, render_page
+from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
 from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
+from extraction.vector_first import plan_reads
 from reports.findings_pdf import FINDINGS_PDF_MEDIA_TYPE, FindingsPdfInput, write_findings_pdf
 from reports.spreadsheet import StoredFinding, decode_reference, write_stored_workbook
 from retrieval.identifiers import NormalizedIdentifier, normalize_identifier
@@ -106,7 +113,12 @@ from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
-from workflow.association import AssociationSettings, ReadItem, dimension_texts
+from workflow.association import (
+    AssociationSettings,
+    LocalizedOcrSettings,
+    ReadItem,
+    dimension_texts,
+)
 from workflow.config import READER_RASTER_DPI
 from workflow.evidence_operands import operands_from_evidence
 from workflow.findings_composer import (
@@ -227,6 +239,7 @@ class DatabaseStages:
         operands: Mapping[str, Mapping[str, VerdictOperand]] | None = None,
         discriminators: Mapping[str, str] | None = None,
         association: AssociationSettings | None = None,
+        localized_ocr: LocalizedOcrSettings | None = None,
         findings_composer: FindingsLanguageModel | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
@@ -245,6 +258,7 @@ class DatabaseStages:
         # here would be this module choosing which line a dimension belongs to on every drawing
         # anybody ever runs, which is the guess `text_association` refuses to make for itself.
         self._association = association
+        self._localized_ocr = localized_ocr
         # Post-verdict presentation only. The composer receives frozen stored findings in
         # ``generate_outputs``; it is unreachable from ``run_checks`` and an error falls back to a
         # complete deterministic summary rather than delaying or changing a verdict.
@@ -452,21 +466,7 @@ class DatabaseStages:
             ocr_items: tuple[OcrItem, ...] = ()
             ocr_rows: list[ObservationCandidate] = []
             read: PageContents | None = None
-            if not page.has_vector_text:
-                # **A scanned page, which the vector reader cannot see at all.** Until this, such a
-                # page produced no candidates and was indistinguishable from a page with nothing on
-                # it. Scanned sheets are one of the six things #274 asks the client for, so this is
-                # not a hypothetical (#499).
-                route = "ocr"
-                ocr_items, ocr_rows = self._read_page_by_ocr(
-                    session,
-                    version_id=version_id,
-                    data=data,
-                    page=page,
-                    task_run_id=run.task_run_id,
-                )
-                written = len(ocr_rows)
-            elif page.has_vector_text:
+            if page.has_vector_text:
                 with traced(
                     "extraction.page",
                     document_version_id=str(version_id),
@@ -519,6 +519,53 @@ class DatabaseStages:
                 page=page,
                 task_run_id=run.task_run_id,
             )
+
+            if not page.has_vector_text:
+                # A stamp-only vendor drawing has no content-stream text, but it does have exact
+                # candidate geometry in its vendor layer. Read those regions as bounded 600-DPI
+                # crops rather than asking OCR to find tiny labels on a full sheet. This needs the
+                # deployment's association geometry settings: without them the pipeline would be
+                # inventing the detector configuration that turns paths into candidate regions.
+                # A page with no usable vendor regions keeps the normal full-page OCR route for
+                # scans and other non-vector inputs.
+                if (
+                    self._association is not None
+                    and self._localized_ocr is not None
+                    and layers is not None
+                ):
+                    plan = plan_reads(
+                        layers,
+                        proximity_limit=self._association.proximity_limit,
+                        minimum_paths=self._localized_ocr.minimum_paths,
+                        maximum_span=self._localized_ocr.maximum_span,
+                    )
+                    if plan.to_read:
+                        route = "localized_ocr"
+                        ocr_items, ocr_rows = self._read_page_by_localized_ocr(
+                            session,
+                            version_id=version_id,
+                            data=data,
+                            page=page,
+                            task_run_id=run.task_run_id,
+                            layers=layers,
+                            regions=tuple(entry.region for entry in plan.to_read),
+                        )
+                    else:
+                        # No line-selected region is an explicit localized abstention. Falling
+                        # back to full-page OCR would reintroduce the tiny-text failure and could
+                        # grab an unrelated number; reviewers can see the geometry set-asides.
+                        route = "localized_ocr"
+                        ocr_items, ocr_rows = (), []
+                else:
+                    route = "ocr"
+                    ocr_items, ocr_rows = self._read_page_by_ocr(
+                        session,
+                        version_id=version_id,
+                        data=data,
+                        page=page,
+                        task_run_id=run.task_run_id,
+                    )
+                written = len(ocr_rows)
 
             # **Both routes' readings against all of the page's lines, in one pass.** A reviewer's
             # correction labels a line the vendor drew, so judging the two layers against separate
@@ -828,6 +875,95 @@ class DatabaseStages:
                 page_index=page.index,
             )
             return read.items, self._ordered_ocr_rows(read.items, rows)
+
+    def _read_page_by_localized_ocr(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        task_run_id: UUID,
+        layers: PageLayers,
+        regions: Sequence[OutlinedTextRegion],
+    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate]]:
+        """Read vendor outlined-text regions as bounded, vendor-only high-DPI crops.
+
+        ``layers`` was read with the deployment's explicit geometry thresholds. ``region_crop``
+        independently strips non-stamp annotations from each rendered crop, so a reviewer
+        annotation cannot leak into OCR even when the original upload carries one.
+
+        Candidate polygons remain in the shared reader DPI frame. The extraction run configuration
+        separately records the 600-DPI crop pixels RapidOCR actually saw, avoiding the provenance
+        error of claiming that a 300-DPI full-page render produced a crop-local reading.
+        """
+        if page.media_box is None or page.crop_box is None:
+            # A manifest row without transform metadata cannot carry a crop reading back to page
+            # coordinates. Full-page OCR is the honest fallback rather than a made-up polygon.
+            return self._read_page_by_ocr(
+                session,
+                version_id=version_id,
+                data=data,
+                page=page,
+                task_run_id=task_run_id,
+            )
+        media = tuple(Decimal(value) for value in page.media_box)
+        crop = tuple(Decimal(value) for value in page.crop_box)
+        if len(media) != 4 or len(crop) != 4:
+            return self._read_page_by_ocr(
+                session,
+                version_id=version_id,
+                data=data,
+                page=page,
+                task_run_id=task_run_id,
+            )
+        transform = PageTransform(
+            dpi=self._dpi,
+            rotation=page.rotation,
+            media_box=(media[0], media[1], media[2], media[3]),
+            crop_box=(crop[0], crop[1], crop[2], crop[3]),
+        )
+        engine = self._ocr()
+        with traced(
+            "extraction.page.localized_ocr",
+            document_version_id=str(version_id),
+            page_index=page.index,
+            extractor_version=engine.version,
+        ):
+            items = read_localized_vendor_regions(
+                data,
+                page_index=page.index,
+                regions=regions,
+                engine=engine,
+                page_transform=transform,
+                margin_pt=(
+                    self._localized_ocr.crop_margin_pt
+                    if self._localized_ocr is not None
+                    else CROP_CONTEXT_MARGIN_PT
+                ),
+            )
+            ocr_run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=engine.name,
+                extractor_version=engine.version,
+                config_hash=(
+                    f"dpi={self._dpi};route=localized_vendor_regions;crop_dpi={VISION_CROP_DPI};"
+                    f"{self._localized_ocr.config_hash if self._localized_ocr is not None else ''}"
+                ),
+                # Candidate polygons use this full-page frame. The actual pixel resolution used by
+                # OCR is separately retained in config_hash above.
+                dpi=self._dpi,
+            )
+            rows = record_ocr_candidates(
+                session,
+                items,
+                document_version_id=version_id,
+                page_id=page.id,
+                extraction_run_id=ocr_run.id,
+                page_index=page.index,
+            )
+            return items, self._ordered_ocr_rows(items, rows)
 
     def _ocr(self) -> OcrEngine:
         """The OCR engine, built once and only when a page actually needs it.
