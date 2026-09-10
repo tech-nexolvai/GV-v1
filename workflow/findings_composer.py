@@ -283,28 +283,37 @@ def _source_label(source: str) -> str:
     return source or "unspecified source"
 
 
+def _human_label(value: str) -> str:
+    """Make an immutable machine key readable without changing the fact it identifies."""
+    return value.replace("_", " ")
+
+
 def deterministic_summary(finding: ComposerFinding) -> str:
-    """A complete plain rendering used whenever the model cannot be trusted or reached."""
+    """A complete, reviewer-readable fallback used whenever the model cannot be reached.
+
+    This is assembled only from persisted engine facts.  In particular, it never derives a number
+    from the comparison string: every displayed value comes straight from ``ComposerFinding``.
+    """
     parts = [
         f"{finding.check}: {finding.outcome}.",
-        f"Checked {finding.check_name}.",
+        f"Check: {finding.check_name}.",
+        f"Reason: {finding.reason}",
         f"Severity: {finding.severity}.",
-        f"Why: {finding.reason}",
     ]
     if finding.operands:
-        rendered = "; ".join(
-            f"{operand.name} ({_source_label(operand.source)}, source {operand.source}) = "
-            f"{operand.value}"
+        rendered = " ".join(
+            f"Recorded {_human_label(operand.name)} from {_source_label(operand.source)} "
+            f"({operand.source}): {operand.value}."
             + (
-                f" on evidence page {operand.evidence_page}"
+                f" Evidence page: {operand.evidence_page}."
                 if operand.evidence_page is not None
                 else ""
             )
             for operand in finding.operands
         )
-        parts.append(f"Values: {rendered}.")
+        parts.append(rendered)
     if finding.comparison is not None:
-        parts.append(f"Comparison: {finding.comparison}.")
+        parts.append(f"Engine comparison: {finding.comparison}.")
     if finding.difference is not None:
         parts.append(f"Difference: {finding.difference}.")
     if finding.tolerance is not None:
@@ -356,7 +365,10 @@ def _guard_one(finding: ComposerFinding, text: str) -> None:
     )
     required_fragments.extend(finding.notes)
     for operand in finding.operands:
-        required_fragments.extend((operand.name, operand.value, operand.source))
+        # The deterministic fallback turns a machine key such as ``vendor_depth`` into the
+        # reviewer-facing ``vendor depth``.  The guard validates that published form, while the
+        # value and raw source code still remain literal immutable facts.
+        required_fragments.extend((_human_label(operand.name), operand.value, operand.source))
         if operand.source.strip().upper() == "ARCH":
             required_fragments.append("approved")
         elif operand.source.strip().upper() == "SHOP":

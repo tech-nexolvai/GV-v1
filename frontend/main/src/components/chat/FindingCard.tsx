@@ -13,6 +13,21 @@ const OUTCOME_ICON = {
   NO_APPLICABLE_RULE: MinusCircle,
 };
 
+function readableLabel(value: string): string {
+  return value.replaceAll('_', ' ');
+}
+
+function readableSource(value: string): string {
+  if (value === 'ARCH') return 'Approved / architectural source';
+  if (value === 'SHOP') return 'Vendor / shop source';
+  if (value === 'USER_INPUT') return 'Reviewer-entered source';
+  return value;
+}
+
+function readableStatus(value: string): string {
+  return value.replaceAll('_', ' ').toLowerCase();
+}
+
 interface FindingCardProps {
   finding: Finding;
   isSelected: boolean;
@@ -131,6 +146,30 @@ export function FindingCard({
             <p className="finding-card__reason">{finding.reason}</p>
           )}
 
+          {/* A concise, always-visible rendering of the immutable engine trace. This gives the
+              reviewer the actual recorded input and comparison before the optional audit detail. */}
+          {finding.trace && finding.trace.operands.length > 0 && (
+            <section className="finding-card__facts" aria-label="Recorded check facts">
+              <p className="finding-card__facts-title">Recorded check facts</p>
+              <div className="finding-card__facts-list">
+                {finding.trace.operands.map((op, index) => (
+                  <div key={`${op.name}-${index}`} className="finding-card__fact">
+                    <span className="finding-card__fact-name">{readableLabel(op.name)}</span>
+                    <code className="finding-card__fact-value">{op.value}</code>
+                    <span className="finding-card__fact-meta">
+                      {readableSource(op.source)} · {readableStatus(op.status)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {finding.trace.comparison && (
+                <p className="finding-card__facts-comparison">
+                  Recorded comparison: <code>{finding.trace.comparison}</code>
+                </p>
+              )}
+            </section>
+          )}
+
           {/* Calculation trace */}
           {finding.trace && (
             <div className="finding-card__trace-section">
@@ -181,10 +220,10 @@ export function FindingCard({
               <button
                 className="btn btn--ghost btn--sm finding-card__evidence-btn"
                 onClick={() => void onViewEvidence(finding)}
-                aria-label="View recorded evidence crop"
+                aria-label="View recorded evidence and check facts"
               >
                 <FileSearch size={12} />
-                View Evidence
+                Evidence &amp; facts
                 <ExternalLink size={10} />
               </button>
 

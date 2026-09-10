@@ -22,17 +22,18 @@ import type { ReviewSession } from '../api/client';
 import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
-import { FileText, CheckSquare, Download } from 'lucide-react';
+import { ArrowLeft, FileText, CheckSquare, Download } from 'lucide-react';
 import './ReviewPage.css';
 
 interface ReviewPageProps {
   sessionId: string;
   onEvidenceChange: (panel: React.ReactNode) => void;
+  onBackToDocuments: () => void;
   initialMessage?: string;
   onMessageConsumed?: () => void;
 }
 
-export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMessageConsumed }: ReviewPageProps) {
+export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, initialMessage, onMessageConsumed }: ReviewPageProps) {
   // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
   const packageId = sessionId;
 
@@ -212,6 +213,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
       const chain = await getFindingChain(projectId(), packageId, finding.id);
       const enriched = withChain(finding, chain);
       setFindings((current) => current.map((item) => (item.id === finding.id ? enriched : item)));
+      // Chat cards keep the list snapshot that produced that reply.  Update that snapshot too, or
+      // the evidence rail would have the chain while the card beside it continued to show the
+      // sparse pre-fetch row — exactly the split view a reviewer cannot audit.
+      setMessages((current) => current.map((message) => ({
+        ...message,
+        findings: message.findings?.map((item) => (item.id === finding.id ? enriched : item)),
+      })));
       if (selectedFindingRef.current !== finding.id) return;
       onEvidenceChange(
         <EvidencePanel
@@ -439,6 +447,15 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
       {/* Package header bar */}
       <div className="review-page__header">
         <div className="review-page__header-left">
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm review-page__back"
+            onClick={onBackToDocuments}
+            aria-label="Back to documents"
+          >
+            <ArrowLeft size={13} />
+            Documents
+          </button>
           <div className="review-page__pkg-info">
             <span className="review-page__pkg-vendor">{pkg.vendor}</span>
             <div className="review-page__pkg-meta">

@@ -126,7 +126,7 @@ def test_an_omitted_numeric_token_reaches_the_numeric_guard() -> None:
     proposed = _faithful(finding)
     changed = ProposedNarrative(
         finding_key=finding.key,
-        text=proposed.text.replace(" on evidence page 3", "").replace(
+        text=proposed.text.replace(" Evidence page: 3.", "").replace(
             "Evidence pages: 3.", "Evidence pages were recorded."
         ),
     )
@@ -152,7 +152,7 @@ def test_a_non_numeric_reason_cannot_be_dropped() -> None:
     proposed = _faithful(finding)
     changed = ProposedNarrative(
         finding_key=finding.key,
-        text=proposed.text.replace(f"Why: {finding.reason}", "Why: check the drawing."),
+        text=proposed.text.replace(f"Reason: {finding.reason}", "Reason: check the drawing."),
     )
 
     result = compose_findings((finding,), _StaticModel((changed,)))

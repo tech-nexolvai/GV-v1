@@ -26,6 +26,13 @@
   flex-wrap: wrap;
 }
 
+.review-page__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
 .review-page__header-right {
   display: flex;
   align-items: center;
