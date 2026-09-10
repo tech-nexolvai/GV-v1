@@ -29,8 +29,9 @@ Render the ALREADY-STORED crop image for each finding in `EvidencePanel`, so a f
 in the actual region of the drawing it came from. The crops already exist (`evidence/crop.py` →
 `evidence_artifacts`); this is a *display* gap, not new extraction.
 - **Boundary:** this shows a MECHANICAL crop of a real candidate (the pixels the reading came from). It is
-  NOT the redline — no boxes or annotations asserting *meaning* or placement on the full drawing; redline
-  stays blocked on semantic typing.
+  NOT the redline — no boxes or annotations asserting *meaning* or placement on the full drawing. The
+  separate redline output is permitted only after a typed canonical observation is sealed into a finding
+  and carries a recorded page location.
 - Crops render at runtime from the evidence store; no client crop is committed. Tests use the committed
   non-drawing PDF / synthetic fixtures.
 
@@ -62,6 +63,7 @@ across every screen.
   non-drawing PDF or synthetic fixtures.
 
 ## Out of scope / deferred
-- **Redline** (annotated drawing) — blocked on semantic typing (#274 + Q20).
+- **Broader redline coverage** — the evidence-grounded redline is available for typed, located finding
+  operands; incomplete typing/locations remain an explicit summary item rather than a box.
 - **The AI reading half** (semantic typing, matching, agentic reader) — at the wall; see
   `docs/V1_LAYERS_STATUS.md`.

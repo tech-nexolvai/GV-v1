@@ -15,6 +15,7 @@ import {
   getFindingChain,
   approvePackage,
   downloadPdfReport,
+  downloadRedline,
   downloadReport,
 } from '../api/client';
 import type { ReviewSession } from '../api/client';
@@ -395,16 +396,18 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
    * — not approved, no report generated — surfaces as a message instead of a download that silently
    * does nothing.
    */
-  async function handleDownload(format: 'pdf' | 'workbook') {
+  async function handleDownload(format: 'pdf' | 'workbook' | 'redline') {
     setActionError(null);
     try {
       const blob = format === 'pdf'
         ? await downloadPdfReport(projectId(), packageId)
-        : await downloadReport(projectId(), packageId);
+        : format === 'redline'
+          ? await downloadRedline(projectId(), packageId)
+          : await downloadReport(projectId(), packageId);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `gv-review-${packageId}.${format === 'pdf' ? 'pdf' : 'xlsx'}`;
+      link.download = `gv-review-${packageId}${format === 'redline' ? '-redline' : ''}.${format === 'workbook' ? 'xlsx' : 'pdf'}`;
       link.click();
       URL.revokeObjectURL(url);
     } catch (error) {
@@ -520,6 +523,15 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
               >
                 <Download size={14} />
                 Download workbook
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => void handleDownload('redline')}
+                data-tooltip="Download the signed-off evidence-grounded drawing redline"
+              >
+                <Download size={14} />
+                Download redline
               </button>
             </>
           )}

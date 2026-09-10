@@ -129,6 +129,7 @@ from workflow.findings_composer import (
 )
 from workflow.idempotency import stage_idempotency_key
 from workflow.measurements import run_parameters_for
+from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
 
 #: What produced these readings, recorded on the extraction run so a candidate can say what read it.
@@ -1256,12 +1257,11 @@ class DatabaseStages:
         reason of a decision, the delta, the variant and the notes — and the workbook marks them
         `not recorded in the database` rather than leaving them blank.
 
-        **No redline, and not for want of a renderer.** `reports/redline.py` exists. An annotated
-        drawing needs each finding tied to the region of the sheet it is about, and that needs a
-        candidate to have a meaning — which is exactly what this pipeline does not do, and will not
-        until the real drawings (#274) and the vocabulary Q20 defers. A redline drawn from untyped
-        candidates would put boxes on a drawing with nothing behind their placement, which is worse
-        than no redline: it looks like evidence.
+        **Redline placement comes only from stored typed evidence.** The optional third artifact
+        joins a live finding through its sealed `VerdictInput` to a typed canonical observation and its
+        recorded page transform. It never reads a raw candidate, a trace's display string, or a
+        reviewer-entered literal to decide where to draw. When no such location exists, no redline
+        artifact is made; the workbook and findings PDF remain complete and truthful.
         """
         if self._store is None:
             return {
@@ -1361,6 +1361,16 @@ class DatabaseStages:
         if composition.fallback_reason is not None:
             composition_status["fallback_reason"] = composition.fallback_reason
 
+        redline = render_evidence_grounded_redline(
+            session,
+            self._store,
+            package_revision_id=package_revision_id,
+            findings=tuple(
+                (finding, run, definition.rule_id, snapshot.snapshot_id)
+                for finding, run, snapshot, definition in rows
+            ),
+        )
+
         outputs = (
             (OutputArtifactKind.FINDINGS_WORKBOOK, workbook, WORKBOOK_MEDIA_TYPE, ".xlsx"),
             (OutputArtifactKind.FINDINGS_PDF, findings_pdf, FINDINGS_PDF_MEDIA_TYPE, ".pdf"),
@@ -1388,6 +1398,25 @@ class DatabaseStages:
                 )
             )
             written[kind.value] = stored.key
+        if redline.artifact is not None:
+            existing = session.execute(
+                select(OutputArtifact.id).where(
+                    OutputArtifact.storage_key == redline.artifact.key,
+                    OutputArtifact.sha256 == redline.artifact.sha256,
+                )
+            ).first()
+            if existing is None:
+                session.add(
+                    OutputArtifact(
+                        package_revision_id=package_revision_id,
+                        kind=OutputArtifactKind.REDLINE.value,
+                        storage_key=redline.artifact.key,
+                        sha256=redline.artifact.sha256,
+                        media_type="application/pdf",
+                        findings=len(rows),
+                    )
+                )
+                written[OutputArtifactKind.REDLINE.value] = redline.artifact.key
         session.flush()
         return {
             "implemented": True,
@@ -1397,6 +1426,10 @@ class DatabaseStages:
             "already_recorded": not written,
             "storage_keys": written,
             "findings_composition": composition_status,
+            "redline": {
+                "generated": redline.artifact is not None,
+                "reason": redline.reason,
+            },
         }
 
     def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:

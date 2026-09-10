@@ -57,13 +57,12 @@ page. `extraction/model/` reasons about items it is *given* — `view_containing
 to the real matcher and returns an honest zero with the reason. When item detection exists this runs
 unchanged.
 
-**No redline, and not for want of a renderer.** `reports/redline.py` exists and is tested. An
-annotated drawing needs each finding tied to the region of the sheet it is about, and that needs a
-candidate to have a meaning — which is exactly what this pipeline does not do. A redline drawn from
-untyped candidates would put boxes on a drawing with nothing behind their placement, which is worse
-than no redline: it looks like evidence, and evidence is the one thing a reviewer is entitled to
-take at face value. `OutputArtifactKind` has a single member for the same reason — the enum gains
-`redline` on the day something can honestly write one, and a test asserts it has not.
+**Evidence-grounded redline output is wired.** The optional redline artifact is built only when a
+live finding has a sealed `VerdictInput` pointing to a typed canonical observation with stored-space
+geometry on a recorded page transform. It never draws from raw candidates, reviewer-entered literals
+or trace display text. Findings without a qualifying location remain in the redline summary rather
+than acquiring a plausible-looking box. The artifact is generated for internal review and, like the
+other review outputs, remains download-blocked until package sign-off.
 
 **The workbook now fills every column (#525).** `findings` stores the outcome, severity, trace and
 parameter versions, and — since #525 — a decision's prose reason, its delta, its applicability variant

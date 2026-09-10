@@ -105,16 +105,9 @@ def test_the_new_pdf_kind_is_accepted_only_because_the_code_produces_it(session:
 
 
 def test_a_kind_the_code_cannot_produce_is_refused(session: Session) -> None:
-    """`redline` is the one somebody will try, and it is exactly the one to refuse.
-
-    An annotated drawing needs each finding tied to a region of the sheet, which needs semantic
-    typing — deliberately absent until the real drawings (#274) and the vocabulary Q20 defers. The
-    constraint gains the value on the day something can honestly write one, the same lesson as
-    `ModelInvocationOutcome.FAILED`, which the database rejected for as long as the enum had a member
-    the `CHECK` did not.
-    """
+    """The schema accepts the redline the output stage now produces, and nothing else."""
     revision = _revision(session)
-    session.add(_artifact(revision, kind="redline"))
+    session.add(_artifact(revision, kind="invented_output"))
 
     with pytest.raises(IntegrityError, match="output_artifact_kind"):
         session.flush()
