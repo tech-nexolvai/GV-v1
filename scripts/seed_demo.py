@@ -40,11 +40,15 @@ if TYPE_CHECKING:
 class _DemoStages(Protocol):
     """The two real stages the seed deliberately demonstrates."""
 
-    def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]: ...
+    def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+        """Record the deterministic findings for the seeded revision."""
 
-    def generate_outputs(
-        self, session: Session, package_revision_id: UUID
-    ) -> Mapping[str, object]: ...
+        ...
+
+    def generate_outputs(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
+        """Build the reviewer handoff artifacts from the recorded findings."""
+
+        ...
 
 
 def _finish_seeded_review(
@@ -97,6 +101,7 @@ SHOP_DEPTH_FAIL = Fraction(101, 4)
 
 
 def main() -> int:
+    """Seed one completed reviewer-input demo package and print its recorded findings."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--fail",
