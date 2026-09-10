@@ -15,12 +15,11 @@ supplying operands to something that already worked. The reading half (#517) fol
 principle: `evidence/crop.py` and `retrieval/matching.py` were finished, tested and unreachable from
 production, so what was missing was the connection rather than the algorithm.
 
-**The pipeline stops at untyped candidates, and that is the state rather than a shortfall.** A
-candidate is a reading with a picture of where it came from. Nothing gives it a meaning, so nothing
-mints a canonical observation, so nothing becomes eligible as a verdict operand — `evidence/gate.py`
-takes a canonical observation and there are none. Which value means "countertop depth" needs the real
-drawings (#274) and a vocabulary Q20 explicitly defers, and a heuristic here would look like progress
-and be a fabricated fact in a review. `docs/decisions/PIPELINE_SPINE.md` records the whole boundary.
+**Raw candidates stay raw.** The default pipeline stops at untyped readings. An opt-in deployment
+may additionally use the semantic-typing gate: only an exact vector vocabulary tag and numeric
+reading already attached to one deterministic line may mint a corroborated observation. Position and
+agent suggestions remain reviewer work, so the verdict still sees no operand when the proof is
+missing. `docs/decisions/SEMANTIC_TYPING_GATE.md` records the whole boundary.
 
 **A check therefore still abstains unless a reviewer supplies the reading**, which `CLIENT_FACTS` Q7
 blesses for exactly this. That is the honest result, not a broken one: no observations means no
@@ -49,6 +48,7 @@ from sqlalchemy.orm import Session
 
 from app.api.documents import storage_key
 from app.db.base import utc_now
+from app.evidence.automatic_typing import AutomaticTypingSettings, qualify_exact_tags_for_revision
 from app.evidence.record import (
     open_extraction_run,
     persist_manifest,
@@ -240,6 +240,7 @@ class DatabaseStages:
         discriminators: Mapping[str, str] | None = None,
         association: AssociationSettings | None = None,
         localized_ocr: LocalizedOcrSettings | None = None,
+        automatic_typing: AutomaticTypingSettings | None = None,
         findings_composer: FindingsLanguageModel | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
@@ -259,6 +260,10 @@ class DatabaseStages:
         # anybody ever runs, which is the guess `text_association` refuses to make for itself.
         self._association = association
         self._localized_ocr = localized_ocr
+        # Optional and deliberately empty by default.  A deployment has to state the vocabulary
+        # final for its layout; exact tags then qualify only through the separate evidence gate.
+        # This never writes ``semantic_guess`` and an agent suggestion is not accepted here.
+        self._automatic_typing = automatic_typing
         # Post-verdict presentation only. The composer receives frozen stored findings in
         # ``generate_outputs``; it is unreachable from ``run_checks`` and an error falls back to a
         # complete deterministic summary rather than delaying or changing a verdict.
@@ -1444,6 +1449,15 @@ class DatabaseStages:
             ),
         ]
         rules = [store.latest(rule_id) for rule_id in store.rule_ids()]
+        typing = (
+            qualify_exact_tags_for_revision(
+                session,
+                package_revision_id=package_revision_id,
+                settings=self._automatic_typing,
+            )
+            if self._automatic_typing is not None
+            else None
+        )
         defaults = declared_defaults(
             [snapshot.rule for snapshot in rules if snapshot is not None], when=utc_now()
         )
@@ -1557,6 +1571,8 @@ class DatabaseStages:
             "rules_published": len(store.rule_ids()),
             "superseded_runs": superseded,
             "not_applicable": skipped,
+            "automatic_types_qualified": 0 if typing is None else len(typing.qualified),
+            "semantic_typing_review_required": 0 if typing is None else len(typing.review_required),
         }
 
 
