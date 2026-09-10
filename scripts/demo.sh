@@ -16,6 +16,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# The local stack is a Python application, and relying on a shell's bare ``python`` makes the demo
+# depend on whichever global interpreter happens to be first on PATH.  Use this checkout's declared
+# runtime consistently; the early refusal is actionable when a new clone has not been installed yet.
+PYTHON=".venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+  echo "  missing $PYTHON — create the project virtual environment before running the demo" >&2
+  exit 1
+fi
+
 # Read from the Makefile rather than recomputed here. Two implementations of "which database is this
 # checkout's" would disagree the first time either changed, and the disagreement would be a demo
 # pointing at another worktree's data.
@@ -34,12 +43,12 @@ fi
 
 say "3/6  the schema"
 # BARE, for alembic.
-DATABASE_URL="$BARE_URL" python -m alembic upgrade head
+DATABASE_URL="$BARE_URL" "$PYTHON" -m alembic upgrade head
 
 say "4/6  the rulebook"
 # `run_checks.py --publish` needs a revision to check, and publishing is the part we want; the seed
 # below creates the package. Published first so the seed's own run has rules to run.
-GV_DATABASE_URL="$BARE_URL" python - <<'PY'
+GV_DATABASE_URL="$BARE_URL" "$PYTHON" - <<'PY'
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path.cwd()))
 from sqlalchemy import create_engine
@@ -54,14 +63,14 @@ with Session(create_engine(Settings().database_url)) as session:
     print(f"  published {published} rule(s) (already-published rules are skipped)")
 PY
 
-say "5/6  a package with reviewer-supplied values"
-PROJECT_ID="$(GV_DATABASE_URL="$BARE_URL" python scripts/seed_demo.py --fail 2>/dev/null \
+say "5/6  a synthetic uploaded drawing with inspectable evidence"
+PROJECT_ID="$(GV_DATABASE_URL="$BARE_URL" "$PYTHON" scripts/seed_demo.py --with-evidence 2>/dev/null \
   | awk '/^package /{print $2}')"
 if [ -z "$PROJECT_ID" ]; then
-  echo "  seed produced no package — run 'python scripts/seed_demo.py' to see why" >&2
+  echo "  seed produced no package — run '$PYTHON scripts/seed_demo.py' to see why" >&2
   exit 1
 fi
-PROJECT_UUID="$(GV_DATABASE_URL="$BARE_URL" python - "$PROJECT_ID" <<'PY'
+PROJECT_UUID="$(GV_DATABASE_URL="$BARE_URL" "$PYTHON" - "$PROJECT_ID" <<'PY'
 import sys
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -81,7 +90,7 @@ GV_DATABASE_URL="$BARE_URL" \
 GV_DEV_PRINCIPAL="demo reviewer" \
 GV_DEV_PROJECTS="$PROJECT_UUID" \
 GV_DEV_PORT="$API_PORT" \
-  python scripts/dev_server.py &
+  "$PYTHON" scripts/dev_server.py &
 API_PID=$!
 
 VITE_PROJECT_ID="$PROJECT_UUID" \
@@ -104,10 +113,12 @@ cat <<EOF
      project     $PROJECT_UUID
      database    $DEMO_DB
 
-   The seeded package has one deliberate error: a countertop depth a
-   quarter inch out. Open the Measure page to enter values yourself,
-   then Run checks — and run 'python scripts/drain_outbox.py' to do
-   the work the API accepted.
+   The seeded package is a clearly labelled synthetic fixture. It has
+   one deliberate 1/4-in countertop-depth mismatch and a real
+   mechanical crop generated from its uploaded PDF. Open the Review
+   page, choose CT-DEPTH-001, then Evidence & facts to inspect it.
+   No client drawing, reviewer annotation, or model-derived type is
+   used by this demo fixture.
 
    Ctrl-C stops both servers.
   ────────────────────────────────────────────────────────────────

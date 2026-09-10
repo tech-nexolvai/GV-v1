@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -13,6 +13,7 @@ from pytest import MonkeyPatch
 from sqlalchemy.orm import Session
 
 from app.models import PackageState
+from extraction.reader import read_page_contents
 
 
 class _DemoStages(Protocol):
@@ -133,3 +134,24 @@ def test_seeded_demo_does_not_handoff_when_checks_fail(monkeypatch: MonkeyPatch)
         module._finish_seeded_review(cast(Session, object()), uuid4(), BrokenStages())
 
     assert events == ["run_checks"]
+
+
+def test_evidence_demo_fixture_is_a_synthetic_pdf_with_the_declared_reading() -> None:
+    """The runnable demo's crop source is safe fixture data, not a copied client drawing."""
+    module = cast(Any, _seed_demo_module())
+
+    contents = read_page_contents(
+        module.EVIDENCE_DRAWING,
+        0,
+        document_version_id=uuid4(),
+        dpi=300,
+    )
+
+    assert module.EVIDENCE_DRAWING.startswith(b"%PDF-")
+    assert module.EVIDENCE_LABEL == "641 [25 1/4]"
+    assert [item.text for item in contents.texts] == [
+        "641 [25 1/4]",
+        "SYNTHETIC",
+        "SHOP",
+        "DEPTH",
+    ]
