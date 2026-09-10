@@ -346,19 +346,27 @@ def _new_package(session: Session, *, project_id: UUID | None = None) -> UUID:
     return package.id
 
 
-def _register(client: Any, digest: str, package_id: UUID) -> Any:
+def _register(
+    client: Any, digest: str, package_id: UUID, *, kind: DocumentKind = DocumentKind.SHOP
+) -> Any:
     return client.post(
         f"/api/v1/projects/{PROJECT}/packages/{package_id}/documents",
-        json={"kind": DocumentKind.SHOP.value, "sha256": digest},
+        json={"kind": kind.value, "sha256": digest},
     )
 
 
 def _upload_and_confirm(
-    client: Any, store: LocalStore, package_id: UUID, payload: bytes, *, pages: int = 3
+    client: Any,
+    store: LocalStore,
+    package_id: UUID,
+    payload: bytes,
+    *,
+    pages: int = 3,
+    kind: DocumentKind = DocumentKind.SHOP,
 ) -> tuple[str, Any]:
     """Register, write the bytes straight to storage as a client would, then confirm."""
     digest = hashlib.sha256(payload).hexdigest()
-    registered = _register(client, digest, package_id)
+    registered = _register(client, digest, package_id, kind=kind)
     assert registered.status_code == 201, registered.text
     document_id = registered.json()["document_id"]
 
@@ -382,50 +390,37 @@ def _outbox_rows(session: Session) -> list[Any]:
     return list(session.execute(select(OutboxEntry)).scalars())
 
 
-def test_the_version_and_the_ingestion_request_commit_together(
-    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**The acceptance criterion, proved rather than observed.**
-
-    The failure is induced *between* the version and the outbox row. A test that confirms both rows
-    appear on the happy path passes identically against an implementation that commits twice — so it
-    would not notice the bug it exists to catch, which is a document version whose ingestion was never
-    requested. That version sits there looking successfully uploaded and is never processed.
-    """
-    from app.api import documents as documents_module
-
-    package_id = _new_package(session)
-    payload = b"%PDF-1.7 induced failure\n"
-
-    def explode(*args: Any, **kwargs: Any) -> None:
-        raise RuntimeError("the outbox write failed")
-
-    monkeypatch.setattr(documents_module, "enqueue", explode)
-
-    client = _client(session, store)
-    _, confirmed = _upload_and_confirm(client, store, package_id, payload)
-
-    assert confirmed.status_code >= 500, "an outbox failure must not read as success"
-    session.rollback()
-    assert _outbox_rows(session) == []
-    assert (
-        list(session.execute(select(DocumentVersion)).scalars()) == []
-    ), "the version survived a failed outbox write, so ingestion will never be requested for it"
-
-
-def test_a_confirmed_upload_writes_the_version_and_one_outbox_row(
+def test_a_confirmed_upload_waits_for_the_complete_pair_before_enqueuing(
     session: Session, store: LocalStore
 ) -> None:
-    """The happy path, and the other half of the atomicity claim: together means both, not either."""
+    """One confirmed PDF must not freeze and read a package whose counterpart is still uploading."""
     package_id = _new_package(session)
     client = _client(session, store)
     _, confirmed = _upload_and_confirm(client, store, package_id, b"%PDF-1.7 good\n")
 
     assert confirmed.status_code == 201, confirmed.text
     assert len(list(session.execute(select(DocumentVersion)).scalars())) == 1
+    assert _outbox_rows(session) == []
+
+
+def test_complete_pair_enqueues_one_package_extraction(session: Session, store: LocalStore) -> None:
+    """The second PDF completes assembly; only the explicit package request may queue extraction."""
+    package_id = _new_package(session)
+    client = _client(session, store)
+    _upload_and_confirm(
+        client, store, package_id, b"%PDF-1.7 arch\n", kind=DocumentKind.ARCHITECTURAL
+    )
+    _upload_and_confirm(client, store, package_id, b"%PDF-1.7 shop\n", kind=DocumentKind.SHOP)
+
+    extracted = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/extract")
+    assert extracted.status_code == 202, extracted.text
     rows = _outbox_rows(session)
     assert len(rows) == 1
-    assert rows[0].payload["sha256"] == confirmed.json()["sha256"]
+    assert rows[0].workflow == "extract_package"
+
+    repeated = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/extract")
+    assert repeated.status_code == 409
+    assert len(_outbox_rows(session)) == 1
 
 
 def test_a_hash_mismatch_is_refused_and_writes_nothing(session: Session, store: LocalStore) -> None:
@@ -470,7 +465,7 @@ def test_re_confirming_the_same_bytes_is_a_no_op(session: Session, store: LocalS
     assert first.status_code == 201
     assert again.status_code == 200, "a repeat is a no-op, not a conflict and not a second create"
     assert again.json()["id"] == first.json()["id"]
-    assert len(_outbox_rows(session)) == 1, "ingestion was requested twice for one upload"
+    assert _outbox_rows(session) == [], "one file is not a complete drawing pair"
 
 
 def test_re_uploading_different_bytes_makes_a_new_version(

@@ -69,7 +69,7 @@ export default function App() {
       // The real thing: create the package, hash each file in the browser, register it, PUT the
       // bytes straight to storage against the returned ticket, and confirm. The API never carries
       // the file — `src/api/upload.ts` explains why.
-      const { reviewSessionId } = await createPackage(
+      const { packageId } = await createPackage(
         projectId(),
         { vendor, architectural: archFile, shop: shopFile },
         (progress: UploadProgress) => {
@@ -79,8 +79,10 @@ export default function App() {
 
       setIsSimulating(false);
       setIsModalOpen(false);
-      if (reviewSessionId) setActiveSession(reviewSessionId);
-      setActivePage('review');
+      // ReviewPage loads package-scoped endpoints. A review-session id is a different resource and
+      // passing it here made every newly uploaded package look like a 404.
+      setActiveSession(packageId);
+      setActivePage('confirm');
       setEvidencePanel(null);
       setArchFile(null);
       setShopFile(null);
@@ -133,11 +135,10 @@ export default function App() {
 
       {activePage === 'measure' && (
         <EnterValuesPage
-          onDone={() => {
-            // Straight to the packages list rather than to a findings view for this
-            // package: the checks are asynchronous, so there may be nothing to show yet,
-            // and a findings page that opened empty would read as a failed run.
-            setActivePage('documents');
+          packageId={activeSession || undefined}
+          onDone={(packageId) => {
+            setActiveSession(packageId);
+            setActivePage('review');
           }}
         />
       )}
@@ -145,10 +146,7 @@ export default function App() {
         <ConfirmReadingsPage
           packageId={activeSession}
           onDone={() => {
-            // The packages list, not a findings view: confirming a reading does not run the
-            // checks, and a findings page opened straight afterwards would read as an empty result
-            // rather than as work not yet asked for.
-            setActivePage('documents');
+            setActivePage('measure');
           }}
         />
       )}

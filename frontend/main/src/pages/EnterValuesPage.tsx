@@ -67,7 +67,13 @@ const SOURCE_LABEL: Record<string, string> = {
   PRODUCT_SPEC: 'product specification',
 };
 
-export function EnterValuesPage({ onDone }: { onDone?: (packageId: string) => void }) {
+export function EnterValuesPage({
+  packageId: selectedPackageId,
+  onDone,
+}: {
+  packageId?: string;
+  onDone?: (packageId: string) => void;
+}) {
   const [needed, setNeeded] = useState<Needed | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [vendor, setVendor] = useState('');
@@ -86,9 +92,15 @@ export function EnterValuesPage({ onDone }: { onDone?: (packageId: string) => vo
   // throwaway package purely to read the rulebook would litter the project with empties.
   useEffect(() => {
     let cancelled = false;
+    // A package switch must never leave the prior package's fields enabled while the new contract is
+    // loading. The reviewer could otherwise submit a value against the wrong drawing pair.
+    setPackageId('');
+    setNeeded(null);
+    setRuns({});
+    setLoadError(null);
     (async () => {
       try {
-        const bootstrap = packageId ?? (await createPackage(projectId(), null)).id;
+        const bootstrap = selectedPackageId ?? (await createPackage(projectId(), null)).id;
         const fields = await getRequiredInputs(projectId(), bootstrap);
         if (cancelled) return;
         setPackageId(bootstrap);
@@ -107,9 +119,8 @@ export function EnterValuesPage({ onDone }: { onDone?: (packageId: string) => vo
     return () => {
       cancelled = true;
     };
-    // Once. Re-fetching on every keystroke would replace the reviewer's rows mid-edit.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // Re-fetch only when the selected package changes, never on a keystroke within its form.
+  }, [selectedPackageId]);
 
   const setRun = (key: string, index: number, value: string) =>
     setRuns((prior) => ({

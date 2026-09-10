@@ -26,10 +26,12 @@ Verification: `tests/test_drain_outbox.py`
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import sys
 import time
 from collections.abc import Mapping
+from decimal import Decimal
 from uuid import UUID
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -40,9 +42,75 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 WATCH_SECONDS = 2.0
 
 
+def _reader_configuration() -> tuple[object | None, object | None]:
+    """Read explicitly supplied localized-reader settings, or leave that optional route off.
+
+    The thresholds select pixels to OCR, so they are deployment configuration rather than product
+    defaults.  A partial configuration is refused; silently filling one value would change which
+    drawing region gets read.  The demo launcher supplies its documented synthetic-fixture values.
+    """
+    if os.environ.get("GV_LOCALIZED_OCR_ENABLED", "").lower() not in {"1", "true", "yes"}:
+        return None, None
+    required = {
+        "GV_READER_LINE_MINIMUM_PT": os.environ.get("GV_READER_LINE_MINIMUM_PT"),
+        "GV_READER_GLYPH_MAXIMUM_PT": os.environ.get("GV_READER_GLYPH_MAXIMUM_PT"),
+        "GV_READER_GLYPH_GAP_PT": os.environ.get("GV_READER_GLYPH_GAP_PT"),
+        "GV_READER_PROXIMITY_LIMIT": os.environ.get("GV_READER_PROXIMITY_LIMIT"),
+        "GV_READER_AMBIGUITY_MARGIN": os.environ.get("GV_READER_AMBIGUITY_MARGIN"),
+        "GV_READER_LOCALIZED_MINIMUM_PATHS": os.environ.get("GV_READER_LOCALIZED_MINIMUM_PATHS"),
+        "GV_READER_LOCALIZED_MAXIMUM_SPAN": os.environ.get("GV_READER_LOCALIZED_MAXIMUM_SPAN"),
+        "GV_READER_LOCALIZED_CROP_MARGIN_PT": os.environ.get("GV_READER_LOCALIZED_CROP_MARGIN_PT"),
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise ValueError("localized OCR is enabled but missing " + ", ".join(missing))
+    from workflow.association import AssociationSettings, LocalizedOcrSettings
+
+    return (
+        AssociationSettings(
+            line_minimum_pt=Decimal(required["GV_READER_LINE_MINIMUM_PT"] or ""),
+            glyph_maximum_pt=Decimal(required["GV_READER_GLYPH_MAXIMUM_PT"] or ""),
+            glyph_gap_pt=Decimal(required["GV_READER_GLYPH_GAP_PT"] or ""),
+            proximity_limit=Decimal(required["GV_READER_PROXIMITY_LIMIT"] or ""),
+            ambiguity_margin=Decimal(required["GV_READER_AMBIGUITY_MARGIN"] or ""),
+        ),
+        LocalizedOcrSettings(
+            minimum_paths=int(required["GV_READER_LOCALIZED_MINIMUM_PATHS"] or ""),
+            maximum_span=Decimal(required["GV_READER_LOCALIZED_MAXIMUM_SPAN"] or ""),
+            crop_margin_pt=Decimal(required["GV_READER_LOCALIZED_CROP_MARGIN_PT"] or ""),
+        ),
+    )
+
+
+def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
+    """Build the local worker's real stages against the same storage root as the dev API."""
+    from storage.local import LocalStore
+    from workflow.findings_bedrock import configured_findings_composer
+    from workflow.stages import DatabaseStages
+
+    # A LocalStore needs a signing key to satisfy its interface, but this worker never issues upload
+    # tickets.  It only reads already-confirmed objects from the same explicitly configured dev root.
+    store = LocalStore(
+        root=pathlib.Path(os.environ.get("GV_DEV_STORAGE", ".dev-storage")).resolve(),
+        ticket_secret=b"local-review-worker-never-issues-tickets",
+    )
+    association, localized = _reader_configuration()
+    from app.config import Settings
+
+    return DatabaseStages(
+        store,
+        operands=None,
+        discriminators=dict(discriminators or {}),
+        association=association,
+        localized_ocr=localized,
+        findings_composer=configured_findings_composer(Settings()),  # type: ignore[call-arg]
+    )
+
+
 def _run_checks(
     session: object,
     package_revision_id: UUID,
+    idempotency_key: str,
     discriminators: Mapping[str, str] | None = None,
 ) -> Mapping[str, object]:
     """Run the checks for one revision, with what the reviewer supplied.
@@ -52,12 +120,95 @@ def _run_checks(
     `CAB-FILLER-001` abstain with REVIEW_REQUIRED however complete the measurements are — the
     resolver cannot choose a variant nobody stated, and refuses to guess one.
     """
-    from workflow.measurements import operands_for
-    from workflow.stages import DatabaseStages
+    # Imported here so this control-plane-safe script still has no heavy imports until it is asked
+    # to consume work.  The operands are loaded by `DatabaseStages.run_checks` only after a human has
+    # confirmed a candidate; no OCR proposal becomes a verdict operand by this path.
+    from app.lifecycle.states import transition
+    from app.models import PackageRevision, PackageState, WorkflowRun
+    from workflow.review import run_stage
 
-    operands = operands_for(session, package_revision_id)  # type: ignore[arg-type]
-    stages = DatabaseStages(operands=operands, discriminators=dict(discriminators or {}))
-    return stages.run_checks(session, package_revision_id)  # type: ignore[arg-type]
+    revision = session.get(PackageRevision, package_revision_id)  # type: ignore[arg-type]
+    if revision is None:
+        return {"implemented": True, "ran": False, "reason": "no such package revision"}
+    stages = _stages(discriminators=discriminators)
+    workflow_run_id = UUID(idempotency_key)
+    _ensure_workflow_run(session, package_revision_id, workflow_run_id, WorkflowRun)
+    outcome = run_stage(
+        session,
+        stage="run_checks",
+        state=PackageState.RUNNING_CHECKS,
+        package_revision_id=package_revision_id,
+        workflow_run_id=workflow_run_id,
+        stages=stages,  # type: ignore[arg-type]
+    )
+    output = run_stage(
+        session,
+        stage="generate_outputs",
+        state=PackageState.GENERATING_OUTPUTS,
+        package_revision_id=package_revision_id,
+        workflow_run_id=workflow_run_id,
+        stages=stages,  # type: ignore[arg-type]
+    )
+    transition(
+        session,
+        package_revision_id,
+        PackageState.AWAITING_REVIEW,
+        actor="local review worker",
+        reason="reviewer-confirmed readings were checked and handoff artifacts generated",
+    )
+    return {"checks": dict(outcome.payload), "outputs": dict(output.payload)}
+
+
+def _ensure_workflow_run(
+    session: object,
+    package_revision_id: UUID,
+    workflow_run_id: UUID,
+    workflow_run_type: object,
+) -> None:
+    """Create the durable parent before a stage claims its task.
+
+    ``task_runs.workflow_run_id`` is a foreign key, not a label.  The outbox id is the stable
+    idempotency key, so the local worker deliberately reuses it as the workflow id; a repeat finds
+    the same parent and lets ``run_stage`` make its normal idempotent decision.
+    """
+    if session.get(workflow_run_type, workflow_run_id) is None:  # type: ignore[union-attr]
+        session.add(  # type: ignore[union-attr]
+            workflow_run_type(
+                id=workflow_run_id,
+                package_revision_id=package_revision_id,
+                engine_run_id=str(workflow_run_id),
+            )
+        )
+        session.flush()  # type: ignore[union-attr]
+
+
+def _extract_package(
+    session: object, package_revision_id: UUID, idempotency_key: str
+) -> Mapping[str, object]:
+    """Run only the pre-verdict stages and leave OCR proposals waiting for human confirmation."""
+    from app.models import PackageState, WorkflowRun
+    from workflow.review import run_stage
+
+    stages = _stages()
+    workflow_run_id = UUID(idempotency_key)
+    _ensure_workflow_run(session, package_revision_id, workflow_run_id, WorkflowRun)
+    results: dict[str, object] = {}
+    for stage, state in (
+        ("ingest", PackageState.INGESTING),
+        ("extract_pages", PackageState.EXTRACTING),
+        ("match", PackageState.MATCHING),
+        ("validate_evidence", PackageState.VALIDATING_EVIDENCE),
+    ):
+        outcome = run_stage(
+            session,
+            stage=stage,
+            state=state,
+            package_revision_id=package_revision_id,
+            workflow_run_id=workflow_run_id,
+            stages=stages,  # type: ignore[arg-type]
+        )
+        results[stage] = dict(outcome.payload)
+    return results
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -88,20 +239,22 @@ def main(argv: list[str] | None = None) -> int:
         runs for the revision and writes a fresh set, so running it twice leaves one live set rather
         than two.
         """
-        if workflow != "run_checks":
-            print(f"  no consumer for {workflow!r} — leaving it for the worker that owns it")
-            raise NotImplementedError(f"no local consumer for {workflow!r}")
-
         revision_id = UUID(str(payload["package_revision_id"]))
-        raw = payload.get("discriminators")
-        # Narrowed rather than cast: the payload is JSON from a database row, so its shape is a claim
-        # this process should check rather than assume. A malformed entry runs the checks without a
-        # discriminator, which abstains — visible — instead of raising here and stalling the queue.
-        stated = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
         with factory() as session:
-            result = _run_checks(session, revision_id, stated)
+            if workflow == "extract_package":
+                result = _extract_package(session, revision_id, idempotency_key)
+            elif workflow == "run_checks":
+                raw = payload.get("discriminators")
+                # Narrowed rather than cast: the payload is JSON from a database row, so its shape is
+                # a claim this process checks rather than assumes. A malformed declaration lets a
+                # rule abstain rather than selecting a layout by guess.
+                stated = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+                result = _run_checks(session, revision_id, idempotency_key, stated)
+            else:
+                print(f"  no local consumer for {workflow!r} — leaving it for its worker")
+                raise NotImplementedError(f"no local consumer for {workflow!r}")
             session.commit()
-        print(f"  run_checks {revision_id}: {dict(result)}")
+        print(f"  {workflow} {revision_id}: {dict(result)}")
 
     passes = 0
     while True:

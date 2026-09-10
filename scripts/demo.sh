@@ -81,7 +81,7 @@ with Session(create_engine(Settings().database_url)) as s:
 PY
 )"
 
-say "6/6  the API on :$API_PORT and the UI on :$VITE_PORT"
+say "6/6  the API, review worker, and UI"
 # `GV_DEV_PRINCIPAL` and `GV_DEV_PROJECTS` are exported rather than written to `.env`: neither is a
 # field on `Settings`, and `extra="forbid"` means a `.env` containing them stops the API starting
 # (#504). `VITE_PROJECT_ID` is exported for the same shape of reason — writing `.env.local` is what
@@ -93,6 +93,23 @@ GV_DEV_PORT="$API_PORT" \
   "$PYTHON" scripts/dev_server.py &
 API_PID=$!
 
+# The demo's crop-local reader uses the explicit geometry settings that were measured for its safe
+# synthetic fixture.  They are process configuration, not application defaults: a deployment must
+# state its own values before it can turn this route on for a different drawing family.
+GV_DATABASE_URL="$BARE_URL" \
+GV_DEV_STORAGE=".dev-storage" \
+GV_LOCALIZED_OCR_ENABLED=1 \
+GV_READER_LINE_MINIMUM_PT=50 \
+GV_READER_GLYPH_MAXIMUM_PT=10 \
+GV_READER_GLYPH_GAP_PT=4 \
+GV_READER_PROXIMITY_LIMIT=0.05 \
+GV_READER_AMBIGUITY_MARGIN=0.005 \
+GV_READER_LOCALIZED_MINIMUM_PATHS=1 \
+GV_READER_LOCALIZED_MAXIMUM_SPAN=0.5 \
+GV_READER_LOCALIZED_CROP_MARGIN_PT=2 \
+  "$PYTHON" scripts/drain_outbox.py --watch &
+WORKER_PID=$!
+
 VITE_PROJECT_ID="$PROJECT_UUID" \
 VITE_API_TARGET="http://127.0.0.1:$API_PORT" \
   npm --prefix frontend/main run dev -- --port "$VITE_PORT" --strictPort &
@@ -100,7 +117,7 @@ VITE_PID=$!
 
 # Both die with this script, however it ends. Without the trap a Ctrl-C leaves two servers holding
 # the ports the next run wants — which is the mess this whole change is about.
-trap 'kill $API_PID $VITE_PID 2>/dev/null || true' EXIT INT TERM
+trap 'kill $API_PID $WORKER_PID $VITE_PID 2>/dev/null || true' EXIT INT TERM
 
 sleep 4
 cat <<EOF

@@ -234,6 +234,16 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     assert confirmed.status_code == 201, confirmed.text
     assert confirmed.json()["status"] == "HUMAN_CONFIRMED"
 
+    # The request commits its canonical observation.  Reloading the proposal queue must not offer
+    # the same raw candidate for a second type — that would be an apparent successful confirmation
+    # followed by a duplicate/conflicting reviewer action on the next page load.
+    reloaded = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates")
+    assert reloaded.status_code == 200, reloaded.text
+    assert depth["candidate_id"] not in {
+        item["candidate_id"] for item in reloaded.json()["candidates"]
+    }
+    assert len(reloaded.json()["candidates"]) == len(readings) - 1
+
     # A second genuine typed reading is deliberately not an operand for any published check. It
     # must not appear on CT-DEPTH-001's redline merely because it lives on the same sheet.
     unrelated = next(row for row in readings if row["raw_text"] == "100 [4]")

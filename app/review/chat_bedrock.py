@@ -149,7 +149,7 @@ class BedrockReviewerChat:
 
 def configured_reviewer_chat(settings: Settings) -> BedrockReviewerChat | None:
     """Build the deployment-configured provider, or make the endpoint use its plain fallback."""
-    if not settings.bedrock_chat_enabled:
+    if not settings.bedrock_chat_enabled or not settings.bedrock_model.strip():
         return None
     return BedrockReviewerChat(
         _Config(

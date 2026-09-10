@@ -3,6 +3,7 @@ import { CheckCircle2, AlertTriangle, ScanLine } from 'lucide-react';
 import {
   ApiError,
   confirmCandidate,
+  downloadCandidateCrop,
   listCandidates,
   listSemanticTypes,
   type CandidateOut,
@@ -48,11 +49,16 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
 
   useEffect(() => {
     let live = true;
-    Promise.all([listCandidates(projectId(), packageId), listSemanticTypes()])
+    let retry: number | undefined;
+    const load = () => Promise.all([listCandidates(projectId(), packageId), listSemanticTypes()])
       .then(([read, vocabulary]) => {
         if (!live) return;
         setCandidates(read.candidates);
         setTypes(vocabulary);
+        // The upload screen moves straight into this review step, while extraction is deliberately
+        // asynchronous. Poll only an empty proposal list: once a reading arrives the UI is stable;
+        // when none ever arrives the reviewer can immediately continue with manual values.
+        if (read.candidates.length === 0) retry = window.setTimeout(load, 2_000);
       })
       .catch((cause: unknown) => {
         if (!live) return;
@@ -63,8 +69,10 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
       .finally(() => {
         if (live) setLoading(false);
       });
+    void load();
     return () => {
       live = false;
+      if (retry !== undefined) window.clearTimeout(retry);
     };
   }, [packageId]);
 
@@ -104,9 +112,12 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
       <div className="readings">
         <h1 className="readings__title">Confirm what was read</h1>
         <p className="readings__status">
-          Nothing with a value has been read for this package yet. A drawing has to be extracted
-          before its dimensions can be confirmed.
+          Waiting for exact AI readings from the drawing. If none are proposed, the reviewer can
+          continue now and supply only the values AI abstained on.
         </p>
+        <button type="button" className="readings__done" onClick={onDone}>
+          Continue with reviewer inputs
+        </button>
       </div>
     );
   }
@@ -117,9 +128,9 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
     <div className="readings">
       <h1 className="readings__title">Confirm what was read</h1>
       <p className="readings__lede">
-        Each row is a dimension the extractor read off the drawing. Check the value against the crop,
-        then say which quantity it is. The value is not re-entered — confirming it is what lets the
-        rules use the reading itself.
+        AI proposed {candidates.length} exact reading{candidates.length === 1 ? '' : 's'} from the
+        drawing. Check each mechanical crop, then say which quantity it is. AI did not choose a type;
+        anything it did not propose stays for you to enter on the next screen.
       </p>
 
       <ul className="readings__list">
@@ -137,6 +148,11 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
                 <span className="reading__raw" title="As printed on the drawing">
                   {candidate.raw_text}
                 </span>
+                {candidate.confidence && (
+                  <span className="reading__confidence">
+                    read confidence {candidate.confidence}
+                  </span>
+                )}
                 {candidate.corroboration_status === 'CONFLICTING' && (
                   <span className="reading__conflict">
                     <AlertTriangle size={14} aria-hidden="true" />
@@ -147,9 +163,7 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
 
               <div className="reading__crop">
                 {candidate.crop_key ? (
-                  <span className="reading__crop-name">
-                    <ScanLine size={14} aria-hidden="true" /> crop recorded
-                  </span>
+                  <ProposalCrop candidate={candidate} packageId={packageId} />
                 ) : (
                   <span className="reading__crop-name reading__crop-name--absent">
                     no crop
@@ -213,4 +227,33 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
       </div>
     </div>
   );
+}
+
+function ProposalCrop({ candidate, packageId }: { candidate: CandidateOut; packageId: string }) {
+  const [state, setState] = useState<{ url: string } | { error: string } | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    let objectUrl: string | null = null;
+    void downloadCandidateCrop(projectId(), packageId, candidate.candidate_id).then(
+      (blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (live) setState({ url: objectUrl });
+        else URL.revokeObjectURL(objectUrl);
+      },
+      (cause: unknown) => {
+        if (live) {
+          setState({ error: cause instanceof Error ? cause.message : 'The stored crop could not be loaded.' });
+        }
+      },
+    );
+    return () => {
+      live = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [candidate.candidate_id, packageId]);
+
+  if (state && 'error' in state) return <span className="reading__crop-name reading__crop-name--absent">crop unavailable</span>;
+  if (!state || !('url' in state)) return <span className="reading__crop-name"><ScanLine size={14} aria-hidden="true" /> loading crop…</span>;
+  return <img className="reading__crop-image" src={state.url} alt={`Mechanical crop for ${candidate.raw_text} on page ${candidate.page_index + 1}`} />;
 }

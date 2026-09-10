@@ -190,6 +190,10 @@ def configured_findings_composer(
     model and region as reviewer chat.  The no-argument form remains for focused tooling and tests
     that configure the extraction seam directly through process environment.
     """
+    if settings is not None and (
+        not settings.bedrock_chat_enabled or not settings.bedrock_model.strip()
+    ):
+        return None
     try:
         if settings is None:
             config = config_from_environment(prompt_id=PROMPT_ID, template_id=TEMPLATE_ID)

@@ -173,6 +173,27 @@ def test_settings_configure_the_same_model_and_region_as_reviewer_chat() -> None
     assert reviewer_chat._config.region_name == composer._config.region_name
 
 
+def test_blank_model_disables_only_the_optional_bedrock_presentation() -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://gv:gv@localhost:5433/gvtest",
+        bedrock_model="",
+    )
+
+    assert configured_findings_composer(settings) is None
+    assert configured_reviewer_chat(settings) is None
+
+
+def test_whitespace_model_disables_only_the_optional_bedrock_presentation() -> None:
+    """A whitespace-only setting is no more configured than an absent model name."""
+    settings = Settings(
+        database_url="postgresql+psycopg://gv:gv@localhost:5433/gvtest",
+        bedrock_model="   ",
+    )
+
+    assert configured_findings_composer(settings) is None
+    assert configured_reviewer_chat(settings) is None
+
+
 def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
     request = BedrockFindingsComposer(_config(), _Client(_response()))._request(
         (_finding(),), "operator-configured-model"
