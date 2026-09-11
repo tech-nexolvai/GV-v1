@@ -69,7 +69,10 @@ export function ChatThread({
                 ) : (
                   <>
                     <strong>Deterministic fallback</strong>
-                    <span>No AI prose was used for this response. The recorded findings below are unchanged.</span>
+                    <span>
+                      No AI narration was applied for this response; the recorded findings below are unchanged.
+                      {msg.narration.fallbackReason ? ` ${msg.narration.fallbackReason}` : ' No model is currently configured.'}
+                    </span>
                   </>
                 )}
               </div>

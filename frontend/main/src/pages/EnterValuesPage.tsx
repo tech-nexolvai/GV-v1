@@ -1,22 +1,26 @@
 import { useEffect, useState } from 'react';
-import { Plus, Play, Trash2, AlertTriangle } from 'lucide-react';
+import { Plus, Play, Trash2, AlertTriangle, ScanLine } from 'lucide-react';
 import {
   ApiError,
-  createPackage,
+  confirmCandidate,
+  downloadCandidateCrop,
   enterMeasurements,
   getRequiredInputs,
+  listCandidates,
+  listSemanticTypes,
   requestChecks,
+  type CandidateOut,
 } from '../api/client';
 import { projectId } from '../api/config';
 import './EnterValuesPage.css';
 
 /**
- * The reviewer types the dimensions, and the deterministic engine decides.
+ * The reviewer completes the dimensions, and the deterministic engine decides.
  *
- * `CLIENT_FACTS` Q7: *"the reviewer types the values into input fields for that drawing set"*. There
- * is no AI here and no drawing — the reading half of the product is a person, which is the sanctioned
- * arrangement rather than a stand-in: a reviewer's own reading is HUMAN_CONFIRMED, and the evidence
- * gate accepts that.
+ * `CLIENT_FACTS` Q7: *"the reviewer types the values into input fields for that drawing set"*. The
+ * reviewer still owns the final input: an AI proposal becomes usable only after that person has
+ * inspected its mechanical crop and selected its meaning. Confirmed readings are then placed in the
+ * same editable fields as reviewer-read values; the reviewer may correct them before saving.
  *
  * **Every field comes from the server, and that is what makes the form complete.** A list of fields
  * written here would be right today and silently wrong the first time a rule gained an input — the
@@ -24,7 +28,10 @@ import './EnterValuesPage.css';
  * genuine missing dimension. `GET .../required-inputs` derives the fields from the published rules,
  * so a rule that gains an input gains a field.
  *
- * **Nothing on this page does arithmetic on a value.** The strings go to the server exactly as typed
+ * AI proposals live here with the rule inputs they can populate. A reviewer picks a meaning only
+ * after seeing the mechanical crop; that one explicit choice saves the confirmation and fills the
+ * matching field. The reviewer may edit it before saving. **Nothing on this page does arithmetic
+ * on a value.** The strings go to the server exactly as typed
  * and are parsed there by the same code that reads a drawing. JavaScript has no exact rational, and
  * under exact match (Q2) there is no tolerance band to absorb a rounding error, so a number this file
  * converted could already be a different verdict.
@@ -45,6 +52,14 @@ type Parameter = {
   blocked: boolean;
 };
 type Discriminator = { name: string; rule_ids: string[]; choices: string[] };
+type ConfirmedReading = {
+  key: string;
+  source: string;
+  semantic_type: string;
+  value: string;
+  qualification: 'reviewer_confirmed' | 'exact_vector_tag';
+};
+
 /** One entry on the wire. Exactly one of `value` or `values`, which the server also enforces. */
 type MeasurementEntry = {
   rule_id: string;
@@ -54,6 +69,7 @@ type MeasurementEntry = {
 };
 type Needed = {
   quantities: Quantity[];
+  confirmed_readings: ConfirmedReading[];
   parameters: Parameter[];
   discriminators: Discriminator[];
   rules_published: number;
@@ -70,16 +86,18 @@ const SOURCE_LABEL: Record<string, string> = {
 export function EnterValuesPage({
   packageId: selectedPackageId,
   onDone,
+  onChoosePackage,
 }: {
   packageId?: string;
   onDone?: (packageId: string) => void;
+  onChoosePackage?: () => void;
 }) {
   const [needed, setNeeded] = useState<Needed | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [vendor, setVendor] = useState('');
   const [packageId, setPackageId] = useState<string | null>(null);
   /** Single-valued quantities and parameters, keyed by quantity key or parameter name. */
   const [singles, setSingles] = useState<Record<string, string>>({});
+  const [reviewerEditedSingles, setReviewerEditedSingles] = useState<Set<string>>(() => new Set());
   /** Many-valued quantities, in layout order. */
   const [runs, setRuns] = useState<Record<string, string[]>>({});
   const [choices, setChoices] = useState<Record<string, string>>({});
@@ -87,29 +105,78 @@ export function EnterValuesPage({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<CandidateOut[]>([]);
+  const [semanticTypes, setSemanticTypes] = useState<string[]>([]);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [candidateError, setCandidateError] = useState<string | null>(null);
 
-  // The package is created on first save, so the fields have to be fetchable before one exists. A
-  // throwaway package purely to read the rulebook would litter the project with empties.
   useEffect(() => {
     let cancelled = false;
     // A package switch must never leave the prior package's fields enabled while the new contract is
     // loading. The reviewer could otherwise submit a value against the wrong drawing pair.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPackageId('');
     setNeeded(null);
     setRuns({});
+    setSingles({});
+    setReviewerEditedSingles(new Set());
+    setChoices({});
+    setCandidates([]);
+    setSemanticTypes([]);
+    setCandidateError(null);
     setLoadError(null);
     (async () => {
       try {
-        const bootstrap = selectedPackageId ?? (await createPackage(projectId(), null)).id;
-        const fields = await getRequiredInputs(projectId(), bootstrap);
+        if (!selectedPackageId) return;
+        const [fields, read, vocabulary] = await Promise.all([
+          getRequiredInputs(projectId(), selectedPackageId),
+          listCandidates(projectId(), selectedPackageId),
+          listSemanticTypes(),
+        ]);
         if (cancelled) return;
-        setPackageId(bootstrap);
-        setNeeded(fields as unknown as Needed);
+        const required = fields as unknown as Needed;
+        setPackageId(selectedPackageId);
+        setNeeded(required);
+        setCandidates(read.candidates);
+        setSemanticTypes(vocabulary);
+        const confirmedByKey = required.confirmed_readings.reduce<Record<string, string[]>>(
+          (grouped, reading) => ({
+            ...grouped,
+            [reading.key]: [...(grouped[reading.key] ?? []), reading.value],
+          }),
+          {},
+        );
+        const prefilledSingles = Object.fromEntries(
+          required.quantities
+            .filter((q) => !q.many)
+            // A scalar with two confirmed readings is a real ambiguity.  Leave it empty for the
+            // reviewer instead of choosing the first result based on insertion order.
+            .map(
+              (q): [string, string] => [
+                q.key,
+                (confirmedByKey[q.key] ?? []).length === 1 ? confirmedByKey[q.key][0] : '',
+              ],
+            ),
+        );
+        const prefilledRuns = Object.fromEntries(
+          required.quantities
+            .filter((q) => q.many)
+            .map((q) => [
+              q.key,
+              confirmedByKey[q.key]?.filter((value) => value.trim())?.length
+                ? confirmedByKey[q.key].filter((value) => value.trim())
+                : [''],
+            ]) as Array<[string, string[]]>,
+        );
+        setSingles((prior) => ({ ...prior, ...prefilledSingles }));
         setRuns(
           Object.fromEntries(
-            (fields as unknown as Needed).quantities.filter((q) => q.many).map((q) => [q.key, ['']]),
+            required.quantities.filter((q) => q.many).map((q) => [q.key, ['']]),
           ),
         );
+        if (Object.keys(prefilledRuns).length > 0) {
+          setRuns((prior) => ({ ...prior, ...prefilledRuns }));
+        }
       } catch (caught) {
         if (!cancelled) {
           setLoadError(caught instanceof ApiError ? caught.message : String(caught));
@@ -122,17 +189,114 @@ export function EnterValuesPage({
     // Re-fetch only when the selected package changes, never on a keystroke within its form.
   }, [selectedPackageId]);
 
+  if (!selectedPackageId) {
+    return (
+      <div className="enter-values">
+        <h1>Choose a review first</h1>
+        <p className="enter-values__hint">
+          Measurements belong to one uploaded drawing pair. Open that pair from Documents, then
+          confirm any AI readings and continue here.
+        </p>
+        {onChoosePackage && (
+          <button type="button" className="value-primary" onClick={onChoosePackage}>
+            Open documents
+          </button>
+        )}
+      </div>
+    );
+  }
+
   const setRun = (key: string, index: number, value: string) =>
     setRuns((prior) => ({
       ...prior,
       [key]: (prior[key] ?? ['']).map((v, i) => (i === index ? value : v)),
     }));
 
-  async function onSave() {
-    if (!packageId || !needed) return;
-    setBusy(true);
-    setError(null);
-    setAccepted(null);
+  async function confirmFromMeasure(candidate: CandidateOut, semanticType: string) {
+    if (!packageId || !needed || !candidate.source || !candidate.value) return;
+    const target = needed.quantities.find(
+      (quantity) => quantity.key === `${candidate.source}:${semanticType}`,
+    );
+    if (!target) {
+      setCandidateError(
+        `${semanticType} is not a measurement this published rulebook asks for from this document.`,
+      );
+      return;
+    }
+
+    setConfirming(candidate.candidate_id);
+    setCandidateError(null);
+    try {
+      const result = await confirmCandidate(
+        projectId(),
+        packageId,
+        candidate.candidate_id,
+        semanticType,
+      );
+      const key = `${candidate.source}:${result.semantic_type}`;
+      const reading: ConfirmedReading = {
+        key,
+        source: candidate.source,
+        semantic_type: result.semantic_type,
+        value: candidate.value,
+        qualification: 'reviewer_confirmed',
+      };
+
+      // The server commits the human confirmation before the field changes. A browser reload cannot
+      // lose it, and this UI is only reflecting that persisted fact.
+      setNeeded((current) =>
+        current === null
+          ? current
+          : { ...current, confirmed_readings: [...current.confirmed_readings, reading] },
+      );
+      if (target.many) {
+        setRuns((prior) => {
+          const current = (prior[target.key] ?? []).filter((value) => value.trim());
+          return {
+            ...prior,
+            [target.key]: current.includes(reading.value) ? current : [...current, reading.value],
+          };
+        });
+      } else {
+        // A reviewer-entered value has priority in the editable form; do not erase it behind their
+        // back merely because they later confirm an AI proposal.
+      setSingles((prior) => {
+        const readingCount = (needed.confirmed_readings.filter((item) => item.key === key).length) + 1;
+        if (reviewerEditedSingles.has(target.key)) return prior;
+        return { ...prior, [target.key]: readingCount === 1 ? reading.value : '' };
+      });
+      }
+      setCandidates((current) =>
+        current.filter((item) => item.candidate_id !== candidate.candidate_id),
+      );
+    } catch (caught) {
+      setCandidateError(
+        caught instanceof ApiError ? caught.message : 'This AI reading could not be confirmed.',
+      );
+    } finally {
+      setConfirming(null);
+    }
+  }
+
+  function typesForCandidate(candidate: CandidateOut): string[] {
+    if (!candidate.source || !needed) return [];
+    const requiredForSource = new Set(
+      needed.quantities
+        .filter((quantity) => quantity.source === candidate.source)
+        .map((quantity) => quantity.semantic_type),
+    );
+    return semanticTypes.filter((semanticType) => requiredForSource.has(semanticType));
+  }
+
+  /**
+   * Persist exactly what is currently visible in the form.
+   *
+   * This is intentionally shared by Save and Run checks.  A reviewer who confirms an AI reading sees
+   * it fill the field, then reasonably expects Run checks to use that field.  Queuing first would
+   * create a run without the displayed measurements, which is both surprising and unsafe.
+   */
+  async function saveVisibleValues(): Promise<boolean> {
+    if (!packageId || !needed) return false;
     try {
       // **One typed value fans out to every rule input it feeds.** The mapping is the server's, taken
       // from `consumers` — a reviewer measures the front offset once, and three rules receive it.
@@ -174,20 +338,36 @@ export function EnterValuesPage({
           (l) => `${l.name} = [${l.values.map((v) => `${v.numerator}/${v.denominator}`).join(', ')}]`,
         ),
       ]);
+      return true;
     } catch (caught) {
       // The server's own message, verbatim. It names the field and says what to do about it; a
       // rewritten "invalid input" would lose both.
       setError(caught instanceof ApiError ? caught.message : String(caught));
+      return false;
+    }
+  }
+
+  async function onSave() {
+    if (!packageId || !needed) return;
+    setBusy(true);
+    setError(null);
+    setAccepted(null);
+    try {
+      await saveVisibleValues();
     } finally {
       setBusy(false);
     }
   }
 
   async function onRunChecks() {
-    if (!packageId) return;
+    if (!packageId || !needed) return;
     setBusy(true);
     setError(null);
+    setAccepted(null);
     try {
+      // A run must evaluate the values the reviewer can see, including any just-confirmed AI
+      // proposals.  If parsing or storage fails, do not enqueue a stale or empty measurement set.
+      if (!(await saveVisibleValues())) return;
       const response = await requestChecks(projectId(), packageId, choices);
       setAccepted(response.accepted_id);
     } catch (caught) {
@@ -214,6 +394,25 @@ export function EnterValuesPage({
     );
   }
 
+  const readingsByKey = needed.confirmed_readings.reduce<Record<string, ConfirmedReading[]>>(
+    (grouped, reading) => ({ ...grouped, [reading.key]: [...(grouped[reading.key] ?? []), reading] }),
+    {},
+  );
+  // A scalar is only prefilled when it has one unambiguous qualified reading.  Counting two
+  // conflicting readings as an "AI-filled field" would be a confidence claim the UI cannot make.
+  const autoFilledFieldCount = needed.quantities.filter((quantity) => {
+    const readings = readingsByKey[quantity.key] ?? [];
+    return quantity.many ? readings.length > 0 : readings.length === 1;
+  }).length;
+  const exactTagFieldCount = needed.quantities.filter((quantity) =>
+    (readingsByKey[quantity.key] ?? []).some((reading) => reading.qualification === 'exact_vector_tag'),
+  ).length;
+  const measurementFieldCount = needed.quantities.length;
+  const autoFillPercent = measurementFieldCount === 0
+    ? 0
+    : Math.round((autoFilledFieldCount / measurementFieldCount) * 100);
+  const waitingForTypeCount = candidates.length;
+
   return (
     <div className="enter-values">
       <header className="enter-values__head">
@@ -230,22 +429,96 @@ export function EnterValuesPage({
       </header>
 
       <section className="enter-values__section">
-        <h2>Package</h2>
-        <input
-          className="value-input value-input--wide"
-          aria-label="Vendor"
-          placeholder="Vendor (optional)"
-          value={vendor}
-          onChange={(e) => setVendor(e.target.value)}
-        />
-      </section>
-
-      <section className="enter-values__section">
         <h2>Measurements</h2>
         <p className="enter-values__hint">
           Each one is read once, even where several checks use it. The sheet to read it from is named
           beside the field.
         </p>
+        <section className="ai-reading-status" aria-label="AI reading status">
+          <div>
+            <strong>{autoFillPercent}%</strong>
+            <span>rule fields filled from confirmed drawing readings</span>
+          </div>
+          <div>
+            <strong>{autoFilledFieldCount}</strong>
+            <span>drawing-backed fields ready to review or edit</span>
+          </div>
+          <div>
+            <strong>{exactTagFieldCount}</strong>
+            <span>fields qualified automatically from an exact drawing tag</span>
+          </div>
+          <div>
+            <strong>{waitingForTypeCount}</strong>
+            <span>readings waiting for you to confirm what they mean</span>
+          </div>
+          <p>
+            This is field coverage, not reading accuracy. Accuracy is shown only from a human-labelled gold set;
+            each proposed reading shows its own OCR confidence and crop below.
+          </p>
+        </section>
+        {candidates.length > 0 && (
+          <section className="ai-proposals" aria-labelledby="ai-proposals-heading">
+            <h3 id="ai-proposals-heading">AI readings awaiting your confirmation</h3>
+            <p className="enter-values__hint">
+              The source drawing is fixed by the uploaded PDF. Inspect the crop, then choose the
+              rule quantity. Choosing it records your confirmation and fills the matching field below.
+            </p>
+            {candidates.map((candidate) => {
+              const availableTypes = typesForCandidate(candidate);
+              const isConfirming = confirming === candidate.candidate_id;
+              return (
+                <div className="ai-proposal" key={candidate.candidate_id}>
+                  <div className="ai-proposal__facts">
+                    <strong>{candidate.value}</strong>
+                    <span>{SOURCE_LABEL[candidate.source ?? ''] ?? 'drawing source unavailable'}</span>
+                    <span>p{candidate.page_index + 1}</span>
+                    {candidate.confidence && <span>read confidence {candidate.confidence}</span>}
+                  </div>
+                  {candidate.crop_key && packageId ? (
+                    <MeasureCandidateCrop candidate={candidate} packageId={packageId} />
+                  ) : (
+                    <p className="ai-proposal__no-crop">
+                      No crop is available, so this reading cannot be confirmed here.
+                    </p>
+                  )}
+                  <label className="ai-proposal__type">
+                    <span>Meaning / rule quantity</span>
+                    <select
+                      className="value-input"
+                      aria-label={`Meaning for AI reading ${candidate.value}`}
+                      defaultValue=""
+                      disabled={isConfirming || !candidate.crop_key || availableTypes.length === 0}
+                      onChange={(event) => {
+                        const type = event.target.value;
+                        if (type) void confirmFromMeasure(candidate, type);
+                      }}
+                    >
+                      <option value="">Choose a quantity…</option>
+                      {availableTypes.map((semanticType) => (
+                        <option key={semanticType} value={semanticType}>
+                          {semanticType}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {isConfirming && <span className="ai-proposal__saving">Saving confirmation…</span>}
+                </div>
+              );
+            })}
+            {candidateError && <p className="enter-values__error">{candidateError}</p>}
+          </section>
+        )}
+        {needed.confirmed_readings.length > 0 ? (
+          <p className="enter-values__hint" role="status">
+            {needed.confirmed_readings.length} drawing reading{needed.confirmed_readings.length === 1 ? ' has' : 's have'} filled below.
+            Review or edit them before saving.
+          </p>
+        ) : (
+          <p className="enter-values__hint" role="status">
+            No AI readings have been confirmed yet. Choose a meaning above, or enter a reviewer-read
+            value below.
+          </p>
+        )}
         {needed.quantities.map((quantity) => (
           <div className="value-field" key={quantity.key}>
             <label className="value-label" htmlFor={`q-${quantity.key}`}>
@@ -254,6 +527,12 @@ export function EnterValuesPage({
               <span className="value-feeds">
                 {quantity.consumers.map((c) => c.rule_id).join(', ')}
               </span>
+              {(readingsByKey[quantity.key] ?? []).some(
+                (reading) => reading.qualification === 'exact_vector_tag',
+              ) && <span className="value-source">exact drawing tag</span>}
+              {(readingsByKey[quantity.key] ?? []).some(
+                (reading) => reading.qualification === 'reviewer_confirmed',
+              ) && <span className="value-source">reviewer-confirmed drawing reading</span>}
             </label>
             {quantity.many ? (
               <>
@@ -263,7 +542,7 @@ export function EnterValuesPage({
                       className="value-input"
                       id={index === 0 ? `q-${quantity.key}` : undefined}
                       aria-label={`${quantity.semantic_type}, item ${index + 1}, left to right`}
-                      placeholder={'24"'}
+                      placeholder=""
                       value={value}
                       onChange={(e) => setRun(quantity.key, index, e.target.value)}
                     />
@@ -301,9 +580,10 @@ export function EnterValuesPage({
                 id={`q-${quantity.key}`}
                 placeholder={'25 1/2" or 648 mm'}
                 value={singles[quantity.key] ?? ''}
-                onChange={(e) =>
-                  setSingles((prior) => ({ ...prior, [quantity.key]: e.target.value }))
-                }
+                onChange={(e) => {
+                  setReviewerEditedSingles((prior) => new Set(prior).add(quantity.key));
+                  setSingles((prior) => ({ ...prior, [quantity.key]: e.target.value }));
+                }}
               />
             )}
           </div>
@@ -336,7 +616,7 @@ export function EnterValuesPage({
                 <input
                   className="value-input value-input--wide"
                   id={`p-${parameter.name}`}
-                  placeholder={parameter.declared_default ?? '24"'}
+                  placeholder=""
                   value={singles[parameter.name] ?? ''}
                   onChange={(e) =>
                     setSingles((prior) => ({ ...prior, [parameter.name]: e.target.value }))
@@ -420,11 +700,48 @@ export function EnterValuesPage({
 
       {accepted && (
         <p className="enter-values__note" role="status">
-          Request recorded ({accepted.slice(0, 8)}). <strong>Nothing has run yet</strong> — the API
-          accepts the request and a worker does the work, so the findings appear once it has. Run{' '}
-          <code>python scripts/drain_outbox.py</code> if no worker is running.
+          Checks queued ({accepted.slice(0, 8)}). The values shown above were saved first. A review
+          worker now runs the deterministic checks; use <strong>See findings</strong> when it has
+          completed.
         </p>
       )}
     </div>
+  );
+}
+
+function MeasureCandidateCrop({ candidate, packageId }: { candidate: CandidateOut; packageId: string }) {
+  const [state, setState] = useState<{ url: string } | { error: string } | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    let objectUrl: string | null = null;
+    void downloadCandidateCrop(projectId(), packageId, candidate.candidate_id).then(
+      (blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (live) setState({ url: objectUrl });
+        else URL.revokeObjectURL(objectUrl);
+      },
+      () => {
+        if (live) setState({ error: 'The stored crop could not be loaded.' });
+      },
+    );
+    return () => {
+      live = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [candidate.candidate_id, packageId]);
+
+  if (state && 'error' in state) {
+    return <span className="ai-proposal__no-crop">{state.error}</span>;
+  }
+  if (!state || !('url' in state)) {
+    return <span className="ai-proposal__crop-loading"><ScanLine size={14} aria-hidden="true" /> Loading crop…</span>;
+  }
+  return (
+    <img
+      className="ai-proposal__crop"
+      src={state.url}
+      alt={`Mechanical crop for ${candidate.raw_text} on page ${candidate.page_index + 1}`}
+    />
   );
 }

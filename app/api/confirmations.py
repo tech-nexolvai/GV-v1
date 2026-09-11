@@ -26,7 +26,13 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_artifact_store, get_session
 from app.auth import Principal, authenticate, require_project_access
 from app.evidence.confirm import ConfirmationRefused, RefusalReason, confirm_candidate_type
-from app.models.document import DocumentVersion, PackageRevisionDocument, Page
+from app.models.document import (
+    Document,
+    DocumentKind,
+    DocumentVersion,
+    PackageRevisionDocument,
+    Page,
+)
 from app.models.evidence import (
     EvidenceArtifact,
     EvidenceArtifactKind,
@@ -81,6 +87,22 @@ class CandidateOut(BaseModel):
     )
     corroboration_status: str | None = None
     corroboration_lane: str | None = None
+    source: str | None = None
+
+
+def _document_source(document_kind: str | None) -> str | None:
+    """Normalize a document kind to the document-role vocabulary used by rule inputs.
+
+    Only architecturally-meaningful documents are candidates for rulebook quantities.
+    """
+    if document_kind is None:
+        return None
+    kind = str(document_kind)
+    if kind == DocumentKind.ARCHITECTURAL.value:
+        return "ARCH"
+    if kind == DocumentKind.SHOP.value:
+        return "SHOP"
+    return None
 
 
 class CandidatesOut(BaseModel):
@@ -144,9 +166,15 @@ def list_candidates(
     revision = _revision(session, project_id, package_id)
 
     rows = session.execute(
-        select(ObservationCandidate, Page.index, EvidenceArtifact.storage_key)
+        select(
+            ObservationCandidate,
+            Page.index,
+            EvidenceArtifact.storage_key,
+            Document.kind,
+        )
         .join(Page, Page.id == ObservationCandidate.page_id)
         .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
+        .join(Document, Document.id == DocumentVersion.document_id)
         .join(
             PackageRevisionDocument,
             PackageRevisionDocument.document_version_id == DocumentVersion.id,
@@ -190,8 +218,9 @@ def list_candidates(
                 confidence=None if row.confidence is None else str(row.confidence),
                 corroboration_status=row.corroboration_status,
                 corroboration_lane=row.corroboration_lane,
+                source=_document_source(document_kind),
             )
-            for row, page_index, crop_key in rows
+            for row, page_index, crop_key, document_kind in rows
         ),
         total=len(rows),
     )

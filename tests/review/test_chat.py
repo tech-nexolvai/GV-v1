@@ -74,7 +74,7 @@ def test_chat_rejects_a_provider_that_asserts_a_verdict_not_in_the_finding() -> 
     finding = _finding()
     invented = ProposedNarrative(
         finding_key=finding.key,
-        text=deterministic_summary(finding).replace("CT-DEPTH-001: FAIL.", "CT-DEPTH-001: PASS."),
+        text=deterministic_summary(finding).replace("Needs correction", "Looks right", 1),
     )
 
     result = answer_question("Why did this fail?", (finding,), _Model((invented,)))
@@ -82,7 +82,7 @@ def test_chat_rejects_a_provider_that_asserts_a_verdict_not_in_the_finding() -> 
     assert result.mode is ChatMode.STRUCTURED_FALLBACK
     assert result.model_id is None
     assert result.narratives[0].text == deterministic_summary(finding)
-    assert "deterministic check and outcome" in str(result.fallback_reason)
+    assert "reviewer-facing check name and deterministic outcome" in str(result.fallback_reason)
 
 
 def test_unavailable_provider_degrades_to_plain_structured_findings() -> None:
@@ -93,6 +93,42 @@ def test_unavailable_provider_degrades_to_plain_structured_findings() -> None:
     assert result.mode is ChatMode.STRUCTURED_FALLBACK
     assert result.narratives[0].text == deterministic_summary(finding)
     assert result.narratives[0].finding_key == finding.key
+
+
+def test_empty_filter_returns_a_normal_state_message() -> None:
+    passed = _finding(key="finding-pass", outcome="PASS")
+
+    result = answer_question("Show me FAIL findings", (passed,), None)
+
+    assert result.mode is ChatMode.STRUCTURED_FALLBACK
+    assert result.fallback_reason == "no finding matched the deterministic outcome filter"
+    assert result.text == "No FAIL findings in this run (1 total)."
+
+
+def test_pass_filter_includes_pass_only_text_when_present() -> None:
+    failed = _finding(key="finding-fail", outcome="FAIL")
+    passed = _finding(key="finding-pass", outcome="PASS")
+
+    result = answer_question("Which passes?", (failed, passed), _Model((_faithful(passed),)))
+
+    assert result.text == (
+        "Showing 1 of 2 recorded findings. The explanation below is grounded in the deterministic run."
+    )
+
+
+def test_chat_keeps_the_intro_free_of_raw_engine_reasons() -> None:
+    review_required = _finding(key="finding-review", outcome="REVIEW_REQUIRED")
+    missing = _finding(key="finding-missing", outcome="NOT_FOUND")
+
+    result = answer_question(
+        "Show all findings",
+        (review_required, missing),
+        _Model((_faithful(review_required), _faithful(missing))),
+    )
+
+    assert "Reviewer decisions required" not in result.text
+    assert "CT-DEPTH-001" not in result.text
+    assert "Showing 2 of 2 recorded findings" in result.text
 
 
 def test_chat_language_modules_cannot_reach_rules_verdicts_or_arithmetic() -> None:

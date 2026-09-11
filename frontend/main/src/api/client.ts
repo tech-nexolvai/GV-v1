@@ -400,7 +400,11 @@ export function confirmCandidate(
  * first version of this file.
  */
 export type CandidatesOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/candidates'>;
-export type CandidateOut = CandidatesOut['candidates'][number];
+// The generated OpenAPI type is authoritative for core fields. A locally-safe extension keeps older
+// clients working if the backend adds the new `source` field after a schema refresh.
+export type CandidateOut = CandidatesOut['candidates'][number] & {
+  source?: string | null;
+};
 export type ConfirmedOut =
   paths['/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm']['post']['responses'][201]['content']['application/json'];
 

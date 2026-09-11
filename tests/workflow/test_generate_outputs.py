@@ -129,12 +129,10 @@ class _PlainLanguageModel:
     def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
         narratives: list[ProposedNarrative] = []
         for finding in findings:
-            summary = deterministic_summary(finding)
-            prefix = f"{finding.check}: {finding.outcome}."
             narratives.append(
                 ProposedNarrative(
                     finding_key=finding.key,
-                    text=summary.replace(prefix, f"{prefix} Reviewer summary:", 1),
+                    text=deterministic_summary(finding),
                 )
             )
         return ModelComposition(
@@ -230,12 +228,10 @@ def test_composed_findings_are_wired_1_to_1_into_the_end_to_end_workbook(
     )
     summary_column = FINDING_COLUMNS.index("reviewer_summary") + 1
     for row in range(2, sheet.max_row + 1):
-        check = sheet.cell(row=row, column=FINDING_COLUMNS.index("check") + 1).value
-        outcome = sheet.cell(row=row, column=FINDING_COLUMNS.index("outcome") + 1).value
         summary = sheet.cell(row=row, column=summary_column).value
         assert isinstance(summary, str)
-        assert summary.startswith(f"{check}: {outcome}.")
-        assert "Reviewer summary:" in summary
+        assert " — " in summary
+        assert "(" in summary and ")" in summary
 
 
 def test_a_failed_provider_still_yields_the_complete_deterministic_workbook(
@@ -260,11 +256,9 @@ def test_a_failed_provider_still_yields_the_complete_deterministic_workbook(
     assert sheet.max_row == len(_live_findings(session, revision.id)) + 1
     summary_column = FINDING_COLUMNS.index("reviewer_summary") + 1
     for row in range(2, sheet.max_row + 1):
-        check = sheet.cell(row=row, column=FINDING_COLUMNS.index("check") + 1).value
-        outcome = sheet.cell(row=row, column=FINDING_COLUMNS.index("outcome") + 1).value
         summary = sheet.cell(row=row, column=summary_column).value
         assert isinstance(summary, str)
-        assert summary.startswith(f"{check}: {outcome}.")
+        assert " — " in summary
         assert "Reviewer summary:" not in summary
 
 

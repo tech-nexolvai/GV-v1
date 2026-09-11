@@ -22,6 +22,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from vocabulary.semantic_types import SemanticType
+
 __all__ = [
     "ComposerFinding",
     "ComposerOperand",
@@ -34,9 +36,137 @@ __all__ = [
     "NarrativeBatch",
     "NarrativeGuardError",
     "ProposedNarrative",
+    "bedrock_narrative_tool_schema",
+    "bedrock_output_token_limit",
     "compose_findings",
     "deterministic_summary",
+    "narration_overview_context",
 ]
+
+
+# Presentation labels only. The engine outcome remains the immutable stored value; this closed map
+# prevents database-style statuses such as ``NOT_FOUND`` from becoming the reviewer headline.
+_OUTCOME_LABELS = {
+    "PASS": "Looks right",
+    "FAIL": "Needs correction",
+    "REVIEW_REQUIRED": "Needs your decision",
+    "NOT_FOUND": "Waiting on a value",
+    "NO_APPLICABLE_RULE": "Not applicable",
+}
+_FIELD_LABELS = {
+    SemanticType.WALL_CONFIG.value: "wall layout",
+    "filler_symmetry": "whether the fillers should be symmetrical",
+    "front_offset": "sink front offset",
+    "countertop_depth": "countertop depth",
+    "cabinet_side_thickness": "cabinet side thickness",
+    "sink_interior_depth": "sink interior depth",
+    "sink_interior_width": "sink interior width",
+    "back_offset_minimum": "minimum back offset",
+}
+
+
+def reviewer_outcome(outcome: str) -> str:
+    return _OUTCOME_LABELS.get(outcome, outcome.replace("_", " ").title())
+
+
+def _field_label(value: str) -> str:
+    return _FIELD_LABELS.get(value, value.replace("_", " "))
+
+
+def reviewer_reason(reason: str, outcome: str) -> str:
+    """Turn a known deterministic abstention into its equally deterministic reviewer action."""
+    missing = re.search(r"(?:needs|required value) '([^']+)'", reason, flags=re.IGNORECASE)
+    if missing:
+        field_key = missing.group(1)
+        field = _field_label(field_key)
+        if outcome == "REVIEW_REQUIRED":
+            if field_key == "filler_symmetry":
+                return "Please confirm whether the fillers should be symmetrical so I can use the right version of this check."
+            return f"Please confirm the {field} so I can use the right version of this check."
+        return (
+            f"I can’t check this yet because the {field} is missing. Please enter it to continue."
+        )
+    if "tolerance" in reason.casefold() and "supplied" in reason.casefold():
+        return "I need the agreed tolerance before this can be marked right or wrong."
+    if "derivation" in reason.casefold() or "final operation" in reason.casefold():
+        quoted = re.search(r"required value '([^']+)'", reason, flags=re.IGNORECASE)
+        if quoted:
+            field = _field_label(quoted.group(1))
+            return f"I can’t check this yet because the {field} is missing. Please enter it to continue."
+        return "I can’t check this yet because a required drawing value is missing. Please enter it to continue."
+    return reason
+
+
+# Amazon Nova's Bedrock tool schema supports a deliberately small JSON Schema subset: at the top
+# level it accepts ``type``, ``properties`` and ``required``.  Pydantic's normal JSON Schema adds
+# ``$defs``, ``$ref``, titles and ``additionalProperties``; those are excellent for local validation
+# but can make Nova produce a malformed tool-use sequence.  Keep the provider schema small, then
+# validate the returned payload with ``NarrativeBatch`` below, which remains strict.
+def bedrock_narrative_tool_schema() -> dict[str, object]:
+    """Return Nova-compatible structured-output schema for a narration batch.
+
+    A fresh dictionary prevents a transport or test from mutating the schema used by another
+    request.  This schema constrains shape only; local Pydantic validation and the fidelity guard
+    still enforce non-empty values, one-to-one findings and exact deterministic facts.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "finding_key": {"type": "string"},
+                        "text": {"type": "string"},
+                    },
+                    "required": ["finding_key", "text"],
+                },
+            },
+        },
+        "required": ["summary", "findings"],
+    }
+
+
+def bedrock_output_token_limit(finding_count: int) -> int:
+    """Reserve enough output room for the fact-preservation contract, within a hard spend bound.
+
+    The guard requires one complete factual narration per finding.  A fixed 1024-token cap works
+    for a one-row question but truncates a nine-finding response while Nova is emitting a forced
+    tool input, which Bedrock reports as malformed tool use.  ``maxTokens`` is a ceiling rather than
+    a charge; 4096 is the bounded ceiling and gives a typical whole run room to finish.
+    """
+    if finding_count < 1:
+        raise ValueError("finding_count must be positive")
+    return min(4096, max(1024, finding_count * 512))
+
+
+def narration_overview_context(findings: Sequence[ComposerFinding]) -> dict[str, object]:
+    """Give the model deterministic aggregate facts it must make useful in its overview."""
+    counts: dict[str, int] = {}
+    reviewer_decisions: list[dict[str, str]] = []
+    unresolved_inputs: set[str] = set()
+    for finding in findings:
+        counts[finding.outcome] = counts.get(finding.outcome, 0) + 1
+        if finding.outcome == "REVIEW_REQUIRED":
+            reviewer_decisions.append({"check": finding.check_name, "reason": finding.reason})
+        unresolved_inputs.update(
+            _field_label(value)
+            for value in re.findall(
+                r"(?:needs|required value) '([^']+)'", finding.reason, flags=re.IGNORECASE
+            )
+        )
+        unresolved_inputs.update(
+            re.findall(r"because the (.+?) is missing", finding.reason, flags=re.IGNORECASE)
+        )
+    return {
+        "selected_finding_count": len(findings),
+        "outcome_counts": dict(sorted(counts.items())),
+        "check_ids": [finding.check for finding in findings],
+        "reviewer_decisions": reviewer_decisions,
+        "unresolved_inputs": sorted(unresolved_inputs),
+    }
 
 
 _DIGIT_NUMBER = re.compile(
@@ -78,6 +208,39 @@ _NUMBER_WORDS = frozenset(
         "million",
     }
 )
+_NUMBER_WORD_DIGITS = {
+    "zero": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "ten": "10",
+    "eleven": "11",
+    "twelve": "12",
+    "thirteen": "13",
+    "fourteen": "14",
+    "fifteen": "15",
+    "sixteen": "16",
+    "seventeen": "17",
+    "eighteen": "18",
+    "nineteen": "19",
+    "twenty": "20",
+    "thirty": "30",
+    "forty": "40",
+    "fifty": "50",
+    "sixty": "60",
+    "seventy": "70",
+    "eighty": "80",
+    "ninety": "90",
+    "hundred": "100",
+    "thousand": "1000",
+    "million": "1000000",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +394,9 @@ class NarrativeBatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    # A short reviewer-ready overview rendered above the immutable findings.  It is separately
+    # guarded so every stated number, outcome, and check identifier is backed by this run.
+    summary: str = Field(default="", max_length=600)
     # JSON has arrays, never tuples.  The transient validated payload may use a list; it is converted
     # to the immutable ``ModelComposition`` tuple immediately after validation.
     findings: list[ProposedNarrative]
@@ -244,6 +410,7 @@ class ModelComposition:
     model_id: str
     prompt_id: str
     template_id: str
+    summary: str | None = None
 
 
 class FindingsLanguageModel(Protocol):
@@ -268,6 +435,7 @@ class CompositionResult:
     prompt_id: str | None = None
     template_id: str | None = None
     fallback_reason: str | None = None
+    summary: str | None = None
 
 
 class NarrativeGuardError(ValueError):
@@ -295,15 +463,12 @@ def deterministic_summary(finding: ComposerFinding) -> str:
     from the comparison string: every displayed value comes straight from ``ComposerFinding``.
     """
     parts = [
-        f"{finding.check}: {finding.outcome}.",
-        f"Check: {finding.check_name}.",
-        f"Reason: {finding.reason}",
-        f"Severity: {finding.severity}.",
+        f"{finding.check_name} — {reviewer_outcome(finding.outcome)} ({finding.check}).",
+        reviewer_reason(finding.reason, finding.outcome),
     ]
     if finding.operands:
         rendered = " ".join(
-            f"Recorded {_human_label(operand.name)} from {_source_label(operand.source)} "
-            f"({operand.source}): {operand.value}."
+            f"{_human_label(operand.name).capitalize()} from {_source_label(operand.source)}: {operand.value}."
             + (
                 f" Evidence page: {operand.evidence_page}."
                 if operand.evidence_page is not None
@@ -313,17 +478,25 @@ def deterministic_summary(finding: ComposerFinding) -> str:
         )
         parts.append(rendered)
     if finding.comparison is not None:
-        parts.append(f"Engine comparison: {finding.comparison}.")
+        parts.append(f"Recorded comparison: {finding.comparison}.")
     if finding.difference is not None:
         parts.append(f"Difference: {finding.difference}.")
     if finding.tolerance is not None:
         parts.append(f"Tolerance: {finding.tolerance}.")
     if finding.arithmetic_unit is not None:
-        parts.append(f"Arithmetic unit: {finding.arithmetic_unit}.")
+        parts.append(f"Unit: {finding.arithmetic_unit}.")
     if finding.evidence_pages:
         parts.append(f"Evidence pages: {', '.join(finding.evidence_pages)}.")
     if finding.notes:
         parts.append(f"Notes: {' | '.join(finding.notes)}.")
+    if finding.outcome == "PASS":
+        parts.append("Next: no action is needed.")
+    elif finding.outcome == "FAIL":
+        parts.append("Next: review the vendor drawing against the approved design.")
+    elif finding.outcome == "REVIEW_REQUIRED":
+        parts.append("Next: make the requested review decision.")
+    elif finding.outcome == "NOT_FOUND":
+        parts.append("Next: provide the missing value, then run the check again.")
     return " ".join(parts)
 
 
@@ -338,21 +511,36 @@ def _number_words(text: str) -> frozenset[str]:
 
 def _outcomes(text: str) -> frozenset[str]:
     folded = re.sub(r"[_-]+", " ", text.upper())
-    return frozenset(
+    outcomes = {
         outcome
         for outcome in _OUTCOME_PHRASES
         if re.search(rf"(?<![A-Z]){re.escape(outcome)}(?![A-Z])", folded)
-    )
+    }
+    # Reviewer-facing labels are verdict claims too; a model must not turn a FAIL into "Looks
+    # right" merely by avoiding the database enum spelling.
+    for outcome, label in _OUTCOME_LABELS.items():
+        if re.search(rf"(?<![A-Z]){re.escape(label.upper())}(?![A-Z])", folded):
+            outcomes.add(outcome.replace("_", " "))
+    return frozenset(outcomes)
 
 
 def _guard_one(finding: ComposerFinding, text: str) -> None:
-    required_prefix = f"{finding.check}: {finding.outcome}."
+    required_prefix = (
+        f"{finding.check_name} — {reviewer_outcome(finding.outcome)} ({finding.check})."
+    )
     if not text.startswith(required_prefix):
         raise NarrativeGuardError(
-            f"{finding.key}: prose must start with the exact deterministic check and outcome"
+            f"{finding.key}: prose must start with the reviewer-facing check name and deterministic outcome"
         )
 
-    required_fragments = [finding.check_name, finding.severity, finding.reason]
+    # The model receives the reviewer-facing translation of known engine reasons.  Requiring the
+    # raw reason here would force it to expose an internal derivation or field key, defeating the
+    # presentation boundary while adding no factual protection.
+    required_fragments = [
+        finding.check_name,
+        reviewer_outcome(finding.outcome),
+        reviewer_reason(finding.reason, finding.outcome),
+    ]
     required_fragments.extend(
         value
         for value in (
@@ -365,16 +553,19 @@ def _guard_one(finding: ComposerFinding, text: str) -> None:
     )
     required_fragments.extend(finding.notes)
     for operand in finding.operands:
-        # The deterministic fallback turns a machine key such as ``vendor_depth`` into the
-        # reviewer-facing ``vendor depth``.  The guard validates that published form, while the
-        # value and raw source code still remain literal immutable facts.
-        required_fragments.extend((_human_label(operand.name), operand.value, operand.source))
-        if operand.source.strip().upper() == "ARCH":
-            required_fragments.append("approved")
-        elif operand.source.strip().upper() == "SHOP":
-            required_fragments.append("vendor")
+        required_fragments.extend(
+            (_human_label(operand.name), operand.value, _source_label(operand.source))
+        )
+    # Names are presentation text, so title casing must not turn an otherwise faithful narrative
+    # into a fallback (``Countertop depth`` and ``countertop depth`` name the same supplied check).
+    # Numeric and verdict preservation remain exact checks below.
+    folded_text = text.casefold()
     missing_fragments = sorted(
-        {fragment for fragment in required_fragments if fragment and fragment not in text}
+        {
+            fragment
+            for fragment in required_fragments
+            if fragment and fragment.casefold() not in folded_text
+        }
     )
     if missing_fragments:
         raise NarrativeGuardError(
@@ -428,6 +619,55 @@ def _guard_batch(
     return tuple(proposed[finding.key] for finding in findings)
 
 
+def _guard_overview(findings: Sequence[ComposerFinding], summary: str | None) -> str | None:
+    """Accept an overview only when every number, outcome and check id is run-backed.
+
+    The overview may now name the reviewer-relevant blockers and exact values, because that is the
+    useful part of narration.  The guard still rejects any new number, outcome or check identifier;
+    cards below remain the full one-to-one deterministic audit record.
+    """
+    if summary is None or not summary.strip():
+        return None
+    text = summary.strip()
+    if len(text) > 600:
+        raise NarrativeGuardError("AI overview is longer than 600 characters")
+    context = narration_overview_context(findings)
+    permitted_digits = set().union(
+        *(_digit_numbers(finding.guarded_text()) for finding in findings),
+        _digit_numbers(str(context["selected_finding_count"])),
+        *(_digit_numbers(str(count)) for count in context["outcome_counts"].values()),
+    )
+    invented_digits = sorted(_digit_numbers(text) - permitted_digits)
+    if invented_digits:
+        raise NarrativeGuardError(f"AI overview introduced numeric claim(s) {invented_digits}")
+    aggregate_numbers = {
+        str(context["selected_finding_count"]),
+        *(str(count) for count in context["outcome_counts"].values()),
+    }
+    # Nova occasionally spells the aggregate counts despite the prompt's digit-only request.
+    # Accept that benign surface variation only when the word maps to an exact supplied aggregate;
+    # a page number or dimension must not let it claim a different number of findings.
+    permitted_number_words = set().union(
+        *(_number_words(finding.guarded_text()) for finding in findings),
+        {word for word, number in _NUMBER_WORD_DIGITS.items() if number in aggregate_numbers},
+    )
+    invented_number_words = sorted(_number_words(text) - permitted_number_words)
+    if invented_number_words:
+        raise NarrativeGuardError(f"AI overview introduced number word(s) {invented_number_words}")
+    # Outcomes are stored with underscores (``NOT_FOUND``) but displayed with spaces.  Compare
+    # through the same normalizer used for prose rather than rejecting the reviewer-facing form.
+    permitted_outcomes = set().union(*(_outcomes(finding.outcome) for finding in findings))
+    invented_outcomes = sorted(_outcomes(text) - permitted_outcomes)
+    if invented_outcomes:
+        raise NarrativeGuardError(f"AI overview introduced outcome claim(s) {invented_outcomes}")
+    mentioned_check_ids = set(re.findall(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b", text))
+    if mentioned_check_ids:
+        # Individual claim/outcome pairs belong on the one-to-one cards, not an aggregate summary.
+        # Refusing raw IDs here avoids accepting a swapped outcome relation in prose.
+        raise NarrativeGuardError("AI overview must not name individual rule IDs")
+    return text
+
+
 def _fallback(findings: Sequence[ComposerFinding], *, reason: str) -> CompositionResult:
     return CompositionResult(
         narratives=tuple(
@@ -456,6 +696,7 @@ def compose_findings(
     try:
         proposed = model.compose(findings)
         narratives = _guard_batch(findings, proposed)
+        summary = _guard_overview(findings, proposed.summary)
     # A provider can fail through its SDK, transport, protocol parser or local schema.  The contract
     # is deliberately broader than any one SDK's exception tree: *every* such failure must preserve
     # the already-recorded verdict and yield the structured fallback.
@@ -468,4 +709,5 @@ def compose_findings(
         model_id=proposed.model_id,
         prompt_id=proposed.prompt_id,
         template_id=proposed.template_id,
+        summary=summary,
     )

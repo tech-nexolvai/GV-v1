@@ -43,6 +43,8 @@ from app.models import (
     CanonicalObservation,
     Document,
     DocumentVersion,
+    EvidenceArtifact,
+    EvidenceArtifactKind,
     ObservationAssociation,
     ObservationCandidate,
     Package,
@@ -307,6 +309,24 @@ def test_exact_vector_tag_on_same_line_becomes_operand_without_a_reviewer_typing
                 end_x="0.9",
                 end_y="0.2",
                 signals=["same resolved test dimension line"],
+            )
+        )
+    # Automatic qualification requires an inspectable crop for both sides of the exact binding.
+    # The test only exercises the evidence relation, so content-addressed placeholder bytes are
+    # sufficient; no viewer fetch occurs on this path.
+    for row in (reading, tag):
+        digest = hashlib.sha256(str(row.id).encode()).hexdigest()
+        session.add(
+            EvidenceArtifact(
+                candidate_id=row.id,
+                canonical_observation_id=None,
+                document_version_id=row.document_version_id,
+                page_id=row.page_id,
+                kind=EvidenceArtifactKind.CROP.value,
+                storage_key=f"test-crops/{row.id}.png",
+                sha256=digest,
+                media_type="image/png",
+                coordinate_space="image",
             )
         )
     _publish_rulebook(session)

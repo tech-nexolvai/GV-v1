@@ -48,6 +48,119 @@
   margin: 0 0 var(--space-2);
 }
 
+.ai-reading-status {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  background: var(--bg-elevated);
+}
+
+.ai-reading-status > div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.ai-reading-status strong {
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  color: var(--text-primary);
+}
+
+.ai-reading-status span,
+.ai-reading-status p {
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: var(--text-secondary);
+}
+
+.ai-reading-status p {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* The reviewer sees the mechanical crop and chooses the meaning in the same place as the field it
+   will populate. The document source is recorded by the upload; it is deliberately a fact, not an
+   editable selector that could turn a shop reading into an architectural one. */
+.ai-proposals {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.ai-proposals h3 {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-tight);
+}
+
+.ai-proposal {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) minmax(9rem, auto) minmax(13rem, 1fr);
+  gap: var(--space-3);
+  align-items: center;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.ai-proposal__facts {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.ai-proposal__facts strong { font-size: var(--text-base); }
+
+.ai-proposal__facts span,
+.ai-proposal__saving,
+.ai-proposal__no-crop,
+.ai-proposal__crop-loading {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.ai-proposal__crop-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ai-proposal__crop {
+  display: block;
+  width: 10rem;
+  max-height: 6rem;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid var(--border-default);
+}
+
+.ai-proposal__type {
+  display: grid;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.ai-proposal__type .value-input { width: 100%; }
+
+@media (max-width: 48rem) {
+  .ai-proposal { grid-template-columns: 1fr; }
+  .ai-reading-status { grid-template-columns: 1fr; }
+}
+
 .value-row {
   display: flex;
   gap: var(--space-2);

@@ -432,3 +432,29 @@ def test_main_still_refuses_when_the_principal_is_absent(
     monkeypatch.delenv("GV_DEV_PRINCIPAL", raising=False)
 
     assert dev_server.main() == 1
+
+
+def test_main_still_refuses_when_the_project_list_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A principal without `GV_DEV_PROJECTS` causes invisible scope failures later.
+
+    The API starts today and every scoped request looks like `404 Not found` when no projects are
+    configured. That is exactly what users see as the document-set submit failure. This guard makes the
+    startup fail early with a clear message.
+    """
+    _dotenv_only(monkeypatch, tmp_path)
+    monkeypatch.setenv("GV_DEV_PRINCIPAL", "test reviewer")
+    monkeypatch.delenv("GV_DEV_PROJECTS", raising=False)
+
+    assert dev_server.main() == 1
+
+
+def test_main_refuses_whitespace_only_project_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _dotenv_only(monkeypatch, tmp_path)
+    monkeypatch.setenv("GV_DEV_PRINCIPAL", "test reviewer")
+    monkeypatch.setenv("GV_DEV_PROJECTS", "   ")
+
+    assert dev_server.main() == 1

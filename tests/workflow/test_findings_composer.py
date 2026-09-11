@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from workflow.findings_composer import (
@@ -14,6 +15,7 @@ from workflow.findings_composer import (
     ProposedNarrative,
     compose_findings,
     deterministic_summary,
+    narration_overview_context,
 )
 
 
@@ -39,8 +41,11 @@ def _finding(*, key: str = "finding-a", outcome: str = "FAIL") -> ComposerFindin
 
 
 class _StaticModel:
-    def __init__(self, narratives: Sequence[ProposedNarrative]) -> None:
+    def __init__(
+        self, narratives: Sequence[ProposedNarrative], *, summary: str | None = None
+    ) -> None:
         self._narratives = tuple(narratives)
+        self._summary = summary
 
     def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
         del findings
@@ -49,6 +54,7 @@ class _StaticModel:
             model_id="configured-model",
             prompt_id="findings-composer-v1",
             template_id="deterministic-findings-v1",
+            summary=self._summary,
         )
 
 
@@ -59,11 +65,9 @@ class _BrokenModel:
 
 
 def _faithful(finding: ComposerFinding) -> ProposedNarrative:
-    deterministic = deterministic_summary(finding)
-    prefix = f"{finding.check}: {finding.outcome}."
     return ProposedNarrative(
         finding_key=finding.key,
-        text=deterministic.replace(prefix, f"{prefix} Reviewer summary:", 1),
+        text=deterministic_summary(finding),
     )
 
 
@@ -78,7 +82,94 @@ def test_a_faithful_model_rewrite_is_accepted_in_deterministic_order() -> None:
     assert result.mode is CompositionMode.LLM
     assert result.model_id == "configured-model"
     assert [item.finding_key for item in result.narratives] == ["finding-a", "finding-b"]
-    assert all("Reviewer summary:" in item.text for item in result.narratives)
+    assert all(item.text.startswith("Countertop depth —") for item in result.narratives)
+
+
+def test_a_guarded_ai_overview_is_available_above_the_audit_record() -> None:
+    finding = _finding()
+    summary = "1 FAIL needs reviewer attention: approved 25 in versus " "vendor 25 1/2 in."
+
+    result = compose_findings((finding,), _StaticModel((_faithful(finding),), summary=summary))
+
+    assert result.mode is CompositionMode.LLM
+    assert result.summary == summary
+
+
+def test_an_ai_overview_cannot_introduce_an_unbacked_number_or_outcome() -> None:
+    finding = _finding()
+
+    result = compose_findings(
+        (finding,),
+        _StaticModel((_faithful(finding),), summary="999 PASS checks need no review."),
+    )
+
+    assert result.mode is CompositionMode.FALLBACK
+    assert "AI overview introduced numeric claim(s) ['999']" in str(result.fallback_reason)
+
+
+def test_an_ai_overview_cannot_introduce_an_unbacked_check_or_number_word() -> None:
+    finding = _finding()
+
+    result = compose_findings(
+        (finding,),
+        _StaticModel(
+            (_faithful(finding),),
+            summary="Three FAIL checks need attention, including CT-WIDTH-001.",
+        ),
+    )
+
+    assert result.mode is CompositionMode.FALLBACK
+    assert "AI overview introduced number word(s) ['three']" in str(result.fallback_reason)
+
+
+def test_an_ai_overview_may_use_the_reviewer_facing_spaced_outcome() -> None:
+    finding = _finding(outcome="NOT_FOUND")
+    summary = "1 NOT FOUND check needs the missing recorded measurement."
+
+    result = compose_findings((finding,), _StaticModel((_faithful(finding),), summary=summary))
+
+    assert result.mode is CompositionMode.LLM
+    assert result.summary == summary
+
+
+def test_an_ai_overview_may_spell_an_exact_aggregate_count() -> None:
+    finding = _finding()
+    summary = "One FAIL needs attention."
+
+    result = compose_findings((finding,), _StaticModel((_faithful(finding),), summary=summary))
+
+    assert result.mode is CompositionMode.LLM
+    assert result.summary == summary
+
+
+def test_an_ai_overview_cannot_claim_an_individual_rule_outcome() -> None:
+    finding = _finding()
+
+    result = compose_findings(
+        (finding,),
+        _StaticModel((_faithful(finding),), summary="1 FAIL: CT-DEPTH-001 needs attention."),
+    )
+
+    assert result.mode is CompositionMode.FALLBACK
+    assert "must not name individual rule IDs" in str(result.fallback_reason)
+
+
+def test_overview_context_exposes_concrete_reviewer_decisions_and_missing_inputs() -> None:
+    reviewer_choice = replace(
+        _finding(outcome="REVIEW_REQUIRED"),
+        reason="This check needs 'wall_config' before it can run.",
+    )
+    missing_input = replace(
+        _finding(key="finding-b", outcome="NOT_FOUND"),
+        reason="The final operation could not resolve required value 'front_offset'.",
+    )
+
+    context = narration_overview_context((reviewer_choice, missing_input))
+
+    assert context["reviewer_decisions"] == [
+        {"check": "Countertop depth", "reason": "This check needs 'wall_config' before it can run."}
+    ]
+    assert context["unresolved_inputs"] == ["sink front offset", "wall layout"]
 
 
 def test_an_unbacked_or_missing_finding_rejects_the_whole_model_batch() -> None:
@@ -152,7 +243,7 @@ def test_a_non_numeric_reason_cannot_be_dropped() -> None:
     proposed = _faithful(finding)
     changed = ProposedNarrative(
         finding_key=finding.key,
-        text=proposed.text.replace(f"Reason: {finding.reason}", "Reason: check the drawing."),
+        text=proposed.text.replace(finding.reason, "Check the drawing."),
     )
 
     result = compose_findings((finding,), _StaticModel((changed,)))
@@ -166,13 +257,41 @@ def test_a_rejudged_verdict_in_model_prose_falls_back() -> None:
     proposed = _faithful(finding)
     changed = ProposedNarrative(
         finding_key=finding.key,
-        text=proposed.text.replace("CT-DEPTH-001: FAIL.", "CT-DEPTH-001: PASS.", 1),
+        text=proposed.text.replace("Needs correction", "Looks right", 1),
     )
 
     result = compose_findings((finding,), _StaticModel((changed,)))
 
     assert result.mode is CompositionMode.FALLBACK
-    assert "exact deterministic check and outcome" in str(result.fallback_reason)
+    assert "reviewer-facing check name and deterministic outcome" in str(result.fallback_reason)
+
+
+def test_known_engine_missing_value_is_presented_without_internal_key() -> None:
+    from workflow.findings_composer import reviewer_reason
+
+    text = reviewer_reason(
+        "derivation 'depth_less_near_clearance' could not resolve required value 'sink_interior_depth'.",
+        "NOT_FOUND",
+    )
+
+    assert (
+        text
+        == "I can’t check this yet because the sink interior depth is missing. Please enter it to continue."
+    )
+    assert "depth_less_near_clearance" not in text
+    assert "sink_interior_depth" not in text
+
+    finding = replace(
+        _finding(outcome="NOT_FOUND"),
+        reason=(
+            "derivation 'depth_less_near_clearance' could not resolve required value "
+            "'sink_interior_depth'."
+        ),
+    )
+    fallback = deterministic_summary(finding)
+    assert text in fallback
+    assert "depth_less_near_clearance" not in fallback
+    assert "sink_interior_depth" not in fallback
 
 
 def test_a_second_conflicting_verdict_cannot_hide_behind_the_correct_prefix() -> None:
