@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { FileSearch } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import './AppShell.css';
@@ -48,7 +49,17 @@ export function AppShell({
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => e.preventDefault()}
         >
-          {children}
+          {/* Keyed on the page *and the selected package*, so React discards the wrapper and the
+              entrance replays on every navigation. Without a key at all the class stays mounted,
+              the animation runs once on first paint, and every later change is an instant swap.
+
+              The session has to be in the key too. Welcome and Review are both `activePage
+              === 'review'` — they are told apart by whether a package is selected — so keying on
+              the page alone left the single most-used transition in the product, opening a document
+              set from the welcome screen, as the one navigation with no animation at all. */}
+          <div key={`${activePage}:${activeSession ?? ''}`} className="page-transition">
+            {children}
+          </div>
         </main>
 
         {/* Evidence panel — slides in from right */}
@@ -57,22 +68,9 @@ export function AppShell({
           aria-label="Evidence viewer"
         >
           {evidencePanel || (
-            <div
-              className="evidence-panel-placeholder"
-              style={{
-                padding: 'var(--space-8)',
-                color: 'var(--text-muted)',
-                fontSize: 'var(--text-sm)',
-                textAlign: 'center',
-                height: '100%',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 'var(--space-3)'
-              }}
-            >
-              <span>Select a finding, then open its recorded evidence crop.</span>
+            <div className="evidence-placeholder">
+              <FileSearch size={22} aria-hidden="true" />
+              <span>Open a finding's evidence to see the recorded crop here.</span>
             </div>
           )}
         </div>

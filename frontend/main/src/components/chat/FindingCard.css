@@ -117,7 +117,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  animation: slideUp var(--duration-base) var(--ease-out) both;
+  animation: gv-rise var(--duration-base) var(--ease-out) both;
 }
 
 /* Values: own card surface */
@@ -254,7 +254,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  animation: slideUp var(--duration-fast) var(--ease-out) both;
+  animation: gv-rise var(--duration-fast) var(--ease-out) both;
 }
 
 .finding-card__trace-op { display: flex; gap: var(--space-3); align-items: baseline; }

@@ -250,70 +250,102 @@
   --evidence-review:       rgba(217, 119, 6, 0.18);
 }
 
-/* Demo system: one deliberate, neutral visual language across the human-operated loop. */
-:root,
+/* ============================================================
+   BRAND LAYER — Graniti Vicentia maroon
+   ============================================================
+
+   This replaces a block added in #557 ("Demo system: one deliberate, neutral visual language")
+   which overrode every surface to #ffffff, every accent to #000000 and all three font stacks to
+   monospace. It sat after the palettes above, so the entire crimson system underneath it was dead
+   code — which is why the product rendered as black-and-white terminal text with no brand in it.
+
+   The maroon is the brand and is used as the brand: primary actions, active navigation, focus,
+   selection, the mark. Error red stays a separate, brighter hue so "this is Graniti Vicentia" and
+   "this check failed" never look like the same signal.
+   ============================================================ */
+:root {
+  /* ── Maroon scale ─────────────────────────────────────────
+     600 is the published brand colour. 700 carries primary buttons: white on #8c1027 measures
+     9.4:1 against WCAG's 4.5:1, and its extra depth is what separates brand burgundy from the
+     brighter #dc2626 a FAIL chip uses. */
+  --maroon-50:   #fdf2f4;
+  --maroon-100:  #fbe3e8;
+  --maroon-200:  #f5c2cc;
+  --maroon-300:  #ea8ea2;
+  --maroon-400:  #d9556f;
+  --maroon-500:  #c62648;
+  --maroon-600:  #ba0c2f;
+  --maroon-700:  #8c1027;
+  --maroon-800:  #6b0a1e;
+  --maroon-900:  #4a0614;
+
+  --gv-crimson:        var(--maroon-600);
+  --gv-crimson-hover:  var(--maroon-700);
+  --gv-crimson-light:  var(--maroon-500);
+  --gv-crimson-dim:    rgba(186, 12, 47, 0.10);
+  --gv-crimson-dim-2:  rgba(186, 12, 47, 0.05);
+  --gv-crimson-border: rgba(186, 12, 47, 0.24);
+
+  /* Primary action = the brand. 9.4:1 with white text. */
+  --color-primary:        var(--maroon-700);
+  --color-primary-hover:  var(--maroon-800);
+  --color-primary-active: var(--maroon-900);
+  --color-primary-dim:    rgba(140, 16, 39, 0.08);
+  --color-primary-border: rgba(140, 16, 39, 0.28);
+  --shadow-primary:
+    0 1px 2px rgba(74, 6, 20, 0.20),
+    0 6px 16px -4px rgba(140, 16, 39, 0.30);
+
+  /* Gradients — used sparingly: the mark, the hero rule, the progress meter. */
+  --gradient-brand: linear-gradient(135deg, var(--maroon-600) 0%, var(--maroon-800) 100%);
+  --gradient-sheen: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.55) 50%,
+    transparent 80%
+  );
+
+  /* ── Elevation ────────────────────────────────────────────
+     Two-part shadows (a tight contact shadow plus a wide ambient one) rather than one blur, so a
+     raised surface reads as lifted instead of smudged. */
+  --elevation-1: 0 1px 2px rgba(26, 22, 21, 0.05), 0 1px 3px rgba(26, 22, 21, 0.04);
+  --elevation-2: 0 2px 4px rgba(26, 22, 21, 0.05), 0 4px 12px -2px rgba(26, 22, 21, 0.07);
+  --elevation-3: 0 4px 8px rgba(26, 22, 21, 0.05), 0 12px 28px -6px rgba(26, 22, 21, 0.10);
+  --elevation-4: 0 8px 16px rgba(26, 22, 21, 0.06), 0 28px 56px -12px rgba(26, 22, 21, 0.16);
+  --ring-focus:  0 0 0 3px rgba(186, 12, 47, 0.22);
+
+  /* ── Motion ───────────────────────────────────────────────
+     `--ease-emphasis` overshoots slightly; it belongs on things that appear (a panel, a card),
+     never on things that leave — a dismissal that bounces reads as a mistake. */
+  --ease-emphasis: cubic-bezier(0.2, 0.9, 0.25, 1.08);
+  --ease-exit:     cubic-bezier(0.4, 0, 1, 1);
+  --duration-micro: 90ms;
+  --duration-xl:    420ms;
+  --stagger:        45ms;
+}
+
+/* Dark theme keeps the same brand but lifts it off a near-black ground: #ba0c2f on #0b0b0d is a
+   4.1:1 text contrast, so text uses the lighter 400 while fills keep the true brand. */
 [data-theme="dark"] {
-  color-scheme: light;
-  --gv-crimson: #000000;
-  --gv-crimson-hover: #222222;
-  --gv-crimson-light: #000000;
-  --gv-crimson-dim: rgba(0, 0, 0, 0.06);
-  --gv-crimson-dim-2: rgba(0, 0, 0, 0.03);
-  --gv-crimson-border: rgba(0, 0, 0, 0.22);
-  --color-primary: #000000;
-  --color-primary-hover: #222222;
-  --color-primary-dim: rgba(0, 0, 0, 0.08);
-  --color-primary-border: rgba(0, 0, 0, 0.3);
-  --shadow-primary: 0 0 0 1px rgba(0, 0, 0, 0.3);
-  --status-pass: #111111;
-  --status-pass-bg: #ffffff;
-  --status-pass-border: #111111;
-  --status-fail: #111111;
-  --status-fail-bg: #e8e8e8;
-  --status-fail-border: #111111;
-  --status-review: #111111;
-  --status-review-bg: #f1f1f1;
-  --status-review-border: #111111;
-  --status-missing: #555555;
-  --status-missing-bg: #fafafa;
-  --status-missing-border: #888888;
-  --status-none: #666666;
-  --status-none-bg: #fafafa;
-  --status-none-border: #999999;
-  --role-arch: #111111;
-  --role-arch-bg: #f1f1f1;
-  --role-arch-border: #111111;
-  --role-shop: #111111;
-  --role-shop-bg: #ffffff;
-  --role-shop-border: #111111;
-  --font-sans: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --font-heading: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --bg-base: #ffffff;
-  --bg-surface: #ffffff;
-  --bg-elevated: #ffffff;
-  --bg-input: #ffffff;
-  --bg-hover: #f2f2f2;
-  --bg-active: #e8e8e8;
-  --bg-overlay: rgba(0, 0, 0, 0.45);
-  --bg-glass: rgba(255, 255, 255, 0.96);
-  --border-subtle: rgba(0, 0, 0, 0.08);
-  --border-default: rgba(0, 0, 0, 0.16);
-  --border-strong: rgba(0, 0, 0, 0.34);
-  --border-focus: #000000;
-  --text-primary: #000000;
-  --text-body: #242424;
-  --text-muted: #555555;
-  --text-faint: #9a9a9a;
-  --text-inverse: #ffffff;
-  --text-brand: #000000;
-  --shadow-sm: none;
-  --shadow-md: none;
-  --shadow-lg: none;
-  --shadow-brand: none;
-  --shadow-topbar: 0 1px 0 rgba(0, 0, 0, 0.12);
-  --pdf-bg: #ffffff;
-  --pdf-lines: #d0d0d0;
-  --pdf-text: #111111;
-  --pdf-footer: #f5f5f5;
+  --gv-crimson:        var(--maroon-500);
+  --gv-crimson-hover:  var(--maroon-400);
+  --text-brand:        var(--maroon-300);
+  --color-primary:        var(--maroon-600);
+  --color-primary-hover:  var(--maroon-500);
+  --color-primary-active: var(--maroon-400);
+  --color-primary-dim:    rgba(214, 85, 111, 0.14);
+  --color-primary-border: rgba(214, 85, 111, 0.32);
+
+  --elevation-1: 0 1px 2px rgba(0, 0, 0, 0.55);
+  --elevation-2: 0 2px 6px rgba(0, 0, 0, 0.55), 0 6px 16px -4px rgba(0, 0, 0, 0.60);
+  --elevation-3: 0 6px 16px rgba(0, 0, 0, 0.60), 0 16px 36px -8px rgba(0, 0, 0, 0.70);
+  --elevation-4: 0 12px 28px rgba(0, 0, 0, 0.65), 0 36px 72px -16px rgba(0, 0, 0, 0.80);
+  --ring-focus:  0 0 0 3px rgba(214, 85, 111, 0.30);
+
+  --gradient-sheen: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.12) 50%,
+    transparent 80%
+  );
 }

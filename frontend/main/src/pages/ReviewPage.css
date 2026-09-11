@@ -125,23 +125,32 @@
 .review-page__record-ids[open] { display: flex; flex-direction: column; gap: 3px; }
 .review-page__record-ids span { display: flex; align-items: center; gap: var(--space-1); }
 
+/* One quiet affordance rather than two lines of standing text — the sentence itself is in the
+   tooltip. Focusable, so it is reachable without a mouse: an explanation only hover can reach is
+   an explanation some people never get. */
 .review-page__method {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-width: 280px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 3px var(--space-2);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-default);
   color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: var(--leading-normal);
+  font-size: var(--text-xs);
+  cursor: help;
+  white-space: nowrap;
+  transition:
+    color var(--duration-base) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out),
+    background-color var(--duration-base) var(--ease-out);
 }
 
-.review-page__method-label {
-  color: var(--text-body);
-  font-size: 10px;
-  font-weight: var(--weight-semi);
-  letter-spacing: var(--tracking-wider);
-  text-transform: uppercase;
+.review-page__method:hover,
+.review-page__method:focus-visible {
+  color: var(--gv-crimson);
+  border-color: var(--gv-crimson-border);
+  background: var(--gv-crimson-dim-2);
+  outline: none;
 }
 
 /* Pkg ID — demoted to mono caption */
@@ -222,8 +231,6 @@
   padding-top: var(--space-3);
   gap: var(--space-3);
 }
-
-[data-style="ide"] .review-page__method { max-width: none; }
 
 [data-style="ide"] .review-page__progress {
   align-items: flex-start;

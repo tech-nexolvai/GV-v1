@@ -1,4 +1,5 @@
 import { PanelLeft } from 'lucide-react';
+import { GVMark } from '../brand/GVMark';
 import './Topbar.css';
 
 interface TopbarProps {
@@ -14,27 +15,30 @@ export function Topbar({
     <header className="topbar" role="banner">
       <div className="topbar__left">
         <button
-          className="btn btn--subtle btn--icon topbar__menu-btn"
+          className="btn btn--subtle btn--icon topbar__menu-btn interactive"
           onClick={onToggleSidebar}
           aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           data-tooltip={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
-          <PanelLeft size={16} />
+          <PanelLeft size={16} className="topbar__menu-icon" data-collapsed={sidebarCollapsed} />
         </button>
 
-        {/* GV Logo + wordmark */}
         <div className="topbar__brand">
-          <div className="topbar__logo" aria-hidden="true">
-            <span className="topbar__logo-v">GV</span>
-          </div>
+          <GVMark size={28} />
           <div className="topbar__wordmark">
             <span className="topbar__name">Graniti Vicentia</span>
-            <span className="topbar__product">× Nexolv · Review Platform</span>
+            <span className="topbar__product">Review Platform</span>
           </div>
         </div>
       </div>
 
-      <div className="topbar__right" aria-label="Human-operated review workspace" />
+      {/* The build partner, set apart from the product name rather than run into it. It was
+          "× Nexolv · Review Platform" on one line, which read as a single four-part product name. */}
+      <div className="topbar__right">
+        <span className="topbar__partner">
+          built with <strong>Nexolv</strong>
+        </span>
+      </div>
     </header>
   );
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Send } from 'lucide-react';
 import './ChatInput.css';
 
@@ -22,6 +22,21 @@ const QUICK_PROMPTS = [
 
 export function ChatInput({ onSend, disabled, placeholder = 'Ask about this package…' }: ChatInputProps) {
   const [value, setValue] = useState('');
+  const textarea = useRef<HTMLTextAreaElement>(null);
+
+  /**
+   * Grow the box to fit what has been typed, up to the max height the stylesheet sets.
+   *
+   * Reset to `auto` before reading `scrollHeight`: without that the element never reports a height
+   * smaller than it already has, so the box grows as you type and then refuses to shrink when you
+   * delete. Capped in CSS rather than here, so the limit lives with the rest of the sizing.
+   */
+  useEffect(() => {
+    const element = textarea.current;
+    if (!element) return;
+    element.style.height = 'auto';
+    element.style.height = `${element.scrollHeight}px`;
+  }, [value]);
 
   function handleSend() {
     const trimmed = value.trim();
@@ -67,6 +82,7 @@ export function ChatInput({ onSend, disabled, placeholder = 'Ask about this pack
         <div className="chat-input-area__field">
           <textarea
             className="chat-input-area__textarea"
+            ref={textarea}
             value={value}
             onChange={e => setValue(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -87,8 +103,11 @@ export function ChatInput({ onSend, disabled, placeholder = 'Ask about this pack
         </button>
       </div>
 
+      {/* The one disclosure that has to be on screen wherever a question can be asked. Trimmed from
+          two sentences to one clause and one claim: the earlier wording named the two companies
+          before it got to the point, and this screen already carries the brand twice. */}
       <p className="chat-input-area__hint">
-        Graniti + Nexolv chat explains recorded findings. Deterministic rules decide every verdict.
+        Chat explains the recorded findings — <strong>deterministic rules decide every verdict</strong>.
       </p>
     </div>
   );
