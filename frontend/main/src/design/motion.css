@@ -81,6 +81,14 @@
 }
 
 /* A soft brand halo that breathes. On the thinking indicator only, where it says "still working". */
+.gv-mark--animated {
+  animation: gv-brand-breathe 1.4s var(--ease-in-out) infinite;
+}
+
+@keyframes gv-brand-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.58; }
+}
 @keyframes gv-breathe {
   0%, 100% { opacity: 0.55; transform: scale(1); }
   50%      { opacity: 1;    transform: scale(1.06); }

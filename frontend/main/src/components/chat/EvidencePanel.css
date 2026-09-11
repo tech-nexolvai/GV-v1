@@ -104,13 +104,13 @@
   margin: 0;
   padding: var(--space-2) var(--space-3);
   border: 1px dashed var(--border-subtle);
-  background: var(--bg-muted);
+  background: var(--bg-elevated);
   color: var(--text-body);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   white-space: pre-wrap;
   text-align: left;
-  line-height: var(--leading-relaxed);
+  line-height: var(--leading-loose);
 }
 
 .evidence-panel__no-evidence-guidance {
@@ -130,7 +130,7 @@
   text-align: left;
   color: var(--text-faint);
   font-size: var(--text-xs);
-  line-height: var(--leading-relaxed);
+  line-height: var(--leading-loose);
 }
 
 .evidence-panel__empty-back {

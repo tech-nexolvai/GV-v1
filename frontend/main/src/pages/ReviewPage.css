@@ -240,9 +240,9 @@
 .review-page__error {
   padding: var(--space-8, 32px);
   max-width: 60ch;
-  color: var(--color-danger, #b42318);
+  color: var(--status-fail, #b42318);
 }
 
 .review-page__error p {
-  color: var(--color-text-muted, #6b7280);
+  color: var(--text-muted, #6b7280);
 }

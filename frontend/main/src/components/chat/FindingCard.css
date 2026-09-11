@@ -334,7 +334,7 @@
 
 .finding-card__decision-label {
   font-size: var(--text-xs);
-  color: var(--text-secondary);
+  color: var(--text-muted);
 }
 
 .finding-card__decision .btn {

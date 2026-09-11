@@ -65,7 +65,7 @@
   gap: var(--space-3);
 }
 
-.topbar__brand svg { flex-shrink: 0; }
+.topbar__brand .gv-mark { flex-shrink: 0; }
 
 .topbar__wordmark {
   display: flex;
