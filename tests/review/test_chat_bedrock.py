@@ -53,11 +53,13 @@ def _response() -> dict[str, object]:
                                 "findings": [
                                     {
                                         "finding_key": "finding-a",
-                                        "text": (
-                                            "CT-DEPTH-001: FAIL. Checked Countertop depth. "
-                                            "Severity: FLAG. Why: The values differ. "
-                                            "Comparison: 25 1/2 in vs 25 in. "
-                                            "Arithmetic unit: in. Evidence pages: 13."
+                                        # The provider now returns only its sentences. The
+                                        # deterministic facts are prepended by
+                                        # `ground_explanations`, which is what removed the
+                                        # transcription step this fixture used to imitate.
+                                        "explanation": (
+                                            "The vendor drawing is shallower than the approved "
+                                            "design allows."
                                         ),
                                     }
                                 ],
@@ -106,15 +108,19 @@ def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
     assert isinstance(system, list)
     text = system[0]["text"]
     assert isinstance(text, str)
-    assert "Never emit the placeholder words" in text
-    assert "literal `required_text`" in text
+    # The provider is told the facts arrive without it, and that adding a number is what gets the
+    # answer discarded. It is no longer told to copy anything, because it no longer can: the
+    # transcription it used to be asked for is done by `ground_explanations`.
+    assert "do NOT restate, copy, or summarise `required_text`" in text
+    assert "one or two plain sentences" in text
     assert "CT-DEPTH-001: FAIL." not in text
     assert "Do not merely list check ids" in text
     messages = request["messages"]
     assert isinstance(messages, list)
     user_text = messages[0]["content"][0]["text"]
     assert isinstance(user_text, str)
-    assert "Copy that entire string character-for-character" in user_text
+    assert "the system places ahead of your words" in user_text
+    assert "Do not copy it, quote it, or restate its values." in user_text
     overview_payload = messages[0]["content"][1]["text"]
     assert isinstance(overview_payload, str)
     assert json.loads(overview_payload) == {
@@ -139,9 +145,9 @@ def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
                     "type": "object",
                     "properties": {
                         "finding_key": {"type": "string"},
-                        "text": {"type": "string"},
+                        "explanation": {"type": "string"},
                     },
-                    "required": ["finding_key", "text"],
+                    "required": ["finding_key", "explanation"],
                 },
             },
         },

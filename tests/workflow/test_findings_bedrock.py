@@ -75,9 +75,11 @@ def _response() -> dict[str, object]:
                                 "findings": [
                                     {
                                         "finding_key": "finding-a",
-                                        "text": (
-                                            "CAB-FILLER-001: REVIEW_REQUIRED. The required "
-                                            "reading was not found."
+                                        # Only the provider's own sentences. The deterministic
+                                        # facts are prepended by `ground_explanations`.
+                                        "explanation": (
+                                            "A reviewer needs to supply this reading before the "
+                                            "check can run."
                                         ),
                                     }
                                 ],
@@ -222,14 +224,17 @@ def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
     text = system[0]["text"]
     assert isinstance(text, str)
     assert "never internal field keys" in text
-    assert "Copy each opaque" in text
-    assert "reviewer-facing `required_text`" in text
+    assert "Copy each opaque" in text  # the finding_key is still an identifier to copy exactly
+    # The facts, by contrast, are no longer the provider's to reproduce.
+    assert "do NOT copy, quote, or restate them" in text
+    assert "at most two short sentences" in text
     assert "what needs correction" in text
     messages = request["messages"]
     assert isinstance(messages, list)
     user_text = messages[0]["content"][0]["text"]
     assert isinstance(user_text, str)
-    assert "Copy that entire string character-for-character" in user_text
+    assert "which the system places ahead of" in user_text
+    assert "do not copy or restate it" in user_text
     overview_payload = messages[0]["content"][1]["text"]
     assert isinstance(overview_payload, str)
     assert json.loads(overview_payload) == {
