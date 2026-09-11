@@ -107,7 +107,13 @@ class BedrockFindingsComposer:
         )
         return cast(BedrockRuntimeClient, client)
 
-    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+    def compose(
+        self, findings: Sequence[ComposerFinding], *, question: str | None = None
+    ) -> ModelComposition:
+        """Narrate a report. `question` exists only to satisfy the shared protocol — a generated
+        document has no reviewer asking anything, so it is accepted and ignored rather than
+        forcing two protocols for one capability."""
+        del question
         """Return provider output; the caller performs the deterministic fidelity checks."""
         try:
             return self._attempt(findings, self._config.model_id)

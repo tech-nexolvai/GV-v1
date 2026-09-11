@@ -82,9 +82,10 @@ def _selection_label(question: str) -> str:
 
 def _intro(question: str, selected: Sequence[ComposerFinding], total: int) -> str:
     """A deterministic envelope around model prose, with no new facts to get wrong."""
-    # The question stays out of the public response unless the facts answer it.
+    # The question stays out of this deterministic envelope. It does now reach the provider, so that
+    # an answer can be about what was asked — but it is never echoed into text this module composes,
+    # because that text is shown whether or not a model ran.
     outcome = _selection_label(question)
-    # We keep `question` unused after parsing to avoid echoing raw user text in system output.
     if not selected:
         if outcome == "all":
             return f"This run has no findings ({total} total)."
@@ -116,7 +117,9 @@ def answer_question(
             model_id=None,
             fallback_reason="no finding matched the deterministic outcome filter",
         )
-    result = compose_findings(selected, model)
+    # The reviewer's own words reach the provider from here. They are untrusted — see
+    # `FindingsLanguageModel` for why the guards, not the prompt, are what makes that safe.
+    result = compose_findings(selected, model, question=question)
     return ChatReply(
         text=_intro(question, selected, len(findings)),
         narratives=result.narratives,

@@ -41,7 +41,9 @@ class _Model:
     def __init__(self, narratives: Sequence[ProposedNarrative]) -> None:
         self._narratives = tuple(narratives)
 
-    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+    def compose(
+        self, findings: Sequence[ComposerFinding], *, question: str | None = None
+    ) -> ModelComposition:
         del findings
         return ModelComposition(
             narratives=self._narratives,

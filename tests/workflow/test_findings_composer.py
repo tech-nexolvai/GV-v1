@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -14,6 +15,7 @@ from workflow.findings_composer import (
     ModelComposition,
     ProposedExplanation,
     ProposedNarrative,
+    _digit_numbers,
     compose_findings,
     deterministic_summary,
     ground_explanations,
@@ -49,7 +51,9 @@ class _ExplainingModel:
         self._explanation = explanation
         self._key = key
 
-    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+    def compose(
+        self, findings: Sequence[ComposerFinding], *, question: str | None = None
+    ) -> ModelComposition:
         return ModelComposition(
             narratives=ground_explanations(
                 findings,
@@ -69,7 +73,9 @@ class _StaticModel:
         self._narratives = tuple(narratives)
         self._summary = summary
 
-    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+    def compose(
+        self, findings: Sequence[ComposerFinding], *, question: str | None = None
+    ) -> ModelComposition:
         del findings
         return ModelComposition(
             narratives=self._narratives,
@@ -81,7 +87,9 @@ class _StaticModel:
 
 
 class _BrokenModel:
-    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+    def compose(
+        self, findings: Sequence[ComposerFinding], *, question: str | None = None
+    ) -> ModelComposition:
         del findings
         raise TimeoutError("provider unavailable")
 
@@ -498,3 +506,93 @@ def test_no_adapter_lets_a_provider_supply_the_finding_text() -> None:
         source = adapter.read_text(encoding="utf-8")
         assert "ground_explanations(findings, batch.findings)" in source, adapter.name
         assert "narratives=tuple(batch.findings)" not in source, adapter.name
+
+
+def test_a_restated_fact_is_not_printed_twice() -> None:
+    """**The regression from grounding.** Input: an explanation echoing the summary. Outcome: once.
+
+    Prepending the facts in code fixed one problem and created another. The provider keeps restating
+    them anyway: Nova Lite, told plainly not to, returned *"Please confirm the wall layout so I can
+    use the right version of this check. Next: make the requested review decision."* — a verbatim
+    copy of two clauses it had just been handed — and the reviewer read the same instruction twice in
+    one paragraph.
+
+    A prompt cannot be relied on to stop that. A comparison can.
+    """
+    finding = _finding(outcome="REVIEW_REQUIRED")
+    summary = deterministic_summary(finding)
+    # Split the way the implementation does, so these are whole sentences rather than fragments
+    # with their punctuation stripped — the earlier version of this test split on ". " and produced
+    # text that was not actually an echo of anything.
+    sentences = re.split(r"(?<=[.!?])\s+", summary)
+    echoed = " ".join(sentences[1:3])
+
+    grounded = ground_explanations(
+        (finding,), (ProposedExplanation(finding_key=finding.key, explanation=echoed),)
+    )
+
+    assert grounded[0].text == summary
+
+
+def test_a_genuine_addition_survives() -> None:
+    """Outcome: a sentence the summary never made is kept.
+
+    The pair to the test above: dropping echoes must not become dropping the explanation.
+    """
+    finding = _finding()
+
+    grounded = ground_explanations(
+        (finding,),
+        (
+            ProposedExplanation(
+                finding_key=finding.key,
+                explanation="The vendor drawing is shallower than the approved design allows.",
+            ),
+        ),
+    )
+
+    assert grounded[0].text.endswith(
+        "The vendor drawing is shallower than the approved design allows."
+    )
+
+
+def test_the_rulebook_may_be_quoted_but_is_never_required() -> None:
+    """**Input: a rule description with a number in it. Outcome: usable, not compulsory.**
+
+    Five of the nine published rules describe themselves with a digit in the sentence. Adding the
+    description to the guarded facts would have made every one of those numbers *mandatory* in the
+    prose — `missing_digits` counts what the facts contain — so narration would have failed closed
+    again for exactly the checks that most need explaining.
+
+    So the rulebook widens what may be said and never what must be. It is a published, versioned
+    source, which is what makes quoting it grounded; it is not a measurement from this run, which is
+    what keeps it out of the required set.
+    """
+    described = replace(
+        _finding(),
+        rule_description="Check the sink cabinet's width against 2 side panels.",
+    )
+
+    # Quoting the rulebook's own number is permitted...
+    quoting = compose_findings((described,), _ExplainingModel("The rule allows for 2 side panels."))
+    assert quoting.mode is CompositionMode.LLM
+
+    # ...and saying nothing about it is equally fine.
+    silent = compose_findings((described,), _ExplainingModel("A reviewer decision is needed."))
+    assert silent.mode is CompositionMode.LLM
+
+    # A number from neither the run nor the rulebook is still refused.
+    invented = compose_findings((described,), _ExplainingModel("There are 7 side panels."))
+    assert invented.mode is CompositionMode.FALLBACK
+
+
+def test_the_rule_description_is_not_a_fact_the_prose_must_recite() -> None:
+    """Outcome: the description stays out of `guarded_text`.
+
+    The assertion behind the test above, stated directly, so the reason survives a refactor that
+    makes `as_data` look like a harmless place to add a field.
+    """
+    described = replace(_finding(), rule_description="Compare against 2 side panels.")
+
+    assert "side panels" not in described.guarded_text()
+    assert "2" not in _digit_numbers(described.guarded_text())

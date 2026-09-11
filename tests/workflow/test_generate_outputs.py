@@ -126,7 +126,9 @@ def _sheet(store: LocalStore, artifact: OutputArtifact, name: str):
 class _PlainLanguageModel:
     """A deterministic test double standing at the configured provider seam."""
 
-    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+    def compose(
+        self, findings: Sequence[ComposerFinding], *, question: str | None = None
+    ) -> ModelComposition:
         narratives: list[ProposedNarrative] = []
         for finding in findings:
             narratives.append(
@@ -146,7 +148,9 @@ class _PlainLanguageModel:
 class _BrokenLanguageModel:
     """The provider boundary failing after deterministic findings already exist."""
 
-    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+    def compose(
+        self, findings: Sequence[ComposerFinding], *, question: str | None = None
+    ) -> ModelComposition:
         del findings
         raise TimeoutError("provider unavailable")
 
