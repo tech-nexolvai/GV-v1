@@ -167,9 +167,20 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
         .filter((item) => matchedIds.has(item.finding_id))
         .map((item) => item.text)
         .join('\n\n');
-      const fallback = response.mode === 'structured_fallback'
-        ? `AI narration is off on this package — showing plain deterministic findings.\n\n${response.fallback_reason ?? 'No provider-configured narration is currently available.'}\n\n`
-        : '';
+      // **Two different things wore the same message.** "AI narration is off on this package" was
+      // shown whenever the mode was `structured_fallback`, including when the question simply
+      // matched no findings — ask "why did this fail?" about a package with no failures and the
+      // screen announced that the AI was switched off. It was not: Bedrock was configured,
+      // reachable, and had nothing to narrate because nothing had been selected for it.
+      //
+      // An empty selection is the honest, common case, and saying so is a better answer than an
+      // apology for a capability that is working.
+      const nothingSelected = response.findings.length === 0;
+      const fallback = response.mode !== 'structured_fallback'
+        ? ''
+        : nothingSelected
+          ? ''
+          : `The AI explanation was not used for this answer, so these are the plain deterministic findings.\n\n${response.fallback_reason ?? 'No provider-configured narration is currently available.'}\n\n`;
       // A guarded Bedrock overview is deliberately shown before the immutable cards.  In LLM mode
       // the cards are the exact audit record, so repeating every provider narration above them only
       // makes the answer look hard-coded.  A provider that predates the overview field still has its
@@ -187,11 +198,17 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
         content: `${overview}${fallback}${response.answer}${auditText}`,
         timestamp: new Date().toISOString(),
         findings: matched,
-        narration: {
-          mode: response.mode === 'llm' ? 'llm' : 'structured_fallback',
-          modelId: response.model_id ?? undefined,
-          fallbackReason: response.fallback_reason ?? null,
-        },
+        // Omitted when nothing was selected, so no provenance badge is rendered. The badge exists
+        // to say which of two sources wrote the prose a reviewer is reading; where there is no
+        // prose, announcing that a model did not write it is a disclosure about nothing, and it
+        // read as a fault report.
+        narration: nothingSelected
+          ? undefined
+          : {
+              mode: response.mode === 'llm' ? 'llm' : 'structured_fallback',
+              modelId: response.model_id ?? undefined,
+              fallbackReason: response.fallback_reason ?? null,
+            },
       };
       setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
     } catch (error) {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, Play, Trash2, AlertTriangle, ScanLine } from 'lucide-react';
+import { Plus, Play, Trash2, AlertTriangle, ScanLine, ChevronRight } from 'lucide-react';
 import {
   ApiError,
   confirmCandidate,
@@ -791,14 +791,33 @@ function AiReadings({
   onUse: (candidate: CandidateOut) => void;
 }) {
   const offered = candidates.filter((candidate) => candidate.source === quantity.source);
+  const [open, setOpen] = useState(false);
   if (offered.length === 0) return null;
+
+  const sheet = SOURCE_LABEL[quantity.source] ?? quantity.source;
 
   return (
     <div className="ai-readings">
-      <span className="ai-readings__label">
+      {/* **Collapsed, because the same readings are offered under every field of their sheet.**
+          Filtering by source is all that can honestly be done today: which sheet a number was read
+          from is recorded, and which field it belongs to is not — that is what the witness-line
+          geometry in `extraction/geometry/dimension_lines.py` (#179) is being built to establish.
+
+          With two readings and ten shop-drawing fields, showing them open put the same two values
+          on screen twenty times and buried the fields themselves. Collapsed, the offer is still at
+          the field that wants one, and the page still reads as a form. When geometry can say which
+          field each reading measures, this stops being a list and becomes one suggestion. */}
+      <button
+        type="button"
+        className="ai-readings__label"
+        aria-expanded={open}
+        onClick={() => setOpen((shown) => !shown)}
+      >
+        <ChevronRight size={12} className="collapsible-chevron" data-open={open} aria-hidden="true" />
         <ScanLine size={12} aria-hidden="true" />
-        Read from the {SOURCE_LABEL[quantity.source] ?? quantity.source}
-      </span>
+        {offered.length} reading{offered.length === 1 ? '' : 's'} from the {sheet}
+      </button>
+      <div className="collapsible" data-open={open} inert={!open}>
       <div className="ai-readings__chips">
         {offered.map((candidate) => (
           <button
@@ -814,6 +833,7 @@ function AiReadings({
             {busyId === candidate.candidate_id ? <span>saving…</span> : <span>use</span>}
           </button>
         ))}
+      </div>
       </div>
     </div>
   );
