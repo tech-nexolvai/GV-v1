@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -286,6 +286,15 @@ class ComposerFinding:
     evidence_pages: tuple[str, ...]
     notes: tuple[str, ...]
 
+    #: What the published rule says it checks, from the snapshot's own `description`.
+    #:
+    #: Deliberately **not** in `as_data`, and therefore not in `guarded_text`. That text defines the
+    #: numbers the prose *must* contain, and a description mentioning "two side panels" would then
+    #: oblige every narration to say "two" or be rejected. `_guard_one` reads this separately to
+    #: decide what the prose *may* contain: the rulebook is a versioned, published source, so
+    #: quoting it is grounded — it is simply not a fact about this particular run.
+    rule_description: str | None = None
+
     def as_data(self) -> dict[str, object]:
         return {
             "finding_key": self.key,
@@ -345,6 +354,8 @@ class NarrationFact(BaseModel):
     evidence_pages: tuple[str, ...]
     notes: tuple[str, ...]
     required_text: str
+    #: What the published rule says it checks. Context for the explanation, never a fact to recite.
+    rule_description: str | None = None
 
     @classmethod
     def from_finding(cls, finding: ComposerFinding) -> NarrationFact:
@@ -372,6 +383,7 @@ class NarrationFact(BaseModel):
             evidence_pages=finding.evidence_pages,
             notes=finding.notes,
             required_text=deterministic_summary(finding),
+            rule_description=finding.rule_description,
         )
 
 
@@ -396,9 +408,15 @@ class ProposedExplanation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     finding_key: str = Field(min_length=1)
-    explanation: str = Field(min_length=1, max_length=600)
+    #: May be empty, and that is a complete answer rather than a failed one.
+    #:
+    #: Before grounding, an empty text meant a finding with nothing said about it, so the batch had
+    #: to be refused. Now the deterministic summary is prepended in code: an empty explanation means
+    #: the provider added nothing, and the reviewer still gets every fact. Requiring one turned a
+    #: model having nothing to add into nine findings losing their narration.
+    explanation: str = Field(default="", max_length=600)
 
-    @field_validator("finding_key", "explanation")
+    @field_validator("finding_key")
     @classmethod
     def _not_blank(cls, value: str) -> str:
         if not value.strip():
@@ -436,6 +454,28 @@ class NarrativeBatch(BaseModel):
     # to the immutable ``ModelComposition`` tuple immediately after validation.
     findings: list[ProposedExplanation]
 
+    @field_validator("findings", mode="before")
+    @classmethod
+    def _drop_unnamed(cls, value: object) -> object:
+        """Discard entries that name no finding, before they fail validation.
+
+        Nova Lite padded a nine-finding answer with a tenth, entirely blank row. Strict validation
+        rejected the payload, so one piece of junk cost nine good narratives and the reviewer saw
+        the fallback.
+
+        A row with no `finding_key` names nothing and can be matched to nothing, so dropping it
+        loses no information. Nothing is being hidden: if a real finding ends up without a
+        narrative, `_guard_batch` still refuses the batch as not 1:1. This only stops a row that was
+        never about anything from taking the others with it.
+        """
+        if not isinstance(value, list):
+            return value
+        return [
+            item
+            for item in value
+            if not (isinstance(item, Mapping) and not str(item.get("finding_key") or "").strip())
+        ]
+
 
 @dataclass(frozen=True, slots=True)
 class ModelComposition:
@@ -449,9 +489,19 @@ class ModelComposition:
 
 
 class FindingsLanguageModel(Protocol):
-    """The only model capability reachable from output generation."""
+    """The only model capability reachable from output generation.
 
-    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+    `question` is the reviewer's own words, and is `None` for report narration, which has nobody to
+    answer. It is **untrusted text** wherever it is not `None`: an adapter passes it as data, never
+    as instruction. What makes that safe is not the prompt but the layers around it — `_selection`
+    chooses the findings deterministically before any model runs, `_guard_batch` enforces one
+    narrative per selected finding, and `_guard_one` refuses a number or a verdict the run does not
+    record. A question cannot make a finding disappear, change an outcome, or introduce a value.
+    """
+
+    def compose(
+        self, findings: Sequence[ComposerFinding], *, question: str | None = None
+    ) -> ModelComposition:
         """Propose one prose rendering for each supplied deterministic finding."""
 
 
@@ -562,13 +612,41 @@ def ground_explanations(
                 ProposedNarrative(finding_key=proposal.finding_key, text=proposal.explanation)
             )
             continue
+        summary = deterministic_summary(finding)
+        addition = _new_sentences(summary, proposal.explanation)
         grounded.append(
             ProposedNarrative(
                 finding_key=proposal.finding_key,
-                text=f"{deterministic_summary(finding)} {proposal.explanation.strip()}".strip(),
+                text=f"{summary} {addition}".strip() if addition else summary,
             )
         )
     return tuple(grounded)
+
+
+def _new_sentences(summary: str, explanation: str) -> str:
+    """Drop any sentence the deterministic summary already made.
+
+    Prepending the facts in code fixed one problem and created another: the provider keeps
+    restating them anyway. Nova Lite was told plainly not to and still returned *"Please confirm the
+    wall layout so I can use the right version of this check. Next: make the requested review
+    decision."* — a verbatim copy of two clauses it had just been handed — so the reviewer read the
+    same instruction twice in one paragraph.
+
+    A prompt cannot be relied on to prevent that; a comparison can. Sentences already present in the
+    summary are dropped, and what remains is whatever the model genuinely added. If it added nothing,
+    the summary stands alone, which is the correct outcome rather than a failure — the facts were
+    always the part that mattered.
+
+    Compared on collapsed whitespace and case so that a re-punctuated echo is still recognised as
+    one; anything subtler than that is a sentence with new words in it, and those are kept.
+    """
+    haystack = " ".join(summary.split()).casefold()
+    kept = [
+        sentence
+        for sentence in re.split(r"(?<=[.!?])\s+", explanation.strip())
+        if sentence.strip() and " ".join(sentence.split()).casefold() not in haystack
+    ]
+    return " ".join(kept).strip()
 
 
 def _digit_numbers(text: str) -> frozenset[str]:
@@ -648,10 +726,15 @@ def _guard_one(finding: ComposerFinding, text: str) -> None:
         raise NarrativeGuardError(f"{finding.key}: prose introduced verdict(s) {invented_outcomes}")
 
     fact_text = finding.guarded_text()
-    permitted_digits = _digit_numbers(fact_text)
+    # Two different sets, and the distinction is the point. `required` is this run's measurements:
+    # every one of them has to survive into the prose. `permitted` additionally allows anything the
+    # published rule says about itself, so an explanation may quote what the check is for without
+    # being obliged to. Widening both together would force the prose to recite the rulebook.
+    required_digits = _digit_numbers(fact_text)
+    permitted_digits = required_digits | _digit_numbers(finding.rule_description or "")
     prose_digits = _digit_numbers(text)
     invented_digits = sorted(prose_digits - permitted_digits)
-    missing_digits = sorted(permitted_digits - prose_digits)
+    missing_digits = sorted(required_digits - prose_digits)
     if invented_digits:
         raise NarrativeGuardError(
             f"{finding.key}: prose introduced numeric token(s) {invented_digits}"
@@ -661,7 +744,11 @@ def _guard_one(finding: ComposerFinding, text: str) -> None:
 
     # Models sometimes spell a new number to evade a digit-only comparison ("four" for ``3``).
     # Such prose is not accepted unless that exact word already occurred in the deterministic facts.
-    invented_words = sorted(_number_words(text) - _number_words(fact_text))
+    invented_words = sorted(
+        _number_words(text)
+        - _number_words(fact_text)
+        - _number_words(finding.rule_description or "")
+    )
     if invented_words:
         raise NarrativeGuardError(
             f"{finding.key}: prose introduced number word(s) {invented_words}"
@@ -751,7 +838,10 @@ def _fallback(findings: Sequence[ComposerFinding], *, reason: str) -> Compositio
 
 
 def compose_findings(
-    findings: Sequence[ComposerFinding], model: FindingsLanguageModel | None
+    findings: Sequence[ComposerFinding],
+    model: FindingsLanguageModel | None,
+    *,
+    question: str | None = None,
 ) -> CompositionResult:
     """Accept a faithful 1:1 model rewrite or fail closed to deterministic prose.
 
@@ -765,7 +855,7 @@ def compose_findings(
     if model is None:
         return _fallback(findings, reason="no findings language model is configured")
     try:
-        proposed = model.compose(findings)
+        proposed = model.compose(findings, question=question)
         narratives = _guard_batch(findings, proposed)
         summary = _guard_overview(findings, proposed.summary)
     # A provider can fail through its SDK, transport, protocol parser or local schema.  The contract

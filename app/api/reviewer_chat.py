@@ -78,9 +78,16 @@ def _evidence_page(reference: object) -> str | None:
         return None
     if not isinstance(document, str) or not document.strip():
         return None
-    # It is intentionally the stored value: this endpoint labels evidence, it does not calculate a
-    # new page number or infer a sheet title.
-    return str(page)
+    # `pages.index` is zero-based, the way the reader addresses a document; a reviewer counts sheets
+    # from one, and so does every other surface in the product (`EnterValuesPage`,
+    # `ConfirmReadingsPage`). This endpoint was the exception, which put "Sheet 0 has the failure"
+    # into an AI answer — a sheet that exists on no drawing.
+    #
+    # The comment here previously called the raw value intentional because this endpoint "does not
+    # calculate a new page number or infer a sheet title". Not inferring a *title* is right and
+    # unchanged. Converting an index to the page number it denotes is not an inference; it is the
+    # same page, written the way the person reading it counts.
+    return str(page + 1)
 
 
 def _operands(trace: Mapping[str, object]) -> tuple[ComposerOperand, ...]:
@@ -99,7 +106,12 @@ def _operands(trace: Mapping[str, object]) -> tuple[ComposerOperand, ...]:
     )
 
 
-def _facts(finding: Finding, definition: RuleDefinition, check_name: str) -> ComposerFinding:
+def _facts(
+    finding: Finding,
+    definition: RuleDefinition,
+    check_name: str,
+    rule_description: str | None = None,
+) -> ComposerFinding:
     """Project exactly the stored deterministic record into the language-only schema."""
     trace = finding.trace
     operands = _operands(trace)
@@ -123,6 +135,10 @@ def _facts(finding: Finding, definition: RuleDefinition, check_name: str) -> Com
         operands=operands,
         evidence_pages=pages,
         notes=() if finding.notes is None else tuple(finding.notes),
+        # The published rule's own account of what it checks. Context, so an answer can say what a
+        # check is *for* rather than only what it concluded — the snapshot was already being parsed
+        # here for its name, and the description was sitting unused beside it.
+        rule_description=rule_description,
     )
 
 
@@ -153,13 +169,30 @@ def _live_run_facts(
     ).all()
     result: list[ComposerFinding] = []
     for finding, definition, canonical_json in rows:
+        name: object = None
+        description: object = None
         try:
             payload = json.loads(canonical_json)
-            name = payload.get("name") if isinstance(payload, Mapping) else None
+            if isinstance(payload, Mapping):
+                name = payload.get("name")
+                description = payload.get("description")
         except (TypeError, ValueError):
-            name = None
+            # A snapshot that will not parse still has a finding worth showing. The rule id is a
+            # usable heading and the description is simply absent, which is what `None` means.
+            pass
         check_name = name if isinstance(name, str) and name.strip() else definition.rule_id
-        result.append(_facts(finding, definition, check_name))
+        result.append(
+            _facts(
+                finding,
+                definition,
+                check_name,
+                (
+                    description.strip()
+                    if isinstance(description, str) and description.strip()
+                    else None
+                ),
+            )
+        )
     return tuple(result)
 
 
