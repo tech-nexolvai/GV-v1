@@ -375,15 +375,35 @@ select.value-input {
   animation: gv-rise-sm var(--duration-base) var(--ease-out) both;
 }
 
+/* A disclosure, so it has to look and behave like a button rather than a caption. */
 .ai-readings__label {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font-family: inherit;
   font-size: var(--text-xs);
   font-weight: var(--weight-medium);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   color: var(--gv-crimson);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ai-readings__label:hover { color: var(--maroon-800); }
+
+.ai-readings__label:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+  border-radius: var(--radius-sm);
+}
+
+/* The chips need a little air once the disclosure opens; collapsed they take none. */
+.ai-readings .collapsible[data-open='true'] > * {
+  padding-top: var(--space-2);
 }
 
 .ai-readings__chips {
