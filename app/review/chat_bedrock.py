@@ -20,8 +20,8 @@ from workflow.findings_composer import (
     NarrationFact,
     NarrativeBatch,
     bedrock_narrative_tool_schema,
-    ground_explanations,
     bedrock_output_token_limit,
+    ground_explanations,
     narration_overview_context,
 )
 

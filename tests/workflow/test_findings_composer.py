@@ -447,7 +447,9 @@ def test_an_explanation_that_invents_a_number_is_still_refused() -> None:
     when the run recorded 1/2 in is exactly the failure this project exists to prevent, and it still
     takes the whole batch down to deterministic prose.
     """
-    result = compose_findings((_finding(),), _ExplainingModel("The gap is 3/4 in, not what it says."))
+    result = compose_findings(
+        (_finding(),), _ExplainingModel("The gap is 3/4 in, not what it says.")
+    )
 
     assert result.mode is CompositionMode.FALLBACK
     assert "numeric token" in (result.fallback_reason or "")
@@ -472,7 +474,9 @@ def test_an_explanation_for_a_finding_this_run_did_not_select_is_refused() -> No
     `_guard_batch` can report it. Dropping it there would turn a provider hallucinating a finding
     into a batch that looked 1:1 and was short one narrative.
     """
-    result = compose_findings((_finding(),), _ExplainingModel("Fine.", key="finding-that-does-not-exist"))
+    result = compose_findings(
+        (_finding(),), _ExplainingModel("Fine.", key="finding-that-does-not-exist")
+    )
 
     assert result.mode is CompositionMode.FALLBACK
     assert "not 1:1" in (result.fallback_reason or "")
