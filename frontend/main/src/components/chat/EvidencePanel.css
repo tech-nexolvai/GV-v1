@@ -267,7 +267,7 @@
   border: 1.5px solid;
   border-radius: 2px;
   pointer-events: none;
-  animation: fadeIn var(--duration-base) var(--ease-out) both;
+  animation: gv-fade-in var(--duration-base) var(--ease-out) both;
 }
 
 /* ── Meta ─────────────────────────────────────────────────── */

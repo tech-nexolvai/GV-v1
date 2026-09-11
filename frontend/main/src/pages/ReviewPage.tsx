@@ -22,7 +22,7 @@ import type { ReviewSession } from '../api/client';
 import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
-import { ArrowLeft, FileText, CheckSquare, Download } from 'lucide-react';
+import { ArrowLeft, FileText, CheckSquare, Download, Info } from 'lucide-react';
 import './ReviewPage.css';
 
 interface ReviewPageProps {
@@ -497,10 +497,21 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
         </div>
 
         <div className="review-page__header-right">
-          <div className="review-page__method" aria-label="Review method">
-            <span className="review-page__method-label">How this review works</span>
-            <span>Recorded values → deterministic checks → optional AI narration</span>
-          </div>
+          {/* The same sentence was on screen three times: here permanently, under the chat input,
+              and again on the welcome screen. The claim matters, so it is kept — but as something
+              available on demand rather than as two lines of standing text in a header whose job is
+              to show the state of this package. The input's disclosure is the one that is always
+              visible, because that is where a verdict is being asked about. */}
+          <span
+            className="review-page__method"
+            tabIndex={0}
+            role="note"
+            aria-label="How this review works: recorded values, then deterministic checks, then optional AI narration"
+            data-tooltip="Recorded values → deterministic checks → optional AI narration"
+          >
+            <Info size={13} aria-hidden="true" />
+            How this works
+          </span>
           <div className="review-page__progress">
             <span className="review-page__progress-text">
               {actioned} / {findings.filter(f => f.outcome !== 'PASS' && f.outcome !== 'NO_APPLICABLE_RULE').length} reviewed

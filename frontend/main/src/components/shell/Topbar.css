@@ -5,12 +5,26 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--space-4);
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-subtle);
-  box-shadow: var(--shadow-topbar);
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border-default);
+  box-shadow: var(--elevation-1);
   flex-shrink: 0;
   z-index: 50;
   gap: var(--space-4);
+  position: relative;
+}
+
+/* A 2px brand rule under the whole bar. One line of colour across the top of the product does
+   more for "whose software is this" than any amount of accent scattered through the body. */
+.topbar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--gradient-brand);
+  opacity: 0.9;
 }
 
 .topbar__left {
@@ -51,24 +65,7 @@
   gap: var(--space-3);
 }
 
-.topbar__logo {
-  width: 28px;
-  height: 28px;
-  background: var(--gv-crimson);
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.topbar__logo-v {
-  font-family: var(--font-heading);
-  font-size: 10px;
-  font-weight: var(--weight-bold);
-  color: #fff;
-  letter-spacing: var(--tracking-wider);
-}
+.topbar__brand svg { flex-shrink: 0; }
 
 .topbar__wordmark {
   display: flex;
@@ -128,6 +125,33 @@
 
 .topbar__menu-btn {
   color: var(--text-muted);
-  transition: color var(--duration-fast) var(--ease-out);
 }
-.topbar__menu-btn:hover { color: var(--text-body); }
+.topbar__menu-btn:hover { color: var(--gv-crimson); }
+
+/* The panel icon flips to face the direction the sidebar will move, so the control says what it
+   will do rather than only what it is. */
+.topbar__menu-icon {
+  transition: transform var(--duration-panel) var(--ease-emphasis);
+}
+.topbar__menu-icon[data-collapsed='true'] { transform: scaleX(-1); }
+
+/* ── Partner line ─────────────────────────────────────────── */
+.topbar__partner {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  letter-spacing: var(--tracking-wide);
+}
+
+.topbar__partner strong {
+  font-weight: var(--weight-semi);
+  color: var(--text-muted);
+}
+
+@media (max-width: 720px) {
+  .topbar__partner,
+  .topbar__wordmark { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar__menu-icon { transition: none; }
+}

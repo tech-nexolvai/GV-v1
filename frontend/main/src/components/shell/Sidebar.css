@@ -156,8 +156,10 @@
   color: var(--text-muted);
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
-  transition: color var(--duration-fast) var(--ease-out),
-              background var(--duration-fast) var(--ease-out);
+  transition:
+    color var(--duration-base) var(--ease-out),
+    background-color var(--duration-base) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out);
   border: 1px solid transparent;
   position: relative;
   white-space: nowrap;
@@ -168,28 +170,53 @@
   background: var(--bg-hover);
 }
 
+/* Active reads as brand, not as "a grey box is switched on". The tint, the text and the icon all
+   move to the brand together, which is what makes the selection legible at a glance down a column
+   of five. */
 .sidebar__nav-item--active {
-  color: var(--text-primary);
-  background: var(--bg-active);
-  border-color: var(--border-default);
+  color: var(--gv-crimson);
+  background: var(--gv-crimson-dim);
+  border-color: var(--gv-crimson-border);
+  font-weight: var(--weight-semi);
 }
 
-/* Crimson left accent on active */
+.sidebar__nav-item--active:hover {
+  color: var(--gv-crimson);
+  background: var(--gv-crimson-dim);
+}
+
+/* The accent bar grows out of the centre rather than fading in. It is the one element that says
+   "the page changed", so it is worth the 4 lines. */
 .sidebar__nav-item--active::before {
   content: '';
   position: absolute;
   left: 0;
   top: 50%;
-  transform: translateY(-50%);
-  width: 2px;
-  height: 16px;
+  width: 3px;
+  height: 18px;
   background: var(--gv-crimson);
-  border-radius: 1px;
-  animation: slideInIndicator var(--duration-fast) var(--ease-spring) both;
+  border-radius: 0 2px 2px 0;
+  transform: translateY(-50%);
+  animation: gv-accent var(--duration-slow) var(--ease-emphasis) both;
+}
+
+@keyframes gv-accent {
+  from { transform: translateY(-50%) scaleY(0); opacity: 0; }
+  to   { transform: translateY(-50%) scaleY(1); opacity: 1; }
 }
 
 .sidebar__nav-icon {
   flex-shrink: 0;
+  transition: transform var(--duration-base) var(--ease-emphasis);
+}
+
+.sidebar__nav-item:hover .sidebar__nav-icon { transform: scale(1.1); }
+.sidebar__nav-item--active .sidebar__nav-icon { transform: scale(1.06); }
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar__nav-item--active::before { animation: none; }
+  .sidebar__nav-icon,
+  .sidebar__nav-item:hover .sidebar__nav-icon { transform: none; transition: none; }
 }
 
 .sidebar__nav-label {

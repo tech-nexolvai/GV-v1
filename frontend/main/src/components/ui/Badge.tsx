@@ -51,20 +51,44 @@ export function OutcomeBadge({ outcome, size = 'md' }: OutcomeBadgeProps) {
 
 // ── StatusBadge ──────────────────────────────────────────────
 interface StatusBadgeProps {
-  status: PackageStatus;
+  /**
+   * Widened to `string` because that is what the API actually sends.
+   *
+   * `data/types.ts` says so directly: the package `state` is published as a bare `string` with no
+   * named schema behind it, so `PackageStatus` is the one list in this app that can drift without
+   * the compiler noticing. Requiring the union here did not prevent that drift — it only forced
+   * every caller to assert its way past it, and `STATUS_CONFIG[unknown]` is `undefined`, so the
+   * next state the server adds would have taken the badge down with `cfg.label` on undefined.
+   */
+  status: PackageStatus | string;
   size?: 'sm' | 'md';
 }
 
 export function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
-  const cfg = STATUS_CONFIG[status];
+  const cfg = STATUS_CONFIG[status as PackageStatus];
+  // An unrecognised state shows its own name in a neutral badge. A reviewer seeing
+  // "Awaiting Second Look" they cannot find in the docs is a far better outcome than a blank
+  // screen, and it makes the drift visible instead of fatal.
+  const label = cfg?.label ?? humanise(status);
+  const cls = cfg?.cls ?? 'badge--muted';
+
   return (
     <span
-      className={`badge ${cfg.cls}`}
+      className={`badge ${cls}`}
       style={size === 'sm' ? { fontSize: '10px', padding: '1px 6px' } : undefined}
     >
-      {cfg.label}
+      {label}
     </span>
   );
+}
+
+/** `AWAITING_REVIEW` → `Awaiting Review`, for a state this file has never heard of. */
+function humanise(value: string): string {
+  return value
+    .toLowerCase()
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }
 
 // ── SeverityDot ──────────────────────────────────────────────

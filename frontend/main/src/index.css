@@ -2,6 +2,7 @@
    GV GLOBAL RESET + BASE
    ============================================================ */
 @import './design/tokens.css';
+@import './design/motion.css';
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -128,26 +129,6 @@ ul, ol { list-style: none; }
 .mono { font-family: var(--font-mono); }
 
 /* ── Animations ──────────────────────────────────────── */
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-@keyframes slideInRight {
-  from { transform: translateX(24px); opacity: 0; }
-  to   { transform: translateX(0);    opacity: 1; }
-}
-
-@keyframes slideInLeft {
-  from { transform: translateX(-24px); opacity: 0; }
-  to   { transform: translateX(0);     opacity: 1; }
-}
-
-@keyframes slideUp {
-  from { transform: translateY(12px); opacity: 0; }
-  to   { transform: translateY(0);    opacity: 1; }
-}
-
 @keyframes pulseGlow {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
@@ -163,16 +144,19 @@ ul, ol { list-style: none; }
   to   { transform: rotate(360deg); }
 }
 
-@keyframes typingDot {
-  0%, 60%, 100% { transform: translateY(0); }
-  30%            { transform: translateY(-4px); }
-}
+/* `typingDot` was here, for the three-dot indicator `ThinkingStream` replaced. `slideInIndicator`
+   went the same way when the sidebar accent started growing from its centre. Both were left behind
+   by the components that used them; a keyframe nothing references is a rule the next person has to
+   read before they can be sure of that.
 
-/* ── Animation utility classes ───────────────────────── */
-.animate-fade-in    { animation: fadeIn var(--duration-base) var(--ease-out) both; }
-.animate-slide-up   { animation: slideUp var(--duration-slow) var(--ease-out) both; }
-.animate-slide-in-r { animation: slideInRight var(--duration-panel) var(--ease-out) both; }
-.animate-slide-in-l { animation: slideInLeft var(--duration-panel) var(--ease-out) both; }
+   ── Animation utility classes ─────────────────────────
+   These keep their names — `PackagesPage` and `UsagePage` use them — but now run the keyframes from
+   `design/motion.css`, so a row entering a table and a card entering the thread move on the same
+   curve. Two entrance systems in one product is how a screen ends up feeling assembled from parts. */
+.animate-fade-in    { animation: gv-fade-in var(--duration-base) var(--ease-out) both; }
+.animate-slide-up   { animation: gv-rise var(--duration-slow) var(--ease-emphasis) both; }
+.animate-slide-in-r { animation: gv-enter-right var(--duration-panel) var(--ease-emphasis) both; }
+.animate-slide-in-l { animation: gv-enter-left var(--duration-panel) var(--ease-emphasis) both; }
 
 /* ============================================================
    RESPONSIVE 12-COLUMN GRID SYSTEM (Per SKILL.md specification)
