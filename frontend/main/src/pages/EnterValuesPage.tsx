@@ -83,6 +83,26 @@ const SOURCE_LABEL: Record<string, string> = {
   PRODUCT_SPEC: 'product specification',
 };
 
+/**
+ * What to call this quantity in front of a person.
+ *
+ * The field was labelled `CT004`, which is the semantic type — a code that means something precise
+ * to the rulebook and nothing at all to a reviewer looking at a form. The rulebook already names
+ * the same quantity readably: `CT004` is `sink_cabinet_width` where `CT-SINK-CABINET-WIDTH-001`
+ * consumes it, and the API sends that `input_name` with every quantity.
+ *
+ * So the label is the rulebook's own word, not one invented here. Where two rules name the same
+ * quantity differently — `CT008` is `cutout_depth` to one check and `sink_depth` to another — the
+ * first is used and the code stays beside it, because the code is what both rules actually agree on
+ * and what a reviewer would quote when asking about it.
+ */
+function fieldLabel(quantity: Quantity): string {
+  const named = quantity.consumers.find((consumer) => consumer.input_name)?.input_name;
+  if (!named) return quantity.semantic_type;
+  const words = named.replace(/_/g, ' ').trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 export function EnterValuesPage({
   packageId: selectedPackageId,
   onDone,
@@ -407,11 +427,14 @@ export function EnterValuesPage({
   const exactTagFieldCount = needed.quantities.filter((quantity) =>
     (readingsByKey[quantity.key] ?? []).some((reading) => reading.qualification === 'exact_vector_tag'),
   ).length;
+  //: How many drawing readings a reviewer has already given a meaning to. Counted from the
+  //: confirmed readings themselves rather than from filled fields: one reading can feed several
+  //: rules, and counting fields would report the same confirmation more than once.
+  const confirmedCount = needed.confirmed_readings.length;
   const measurementFieldCount = needed.quantities.length;
   const autoFillPercent = measurementFieldCount === 0
     ? 0
     : Math.round((autoFilledFieldCount / measurementFieldCount) * 100);
-  const waitingForTypeCount = candidates.length;
 
   return (
     <div className="enter-values">
@@ -434,34 +457,48 @@ export function EnterValuesPage({
           Each one is read once, even where several checks use it. The sheet to read it from is named
           beside the field.
         </p>
-        <section className="ai-reading-status" aria-label="AI reading status">
+        {/* **What the reader got off this drawing, said plainly.**
+            This panel counted fields and said nothing about readings, so a drawing the reader had
+            largely failed on looked identical to one it had read perfectly — both showed an empty
+            form. On a real upload it found 25 tokens and could use 2, and there was no way to learn
+            that from the screen. A reviewer staring at empty fields deserves to know whether the
+            reader found nothing, or found plenty and could not parse it. */}
+        <section className="ai-reading-status" aria-label="What the reader found">
+          <div>
+            <strong>{candidates.length + confirmedCount}</strong>
+            <span>dimensions read off the drawing</span>
+          </div>
+          <div>
+            <strong>{confirmedCount}</strong>
+            <span>confirmed by a reviewer and filled below</span>
+          </div>
+          <div>
+            <strong>{candidates.length}</strong>
+            <span>waiting for you to say what they are</span>
+          </div>
           <div>
             <strong>{autoFillPercent}%</strong>
-            <span>rule fields filled from confirmed drawing readings</span>
+            <span>of the rule fields have a value</span>
           </div>
-          <div>
-            <strong>{autoFilledFieldCount}</strong>
-            <span>drawing-backed fields ready to review or edit</span>
-          </div>
-          <div>
-            <strong>{exactTagFieldCount}</strong>
-            <span>fields qualified automatically from an exact drawing tag</span>
-          </div>
-          <div>
-            <strong>{waitingForTypeCount}</strong>
-            <span>readings waiting for you to confirm what they mean</span>
-          </div>
+          {exactTagFieldCount > 0 && (
+            <div>
+              <strong>{exactTagFieldCount}</strong>
+              <span>filled with no click — the drawing states the meaning itself</span>
+            </div>
+          )}
           <p>
-            This is field coverage, not reading accuracy. Accuracy is shown only from a human-labelled gold set;
-            each proposed reading shows its own OCR confidence and crop below.
+            This is coverage, not accuracy — it counts fields that have a value, not values that are
+            right. A dimension the reader could not parse, or a number with no unit, is not counted
+            here at all: it was refused rather than guessed, and the field stays empty for you.
           </p>
         </section>
         {candidates.length > 0 && (
           <section className="ai-proposals" aria-labelledby="ai-proposals-heading">
-            <h3 id="ai-proposals-heading">AI readings awaiting your confirmation</h3>
+            <h3 id="ai-proposals-heading">Inspect a reading before you use it</h3>
             <p className="enter-values__hint">
-              The source drawing is fixed by the uploaded PDF. Inspect the crop, then choose the
-              rule quantity. Choosing it records your confirmation and fills the matching field below.
+              Every reading below is also offered beside the field it could fill — using it there is
+              one click. This list is for when you want to see the crop first: the region of the
+              uploaded PDF the number was actually read from, before you say what it means.
             </p>
             {candidates.map((candidate) => {
               const availableTypes = typesForCandidate(candidate);
@@ -522,7 +559,11 @@ export function EnterValuesPage({
         {needed.quantities.map((quantity) => (
           <div className="value-field" key={quantity.key}>
             <label className="value-label" htmlFor={`q-${quantity.key}`}>
-              {quantity.semantic_type}
+              {/* The rulebook's readable name leads; the code follows it. A reviewer filling this
+                  in needs to know it is the sink cabinet width — `CT004` is what they quote back
+                  when asking about it, not what tells them which box to type in. */}
+              <span className="value-name">{fieldLabel(quantity)}</span>
+              <span className="value-code">{quantity.semantic_type}</span>
               <span className="value-source">{SOURCE_LABEL[quantity.source] ?? quantity.source}</span>
               <span className="value-feeds">
                 {quantity.consumers.map((c) => c.rule_id).join(', ')}
@@ -534,6 +575,21 @@ export function EnterValuesPage({
                 (reading) => reading.qualification === 'reviewer_confirmed',
               ) && <span className="value-source">reviewer-confirmed drawing reading</span>}
             </label>
+            {/* **The AI's own readings, offered at the field that wants one.**
+                They were previously listed in a separate block above the form: you picked a meaning
+                from a dropdown of raw codes up there, and the value appeared in a box somewhere
+                below. That is the interaction inside-out — it asks "what does this number mean?"
+                when the reviewer is looking at a field and asking "what goes in here?".
+                Offered here, confirming a reading is one click at the point it is needed, and the
+                meaning is the field it was clicked under rather than a code chosen from a list.
+                Nothing is filled in automatically: the click is the reviewer saying what the number
+                means, which is the one judgement no model makes in this product. */}
+            <AiReadings
+              quantity={quantity}
+              candidates={candidates}
+              busyId={confirming}
+              onUse={(candidate) => void confirmFromMeasure(candidate, quantity.semantic_type)}
+            />
             {quantity.many ? (
               <>
                 {(runs[quantity.key] ?? ['']).map((value, index) => (
@@ -705,6 +761,60 @@ export function EnterValuesPage({
           completed.
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The unconfirmed readings the AI took off the drawing this field comes from, as one-click chips.
+ *
+ * **Filtered by source, not guessed at.** A reading off the shop drawing is offered only for a
+ * field the rulebook wants from the shop drawing. That is not a model deciding what a number means
+ * — it is which sheet the number was physically read from, which is recorded, not inferred.
+ *
+ * Every reading for that sheet is offered, in the order the page holds them, with no ranking. A
+ * "most likely" ordering would be exactly the guess this product does not make; the reviewer is
+ * looking at the crop and the drawing, and they are the one who knows.
+ *
+ * Renders nothing when there is nothing to offer, so a field the reader found no candidates for is
+ * an ordinary empty box rather than an empty promise.
+ */
+function AiReadings({
+  quantity,
+  candidates,
+  busyId,
+  onUse,
+}: {
+  quantity: Quantity;
+  candidates: CandidateOut[];
+  busyId: string | null;
+  onUse: (candidate: CandidateOut) => void;
+}) {
+  const offered = candidates.filter((candidate) => candidate.source === quantity.source);
+  if (offered.length === 0) return null;
+
+  return (
+    <div className="ai-readings">
+      <span className="ai-readings__label">
+        <ScanLine size={12} aria-hidden="true" />
+        Read from the {SOURCE_LABEL[quantity.source] ?? quantity.source}
+      </span>
+      <div className="ai-readings__chips">
+        {offered.map((candidate) => (
+          <button
+            key={candidate.candidate_id}
+            type="button"
+            className="ai-reading interactive"
+            disabled={busyId !== null}
+            onClick={() => onUse(candidate)}
+            title={`Confirm ${candidate.value} as ${fieldLabel(quantity)}`}
+          >
+            <strong>{candidate.value}</strong>
+            <span>p{candidate.page_index + 1}</span>
+            {busyId === candidate.candidate_id ? <span>saving…</span> : <span>use</span>}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

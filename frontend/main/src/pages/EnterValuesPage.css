@@ -27,7 +27,7 @@
 .enter-values__head p,
 .enter-values__hint {
   font-size: var(--text-sm);
-  color: var(--text-secondary);
+  color: var(--text-muted);
   margin: 0 0 var(--space-4);
   line-height: 1.5;
 }
@@ -73,7 +73,7 @@
 .ai-reading-status p {
   font-size: var(--text-xs);
   line-height: var(--leading-normal);
-  color: var(--text-secondary);
+  color: var(--text-muted);
 }
 
 .ai-reading-status p {
@@ -128,7 +128,7 @@
 .ai-proposal__saving,
 .ai-proposal__no-crop,
 .ai-proposal__crop-loading {
-  color: var(--text-secondary);
+  color: var(--text-muted);
   font-size: var(--text-xs);
 }
 
@@ -151,7 +151,7 @@
   display: grid;
   gap: var(--space-1);
   font-size: var(--text-xs);
-  color: var(--text-secondary);
+  color: var(--text-muted);
 }
 
 .ai-proposal__type .value-input { width: 100%; }
@@ -208,7 +208,7 @@
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
-  color: var(--text-secondary);
+  color: var(--text-muted);
   background: transparent;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
@@ -270,14 +270,14 @@
   padding-left: var(--space-5);
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  color: var(--text-secondary);
+  color: var(--text-muted);
   line-height: 1.7;
 }
 
 .enter-values__note {
   margin-top: var(--space-3);
   font-size: var(--text-sm);
-  color: var(--text-secondary);
+  color: var(--text-muted);
   line-height: 1.5;
 }
 
@@ -289,26 +289,45 @@
 .value-label {
   display: flex;
   align-items: baseline;
-  gap: var(--space-3);
+  gap: var(--space-2);
   flex-wrap: wrap;
   margin-bottom: var(--space-2);
-  font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--text-primary);
 }
 
+/* The rulebook's readable name for the quantity. Sized and weighted as the label, because it is
+   the one thing on the row a reviewer reads to know what to type. */
+.value-name {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semi);
+  color: var(--text-primary);
+}
+
+/* The semantic type, demoted to a reference. It is what a reviewer quotes when asking about this
+   field and what the rulebook matches on — worth showing, not worth leading with. */
+.value-code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+}
+
 /* Which drawing to read from. A reviewer looking at the wrong sheet is the mistake this prevents. */
 .value-source {
-  font-family: var(--font-body);
+  font-family: var(--font-sans);
   font-size: var(--text-xs);
-  color: var(--text-secondary);
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: var(--tracking-wide);
 }
 
 /* Which checks consume the value, so a reviewer can see why a field is being asked for. */
 .value-feeds {
-  font-family: var(--font-body);
+  font-family: var(--font-sans);
   font-size: var(--text-xs);
   color: var(--text-muted);
   margin-left: auto;
@@ -328,13 +347,92 @@
   margin: 0;
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
-  color: var(--text-secondary);
+  color: var(--text-muted);
   background: var(--bg-elevated);
   border: 1px dashed var(--border-default);
   border-radius: var(--radius-md);
 }
 
 select.value-input {
-  font-family: var(--font-body);
+  font-family: var(--font-sans);
   cursor: pointer;
+}
+
+
+/* ============================================================
+   AI READINGS, offered at the field that wants one
+   ============================================================ */
+
+.ai-readings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--gv-crimson);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: var(--gv-crimson-dim-2);
+  animation: gv-rise-sm var(--duration-base) var(--ease-out) both;
+}
+
+.ai-readings__label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--gv-crimson);
+}
+
+.ai-readings__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* One reading. The value leads at full weight because it is what the reviewer is checking against
+   the drawing; the page and the action follow it, quietly. */
+.ai-reading {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-body);
+  box-shadow: var(--elevation-1);
+}
+
+.ai-reading strong {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  color: var(--text-primary);
+}
+
+.ai-reading span {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* The last span is the action word. It goes brand-coloured on hover so the chip reads as a button
+   rather than as a label that happens to be clickable. */
+.ai-reading:hover:not(:disabled) {
+  border-color: var(--gv-crimson);
+  box-shadow: var(--elevation-2);
+}
+
+.ai-reading:hover:not(:disabled) span:last-child {
+  color: var(--gv-crimson);
+  font-weight: var(--weight-semi);
+}
+
+.ai-reading:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

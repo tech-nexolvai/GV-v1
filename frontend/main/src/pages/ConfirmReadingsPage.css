@@ -7,22 +7,22 @@
 .readings__title {
   font-size: 1.5rem;
   margin: 0 0 0.5rem;
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 .readings__lede {
   margin: 0 0 1.5rem;
-  color: var(--color-text-muted);
+  color: var(--text-muted);
   max-width: 46rem;
 }
 
 .readings__status {
-  color: var(--color-text-muted);
+  color: var(--text-muted);
   padding: 1.5rem;
 }
 
 .readings__status--error {
-  color: var(--color-danger);
+  color: var(--status-fail);
 }
 
 .readings__list {
@@ -40,9 +40,9 @@
   gap: 1rem;
   align-items: center;
   padding: 0.75rem 1rem;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border-default);
   border-radius: 0.5rem;
-  background: var(--color-surface);
+  background: var(--bg-surface);
 }
 
 .reading--confirmed {
@@ -58,8 +58,8 @@
 
 .reading__page {
   font-size: 0.75rem;
-  color: var(--color-text-muted);
-  border: 1px solid var(--color-border);
+  color: var(--text-muted);
+  border: 1px solid var(--border-default);
   border-radius: 0.25rem;
   padding: 0 0.35rem;
 }
@@ -68,12 +68,12 @@
 .reading__value {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 1.05rem;
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 .reading__raw {
   font-size: 0.8rem;
-  color: var(--color-text-muted);
+  color: var(--text-muted);
 }
 
 .reading__conflict {
@@ -81,7 +81,7 @@
   align-items: center;
   gap: 0.3rem;
   font-size: 0.8rem;
-  color: var(--color-danger);
+  color: var(--status-fail);
 }
 
 .reading__crop-name {
@@ -89,7 +89,7 @@
   align-items: center;
   gap: 0.3rem;
   font-size: 0.8rem;
-  color: var(--color-text-muted);
+  color: var(--text-muted);
 }
 
 .reading__crop-name--absent {
@@ -99,8 +99,8 @@
 .reading__confidence {
   font-size: 0.72rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--color-text-muted);
-  border: 1px solid var(--color-border);
+  color: var(--text-muted);
+  border: 1px solid var(--border-default);
   border-radius: 0.25rem;
   padding: 0.05rem 0.3rem;
 }
@@ -110,7 +110,7 @@
   width: 11rem;
   max-height: 7rem;
   object-fit: contain;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border-default);
   background: white;
 }
 
@@ -128,15 +128,15 @@
 
 .reading__label-text {
   font-size: 0.75rem;
-  color: var(--color-text-muted);
+  color: var(--text-muted);
 }
 
 .reading__select {
   padding: 0.35rem 0.5rem;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border-default);
   border-radius: 0.35rem;
-  background: var(--color-surface);
-  color: var(--color-text);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   min-width: 11rem;
 }
 
@@ -145,7 +145,7 @@
   border: 1px solid var(--color-primary);
   border-radius: 0.35rem;
   background: var(--color-primary);
-  color: var(--color-on-primary);
+  color: var(--text-inverse);
   cursor: pointer;
 }
 
@@ -167,7 +167,7 @@
   grid-column: 1 / -1;
   margin: 0.25rem 0 0;
   font-size: 0.85rem;
-  color: var(--color-danger);
+  color: var(--status-fail);
 }
 
 .readings__footer {
@@ -179,15 +179,15 @@
 
 .readings__count {
   margin: 0;
-  color: var(--color-text-muted);
+  color: var(--text-muted);
 }
 
 .readings__done {
   padding: 0.45rem 1.1rem;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border-default);
   border-radius: 0.35rem;
-  background: var(--color-surface);
-  color: var(--color-text);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   cursor: pointer;
 }
 
