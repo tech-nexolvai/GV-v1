@@ -41,6 +41,9 @@ class ChatReply:
     # prompt, response, drawing, or finding value, so a reviewer can tell whether narration ran.
     model_id: str | None = None
     fallback_reason: str | None = None
+    # The optional language overview is rendered above the exact audit cards.  Its numbers,
+    # outcomes, and check identifiers have already been checked against the deterministic run.
+    summary: str | None = None
 
 
 def _selection(question: str, findings: Sequence[ComposerFinding]) -> tuple[ComposerFinding, ...]:
@@ -65,18 +68,31 @@ def _selection(question: str, findings: Sequence[ComposerFinding]) -> tuple[Comp
     return tuple(findings)
 
 
+def _selection_label(question: str) -> str:
+    """A short outcome label that matches the filter used by _selection."""
+    folded = question.casefold()
+    if "fail" in folded:
+        return "FAIL"
+    if "pass" in folded:
+        return "PASS"
+    if any(token in folded for token in ("review", "abstain", "missing", "not found")):
+        return "REVIEW_REQUIRED or NOT_FOUND"
+    return "all"
+
+
 def _intro(question: str, selected: Sequence[ComposerFinding], total: int) -> str:
     """A deterministic envelope around model prose, with no new facts to get wrong."""
-    del question  # The question stays out of the public response unless the facts answer it.
+    # The question stays out of the public response unless the facts answer it.
+    outcome = _selection_label(question)
+    # We keep `question` unused after parsing to avoid echoing raw user text in system output.
     if not selected:
-        return (
-            f"No recorded finding in this run matches that outcome filter. The full run contains "
-            f"{total} finding{'s' if total != 1 else ''}; no verdict has been changed."
-        )
+        if outcome == "all":
+            return f"This run has no findings ({total} total)."
+        return f"No {outcome} findings in this run ({total} total)."
+    del question
     return (
         f"Showing {len(selected)} of {total} recorded finding"
-        f"{'s' if total != 1 else ''}. The entries below are grounded in the deterministic run "
-        "and its recorded evidence pages."
+        f"{'s' if total != 1 else ''}. The explanation below is grounded in the deterministic run."
     )
 
 
@@ -111,4 +127,5 @@ def answer_question(
         ),
         model_id=(result.model_id if result.mode.value == ChatMode.LLM.value else None),
         fallback_reason=result.fallback_reason,
+        summary=result.summary,
     )

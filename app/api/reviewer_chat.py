@@ -23,7 +23,7 @@ from app.auth import Principal, require_project_access
 from app.models import CheckRun, Finding, Package, PackageRevision, RuleDefinition, RuleSnapshot
 from app.review.chat import ChatReply, answer_question
 from app.review.chat_bedrock import configured_reviewer_chat
-from workflow.findings_composer import ComposerFinding, ComposerOperand
+from workflow.findings_composer import ComposerFinding, ComposerOperand, reviewer_reason
 
 router = APIRouter(tags=["reviewer chat"])
 NOT_FOUND_DETAIL = "Not found"
@@ -56,6 +56,7 @@ class ReviewerChatOut(BaseModel):
     mode: str
     model_id: str | None = None
     fallback_reason: str | None = None
+    summary: str | None = None
     findings: tuple[ReviewerChatNarrative, ...]
 
 
@@ -98,7 +99,7 @@ def _operands(trace: Mapping[str, object]) -> tuple[ComposerOperand, ...]:
     )
 
 
-def _facts(finding: Finding, definition: RuleDefinition) -> ComposerFinding:
+def _facts(finding: Finding, definition: RuleDefinition, check_name: str) -> ComposerFinding:
     """Project exactly the stored deterministic record into the language-only schema."""
     trace = finding.trace
     operands = _operands(trace)
@@ -106,10 +107,13 @@ def _facts(finding: Finding, definition: RuleDefinition) -> ComposerFinding:
     return ComposerFinding(
         key=str(finding.id),
         check=definition.rule_id,
-        check_name=definition.rule_id,
+        check_name=check_name,
         outcome=finding.outcome,
         severity=finding.severity,
-        reason=(finding.reason or _text(trace.get("reason")) or "No reason was recorded."),
+        reason=reviewer_reason(
+            finding.reason or _text(trace.get("reason")) or "No reason was recorded.",
+            finding.outcome,
+        ),
         comparison=_text(trace.get("comparison")) or None,
         # The stored comparison and operands already carry exact rendered values.  This endpoint does
         # not rebuild a delta from rational columns or do arithmetic just to make chat more verbose.
@@ -137,7 +141,7 @@ def _live_run_facts(
         return None
 
     rows = session.execute(
-        select(Finding, RuleDefinition)
+        select(Finding, RuleDefinition, RuleSnapshot.canonical_json)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
         .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
         .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
@@ -147,7 +151,16 @@ def _live_run_facts(
         )
         .order_by(Finding.created_at, Finding.id)
     ).all()
-    return tuple(_facts(finding, definition) for finding, definition in rows)
+    result: list[ComposerFinding] = []
+    for finding, definition, canonical_json in rows:
+        try:
+            payload = json.loads(canonical_json)
+            name = payload.get("name") if isinstance(payload, Mapping) else None
+        except (TypeError, ValueError):
+            name = None
+        check_name = name if isinstance(name, str) and name.strip() else definition.rule_id
+        result.append(_facts(finding, definition, check_name))
+    return tuple(result)
 
 
 @router.post(
@@ -183,6 +196,7 @@ def reviewer_chat(
         mode=reply.mode.value,
         model_id=reply.model_id,
         fallback_reason=reply.fallback_reason,
+        summary=reply.summary,
         findings=tuple(
             ReviewerChatNarrative(finding_id=UUID(item.finding_key), text=item.text)
             for item in reply.narratives

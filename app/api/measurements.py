@@ -39,6 +39,7 @@ Verification: `tests/api/test_measurements.py`
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from fractions import Fraction
 from typing import Annotated, Final
 from uuid import UUID
 
@@ -49,10 +50,17 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Package, PackageRevision
+from app.models.document import DocumentVersion, PackageRevisionDocument, Page
+from app.models.evidence import (
+    CanonicalObservation,
+    EvidenceSupportingCandidate,
+    ObservationCandidate,
+)
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import to_rows
 from app.schemas.measurements import (
     CheckRequest,
+    ConfirmedReadingOut,
     DiscriminatorOut,
     ParameterOut,
     QuantityOut,
@@ -66,8 +74,10 @@ from app.verdicts.rulebook import snapshot_store
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
 from rules.required_inputs import required_inputs
 from rules.schema import Quantity
+from units.imperial import format_inches
 from units.measurement import Measurement
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus
 from workflow.measurements import LIST_MARKER
 from workflow.outbox import enqueue
 
@@ -218,7 +228,7 @@ def read_required_inputs(
     published means an empty form and `rules_published: 0` — a different situation from a rulebook
     that wants nothing, and the caller can tell them apart.
     """
-    _revision(session, project_id, package_id)
+    revision = _revision(session, project_id, package_id)
 
     store = snapshot_store(session)
     rules = [
@@ -227,6 +237,56 @@ def read_required_inputs(
         if snapshot is not None
     ]
     needs = required_inputs(rules)
+
+    # The Confirm screen is the human gate.  Once a reviewer has confirmed both what the drawing
+    # says and what it means, asking them to type that exact value again is pure transcription risk.
+    # Scope through the supporting candidate and revision membership: a canonical observation from a
+    # different package (or an older revision containing different documents) must never prefill this
+    # review.  Page/candidate ordering makes a MANY field deterministic without assigning meaning.
+    confirmed_rows = session.execute(
+        select(CanonicalObservation, Page.index, ObservationCandidate.created_at)
+        .join(
+            EvidenceSupportingCandidate,
+            EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
+        )
+        .join(
+            ObservationCandidate,
+            ObservationCandidate.id == EvidenceSupportingCandidate.candidate_id,
+        )
+        .join(Page, Page.id == CanonicalObservation.page_id)
+        .join(DocumentVersion, DocumentVersion.id == CanonicalObservation.document_version_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(
+            PackageRevisionDocument.package_revision_id == revision.id,
+            CanonicalObservation.status.in_([item.value for item in QUALIFIED_STATUSES]),
+        )
+        .order_by(Page.index, ObservationCandidate.created_at, CanonicalObservation.id)
+    ).all()
+
+    # One canonical observation can have a primary candidate plus corroborating candidates.  It is
+    # still one qualified reading, especially for a many-valued rule input.
+    seen_observations: set[UUID] = set()
+    confirmed_readings = tuple(
+        ConfirmedReadingOut(
+            key=f"{observation.document_role}:{observation.semantic_type}",
+            source=observation.document_role,
+            semantic_type=observation.semantic_type,
+            value=(
+                f"{format_inches(Fraction(observation.value_numerator, observation.value_denominator))} "
+                f"{observation.unit}"
+            ),
+            qualification=(
+                "exact_vector_tag"
+                if observation.status == EvidenceStatus.CORROBORATED.value
+                else "reviewer_confirmed"
+            ),
+        )
+        for observation, _page_index, _created_at in confirmed_rows
+        if not (observation.id in seen_observations or seen_observations.add(observation.id))
+    )
 
     return RequiredInputsOut(
         quantities=tuple(
@@ -242,6 +302,7 @@ def read_required_inputs(
             )
             for quantity in needs.quantities
         ),
+        confirmed_readings=confirmed_readings,
         parameters=tuple(
             ParameterOut(
                 name=parameter.name,

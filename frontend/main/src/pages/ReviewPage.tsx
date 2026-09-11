@@ -162,21 +162,35 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
         const finding = byId.get(item.finding_id);
         return finding ? [finding] : [];
       });
-      const narratives = response.findings.map((item) => item.text).join('\n\n');
+      const matchedIds = new Set(matched.map((finding) => finding.id));
+      const narratives = response.findings
+        .filter((item) => matchedIds.has(item.finding_id))
+        .map((item) => item.text)
+        .join('\n\n');
       const fallback = response.mode === 'structured_fallback'
-        ? 'The language model is unavailable or returned an unsafe reply. Showing plain deterministic findings.\n\n'
+        ? `AI narration is off on this package — showing plain deterministic findings.\n\n${response.fallback_reason ?? 'No provider-configured narration is currently available.'}\n\n`
         : '';
+      // A guarded Bedrock overview is deliberately shown before the immutable cards.  In LLM mode
+      // the cards are the exact audit record, so repeating every provider narration above them only
+      // makes the answer look hard-coded.  A provider that predates the overview field still has its
+      // per-finding narration displayed rather than being made invisible.
+      const overview = response.mode === 'llm' && response.summary
+        ? `**AI review overview**\n${response.summary}\n\n`
+        : '';
+      // Show the guarded per-finding explanation in every mode. Hiding it in LLM mode made the
+      // chat look like a generic summary followed by raw engine cards, despite Bedrock having
+      // already produced the reviewer-readable explanation.
+      const auditText = narratives ? `\n\n**Findings**\n${narratives}` : '';
       const replyMsg: ChatMessage = {
         id: `msg-a-${Date.now()}`,
         role: 'assistant',
-        content: narratives
-          ? `${fallback}${response.answer}\n\n${narratives}`
-          : `${fallback}${response.answer}`,
+        content: `${overview}${fallback}${response.answer}${auditText}`,
         timestamp: new Date().toISOString(),
         findings: matched,
         narration: {
           mode: response.mode === 'llm' ? 'llm' : 'structured_fallback',
           modelId: response.model_id ?? undefined,
+          fallbackReason: response.fallback_reason ?? null,
         },
       };
       setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
@@ -187,9 +201,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
       const replyMsg: ChatMessage = {
         id: `msg-a-${Date.now()}`,
         role: 'assistant',
-        content: `The chat service is unavailable. Showing the plain deterministic findings instead — ${message}`,
+        content: `The chat service could not return narration right now, so this uses deterministic findings only.\n${message}`,
         timestamp: new Date().toISOString(),
         findings: [...source],
+        narration: {
+          mode: 'structured_fallback',
+          fallbackReason: message,
+        },
       };
       setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
     } finally {

@@ -106,6 +106,22 @@ export interface Finding {
   tolerance?: string;
   reason?: string;
   trace?: Trace;
+  /**
+   * The operands persisted for this finding's arithmetic run, including source/location
+   * provenance for evidence decisions.
+   *
+   * Empty means the chain did not return any persisted operands (for example, an abstention),
+   * which is a valid state.
+   */
+  recorded_operands?: Array<{
+    name: string;
+    value: string;
+    source: string;
+    status: string;
+    hasEvidence: boolean;
+    documentRole?: string;
+    canonicalObservationId?: string;
+  }>;
   arch_evidence?: Evidence | null;
   shop_evidence?: Evidence | null;
   reviewer_action: ReviewerAction | null;
@@ -128,6 +144,8 @@ export interface ChatMessage {
   narration?: {
     mode: 'llm' | 'structured_fallback';
     modelId?: string;
+    /** Why narration was not used, when applicable. */
+    fallbackReason?: string | null;
   };
   is_typing?: boolean;
 }

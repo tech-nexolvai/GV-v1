@@ -20,6 +20,8 @@ from app.evidence.confirm import _document_role, _transform
 from app.models.document import PackageRevisionDocument, Page
 from app.models.evidence import (
     CanonicalObservation,
+    EvidenceArtifact,
+    EvidenceArtifactKind,
     EvidenceCorroborationLane,
     EvidenceSupportingCandidate,
     ObservationAssociation,
@@ -122,6 +124,19 @@ def _already_qualified(session: Session, candidate_id: UUID) -> bool:
     )
 
 
+def _has_crop(session: Session, candidate_id: UUID) -> bool:
+    """Only promote inspectable reading/tag evidence into a verdict operand."""
+    return (
+        session.execute(
+            select(EvidenceArtifact.id).where(
+                EvidenceArtifact.candidate_id == candidate_id,
+                EvidenceArtifact.kind == EvidenceArtifactKind.CROP.value,
+            )
+        ).first()
+        is not None
+    )
+
+
 def _review(
     *, candidate_id: UUID, reason: str, semantic_type: SemanticType | None = None
 ) -> SemanticTypingDecision:
@@ -167,6 +182,11 @@ def qualify_exact_tag_pair(
         return _review(
             candidate_id=candidate_id,
             reason="the reading already has canonical evidence; it is not promoted twice",
+        )
+    if not _has_crop(session, candidate_id) or not _has_crop(session, tag_candidate_id):
+        return _review(
+            candidate_id=candidate_id,
+            reason="the reading or its exact tag has no stored evidence crop",
         )
     tag_run = session.get(ExtractionRun, tag.extraction_run_id)
     decision = from_exact_tag(

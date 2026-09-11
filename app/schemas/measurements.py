@@ -155,6 +155,26 @@ class QuantityOut(BaseModel):
     consumers: tuple[dict[str, str], ...]
 
 
+class ConfirmedReadingOut(BaseModel):
+    """One qualified drawing reading that can prefill this package's measurement form.
+
+    This is intentionally an *input suggestion*, not a new verdict operand.  It can be a reviewer
+    confirmation, or the deliberately narrower automatic lane: an exact vector vocabulary tag on
+    the same associated dimension line.  The latter is named explicitly on the wire so the UI never
+    presents a machine qualification as if a person had performed it.  Unqualified candidates never
+    appear here.
+    """
+
+    #: The same ``SOURCE:semantic_type`` key used by :class:`QuantityOut`.
+    key: str
+    source: str
+    semantic_type: str
+    #: Exact normalized display text, e.g. ``25 1/2 in``.  The browser never computes this value.
+    value: str
+    #: Why this value has a semantic type.  ``exact_vector_tag`` is the only automatic type route.
+    qualification: Literal["reviewer_confirmed", "exact_vector_tag"]
+
+
 class ParameterOut(BaseModel):
     """One setting the reviewer supplies or confirms."""
 
@@ -188,6 +208,9 @@ class RequiredInputsOut(BaseModel):
     """
 
     quantities: tuple[QuantityOut, ...]
+    #: Readings a reviewer already confirmed on the mechanical crop for this exact package revision.
+    #: They are returned separately from rule requirements so the UI can make their provenance visible.
+    confirmed_readings: tuple[ConfirmedReadingOut, ...] = ()
     parameters: tuple[ParameterOut, ...]
     discriminators: tuple[DiscriminatorOut, ...]
     #: How many rules are published. Zero means the form is empty because nothing is published, which

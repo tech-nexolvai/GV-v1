@@ -224,6 +224,7 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
 
     depth = next(row for row in readings if row["raw_text"] == "648 [25 1/2]")
     assert depth["value"] == "25 1/2 in", depth
+    assert depth["source"] == "SHOP"
 
     # 3. The reviewer says what one of them is. The value is not re-entered.
     confirmed = client.post(
@@ -233,6 +234,17 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     )
     assert confirmed.status_code == 201, confirmed.text
     assert confirmed.json()["status"] == "HUMAN_CONFIRMED"
+
+    # The Measure form is server-backed: returning to it later (or from a different browser) carries
+    # the exact reading the reviewer confirmed on the crop.  This is not a semantic guess — the
+    # confirmation above is the only thing that put it in this response.
+    required = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/required-inputs")
+    assert required.status_code == 200, required.text
+    confirmed_readings = required.json()["confirmed_readings"]
+    assert len(confirmed_readings) == 1
+    assert confirmed_readings[0]["key"] == f"SHOP:{DEPTH_TYPE}"
+    assert confirmed_readings[0]["value"] == "25 1/2 in"
+    assert confirmed_readings[0]["qualification"] == "reviewer_confirmed"
 
     # The request commits its canonical observation.  Reloading the proposal queue must not offer
     # the same raw candidate for a second type — that would be an apparent successful confirmation
@@ -286,7 +298,9 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     assert answer["mode"] == "structured_fallback"
     assert len(answer["findings"]) == 1
     assert answer["findings"][0]["finding_id"] == depth_finding["id"]
-    assert "CT-DEPTH-001: PASS." in answer["findings"][0]["text"]
+    assert answer["findings"][0]["text"].startswith(
+        "Countertop depth verification — Looks right (CT-DEPTH-001)."
+    )
 
     chain = client.get(
         f"/api/v1/projects/{PROJECT}/packages/{package_id}/findings/{depth_finding['id']}/chain"

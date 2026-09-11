@@ -36,6 +36,8 @@ from uuid import UUID
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+from app.evidence.automatic_typing import AutomaticTypingSettings
+
 #: How long `--watch` sleeps between passes. Two seconds matches `GV_OUTBOX_POLL_SECONDS`'s default,
 #: which `.env.example` describes as "the visible wait between a package being accepted and its
 #: workflow starting, and somebody is watching".
@@ -82,6 +84,23 @@ def _reader_configuration() -> tuple[object | None, object | None]:
     )
 
 
+def _automatic_typing_configuration() -> AutomaticTypingSettings | None:
+    """Enable only explicitly approved exact-tag types; all other readings stay for review."""
+    raw = os.environ.get("GV_AUTOMATIC_TYPES", "").strip()
+    if not raw:
+        return None
+    from vocabulary.semantic_types import SemanticType
+
+    names = [item.strip() for item in raw.split(",") if item.strip()]
+    try:
+        permitted = frozenset(SemanticType(name) for name in names)
+    except ValueError as error:
+        raise ValueError(
+            "GV_AUTOMATIC_TYPES must contain exact semantic-type tags, comma-separated"
+        ) from error
+    return AutomaticTypingSettings(permitted)
+
+
 def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
     from storage.local import LocalStore
@@ -95,6 +114,7 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         ticket_secret=b"local-review-worker-never-issues-tickets",
     )
     association, localized = _reader_configuration()
+    automatic_typing = _automatic_typing_configuration()
     from app.config import Settings
 
     return DatabaseStages(
@@ -103,6 +123,7 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         discriminators=dict(discriminators or {}),
         association=association,
         localized_ocr=localized,
+        automatic_typing=automatic_typing,
         findings_composer=configured_findings_composer(Settings()),  # type: ignore[call-arg]
     )
 

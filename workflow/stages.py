@@ -126,6 +126,7 @@ from workflow.findings_composer import (
     ComposerOperand,
     FindingsLanguageModel,
     compose_findings,
+    reviewer_reason,
 )
 from workflow.idempotency import stage_idempotency_key
 from workflow.measurements import run_parameters_for
@@ -1098,10 +1099,10 @@ class DatabaseStages:
         person cannot check against the sheet is a number they have to take on trust, which is the
         one thing this system is not supposed to ask for.
 
-        **What this does not do.** It does not qualify evidence, promote a candidate, or assign it a
-        meaning. A crop is a picture of a region; the candidate it belongs to stays exactly as
-        untyped after this stage as before it. The stage is named for the step it will eventually
-        also perform — corroboration and the evidence gate — and it performs the part that is built.
+        **What this does not do by itself.** A crop is only a picture of a region and never assigns
+        meaning.  When the deployment has explicitly enabled the exact-tag gate, this stage may
+        then qualify a candidate whose vector tag is an approved vocabulary member on the very same
+        associated dimension line.  Every other candidate stays untyped for reviewer confirmation.
 
         **The coordinate round trip is the delicate part, so it is exact rather than trusted.** A
         candidate's polygon is integer image pixels at the dpi the reader used. `CropSpec` wants
@@ -1245,6 +1246,18 @@ class DatabaseStages:
                 written += 1
 
         session.flush()
+        # This is the only automatic route across the semantic wall: an exact, vector-extracted
+        # vocabulary tag must already be associated with the same dimension line. It runs after
+        # crops exist so any resulting prefilled field remains inspectable by the reviewer.
+        typing = (
+            qualify_exact_tags_for_revision(
+                session,
+                package_revision_id=package_revision_id,
+                settings=self._automatic_typing,
+            )
+            if self._automatic_typing is not None
+            else None
+        )
         return {
             "implemented": True,
             "ran": True,
@@ -1252,6 +1265,8 @@ class DatabaseStages:
             "crops": written,
             "already_had_one": skipped,
             "refused": len(abstained),
+            "automatic_types_qualified": 0 if typing is None else len(typing.qualified),
+            "semantic_typing_review_required": 0 if typing is None else len(typing.review_required),
             # Capped, because this payload is persisted as JSON and a document that fails to render
             # would otherwise put one sentence per candidate into it. The count above is exact; these
             # are the examples a person reads first.
@@ -1778,7 +1793,10 @@ def _finding_facts(*, key: str, check_name: str, finding: StoredFinding) -> Comp
         check_name=check_name or finding.rule_id,
         outcome=finding.outcome,
         severity=finding.severity,
-        reason=(finding.reason or _composer_text(trace.get("reason")) or "No reason was recorded."),
+        reason=reviewer_reason(
+            finding.reason or _composer_text(trace.get("reason")) or "No reason was recorded.",
+            finding.outcome,
+        ),
         comparison=_composer_text(trace.get("comparison")) or None,
         difference=finding.delta,
         tolerance=_composer_text(trace.get("tolerance")) or None,

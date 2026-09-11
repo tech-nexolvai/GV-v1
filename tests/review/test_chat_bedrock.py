@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from app.review.chat_bedrock import TOOL_NAME, BedrockReviewerChat, _Config
-from workflow.findings_composer import ComposerFinding, NarrationFact
+from workflow.findings_composer import ComposerFinding, NarrationFact, narration_overview_context
 
 
 class _Client:
@@ -49,6 +49,7 @@ def _response() -> dict[str, object]:
                         "toolUse": {
                             "name": TOOL_NAME,
                             "input": {
+                                "summary": "1 FAIL needs attention: CT-DEPTH-001 records 25 1/2 in versus 25 in.",
                                 "findings": [
                                     {
                                         "finding_key": "finding-a",
@@ -59,7 +60,7 @@ def _response() -> dict[str, object]:
                                             "Arithmetic unit: in. Evidence pages: 13."
                                         ),
                                     }
-                                ]
+                                ],
                             },
                         }
                     }
@@ -76,6 +77,7 @@ def test_transport_uses_the_configured_provider_and_forces_its_only_tool() -> No
     result = composer.compose((_finding(),))
 
     assert result.model_id == "configured-model"
+    assert result.summary == "1 FAIL needs attention: CT-DEPTH-001 records 25 1/2 in versus 25 in."
     request = client.requests[0]
     assert request["modelId"] == "configured-model"
     tool_config = request["toolConfig"]
@@ -105,15 +107,52 @@ def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
     text = system[0]["text"]
     assert isinstance(text, str)
     assert "Never emit the placeholder words" in text
-    assert "CT-DEPTH-001: FAIL." in text
+    assert "literal `required_text`" in text
+    assert "CT-DEPTH-001: FAIL." not in text
+    assert "Do not merely list check ids" in text
     messages = request["messages"]
     assert isinstance(messages, list)
     user_text = messages[0]["content"][0]["text"]
     assert isinstance(user_text, str)
     assert "Copy that entire string character-for-character" in user_text
-    fact_payload = messages[0]["content"][1]["text"]
+    overview_payload = messages[0]["content"][1]["text"]
+    assert isinstance(overview_payload, str)
+    assert json.loads(overview_payload) == {
+        "overview_context": narration_overview_context((_finding(),))
+    }
+    fact_payload = messages[0]["content"][2]["text"]
     assert isinstance(fact_payload, str)
     assert json.loads(fact_payload) == [
         NarrationFact.from_finding(_finding()).model_dump(mode="json")
     ]
     assert request["inferenceConfig"] == {"temperature": 0, "maxTokens": 1024}
+    tool_config = request["toolConfig"]
+    assert isinstance(tool_config, dict)
+    schema = tool_config["tools"][0]["toolSpec"]["inputSchema"]["json"]
+    assert schema == {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "finding_key": {"type": "string"},
+                        "text": {"type": "string"},
+                    },
+                    "required": ["finding_key", "text"],
+                },
+            },
+        },
+        "required": ["summary", "findings"],
+    }
+
+
+def test_transport_reserves_bounded_output_room_for_a_complete_run() -> None:
+    client = _Client(_response())
+    composer = BedrockReviewerChat(_Config("configured-model", "us-east-1", 1, 2), client=client)
+
+    composer.compose((_finding(),) * 9)
+
+    assert client.requests[0]["inferenceConfig"] == {"temperature": 0, "maxTokens": 4096}

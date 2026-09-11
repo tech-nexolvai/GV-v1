@@ -1258,6 +1258,8 @@ export interface components {
             page_index: number;
             /** Raw Text */
             raw_text: string;
+            /** Source */
+            source?: string | null;
             /**
              * Value
              * @description The reading as exact text, `25 1/2 in`. Null when the token carried no unit and was recorded without a value, which is most text on a drawing.
@@ -1314,6 +1316,31 @@ export interface components {
             semantic_type: string;
             /** Status */
             status: string;
+        };
+        /**
+         * ConfirmedReadingOut
+         * @description One qualified drawing reading that can prefill this package's measurement form.
+         *
+         *     This is intentionally an *input suggestion*, not a new verdict operand.  It can be a reviewer
+         *     confirmation, or the deliberately narrower automatic lane: an exact vector vocabulary tag on
+         *     the same associated dimension line.  The latter is named explicitly on the wire so the UI never
+         *     presents a machine qualification as if a person had performed it.  Unqualified candidates never
+         *     appear here.
+         */
+        ConfirmedReadingOut: {
+            /** Key */
+            key: string;
+            /**
+             * Qualification
+             * @enum {string}
+             */
+            qualification: "reviewer_confirmed" | "exact_vector_tag";
+            /** Semantic Type */
+            semantic_type: string;
+            /** Source */
+            source: string;
+            /** Value */
+            value: string;
         };
         /**
          * DecideEvidence
@@ -2113,6 +2140,11 @@ export interface components {
          *     field to be missing: a rule that gains an input gains a field here on the next publish.
          */
         RequiredInputsOut: {
+            /**
+             * Confirmed Readings
+             * @default []
+             */
+            confirmed_readings: components["schemas"]["ConfirmedReadingOut"][];
             /** Discriminators */
             discriminators: components["schemas"]["DiscriminatorOut"][];
             /** Parameters */
@@ -2296,6 +2328,8 @@ export interface components {
             mode: string;
             /** Model Id */
             model_id?: string | null;
+            /** Summary */
+            summary?: string | null;
         };
         /**
          * ReviewerChatRequest

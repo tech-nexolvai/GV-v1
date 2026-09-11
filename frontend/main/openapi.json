@@ -385,6 +385,17 @@
             "title": "Raw Text",
             "type": "string"
           },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
           "value": {
             "anyOf": [
               {
@@ -481,6 +492,44 @@
           "status"
         ],
         "title": "ConfirmedOut",
+        "type": "object"
+      },
+      "ConfirmedReadingOut": {
+        "description": "One qualified drawing reading that can prefill this package's measurement form.\n\nThis is intentionally an *input suggestion*, not a new verdict operand.  It can be a reviewer\nconfirmation, or the deliberately narrower automatic lane: an exact vector vocabulary tag on\nthe same associated dimension line.  The latter is named explicitly on the wire so the UI never\npresents a machine qualification as if a person had performed it.  Unqualified candidates never\nappear here.",
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "qualification": {
+            "enum": [
+              "reviewer_confirmed",
+              "exact_vector_tag"
+            ],
+            "title": "Qualification",
+            "type": "string"
+          },
+          "semantic_type": {
+            "title": "Semantic Type",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "source",
+          "semantic_type",
+          "value",
+          "qualification"
+        ],
+        "title": "ConfirmedReadingOut",
         "type": "object"
       },
       "DecideEvidence": {
@@ -1834,6 +1883,14 @@
       "RequiredInputsOut": {
         "description": "Everything the published rulebook needs, grouped so a form can render it.\n\nDerived from the published rules rather than listed, which is what makes it impossible for a\nfield to be missing: a rule that gains an input gains a field here on the next publish.",
         "properties": {
+          "confirmed_readings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ConfirmedReadingOut"
+            },
+            "title": "Confirmed Readings",
+            "type": "array"
+          },
           "discriminators": {
             "items": {
               "$ref": "#/components/schemas/DiscriminatorOut"
@@ -2149,6 +2206,17 @@
               }
             ],
             "title": "Model Id"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
           }
         },
         "required": [

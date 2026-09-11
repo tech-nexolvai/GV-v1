@@ -40,9 +40,27 @@ export function toFinding(listed: Listed): Finding {
 /** The arithmetic behind one verdict, folded into the card the reviewer already has open. */
 export function withChain(finding: Finding, chain: Chain): Finding {
   const operands = chain.operands ?? [];
+  const tracedSources = new Map(
+    chain.trace.kind === 'calculation'
+      ? chain.trace.operands.map((operand) => [operand.name, operand.source])
+      : [],
+  );
   const evidence = operands
     .map((operand) => operand.evidence)
     .filter((item): item is NonNullable<typeof item> => item !== null);
+  const recordedOperands = operands.map((operand) => ({
+    name: operand.name,
+    // These are the immutable exact fields from the finding chain.  Do not turn them into a
+    // JavaScript number: the evidence view is explanatory and must not silently round a value.
+    value: operand.denominator === '1'
+      ? `${operand.numerator} ${operand.unit}`
+      : `${operand.numerator}/${operand.denominator} ${operand.unit}`,
+    source: tracedSources.get(operand.name) ?? operand.evidence?.document_role ?? 'RECORDED',
+    status: operand.evidence_status,
+    hasEvidence: operand.evidence !== null,
+    documentRole: operand.evidence?.document_role,
+    canonicalObservationId: operand.evidence?.canonical_observation_id,
+  }));
 
   // `trace` is a discriminated union now, so this narrows instead of guessing. It used to be a
   // free-form dict and this function read fields out of it with a string guard — the one place the
@@ -78,6 +96,7 @@ export function withChain(finding: Finding, chain: Chain): Finding {
 
   return {
     ...finding,
+    recorded_operands: recordedOperands,
     trace,
     arch_evidence: _evidenceFor(evidence, 'ARCH'),
     shop_evidence: _evidenceFor(evidence, 'SHOP'),
@@ -89,7 +108,8 @@ function _evidenceFor(
   evidence: readonly NonNullable<Chain['operands'][number]['evidence']>[],
   role: 'ARCH' | 'SHOP',
 ): Evidence | null {
-  const located = evidence.find((item) => item.document_role === role);
+  const located = evidence.find((item) => item.document_role === role)
+    ?? evidence.find((item) => item.document_role.toUpperCase() === role);
   if (!located) return null;
 
   const polygon = located.polygon.map(([x, y]) => [Number(x), Number(y)] as [number, number]);

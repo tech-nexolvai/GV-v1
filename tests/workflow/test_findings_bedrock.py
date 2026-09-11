@@ -18,7 +18,7 @@ from workflow.findings_bedrock import (
     FindingsBedrockError,
     configured_findings_composer,
 )
-from workflow.findings_composer import ComposerFinding, NarrationFact
+from workflow.findings_composer import ComposerFinding, NarrationFact, narration_overview_context
 
 
 class _Client:
@@ -71,6 +71,7 @@ def _response() -> dict[str, object]:
                         "toolUse": {
                             "name": TOOL_NAME,
                             "input": {
+                                "summary": "1 REVIEW_REQUIRED needs attention: CAB-FILLER-001 needs its reading.",
                                 "findings": [
                                     {
                                         "finding_key": "finding-a",
@@ -79,7 +80,7 @@ def _response() -> dict[str, object]:
                                             "reading was not found."
                                         ),
                                     }
-                                ]
+                                ],
                             },
                         }
                     }
@@ -96,15 +97,33 @@ def test_the_configured_model_and_forced_tool_are_used_without_free_text() -> No
 
     assert result.model_id == "operator-configured-model"
     assert result.prompt_id == "prompt-v1"
+    assert result.summary == "1 REVIEW_REQUIRED needs attention: CAB-FILLER-001 needs its reading."
     assert len(result.narratives) == 1
     request = client.requests[0]
     assert request["modelId"] == "operator-configured-model"
     tool_config = request["toolConfig"]
     assert isinstance(tool_config, dict)
     assert tool_config["toolChoice"] == {"tool": {"name": TOOL_NAME}}
+    schema = tool_config["tools"][0]["toolSpec"]["inputSchema"]["json"]
+    assert "$defs" not in schema
+    assert schema["type"] == "object"
+    assert schema["required"] == ["summary", "findings"]
     messages = request["messages"]
     assert isinstance(messages, list)
     assert all("text" in block for block in messages[0]["content"])
+    overview_payload = messages[0]["content"][1]["text"]
+    assert isinstance(overview_payload, str)
+    assert json.loads(overview_payload) == {
+        "overview_context": narration_overview_context((_finding(),))
+    }
+
+
+def test_full_findings_batch_gets_a_bounded_output_budget() -> None:
+    client = _Client(_response())
+
+    BedrockFindingsComposer(_config(), client).compose((_finding(),) * 9)
+
+    assert client.requests[0]["inferenceConfig"] == {"temperature": 0, "maxTokens": 4096}
 
 
 def test_model_text_beside_the_tool_call_is_rejected() -> None:
@@ -202,14 +221,21 @@ def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
     assert isinstance(system, list)
     text = system[0]["text"]
     assert isinstance(text, str)
-    assert "Never emit the placeholder words" in text
-    assert "CT-DEPTH-001: FAIL." in text
+    assert "never internal field keys" in text
+    assert "Copy each opaque" in text
+    assert "reviewer-facing `required_text`" in text
+    assert "what needs correction" in text
     messages = request["messages"]
     assert isinstance(messages, list)
     user_text = messages[0]["content"][0]["text"]
     assert isinstance(user_text, str)
     assert "Copy that entire string character-for-character" in user_text
-    fact_payload = messages[0]["content"][1]["text"]
+    overview_payload = messages[0]["content"][1]["text"]
+    assert isinstance(overview_payload, str)
+    assert json.loads(overview_payload) == {
+        "overview_context": narration_overview_context((_finding(),))
+    }
+    fact_payload = messages[0]["content"][2]["text"]
     assert isinstance(fact_payload, str)
     assert json.loads(fact_payload) == [
         NarrationFact.from_finding(_finding()).model_dump(mode="json")

@@ -297,6 +297,19 @@ def main() -> int:
         )
         return 1
 
+    # If a principal is requested but no projects are named, every request succeeds through the
+    # authentication layer and then fails as a 404 "Not found" at route time. That looks like a
+    # wrong project to users, so fail fast with an explicit startup message and force the project
+    # list to be supplied intentionally for local runs.
+    if not os.environ.get("GV_DEV_PROJECTS", "").strip():
+        print(
+            "GV_DEV_PRINCIPAL is set, but GV_DEV_PROJECTS is empty. Set GV_DEV_PROJECTS to the "
+            "project UUID(s) this principal may access, otherwise all package submissions will "
+            "look like Not Found.",
+            file=sys.stderr,
+        )
+        return 1
+
     port = int(os.environ.get("GV_DEV_PORT", DEFAULT_PORT))
     print(
         f"API on http://localhost:{port} — development identity, local storage, "
