@@ -12,9 +12,11 @@ from workflow.findings_composer import (
     ComposerOperand,
     CompositionMode,
     ModelComposition,
+    ProposedExplanation,
     ProposedNarrative,
     compose_findings,
     deterministic_summary,
+    ground_explanations,
     narration_overview_context,
 )
 
@@ -38,6 +40,26 @@ def _finding(*, key: str = "finding-a", outcome: str = "FAIL") -> ComposerFindin
         evidence_pages=("3",),
         notes=(),
     )
+
+
+class _ExplainingModel:
+    """A provider that returns only its sentences, the way a real adapter now does."""
+
+    def __init__(self, explanation: str, *, key: str = "finding-a") -> None:
+        self._explanation = explanation
+        self._key = key
+
+    def compose(self, findings: Sequence[ComposerFinding]) -> ModelComposition:
+        return ModelComposition(
+            narratives=ground_explanations(
+                findings,
+                (ProposedExplanation(finding_key=self._key, explanation=self._explanation),),
+            ),
+            model_id="configured-model",
+            prompt_id="findings-composer-v1",
+            template_id="deterministic-findings-v1",
+            summary=None,
+        )
 
 
 class _StaticModel:
@@ -363,3 +385,112 @@ def test_the_language_modules_cannot_reach_rules_verdicts_or_arithmetic() -> Non
     schema = ProposedNarrative.model_json_schema()["properties"]
     assert set(schema) == {"finding_key", "text"}
     assert "outcome" not in schema, "the model must not have a verdict field it can change"
+
+
+# ---------------------------------------------------------------------------
+# Grounding: the facts are prepended in code, never transcribed by the provider
+# ---------------------------------------------------------------------------
+
+
+def test_an_explanation_that_states_no_facts_still_carries_all_of_them() -> None:
+    """**The fix.** Input: a sentence naming nothing. Outcome: a narrative the guard accepts.
+
+    This is what the whole change is for. The provider used to be handed the complete deterministic
+    summary as `required_text` and told to copy it character-for-character before adding a sentence;
+    the guard then checked that every fact had survived the copy. Nova Lite dropped one clause —
+    `Recorded comparison: 101/4 in != 51/2 in` — from an otherwise sound explanation, so the batch
+    was rejected and every reviewer saw the plain fallback instead of narration.
+
+    Transcription is not a thing to ask a language model for. `deterministic_summary` is prepended
+    where the string already exists, so a provider cannot omit a fact it was never holding.
+    """
+    finding = _finding()
+
+    grounded = ground_explanations(
+        (finding,),
+        (
+            ProposedExplanation(
+                finding_key=finding.key,
+                explanation="The vendor drawing is shallower than the approved design allows.",
+            ),
+        ),
+    )
+
+    assert len(grounded) == 1
+    text = grounded[0].text
+    assert text.startswith(deterministic_summary(finding))
+    assert text.endswith("The vendor drawing is shallower than the approved design allows.")
+    # Every guarded fragment is present because the summary was prepended, not retyped.
+    for fragment in ("Countertop depth", "25 1/2 in vs 25 in", "1/2 in", "1/16 in"):
+        assert fragment in text
+
+
+def test_the_grounded_narrative_passes_the_guard_end_to_end() -> None:
+    """Outcome: `LLM` mode, not the structured fallback.
+
+    The assertion that would have failed before this change, on the same provider output.
+    """
+    finding = _finding()
+    model = _ExplainingModel("A quarter inch short; check the vendor drawing.")
+
+    result = compose_findings((finding,), model)
+
+    assert result.mode is CompositionMode.LLM
+    assert "A quarter inch short; check the vendor drawing." in result.narratives[0].text
+
+
+def test_an_explanation_that_invents_a_number_is_still_refused() -> None:
+    """**The protection that must survive.** Input: a number nothing recorded. Outcome: fallback.
+
+    Prepending the facts removed the provider's ability to *omit* one. It must not have removed the
+    check on what the provider *adds* — the guard's real job. A model that decides the gap is 3/4 in
+    when the run recorded 1/2 in is exactly the failure this project exists to prevent, and it still
+    takes the whole batch down to deterministic prose.
+    """
+    result = compose_findings((_finding(),), _ExplainingModel("The gap is 3/4 in, not what it says."))
+
+    assert result.mode is CompositionMode.FALLBACK
+    assert "numeric token" in (result.fallback_reason or "")
+
+
+def test_an_explanation_that_invents_a_verdict_is_still_refused() -> None:
+    """Input: prose calling a FAIL a pass. Outcome: fallback, because verdicts are not the model's.
+
+    `AGENTS.md` §2 puts every verdict in deterministic Python. A provider that can narrate one into
+    existence has taken the decision, whatever the engine recorded.
+    """
+    result = compose_findings((_finding(),), _ExplainingModel("On balance this should PASS."))
+
+    assert result.mode is CompositionMode.FALLBACK
+    assert "verdict" in (result.fallback_reason or "")
+
+
+def test_an_explanation_for_a_finding_this_run_did_not_select_is_refused() -> None:
+    """**Input: a key from no finding. Outcome: refused as unbacked, never silently dropped.**
+
+    `ground_explanations` carries an unknown key through rather than discarding it, precisely so
+    `_guard_batch` can report it. Dropping it there would turn a provider hallucinating a finding
+    into a batch that looked 1:1 and was short one narrative.
+    """
+    result = compose_findings((_finding(),), _ExplainingModel("Fine.", key="finding-that-does-not-exist"))
+
+    assert result.mode is CompositionMode.FALLBACK
+    assert "not 1:1" in (result.fallback_reason or "")
+
+
+def test_no_adapter_lets_a_provider_supply_the_finding_text() -> None:
+    """**The standing guard.** Outcome: no Bedrock adapter builds `narratives` from raw provider text.
+
+    The defect this change fixes came back the moment somebody wired a provider's string straight
+    into `ModelComposition.narratives`. Every adapter must route through `ground_explanations`, so
+    the facts are the engine's in every path rather than in the one that was remembered.
+    """
+    adapters = (
+        Path(__file__).resolve().parents[2] / "app" / "review" / "chat_bedrock.py",
+        Path(__file__).resolve().parents[2] / "workflow" / "findings_bedrock.py",
+    )
+
+    for adapter in adapters:
+        source = adapter.read_text(encoding="utf-8")
+        assert "ground_explanations(findings, batch.findings)" in source, adapter.name
+        assert "narratives=tuple(batch.findings)" not in source, adapter.name

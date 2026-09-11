@@ -35,8 +35,10 @@ __all__ = [
     "NarrationOperand",
     "NarrativeBatch",
     "NarrativeGuardError",
+    "ProposedExplanation",
     "ProposedNarrative",
     "bedrock_narrative_tool_schema",
+    "ground_explanations",
     "bedrock_output_token_limit",
     "compose_findings",
     "deterministic_summary",
@@ -119,9 +121,9 @@ def bedrock_narrative_tool_schema() -> dict[str, object]:
                     "type": "object",
                     "properties": {
                         "finding_key": {"type": "string"},
-                        "text": {"type": "string"},
+                        "explanation": {"type": "string"},
                     },
-                    "required": ["finding_key", "text"],
+                    "required": ["finding_key", "explanation"],
                 },
             },
         },
@@ -373,8 +375,41 @@ class NarrationFact(BaseModel):
         )
 
 
+class ProposedExplanation(BaseModel):
+    """One provider proposal: the plain-language half, and nothing else.
+
+    **The model is no longer asked to reproduce the facts.** It used to receive the complete
+    deterministic summary as ``required_text`` and was told to copy it character-for-character
+    before appending a sentence; the guard then checked that every fact had survived. Transcription
+    is not a thing to ask a language model for, and Nova Lite proved it — it dropped the clause
+    ``Recorded comparison: 101/4 in != 51/2 in`` from an otherwise sound explanation, so the guard
+    rejected the whole batch and every reviewer saw the plain fallback instead of any narration at
+    all.
+
+    Now ``deterministic_summary`` is prepended in code, where the string already exists and cannot
+    be mistyped, and the provider supplies only the sentences it is actually good at. Every
+    protective check in ``_guard_one`` still runs on the composed text: an invented number, an
+    invented verdict word, or a spelled-out number still fails the batch. What stopped being
+    checkable is a transcription error that can no longer happen.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    finding_key: str = Field(min_length=1)
+    explanation: str = Field(min_length=1, max_length=600)
+
+    @field_validator("finding_key", "explanation")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+
 class ProposedNarrative(BaseModel):
-    """One model proposal.  Unknown fields reject instead of disappearing."""
+    """One composed narrative — deterministic facts plus the provider's explanation.
+
+    Built by ``ground_explanations``; never accepted directly from a provider any more."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -399,7 +434,7 @@ class NarrativeBatch(BaseModel):
     summary: str = Field(default="", max_length=600)
     # JSON has arrays, never tuples.  The transient validated payload may use a list; it is converted
     # to the immutable ``ModelComposition`` tuple immediately after validation.
-    findings: list[ProposedNarrative]
+    findings: list[ProposedExplanation]
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,6 +533,42 @@ def deterministic_summary(finding: ComposerFinding) -> str:
     elif finding.outcome == "NOT_FOUND":
         parts.append("Next: provide the missing value, then run the check again.")
     return " ".join(parts)
+
+
+def ground_explanations(
+    findings: Sequence[ComposerFinding], proposals: Sequence[ProposedExplanation]
+) -> tuple[ProposedNarrative, ...]:
+    """Put each provider explanation behind the deterministic summary of its own finding.
+
+    This is the step that makes fact preservation structural instead of hopeful. The facts come
+    from ``deterministic_summary``, which reads them out of the persisted ``ComposerFinding``; the
+    provider contributes only what follows. A model can no longer omit a fact, because it was never
+    holding one.
+
+    A proposal naming a finding this run did not select is dropped here rather than concatenated
+    onto a mismatched summary — ``_guard_batch`` is what reports it, as an unbacked key, and it must
+    see the same set of keys the provider actually sent. A finding with no proposal is likewise left
+    out so the same check can report it as missing, rather than silently arriving with a
+    deterministic summary and no explanation, which would look like a narrated answer and be a
+    fallback wearing its clothes.
+    """
+    by_key = {finding.key: finding for finding in findings}
+    grounded: list[ProposedNarrative] = []
+    for proposal in proposals:
+        finding = by_key.get(proposal.finding_key)
+        if finding is None:
+            # Kept, so `_guard_batch` reports it as unbacked and the whole batch falls back.
+            grounded.append(
+                ProposedNarrative(finding_key=proposal.finding_key, text=proposal.explanation)
+            )
+            continue
+        grounded.append(
+            ProposedNarrative(
+                finding_key=proposal.finding_key,
+                text=f"{deterministic_summary(finding)} {proposal.explanation.strip()}".strip(),
+            )
+        )
+    return tuple(grounded)
 
 
 def _digit_numbers(text: str) -> frozenset[str]:
