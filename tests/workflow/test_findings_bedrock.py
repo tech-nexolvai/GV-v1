@@ -246,3 +246,50 @@ def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
         NarrationFact.from_finding(_finding()).model_dump(mode="json")
     ]
     assert request["inferenceConfig"] == {"temperature": 0, "maxTokens": 1024}
+
+
+def test_an_overlong_summary_costs_the_summary_not_the_narratives() -> None:
+    """**Outcome: nine narratives kept, the overview dropped.**
+
+    Nova returned nine good explanations and an overview a few characters past the limit. Strict
+    validation rejected the whole payload, so a reviewer asking "why did this fail?" was shown the
+    plain fallback *and* a Pydantic ValidationError quoting its own documentation URL.
+
+    The summary is optional presentation rendered above findings that each carry their own
+    deterministic sentence. Losing it costs an overview; losing the batch costs every explanation.
+    Same disproportion `_drop_unnamed` exists to stop.
+
+    **Dropped rather than truncated**, because these sentences state outcomes: "the depth is within
+    tolerance" cut at the limit can become "the depth is". An absent summary says nothing; a severed
+    one says something the run did not.
+    """
+    from workflow.findings_composer import NarrativeBatch
+
+    batch = NarrativeBatch.model_validate(
+        {
+            "summary": "N" * 900,
+            "findings": [
+                {"finding_key": f"f{index}", "explanation": "Depth is 25 1/4 in."}
+                for index in range(9)
+            ],
+        },
+        strict=False,
+    )
+
+    assert batch.summary == ""
+    assert len(batch.findings) == 9
+
+
+def test_a_summary_within_the_limit_is_kept() -> None:
+    """Outcome: unchanged. The drop must not quietly remove every overview."""
+    from workflow.findings_composer import NarrativeBatch
+
+    batch = NarrativeBatch.model_validate(
+        {
+            "summary": "Nine findings were selected.",
+            "findings": [{"finding_key": "f1", "explanation": "x"}],
+        },
+        strict=False,
+    )
+
+    assert batch.summary == "Nine findings were selected."
