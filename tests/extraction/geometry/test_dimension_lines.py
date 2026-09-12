@@ -184,6 +184,7 @@ def test_a_segment_cannot_be_both_classified_and_unclassified() -> None:
         DetectedDimensions(
             lines=(DimensionLine(extent=line, axis=Axis.HORIZONTAL, witness_lines=(witness,)),),
             chains=(),
+            closures=(),
             unclassified=(line,),
         )
 
@@ -371,3 +372,133 @@ def test_nothing_here_says_what_a_dimension_measures() -> None:
         if any(word in name.lower() for word in ("semantic", "cabinet", "filler", "countertop"))
     )
     assert not forbidden, f"the detector reaches for meaning: {forbidden}"
+
+
+# ---------------------------------------------------------------------------
+# Closures — the drawing checking itself
+# ---------------------------------------------------------------------------
+
+
+def _at(y: str, x0: str, x1: str) -> tuple[DimensionExtent, ...]:
+    """A horizontal dimension at `y` from `x0` to `x1`, crossed at both ends."""
+    return (
+        _segment(x0, y, x1, y),
+        _segment(x0, str(Decimal(y) - Decimal("0.10")), x0, str(Decimal(y) + Decimal("0.10"))),
+        _segment(x1, str(Decimal(y) - Decimal("0.10")), x1, str(Decimal(y) + Decimal("0.10"))),
+    )
+
+
+def test_an_overall_dimension_tiled_by_smaller_ones_is_a_closure() -> None:
+    """**Input: an overall, and three parts that tile it on another row. Outcome: one closure.**
+
+    This is the drawing checking itself. A run dimensioned segment by segment *and* again overall
+    asserts that the parts make up the whole, and `CT-WIDTH-001` is written against exactly that
+    arrangement.
+
+    Across rows on purpose: a drawing puts the overall on one line and the breakdown above it.
+    `_chains` requires one offset and would find none of these.
+    """
+    strokes = (
+        *_at("0.60", "0.10", "0.90"),
+        *_at("0.40", "0.10", "0.30"),
+        *_at("0.40", "0.30", "0.55"),
+        *_at("0.40", "0.55", "0.90"),
+    )
+
+    found = _detect(*strokes)
+
+    assert len(found.closures) == 1
+    closure = found.closures[0]
+    assert closure.axis is Axis.HORIZONTAL
+    assert closure.overall.span == Decimal("0.80")
+    assert len(closure.parts) == 3
+    # Spatial only: the parts tile the overall's extent. Whether their *stated numbers* sum to its
+    # stated number is arithmetic, and B3's to check — which is what keeps this from being circular.
+    assert sum((part.span for part in closure.parts), Decimal(0)) == closure.overall.span
+
+
+def test_dimensions_merely_inside_a_longer_one_are_not_a_closure() -> None:
+    """**Input: two short dimensions floating inside a long one. Outcome: no closure.**
+
+    Containment alone says nothing — they might measure two unrelated features that happen to fall
+    within it. A breakdown starts where the overall starts, ends where it ends, and meets in
+    between. Without that, running a closure check would compare numbers the drawing never claimed
+    were related.
+    """
+    strokes = (
+        *_at("0.60", "0.10", "0.90"),
+        *_at("0.40", "0.20", "0.35"),
+        *_at("0.40", "0.55", "0.70"),
+    )
+
+    found = _detect(*strokes)
+
+    assert found.closures == ()
+
+
+def test_a_gap_in_the_breakdown_is_not_a_closure() -> None:
+    """Input: parts that start and end right but leave a gap. Outcome: none.
+
+    The boundary case for "with nothing left over". A gap means something inside the overall is
+    undimensioned, and the parts cannot be said to account for it.
+    """
+    strokes = (
+        *_at("0.60", "0.10", "0.90"),
+        *_at("0.40", "0.10", "0.30"),
+        *_at("0.40", "0.45", "0.90"),
+    )
+
+    found = _detect(*strokes)
+
+    assert found.closures == ()
+
+
+def test_the_same_dimension_drawn_on_two_rows_is_not_its_own_breakdown() -> None:
+    """**Input: one dimension repeated on another row. Outcome: no closure.**
+
+    A drawing repeats an overall above and below a run often enough that this matters: without the
+    strictly-shorter rule, each copy would be reported as the other's single-part breakdown, and a
+    closure check would then confirm that a number equals itself.
+    """
+    strokes = (
+        *_at("0.60", "0.10", "0.90"),
+        *_at("0.30", "0.10", "0.90"),
+    )
+
+    found = _detect(*strokes)
+
+    assert found.closures == ()
+
+
+def test_nothing_in_a_closure_reads_a_value() -> None:
+    """**The boundary that stops this being circular.** Outcome: closures come from geometry alone.
+
+    If which dimensions formed a breakdown were decided by trying combinations until the numbers
+    added up, the closure check would then verify that they add up — and pass on every drawing,
+    including one with a real error in it. So the tiling is spatial, and the arithmetic stays
+    `B3`'s: a closure found here can still fail the check that uses it.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from extraction.geometry import dimension_lines
+
+    # Read off the identifiers these two functions actually reference, not their text. A text scan
+    # trips on the docstring that explains the rule — "nothing here reads a value" contains
+    # "value" — and a guard a comment can fail is a guard somebody deletes.
+    referenced: set[str] = set()
+    for function in (dimension_lines._closures, dimension_lines._tiling):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+        referenced |= {
+            node.id if isinstance(node, ast.Name) else node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Name, ast.Attribute))
+        }
+
+    reaching = sorted(
+        name
+        for name in referenced
+        if any(word in name.lower() for word in ("value", "measure", "raw_text", "total", "sum"))
+    )
+    assert not reaching, f"closure detection reaches for {reaching}"
