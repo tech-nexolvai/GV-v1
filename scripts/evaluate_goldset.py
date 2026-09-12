@@ -141,10 +141,23 @@ def _pdf(text: str, *, box: bytes = b"[0 0 200 100]") -> bytes:
     §9 forbids inventing a *drawing* to tune against, and this invents a document to prove plumbing.
     """
     lines = text.split("|")
-    # Two explicit dimension lines make the generated package exercise the same association path as
-    # a real drawing. Their y positions map to the centres of the two answer-key boxes at 150 dpi.
+    # Two explicit dimensions make the generated package exercise the same association path as a
+    # real drawing. Their y positions map to the centres of the two answer-key boxes at 150 dpi.
     # These are fixture geometry, not production thresholds and not client-derived dimensions.
-    content = b"1 w 20 66 m 100 66 l S\n1 w 20 36 m 100 36 l S\n" + b"".join(
+    #
+    # **Each carries witness lines crossing both of its ends**, because since #179 a bare stroke is
+    # not a dimension: only runs whose ends are crossed by a perpendicular are offered to
+    # `associate`, and an unassociated reading is one this grader will not score — see
+    # `_candidate_at_answer`, which requires `refusal_reason IS NULL`. Without them the fixture
+    # produced two readings, both refused, and the scorecard reported nothing attempted.
+    content = (
+        b"1 w 20 66 m 100 66 l S\n"
+        b"1 w 20 56 m 20 76 l S\n"
+        b"1 w 100 56 m 100 76 l S\n"
+        b"1 w 20 36 m 100 36 l S\n"
+        b"1 w 20 26 m 20 46 l S\n"
+        b"1 w 100 26 m 100 46 l S\n"
+    ) + b"".join(
         f"BT /F1 12 Tf 1 0 0 1 20 {70 - index * 30} Tm ("
         f"{line.replace(chr(92), chr(92) * 2).replace('(', chr(92) + '(').replace(')', chr(92) + ')')}"
         ") Tj ET\n".encode("latin-1")
@@ -312,6 +325,10 @@ class Arguments(BaseModel):
     glyph_gap_pt: Decimal | None
     proximity_limit: Decimal | None
     ambiguity_margin: Decimal | None
+    witness_tolerance: Decimal | None
+    minimum_span: Decimal | None
+    straightness: Decimal | None
+    crossing_margin: Decimal | None
 
 
 def _arguments() -> Arguments:
@@ -403,6 +420,32 @@ def _arguments() -> Arguments:
             "units"
         ),
     )
+    # The dimension-line detector's four (#179). Required for the same reason as the five above:
+    # they decide which strokes a reading may attach to at all, and a grader that defaulted one
+    # would be scoring a configuration no deployment runs.
+    parser.add_argument(
+        "--witness-tolerance",
+        type=Decimal,
+        help="required: how near a perpendicular must come to a run's end, in stored page units",
+    )
+    parser.add_argument(
+        "--minimum-span",
+        type=Decimal,
+        help="required: how far a run must reach to be a dimension candidate, in stored page units",
+    )
+    parser.add_argument(
+        "--straightness",
+        type=Decimal,
+        help="required: how far off-axis a stroke may drift, in stored page units",
+    )
+    parser.add_argument(
+        "--crossing-margin",
+        type=Decimal,
+        help=(
+            "required: how far a witness line must extend past the dimension line, in stored page "
+            "units. This is what separates a dimension from the box it measures"
+        ),
+    )
     return Arguments.model_validate(vars(parser.parse_args()))
 
 
@@ -419,6 +462,10 @@ def _association_settings(arguments: Arguments) -> AssociationSettings:
         "glyph-gap-pt": arguments.glyph_gap_pt,
         "proximity-limit": arguments.proximity_limit,
         "ambiguity-margin": arguments.ambiguity_margin,
+        "witness-tolerance": arguments.witness_tolerance,
+        "minimum-span": arguments.minimum_span,
+        "straightness": arguments.straightness,
+        "crossing-margin": arguments.crossing_margin,
     }
     missing = [name for name, value in supplied.items() if value is None]
     if missing:
@@ -431,12 +478,20 @@ def _association_settings(arguments: Arguments) -> AssociationSettings:
     assert arguments.glyph_gap_pt is not None
     assert arguments.proximity_limit is not None
     assert arguments.ambiguity_margin is not None
+    assert arguments.witness_tolerance is not None
+    assert arguments.minimum_span is not None
+    assert arguments.straightness is not None
+    assert arguments.crossing_margin is not None
     return AssociationSettings(
         line_minimum_pt=arguments.line_minimum_pt,
         glyph_maximum_pt=arguments.glyph_maximum_pt,
         glyph_gap_pt=arguments.glyph_gap_pt,
         proximity_limit=arguments.proximity_limit,
         ambiguity_margin=arguments.ambiguity_margin,
+        witness_tolerance=arguments.witness_tolerance,
+        minimum_span=arguments.minimum_span,
+        straightness=arguments.straightness,
+        crossing_margin=arguments.crossing_margin,
     )
 
 

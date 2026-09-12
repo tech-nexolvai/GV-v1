@@ -59,6 +59,13 @@ def _reader_configuration() -> tuple[object | None, object | None]:
         "GV_READER_GLYPH_GAP_PT": os.environ.get("GV_READER_GLYPH_GAP_PT"),
         "GV_READER_PROXIMITY_LIMIT": os.environ.get("GV_READER_PROXIMITY_LIMIT"),
         "GV_READER_AMBIGUITY_MARGIN": os.environ.get("GV_READER_AMBIGUITY_MARGIN"),
+        # The dimension-line detector (#179). Required for the same reason as the rest: each
+        # decides which strokes a reading may attach to, and a default would be this machine's
+        # guess shipped as every deployment's.
+        "GV_READER_WITNESS_TOLERANCE": os.environ.get("GV_READER_WITNESS_TOLERANCE"),
+        "GV_READER_MINIMUM_SPAN": os.environ.get("GV_READER_MINIMUM_SPAN"),
+        "GV_READER_STRAIGHTNESS": os.environ.get("GV_READER_STRAIGHTNESS"),
+        "GV_READER_CROSSING_MARGIN": os.environ.get("GV_READER_CROSSING_MARGIN"),
         "GV_READER_LOCALIZED_MINIMUM_PATHS": os.environ.get("GV_READER_LOCALIZED_MINIMUM_PATHS"),
         "GV_READER_LOCALIZED_MAXIMUM_SPAN": os.environ.get("GV_READER_LOCALIZED_MAXIMUM_SPAN"),
         "GV_READER_LOCALIZED_CROP_MARGIN_PT": os.environ.get("GV_READER_LOCALIZED_CROP_MARGIN_PT"),
@@ -75,6 +82,10 @@ def _reader_configuration() -> tuple[object | None, object | None]:
             glyph_gap_pt=Decimal(required["GV_READER_GLYPH_GAP_PT"] or ""),
             proximity_limit=Decimal(required["GV_READER_PROXIMITY_LIMIT"] or ""),
             ambiguity_margin=Decimal(required["GV_READER_AMBIGUITY_MARGIN"] or ""),
+            witness_tolerance=Decimal(required["GV_READER_WITNESS_TOLERANCE"] or ""),
+            minimum_span=Decimal(required["GV_READER_MINIMUM_SPAN"] or ""),
+            straightness=Decimal(required["GV_READER_STRAIGHTNESS"] or ""),
+            crossing_margin=Decimal(required["GV_READER_CROSSING_MARGIN"] or ""),
         ),
         LocalizedOcrSettings(
             minimum_paths=int(required["GV_READER_LOCALIZED_MINIMUM_PATHS"] or ""),

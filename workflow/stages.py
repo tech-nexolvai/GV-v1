@@ -90,6 +90,7 @@ from extraction.annotations import (
     read_markup_layer,
 )
 from extraction.geometry.containment import DimensionExtent
+from extraction.geometry.dimension_lines import detect
 from extraction.geometry.text_association import DimensionText, associate
 from extraction.localized_ocr import read_localized_vendor_regions
 from extraction.manifest import build_manifest
@@ -724,9 +725,27 @@ class DatabaseStages:
             page_index=page.index,
             extractor_version=ASSOCIATION_EXTRACTOR_VERSION,
         ):
+            # **Only the dimension lines are offered, not every stroke on the page.**
+            #
+            # `associate` was previously handed all of them, which meant a reading could attach
+            # itself to the edge of a cabinet as readily as to the dimension that measures it — and
+            # once attached the two are indistinguishable. `DESIGN_EXTRACTION.md` §6 names that as
+            # the failure this layer exists to prevent: the number reads correctly, the arithmetic
+            # is exact, and the finding is about the wrong thing.
+            #
+            # On the first real sheet this takes 136 strokes down to 11 candidates. The other 125
+            # are cabinets, borders and hatching, and every one of them used to be somewhere a
+            # number could land.
+            detected = detect(
+                lines,
+                witness_tolerance=settings.witness_tolerance,
+                minimum_span=settings.minimum_span,
+                straightness=settings.straightness,
+                crossing_margin=settings.crossing_margin,
+            )
             result = associate(
                 tuple(texts),
-                lines,
+                tuple(line.extent for line in detected.lines),
                 proximity_limit=settings.proximity_limit,
                 ambiguity_margin=settings.ambiguity_margin,
             )

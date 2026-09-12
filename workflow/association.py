@@ -56,9 +56,9 @@ class ReadItem(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class AssociationSettings:
-    """The five lengths the association step runs under. Stated by a deployment, never defaulted.
+    """The nine lengths the association step runs under. Stated by a deployment, never defaulted.
 
-    **All five are required and none is a guess this code makes.** `dpi` is already handled this way
+    **All nine are required and none is a guess this code makes.** `dpi` is already handled this way
     by `DatabaseStages`, and `text_association` requires its two for the reason it gives at length.
     The three geometry lengths come from `extraction/annotations.py`, which requires them because
     deciding which vector primitives are dimension lines is a detector (#179) and one sheet cannot
@@ -87,6 +87,32 @@ class AssociationSettings:
     proximity_limit: Decimal
     """How far from a line a reading may sit and still be considered its annotation."""
 
+    witness_tolerance: Decimal
+    """How near a perpendicular must come to a run's end before it bounds it, in stored units.
+
+    The four below are `extraction/geometry/dimension_lines.py` (#179), which is what this class's
+    docstring was waiting for when it said "deciding which vector primitives are dimension lines is
+    a detector". Until it existed, `associate` was handed *every* stroke on the page — so a reading
+    could attach itself to the edge of a cabinet as readily as to the dimension that measures it,
+    and the two are indistinguishable once attached."""
+
+    minimum_span: Decimal
+    """How far a run must reach to be a dimension candidate at all, in stored units. Arrowheads,
+    ticks and hatching are strokes too, and every one of them has ends other strokes pass near."""
+
+    straightness: Decimal
+    """How far off-axis a stroke may drift and still count as orthogonal, in stored units. Not a
+    tolerance on the drawing — a CAD file's coordinates are exact — but on the trip through integer
+    image pixels that brought them into stored space."""
+
+    crossing_margin: Decimal
+    """How far a witness line must extend *past* the dimension line, in stored units.
+
+    **The one that separates a dimension from the box it measures.** A witness line overshoots; a
+    rectangle's corner stops. Measured on the first real sheet: of 81 runs met at both ends by a
+    perpendicular, 21 are crossed at both ends and 53 are plain corners. Set this to the wider
+    `witness_tolerance` and every real dimension on that sheet is rejected."""
+
     ambiguity_margin: Decimal
     """How much nearer the best candidate must be than the next before the choice counts as made.
     Within it the answer is no association — which is a result, not a failure to produce one.
@@ -104,6 +130,10 @@ class AssociationSettings:
             "glyph_gap_pt",
             "proximity_limit",
             "ambiguity_margin",
+            "witness_tolerance",
+            "minimum_span",
+            "straightness",
+            "crossing_margin",
         ):
             value = getattr(self, name)
             if isinstance(value, float):
@@ -129,7 +159,12 @@ class AssociationSettings:
         return (
             f"line>={self.line_minimum_pt};glyph<={self.glyph_maximum_pt};"
             f"gap<={self.glyph_gap_pt};near<={self.proximity_limit};"
-            f"margin={self.ambiguity_margin}"
+            f"margin={self.ambiguity_margin};"
+            # The detector's four are in the identity for the same reason as the rest: each decides
+            # which strokes are offered to `associate` at all, so a re-run under a different value
+            # would reuse rows that a different set of lines produced.
+            f"witness<={self.witness_tolerance};span>={self.minimum_span};"
+            f"straight<={self.straightness};cross>{self.crossing_margin}"
         )
 
 
