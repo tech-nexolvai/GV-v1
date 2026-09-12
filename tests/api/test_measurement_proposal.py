@@ -505,3 +505,61 @@ def test_a_page_with_nothing_left_to_propose_does_not_blame_the_model(session: S
     assert result["readings_considered"] == 0
     assert result["unfilled_reason"] == "there was nothing to choose between, so nothing was asked"
     assert model.contexts == [], "a call was made with nothing to choose between"
+
+
+# ---------------------------------------------------------------------------
+# An empty form is not yet an answer about the drawings (#606)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("state", "waiting"),
+    [
+        (PackageState.UPLOADED, True),
+        (PackageState.INGESTING, True),
+        (PackageState.EXTRACTING, True),
+        (PackageState.MATCHING, True),
+        (PackageState.VALIDATING_EVIDENCE, True),
+        (PackageState.NEEDS_INPUT, False),
+        (PackageState.AWAITING_REVIEW, False),
+        (PackageState.APPROVED, False),
+    ],
+)
+def test_the_form_says_whether_the_reader_has_finished(
+    session: Session, state: PackageState, waiting: bool
+) -> None:
+    """**Outcome: `still_reading` is true exactly while the pipeline is working.**
+
+    The form loads once and reading a drawing takes the better part of a minute, so opening Measure
+    straight after uploading showed "nothing was read off these drawings" — and kept showing it,
+    because nothing went back to look. The readings landed thirty seconds later and the page never
+    knew. It was reported three times as the AI refusing to fill anything; the values were in the
+    database throughout.
+
+    So the form reports which of the two an empty one is: the reader has not finished, or it has
+    finished and found nothing. Those want opposite things from a reviewer — wait, or go and check
+    Documents.
+
+    Parametrised over the real states rather than one, because the failure mode is a state nobody
+    thought about being treated as finished.
+    """
+    _publish_rulebook(session)
+    package, _ = _package_with_readings(session, readings=())
+    revision = session.execute(
+        PackageRevision.__table__.select().where(PackageRevision.package_id == package)
+    ).one()
+    session.execute(
+        PackageRevision.__table__.update()
+        .where(PackageRevision.id == revision.id)
+        .values(state=state.value)
+    )
+    session.commit()
+
+    response = _client(session).get(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/required-inputs"
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["still_reading"] is waiting, state
+    assert body["revision_state"] == state.value

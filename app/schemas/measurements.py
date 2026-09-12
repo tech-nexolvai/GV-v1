@@ -259,6 +259,21 @@ class RequiredInputsOut(BaseModel):
     #: is a different problem from a rulebook that asks for nothing.
     rules_published: int
 
+    #: Whether something is still working on this package.
+    #:
+    #: **The form loads once, and reading a drawing takes the better part of a minute.** Opening
+    #: Measure straight after uploading therefore showed an empty form with "nothing was read off
+    #: these drawings" — permanently, because nothing went back to look. The readings landed thirty
+    #: seconds later and the page never knew.
+    #:
+    #: So the form says which of the two it is: the reader has not finished, or it has finished and
+    #: found nothing. They want opposite things from a reviewer — wait, or go and look at Documents.
+    still_reading: bool = False
+
+    #: The package revision's lifecycle state, as the pipeline last recorded it. The reason behind
+    #: `still_reading`, so a screen can say *what* is happening rather than only that something is.
+    revision_state: str = ""
+
 
 class CheckRequest(BaseModel):
     """Asking for the checks, and what the reviewer says about the layout.

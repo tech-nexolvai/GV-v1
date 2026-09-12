@@ -18,7 +18,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Final, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -442,6 +442,14 @@ class ProposedNarrative(BaseModel):
         return value
 
 
+#: How long a reviewer-facing overview may be.
+#:
+#: A cap rather than a suggestion because this renders above the findings and a page of prose there
+#: buries them. Past it the summary is dropped and the narratives are kept — see
+#: `NarrativeBatch._drop_an_overlong_summary` for why that trade is the right way round.
+_SUMMARY_LIMIT: Final = 600
+
+
 class NarrativeBatch(BaseModel):
     """The one forced-tool payload accepted from the model."""
 
@@ -449,10 +457,33 @@ class NarrativeBatch(BaseModel):
 
     # A short reviewer-ready overview rendered above the immutable findings.  It is separately
     # guarded so every stated number, outcome, and check identifier is backed by this run.
-    summary: str = Field(default="", max_length=600)
+    summary: str = Field(default="", max_length=_SUMMARY_LIMIT)
     # JSON has arrays, never tuples.  The transient validated payload may use a list; it is converted
     # to the immutable ``ModelComposition`` tuple immediately after validation.
     findings: list[ProposedExplanation]
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _drop_an_overlong_summary(cls, value: object) -> object:
+        """Discard a summary past the limit rather than refusing the batch for it.
+
+        **The same disproportion `_drop_unnamed` exists to stop.** Nova returned nine good
+        narratives and an overview a few characters past 600; strict validation rejected the whole
+        payload, and a reviewer asking "why did this fail?" got the plain fallback plus a Pydantic
+        error quoting its own URL.
+
+        The summary is optional presentation — `default=""` — and it is rendered *above* findings
+        that each carry their own deterministic sentence. Losing it costs an overview. Losing the
+        batch costs every explanation.
+
+        **Dropped rather than truncated**, deliberately. These sentences state outcomes, and cutting
+        one at 600 characters can remove the half that matters: "the depth is within tolerance"
+        truncates to "the depth is". An absent summary says nothing; a severed one says something
+        the run did not.
+        """
+        if isinstance(value, str) and len(value) > _SUMMARY_LIMIT:
+            return ""
+        return value
 
     @field_validator("findings", mode="before")
     @classmethod

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ChevronRight,
@@ -96,6 +96,9 @@ type Needed = {
   parameters: Parameter[];
   discriminators: Discriminator[];
   rules_published: number;
+  /** Whether something is still working on this package, so an empty form is not yet an answer. */
+  still_reading: boolean;
+  revision_state: string;
 };
 
 /** Which sheet a measurement is read from, in the words a reviewer uses. */
@@ -105,6 +108,71 @@ const SOURCE_LABEL: Record<string, string> = {
   USER_INPUT: 'measured on site',
   PRODUCT_SPEC: 'product specification',
 };
+
+
+/**
+ * The drawings are being read, and this says so for as long as it takes.
+ *
+ * **The bar is indeterminate on purpose.** Reading a pair takes roughly a minute, but how long
+ * *this* pair will take is not something this side of the request knows — it depends on the sheet,
+ * the routes it needs and whether OCR runs. A bar that filled steadily would be asserting a
+ * completion fraction nobody measured, which is the one thing the progress display on this product
+ * is careful never to do. A segment crossing the track says "working" and claims nothing.
+ *
+ * The clock is measured here, and the stage name is the pipeline's own — both are facts. So a
+ * reviewer waiting knows it is alive, roughly how long it has been, and which part of the work it
+ * is in, without being told a number that was invented.
+ */
+function ReadingProgress({ state }: { state: string }) {
+  const [elapsed, setElapsed] = useState(0);
+  const startedAt = useRef(0);
+
+  useEffect(() => {
+    // Started in the effect, not during render: React may render more than once per commit, so a
+    // timestamp taken there can come from an attempt that was discarded.
+    startedAt.current = Date.now();
+    const timer = window.setInterval(() => setElapsed(Date.now() - startedAt.current), 200);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const stage = state.toLowerCase().replace(/_/g, ' ');
+  return (
+    <div className="reading" role="status" aria-live="polite" aria-busy="true">
+      <div className="reading__head">
+        <ScanLine size={14} aria-hidden="true" />
+        <span className="reading__title">Reading these drawings</span>
+        <span className="reading__stage">{stage}</span>
+        <span className="reading__clock mono">{(elapsed / 1000).toFixed(0)}s</span>
+      </div>
+      <div className="reading__track" aria-hidden="true">
+        <span className="reading__bar" />
+      </div>
+      <p className="reading__note">
+        This usually takes about a minute. The page is watching and will fill itself in when the
+        reading finishes — you do not need to reload.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * A semantic type as a person would say it, with the code kept beside it.
+ *
+ * `CT008` is what the rulebook matches on and what a reviewer quotes when asking about a field —
+ * worth showing, useless on its own. Every quantity the rulebook asks for carries a readable name
+ * through `consumers[].input_name`, and `fieldLabel` already renders it on the form; this reuses it
+ * so one quantity cannot be called two different things on one screen.
+ *
+ * Falls back to the bare code where the rulebook asks for a quantity under no readable name, which
+ * is honest: inventing a friendly word for a code nobody has defined would be worse than showing
+ * the code.
+ */
+function quantityLabel(quantities: Quantity[], semanticType: string): string {
+  const quantity = quantities.find((item) => item.semantic_type === semanticType);
+  if (!quantity) return semanticType;
+  const named = fieldLabel(quantity);
+  return named === semanticType ? semanticType : `${named} (${semanticType})`;
+}
 
 /**
  * Who put the value that is currently in a field, said in four words.
@@ -184,6 +252,8 @@ export function EnterValuesPage({
   const [proposing, setProposing] = useState(false);
   /** Whether the crop-inspection list is open. Closed by default; it is the slow route. */
   const [inspecting, setInspecting] = useState(false);
+  /** Bumped to re-fetch the form while the reader is still working. */
+  const [reload, setReload] = useState(0);
   /**
    * Which fields a model proposed, by field key, with the readings it chose.
    *
@@ -297,7 +367,27 @@ export function EnterValuesPage({
       cancelled = true;
     };
     // Re-fetch only when the selected package changes, never on a keystroke within its form.
-  }, [selectedPackageId]);
+  }, [selectedPackageId, reload]);
+
+  /**
+   * Go back and look while the drawings are still being read.
+   *
+   * **The form loaded once, and reading a drawing takes the better part of a minute.** Opening
+   * Measure straight after uploading therefore showed "nothing was read off these drawings" — and
+   * kept showing it, because nothing went back to look. The readings landed thirty seconds later
+   * and the page never knew. Reported three times as "the AI is not filling anything"; the values
+   * were in the database the whole time.
+   *
+   * Only while the pipeline says it is still working, so a package it has finished with is not
+   * polled for ever. Five seconds because that is fast enough that nobody sits watching an empty
+   * form, and slow enough that a reviewer reading the page is not re-fetching it twelve times a
+   * minute.
+   */
+  useEffect(() => {
+    if (!needed?.still_reading) return;
+    const timer = window.setInterval(() => setReload((count) => count + 1), 5000);
+    return () => window.clearInterval(timer);
+  }, [needed?.still_reading]);
 
   if (!selectedPackageId) {
     return (
@@ -405,12 +495,58 @@ export function EnterValuesPage({
    * it fill the field, then reasonably expects Run checks to use that field.  Queuing first would
    * create a run without the displayed measurements, which is both surprising and unsafe.
    */
+  /**
+   * Accepting an AI reading is confirming a drawing reading, not typing a number.
+   *
+   * **This is what kept a crop off the screen.** A proposal knows which reading it came from, and
+   * that reading has a stored crop cut from the uploaded PDF. But saving put the *number* into the
+   * parameter set as a reviewer-supplied value — and `run_checks` deliberately lets a supplied
+   * operand override a derived one, because "supplying one is a deliberate act". So the check was
+   * judged on `USER_INPUT: 18 in`, with no page, no polygon and no crop, while the drawing reading
+   * that produced it sat unused beside it. Asked for the evidence, the panel could only say there
+   * was none.
+   *
+   * So an unedited proposal is confirmed instead: the candidate is sealed as a canonical
+   * observation the reviewer stands behind, which carries its page, its polygon and its crop, and
+   * the check reads it through the evidence path. The reviewer's act is the same one click; what
+   * changes is that the record keeps hold of where the number came from.
+   *
+   * Returns the field keys it confirmed, so the caller can leave them out of the typed payload —
+   * sending both would put a value with no provenance in front of the one with it.
+   */
+  async function confirmAcceptedProposals(): Promise<Set<string>> {
+    if (!packageId || !needed) return new Set();
+    const confirmed = new Set<string>();
+    for (const [key, candidateIds] of Object.entries(aiFilled)) {
+      const quantity = needed.quantities.find((item) => item.key === key);
+      if (!quantity || candidateIds.length === 0) continue;
+      try {
+        // In order: a many-valued field's readings are a run, and the evidence path orders a run by
+        // the time its readings were confirmed.
+        for (const candidateId of candidateIds) {
+          await confirmCandidate(projectId(), packageId, candidateId, quantity.semantic_type);
+        }
+        confirmed.add(key);
+      } catch {
+        // **A confirmation that fails costs the crop, never the value.** The number is still what
+        // the reviewer accepted, so it goes down the typed path as before and the check still runs.
+        // Losing a value because its provenance could not be recorded would be the worse trade.
+      }
+    }
+    return confirmed;
+  }
+
   async function saveVisibleValues(): Promise<boolean> {
     if (!packageId || !needed) return false;
     try {
+      const confirmedFromDrawing = await confirmAcceptedProposals();
+
       // **One typed value fans out to every rule input it feeds.** The mapping is the server's, taken
       // from `consumers` — a reviewer measures the front offset once, and three rules receive it.
       const measurements = needed.quantities.flatMap<MeasurementEntry>((quantity) => {
+        // Confirmed above, so it reaches the checks as drawing-backed evidence. Typing it as well
+        // would shadow that with a value carrying no page, no polygon and no crop.
+        if (confirmedFromDrawing.has(quantity.key)) return [];
         const consumers = quantity.consumers.filter((c) => c.rule_id && c.input_name);
         if (quantity.many) {
           const values = (runs[quantity.key] ?? []).map((v) => v.trim()).filter(Boolean);
@@ -695,6 +831,7 @@ export function EnterValuesPage({
               </li>
             )}
           </ul>
+          {needed.still_reading && <ReadingProgress state={needed.revision_state} />}
           <p className="measure-coverage__caveat">
             Coverage, not accuracy. A dimension the reader could not parse, or a number with no unit,
             is not counted here at all — it was refused rather than guessed, and the field stays
@@ -780,11 +917,13 @@ export function EnterValuesPage({
                 they want completely different things done about them. */}
             {candidates.length === 0 && (
               <p className="enter-values__hint enter-values__hint--tight">
-                {confirmedCount > 0
-                  ? 'Nothing left to propose — every reading off these drawings already has a meaning.'
-                  : 'Nothing was read off these drawings, so there is nothing to propose from. ' +
-                    'Check on Documents that both drawings finished uploading and that the AI ' +
-                    'reading has run.'}
+                {needed.still_reading
+                  ? `The AI is still reading these drawings (${needed.revision_state.toLowerCase().replace(/_/g, ' ')}). This page is watching, and will fill itself in when the reading finishes.`
+                  : confirmedCount > 0
+                    ? 'Nothing left to propose — every reading off these drawings already has a meaning.'
+                    : 'Nothing was read off these drawings, so there is nothing to propose from. ' +
+                      'Check on Documents that both drawings finished uploading and that the AI ' +
+                      'reading has run.'}
               </p>
             )}
           </div>
@@ -849,7 +988,15 @@ export function EnterValuesPage({
                     </p>
                   )}
                   <label className="ai-proposal__type">
-                    <span>Meaning / rule quantity</span>
+                    {/* **The codes are not a vocabulary anybody has.**
+                        This listed `CT004`, `CT008`, `cabinet_width` — the rulebook's internal
+                        keys — and asked a reviewer to pick one. Nobody outside the rule engine
+                        knows what `CT008` measures, so the only honest thing a person could do was
+                        guess or give up. The rulebook already names every one of them readably and
+                        the page already uses those names on its own fields; this is the same
+                        `fieldLabel`, so the dropdown and the form cannot call one quantity two
+                        things. */}
+                    <span>What does this number measure?</span>
                     <select
                       className="value-input"
                       aria-label={`Meaning for AI reading ${candidate.value}`}
@@ -860,10 +1007,10 @@ export function EnterValuesPage({
                         if (type) void confirmFromMeasure(candidate, type);
                       }}
                     >
-                      <option value="">Choose a quantity…</option>
+                      <option value="">Choose what it measures…</option>
                       {availableTypes.map((semanticType) => (
                         <option key={semanticType} value={semanticType}>
-                          {semanticType}
+                          {quantityLabel(needed.quantities, semanticType)}
                         </option>
                       ))}
                     </select>
@@ -919,6 +1066,13 @@ export function EnterValuesPage({
                       <span className={`value-origin value-origin--${origin}`}>
                         {ORIGIN_LABEL[origin]}
                       </span>
+                      {quantity.key in aiFilled && (
+                        <span className="value-where">
+                          {aiFilled[quantity.key].length} reading
+                          {aiFilled[quantity.key].length === 1 ? '' : 's'} from the{' '}
+                          {SOURCE_LABEL[quantity.source] ?? quantity.source}
+                        </span>
+                      )}
                       <span className="value-feeds" title={quantity.consumers.map((c) => c.rule_id).join(', ')}>
                         {quantity.consumers.length} check{quantity.consumers.length === 1 ? '' : 's'}
                       </span>
@@ -999,6 +1153,17 @@ export function EnterValuesPage({
                           setSingles((prior) => ({ ...prior, [quantity.key]: e.target.value }));
                         }}
                       />
+                    )}
+                    {/* **An empty field used to say nothing at all.**
+                        A reviewer new to the product sees fourteen boxes and no indication of
+                        where any number comes from. The rulebook knows: which sheet it is read
+                        from, and what the client's own code book says the quantity is. Both were
+                        already loaded and neither was on the screen. */}
+                    {origin === 'empty' && (
+                      <p className="value-help">
+                        Read it off the <strong>{SOURCE_LABEL[quantity.source] ?? quantity.source}</strong>
+                        {' '}and type it with its unit. Nothing was read here that could fill it.
+                      </p>
                     )}
                   </div>
                 );
