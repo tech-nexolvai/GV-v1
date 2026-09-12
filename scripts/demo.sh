@@ -100,11 +100,29 @@ API_PID=$!
 # The four dimension-line values were measured against `AI_Set 2` p13 (#179) and are this demo's,
 # not anybody else's. `CROSSING_MARGIN` is the one that separates a dimension from the box it
 # measures; raise it toward `WITNESS_TOLERANCE` and every real dimension on that sheet is rejected.
+#
+# **`LINE_MINIMUM_PT` was 50 and that discarded every dimension line on every drawing we have.**
+# It is the shortest stroke the reader will consider line-work at all, applied before the detector
+# ever runs. The client's dimension lines are shorter than that, so the detector was being handed a
+# page with none of them on it. Swept across the whole set at dpi 150 (#600):
+#
+#     drawing                     min=50   min=10   min=6    min=4
+#     demo_pair/shop.pdf p1            0        6        7        8
+#     aiset2/AI_Set_2.pdf p13         11       29       37       44
+#     aiset1/AI_Set_1.pdf p2          10      123      158      202
+#
+# At 6, `demo_pair` goes from filling nothing to filling its fields with the placement check
+# passing. `GLYPH_MAXIMUM_PT` moves to 5 with it: it is the longest stroke that may still be part of
+# a glyph, so leaving it at 10 would put every stroke between 6 and 10 in both categories at once.
+#
+# These are still this demo's numbers rather than a deployment's, and still measured rather than
+# chosen — the difference is that they are now measured against the drawings somebody actually
+# uploads instead of one sheet.
 GV_DATABASE_URL="$BARE_URL" \
 GV_DEV_STORAGE=".dev-storage" \
 GV_LOCALIZED_OCR_ENABLED=1 \
-GV_READER_LINE_MINIMUM_PT=50 \
-GV_READER_GLYPH_MAXIMUM_PT=10 \
+GV_READER_LINE_MINIMUM_PT=6 \
+GV_READER_GLYPH_MAXIMUM_PT=5 \
 GV_READER_GLYPH_GAP_PT=4 \
 GV_READER_PROXIMITY_LIMIT=0.05 \
 GV_READER_AMBIGUITY_MARGIN=0.005 \
