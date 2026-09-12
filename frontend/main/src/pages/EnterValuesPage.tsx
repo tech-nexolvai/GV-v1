@@ -570,6 +570,9 @@ export function EnterValuesPage({
     return 'typed';
   };
 
+  /** Whether a proposal has been asked for at all. What decides who owns the panel's space. */
+  const attempted = proposing || proposalSteps.length > 0 || proposal !== null || proposalError !== null;
+
   /** The sheets this rulebook reads from, in the order the fields appear. One group per sheet. */
   const sheets = needed.quantities.reduce<string[]>(
     (seen, quantity) => (seen.includes(quantity.source) ? seen : [...seen, quantity.source]),
@@ -651,7 +654,13 @@ export function EnterValuesPage({
             is never given is the rule arithmetic — a model that knew the equation could choose
             readings that make it balance, and the check would then confirm the balance on a drawing
             with a real error in it. */}
-        {proposalSteps.length === 0 && !proposing ? (
+        {/* **The offer stands until an attempt has been made, and then the panel owns the space.**
+            This was keyed on `proposalSteps.length === 0`, which is the state a request that failed
+            *before its first frame* also lands in — a 413, a 404, a server that did not answer. The
+            offer panel came back, `proposalError` was rendered nowhere, and pressing Fill with AI
+            looked like pressing a button that does nothing. Keyed on whether anything was attempted
+            instead, so a failure is shown rather than swallowed. */}
+        {!attempted ? (
           <div className="measure-fill">
             <div className="measure-fill__text">
               <h3>Fill these from the drawings</h3>
@@ -670,10 +679,18 @@ export function EnterValuesPage({
             >
               <Sparkles size={14} aria-hidden="true" /> Fill with AI
             </button>
+            {/* **Two situations, not one sentence covering both.**
+                "every reading already has a meaning, or the reader found none" made the reviewer
+                work out which of the two they were in — from a panel that already knows. One of
+                them is a finished package and the other is a drawing nothing was read from, and
+                they want completely different things done about them. */}
             {candidates.length === 0 && (
               <p className="enter-values__hint enter-values__hint--tight">
-                There is nothing to propose from: every reading has already been given a meaning, or
-                the reader found none on these drawings.
+                {confirmedCount > 0
+                  ? 'Nothing left to propose — every reading off these drawings already has a meaning.'
+                  : 'Nothing was read off these drawings, so there is nothing to propose from. ' +
+                    'Check on Documents that both drawings finished uploading and that the AI ' +
+                    'reading has run.'}
               </p>
             )}
           </div>
