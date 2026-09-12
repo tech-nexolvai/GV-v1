@@ -79,9 +79,18 @@ type MeasurementEntry = {
   value?: string;
   values?: string[];
 };
+/** One field a model proposed values for, already checked, as `required-inputs` sends it. */
+type ProposedField = {
+  field_key: string;
+  name: string;
+  source: string;
+  many: boolean;
+  values: { candidate_id: string; value: string; page_index: number }[];
+};
 type Needed = {
   quantities: Quantity[];
   confirmed_readings: ConfirmedReading[];
+  proposed_readings: ProposedField[];
   parameters: Parameter[];
   discriminators: Discriminator[];
   rules_published: number;
@@ -236,15 +245,37 @@ export function EnterValuesPage({
                 : [''],
             ]) as Array<[string, string[]]>,
         );
-        setSingles((prior) => ({ ...prior, ...prefilledSingles }));
+        // **What a model proposed when the drawings were read.**
+        //
+        // Applied *under* the confirmed readings, never over them: a reading a person confirmed on
+        // the crop is a stronger claim than a proposal, and the two reach the same box. A field
+        // that already has a confirmed value keeps it and is not marked as proposed.
+        const proposedSingles: Record<string, string> = {};
+        const proposedRuns: Record<string, string[]> = {};
+        const marks: Record<string, string[]> = {};
+        for (const field of required.proposed_readings ?? []) {
+          const values = field.values.map((reading) => reading.value);
+          if (!values.length) continue;
+          if (field.many) {
+            if ((prefilledRuns[field.field_key] ?? []).length > 0) continue;
+            proposedRuns[field.field_key] = values;
+          } else {
+            if ((prefilledSingles[field.field_key] ?? '').trim()) continue;
+            proposedSingles[field.field_key] = values[0];
+          }
+          marks[field.field_key] = field.values.map((reading) => reading.candidate_id);
+        }
+
+        setSingles((prior) => ({ ...prior, ...prefilledSingles, ...proposedSingles }));
         setRuns(
           Object.fromEntries(
             required.quantities.filter((q) => q.many).map((q) => [q.key, ['']]),
           ),
         );
-        if (Object.keys(prefilledRuns).length > 0) {
-          setRuns((prior) => ({ ...prior, ...prefilledRuns }));
+        if (Object.keys(prefilledRuns).length > 0 || Object.keys(proposedRuns).length > 0) {
+          setRuns((prior) => ({ ...prior, ...prefilledRuns, ...proposedRuns }));
         }
+        setAiFilled(marks);
       } catch (caught) {
         if (!cancelled) {
           setLoadError(caught instanceof ApiError ? caught.message : String(caught));
@@ -570,6 +601,10 @@ export function EnterValuesPage({
     return 'typed';
   };
 
+  /** How many fields the filed proposal covers. Zero when nothing was filed, which is a real
+   *  outcome: the checks refused the model's answer, or the reader attached nothing to fill from. */
+  const storedProposalCount = (needed.proposed_readings ?? []).length;
+
   /** Whether a proposal has been asked for at all. What decides who owns the panel's space. */
   const attempted = proposing || proposalSteps.length > 0 || proposal !== null || proposalError !== null;
 
@@ -660,15 +695,43 @@ export function EnterValuesPage({
             offer panel came back, `proposalError` was rendered nowhere, and pressing Fill with AI
             looked like pressing a button that does nothing. Keyed on whether anything was attempted
             instead, so a failure is shown rather than swallowed. */}
-        {!attempted ? (
+        {!attempted && storedProposalCount > 0 ? (
+          /* **Already done, before the reviewer arrived.** The proposal is made when the drawings
+             are read and filed, so this panel reports a completed step rather than offering one.
+             The offer below is what a package with no filed proposal still shows. */
+          <div className="measure-fill measure-fill--done">
+            <div className="measure-fill__text">
+              <h3>
+                <Sparkles size={15} aria-hidden="true" /> Filled from the drawings
+              </h3>
+              <p>
+                {storedProposalCount} field{storedProposalCount === 1 ? '' : 's'} below
+                {storedProposalCount === 1 ? ' was' : ' were'} filled when these drawings were read,
+                and every one passed the checks against the drawing — the right sheet, attached to a
+                real dimension line, one reading per field, and a run in the order the drawing draws
+                it. They are marked <strong>proposed by AI</strong>. Check them, edit anything that
+                is wrong, and press Save.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="value-secondary interactive"
+              onClick={() => void onPropose()}
+              disabled={busy || candidates.length === 0}
+            >
+              <Sparkles size={13} aria-hidden="true" /> Ask again
+            </button>
+          </div>
+        ) : !attempted ? (
           <div className="measure-fill">
             <div className="measure-fill__text">
               <h3>Fill these from the drawings</h3>
               <p>
-                A model proposes which reading fills which field. Every proposal is then checked
-                against the drawing — the right sheet, attached to a real dimension line, one reading
-                per field, and a run in the order the drawing draws it — and refused as a batch if
-                any part of it fails. Nothing is saved until you press Save.
+                A model proposes which reading fills which field when the drawings are read, so this
+                form normally arrives already filled. Every proposal is checked against the drawing —
+                the right sheet, attached to a real dimension line, one reading per field, and a run
+                in the order the drawing draws it — and refused as a batch if any part of it fails.
+                Nothing is saved until you press Save.
               </p>
             </div>
             <button

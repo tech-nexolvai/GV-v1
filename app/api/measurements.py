@@ -49,12 +49,10 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.confirmations import document_source
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Package, PackageRevision
 from app.models.document import (
-    Document,
     DocumentVersion,
     PackageRevisionDocument,
     Page,
@@ -62,9 +60,7 @@ from app.models.document import (
 from app.models.evidence import (
     CanonicalObservation,
     EvidenceSupportingCandidate,
-    ObservationAssociation,
     ObservationCandidate,
-    line_key,
 )
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import to_rows
@@ -93,8 +89,6 @@ from units.imperial import format_inches
 from units.measurement import Measurement
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus
-from vocabulary.semantic_types import CLIENT_CODES
-from workflow.assignment import AssignmentContext, Field, Reading
 from workflow.assignment_bedrock import (
     AssignmentProgress,
     configured_assignment_model,
@@ -102,6 +96,13 @@ from workflow.assignment_bedrock import (
 )
 from workflow.measurements import LIST_MARKER
 from workflow.outbox import enqueue
+from workflow.propose import (
+    MAX_ASSIGNMENT_READINGS,
+    assignment_context,
+    assignment_fields,
+    record_proposal,
+    stored_proposal,
+)
 
 router = APIRouter(tags=["measurements"])
 
@@ -225,6 +226,69 @@ def _store(
     )
 
 
+def _stored_proposal_out(
+    session: Session, revision: PackageRevision
+) -> tuple[ProposedFieldOut, ...]:
+    """The filed proposal for this revision, rendered for the form.
+
+    **Read, never computed.** The proposal was made when the drawings were read; asking the model
+    again here would put a network call and a cost on a page load, and would let two loads of the
+    same unchanged package disagree with each other.
+
+    The value comes from the candidate's own exact numerator and denominator rather than from
+    anything stored beside the proposal. `measurement_proposals` records which reading fills which
+    slot and nothing else, so there is no second copy of a number here to drift from the first.
+    """
+    rows = stored_proposal(session, revision.id)
+    if not rows:
+        return ()
+
+    candidates = {
+        candidate.id: (candidate, page_index)
+        for candidate, page_index in session.execute(
+            select(ObservationCandidate, Page.index)
+            .join(Page, Page.id == ObservationCandidate.page_id)
+            .where(ObservationCandidate.id.in_([row.candidate_id for row in rows]))
+        ).all()
+    }
+
+    fields, _rules = assignment_fields(session)
+    by_key = {field.key: field for field in fields}
+
+    grouped: dict[str, list[ProposedReadingOut]] = {}
+    for row in rows:
+        found = candidates.get(row.candidate_id)
+        if found is None or row.field_key not in by_key:
+            # A proposal naming a reading this revision no longer has, or a field the published
+            # rulebook has stopped asking for. Both mean the rulebook or the read moved on since the
+            # proposal was filed, and a stale row must not put a value in front of a reviewer.
+            continue
+        candidate, page_index = found
+        if candidate.value_numerator is None or candidate.value_denominator is None:
+            continue
+        grouped.setdefault(row.field_key, []).append(
+            ProposedReadingOut(
+                candidate_id=candidate.id,
+                value=(
+                    f"{format_inches(Fraction(candidate.value_numerator, candidate.value_denominator))} "
+                    f"{candidate.unit}"
+                ),
+                page_index=page_index,
+            )
+        )
+
+    return tuple(
+        ProposedFieldOut(
+            field_key=key,
+            name=by_key[key].name,
+            source=by_key[key].source,
+            many=by_key[key].many,
+            values=tuple(values),
+        )
+        for key, values in sorted(grouped.items())
+    )
+
+
 @router.get(
     "/projects/{project_id}/packages/{package_id}/required-inputs",
     response_model=RequiredInputsOut,
@@ -311,6 +375,7 @@ def read_required_inputs(
     )
 
     return RequiredInputsOut(
+        proposed_readings=_stored_proposal_out(session, revision),
         quantities=tuple(
             QuantityOut(
                 key=quantity.key,
@@ -567,11 +632,6 @@ ASSIGNMENT_PHASES: Final[tuple[tuple[str, str], ...]] = (
     ("filling", "Filling the form"),
 )
 
-#: Above this, nothing is proposed. A page with hundreds of readings is one where the reader has
-#: picked up the title block and the scale bar, and asking a model to sort that out would spend a
-#: large prompt to produce a proposal the guard is likely to refuse whole.
-MAX_ASSIGNMENT_READINGS: Final = 200
-
 
 class EventStreamResponse(StreamingResponse):
     """A `text/event-stream` body.
@@ -604,128 +664,6 @@ def _phase_event(name: str, detail: str, *, attempt: int = 1) -> AssignmentEvent
             sequence=tuple(prose for _, prose in ASSIGNMENT_PHASES) if index == 1 else (),
         ),
     )
-
-
-def _assignment_description(semantic_type: str) -> str | None:
-    """What this quantity *is*, in the client's own words, or `None` where they have not said.
-
-    **The client's code book, deliberately, and not the rule's own description.** `Rule.description`
-    is free text an author writes, and on these rules it says things like "the countertop width
-    equals the sum of the cabinets and the fillers" — which is the arithmetic, and the one thing
-    `workflow/assignment.py` exists to withhold: a model holding the equation could choose readings
-    that make it balance, and the check would then confirm the balance on every drawing including
-    one with a real error in it.
-
-    `CLIENT_CODES` says where a quantity *is* on the drawing — "cabinet 2 width, sink cabinet
-    underneath" — which is positional, carries no formula, and is exactly what makes the choice
-    decidable. Anything the client has not defined is left out rather than substituted.
-    """
-    code = CLIENT_CODES.get(semantic_type)
-    return None if code is None else code.description
-
-
-def _assignment_fields(session: Session) -> tuple[tuple[Field, ...], int]:
-    """The rulebook's fields as an assignment context takes them, and how many rules published them.
-
-    The name is the rulebook's own readable one — `cabinet_widths`, not `CT004` — taken from the
-    first rule that consumes the quantity, the same choice the form's labels make. Where two rules
-    name one quantity differently the code is what they agree on, and it stays in `key`.
-    """
-    store = snapshot_store(session)
-    rules = [
-        snapshot.rule
-        for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
-        if snapshot is not None
-    ]
-    needs = required_inputs(rules)
-    fields = tuple(
-        Field(
-            key=quantity.key,
-            name=next(
-                (consumer.input_name for consumer in quantity.consumers if consumer.input_name),
-                quantity.semantic_type,
-            ),
-            source=quantity.source,
-            many=quantity.many,
-            description=_assignment_description(quantity.semantic_type),
-        )
-        for quantity in needs.quantities
-    )
-    return fields, len(rules)
-
-
-def _assignment_readings(session: Session, revision: PackageRevision) -> tuple[Reading, ...]:
-    """Every reading of this package that could fill a field, with what the geometry established.
-
-    Unconfirmed only, for the reason `list_candidates` gives: a confirmed reading already has a
-    meaning and already fills its field, and offering it again would invite a second answer to a
-    question a person has settled.
-
-    **Unattached readings are included, and marked.** `guard_assignment` refuses one — an unattached
-    number is a title block or a scale bar, and `text_association` declining to say what it
-    annotates is a result — but `assignment_bedrock` deliberately tells the model which readings are
-    unusable rather than letting it propose one and lose the whole batch to the refusal.
-
-    The latest association wins where a candidate has more than one. `open_extraction_run` keys a run
-    on its configuration, so a second row is a re-association under different thresholds rather than
-    a competing opinion, and the later thresholds are the deployment's current ones.
-    """
-    rows = session.execute(
-        select(ObservationCandidate, Page.index, Document.kind, ObservationAssociation)
-        .join(Page, Page.id == ObservationCandidate.page_id)
-        .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
-        .join(Document, Document.id == DocumentVersion.document_id)
-        .join(
-            PackageRevisionDocument,
-            PackageRevisionDocument.document_version_id == DocumentVersion.id,
-        )
-        .outerjoin(
-            ObservationAssociation,
-            ObservationAssociation.candidate_id == ObservationCandidate.id,
-        )
-        .where(
-            PackageRevisionDocument.package_revision_id == revision.id,
-            ObservationCandidate.value_numerator.is_not(None),
-            ObservationCandidate.id.not_in(select(EvidenceSupportingCandidate.candidate_id)),
-        )
-        .order_by(
-            Page.index,
-            ObservationCandidate.created_at,
-            ObservationCandidate.id,
-            ObservationAssociation.created_at,
-        )
-    ).all()
-
-    readings: dict[UUID, Reading] = {}
-    for candidate, page_index, document_kind, association in rows:
-        source = document_source(document_kind)
-        if source is None or candidate.value_denominator is None:
-            # Neither sheet the rules read from, or a value the parser could not make exact. It can
-            # fill no field, and putting it in the context would spend prompt on a refusal.
-            continue
-        attached = association is not None and association.refusal_reason is None
-        readings[candidate.id] = Reading(
-            candidate_id=str(candidate.id),
-            value=(
-                f"{format_inches(Fraction(candidate.value_numerator, candidate.value_denominator))} "
-                f"{candidate.unit}"
-            ),
-            source=source,
-            page=page_index + 1,
-            line_key=(
-                line_key(
-                    association.start_x,
-                    association.start_y,
-                    association.end_x,
-                    association.end_y,
-                )
-                if attached
-                else None
-            ),
-            chain_key=association.chain_key if attached else None,
-            order=association.chain_position if attached else None,
-        )
-    return tuple(readings.values())
 
 
 @router.post(
@@ -770,8 +708,8 @@ def propose_measurements(
     """
     revision = _revision(session, project_id, package_id)
 
-    fields, rules_published = _assignment_fields(session)
-    readings = _assignment_readings(session, revision)
+    context, rules_published = assignment_context(session, revision)
+    fields, readings = context.fields, context.readings
 
     if len(readings) > MAX_ASSIGNMENT_READINGS:
         raise HTTPException(
@@ -783,7 +721,6 @@ def propose_measurements(
             ),
         )
 
-    context = AssignmentContext(fields=fields, readings=readings)
     model = configured_assignment_model(request.app.state.settings)
     attached = sum(1 for reading in readings if reading.line_key is not None)
     by_id = {reading.candidate_id: reading for reading in readings}
@@ -824,6 +761,19 @@ def propose_measurements(
         proposed = propose_and_guard(context, model, observer=observe)
         for event in pending:
             yield send(event)
+
+        # **Filed, exactly as the pipeline files its own.** The button used to produce an answer
+        # that lived in one browser tab: reload the page and the form was empty again, and nothing
+        # recorded that a model had ever proposed anything. One writer, one reader, so "what is the
+        # current proposal" has a single answer whichever path produced it.
+        if proposed and model is not None:
+            record_proposal(
+                session,
+                package_revision_id=revision.id,
+                assignments=proposed,
+                model_id=model.config.model_id,
+            )
+            session.commit()
 
         assignments = tuple(
             ProposedFieldOut(

@@ -2138,6 +2138,14 @@
             "title": "Parameters",
             "type": "array"
           },
+          "proposed_readings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ProposedFieldOut"
+            },
+            "title": "Proposed Readings",
+            "type": "array"
+          },
           "quantities": {
             "items": {
               "$ref": "#/components/schemas/QuantityOut"

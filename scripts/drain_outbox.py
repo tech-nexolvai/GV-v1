@@ -241,6 +241,28 @@ def _ensure_workflow_run(
         session.flush()  # type: ignore[union-attr]
 
 
+def _propose_measurements(session: object, package_revision_id: UUID) -> Mapping[str, object]:
+    """Ask a model which reading fills which field, check it, and file what survived.
+
+    **Every failure leaves the reviewer exactly where they are today**, typing the values in
+    themselves — which is what a deployment with no model configured does, and what happened before
+    this step existed. So nothing here raises: a drawing that was read successfully must not be
+    lost because a provider was unreachable.
+
+    Imported inside the function for the reason the other consumers are: this script stays
+    control-plane-safe until it is actually asked to consume work.
+    """
+    from app.config import Settings
+    from workflow.assignment_bedrock import configured_assignment_model
+    from workflow.propose import propose_for_revision
+
+    try:
+        model = configured_assignment_model(Settings())  # type: ignore[call-arg]
+        return propose_for_revision(session, package_revision_id, model)  # type: ignore[arg-type]
+    except Exception as error:  # noqa: BLE001 - reported, never fatal to a read drawing
+        return {"ran": False, "reason": f"the proposal step failed: {error}"}
+
+
 def _extract_package(
     session: object, package_revision_id: UUID, idempotency_key: str
 ) -> Mapping[str, object]:
@@ -268,6 +290,18 @@ def _extract_package(
             stages=stages,  # type: ignore[arg-type]
         )
         results[stage] = dict(outcome.payload)
+    # **Fill the reviewer's form, now, while the facts are in hand.**
+    #
+    # This is the whole point of doing it here rather than behind a button on the form: a reviewer
+    # opening Measure finds it already filled and marked, instead of an empty form and a request to
+    # make. It also costs one model call per upload rather than one per page load.
+    #
+    # It cannot fail the extraction. The drawings were read and the readings are recorded; a
+    # provider that will not answer leaves the form to be filled by hand, which is exactly what a
+    # deployment with no model configured does anyway. `propose_for_revision` catches its own
+    # failures and reports them; this only decides what to print.
+    results["propose_measurements"] = _propose_measurements(session, package_revision_id)
+
     # Extraction is deliberately pre-verdict work. Whether it found many readings or none,
     # the next actor is the reviewer: confirm the untyped proposals and supply the values the
     # reader abstained on. Leaving a zero-result revision in VALIDATING_EVIDENCE makes that

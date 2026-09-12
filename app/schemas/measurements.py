@@ -201,38 +201,6 @@ class DiscriminatorOut(BaseModel):
     choices: tuple[str, ...]
 
 
-class RequiredInputsOut(BaseModel):
-    """Everything the published rulebook needs, grouped so a form can render it.
-
-    Derived from the published rules rather than listed, which is what makes it impossible for a
-    field to be missing: a rule that gains an input gains a field here on the next publish.
-    """
-
-    quantities: tuple[QuantityOut, ...]
-    #: Readings a reviewer already confirmed on the mechanical crop for this exact package revision.
-    #: They are returned separately from rule requirements so the UI can make their provenance visible.
-    confirmed_readings: tuple[ConfirmedReadingOut, ...] = ()
-    parameters: tuple[ParameterOut, ...]
-    discriminators: tuple[DiscriminatorOut, ...]
-    #: How many rules are published. Zero means the form is empty because nothing is published, which
-    #: is a different problem from a rulebook that asks for nothing.
-    rules_published: int
-
-
-class CheckRequest(BaseModel):
-    """Asking for the checks, and what the reviewer says about the layout.
-
-    **Discriminators travel with the request rather than being stored as evidence**, because that is
-    what they are: a statement about how to read this package on this run. A rule with a discriminator
-    nobody stated abstains with REVIEW_REQUIRED however complete the measurements are, so without
-    these two `CT-WIDTH-001` and `CAB-FILLER-001` could never reach a verdict.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    discriminators: dict[str, str] = Field(default_factory=dict)
-
-
 class ProposedReadingOut(BaseModel):
     """One reading a model proposes for a field, named by the candidate it already is."""
 
@@ -257,6 +225,45 @@ class ProposedFieldOut(BaseModel):
     source: str
     many: bool
     values: tuple[ProposedReadingOut, ...]
+
+
+class RequiredInputsOut(BaseModel):
+    """Everything the published rulebook needs, grouped so a form can render it.
+
+    Derived from the published rules rather than listed, which is what makes it impossible for a
+    field to be missing: a rule that gains an input gains a field here on the next publish.
+    """
+
+    quantities: tuple[QuantityOut, ...]
+    #: Readings a reviewer already confirmed on the mechanical crop for this exact package revision.
+    #: They are returned separately from rule requirements so the UI can make their provenance visible.
+    confirmed_readings: tuple[ConfirmedReadingOut, ...] = ()
+    #: What a model proposed for this revision, already checked, filed when the drawings were read.
+    #:
+    #: **Here rather than behind a second request**, because a form that arrives empty and fills a
+    #: moment later is a form a reviewer starts typing into. Separate from `confirmed_readings` for
+    #: the reason those are separate from the quantities: a proposal is the weakest claim on the
+    #: screen, and the page has to be able to mark it as one.
+    proposed_readings: tuple[ProposedFieldOut, ...] = ()
+    parameters: tuple[ParameterOut, ...]
+    discriminators: tuple[DiscriminatorOut, ...]
+    #: How many rules are published. Zero means the form is empty because nothing is published, which
+    #: is a different problem from a rulebook that asks for nothing.
+    rules_published: int
+
+
+class CheckRequest(BaseModel):
+    """Asking for the checks, and what the reviewer says about the layout.
+
+    **Discriminators travel with the request rather than being stored as evidence**, because that is
+    what they are: a statement about how to read this package on this run. A rule with a discriminator
+    nobody stated abstains with REVIEW_REQUIRED however complete the measurements are, so without
+    these two `CT-WIDTH-001` and `CAB-FILLER-001` could never reach a verdict.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    discriminators: dict[str, str] = Field(default_factory=dict)
 
 
 class ProposedMeasurementsOut(BaseModel):
