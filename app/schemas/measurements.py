@@ -224,6 +224,14 @@ class ProposedFieldOut(BaseModel):
     name: str
     source: str
     many: bool
+    #: Whether the drawing's own geometry confirmed where these readings sit.
+    #:
+    #: `False` on a page with no dimension line-work — a scanned drawing — where the attachment
+    #: check had nothing to test against and abstained rather than refusing. Every other check still
+    #: applied. The distinction is on the wire because a screen showing a value has to be able to say
+    #: on what grounds it is there, and "the geometry agrees" and "there was no geometry" are not
+    #: the same grounds.
+    placement_verified: bool = True
     values: tuple[ProposedReadingOut, ...]
 
 

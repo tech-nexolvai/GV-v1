@@ -408,6 +408,7 @@ def record_associations(
     *,
     extraction_run_id: UUID,
     chains: Mapping[str, tuple[str, int]] | None = None,
+    lines_on_page: int | None = None,
 ) -> list[ObservationAssociation]:
     """Persist what the association step decided about each reading — attachment or refusal.
 
@@ -480,6 +481,7 @@ def record_associations(
                 signals=list(attached.signals),
                 chain_key=None if chain is None else chain[0],
                 chain_position=None if chain is None else chain[1],
+                lines_on_page=lines_on_page,
             )
         )
     for refused in result.unassociated:
@@ -489,6 +491,7 @@ def record_associations(
                 extraction_run_id=extraction_run_id,
                 signals=[],
                 refusal_reason=refused.reason,
+                lines_on_page=lines_on_page,
                 # What the choice was between. A reviewer told only that an association could not be
                 # made cannot check the geometry; shown the candidates, they can.
                 candidate_lines=[

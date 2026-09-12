@@ -209,6 +209,13 @@ def assignment_readings(session: Session, revision: PackageRevision) -> tuple[Re
             ),
             chain_key=association.chain_key if attached else None,
             order=association.chain_position if attached else None,
+            # **A page with no line-work never tested this reading.** `lines_on_page` is `0` for a
+            # scanned drawing, where the detector had nothing to detect; `None` for a row written
+            # before the count was recorded, which is treated as "we do not know", and not knowing
+            # is not grounds to waive a check.
+            geometry_available=bool(
+                association is not None and (association.lines_on_page or 0) > 0
+            ),
         )
     return tuple(readings.values())
 
@@ -228,6 +235,7 @@ def record_proposal(
     package_revision_id: UUID,
     assignments: tuple[ProposedAssignment, ...],
     model_id: str,
+    unverified_placement: tuple[str, ...] = (),
 ) -> UUID | None:
     """File an accepted proposal, or file nothing. Returns the proposal id, or `None`.
 
@@ -239,6 +247,10 @@ def record_proposal(
     Appends rather than replaces, because the table is append-only: a second proposal is a second
     set of rows beside the first, and `stored_proposal` reads the newest. The older set is the
     record of what it replaced.
+
+    `unverified_placement` names the fields whose readings the drawing's geometry could not vouch
+    for, because the page had none. Written onto the row rather than left to be recomputed, so the
+    ground a value is shown on travels with the value.
     """
     if not assignments:
         return None
@@ -252,6 +264,7 @@ def record_proposal(
                     field_key=assignment.field_key,
                     position=position,
                     candidate_id=UUID(candidate_id),
+                    placement_verified=assignment.field_key not in unverified_placement,
                     model_id=model_id,
                     prompt_id=PROMPT_ID,
                 )
@@ -321,12 +334,13 @@ def propose_for_revision(
         }
 
     last: list[AssignmentProgress] = []
-    accepted = propose_and_guard(context, model, observer=last.append)
+    accepted, unverified = propose_and_guard(context, model, observer=last.append)
     proposal_id = record_proposal(
         session,
         package_revision_id=package_revision_id,
         assignments=accepted,
         model_id=model.config.model_id,
+        unverified_placement=unverified,
     )
     refused = next(
         (
@@ -342,6 +356,7 @@ def propose_for_revision(
         "attached": sum(1 for reading in context.readings if reading.line_key is not None),
         "fields": len(context.fields),
         "filled": len(accepted),
+        "unverified_placement": len(unverified),
         "proposal_id": None if proposal_id is None else str(proposal_id),
         **({"reason": refused} if refused and not accepted else {}),
     }

@@ -242,7 +242,7 @@ def test_a_proposal_the_guard_refuses_yields_nothing() -> None:
     )
     model = _model(_response([{"field_key": "ARCH:CT001", "candidate_ids": ["c1"]}]))
 
-    assert propose_and_guard(context, model) == ()
+    assert propose_and_guard(context, model) == ((), ())
 
 
 def test_a_provider_failure_yields_nothing_rather_than_raising() -> None:
@@ -263,18 +263,19 @@ def test_a_provider_failure_yields_nothing_rather_than_raising() -> None:
         client=_Broken(),
     )
 
-    assert propose_and_guard(_context(), model) == ()
+    assert propose_and_guard(_context(), model) == ((), ())
 
 
 def test_no_model_configured_yields_nothing() -> None:
     """Outcome: `()`, which is today's behaviour and a complete one."""
-    assert propose_and_guard(_context(), None) == ()
+    assert propose_and_guard(_context(), None) == ((), ())
 
 
 def test_an_accepted_proposal_comes_back() -> None:
     """Outcome: the assignment, once it has passed every check."""
     assert propose_and_guard(_context(), _model()) == (
-        ProposedAssignment(field_key="SHOP:CT010", candidate_ids=("c1",)),
+        (ProposedAssignment(field_key="SHOP:CT010", candidate_ids=("c1",)),),
+        (),
     )
 
 
@@ -364,10 +365,11 @@ def test_a_correctable_mistake_is_corrected_on_the_second_attempt() -> None:
         client=client,
     )
 
-    result = propose_and_guard(_run_context(), model)
+    accepted, unverified = propose_and_guard(_run_context(), model)
 
     assert len(client.calls) == 2
-    assert result == (
+    assert unverified == (), "every reading in this context is attached"
+    assert accepted == (
         ProposedAssignment(field_key="SHOP:cabinet_width", candidate_ids=("c2",)),
         ProposedAssignment(field_key="SHOP:filler_width", candidate_ids=("c1",)),
     )
@@ -423,7 +425,7 @@ def test_it_retries_once_and_not_forever() -> None:
         client=client,
     )
 
-    assert propose_and_guard(_run_context(), model) == ()
+    assert propose_and_guard(_run_context(), model) == ((), ())
     assert client.calls == 2
 
 
@@ -468,7 +470,7 @@ def test_the_observer_sees_the_retry_that_the_return_value_hides() -> None:
     )
     seen: list[AssignmentProgress] = []
 
-    accepted = propose_and_guard(_run_context(), model, observer=seen.append)
+    accepted, _ = propose_and_guard(_run_context(), model, observer=seen.append)
 
     assert accepted, "the corrected answer was not returned"
     assert [progress.phase for progress in seen] == [
@@ -519,7 +521,7 @@ def test_a_deployment_with_no_model_says_so_rather_than_going_quiet() -> None:
     """
     seen: list[AssignmentProgress] = []
 
-    assert propose_and_guard(_run_context(), None, observer=seen.append) == ()
+    assert propose_and_guard(_run_context(), None, observer=seen.append) == ((), ())
 
     assert [progress.phase for progress in seen] == ["unavailable"]
     assert "no model is configured" in seen[0].detail

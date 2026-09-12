@@ -1811,6 +1811,11 @@
             "title": "Name",
             "type": "string"
           },
+          "placement_verified": {
+            "default": true,
+            "title": "Placement Verified",
+            "type": "boolean"
+          },
           "source": {
             "title": "Source",
             "type": "string"

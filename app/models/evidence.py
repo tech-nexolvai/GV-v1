@@ -404,6 +404,20 @@ class ObservationAssociation(Base, TimestampedUUID, Immutable):
     """Its place along that chain, `0` upward, in the order the drawing draws it. Position is what
     the check compares, so this is a fact about the sheet rather than a presentation choice."""
 
+    lines_on_page: Mapped[int | None] = mapped_column(default=None)
+    """How many dimension lines the detector found on this page when this decision was made.
+
+    **`0` and `null` are not the same as a large number, and the difference decides what a model is
+    allowed to propose.** A reading refused where twelve lines were found is a number that sits near
+    none of them — floating, possibly a title block or a scale bar, and `guard_assignment` is right
+    to refuse it. A reading refused where *zero* were found was never checked against anything: the
+    drawing is a scanned image with no vector line-work, so there was no geometry to test it
+    against, which is a different fact and reads as a different sentence.
+
+    Conflating them meant autofill was switched off entirely for scanned drawings, on the strength
+    of a check that had not run. Recorded as a count rather than inferred from the refusal text,
+    because a sentence is not a thing downstream code should be parsing."""
+
     __table_args__ = (
         # Attached or refused, never both and never neither. A row with endpoints *and* a reason
         # would be two answers to one question, and a row with neither would be a decision nobody
@@ -482,6 +496,15 @@ class MeasurementProposal(Base, TimestampedUUID, Immutable):
     candidate_id: Mapped[UUID] = mapped_column(
         ForeignKey("observation_candidates.id", ondelete="RESTRICT"), index=True
     )
+
+    placement_verified: Mapped[bool] = mapped_column(default=True)
+    """Whether the drawing's own geometry confirmed this reading sits on a dimension line.
+
+    `False` where the page had no line-work at all, so the check could not run. The reading still
+    passed every other check — right sheet, one field, a field that takes one value, a reading this
+    run actually produced — and a reviewer still confirms it. But the screen has to say which of the
+    two it is looking at, because "the geometry agrees" and "there was no geometry" are different
+    grounds for the same number appearing in the same box."""
 
     model_id: Mapped[str] = mapped_column(String(200))
     prompt_id: Mapped[str] = mapped_column(String(100))
