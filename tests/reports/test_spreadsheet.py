@@ -663,3 +663,51 @@ def test_reviewer_narration_is_appended_without_replacing_the_engine_reason() ->
     assert sheet.cell(row=2, column=FINDING_COLUMNS.index("reviewer_summary") + 1).value == (
         "CT-DEPTH-001: PASS. Reviewer-facing language."
     )
+
+
+# ---------------------------------------------------------------------------
+# The same findings must produce the same bytes (#602)
+# ---------------------------------------------------------------------------
+
+
+def test_the_same_findings_produce_byte_identical_workbooks() -> None:
+    """**Outcome: identical bytes, however much time passes between the two writes.**
+
+    `workflow/stages.py:generate_outputs` hashes these bytes to decide whether a deliverable has
+    already been recorded. An `.xlsx` is a ZIP and carried two clocks — the modification time a ZIP
+    stores per entry, and the `created`/`modified` instants openpyxl writes into
+    `docProps/core.xml` — so regenerating an unchanged revision produced different bytes and
+    recorded a *second* deliverable for one set of findings.
+
+    **The sleep is the test.** Both clocks have coarse resolution, so two writes in the same instant
+    agree whatever is wrong; that is exactly how this survived, passing locally every time and
+    failing on a slower machine. Two and a half seconds clears the ZIP's two-second bucket.
+    """
+    import time
+
+    first = write_stored_workbook(())
+    time.sleep(2.5)
+    second = write_stored_workbook(())
+
+    assert first == second
+
+
+def test_a_produced_workbook_still_opens_and_keeps_its_sheets() -> None:
+    """Outcome: a real workbook, not merely identical bytes.
+
+    The archive is rewritten to strip its clocks, and a rewrite that produced something Excel would
+    not open would trade one bug for a worse one.
+    """
+    import io
+    import zipfile
+
+    import openpyxl
+
+    produced = write_stored_workbook(())
+
+    assert zipfile.ZipFile(io.BytesIO(produced)).testzip() is None
+    assert openpyxl.load_workbook(io.BytesIO(produced)).sheetnames == [
+        "Review Summary",
+        "Findings",
+        "Operands",
+    ]

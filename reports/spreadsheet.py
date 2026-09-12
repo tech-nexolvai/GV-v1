@@ -46,6 +46,8 @@ Verification: ``tests/reports/test_spreadsheet.py``
 from __future__ import annotations
 
 import json
+import re
+import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -561,6 +563,69 @@ def _stored_operand_rows(finding: StoredFinding) -> list[tuple[object, ...]]:
     return rows
 
 
+#: The instant a produced workbook claims it was created and modified.
+#:
+#: openpyxl writes the clock into `docProps/core.xml`, and re-stamps `modified` at save time
+#: whatever the workbook's properties say — so setting them before saving fixes `created` and not
+#: `modified`. Normalised while the archive is being rewritten instead, which is one mechanism
+#: rather than two and does not depend on how a library version chooses to fill the field.
+#:
+#: *When* a deliverable was produced is recorded by `output_artifacts.created_at`, on a row where it
+#: can be audited — not inside a file whose identity is supposed to be its hash.
+_FIXED_DOCUMENT_INSTANT: Final = "1980-01-01T00:00:00Z"
+
+#: The two `docProps/core.xml` fields that carry it.
+_DOCUMENT_INSTANT_FIELDS: Final = re.compile(
+    rb"(<dcterms:(?:created|modified)\b[^>]*>)[^<]*(</dcterms:(?:created|modified)>)"
+)
+
+#: The timestamp written into every entry of a produced workbook.
+#:
+#: An `.xlsx` is a ZIP, and a ZIP records a modification time per entry. openpyxl stamps the clock,
+#: so the same findings written twice produce different bytes — which makes a content-addressed key
+#: not content-addressed. `workflow/stages.py:generate_outputs` hashes these bytes to decide whether
+#: a deliverable has already been recorded, so a regeneration more than two seconds after the first
+#: recorded a *second* deliverable for one set of findings.
+#:
+#: The value is the MS-DOS epoch, the earliest a ZIP can express. It is a constant rather than a
+#: build date because the point is that it carries no information: a reader comparing two workbooks
+#: should see a difference only where the findings differ.
+_FIXED_ZIP_TIMESTAMP: Final = (1980, 1, 1, 0, 0, 0)
+
+#: Where a workbook records when it says it was made.
+_CORE_PROPERTIES: Final = "docProps/core.xml"
+
+
+def _without_timestamps(archive: bytes) -> bytes:
+    """The same workbook with every clock in it fixed.
+
+    Two clocks, both of which made a content-addressed key not content-addressed: the modification
+    time a ZIP records per entry, and the `created`/`modified` instants openpyxl writes into
+    `docProps/core.xml`.
+
+    Rewritten rather than patched in place: a ZIP records the time in both the local header and the
+    central directory, and editing one of the two makes an archive some readers reject. Entry order,
+    names, contents and compression are preserved exactly, so this changes the bytes that carry a
+    clock and nothing else.
+    """
+    source = zipfile.ZipFile(BytesIO(archive))
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as destination:
+        for entry in source.infolist():
+            fixed = zipfile.ZipInfo(entry.filename, date_time=_FIXED_ZIP_TIMESTAMP)
+            fixed.compress_type = entry.compress_type
+            fixed.external_attr = entry.external_attr
+            fixed.internal_attr = entry.internal_attr
+            fixed.create_system = entry.create_system
+            content = source.read(entry.filename)
+            if entry.filename == _CORE_PROPERTIES:
+                content = _DOCUMENT_INSTANT_FIELDS.sub(
+                    rb"\g<1>" + _FIXED_DOCUMENT_INSTANT.encode() + rb"\g<2>", content
+                )
+            destination.writestr(fixed, content)
+    return out.getvalue()
+
+
 def write_stored_workbook(
     findings: Sequence[StoredFinding], *, signoff: WorkbookSignoff | None = None
 ) -> bytes:
@@ -590,7 +655,7 @@ def write_stored_workbook(
 
     out = BytesIO()
     workbook.save(out)
-    return out.getvalue()
+    return _without_timestamps(out.getvalue())
 
 
 def write_workbook(findings: Sequence[Finding]) -> bytes:
@@ -624,4 +689,4 @@ def write_workbook(findings: Sequence[Finding]) -> bytes:
 
     out = BytesIO()
     workbook.save(out)
-    return out.getvalue()
+    return _without_timestamps(out.getvalue())
