@@ -495,12 +495,58 @@ export function EnterValuesPage({
    * it fill the field, then reasonably expects Run checks to use that field.  Queuing first would
    * create a run without the displayed measurements, which is both surprising and unsafe.
    */
+  /**
+   * Accepting an AI reading is confirming a drawing reading, not typing a number.
+   *
+   * **This is what kept a crop off the screen.** A proposal knows which reading it came from, and
+   * that reading has a stored crop cut from the uploaded PDF. But saving put the *number* into the
+   * parameter set as a reviewer-supplied value — and `run_checks` deliberately lets a supplied
+   * operand override a derived one, because "supplying one is a deliberate act". So the check was
+   * judged on `USER_INPUT: 18 in`, with no page, no polygon and no crop, while the drawing reading
+   * that produced it sat unused beside it. Asked for the evidence, the panel could only say there
+   * was none.
+   *
+   * So an unedited proposal is confirmed instead: the candidate is sealed as a canonical
+   * observation the reviewer stands behind, which carries its page, its polygon and its crop, and
+   * the check reads it through the evidence path. The reviewer's act is the same one click; what
+   * changes is that the record keeps hold of where the number came from.
+   *
+   * Returns the field keys it confirmed, so the caller can leave them out of the typed payload —
+   * sending both would put a value with no provenance in front of the one with it.
+   */
+  async function confirmAcceptedProposals(): Promise<Set<string>> {
+    if (!packageId || !needed) return new Set();
+    const confirmed = new Set<string>();
+    for (const [key, candidateIds] of Object.entries(aiFilled)) {
+      const quantity = needed.quantities.find((item) => item.key === key);
+      if (!quantity || candidateIds.length === 0) continue;
+      try {
+        // In order: a many-valued field's readings are a run, and the evidence path orders a run by
+        // the time its readings were confirmed.
+        for (const candidateId of candidateIds) {
+          await confirmCandidate(projectId(), packageId, candidateId, quantity.semantic_type);
+        }
+        confirmed.add(key);
+      } catch {
+        // **A confirmation that fails costs the crop, never the value.** The number is still what
+        // the reviewer accepted, so it goes down the typed path as before and the check still runs.
+        // Losing a value because its provenance could not be recorded would be the worse trade.
+      }
+    }
+    return confirmed;
+  }
+
   async function saveVisibleValues(): Promise<boolean> {
     if (!packageId || !needed) return false;
     try {
+      const confirmedFromDrawing = await confirmAcceptedProposals();
+
       // **One typed value fans out to every rule input it feeds.** The mapping is the server's, taken
       // from `consumers` — a reviewer measures the front offset once, and three rules receive it.
       const measurements = needed.quantities.flatMap<MeasurementEntry>((quantity) => {
+        // Confirmed above, so it reaches the checks as drawing-backed evidence. Typing it as well
+        // would shadow that with a value carrying no page, no polygon and no crop.
+        if (confirmedFromDrawing.has(quantity.key)) return [];
         const consumers = quantity.consumers.filter((c) => c.rule_id && c.input_name);
         if (quantity.many) {
           const values = (runs[quantity.key] ?? []).map((v) => v.trim()).filter(Boolean);
