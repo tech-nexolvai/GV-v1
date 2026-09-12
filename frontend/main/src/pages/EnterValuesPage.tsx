@@ -670,10 +670,18 @@ export function EnterValuesPage({
             >
               <Sparkles size={14} aria-hidden="true" /> Fill with AI
             </button>
+            {/* **Two situations, not one sentence covering both.**
+                "every reading already has a meaning, or the reader found none" made the reviewer
+                work out which of the two they were in — from a panel that already knows. One of
+                them is a finished package and the other is a drawing nothing was read from, and
+                they want completely different things done about them. */}
             {candidates.length === 0 && (
               <p className="enter-values__hint enter-values__hint--tight">
-                There is nothing to propose from: every reading has already been given a meaning, or
-                the reader found none on these drawings.
+                {confirmedCount > 0
+                  ? 'Nothing left to propose — every reading off these drawings already has a meaning.'
+                  : 'Nothing was read off these drawings, so there is nothing to propose from. ' +
+                    'Check on Documents that both drawings finished uploading and that the AI ' +
+                    'reading has run.'}
               </p>
             )}
           </div>
