@@ -6,7 +6,7 @@ import ast
 from collections.abc import Sequence
 from pathlib import Path
 
-from app.review.chat import ChatMode, answer_question
+from app.review.chat import NOTHING_HAS_RUN, ChatMode, answer_question
 from workflow.findings_composer import (
     ComposerFinding,
     ComposerOperand,
@@ -146,3 +146,47 @@ def test_chat_language_modules_cannot_reach_rules_verdicts_or_arithmetic() -> No
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
         assert imported.isdisjoint(forbidden), f"{relative} reaches {imported & forbidden}"
+
+
+# ---------------------------------------------------------------------------
+# A package nobody has checked
+# ---------------------------------------------------------------------------
+
+
+def test_a_package_nobody_has_checked_is_not_a_run_with_no_failures() -> None:
+    """**Input: no findings, and no check has run. Outcome: it says so.**
+
+    The two empty cases arrive here identically and mean opposite things. Asked "Why did this
+    fail?" about a package uploaded four minutes earlier and never checked, this answered *"No FAIL
+    findings in this run (0 total)"* — which a reviewer reads as a clean bill of health for a
+    drawing nothing has looked at. That is the most expensive sentence this module can say, and it
+    was the default one.
+    """
+    result = answer_question("Why did this fail?", (), None, checks_have_run=False)
+
+    assert result.text == NOTHING_HAS_RUN
+    assert "No FAIL findings" not in result.text
+    assert result.narratives == ()
+    assert result.fallback_reason == "no checks have been run on this package"
+
+
+def test_a_run_that_found_nothing_still_says_the_run_happened() -> None:
+    """Outcome: the existing sentence, unchanged.
+
+    The other half of the distinction. A check that ran and found nothing is a real result and must
+    keep reading like one — the fix must not make every empty answer sound like an unfinished job.
+    """
+    result = answer_question("Show me FAIL findings", (), None)
+
+    assert result.text == "No FAIL findings in this run (0 total)."
+
+
+def test_nothing_having_run_outranks_the_outcome_filter() -> None:
+    """Outcome: the same sentence whichever outcome was asked about.
+
+    "Show me PASS findings" on an unchecked package must not answer "no PASS findings" either. The
+    filter chooses among recorded findings; where there is no run, there is nothing to choose from
+    and the question does not have an answer yet.
+    """
+    for question in ("Show all findings", "Which passes?", "Show FAIL findings"):
+        assert answer_question(question, (), None, checks_have_run=False).text == NOTHING_HAS_RUN

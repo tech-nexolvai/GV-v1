@@ -142,10 +142,32 @@ def _facts(
     )
 
 
+def _checks_have_run(session: Session, revision_id: UUID) -> bool:
+    """Whether any check has actually been run on this revision.
+
+    **Separate from "are there findings", because an empty list means two different things.** A
+    package uploaded and never checked and a package checked with nothing wrong both produce no
+    findings, and answering them the same way told a reviewer "No FAIL findings in this run" about a
+    drawing nothing had looked at — which reads as a clean bill of health. The presence of an
+    unsuperseded `CheckRun` is what separates them, and it is a row rather than an inference.
+    """
+    return (
+        session.execute(
+            select(CheckRun.id)
+            .where(CheckRun.package_revision_id == revision_id, CheckRun.superseded_at.is_(None))
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
 def _live_run_facts(
     session: Session, project_id: UUID, package_id: UUID
-) -> tuple[ComposerFinding, ...] | None:
-    """Return one package revision's unsuperseded deterministic findings, or no such package."""
+) -> tuple[tuple[ComposerFinding, ...], bool] | None:
+    """One revision's unsuperseded findings and whether anything was checked, or no such package.
+
+    Both, because the findings alone cannot tell the caller which of the two empty cases it is in.
+    """
     revision = session.execute(
         select(PackageRevision.id)
         .join(Package, Package.id == PackageRevision.package_id)
@@ -156,6 +178,7 @@ def _live_run_facts(
     if revision is None:
         return None
 
+    checked = _checks_have_run(session, revision)
     rows = session.execute(
         select(Finding, RuleDefinition, RuleSnapshot.canonical_json)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
@@ -193,7 +216,7 @@ def _live_run_facts(
                 ),
             )
         )
-    return tuple(result)
+    return tuple(result), checked
 
 
 @router.post(
@@ -210,14 +233,16 @@ def reviewer_chat(
     package_id: UUID,
 ) -> ReviewerChatOut:
     """Narrate the package's current findings without changing, calculating, or extending them."""
-    facts = _live_run_facts(session, project_id, package_id)
-    if facts is None:
+    live = _live_run_facts(session, project_id, package_id)
+    if live is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    facts, checks_have_run = live
 
     reply: ChatReply = answer_question(
         body.question,
         facts,
         configured_reviewer_chat(request.app.state.settings),
+        checks_have_run=checks_have_run,
     )
     keys = {item.key for item in facts}
     # This is redundant with ``compose_findings`` deliberately: an API response with an unbacked id
