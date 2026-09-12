@@ -1,0 +1,241 @@
+/* ============================================================
+   ASSIGNMENT PROGRESS
+   What the screen shows while a model decides which reading fills which field.
+
+   The bar here is determinate and `ThinkingStream`'s is not, deliberately: this request reports its
+   own position five times, and a chat request reports none. Same visual family, opposite claim.
+   ============================================================ */
+
+.assign {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--gv-crimson-border);
+  border-left: 3px solid var(--gv-crimson);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(var(--gv-crimson-dim-2), var(--gv-crimson-dim-2)),
+    var(--bg-base);
+  box-shadow: var(--elevation-2);
+  animation: gv-rise var(--duration-slow) var(--ease-emphasis) both;
+}
+
+.assign[data-state='done']  { border-left-color: var(--status-pass); }
+.assign[data-state='error'] { border-left-color: var(--status-review); }
+
+/* ── Header ─────────────────────────────────────────────── */
+
+.assign__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.assign__halo {
+  display: grid;
+  place-items: center;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.assign__halo::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: var(--radius-lg);
+  background: var(--gv-crimson);
+  opacity: 0.16;
+}
+
+.assign[data-state='running'] .assign__halo::before {
+  animation: gv-breathe 1.8s var(--ease-in-out) infinite;
+}
+
+.assign__halo > * { position: relative; }
+
+.assign__titles { min-width: 0; }
+
+.assign__title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semi);
+  letter-spacing: var(--tracking-tight);
+  color: var(--text-primary);
+}
+
+.assign__subtitle {
+  margin: 2px 0 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--text-body);
+}
+
+/* The one big number. `tabular-nums` so 9 → 10 does not shift the sign beside it. */
+.assign__percent {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.assign__percent-value {
+  font-size: var(--text-3xl);
+  font-weight: var(--weight-semi);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-tight);
+  color: var(--text-brand);
+  transition: color var(--duration-base) var(--ease-out);
+}
+
+.assign[data-state='done'] .assign__percent-value { color: var(--status-pass); }
+
+.assign__percent-unit {
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  color: var(--text-muted);
+}
+
+/* ── Determinate bar ────────────────────────────────────── */
+
+.assign__track {
+  position: relative;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--bg-input);
+  overflow: hidden;
+}
+
+.assign__bar {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--gradient-brand);
+  /* Slow, because the jump between phases is large and an instant snap reads as a glitch rather
+     than as a step completing. */
+  transition: width var(--duration-panel) var(--ease-out);
+}
+
+/* A sheen travels the filled part only while work is in flight — it says "this is the live figure",
+   and it stops the moment the number is final so a finished panel is visibly still. */
+.assign[data-state='running'] .assign__bar::after {
+  content: '';
+  display: block;
+  height: 100%;
+  background: var(--gradient-sheen);
+  background-size: 200% 100%;
+  animation: gv-sheen 1.6s linear infinite;
+}
+
+.assign[data-state='done'] .assign__bar { background: var(--status-pass); }
+
+.assign__legend {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: var(--text-muted);
+}
+
+.assign__legend .mono { margin-left: var(--space-2); font-variant-numeric: tabular-nums; }
+
+/* ── Phase list ─────────────────────────────────────────── */
+
+.assign__phases {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.assign__phase {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  transition:
+    color var(--duration-base) var(--ease-out),
+    background-color var(--duration-base) var(--ease-out);
+}
+
+.assign__phase[data-state='active'] {
+  background: var(--gv-crimson-dim);
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+}
+
+.assign__phase[data-state='done']    { color: var(--text-body); }
+.assign__phase[data-state='waiting'] { color: var(--text-faint); }
+.assign__phase[data-state='skipped'] { color: var(--text-faint); font-style: italic; }
+.assign__phase[data-state='error']   { color: var(--status-review); }
+
+.assign__marker {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: currentColor;
+}
+
+.assign__phase[data-state='done'] .assign__marker { color: var(--status-pass); }
+
+.assign__phase-label { flex-shrink: 0; }
+
+/* The detail is the phase's own count — "11 readings, 8 attached to a dimension line". It truncates
+   rather than wrapping, because a phase row growing to two lines moves every row under it while the
+   list is still being written to. */
+.assign__phase-detail {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.assign__retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--status-review-bg);
+  color: var(--status-review);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+
+/* ── Notes ──────────────────────────────────────────────── */
+
+.assign__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--text-body);
+}
+
+.assign__note svg { flex-shrink: 0; margin-top: 2px; }
+
+.assign__note--refused {
+  background: var(--status-review-bg);
+  color: var(--status-review);
+}
+
+.assign__model {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}

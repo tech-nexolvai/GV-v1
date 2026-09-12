@@ -317,6 +317,21 @@ def _canonical_fraction_is_normalized(
     _require_normalized_rational(target.value_numerator, target.value_denominator)
 
 
+def line_key(start_x: object, start_y: object, end_x: object, end_y: object) -> str:
+    """One dimension line's endpoints as a single string, for looking a line up by where it is.
+
+    There is no `dimension_lines` table and no line id, deliberately — `ObservationAssociation`
+    explains why. So a caller that knows something *about* a line, such as which chain the detector
+    put it in, has only its coordinates to name it by. This is that name, built from the same strings
+    the row stores, so the two cannot drift into different spellings of the same line.
+
+    Here rather than beside the code that writes a row, because the control plane reads these keys
+    too and `tests/api/test_no_heavy_work.py` refuses `app/api/` any path to `extraction/` — which
+    `app/evidence/record.py` legitimately has.
+    """
+    return f"{start_x},{start_y},{end_x},{end_y}"
+
+
 class ObservationAssociation(Base, TimestampedUUID, Immutable):
     """Which dimension line one reading annotates — or why that could not be decided.
 
@@ -369,6 +384,26 @@ class ObservationAssociation(Base, TimestampedUUID, Immutable):
     """What the choice was between, when there was one. A reviewer told only that an association
     could not be made cannot check the geometry; shown the candidates, they can."""
 
+    chain_key: Mapped[str | None] = mapped_column(String(120), default=None)
+    """Which chain of end-to-end dimensions this reading's line belongs to, or `None` for a line
+    that stands alone.
+
+    **This is the fact that makes an ordered run checkable, and it had nowhere to live.**
+    `extraction/geometry/dimension_lines.py` has grouped dimension lines into chains since #588, and
+    `workflow/assignment.py` refuses a many-valued field whose readings come from two of them —
+    because `CT-WIDTH-001` compares two runs position by position, so values gathered from unrelated
+    places would produce a check comparing the second cabinet against the fifth. That refusal could
+    never fire in production: the detector ran in the worker and its chains were discarded on the
+    next line. This column is where they stop being discarded.
+
+    Page-scoped and deterministic: `page.id`, the axis, and the chain's index in detection order.
+    Not an identity — there is still no `dimension_lines` table, and this says only "these readings'
+    lines were drawn end to end", which is a statement about where the strokes are."""
+
+    chain_position: Mapped[int | None] = mapped_column(default=None)
+    """Its place along that chain, `0` upward, in the order the drawing draws it. Position is what
+    the check compares, so this is a fact about the sheet rather than a presentation choice."""
+
     __table_args__ = (
         # Attached or refused, never both and never neither. A row with endpoints *and* a reason
         # would be two answers to one question, and a row with neither would be a decision nobody
@@ -389,6 +424,16 @@ class ObservationAssociation(Base, TimestampedUUID, Immutable):
         CheckConstraint(
             "refusal_reason IS NULL OR refusal_reason !~ '^[[:space:]]*$'",
             name="refusal_reason_not_blank",
+        ),
+        # A chain membership is a key *and* a position, and only on a row that was attached. Half of
+        # one is not a weaker answer, it is an unusable one: a position with no chain cannot be
+        # ordered against anything, and a chain on a refused row would claim the line it belongs to
+        # while the same row says no line was decided.
+        CheckConstraint(
+            "(chain_key IS NULL AND chain_position IS NULL)"
+            " OR (chain_key IS NOT NULL AND chain_position IS NOT NULL"
+            " AND refusal_reason IS NULL)",
+            name="chain_paired",
         ),
         # One answer per candidate per run. A second row for the same pair would be two associations
         # for one reading, and nothing downstream could tell which was meant.

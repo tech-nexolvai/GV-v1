@@ -33,6 +33,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import Engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from alembic import command
@@ -124,6 +125,36 @@ ONE_LINE = _pdf(
             b"1 w 150 550 m 250 550 l S\n"
             b"1 w 150 520 m 150 580 l S\n"
             b"1 w 250 520 m 250 580 l S\n"
+        )
+    ],
+)
+
+#: Two dimensions drawn end to end along one axis — a chain — with a note on each.
+#:
+#: This is what a cabinet run looks like on a sheet, and it is the only geometry that makes an
+#: ordered run checkable: `workflow/assignment.py` refuses a many-valued field whose readings come
+#: from two different chains, because `CT-WIDTH-001` compares two runs position by position.
+#:
+#: Three witness lines, not four. The middle one crosses the end of the first dimension and the
+#: start of the second, which is exactly how a drawing dimensions adjoining parts.
+CHAINED = _pdf(
+    annotations=[
+        _free_text('15"', rect=b"[110 90 190 110]"),
+        _free_text('36"', rect=b"[210 90 290 110]"),
+        # Object 8: three annotations occupy 5, 6 and 7, so the appearance follows them. A stamp
+        # pointing at itself parses and draws nothing, and every reading then arrives unassociated
+        # with no error anywhere — which is how this fixture failed the first time it was written.
+        _stamp(appearance_object=8),
+    ],
+    extra_objects=[
+        # Page y=100, running page x=100..200 and x=200..300: collinear and touching, which is what
+        # `_chains` groups on. Witnesses at each junction, 60 points long and crossing.
+        _appearance(
+            b"1 w 150 550 m 250 550 l S\n"
+            b"1 w 250 550 m 350 550 l S\n"
+            b"1 w 150 520 m 150 580 l S\n"
+            b"1 w 250 520 m 250 580 l S\n"
+            b"1 w 350 520 m 350 580 l S\n"
         )
     ],
 )
@@ -857,3 +888,70 @@ def test_every_page_gets_its_own_decisions(session: Session, store: LocalStore) 
     assert len(rows) == len(candidates) == 2
     assert {row.refusal_reason is None for row in rows} == {True, False}
     assert len({row.candidate_id for row in rows}) == 2
+
+
+# ---------------------------------------------------------------------------
+# The chain the drawing draws
+# ---------------------------------------------------------------------------
+
+
+def test_readings_on_one_chain_record_the_chain_and_their_place_in_it(
+    session: Session, store: LocalStore
+) -> None:
+    """**Input: two dimensions drawn end to end, a note on each. Outcome: one chain, positions 0 and 1.**
+
+    The fact this whole path exists for. `dimension_lines` has grouped chains since #588 and the
+    association stage threw the grouping away on the next line, so `guard_assignment`'s refusal of a
+    run gathered from two places could not fire on a real drawing. Asserted on the stored rows,
+    because that is where the gap was: the detector was already right.
+    """
+    _extract(session, store, data=CHAINED)
+
+    rows = _associations(session)
+    attached = [row for row in rows if row.refusal_reason is None]
+    assert len(attached) == 2, [row.refusal_reason for row in rows]
+
+    keys = {row.chain_key for row in attached}
+    assert len(keys) == 1 and None not in keys, "the two dimensions were not seen as one run"
+    by_text = {_text_of(session, row): row for row in attached}
+    assert by_text['15"'].chain_position == 0
+    assert by_text['36"'].chain_position == 1
+
+
+def test_a_line_standing_alone_records_no_chain(session: Session, store: LocalStore) -> None:
+    """Outcome: `chain_key` and `chain_position` are both null.
+
+    A single dimension is not a run, and recording it as one would make every dimension on the sheet
+    look like a closure waiting to be validated. Null is the answer, not a gap.
+    """
+    _extract(session, store, data=ONE_LINE)
+
+    attached = [row for row in _associations(session) if row.refusal_reason is None]
+    assert attached, "nothing attached, so this asserts nothing"
+    assert all(row.chain_key is None and row.chain_position is None for row in attached)
+
+
+def test_a_refused_reading_can_carry_no_chain(session: Session, store: LocalStore) -> None:
+    """Outcome: the database refuses a chain on a row that says no line was decided.
+
+    Half an answer is not a weaker one here, it is an unusable one: a chain on a refused row would
+    claim the line it belongs to while the same row says none was chosen. A check constraint rather
+    than a convention, for the reason `attached_or_refused` is one.
+    """
+    revision, _ = _extract(session, store, data=ONE_LINE)
+    existing = _associations(session)[0]
+
+    session.add(
+        ObservationAssociation(
+            candidate_id=existing.candidate_id,
+            extraction_run_id=existing.extraction_run_id,
+            signals=[],
+            refusal_reason="two lines were equally close",
+            chain_key="invented",
+            chain_position=0,
+        )
+    )
+    with pytest.raises(IntegrityError, match="chain_paired"):
+        session.flush()
+    session.rollback()
+    assert revision is not None

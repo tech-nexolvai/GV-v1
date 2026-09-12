@@ -9,7 +9,7 @@
  * Regenerate with `npm run api:types`, and CI fails if the result differs from what is committed.
  */
 
-import type { paths } from './schema';
+import type { components, paths } from './schema';
 
 /** Every failure the API produces has this shape — `app/errors.py`. */
 export interface ErrorEnvelope {
@@ -202,6 +202,89 @@ export function getRequiredInputs(projectId: string, packageId: string) {
   type Needed =
     paths['/api/v1/projects/{project_id}/packages/{package_id}/required-inputs']['get']['responses']['200']['content']['application/json'];
   return request<Needed>(`/projects/${projectId}/packages/${packageId}/required-inputs`);
+}
+
+/** One frame of the assignment stream. The server's own type — see `AssignmentEvent`. */
+export type AssignmentEvent = components['schemas']['AssignmentEvent'];
+/** One phase of the assignment, as it begins. */
+export type AssignmentStep = components['schemas']['AssignmentStepOut'];
+/** The accepted proposal, and the counts that say how much of the form it fills. */
+export type ProposedMeasurements = components['schemas']['ProposedMeasurementsOut'];
+/** One field and the readings proposed to fill it, in drawing order. */
+export type ProposedField = components['schemas']['ProposedFieldOut'];
+
+/**
+ * Ask which reading fills which field, and report each phase as the server reaches it.
+ *
+ * **The only streaming call in this client, and it streams for one reason.** The model call is the
+ * slow part of the request, and the alternative to real phase frames is a progress display moving
+ * on a timer — which asserts a position nothing measured. Every phase this shows, and the
+ * percentage on it, arrives from the server having actually happened.
+ *
+ * `fetch` with a body reader rather than `EventSource`, which can only issue a GET and cannot send
+ * a header. The frames are plain SSE: one `data:` line each, blank line between.
+ *
+ * Resolves with the result frame. A stream that ends without one is an error — a truncated response
+ * would otherwise read as "the model filled nothing", which is a different and reassuring answer.
+ */
+export async function proposeMeasurements(
+  projectId: string,
+  packageId: string,
+  onStep: (step: AssignmentStep) => void,
+  signal?: AbortSignal,
+): Promise<ProposedMeasurements> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/measurements/propose`,
+    { method: 'POST', headers: { Accept: 'text/event-stream' }, signal },
+  );
+
+  if (!response.ok || !response.body) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The server returned ${response.status} and a body this client could not parse.`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  let result: ProposedMeasurements | null = null;
+
+  // Frames are separated by a blank line and a frame can arrive split across two network chunks, so
+  // the tail of the buffer is kept rather than parsed. Parsing what has arrived so far would throw
+  // on a half-written frame roughly whenever a proposal is large enough to matter.
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffered += decoder.decode(value, { stream: true });
+    const frames = buffered.split('\n\n');
+    buffered = frames.pop() ?? '';
+    for (const frame of frames) {
+      const line = frame.split('\n').find((part) => part.startsWith('data:'));
+      if (!line) continue;
+      const event = JSON.parse(line.slice('data:'.length).trim()) as AssignmentEvent;
+      if (event.event === 'step' && event.step) onStep(event.step);
+      if (event.event === 'result' && event.result) result = event.result;
+    }
+  }
+
+  if (!result) {
+    throw new ApiError(502, {
+      error: 'incomplete_stream',
+      message:
+        'The proposal ended before it said what it had filled. Nothing was changed; enter the ' +
+        'values yourself, or try again.',
+      request_id: response.headers.get('x-request-id') ?? 'unknown',
+    });
+  }
+  return result;
 }
 
 /**

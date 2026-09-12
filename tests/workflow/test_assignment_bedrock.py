@@ -22,6 +22,7 @@ from app.config import Settings
 from workflow.assignment import AssignmentContext, Field, ProposedAssignment, Reading
 from workflow.assignment_bedrock import (
     TOOL_NAME,
+    AssignmentProgress,
     BedrockAssignmentModel,
     _Config,
     assignment_tool_schema,
@@ -443,3 +444,82 @@ def test_the_first_attempt_carries_no_correction() -> None:
     propose_and_guard(_run_context(), model)
 
     assert "deterministic check" not in json.dumps(client.calls[0])
+
+
+# ---------------------------------------------------------------------------
+# What it reports while it works
+# ---------------------------------------------------------------------------
+
+
+def test_the_observer_sees_the_retry_that_the_return_value_hides() -> None:
+    """**Input: a refused-then-corrected run. Outcome: the observer saw five phases, not two.**
+
+    The reason the hook exists. A first-time success and a refused-then-corrected success return the
+    same tuple, so a screen watching only the result cannot tell a checked answer from an unchecked
+    one — and that the answer is checked is the single most useful thing this feature can show a
+    reviewer.
+    """
+    client = _CorrectsOnceClient()
+    model = BedrockAssignmentModel(
+        config=_Config(
+            model_id="m", region_name="us-east-1", connect_timeout_seconds=1, read_timeout_seconds=2
+        ),
+        client=client,
+    )
+    seen: list[AssignmentProgress] = []
+
+    accepted = propose_and_guard(_run_context(), model, observer=seen.append)
+
+    assert accepted, "the corrected answer was not returned"
+    assert [progress.phase for progress in seen] == [
+        "asking",
+        "checking",
+        "refused",
+        "asking",
+        "checking",
+        "accepted",
+    ]
+    assert [progress.attempt for progress in seen] == [1, 1, 1, 2, 2, 2]
+    # The refusal it reports is the guard's own sentence, not a summary written here: the screen
+    # quotes it to the reviewer, and a paraphrase would be this module explaining a decision it did
+    # not make.
+    refused = next(progress for progress in seen if progress.phase == "refused")
+    assert "One reading measures one thing" in refused.detail
+
+
+def test_the_observer_changes_nothing_about_the_answer() -> None:
+    """Outcome: the same result with an observer and without one.
+
+    Asserted rather than assumed, because a reporting hook that can alter an outcome is no longer
+    reporting. Nothing in `propose_and_guard` reads what the observer returns, and this is what
+    keeps that true as the function changes.
+    """
+
+    def run(observer: Any) -> tuple[Any, ...]:
+        client = _CorrectsOnceClient()
+        model = BedrockAssignmentModel(
+            config=_Config(
+                model_id="m",
+                region_name="us-east-1",
+                connect_timeout_seconds=1,
+                read_timeout_seconds=2,
+            ),
+            client=client,
+        )
+        return propose_and_guard(_run_context(), model, observer=observer)
+
+    assert run(None) == run(lambda _progress: "a return value nothing reads")
+
+
+def test_a_deployment_with_no_model_says_so_rather_than_going_quiet() -> None:
+    """Outcome: one `unavailable` phase.
+
+    The screen has to distinguish "no model is configured here" from "the model was asked and
+    answered nothing". Both leave the fields empty; only one of them is worth a reviewer's attention.
+    """
+    seen: list[AssignmentProgress] = []
+
+    assert propose_and_guard(_run_context(), None, observer=seen.append) == ()
+
+    assert [progress.phase for progress in seen] == ["unavailable"]
+    assert "no model is configured" in seen[0].detail

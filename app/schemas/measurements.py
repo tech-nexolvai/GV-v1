@@ -21,6 +21,7 @@ number this API emits, so a client can render `51/2` as `25 1/2` without a float
 from __future__ import annotations
 
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -230,3 +231,103 @@ class CheckRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     discriminators: dict[str, str] = Field(default_factory=dict)
+
+
+class ProposedReadingOut(BaseModel):
+    """One reading a model proposes for a field, named by the candidate it already is."""
+
+    #: The candidate the extraction layer produced. Not a value a model composed — a model may only
+    #: *choose* one of these, and `assignment_tool_schema` puts the real ids in the tool's `enum` so
+    #: an invented one is not something it can emit.
+    candidate_id: UUID
+    value: str
+    page_index: int
+    #: Which run of end-to-end dimensions this reading's line belongs to, where the drawing draws
+    #: one. Present so a reviewer can see *why* an ordered run was accepted as one.
+    chain_key: str | None = None
+    chain_position: int | None = None
+
+
+class ProposedFieldOut(BaseModel):
+    """One field and the readings proposed to fill it, in drawing order."""
+
+    field_key: str
+    #: The rulebook's own readable name, so a form need not translate `CT004` itself.
+    name: str
+    source: str
+    many: bool
+    values: tuple[ProposedReadingOut, ...]
+
+
+class ProposedMeasurementsOut(BaseModel):
+    """What survived every structural check, and enough counts to say so honestly.
+
+    **Nothing here is stored.** These fill a form a reviewer then reads, edits and saves; the saving
+    is what records a value, and it records it as the reviewer's. A model's proposal never becomes a
+    measurement without a person submitting it.
+    """
+
+    assignments: tuple[ProposedFieldOut, ...]
+    #: Every field the published rulebook asks for. The denominator of "filled".
+    fields_total: int
+    #: How many of them this proposal fills. The one genuine completion figure on the screen.
+    fields_filled: int
+    #: Readings this run produced with a value, and how many of those are attached to a dimension
+    #: line. The second is the number that could fill anything: `guard_assignment` refuses an
+    #: unattached reading, because `text_association` already declined to say what it annotates.
+    readings_considered: int
+    readings_attached: int
+    #: The model that was asked, or `None` when no model is configured — in which case the fields
+    #: stay empty and a reviewer fills them, which is what happens today.
+    model_id: str | None = None
+    #: Why nothing was filled, in the words of whatever declined — the deterministic guard's own
+    #: sentence where a guard refused the proposal, otherwise that no model is configured or that
+    #: the provider did not answer. `None` when something was filled.
+    #:
+    #: Named for the outcome rather than for a refusal, because the three causes reach the reviewer
+    #: as the same situation — empty fields to type into — and only one of them is a refusal.
+    unfilled_reason: str | None = None
+
+
+class AssignmentStepOut(BaseModel):
+    """One phase of the assignment, sent as that phase begins.
+
+    **`percent` is phases finished, and says so.** It is not a guess at how long the model will
+    take and not a confidence in the answer — those are two numbers nothing on this side of the
+    request knows. A retry re-sends the phase it went back to, so the bar holds rather than
+    advancing on work that was rejected.
+    """
+
+    index: int
+    total: int
+    #: Stable identifier for the phase, for a client that wants to style it. Prose is in `label`.
+    name: str
+    label: str
+    detail: str = ""
+    percent: int
+    #: Which attempt this is, `1` for the first. A second attempt means a deterministic check
+    #: refused the first and the model was told why.
+    attempt: int = 1
+
+    #: Every phase label in order, sent once on the first frame and empty afterwards.
+    #:
+    #: So a client can show what is still to come without keeping its own copy of the sequence —
+    #: which would be a second answer to "what are the phases", free to disagree with this one the
+    #: first time a phase is added. It also lets a client tell a phase that was *skipped* from one
+    #: still waiting: a proposal nobody made is never checked, and rendering that as "done" would
+    #: claim a check that did not run.
+    sequence: tuple[str, ...] = ()
+
+
+class AssignmentEvent(BaseModel):
+    """One frame of the assignment stream: a phase beginning, or the finished result.
+
+    The endpoint returns `text/event-stream` and each frame's `data:` is one of these. A stream
+    rather than a single response because the model call is the slow part, and a screen that shows
+    a real phase name while it waits is telling the truth about what is happening — where a bar
+    moving on a timer would not be.
+    """
+
+    event: Literal["step", "result"]
+    step: AssignmentStepOut | None = None
+    result: ProposedMeasurementsOut | None = None

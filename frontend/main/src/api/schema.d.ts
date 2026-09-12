@@ -536,6 +536,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/measurements/propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask a model which reading fills which field, and check every answer
+         * @description Propose which reading fills which field, and stream the phases while it happens.
+         *
+         *     **Nothing is stored and nothing is decided.** The accepted proposal fills a form the reviewer
+         *     then reads, edits and saves; saving is what records a value and records it as theirs. Every
+         *     failure — no model configured, a provider that will not answer, a proposal the deterministic
+         *     guard refuses — ends with the same thing on screen: empty fields and a person filling them,
+         *     which is what happens today. This step can make that faster; it cannot make it worse.
+         *
+         *     **A stream rather than one response**, because the model call is the slow part and a screen that
+         *     names the phase it is waiting on is telling the truth about what is happening. The percentage is
+         *     phases finished out of five, which is a number this endpoint knows; how long the model will take
+         *     and how right its answer is are two it does not, and neither is on the bar.
+         *
+         *     The database work is done before the stream opens, so the session is not held across it.
+         */
+        post: operations["propose_measurements_api_v1_projects__project_id__packages__package_id__measurements_propose_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/redline.pdf": {
         parameters: {
             query?: never;
@@ -1165,6 +1198,60 @@ export interface components {
             package_revision_id: string;
             /** State */
             state: string;
+        };
+        /**
+         * AssignmentEvent
+         * @description One frame of the assignment stream: a phase beginning, or the finished result.
+         *
+         *     The endpoint returns `text/event-stream` and each frame's `data:` is one of these. A stream
+         *     rather than a single response because the model call is the slow part, and a screen that shows
+         *     a real phase name while it waits is telling the truth about what is happening — where a bar
+         *     moving on a timer would not be.
+         */
+        AssignmentEvent: {
+            /**
+             * Event
+             * @enum {string}
+             */
+            event: "step" | "result";
+            result?: components["schemas"]["ProposedMeasurementsOut"] | null;
+            step?: components["schemas"]["AssignmentStepOut"] | null;
+        };
+        /**
+         * AssignmentStepOut
+         * @description One phase of the assignment, sent as that phase begins.
+         *
+         *     **`percent` is phases finished, and says so.** It is not a guess at how long the model will
+         *     take and not a confidence in the answer — those are two numbers nothing on this side of the
+         *     request knows. A retry re-sends the phase it went back to, so the bar holds rather than
+         *     advancing on work that was rejected.
+         */
+        AssignmentStepOut: {
+            /**
+             * Attempt
+             * @default 1
+             */
+            attempt: number;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Index */
+            index: number;
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+            /** Percent */
+            percent: number;
+            /**
+             * Sequence
+             * @default []
+             */
+            sequence: string[];
+            /** Total */
+            total: number;
         };
         /**
          * AwaitingToleranceOut
@@ -2030,6 +2117,65 @@ export interface components {
             storage_key: string;
             /** Upload Url */
             upload_url: string;
+        };
+        /**
+         * ProposedFieldOut
+         * @description One field and the readings proposed to fill it, in drawing order.
+         */
+        ProposedFieldOut: {
+            /** Field Key */
+            field_key: string;
+            /** Many */
+            many: boolean;
+            /** Name */
+            name: string;
+            /** Source */
+            source: string;
+            /** Values */
+            values: components["schemas"]["ProposedReadingOut"][];
+        };
+        /**
+         * ProposedMeasurementsOut
+         * @description What survived every structural check, and enough counts to say so honestly.
+         *
+         *     **Nothing here is stored.** These fill a form a reviewer then reads, edits and saves; the saving
+         *     is what records a value, and it records it as the reviewer's. A model's proposal never becomes a
+         *     measurement without a person submitting it.
+         */
+        ProposedMeasurementsOut: {
+            /** Assignments */
+            assignments: components["schemas"]["ProposedFieldOut"][];
+            /** Fields Filled */
+            fields_filled: number;
+            /** Fields Total */
+            fields_total: number;
+            /** Model Id */
+            model_id?: string | null;
+            /** Readings Attached */
+            readings_attached: number;
+            /** Readings Considered */
+            readings_considered: number;
+            /** Unfilled Reason */
+            unfilled_reason?: string | null;
+        };
+        /**
+         * ProposedReadingOut
+         * @description One reading a model proposes for a field, named by the candidate it already is.
+         */
+        ProposedReadingOut: {
+            /**
+             * Candidate Id
+             * Format: uuid
+             */
+            candidate_id: string;
+            /** Chain Key */
+            chain_key?: string | null;
+            /** Chain Position */
+            chain_position?: number | null;
+            /** Page Index */
+            page_index: number;
+            /** Value */
+            value: string;
         };
         /**
          * PublicationOut
@@ -3275,6 +3421,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewerEntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    propose_measurements_api_v1_projects__project_id__packages__package_id__measurements_propose_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A stream of `AssignmentEvent` frames: one per phase as it begins, then the result. Each frame is one `data:` line. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["AssignmentEvent"];
                 };
             };
             /** @description Validation Error */
