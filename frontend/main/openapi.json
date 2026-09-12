@@ -205,6 +205,96 @@
         "title": "ApprovalOut",
         "type": "object"
       },
+      "AssignmentEvent": {
+        "description": "One frame of the assignment stream: a phase beginning, or the finished result.\n\nThe endpoint returns `text/event-stream` and each frame's `data:` is one of these. A stream\nrather than a single response because the model call is the slow part, and a screen that shows\na real phase name while it waits is telling the truth about what is happening \u2014 where a bar\nmoving on a timer would not be.",
+        "properties": {
+          "event": {
+            "enum": [
+              "step",
+              "result"
+            ],
+            "title": "Event",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProposedMeasurementsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "step": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssignmentStepOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "title": "AssignmentEvent",
+        "type": "object"
+      },
+      "AssignmentStepOut": {
+        "description": "One phase of the assignment, sent as that phase begins.\n\n**`percent` is phases finished, and says so.** It is not a guess at how long the model will\ntake and not a confidence in the answer \u2014 those are two numbers nothing on this side of the\nrequest knows. A retry re-sends the phase it went back to, so the bar holds rather than\nadvancing on work that was rejected.",
+        "properties": {
+          "attempt": {
+            "default": 1,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "percent": {
+            "title": "Percent",
+            "type": "integer"
+          },
+          "sequence": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Sequence",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index",
+          "total",
+          "name",
+          "label",
+          "percent"
+        ],
+        "title": "AssignmentStepOut",
+        "type": "object"
+      },
       "AwaitingToleranceOut": {
         "additionalProperties": false,
         "description": "One rule that cannot be released, and how much of it is still a guess.",
@@ -1704,6 +1794,149 @@
           "required_headers"
         ],
         "title": "PresignedUpload",
+        "type": "object"
+      },
+      "ProposedFieldOut": {
+        "description": "One field and the readings proposed to fill it, in drawing order.",
+        "properties": {
+          "field_key": {
+            "title": "Field Key",
+            "type": "string"
+          },
+          "many": {
+            "title": "Many",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/ProposedReadingOut"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "field_key",
+          "name",
+          "source",
+          "many",
+          "values"
+        ],
+        "title": "ProposedFieldOut",
+        "type": "object"
+      },
+      "ProposedMeasurementsOut": {
+        "description": "What survived every structural check, and enough counts to say so honestly.\n\n**Nothing here is stored.** These fill a form a reviewer then reads, edits and saves; the saving\nis what records a value, and it records it as the reviewer's. A model's proposal never becomes a\nmeasurement without a person submitting it.",
+        "properties": {
+          "assignments": {
+            "items": {
+              "$ref": "#/components/schemas/ProposedFieldOut"
+            },
+            "title": "Assignments",
+            "type": "array"
+          },
+          "fields_filled": {
+            "title": "Fields Filled",
+            "type": "integer"
+          },
+          "fields_total": {
+            "title": "Fields Total",
+            "type": "integer"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "readings_attached": {
+            "title": "Readings Attached",
+            "type": "integer"
+          },
+          "readings_considered": {
+            "title": "Readings Considered",
+            "type": "integer"
+          },
+          "unfilled_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unfilled Reason"
+          }
+        },
+        "required": [
+          "assignments",
+          "fields_total",
+          "fields_filled",
+          "readings_considered",
+          "readings_attached"
+        ],
+        "title": "ProposedMeasurementsOut",
+        "type": "object"
+      },
+      "ProposedReadingOut": {
+        "description": "One reading a model proposes for a field, named by the candidate it already is.",
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "chain_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain Key"
+          },
+          "chain_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain Position"
+          },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "value",
+          "page_index"
+        ],
+        "title": "ProposedReadingOut",
         "type": "object"
       },
       "PublicationOut": {
@@ -4029,6 +4262,61 @@
           }
         },
         "summary": "Enter reviewer-supplied parameters and measurements",
+        "tags": [
+          "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/measurements/propose": {
+      "post": {
+        "description": "Propose which reading fills which field, and stream the phases while it happens.\n\n**Nothing is stored and nothing is decided.** The accepted proposal fills a form the reviewer\nthen reads, edits and saves; saving is what records a value and records it as theirs. Every\nfailure \u2014 no model configured, a provider that will not answer, a proposal the deterministic\nguard refuses \u2014 ends with the same thing on screen: empty fields and a person filling them,\nwhich is what happens today. This step can make that faster; it cannot make it worse.\n\n**A stream rather than one response**, because the model call is the slow part and a screen that\nnames the phase it is waiting on is telling the truth about what is happening. The percentage is\nphases finished out of five, which is a number this endpoint knows; how long the model will take\nand how right its answer is are two it does not, and neither is on the bar.\n\nThe database work is done before the stream opens, so the session is not held across it.",
+        "operationId": "propose_measurements_api_v1_projects__project_id__packages__package_id__measurements_propose_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentEvent",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "A stream of `AssignmentEvent` frames: one per phase as it begins, then the result. Each frame is one `data:` line."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask a model which reading fills which field, and check every answer",
         "tags": [
           "measurements"
         ]

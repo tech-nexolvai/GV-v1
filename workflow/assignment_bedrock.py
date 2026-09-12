@@ -31,9 +31,9 @@ Source: issue #589 · Verification: `tests/workflow/test_assignment_bedrock.py`
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Final, cast
+from typing import Any, Final, Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
@@ -43,9 +43,11 @@ from workflow.assignment import AssignmentContext, ProposedAssignment
 
 __all__ = [
     "PROMPT_ID",
+    "AssignmentProgress",
     "BedrockAssignmentModel",
     "assignment_tool_schema",
     "configured_assignment_model",
+    "propose_and_guard",
 ]
 
 TOOL_NAME: Final = "assign_readings_to_rule_fields"
@@ -70,6 +72,22 @@ USER_TASK: Final = (
     "entry per field you are confident about, with its readings in drawing order, and omit every "
     "field you are not confident about."
 )
+
+
+@dataclass(frozen=True, slots=True)
+class AssignmentProgress:
+    """What this step is doing, reported as it does it. Reporting only — it decides nothing.
+
+    **So that a screen waiting on the model can say something true.** The model call is seconds
+    long, and the alternative to a real phase name is a bar moving on a timer, which asserts
+    progress nobody measured. These are the phases that actually happen, including the one a caller
+    would otherwise never see: a proposal refused by the deterministic guard and a second attempt
+    told exactly what was wrong.
+    """
+
+    phase: Literal["asking", "checking", "refused", "accepted", "unavailable"]
+    attempt: int
+    detail: str = ""
 
 
 class _Config(BaseModel):
@@ -318,7 +336,10 @@ def configured_assignment_model(settings: Settings) -> BedrockAssignmentModel | 
 
 
 def propose_and_guard(
-    context: AssignmentContext, model: BedrockAssignmentModel | None
+    context: AssignmentContext,
+    model: BedrockAssignmentModel | None,
+    *,
+    observer: Callable[[AssignmentProgress], None] | None = None,
 ) -> tuple[ProposedAssignment, ...]:
     """Propose an assignment and return only one that passes every check, else nothing.
 
@@ -327,10 +348,28 @@ def propose_and_guard(
     none of them is distinguished here, because none of them changes what the reviewer does next.
     The distinctions matter for diagnosis and are the caller's to log; they do not matter for
     behaviour, and collapsing them here is what keeps this step incapable of making things worse.
+
+    **`observer` is told what is happening and is never asked anything.** It exists so a screen
+    waiting on the model can name the phase it is waiting on, including the retry — the one phase a
+    caller watching only the return value can never see. It cannot change the outcome: nothing below
+    reads what it returns, and a caller that passes none gets the same answer.
     """
     from workflow.assignment import AcceptedAssignment, guard_assignment
 
+    def report(phase: str, attempt: int, detail: str = "") -> None:
+        if observer is not None:
+            observer(AssignmentProgress(phase=cast(Any, phase), attempt=attempt, detail=detail))
+
     if model is None:
+        report("unavailable", 1, "no model is configured, so the fields stay for the reviewer")
+        return ()
+
+    # **Said here as well as in the adapter, because the two answer different questions.** The
+    # adapter returns early so that no call is paid for; this reports *why* nothing came back, and
+    # "the model proposed nothing" would be false about a model that was never asked — a page with
+    # every reading already confirmed is the ordinary case that produces it.
+    if not context.readings or not context.fields:
+        report("unavailable", 1, "there was nothing to choose between, so nothing was asked")
         return ()
 
     # **One retry, with the guard's own sentence fed back.** Measured against the real provider on
@@ -342,15 +381,30 @@ def propose_and_guard(
     # One, not a loop. A second failure after being shown the reason is not a slip, and paying for
     # attempt after attempt to reach an answer a reviewer would give in a click is the wrong trade.
     refused: str | None = None
-    for _ in range(2):
+    for index in range(2):
+        attempt = index + 1
+        report(
+            "asking",
+            attempt,
+            (
+                f"{len(context.readings)} readings, {len(context.fields)} fields"
+                if refused is None
+                else "asking again, with the reason the check gave"
+            ),
+        )
         try:
             proposed = model.propose(context, refused=refused)
         except Exception:  # noqa: BLE001 - fail closed across the provider boundary
+            report("unavailable", attempt, "the model could not be reached")
             return ()
         if not proposed:
+            report("unavailable", attempt, "the model proposed nothing")
             return ()
+        report("checking", attempt, f"{len(proposed)} proposed, seven structural checks")
         checked = guard_assignment(context, proposed)
         if isinstance(checked, AcceptedAssignment):
+            report("accepted", attempt, f"{len(checked.assignments)} fields")
             return checked.assignments
         refused = checked.reason
+        report("refused", attempt, checked.reason)
     return ()

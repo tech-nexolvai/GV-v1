@@ -90,7 +90,7 @@ class CandidateOut(BaseModel):
     source: str | None = None
 
 
-def _document_source(document_kind: str | None) -> str | None:
+def document_source(document_kind: str | None) -> str | None:
     """Normalize a document kind to the document-role vocabulary used by rule inputs.
 
     Only architecturally-meaningful documents are candidates for rulebook quantities.
@@ -218,7 +218,7 @@ def list_candidates(
                 confidence=None if row.confidence is None else str(row.confidence),
                 corroboration_status=row.corroboration_status,
                 corroboration_lane=row.corroboration_lane,
-                source=_document_source(document_kind),
+                source=document_source(document_kind),
             )
             for row, page_index, crop_key, document_kind in rows
         ),

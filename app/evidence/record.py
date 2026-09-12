@@ -30,7 +30,7 @@ they cannot be recovered afterwards: `dpi`, `media_box` and `crop_box` are not p
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Final
 from uuid import UUID
 
@@ -38,7 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.document import Page
-from app.models.evidence import ObservationAssociation, ObservationCandidate
+from app.models.evidence import ObservationAssociation, ObservationCandidate, line_key
 from app.models.runs import ExtractionFailure, ExtractionRun
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.coordinates import ImagePoint, PageBox
@@ -407,6 +407,7 @@ def record_associations(
     result: AssociationResult,
     *,
     extraction_run_id: UUID,
+    chains: Mapping[str, tuple[str, int]] | None = None,
 ) -> list[ObservationAssociation]:
     """Persist what the association step decided about each reading — attachment or refusal.
 
@@ -432,6 +433,13 @@ def record_associations(
     the readings actually in hand, which is exactly what the unique constraint on
     `(candidate_id, extraction_run_id)` protects. Found by running it over a real document; a
     single-page test cannot see it.
+
+    **`chains` is what the detector found and this is where it stops being discarded.** Keyed by
+    `line_key`, each entry says which run of end-to-end dimensions a line belongs to and where along
+    it — the fact `workflow/assignment.py` needs to refuse a cabinet run gathered from two places,
+    which until now was computed in the association stage and thrown away on the next line. Absent
+    for a line that stands alone, which is most of them, and absent entirely for a caller that did
+    not detect chains.
     """
     candidate_ids = [entry.text.observation_id for entry in result.associated]
     candidate_ids += [entry.text.observation_id for entry in result.unassociated]
@@ -456,15 +464,22 @@ def record_associations(
 
     written: list[ObservationAssociation] = []
     for attached in result.associated:
+        start_x = str(attached.line.start.x)
+        start_y = str(attached.line.start.y)
+        end_x = str(attached.line.end.x)
+        end_y = str(attached.line.end.y)
+        chain = (chains or {}).get(line_key(start_x, start_y, end_x, end_y))
         written.append(
             ObservationAssociation(
                 candidate_id=attached.text.observation_id,
                 extraction_run_id=extraction_run_id,
-                start_x=str(attached.line.start.x),
-                start_y=str(attached.line.start.y),
-                end_x=str(attached.line.end.x),
-                end_y=str(attached.line.end.y),
+                start_x=start_x,
+                start_y=start_y,
+                end_x=end_x,
+                end_y=end_y,
                 signals=list(attached.signals),
+                chain_key=None if chain is None else chain[0],
+                chain_position=None if chain is None else chain[1],
             )
         )
     for refused in result.unassociated:

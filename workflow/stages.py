@@ -68,7 +68,12 @@ from app.models.document import (
     Page,
 )
 from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier
-from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind, ObservationCandidate
+from app.models.evidence import (
+    EvidenceArtifact,
+    EvidenceArtifactKind,
+    ObservationCandidate,
+    line_key,
+)
 from app.models.matching import MatchCandidate as MatchCandidateRow
 from app.models.package import Package, PackageRevision
 from app.models.parameters import declared_defaults, load_parameter_sets
@@ -90,7 +95,7 @@ from extraction.annotations import (
     read_markup_layer,
 )
 from extraction.geometry.containment import DimensionExtent
-from extraction.geometry.dimension_lines import detect
+from extraction.geometry.dimension_lines import DetectedDimensions, detect
 from extraction.geometry.text_association import DimensionText, associate
 from extraction.localized_ocr import read_localized_vendor_regions
 from extraction.manifest import build_manifest
@@ -757,7 +762,14 @@ class DatabaseStages:
                 config_hash=f"dpi={self._dpi};{settings.config_hash}",
                 dpi=self._dpi,
             )
-            return len(record_associations(session, result, extraction_run_id=association_run.id))
+            return len(
+                record_associations(
+                    session,
+                    result,
+                    extraction_run_id=association_run.id,
+                    chains=_chain_membership(detected, page_id=page.id),
+                )
+            )
 
     def _read_page_markup(
         self,
@@ -2019,3 +2031,33 @@ def _fetch(store: ArtifactStore, key: str) -> bytes:
     """
     with store.get(key) as stored:
         return stored.read()
+
+
+def _chain_membership(detected: DetectedDimensions, *, page_id: UUID) -> dict[str, tuple[str, int]]:
+    """Which run each detected dimension line belongs to, keyed by where the line is.
+
+    **The grouping was being computed and thrown away.** `detect` returns chains — dimension lines
+    drawn end to end along one axis, which is what a cabinet run looks like on a sheet — and
+    `associate` is handed only the extents, so the chains went out of scope on the next line. They
+    are the fact `workflow/assignment.py` needs to refuse a many-valued field gathered from two
+    different runs, and that refusal could not fire on a real drawing without them.
+
+    The key is page-scoped and deterministic: the page's own id, the axis, and the chain's index in
+    detection order. Page-scoped because one extraction run covers every page of every document in a
+    stage execution, so two pages with the same geometry would otherwise be handed the same chain
+    name and their readings would look like one run.
+
+    A line in no chain is simply absent, which is most lines and is not a gap: a single dimension is
+    not a run, and reporting it as one would make every dimension on the sheet look like a closure
+    waiting to be validated.
+    """
+    membership: dict[str, tuple[str, int]] = {}
+    for index, chain in enumerate(detected.chains):
+        key = f"{page_id}:{chain.axis.value}:{index}"
+        for position, line in enumerate(chain.lines):
+            extent = line.extent
+            membership[line_key(extent.start.x, extent.start.y, extent.end.x, extent.end.y)] = (
+                key,
+                position,
+            )
+    return membership
