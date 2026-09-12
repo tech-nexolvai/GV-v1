@@ -19,6 +19,7 @@ from extraction.ocr import (
     RapidOcrEngine,
     _confidence,
     combine_dual_notation,
+    join_split_bracketed_inches,
     read_page,
 )
 from extraction.rasterise import render_page
@@ -389,3 +390,83 @@ def test_a_score_of_an_unreadable_type_is_refused() -> None:
     """An engine that returned something else has changed its contract, and that must be loud."""
     with pytest.raises(TypeError, match="cannot read an OCR confidence"):
         _confidence(object())
+
+
+# ---------------------------------------------------------------------------
+# A bracketed half split across two boxes (#598)
+# ---------------------------------------------------------------------------
+
+
+def test_a_bracketed_inch_token_split_across_two_boxes_is_put_back_together() -> None:
+    """**The fault, measured on a real uploaded sheet.**
+
+    RapidOCR read `724 [28 1/2]` as three boxes — `724`, `[28`, `1/2]` — breaking the bracketed
+    half across two detections. `combine_dual_notation` wants a *whole* bracketed token to pair the
+    millimetres with, found none, and all three fragments fell out unparsed: `724` a number with no
+    unit, the other two nothing at all. Twenty-five readings on that page, two survived.
+    """
+    items = (
+        _item("724", (10, 10, 60, 40)),
+        _item("[28", (10, 50, 55, 80)),
+        _item("1/2]", (60, 50, 110, 80)),
+    )
+
+    combined = combine_dual_notation(items)
+
+    assert [item.text for item in combined] == ["724 [28 1/2]"]
+    assert combined[0].rotation_degrees == 0, "the joined reading cannot enter association"
+
+
+def test_two_fragments_that_do_not_make_a_measurement_are_left_alone() -> None:
+    """**Outcome: untouched.**
+
+    The join has to produce a measurement, not merely a bracket-shaped string. `[ab` and `cd]`
+    concatenate into something the bracket pattern accepts and `parse_imperial` refuses, and
+    assembling it would manufacture a reading nobody wrote out of two pieces of a label.
+    """
+    items = (_item("[ab", (10, 50, 55, 80)), _item("cd]", (60, 50, 110, 80)))
+
+    assert join_split_bracketed_inches(items) == items
+
+
+def test_fragments_on_different_text_rows_are_not_joined() -> None:
+    """Outcome: untouched. Vertical neighbours are a different relationship entirely.
+
+    Two boxes stacked rather than side by side are what `combine_dual_notation` pairs, and joining
+    them here would consume the halves before it ever looked.
+    """
+    items = (_item("[28", (10, 10, 55, 40)), _item("1/2]", (10, 90, 55, 120)))
+
+    assert join_split_bracketed_inches(items) == items
+
+
+def test_a_gap_wider_than_the_row_is_tall_is_not_one_token() -> None:
+    """Outcome: untouched. A space is about as wide as the text is tall; a column apart is not."""
+    near = (_item("[28", (10, 50, 55, 80)), _item("1/2]", (80, 50, 130, 80)))
+    far = (_item("[28", (10, 50, 55, 80)), _item("1/2]", (120, 50, 170, 80)))
+
+    assert [item.text for item in join_split_bracketed_inches(near)] == ["[28 1/2]"]
+    assert join_split_bracketed_inches(far) == far
+
+
+def test_an_ambiguous_pairing_leaves_every_fragment_untouched() -> None:
+    """**Outcome: untouched, rather than the first plausible join.**
+
+    Two closing fragments equally able to finish one opening fragment is exactly the situation this
+    must not resolve by picking one — the same one-to-one rule `combine_dual_notation` applies, for
+    the same reason: an assembled number nobody wrote is worse than an abstention.
+    """
+    items = (
+        _item("[28", (10, 50, 55, 80)),
+        _item("1/2]", (60, 50, 110, 80)),
+        _item("1/4]", (60, 50, 110, 80)),
+    )
+
+    assert join_split_bracketed_inches(items) == items
+
+
+def test_a_whole_bracketed_token_is_not_treated_as_a_fragment() -> None:
+    """Outcome: untouched. `[28 1/2]` is already what the joiner is trying to produce."""
+    items = (_item("[28 1/2]", (10, 50, 90, 80)), _item("[13 1/4]", (95, 50, 175, 80)))
+
+    assert join_split_bracketed_inches(items) == items

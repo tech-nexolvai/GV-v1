@@ -659,6 +659,36 @@ select.value-input {
   color: var(--gv-crimson);
 }
 
+/* Louder than `--proposed`, because it is a weaker claim: the model chose this number and nothing
+   confirmed where it sits. Review amber rather than brand crimson, so the two are never confused
+   at a glance on a form with both on it. */
+.value-origin--unplaced {
+  background: var(--status-review-bg);
+  border-color: var(--status-review-border);
+  color: var(--status-review);
+}
+
+.value-field[data-origin='unplaced'] {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--status-review-border);
+  animation: gv-rise-sm var(--duration-slow) var(--ease-emphasis) both;
+}
+
+.measure-fill__caveat {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--status-review-bg);
+  color: var(--status-review);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.measure-fill__caveat svg { flex-shrink: 0; margin-top: 2px; }
+
 .value-origin--confirmed,
 .value-origin--tagged {
   background: var(--status-pass-bg);

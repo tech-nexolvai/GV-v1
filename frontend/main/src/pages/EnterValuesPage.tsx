@@ -85,6 +85,8 @@ type ProposedField = {
   name: string;
   source: string;
   many: boolean;
+  /** Whether the drawing's own geometry confirmed where these readings sit. */
+  placement_verified: boolean;
   values: { candidate_id: string; value: string; page_index: number }[];
 };
 type Needed = {
@@ -115,6 +117,15 @@ const SOURCE_LABEL: Record<string, string> = {
 const ORIGIN_LABEL: Record<string, string> = {
   empty: 'needs a value',
   proposed: 'proposed by AI — check it',
+  /**
+   * **The weakest claim on the screen, and it says so.**
+   *
+   * On a scanned drawing there is no vector line-work, so nothing could confirm that this number
+   * sits on the dimension it is supposed to measure. Every other check still passed — the right
+   * sheet, one reading per field, a reading this run produced — but the geometry could not vouch
+   * for where it is, and a reviewer has to know that before they keep it.
+   */
+  unplaced: 'proposed by AI — placement unchecked',
   confirmed: 'you confirmed this reading',
   tagged: 'exact drawing tag',
   typed: 'you typed this',
@@ -592,9 +603,11 @@ export function EnterValuesPage({
    */
   const fieldOrigin = (
     quantity: Quantity,
-  ): 'empty' | 'proposed' | 'confirmed' | 'tagged' | 'typed' => {
+  ): 'empty' | 'proposed' | 'unplaced' | 'confirmed' | 'tagged' | 'typed' => {
     if (!hasValue(quantity)) return 'empty';
-    if (quantity.key in aiFilled) return 'proposed';
+    if (quantity.key in aiFilled) {
+      return unverifiedFields.has(quantity.key) ? 'unplaced' : 'proposed';
+    }
     const readings = readingsByKey[quantity.key] ?? [];
     if (readings.some((reading) => reading.qualification === 'exact_vector_tag')) return 'tagged';
     if (readings.length > 0) return 'confirmed';
@@ -604,6 +617,13 @@ export function EnterValuesPage({
   /** How many fields the filed proposal covers. Zero when nothing was filed, which is a real
    *  outcome: the checks refused the model's answer, or the reader attached nothing to fill from. */
   const storedProposalCount = (needed.proposed_readings ?? []).length;
+
+  /** Fields whose placement nothing could confirm, because the drawing carries no line-work. */
+  const unverifiedFields = new Set(
+    (needed.proposed_readings ?? [])
+      .filter((field) => !field.placement_verified)
+      .map((field) => field.field_key),
+  );
 
   /** Whether a proposal has been asked for at all. What decides who owns the panel's space. */
   const attempted = proposing || proposalSteps.length > 0 || proposal !== null || proposalError !== null;
@@ -712,6 +732,17 @@ export function EnterValuesPage({
                 it. They are marked <strong>proposed by AI</strong>. Check them, edit anything that
                 is wrong, and press Save.
               </p>
+              {unverifiedFields.size > 0 && (
+                <p className="measure-fill__caveat">
+                  <AlertTriangle size={13} aria-hidden="true" />
+                  <span>
+                    {unverifiedFields.size} of them could not be checked against the drawing&apos;s
+                    geometry: these sheets are scanned images with no dimension line-work, so
+                    nothing confirmed that each number sits on the dimension it measures. Open the
+                    crop for those before you keep them.
+                  </span>
+                </p>
+              )}
             </div>
             <button
               type="button"

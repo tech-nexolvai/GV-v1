@@ -256,6 +256,7 @@ def _stored_proposal_out(
     by_key = {field.key: field for field in fields}
 
     grouped: dict[str, list[ProposedReadingOut]] = {}
+    verified: dict[str, bool] = {}
     for row in rows:
         found = candidates.get(row.candidate_id)
         if found is None or row.field_key not in by_key:
@@ -266,6 +267,7 @@ def _stored_proposal_out(
         candidate, page_index = found
         if candidate.value_numerator is None or candidate.value_denominator is None:
             continue
+        verified[row.field_key] = row.placement_verified
         grouped.setdefault(row.field_key, []).append(
             ProposedReadingOut(
                 candidate_id=candidate.id,
@@ -283,6 +285,7 @@ def _stored_proposal_out(
             name=by_key[key].name,
             source=by_key[key].source,
             many=by_key[key].many,
+            placement_verified=verified[key],
             values=tuple(values),
         )
         for key, values in sorted(grouped.items())
@@ -758,7 +761,7 @@ def propose_measurements(
             elif progress.phase in {"refused", "unavailable"}:
                 outcome["unfilled_reason"] = progress.detail
 
-        proposed = propose_and_guard(context, model, observer=observe)
+        proposed, unverified = propose_and_guard(context, model, observer=observe)
         for event in pending:
             yield send(event)
 
@@ -772,6 +775,7 @@ def propose_measurements(
                 package_revision_id=revision.id,
                 assignments=proposed,
                 model_id=model.config.model_id,
+                unverified_placement=unverified,
             )
             session.commit()
 

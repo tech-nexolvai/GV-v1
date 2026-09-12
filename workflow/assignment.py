@@ -99,6 +99,20 @@ class Reading:
     order: int | None = None
     """Its position along that chain, low to high. `None` when it is in no chain."""
 
+    geometry_available: bool = True
+    """Whether this reading's page had any dimension line-work to be checked against.
+
+    **`False` is not a weaker `line_key is None`; it is a different statement.** A reading that is
+    unattached on a page with twelve dimension lines sits near none of them, and refusing it is this
+    module doing its job. A reading unattached on a page with *no* line-work was never tested: the
+    drawing is a scanned image, the detector had nothing to detect, and treating the two the same
+    switched this step off entirely for that whole class of drawing on the strength of a check that
+    never ran.
+
+    So where it is `False` the attachment check abstains rather than refusing, the assignment is
+    marked as having unverified placement, and the screen says so. Every other check still applies,
+    and the reviewer still confirms every value before anything is saved."""
+
 
 @dataclass(frozen=True, slots=True)
 class AssignmentContext:
@@ -118,9 +132,15 @@ class ProposedAssignment:
 
 @dataclass(frozen=True, slots=True)
 class AcceptedAssignment:
-    """A proposal that survived every check."""
+    """A proposal that survived every check that could be run."""
 
     assignments: tuple[ProposedAssignment, ...]
+
+    unverified_placement: tuple[str, ...] = ()
+    """The field keys whose readings could not be checked against the drawing's geometry, because
+    the page had none. Reported rather than silently folded in: a caller that shows a value has to
+    be able to say on what grounds it is there, and "the geometry agrees" and "there was no
+    geometry" are different grounds for the same number in the same box."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,11 +170,18 @@ def guard_assignment(
     Seven checks, and each rejects a way a plausible-looking assignment is wrong. None of them
     inspects a *value*: this decides whether the shape of the answer is possible, and what the
     numbers then say is the deterministic engine's business.
+
+    **One of the seven can be unavailable rather than failed.** Where a page carries no dimension
+    line-work at all, the attachment check has nothing to test against; it abstains, and the fields
+    it could not vouch for come back in `unverified_placement` rather than refusing the batch. That
+    is the difference between "we looked and this number is floating" and "there was nothing to look
+    at", and collapsing them switched this step off for every scanned drawing.
     """
     fields = {field.key: field for field in context.fields}
     readings = {reading.candidate_id: reading for reading in context.readings}
 
     claimed: dict[str, str] = {}
+    unverified: set[str] = set()
     for proposal in proposals:
         field = fields.get(proposal.field_key)
         if field is None:
@@ -193,11 +220,19 @@ def guard_assignment(
 
             # An unattached reading is a number floating on the sheet. `text_association` already
             # declined to say what it annotates; a model may not overrule that by using it.
+            #
+            # **Unless there was nothing to attach it to.** On a page with no dimension line-work —
+            # a scanned drawing, where the detector had nothing to detect — the attachment check did
+            # not run, and refusing on its silence would be reporting an examination that never
+            # happened. It abstains instead, and the field is marked so the screen can say which of
+            # the two grounds the value is there on. See `Reading.geometry_available`.
             if reading.line_key is None:
-                return AssignmentRefused(
-                    f"{reading.value} is not attached to any dimension line, so there is nothing "
-                    f"to say it measures {field.name}"
-                )
+                if reading.geometry_available:
+                    return AssignmentRefused(
+                        f"{reading.value} is not attached to any dimension line, so there is "
+                        f"nothing to say it measures {field.name}"
+                    )
+                unverified.add(field.key)
 
             if candidate_id in claimed:
                 return AssignmentRefused(
@@ -211,7 +246,9 @@ def guard_assignment(
             if refusal is not None:
                 return refusal
 
-    return AcceptedAssignment(assignments=tuple(proposals))
+    return AcceptedAssignment(
+        assignments=tuple(proposals), unverified_placement=tuple(sorted(unverified))
+    )
 
 
 def _run_is_drawn_as_one(

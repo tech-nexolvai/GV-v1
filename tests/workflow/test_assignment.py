@@ -39,6 +39,7 @@ def _reading(
     line_key: str | None = "line-1",
     chain_key: str | None = None,
     order: int | None = None,
+    geometry_available: bool = True,
 ) -> Reading:
     return Reading(
         candidate_id=candidate_id,
@@ -48,6 +49,7 @@ def _reading(
         line_key=line_key,
         chain_key=chain_key,
         order=order,
+        geometry_available=geometry_available,
     )
 
 
@@ -322,3 +324,80 @@ def test_nothing_in_the_guard_reads_a_value() -> None:
     # comparison, a sum, a conversion — would be this module deciding something.
     assert "exact" not in referenced
     assert "value_numerator" not in referenced
+
+
+# ---------------------------------------------------------------------------
+# A check that could not run is not a check that failed
+# ---------------------------------------------------------------------------
+
+
+def test_an_unattached_reading_on_a_page_with_no_geometry_is_not_refused() -> None:
+    """**Input: an unattached reading whose page had no line-work. Outcome: accepted, and marked.**
+
+    Measured on a real uploaded pair: `page texts=0, segments=0, annotation strokes=0` on both
+    sheets — scanned images in a PDF wrapper. The detector had nothing to detect, so nothing
+    attached, so this module refused every proposal and the form stayed empty. The refusal was
+    reporting an examination that never happened.
+
+    Where the geometry is absent the attachment check abstains and the field comes back in
+    `unverified_placement`. Every other check still applied to get here, and a reviewer still
+    confirms the value before anything is saved.
+    """
+    context = _context(_reading("c1", "25 1/2 in", line_key=None, geometry_available=False))
+
+    result = _guard(context, ProposedAssignment("SHOP:CT010", ("c1",)))
+
+    assert isinstance(result, AcceptedAssignment)
+    assert result.unverified_placement == ("SHOP:CT010",)
+
+
+def test_an_unattached_reading_on_a_page_that_has_dimension_lines_is_still_refused() -> None:
+    """**The half that must not move.** Outcome: refused, exactly as before.
+
+    A number unattached on a page with line-work sits near none of it — a title block, a revision
+    note, a scale bar. The drawing was examined and did not vouch for it, and that is a finding.
+    Widening the abstention to cover this case would be the safety property quietly disappearing.
+    """
+    context = _context(_reading("c1", "25 1/2 in", line_key=None, geometry_available=True))
+
+    result = _guard(context, ProposedAssignment("SHOP:CT010", ("c1",)))
+
+    assert isinstance(result, AssignmentRefused)
+    assert "not attached to any dimension line" in result.reason
+
+
+def test_an_attached_reading_is_never_marked_unverified() -> None:
+    """Outcome: accepted with an empty `unverified_placement`.
+
+    The mark means "nothing confirmed where this sits". A reading the geometry did vouch for must
+    not carry it, or the screen would warn about every value and the warning would stop meaning
+    anything.
+    """
+    context = _context(_reading("c1", "25 1/2 in"))
+
+    result = _guard(context, ProposedAssignment("SHOP:CT010", ("c1",)))
+
+    assert isinstance(result, AcceptedAssignment)
+    assert result.unverified_placement == ()
+
+
+def test_only_the_fields_that_could_not_be_checked_are_marked() -> None:
+    """**Outcome: one field marked, the other not, in one accepted proposal.**
+
+    A package is two drawings and they need not be the same kind of file: a vector shop drawing
+    beside a scanned architectural one is ordinary. The mark is per field, so a reviewer is warned
+    about exactly the values nothing vouched for and no others.
+    """
+    context = _context(
+        _reading("c1", "25 1/2 in"),
+        _reading("c2", "36 in", source="ARCH", line_key=None, geometry_available=False),
+    )
+
+    result = _guard(
+        context,
+        ProposedAssignment("SHOP:CT010", ("c1",)),
+        ProposedAssignment("ARCH:CT001", ("c2",)),
+    )
+
+    assert isinstance(result, AcceptedAssignment)
+    assert result.unverified_placement == ("ARCH:CT001",)

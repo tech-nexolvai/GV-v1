@@ -768,6 +768,10 @@ class DatabaseStages:
                     result,
                     extraction_run_id=association_run.id,
                     chains=_chain_membership(detected, page_id=page.id),
+                    # Zero here is the fact a scanned drawing turns on: no line-work was found, so
+                    # the attachment check could not run, and a refusal recorded against it must not
+                    # read downstream as an examination.
+                    lines_on_page=len(detected.lines),
                 )
             )
 

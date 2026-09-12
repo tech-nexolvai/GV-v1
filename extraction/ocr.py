@@ -50,12 +50,17 @@ __all__ = [
     "OcrUnavailable",
     "RapidOcrEngine",
     "combine_dual_notation",
+    "join_split_bracketed_inches",
     "read_page",
 ]
 
 
 _MILLIMETRE_TOKEN: Final = re.compile(r"\d+")
 _BRACKETED_INCH_TOKEN: Final = re.compile(r"\[\s*[^\[\]]+\s*\]")
+#: A fragment that opens a bracket and never closes it, and one that closes without
+#: opening. Two halves of a token one OCR detection should have returned whole.
+_OPENS_BRACKET: Final = re.compile(r"\[[^\[\]]*$")
+_CLOSES_BRACKET: Final = re.compile(r"^[^\[\]]*\]$")
 _AXIS_ALIGNMENT_TOLERANCE_PX: Final = 3
 
 
@@ -160,6 +165,109 @@ def read_page(rendered: RenderedPage, *, engine: OcrEngine) -> OcrPage:
     )
 
 
+def join_split_bracketed_inches(items: tuple[OcrItem, ...]) -> tuple[OcrItem, ...]:
+    """Join two boxes on one text row whose concatenation is a bracketed inch token.
+
+    **The fault this fixes, measured on a real uploaded sheet.** RapidOCR read the dimension
+    `724 [28 1/2]` as three boxes — `724`, `[28`, `1/2]` — because it broke the bracketed half across
+    two detections. `combine_dual_notation` looks for a *whole* bracketed token to pair the
+    millimetres with, found none, and every fragment fell out unparsed: `724` as a number with no
+    unit, `[28` and `1/2]` as nothing at all. Of twenty-five readings on that page, two survived.
+
+    So this runs first and puts the bracketed halves back together, and the existing stacked-pair
+    recogniser then does what it always did.
+
+    **A layout recogniser, not fuzzy text assembly**, held to the same conditions as its neighbour:
+    both boxes axis-aligned; overlapping vertically by most of the shorter one, which is what "the
+    same text row" means; the right box starting after the left one ends, by no more than the row is
+    tall, which is what a space is; the concatenation matching a bracketed inch token when neither
+    half does; and the pairing one-to-one in both directions. Anything ambiguous leaves every
+    original token untouched, so an unreadable crop still abstains rather than being assembled into
+    a number nobody wrote.
+    """
+    from units.imperial import ImperialParseError, parse_imperial
+
+    left_parts = [
+        index
+        for index, item in enumerate(items)
+        if _OPENS_BRACKET.match(item.text.strip())
+        and not _BRACKETED_INCH_TOKEN.fullmatch(item.text.strip())
+    ]
+    right_parts = [
+        index
+        for index, item in enumerate(items)
+        if _CLOSES_BRACKET.search(item.text.strip())
+        and not _BRACKETED_INCH_TOKEN.fullmatch(item.text.strip())
+    ]
+
+    compatible: dict[int, list[int]] = {index: [] for index in left_parts}
+    reverse: dict[int, list[int]] = {index: [] for index in right_parts}
+    for left_index in left_parts:
+        for right_index in right_parts:
+            if left_index == right_index:
+                continue
+            left, right = items[left_index], items[right_index]
+            if not _is_same_row_pair(left, right):
+                continue
+            joined = f"{left.text.strip()} {right.text.strip()}"
+            if not _BRACKETED_INCH_TOKEN.fullmatch(joined):
+                continue
+            # The join has to produce a *measurement*, not merely a bracket-shaped string. A pair
+            # whose inside will not parse is two fragments that happen to sit beside each other.
+            try:
+                parse_imperial(joined.strip("[]").strip())
+            except ImperialParseError:
+                continue
+            compatible[left_index].append(right_index)
+            reverse[right_index].append(left_index)
+
+    pairs = {
+        left_index: matches[0]
+        for left_index, matches in compatible.items()
+        if len(matches) == 1 and len(reverse[matches[0]]) == 1
+    }
+    consumed = set(pairs.values())
+    joined_items: list[OcrItem] = []
+    for index, item in enumerate(items):
+        if index in consumed:
+            continue
+        partner = pairs.get(index)
+        if partner is None:
+            joined_items.append(item)
+            continue
+        right = items[partner]
+        joined_items.append(
+            OcrItem(
+                text=f"{item.text.strip()} {right.text.strip()}",
+                confidence=min(item.confidence, right.confidence),
+                image_extent=_union_extent(item.image_extent, right.image_extent),
+                # Deliberately not oriented here. This says two boxes are one token; whether that
+                # token reads along an axis is the stacked-pair recogniser's finding, and claiming
+                # it early would let a single joined fragment reach association on its own.
+                rotation_degrees=item.rotation_degrees,
+            )
+        )
+    return tuple(joined_items)
+
+
+def _is_same_row_pair(left: OcrItem, right: OcrItem) -> bool:
+    """Whether `right` is the next box along one line of text from `left`."""
+    if not _is_axis_aligned(left.image_extent) or not _is_axis_aligned(right.image_extent):
+        return False
+    _, left_y0, left_x1, left_y1 = _bounds(left.image_extent)
+    right_x0, right_y0, _, right_y1 = _bounds(right.image_extent)
+    left_height = left_y1 - left_y0
+    right_height = right_y1 - right_y0
+    if left_height <= 0 or right_height <= 0:
+        return False
+    shorter = min(left_height, right_height)
+    vertical_overlap = min(left_y1, right_y1) - max(left_y0, right_y0)
+    horizontal_gap = right_x0 - left_x1
+    return (
+        vertical_overlap * 2 > shorter and horizontal_gap >= -shorter and horizontal_gap <= shorter
+    )
+
+
 def combine_dual_notation(items: tuple[OcrItem, ...]) -> tuple[OcrItem, ...]:
     """Join an unambiguous stacked ``millimetres`` + ``[inches]`` OCR pair.
 
@@ -175,6 +283,10 @@ def combine_dual_notation(items: tuple[OcrItem, ...]) -> tuple[OcrItem, ...]:
     Any ambiguity leaves every original token untouched, preserving the existing abstention.
     """
     from units.dual import DualDimensionParseError, parse_dual
+
+    # A bracketed half split across two boxes is put back together before anything looks for a
+    # whole one to pair with. See `join_split_bracketed_inches` for the reading this was measured on.
+    items = join_split_bracketed_inches(items)
 
     millimetres = [
         index for index, item in enumerate(items) if _MILLIMETRE_TOKEN.fullmatch(item.text.strip())

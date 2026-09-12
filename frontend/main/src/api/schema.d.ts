@@ -2129,6 +2129,11 @@ export interface components {
             many: boolean;
             /** Name */
             name: string;
+            /**
+             * Placement Verified
+             * @default true
+             */
+            placement_verified: boolean;
             /** Source */
             source: string;
             /** Values */

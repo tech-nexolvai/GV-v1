@@ -340,8 +340,12 @@ def propose_and_guard(
     model: BedrockAssignmentModel | None,
     *,
     observer: Callable[[AssignmentProgress], None] | None = None,
-) -> tuple[ProposedAssignment, ...]:
-    """Propose an assignment and return only one that passes every check, else nothing.
+) -> tuple[tuple[ProposedAssignment, ...], tuple[str, ...]]:
+    """Propose an assignment and return only one that passes every check, with what it could not check.
+
+    Returns the accepted assignments and the field keys whose placement the drawing's geometry could
+    not vouch for — `guard_assignment` abstains on a page with no line-work rather than refusing,
+    and the caller has to be able to say so on the screen.
 
     **Every failure has the same outcome: the fields stay empty and a reviewer fills them.** A
     provider that is unreachable, a payload that will not parse, a proposal the guard refuses —
@@ -362,7 +366,7 @@ def propose_and_guard(
 
     if model is None:
         report("unavailable", 1, "no model is configured, so the fields stay for the reviewer")
-        return ()
+        return (), ()
 
     # **Said here as well as in the adapter, because the two answer different questions.** The
     # adapter returns early so that no call is paid for; this reports *why* nothing came back, and
@@ -370,7 +374,7 @@ def propose_and_guard(
     # every reading already confirmed is the ordinary case that produces it.
     if not context.readings or not context.fields:
         report("unavailable", 1, "there was nothing to choose between, so nothing was asked")
-        return ()
+        return (), ()
 
     # **One retry, with the guard's own sentence fed back.** Measured against the real provider on
     # a five-reading cabinet run: the first attempt put the two fillers into `filler_widths`
@@ -396,15 +400,15 @@ def propose_and_guard(
             proposed = model.propose(context, refused=refused)
         except Exception:  # noqa: BLE001 - fail closed across the provider boundary
             report("unavailable", attempt, "the model could not be reached")
-            return ()
+            return (), ()
         if not proposed:
             report("unavailable", attempt, "the model proposed nothing")
-            return ()
+            return (), ()
         report("checking", attempt, f"{len(proposed)} proposed, seven structural checks")
         checked = guard_assignment(context, proposed)
         if isinstance(checked, AcceptedAssignment):
             report("accepted", attempt, f"{len(checked.assignments)} fields")
-            return checked.assignments
+            return checked.assignments, checked.unverified_placement
         refused = checked.reason
         report("refused", attempt, checked.reason)
-    return ()
+    return (), ()
