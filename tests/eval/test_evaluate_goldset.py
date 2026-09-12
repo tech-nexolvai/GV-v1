@@ -70,6 +70,17 @@ ASSOCIATION_ARGUMENTS = [
     "0.1",
     "--ambiguity-margin",
     "0.01",
+    # The dimension-line detector's four (#179). Required now, because only the runs it classifies
+    # reach `associate` — so a grader that omitted them would be refused rather than silently
+    # scoring a run with every stroke on the page offered as somewhere a reading could land.
+    "--witness-tolerance",
+    "0.01",
+    "--minimum-span",
+    "0.02",
+    "--straightness",
+    "0.0005",
+    "--crossing-margin",
+    "0.001",
 ]
 
 
@@ -242,6 +253,10 @@ def test_the_extraction_stage_never_receives_the_reviewer_answer(
         glyph_gap_pt=Decimal(4),
         proximity_limit=Decimal("0.3"),
         ambiguity_margin=Decimal("0.01"),
+        witness_tolerance=Decimal("0.01"),
+        minimum_span=Decimal("0.02"),
+        straightness=Decimal("0.0005"),
+        crossing_margin=Decimal("0.001"),
     )
     url = postgres_engine.url.render_as_string(hide_password=False)
 

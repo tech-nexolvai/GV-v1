@@ -96,6 +96,10 @@ API_PID=$!
 # The demo's crop-local reader uses the explicit geometry settings that were measured for its safe
 # synthetic fixture.  They are process configuration, not application defaults: a deployment must
 # state its own values before it can turn this route on for a different drawing family.
+#
+# The four dimension-line values were measured against `AI_Set 2` p13 (#179) and are this demo's,
+# not anybody else's. `CROSSING_MARGIN` is the one that separates a dimension from the box it
+# measures; raise it toward `WITNESS_TOLERANCE` and every real dimension on that sheet is rejected.
 GV_DATABASE_URL="$BARE_URL" \
 GV_DEV_STORAGE=".dev-storage" \
 GV_LOCALIZED_OCR_ENABLED=1 \
@@ -104,6 +108,10 @@ GV_READER_GLYPH_MAXIMUM_PT=10 \
 GV_READER_GLYPH_GAP_PT=4 \
 GV_READER_PROXIMITY_LIMIT=0.05 \
 GV_READER_AMBIGUITY_MARGIN=0.005 \
+GV_READER_WITNESS_TOLERANCE=0.004 \
+GV_READER_MINIMUM_SPAN=0.01 \
+GV_READER_STRAIGHTNESS=0.0005 \
+GV_READER_CROSSING_MARGIN=0.0005 \
 GV_READER_LOCALIZED_MINIMUM_PATHS=1 \
 GV_READER_LOCALIZED_MAXIMUM_SPAN=0.5 \
 GV_READER_LOCALIZED_CROP_MARGIN_PT=2 \

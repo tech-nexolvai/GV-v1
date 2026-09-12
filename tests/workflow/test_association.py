@@ -5,10 +5,14 @@ Verification for: `DatabaseStages._associate_page` in `workflow/stages.py`, `wor
 
 **The geometry here is arithmetic, not a guess.** The PDFs are hand-built, and the appearance stream's
 own coordinate system maps into page space by a stated `/BBox`, `/Matrix` and `/Rect` — for these
-files, `page = (appearance_x - 50, appearance_y - 450)`. So a line drawn at appearance `y = 500` sits
-at page `y = 50`, which on a 300-point page is stored `y = 0.8333`, and a note whose box spans page
-`y = 40..60` has its centre exactly there. Every distance in these tests can be checked by hand,
-which is the only way a test about proximity means anything.
+files, `page = (appearance_x - 50, appearance_y - 450)`. So a dimension drawn at appearance
+`y = 550` sits at page `y = 100`, which on a 300-point page is stored `y = 0.6667`, and a note whose
+box spans page `y = 90..110` has its centre exactly there. Every distance in these tests can be
+checked by hand, which is the only way a test about proximity means anything.
+
+The geometry moved off the BBox edge when #179 landed: a dimension is now a run whose ends are
+*crossed* by witness lines, and a run drawn on the edge has the half of its witnesses that would
+overshoot clipped away.
 
 The two tests to read first are `test_a_reading_between_two_equally_close_lines_is_refused`, because
 refusing is the deliverable rather than the fallback, and
@@ -78,6 +82,13 @@ SETTINGS = AssociationSettings(
     glyph_gap_pt=Decimal(4),
     proximity_limit=Decimal("0.05"),
     ambiguity_margin=Decimal("0.005"),
+    # The dimension-line detector's four (#179). Only strokes it classifies reach `associate`, so
+    # a fixture whose lines are not dimension-shaped now associates nothing — which is why the
+    # geometry in these tests carries witness lines crossing both ends.
+    witness_tolerance=Decimal("0.01"),
+    minimum_span=Decimal("0.02"),
+    straightness=Decimal("0.0005"),
+    crossing_margin=Decimal("0.001"),
 )
 
 LOCALIZED = LocalizedOcrSettings(
@@ -86,10 +97,35 @@ LOCALIZED = LocalizedOcrSettings(
     crop_margin_pt=Decimal(2),
 )
 
-#: One horizontal line at page y=50, running page x=50..150. The note below sits on it.
+# Appearance space is the stamp's `/BBox` — `[100 500 400 700]` — mapped onto its `/Rect`,
+# `[50 50 350 250]`, so appearance `(x, y)` is page `(x - 50, y - 450)`. Each fixture is written in
+# appearance coordinates and described in page ones.
+#
+# **Each now draws a dimension rather than a bare stroke, which is the point of #179.** A line alone
+# is not a dimension: `associate` is only offered runs whose ends are *crossed* by a perpendicular,
+# because otherwise a reading attaches as readily to the edge of a cabinet as to the dimension that
+# measures it. These fixtures drew one stroke and called it a dimension line — exactly the
+# assumption the detector exists to refuse — so they draw their witness lines too.
+#
+# Two constraints the geometry has to respect, both found by watching a fixture fail silently:
+#
+# * **Inside the BBox.** The reader clips to it, so a witness needs room to overshoot on both sides.
+#   Drawn on the bottom edge, the half below is clipped away and the junction is an L again.
+# * **At least `line_minimum_pt` long**, which is 50 here. A shorter run is not line-work at all —
+#   `read_annotation_layers` drops it as a possible glyph before `detect` ever sees it. At 40 points
+#   each of these looked like a dimension and arrived as one unclassifiable line.
+
+#: One horizontal dimension at page y=100 running page x=100..200, its ends crossed by 60-point
+#: witness lines. The note sits on it.
 ONE_LINE = _pdf(
-    annotations=[_free_text('185 1/4"', rect=b"[40 40 120 60]"), _stamp(appearance_object=7)],
-    extra_objects=[_appearance(b"1 w 100 500 m 200 500 l S\n")],
+    annotations=[_free_text('185 1/4"', rect=b"[110 90 190 110]"), _stamp(appearance_object=7)],
+    extra_objects=[
+        _appearance(
+            b"1 w 150 550 m 250 550 l S\n"
+            b"1 w 150 520 m 150 580 l S\n"
+            b"1 w 250 520 m 250 580 l S\n"
+        )
+    ],
 )
 
 #: Two horizontal lines at page y=75 and y=85, with a note centred at page y=80 — exactly
@@ -100,8 +136,17 @@ ONE_LINE = _pdf(
 #: past its box and the box is what a viewer clips it to, so a line outside it is not on the sheet
 #: anybody saw. The remaining line then attached and the test's premise had quietly disappeared.
 TWO_LINES = _pdf(
-    annotations=[_free_text('185 1/4"', rect=b"[40 70 120 90]"), _stamp(appearance_object=7)],
-    extra_objects=[_appearance(b"1 w 100 525 m 200 525 l S\n1 w 100 535 m 200 535 l S\n")],
+    annotations=[_free_text('185 1/4"', rect=b"[110 95 190 115]"), _stamp(appearance_object=7)],
+    extra_objects=[
+        # Two dimensions at page y=95 and y=115, ten points either side of a note centred at 105.
+        # One pair of witness lines crosses both, which is how a drawing stacks dimension rows.
+        _appearance(
+            b"1 w 150 545 m 250 545 l S\n"
+            b"1 w 150 565 m 250 565 l S\n"
+            b"1 w 150 520 m 150 590 l S\n"
+            b"1 w 250 520 m 250 590 l S\n"
+        )
+    ],
 )
 
 #: A vertical line at page x=100 and a horizontal one at page y=150, each the same distance from a
@@ -111,13 +156,31 @@ CROSSED = _pdf(
         _free_text('102"', rect=b"[90 140 110 160]", rotation=b" /Rotation 270"),
         _stamp(appearance_object=7),
     ],
-    extra_objects=[_appearance(b"1 w 150 550 m 150 650 l S\n1 w 100 600 m 200 600 l S\n")],
+    extra_objects=[
+        # A vertical dimension at page x=100 and a horizontal one at page y=150, each with its own
+        # crossing witnesses, and each the same distance from the note at page (100, 150).
+        _appearance(
+            b"1 w 150 550 m 150 650 l S\n"
+            b"1 w 110 550 m 190 550 l S\n"
+            b"1 w 110 650 m 190 650 l S\n"
+            b"1 w 130 600 m 230 600 l S\n"
+            b"1 w 130 560 m 130 640 l S\n"
+            b"1 w 230 560 m 230 640 l S\n"
+        )
+    ],
 )
 
 #: A note twenty-five points from the only line on the page: outside a 0.05 stored limit.
 FAR_FROM_THE_LINE = _pdf(
-    annotations=[_free_text('185 1/4"', rect=b"[40 90 120 110]"), _stamp(appearance_object=7)],
-    extra_objects=[_appearance(b"1 w 100 500 m 200 500 l S\n")],
+    annotations=[_free_text('185 1/4"', rect=b"[110 160 190 180]"), _stamp(appearance_object=7)],
+    extra_objects=[
+        # The same dimension as ONE_LINE, at page y=100, with the note moved up to page y=170.
+        _appearance(
+            b"1 w 150 550 m 250 550 l S\n"
+            b"1 w 150 520 m 150 580 l S\n"
+            b"1 w 250 520 m 250 580 l S\n"
+        )
+    ],
 )
 
 
@@ -256,10 +319,10 @@ def test_a_reading_on_a_line_is_attached_to_it(session: Session, store: LocalSto
 
     assert len(attached) == 1
     assert _text_of(session, attached[0]) == '185 1/4"'
-    # Page y=50 on a 300-point page: stored 0.8333, and the line runs page x=50..150.
+    # Page y=100 on a 300-point page: stored 0.6667, and the dimension runs page x=100..200.
     assert attached[0].start_y == attached[0].end_y
     assert Decimal(attached[0].start_y or "0") == pytest.approx(
-        Decimal("0.8333"), abs=Decimal("0.002")
+        Decimal("0.6667"), abs=Decimal("0.002")
     )
 
 
@@ -275,24 +338,28 @@ def test_an_unambiguous_split_ocr_reading_uses_the_same_production_association(
         def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
             del rgb, width, height
             return (
+                # Image pixels, at the fixture's 150 dpi on a 400x300-point page. The dimension in
+                # `ONE_LINE` is at page (100..200, y=100), which is image x 208..417, y ≈ 417 —
+                # measured from the top, where page y is measured from the bottom. These boxes sat
+                # over the old line at page y=50 and had to move with it.
                 OcrItem(
                     text="76",
                     confidence=Decimal("0.81"),
                     image_extent=(
-                        ImagePoint(170, 500),
-                        ImagePoint(210, 500),
-                        ImagePoint(210, 522),
-                        ImagePoint(170, 522),
+                        ImagePoint(292, 406),
+                        ImagePoint(332, 406),
+                        ImagePoint(332, 428),
+                        ImagePoint(292, 428),
                     ),
                 ),
                 OcrItem(
                     text="[3]",
                     confidence=Decimal("0.77"),
                     image_extent=(
-                        ImagePoint(168, 518),
-                        ImagePoint(212, 518),
-                        ImagePoint(212, 542),
-                        ImagePoint(168, 542),
+                        ImagePoint(290, 424),
+                        ImagePoint(334, 424),
+                        ImagePoint(334, 448),
+                        ImagePoint(290, 448),
                     ),
                 ),
             )
@@ -679,6 +746,10 @@ def test_running_the_stage_twice_records_one_decision_per_reading(
         "glyph_gap_pt",
         "proximity_limit",
         "ambiguity_margin",
+        "witness_tolerance",
+        "minimum_span",
+        "straightness",
+        "crossing_margin",
     ],
 )
 def test_a_float_length_is_refused(name: str) -> None:
@@ -693,6 +764,10 @@ def test_a_float_length_is_refused(name: str) -> None:
         "glyph_gap_pt": Decimal(4),
         "proximity_limit": Decimal("0.05"),
         "ambiguity_margin": Decimal("0.005"),
+        "witness_tolerance": Decimal("0.01"),
+        "minimum_span": Decimal("0.02"),
+        "straightness": Decimal("0.0005"),
+        "crossing_margin": Decimal("0.001"),
     }
     values[name] = 0.05  # type: ignore[assignment]
 
@@ -710,6 +785,10 @@ def test_a_length_that_admits_nothing_is_refused(value: Decimal) -> None:
             glyph_gap_pt=Decimal(4),
             proximity_limit=Decimal("0.05"),
             ambiguity_margin=Decimal("0.005"),
+            witness_tolerance=Decimal("0.01"),
+            minimum_span=Decimal("0.02"),
+            straightness=Decimal("0.0005"),
+            crossing_margin=Decimal("0.001"),
         )
 
 
