@@ -54,6 +54,7 @@ __all__ = [
     "Axis",
     "DetectedDimensions",
     "DimensionChain",
+    "DimensionClosure",
     "DimensionLine",
     "detect",
 ]
@@ -130,6 +131,30 @@ class DimensionChain:
 
 
 @dataclass(frozen=True, slots=True)
+class DimensionClosure:
+    """An overall dimension and the smaller ones that tile the same extent.
+
+    **The drawing checking itself.** A cabinet run dimensioned segment by segment *and* again
+    overall is a statement that the parts add up to the whole. That the parts *tile* the whole is
+    spatial — it is read off where the strokes are — and whether their stated numbers *sum* to the
+    stated overall is arithmetic, which is `B3`'s question and can still come out wrong. Keeping
+    those two apart is what stops this from being circular: nothing here consults a value, so
+    finding a closure cannot make a closure check pass.
+
+    **Not the same thing as a chain.** A `DimensionChain` is lines drawn end to end at the same
+    offset — one row. A closure spans rows: a drawing puts the overall on one line and the
+    breakdown on another above it, which is exactly the arrangement `CT-WIDTH-001` is written
+    against. Requiring one offset would miss every real one.
+    """
+
+    axis: Axis
+    overall: DimensionLine
+    parts: tuple[DimensionLine, ...]
+    """Two or more, in order along the axis. One "part" spanning the whole is the same dimension
+    drawn twice, not a breakdown of it."""
+
+
+@dataclass(frozen=True, slots=True)
 class DetectedDimensions:
     """What the strokes resolved into, and what they did not.
 
@@ -141,6 +166,7 @@ class DetectedDimensions:
 
     lines: tuple[DimensionLine, ...]
     chains: tuple[DimensionChain, ...]
+    closures: tuple[DimensionClosure, ...]
     unclassified: tuple[DimensionExtent, ...]
 
     def __post_init__(self) -> None:
@@ -247,7 +273,7 @@ def detect(
             reason `DimensionExtent` carries its provenance at all.
     """
     if not segments:
-        return DetectedDimensions(lines=(), chains=(), unclassified=())
+        return DetectedDimensions(lines=(), chains=(), closures=(), unclassified=())
 
     scopes = {(extent.document_version_id, extent.page) for extent in segments}
     if len(scopes) > 1:
@@ -339,8 +365,93 @@ def detect(
     return DetectedDimensions(
         lines=tuple(lines),
         chains=_chains(lines, tolerance=witness_tolerance),
+        closures=_closures(lines, tolerance=witness_tolerance),
         unclassified=unclassified,
     )
+
+
+def _interval(line: DimensionLine) -> tuple[Decimal, Decimal]:
+    """Where a dimension starts and ends along its own axis, low first."""
+    if line.axis is Axis.HORIZONTAL:
+        return min(line.extent.start.x, line.extent.end.x), max(
+            line.extent.start.x, line.extent.end.x
+        )
+    return min(line.extent.start.y, line.extent.end.y), max(line.extent.start.y, line.extent.end.y)
+
+
+def _closures(
+    lines: Sequence[DimensionLine], *, tolerance: Decimal
+) -> tuple[DimensionClosure, ...]:
+    """Find each dimension whose extent is tiled by smaller ones on the same axis.
+
+    **Tiled, not merely contained.** Two sub-dimensions sitting somewhere inside a longer one say
+    nothing; they might measure two unrelated features that happen to fall within it. A breakdown is
+    parts that start where the overall starts, end where it ends, and meet each other in between
+    with nothing left over. That is the drawing asserting these are *the* constituents, and it is
+    the only arrangement a closure check can be run against.
+
+    Across offsets on purpose — a drawing puts the overall on one line and the breakdown on another
+    above it. Restricting to one offset, as `_chains` does, would find none of them.
+
+    Nothing here reads a value. Whether the parts' stated numbers sum to the overall's stated number
+    is arithmetic and `B3`'s to check; this only reports that the drawing laid them out as a
+    breakdown, so there is something to check at all.
+    """
+    found: list[DimensionClosure] = []
+    for axis in (Axis.HORIZONTAL, Axis.VERTICAL):
+        candidates = [line for line in lines if line.axis is axis]
+        for overall in candidates:
+            low, high = _interval(overall)
+            inside = sorted(
+                (
+                    other
+                    for other in candidates
+                    if other is not overall
+                    and _interval(other)[0] >= low - tolerance
+                    and _interval(other)[1] <= high + tolerance
+                    # Strictly shorter, so the same dimension drawn twice is not its own breakdown.
+                    and (_interval(other)[1] - _interval(other)[0]) < (high - low) - tolerance
+                ),
+                key=lambda line: _interval(line)[0],
+            )
+            parts = _tiling(inside, low=low, high=high, tolerance=tolerance)
+            if parts is not None:
+                found.append(DimensionClosure(axis=axis, overall=overall, parts=parts))
+    return tuple(found)
+
+
+def _tiling(
+    inside: Sequence[DimensionLine], *, low: Decimal, high: Decimal, tolerance: Decimal
+) -> tuple[DimensionLine, ...] | None:
+    """The subset of `inside` that tiles `low..high` contiguously, or `None`.
+
+    Greedy from the low end, taking the longest run that starts where the last one finished. Greedy
+    rather than exhaustive because a sheet offers a handful of candidates and the longest-first rule
+    is what a person reads off the drawing: the breakdown is the coarsest set of parts that covers
+    the span, not the finest subdivision that happens to fit.
+
+    **One rule does the refusing, not three.** This ended with
+    `if abs(position - high) > tolerance or len(chosen) < 2: return None`, and mutation testing
+    showed neither clause could be made to matter. The first is unreachable — the loop exits within
+    `tolerance` of `high` and every candidate is bounded by it, so the distance can never exceed
+    one. The second only ever fired for a single part spanning the whole, which `_closures` has
+    already excluded by requiring each part to be strictly shorter.
+    """
+    chosen: list[DimensionLine] = []
+    position = low
+    while position < high - tolerance:
+        following = [
+            line
+            for line in inside
+            if abs(_interval(line)[0] - position) <= tolerance
+            and _interval(line)[1] > position + tolerance
+        ]
+        if not following:
+            return None
+        step = max(following, key=lambda line: _interval(line)[1])
+        chosen.append(step)
+        position = _interval(step)[1]
+    return tuple(chosen)
 
 
 def _chains(lines: Sequence[DimensionLine], *, tolerance: Decimal) -> tuple[DimensionChain, ...]:
