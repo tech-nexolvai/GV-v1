@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ChevronRight,
@@ -108,6 +108,71 @@ const SOURCE_LABEL: Record<string, string> = {
   USER_INPUT: 'measured on site',
   PRODUCT_SPEC: 'product specification',
 };
+
+
+/**
+ * The drawings are being read, and this says so for as long as it takes.
+ *
+ * **The bar is indeterminate on purpose.** Reading a pair takes roughly a minute, but how long
+ * *this* pair will take is not something this side of the request knows — it depends on the sheet,
+ * the routes it needs and whether OCR runs. A bar that filled steadily would be asserting a
+ * completion fraction nobody measured, which is the one thing the progress display on this product
+ * is careful never to do. A segment crossing the track says "working" and claims nothing.
+ *
+ * The clock is measured here, and the stage name is the pipeline's own — both are facts. So a
+ * reviewer waiting knows it is alive, roughly how long it has been, and which part of the work it
+ * is in, without being told a number that was invented.
+ */
+function ReadingProgress({ state }: { state: string }) {
+  const [elapsed, setElapsed] = useState(0);
+  const startedAt = useRef(0);
+
+  useEffect(() => {
+    // Started in the effect, not during render: React may render more than once per commit, so a
+    // timestamp taken there can come from an attempt that was discarded.
+    startedAt.current = Date.now();
+    const timer = window.setInterval(() => setElapsed(Date.now() - startedAt.current), 200);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const stage = state.toLowerCase().replace(/_/g, ' ');
+  return (
+    <div className="reading" role="status" aria-live="polite" aria-busy="true">
+      <div className="reading__head">
+        <ScanLine size={14} aria-hidden="true" />
+        <span className="reading__title">Reading these drawings</span>
+        <span className="reading__stage">{stage}</span>
+        <span className="reading__clock mono">{(elapsed / 1000).toFixed(0)}s</span>
+      </div>
+      <div className="reading__track" aria-hidden="true">
+        <span className="reading__bar" />
+      </div>
+      <p className="reading__note">
+        This usually takes about a minute. The page is watching and will fill itself in when the
+        reading finishes — you do not need to reload.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * A semantic type as a person would say it, with the code kept beside it.
+ *
+ * `CT008` is what the rulebook matches on and what a reviewer quotes when asking about a field —
+ * worth showing, useless on its own. Every quantity the rulebook asks for carries a readable name
+ * through `consumers[].input_name`, and `fieldLabel` already renders it on the form; this reuses it
+ * so one quantity cannot be called two different things on one screen.
+ *
+ * Falls back to the bare code where the rulebook asks for a quantity under no readable name, which
+ * is honest: inventing a friendly word for a code nobody has defined would be worse than showing
+ * the code.
+ */
+function quantityLabel(quantities: Quantity[], semanticType: string): string {
+  const quantity = quantities.find((item) => item.semantic_type === semanticType);
+  if (!quantity) return semanticType;
+  const named = fieldLabel(quantity);
+  return named === semanticType ? semanticType : `${named} (${semanticType})`;
+}
 
 /**
  * Who put the value that is currently in a field, said in four words.
@@ -720,15 +785,7 @@ export function EnterValuesPage({
               </li>
             )}
           </ul>
-          {needed.still_reading && (
-            <p className="measure-coverage__reading" role="status">
-              <ScanLine size={13} aria-hidden="true" />
-              <span>
-                Still reading these drawings — these counts are not final yet. The page is watching
-                and will update itself.
-              </span>
-            </p>
-          )}
+          {needed.still_reading && <ReadingProgress state={needed.revision_state} />}
           <p className="measure-coverage__caveat">
             Coverage, not accuracy. A dimension the reader could not parse, or a number with no unit,
             is not counted here at all — it was refused rather than guessed, and the field stays
@@ -885,7 +942,15 @@ export function EnterValuesPage({
                     </p>
                   )}
                   <label className="ai-proposal__type">
-                    <span>Meaning / rule quantity</span>
+                    {/* **The codes are not a vocabulary anybody has.**
+                        This listed `CT004`, `CT008`, `cabinet_width` — the rulebook's internal
+                        keys — and asked a reviewer to pick one. Nobody outside the rule engine
+                        knows what `CT008` measures, so the only honest thing a person could do was
+                        guess or give up. The rulebook already names every one of them readably and
+                        the page already uses those names on its own fields; this is the same
+                        `fieldLabel`, so the dropdown and the form cannot call one quantity two
+                        things. */}
+                    <span>What does this number measure?</span>
                     <select
                       className="value-input"
                       aria-label={`Meaning for AI reading ${candidate.value}`}
@@ -896,10 +961,10 @@ export function EnterValuesPage({
                         if (type) void confirmFromMeasure(candidate, type);
                       }}
                     >
-                      <option value="">Choose a quantity…</option>
+                      <option value="">Choose what it measures…</option>
                       {availableTypes.map((semanticType) => (
                         <option key={semanticType} value={semanticType}>
-                          {semanticType}
+                          {quantityLabel(needed.quantities, semanticType)}
                         </option>
                       ))}
                     </select>
@@ -955,6 +1020,13 @@ export function EnterValuesPage({
                       <span className={`value-origin value-origin--${origin}`}>
                         {ORIGIN_LABEL[origin]}
                       </span>
+                      {quantity.key in aiFilled && (
+                        <span className="value-where">
+                          {aiFilled[quantity.key].length} reading
+                          {aiFilled[quantity.key].length === 1 ? '' : 's'} from the{' '}
+                          {SOURCE_LABEL[quantity.source] ?? quantity.source}
+                        </span>
+                      )}
                       <span className="value-feeds" title={quantity.consumers.map((c) => c.rule_id).join(', ')}>
                         {quantity.consumers.length} check{quantity.consumers.length === 1 ? '' : 's'}
                       </span>
@@ -1035,6 +1107,17 @@ export function EnterValuesPage({
                           setSingles((prior) => ({ ...prior, [quantity.key]: e.target.value }));
                         }}
                       />
+                    )}
+                    {/* **An empty field used to say nothing at all.**
+                        A reviewer new to the product sees fourteen boxes and no indication of
+                        where any number comes from. The rulebook knows: which sheet it is read
+                        from, and what the client's own code book says the quantity is. Both were
+                        already loaded and neither was on the screen. */}
+                    {origin === 'empty' && (
+                      <p className="value-help">
+                        Read it off the <strong>{SOURCE_LABEL[quantity.source] ?? quantity.source}</strong>
+                        {' '}and type it with its unit. Nothing was read here that could fill it.
+                      </p>
                     )}
                   </div>
                 );
