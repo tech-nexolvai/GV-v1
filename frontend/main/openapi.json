@@ -2158,9 +2158,19 @@
             "title": "Quantities",
             "type": "array"
           },
+          "revision_state": {
+            "default": "",
+            "title": "Revision State",
+            "type": "string"
+          },
           "rules_published": {
             "title": "Rules Published",
             "type": "integer"
+          },
+          "still_reading": {
+            "default": false,
+            "title": "Still Reading",
+            "type": "boolean"
           }
         },
         "required": [

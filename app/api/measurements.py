@@ -51,7 +51,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
-from app.models import Package, PackageRevision
+from app.models import Package, PackageRevision, PackageState
 from app.models.document import (
     DocumentVersion,
     PackageRevisionDocument,
@@ -112,6 +112,23 @@ NOT_FOUND_DETAIL: Final = "Not found"
 #: The workflow the enqueued row asks for. Named, not free text, so a typo cannot enqueue work that
 #: no consumer recognises and that then sits in the outbox looking accepted.
 RUN_CHECKS_WORKFLOW: Final = "run_checks"
+
+#: The states in which something is still working on a package, so an empty form is not yet an
+#: answer about the drawings.
+#:
+#: Listed rather than inferred from "is it not a terminal state", because the two ends of that
+#: sentence drift: a state added later would silently become "still reading" and a reviewer would be
+#: told to wait for something nobody is doing. A member here is a state the pipeline moves *out* of
+#: on its own.
+READING_STATES: Final[frozenset[str]] = frozenset(
+    {
+        PackageState.UPLOADED.value,
+        PackageState.INGESTING.value,
+        PackageState.EXTRACTING.value,
+        PackageState.MATCHING.value,
+        PackageState.VALIDATING_EVIDENCE.value,
+    }
+)
 
 
 def _parse(value: str, *, field: str) -> Measurement:
@@ -412,6 +429,8 @@ def read_required_inputs(
             for discriminator in needs.discriminators
         ),
         rules_published=len(rules),
+        revision_state=revision.state,
+        still_reading=revision.state in READING_STATES,
     )
 
 
