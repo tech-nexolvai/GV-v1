@@ -20,7 +20,7 @@ from workflow.findings_composer import (
     compose_findings,
 )
 
-__all__ = ["ChatMode", "ChatReply", "answer_question"]
+__all__ = ["NOTHING_HAS_RUN", "ChatMode", "ChatReply", "answer_question"]
 
 
 class ChatMode(StrEnum):
@@ -80,8 +80,30 @@ def _selection_label(question: str) -> str:
     return "all"
 
 
-def _intro(question: str, selected: Sequence[ComposerFinding], total: int) -> str:
+#: What the reviewer is told when nothing has been checked yet. Deliberately not phrased as an
+#: answer to their question, because there is no run to answer it about.
+NOTHING_HAS_RUN = (
+    "No checks have been run on this package yet, so there is nothing to explain. "
+    "Open Measure, fill in the values the rulebook asks for, and press Run checks."
+)
+
+
+def _intro(
+    question: str,
+    selected: Sequence[ComposerFinding],
+    total: int,
+    *,
+    checks_have_run: bool = True,
+) -> str:
     """A deterministic envelope around model prose, with no new facts to get wrong."""
+    # **A package nobody has checked is not a run with no failures.** Both arrive here with an empty
+    # sequence, and answering them the same way told a reviewer "No FAIL findings in this run"
+    # about a package that had been uploaded four minutes earlier and never checked — which reads
+    # as a clean bill of health for a drawing nothing has looked at. That is the most expensive
+    # sentence this module could say.
+    if not checks_have_run:
+        return NOTHING_HAS_RUN
+
     # The question stays out of this deterministic envelope. It does now reach the provider, so that
     # an answer can be about what was asked — but it is never echoed into text this module composes,
     # because that text is shown whether or not a model ran.
@@ -101,13 +123,29 @@ def answer_question(
     question: str,
     findings: Sequence[ComposerFinding],
     model: FindingsLanguageModel | None,
+    *,
+    checks_have_run: bool = True,
 ) -> ChatReply:
     """Return guarded language over one run's facts, or the complete structured fallback.
 
     ``compose_findings`` supplies the hard 1:1 and fact-preservation checks.  In particular, a
     provider cannot add a PASS/FAIL phrase, alter a number, omit a supplied fact, or emit a finding
     key that was not in the deterministic query.  Any failure falls back to the plain summaries.
+
+    ``checks_have_run`` is the caller's answer to a question this module cannot see: an empty
+    ``findings`` means "the checks found nothing" *or* "nobody has run them", and the two must not
+    be answered the same way. It defaults to ``True`` so that a caller holding real findings need
+    not state the obvious; a caller with none has to have looked.
     """
+    if not checks_have_run:
+        return ChatReply(
+            text=_intro(question, (), len(findings), checks_have_run=False),
+            narratives=(),
+            mode=ChatMode.STRUCTURED_FALLBACK,
+            model_id=None,
+            fallback_reason="no checks have been run on this package",
+        )
+
     selected = _selection(question, findings)
     if not selected:
         return ChatReply(
