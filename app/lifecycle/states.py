@@ -175,6 +175,26 @@ def _build_transitions() -> dict[PackageState, frozenset[PackageState]]:
         {PackageState.APPROVED, PackageState.CHANGES_REQUESTED}
     )
 
+    # **And a reviewer may supply a missing value and ask for the checks again.**
+    #
+    # Without this edge a package could be checked exactly once. A reviewer reading "waiting on a
+    # value", going to Measure, typing it and pressing Run checks got a 202 and then nothing: the
+    # worker refused `AWAITING_REVIEW -> AWAITING_REVIEW` at the end of the run, the outbox row
+    # retried for ever — 1680 attempts on one row, observed — and the findings stayed stale. The
+    # loop the product is built around, fill in what it asked for and check again, was closed.
+    #
+    # **This skips nothing, which is the property the table exists to protect.** A revision can only
+    # be in `AWAITING_REVIEW` by having already passed ingestion, extraction, matching and evidence
+    # validation, so re-entering the checks repeats work that was legitimately done rather than
+    # bypassing it. `AWAITING_REVIEW`'s own entry condition still has to hold on the way back, so a
+    # package cannot return to a reviewer without checks having run — which is the guarantee
+    # `AGENTS.md` §2.2 asks for and the one thing this edge must not weaken.
+    #
+    # Deliberately to `RUNNING_CHECKS` and not to an earlier stage: nothing about new reviewer input
+    # invalidates the evidence that was validated, and an edge back to `VALIDATING_EVIDENCE` would
+    # let a package re-enter the pipeline at a point it has no reason to revisit.
+    table[PackageState.AWAITING_REVIEW].add(PackageState.RUNNING_CHECKS)
+
     # Work of ours can fail; nothing else can.
     for state in PROCESSING_STATES:
         table[state].update(FAILURE_STATES)
