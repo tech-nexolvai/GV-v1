@@ -2,12 +2,26 @@ import type { Outcome, PackageStatus } from '../../data/types';
 import '../../design/components.css';
 
 // ── Outcome → display config ─────────────────────────────────
+//
+// **These say what happened to the check, not what the engine called it.**
+//
+// `NOT_FOUND` was rendered as "NOT FOUND", which a reviewer reads as *the evidence was not found*
+// — beside an evidence panel that may be showing a crop perfectly well. It means something else
+// entirely: the check could not run because a value it needs has not been supplied. The narration
+// under the same card already says "Waiting on a value"; the badge was the one place still
+// speaking the engine's vocabulary, and the two meanings of "not found" collided on one screen.
+//
+// `NO_APPLICABLE_RULE` had the same problem in the other direction: "N/A RULE" reads like the rule
+// is broken, when it means the rule deliberately does not apply to this package.
+//
+// The engine's own names are unchanged — `Outcome` is still the stored vocabulary, and the rule id
+// is always shown beside the badge. Only the word a person reads is different.
 const OUTCOME_CONFIG: Record<Outcome, { label: string; cls: string; dot: string }> = {
-  PASS:               { label: 'PASS',        cls: 'badge--pass',    dot: '●' },
-  FAIL:               { label: 'FAIL',        cls: 'badge--fail',    dot: '✕' },
-  REVIEW_REQUIRED:    { label: 'REVIEW',      cls: 'badge--review',  dot: '◎' },
-  NOT_FOUND:          { label: 'NOT FOUND',   cls: 'badge--missing', dot: '–' },
-  NO_APPLICABLE_RULE: { label: 'N/A RULE',    cls: 'badge--none',    dot: '—' },
+  PASS:               { label: 'PASS',          cls: 'badge--pass',    dot: '●' },
+  FAIL:               { label: 'FAIL',          cls: 'badge--fail',    dot: '✕' },
+  REVIEW_REQUIRED:    { label: 'NEEDS REVIEW',  cls: 'badge--review',  dot: '◎' },
+  NOT_FOUND:          { label: 'NEEDS A VALUE', cls: 'badge--missing', dot: '–' },
+  NO_APPLICABLE_RULE: { label: "DOESN'T APPLY", cls: 'badge--none',    dot: '—' },
 };
 
 const STATUS_CONFIG: Record<PackageStatus, { label: string; cls: string }> = {

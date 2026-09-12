@@ -224,7 +224,7 @@ function FindingsSummary({ findings }: { findings: Finding[] }) {
       <div
         className="summary__meter"
         role="img"
-        aria-label={`${counts.PASS} passed, ${counts.FAIL} failed, ${counts.REVIEW_REQUIRED} need review, ${counts.NOT_FOUND} not found`}
+        aria-label={`${counts.PASS} passed, ${counts.FAIL} failed, ${counts.REVIEW_REQUIRED} need review, ${counts.NOT_FOUND} waiting on a value`}
       >
         {(['PASS', 'FAIL', 'REVIEW_REQUIRED', 'NOT_FOUND'] as const).map((outcome) =>
           counts[outcome] > 0 ? (
@@ -241,7 +241,8 @@ function FindingsSummary({ findings }: { findings: Finding[] }) {
         {counts.PASS > 0 && <Count icon={<CheckCircle2 size={12} />} kind="pass" n={counts.PASS} label="pass" />}
         {counts.FAIL > 0 && <Count icon={<XCircle size={12} />} kind="fail" n={counts.FAIL} label="fail" />}
         {counts.REVIEW_REQUIRED > 0 && <Count icon={<AlertCircle size={12} />} kind="review" n={counts.REVIEW_REQUIRED} label="need review" />}
-        {counts.NOT_FOUND > 0 && <Count icon={<CircleDashed size={12} />} kind="missing" n={counts.NOT_FOUND} label="not found" />}
+        {/* "not found" reads as missing evidence; it means a value the check needs was never supplied. */}
+        {counts.NOT_FOUND > 0 && <Count icon={<CircleDashed size={12} />} kind="missing" n={counts.NOT_FOUND} label="waiting on a value" />}
       </div>
     </div>
   );
