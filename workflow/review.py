@@ -263,6 +263,7 @@ def run_stage(
     stages: Stages,
     engine_version: str = ENGINE_VERSION,
     actor: str | None = None,
+    request: str | None = None,
 ) -> StageOutcome:
     """Claim the stage, move the package into the stage's state, then do the work. Commits nothing.
 
@@ -310,10 +311,13 @@ def run_stage(
     Raises:
         UnknownRevision / IllegalTransition: from `transition`, unchanged.
     """
+    # `request` separates "run this again" from "you already ran this" — see
+    # `stage_idempotency_key`. `None` keeps the coarse identity the extraction stages need.
     key = stage_idempotency_key(
         package_revision_id=package_revision_id,
         stage=stage,
         engine_version=engine_version,
+        request=request,
     )
     taken = claim(
         session,

@@ -210,6 +210,7 @@ def stage_idempotency_key(
     package_revision_id: UUID,
     stage: str,
     engine_version: str,
+    request: str | None = None,
 ) -> str:
     """The stable identity of one *stage* of one package revision (#215, C4.3).
 
@@ -228,19 +229,37 @@ def stage_idempotency_key(
     `engine_version` is inside the key for the same reason `extractor_version` is inside the other one:
     a changed engine is a different task, not a cache hit (`AGENTS.md` §2.7).
 
+    **`request` is what separates "run this again" from "you already ran this".** Without it the key
+    names a stage of a revision and nothing else, so *every* later ask is indistinguishable from a
+    redelivery of the first — which is right for reading a drawing, and wrong for running the checks.
+    A reviewer who reads "waiting on a value", supplies it and asks again is making a new request,
+    not repeating an old one. Left out, the second ask returned `already_done`, moved nothing and did
+    no work, and the findings stayed as they were while the outbox row retried for ever.
+
+    Pass the id of the thing that asked — the outbox row — and the two cases separate exactly:
+    redelivering one row keeps its key and stays idempotent, while a fresh request carries a fresh
+    row and therefore a fresh key.
+
+    `None` keeps the coarse identity, which is what the extraction stages want: a redelivered
+    `extract_package` must not read the drawings twice, and nothing about a second ask makes the
+    first read stale.
+
     Args:
         package_revision_id: the revision the stage is running for.
         stage: the stage name, e.g. `run_checks`.
         engine_version: the version of the code running the stage.
+        request: the identity of the request that asked, where asking twice is meaningful.
 
     Raises:
         TypeError: `package_revision_id` is not a UUID.
-        ValueError: the stage or the engine version is blank.
+        ValueError: the stage or the engine version is blank, or `request` is given and blank.
     """
     if not isinstance(package_revision_id, UUID):
         raise TypeError("package_revision_id must be a UUID")
     _require_text(stage, "stage")
     _require_text(engine_version, "engine_version")
+    if request is not None:
+        _require_text(request, "request")
 
     canonical = json.dumps(
         _canonical(
@@ -248,6 +267,9 @@ def stage_idempotency_key(
                 "package_revision_id": package_revision_id,
                 "stage": stage,
                 "engine_version": engine_version,
+                # Absent rather than null when there is none, so every key computed before this
+                # existed still hashes to what it did.
+                **({"request": request} if request is not None else {}),
             }
         ),
         sort_keys=True,
