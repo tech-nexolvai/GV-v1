@@ -286,3 +286,122 @@ def test_a_package_uploaded_through_the_ui_can_be_filled_by_a_model(
     # `guard_assignment` checks and the reason a value can be trusted into a position.
     assert len({item["chain_key"] for item in filled["values"]}) == 1
     assert [item["chain_position"] for item in filled["values"]] == [0, 1]
+
+
+def test_the_worker_fills_the_form_before_a_reviewer_opens_it(
+    session: Session, store: LocalStore
+) -> None:
+    """**What "filled on upload" actually means: no button, no second request, already there.**
+
+    `required-inputs` is what the form loads. A proposal that existed only behind a second call
+    would meet a reviewer as an empty form and a thing to press — which is what #591 shipped and
+    what this replaces. So the assertion is on the *form contract*: once the drawings have been
+    read, the fields a model filled arrive with the form itself.
+    """
+    session.add(Project(id=PROJECT, name="filled on upload"))
+    session.flush()
+    _publish_rulebook(session)
+    session.commit()
+
+    client = _client(session, store)
+    package_id = client.post(
+        f"/api/v1/projects/{PROJECT}/packages", json={"vendor": "Apex"}
+    ).json()["id"]
+    _upload(client, store, package_id, ARCH_DRAWING, "architectural")
+    _upload(client, store, package_id, SHOP_DRAWING, "shop")
+    queued = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/extract")
+    session.commit()
+
+    revision_id = UUID(queued.json()["package_revision_id"])
+    from app.models.runs import WorkflowRun
+
+    workflow_run = WorkflowRun(package_revision_id=revision_id, engine_run_id=str(uuid4()))
+    session.add(workflow_run)
+    session.commit()
+    run_all(
+        sessionmaker(bind=session.get_bind(), expire_on_commit=False),
+        package_revision_id=revision_id,
+        workflow_run_id=workflow_run.id,
+        stages=DatabaseStages(store=store, dpi=150, association=SETTINGS),
+    )
+    session.expire_all()
+
+    # What `scripts/drain_outbox.py` runs at the end of extraction, with the deployment's model.
+    from workflow.propose import propose_for_revision
+
+    summary = propose_for_revision(session, revision_id, _StubModel())  # type: ignore[arg-type]
+    session.commit()
+    assert summary["filled"], summary
+
+    # And now the form, loaded exactly as the page loads it. No propose call anywhere.
+    required = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/required-inputs")
+    assert required.status_code == 200, required.text
+    proposed = required.json()["proposed_readings"]
+
+    assert proposed, "the form arrived empty after the drawings were read"
+    run = next(field for field in proposed if field["many"])
+    assert [item["value"] for item in run["values"]] == ["15 in", "36 in"]
+
+
+def test_a_second_proposal_replaces_the_first_on_the_form(
+    session: Session, store: LocalStore
+) -> None:
+    """Outcome: the newest filed proposal is the one the form shows.
+
+    The table is append-only, so asking again writes a second set of rows beside the first rather
+    than editing it. That is the record working as intended — and it only works if the reader picks
+    the newest set rather than mixing the two, which would put two answers in one field.
+    """
+    from workflow.assignment import ProposedAssignment
+    from workflow.propose import record_proposal, stored_proposal
+
+    session.add(Project(id=PROJECT, name="second proposal"))
+    session.flush()
+    _publish_rulebook(session)
+    session.commit()
+
+    client = _client(session, store)
+    package_id = client.post(
+        f"/api/v1/projects/{PROJECT}/packages", json={"vendor": "Apex"}
+    ).json()["id"]
+    _upload(client, store, package_id, ARCH_DRAWING, "architectural")
+    _upload(client, store, package_id, SHOP_DRAWING, "shop")
+    queued = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/extract")
+    session.commit()
+    revision_id = UUID(queued.json()["package_revision_id"])
+
+    from app.models.runs import WorkflowRun
+
+    workflow_run = WorkflowRun(package_revision_id=revision_id, engine_run_id=str(uuid4()))
+    session.add(workflow_run)
+    session.commit()
+    run_all(
+        sessionmaker(bind=session.get_bind(), expire_on_commit=False),
+        package_revision_id=revision_id,
+        workflow_run_id=workflow_run.id,
+        stages=DatabaseStages(store=store, dpi=150, association=SETTINGS),
+    )
+    session.expire_all()
+
+    listed = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates").json()
+    first = listed["candidates"][0]["candidate_id"]
+    second = listed["candidates"][1]["candidate_id"]
+
+    record_proposal(
+        session,
+        package_revision_id=revision_id,
+        assignments=(ProposedAssignment("SHOP:CT004", (first,)),),
+        model_id="first",
+    )
+    session.commit()
+    record_proposal(
+        session,
+        package_revision_id=revision_id,
+        assignments=(ProposedAssignment("SHOP:CT004", (second,)),),
+        model_id="second",
+    )
+    session.commit()
+
+    current = stored_proposal(session, revision_id)
+    assert {row.model_id for row in current} == {"second"}
+    assert [str(row.candidate_id) for row in current] == [second]

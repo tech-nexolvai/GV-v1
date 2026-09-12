@@ -2295,6 +2295,11 @@ export interface components {
             discriminators: components["schemas"]["DiscriminatorOut"][];
             /** Parameters */
             parameters: components["schemas"]["ParameterOut"][];
+            /**
+             * Proposed Readings
+             * @default []
+             */
+            proposed_readings: components["schemas"]["ProposedFieldOut"][];
             /** Quantities */
             quantities: components["schemas"]["QuantityOut"][];
             /** Rules Published */

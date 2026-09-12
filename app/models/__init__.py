@@ -47,6 +47,7 @@ from app.models.evidence import (
     EvidenceCandidateRole,
     EvidenceCorroborationLane,
     EvidenceSupportingCandidate,
+    MeasurementProposal,
     ObservationAssociation,
     ObservationCandidate,
 )
@@ -130,6 +131,7 @@ __all__ = [
     "LegalHold",
     "MatchCandidate",
     "MatchReviewEvent",
+    "MeasurementProposal",
     "MetricResult",
     "ModelInvocation",
     "ModelInvocationOutcome",

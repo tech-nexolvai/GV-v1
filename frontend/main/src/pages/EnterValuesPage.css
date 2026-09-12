@@ -155,6 +155,21 @@
     var(--bg-base);
 }
 
+/* A step already taken reads as a result, not an offer: the brand edge becomes the pass colour
+   and the heading carries the mark rather than a call to action. */
+.measure-fill--done {
+  border-color: var(--status-pass-border);
+  border-left-color: var(--status-pass);
+  background: linear-gradient(var(--status-pass-bg), var(--status-pass-bg)), var(--bg-base);
+}
+
+.measure-fill--done .measure-fill__text h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--status-pass);
+}
+
 .measure-fill__text { flex: 1 1 20rem; min-width: 0; }
 
 .measure-fill__text h3 {

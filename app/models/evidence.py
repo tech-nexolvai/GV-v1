@@ -441,3 +441,59 @@ class ObservationAssociation(Base, TimestampedUUID, Immutable):
             "candidate_id", "extraction_run_id", name="uq_observation_associations_candidate_run"
         ),
     )
+
+
+class MeasurementProposal(Base, TimestampedUUID, Immutable):
+    """Which reading a model proposed for which rule field, checked and kept.
+
+    **Stored because the reviewer should not have to ask for it.** The proposal used to be computed
+    when somebody pressed a button, which meant the form was empty every time it was opened and the
+    model was paid for again on every reload. It is computed once, when the drawings are read, and
+    a reviewer arriving at the form finds it already filled in.
+
+    **Only accepted proposals are rows.** `workflow/assignment.py` refuses a whole batch if any part
+    of it fails, and a refusal leaves the fields empty for the reviewer — which is exactly what an
+    absent row already means. Recording the refusal here would be a second way of saying nothing,
+    and the reason belongs in the worker's log where somebody diagnosing it will look.
+
+    **A proposal is not a measurement and must never be read as one.** No value is copied here: a
+    row names the candidate, and the value comes from the candidate's own exact numerator and
+    denominator. The reviewer still saves the form, and saving is what records a measurement — with
+    `Provenance.MEASURED` and their name on it, which `rules/parameters.py` keeps a closed set for.
+    """
+
+    __tablename__ = "measurement_proposals"
+
+    package_revision_id: Mapped[UUID] = mapped_column(index=True)
+
+    proposal_id: Mapped[UUID] = mapped_column(index=True)
+    """Which run of the step produced this row. Append-only means a re-proposal is a second set of
+    rows beside the first, and this is what tells them apart — the newest set is the current answer
+    and the older ones are what it replaced, which is a record rather than a leak."""
+
+    field_key: Mapped[str] = mapped_column(String(200))
+    """`SOURCE:SEMANTIC_TYPE`, the key `required-inputs` uses for the same quantity."""
+
+    position: Mapped[int]
+    """Where along the field's ordered run this reading sits, `0` upward; `0` for a field that takes
+    one value. The order is a fact about the drawing — `CT-WIDTH-001` compares two runs position by
+    position — so it is stored rather than recovered from insertion order."""
+
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), index=True
+    )
+
+    model_id: Mapped[str] = mapped_column(String(200))
+    prompt_id: Mapped[str] = mapped_column(String(100))
+    """Which model and which prompt, so a proposal a reviewer disagrees with can be traced to the
+    configuration that produced it rather than to "the AI"."""
+
+    __table_args__ = (
+        # One reading per position per field per run. A second row would be two answers to one
+        # slot, and nothing downstream could say which was meant.
+        UniqueConstraint(
+            "proposal_id", "field_key", "position", name="uq_measurement_proposals_slot"
+        ),
+        # A position is an index into a run, so it starts at zero and counts up.
+        CheckConstraint("position >= 0", name="position_not_negative"),
+    )
