@@ -46,7 +46,7 @@ from extraction.annotations import MarkupNote, OutlinedTextRegion, PageLayers
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import lines_within
 from extraction.rasterise import VISION_CROP_DPI
-from extraction.reader import UnreadablePdf
+from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = [
     "RegionToRead",
@@ -308,7 +308,12 @@ def _declared_crop_box(data: bytes, page_index: int) -> tuple[Decimal, Decimal, 
     try:
         with pdfplumber.open(io.BytesIO(data)) as document:
             page = document.pages[page_index]
-            values = tuple(Decimal(str(value)) for value in page.cropbox)
+            # `page.cropbox` is pdfplumber's own, inverted about the media box height — which is
+            # not what this function's name or its docstring promise. See
+            # `reader.page_boxes_in_pdf_space`: on an offset media box the two differ by twice the
+            # offset, and a crop taken against the wrong one is a picture of the wrong part of the
+            # drawing.
+            values = page_boxes_in_pdf_space(page)[1]
     except (IndexError, ValueError, TypeError) as error:
         raise UnreadablePdf(
             f"page {page_index} has no readable declared crop box: {error}"

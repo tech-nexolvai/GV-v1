@@ -569,3 +569,83 @@ def test_an_angle_that_is_not_a_quarter_turn_is_refused_not_rounded() -> None:
 
     assert layers.markup == ()
     assert any("reads along no axis" in item.reason for item in layers.refusals)
+
+
+# ---------------------------------------------------------------------------
+# A page whose media box does not start at the origin (#600)
+# ---------------------------------------------------------------------------
+
+
+def test_a_page_with_an_offset_media_box_is_read_rather_than_refused() -> None:
+    """**The bug that threw away a whole drawing.**
+
+    `pdfplumber` runs a page's media and crop boxes through its own `_invert_box`, flipping `y`
+    about the media box height so its coordinates read top-down. Everything else here is bottom-up
+    PDF space: the annotation's `/Rect`, the appearance matrix, the paths pypdfium2 returns. For the
+    ordinary page whose media box starts at `(0, 0)` the inversion is the identity, so mixing them
+    went unnoticed for as long as every fixture did that.
+
+    The client's sheets are cut out of a larger set, so their media boxes are offset — one measured
+    at `[321.8, 477.6, 852.1, 837.6]`. Flipped, its crop box lands at negative `y` while the stamp's
+    `/Rect` stays positive, the two share no `y` at all, and `_visible_annotation_rect` refused the
+    annotation with *"does not intersect the visible crop box"*. A 67 KB appearance stream carrying
+    2,165 strokes was discarded, and the page reported itself as having no annotation layers.
+
+    The sister drawing survived only because its offset was small enough that the flipped ranges
+    still overlapped — by luck, and with every coordinate derived from it wrong by twice the offset.
+    """
+    offset = _pdf(
+        annotations=[
+            _free_text('185 1/4"', rect=b"[610 590 690 610]"),
+            _stamp(rect=b"[550 550 850 750]", appearance_object=7),
+        ],
+        extra_objects=[
+            _appearance(
+                b"1 w 150 550 m 250 550 l S\n"
+                b"1 w 150 520 m 150 580 l S\n"
+                b"1 w 250 520 m 250 580 l S\n"
+            )
+        ],
+        box=b"[500 500 900 800]",
+    )
+
+    layers = read_annotation_layers(
+        offset,
+        0,
+        document_version_id=uuid4(),
+        dpi=150,
+        line_minimum_pt=Decimal(50),
+        glyph_maximum_pt=Decimal(10),
+        glyph_gap_pt=Decimal(4),
+    )
+
+    assert layers.unreadable_reason is None, layers.refusals
+    assert not [
+        refusal for refusal in layers.refusals if "crop box" in refusal.reason
+    ], layers.refusals
+    assert layers.drawing_segments, "the vendor line-work was discarded"
+    assert layers.markup, "the reviewer note was discarded"
+
+
+def test_the_page_boxes_a_reader_uses_are_the_ones_the_pdf_declares() -> None:
+    """**Outcome: PDF space, whatever pdfplumber would have said.**
+
+    Asserted on the helper rather than only through a read, because the two boxes agree on every
+    page that starts at the origin — which is every fixture in this file but the one above. A test
+    that only exercised those would pass with the bug in place, which is how it survived.
+    """
+    import io
+
+    import pdfplumber
+
+    from extraction.reader import page_boxes_in_pdf_space
+
+    offset = _pdf(annotations=[_free_text()], box=b"[500 500 900 800]")
+    with pdfplumber.open(io.BytesIO(offset)) as document:
+        page = document.pages[0]
+        media, crop = page_boxes_in_pdf_space(page)
+        inverted = tuple(Decimal(str(value)) for value in page.mediabox)
+
+    assert media == (Decimal(500), Decimal(500), Decimal(900), Decimal(800))
+    assert crop == media, "a page declaring no CropBox inherits its MediaBox"
+    assert media != inverted, "this page does not exercise the difference"

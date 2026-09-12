@@ -65,7 +65,7 @@ import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint
 from evidence.polygon import Polygon
 from extraction.geometry.containment import DimensionExtent
-from extraction.reader import UnreadablePdf
+from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = [
     "DrawingLayer",
@@ -696,11 +696,17 @@ def _read_layers(
                 raise UnreadablePdf(
                     f"page {page_index} is beyond the {len(plumbed.pages)} pages in this document"
                 ) from error
+            # **PDF space, not pdfplumber's.** `page_boxes_in_pdf_space` explains at length why
+            # these cannot be `page.mediabox` / `page.cropbox`: those are inverted about the media
+            # box height, and every other coordinate in this function — the annotation `/Rect`, the
+            # appearance matrix, the paths pypdfium2 returns — is bottom-up PDF space. Mixing them
+            # threw away an entire drawing.
+            media_box, crop_box = page_boxes_in_pdf_space(page)
             transform = PageTransform(
                 dpi=dpi,
                 rotation=int(page.rotation or 0) % 360,
-                media_box=_rect(page.mediabox),
-                crop_box=_rect(page.cropbox),
+                media_box=media_box,
+                crop_box=crop_box,
             )
             annotations = [annotation["data"] for annotation in page.annots]
 

@@ -42,7 +42,7 @@ import pypdfium2 as pdfium  # type: ignore[import-untyped]
 
 from evidence.coordinates import SUPPORTED_ROTATIONS
 from evidence.crop import RenderedPage
-from extraction.reader import UnreadablePdf
+from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = ["VISION_CROP_DPI", "PageTooLarge", "render_page"]
 
@@ -186,7 +186,9 @@ def _declared_crop_box(data: bytes, page_index: int) -> tuple[Decimal, Decimal, 
     """
     try:
         with pdfplumber.open(io.BytesIO(data)) as document:
-            values = tuple(Decimal(str(value)) for value in document.pages[page_index].cropbox)
+            # Not `.cropbox`, which is pdfplumber's inverted box rather than the PDF-declared
+            # one this docstring promises. `reader.page_boxes_in_pdf_space` has the measurement.
+            values = page_boxes_in_pdf_space(document.pages[page_index])[1]
     except (IndexError, TypeError, ValueError) as error:
         raise UnreadablePdf(
             f"page {page_index} has no readable declared crop box: {error}"
