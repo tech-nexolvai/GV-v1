@@ -162,6 +162,8 @@ export function EnterValuesPage({
   const [proposal, setProposal] = useState<ProposedMeasurements | null>(null);
   const [proposalError, setProposalError] = useState<string | null>(null);
   const [proposing, setProposing] = useState(false);
+  /** Whether the crop-inspection list is open. Closed by default; it is the slow route. */
+  const [inspecting, setInspecting] = useState(false);
   /**
    * Which fields a model proposed, by field key, with the readings it chose.
    *
@@ -576,16 +578,20 @@ export function EnterValuesPage({
 
   return (
     <div className="enter-values">
+      {/* **Two sentences, not five.** Everything here was true and none of it was what a reviewer
+          opening the page needs first, which is the format of a value. The rest is the rationale
+          for the form's existence — worth saying once, in small type, under the instruction. */}
       <header className="enter-values__head">
         <h1>Enter measurements</h1>
         <p>
-          Type each value with its unit — <code>25 1/2&quot;</code> or <code>648 mm</code>. Values are
-          parsed exactly and compared by the rule engine; nothing is rounded and nothing is inferred.
-          A value with no unit is refused rather than guessed at.
+          Type each value with its unit — <code>25 1/2&quot;</code> or <code>648 mm</code>. A value
+          with no unit is refused rather than guessed at.
         </p>
         <p className="enter-values__hint">
-          These fields come from the {needed.rules_published} published rules, so a check can only
-          fail to decide for a reason you can see — never because a field was missing.
+          Parsed exactly and compared by the rule engine; nothing is rounded and nothing is
+          inferred. Every field below comes from the {needed.rules_published} published rules, so a
+          check can only fail to decide for a reason you can see — never because a field was
+          missing.
         </p>
       </header>
 
@@ -687,14 +693,32 @@ export function EnterValuesPage({
             <Sparkles size={13} aria-hidden="true" /> Ask again
           </button>
         )}
+        {/* **Collapsed, because it is the slow route and no longer the only one.**
+            Every reading here is also offered beside the field it could fill, and now a model
+            proposes which field that is. What this list is still for is the moment a reviewer
+            wants to see the crop — the region of the uploaded PDF the number was read from —
+            before saying what it means. Open, it pushed the form itself below the fold on every
+            package with readings left. */}
         {candidates.length > 0 && (
           <section className="ai-proposals" aria-labelledby="ai-proposals-heading">
-            <h3 id="ai-proposals-heading">Inspect a reading before you use it</h3>
-            <p className="enter-values__hint">
-              Every reading below is also offered beside the field it could fill — using it there is
-              one click. This list is for when you want to see the crop first: the region of the
-              uploaded PDF the number was actually read from, before you say what it means.
-            </p>
+            <button
+              type="button"
+              className="ai-proposals__toggle"
+              aria-expanded={inspecting}
+              id="ai-proposals-heading"
+              onClick={() => setInspecting((shown) => !shown)}
+            >
+              <ChevronRight
+                size={14}
+                className="collapsible-chevron"
+                data-open={inspecting}
+                aria-hidden="true"
+              />
+              Inspect {candidates.length} reading{candidates.length === 1 ? '' : 's'} on the crop
+              before using {candidates.length === 1 ? 'it' : 'them'}
+            </button>
+            <div className="collapsible" data-open={inspecting} inert={!inspecting}>
+            <div>
             {candidates.map((candidate) => {
               const availableTypes = typesForCandidate(candidate);
               const isConfirming = confirming === candidate.candidate_id;
@@ -737,6 +761,8 @@ export function EnterValuesPage({
                 </div>
               );
             })}
+            </div>
+            </div>
             {candidateError && <p className="enter-values__error">{candidateError}</p>}
           </section>
         )}

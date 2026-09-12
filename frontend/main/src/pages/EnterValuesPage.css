@@ -228,12 +228,34 @@
   background: var(--bg-elevated);
 }
 
-.ai-proposals h3 {
-  margin: 0;
+.ai-proposals__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
   font-family: var(--font-heading);
-  font-size: var(--text-sm);
-  text-transform: uppercase;
+  font-size: var(--text-base);
+  font-weight: var(--weight-semi);
   letter-spacing: var(--tracking-tight);
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.ai-proposals__toggle:hover { color: var(--maroon-800); }
+
+.ai-proposals__toggle:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* The disclosure clips its content while closed, so the crops inside must not force it open. */
+.ai-proposals .collapsible[data-open='true'] > * {
+  overflow: visible;
 }
 
 .ai-proposal {
