@@ -96,6 +96,9 @@ type Needed = {
   parameters: Parameter[];
   discriminators: Discriminator[];
   rules_published: number;
+  /** Whether something is still working on this package, so an empty form is not yet an answer. */
+  still_reading: boolean;
+  revision_state: string;
 };
 
 /** Which sheet a measurement is read from, in the words a reviewer uses. */
@@ -184,6 +187,8 @@ export function EnterValuesPage({
   const [proposing, setProposing] = useState(false);
   /** Whether the crop-inspection list is open. Closed by default; it is the slow route. */
   const [inspecting, setInspecting] = useState(false);
+  /** Bumped to re-fetch the form while the reader is still working. */
+  const [reload, setReload] = useState(0);
   /**
    * Which fields a model proposed, by field key, with the readings it chose.
    *
@@ -297,7 +302,27 @@ export function EnterValuesPage({
       cancelled = true;
     };
     // Re-fetch only when the selected package changes, never on a keystroke within its form.
-  }, [selectedPackageId]);
+  }, [selectedPackageId, reload]);
+
+  /**
+   * Go back and look while the drawings are still being read.
+   *
+   * **The form loaded once, and reading a drawing takes the better part of a minute.** Opening
+   * Measure straight after uploading therefore showed "nothing was read off these drawings" — and
+   * kept showing it, because nothing went back to look. The readings landed thirty seconds later
+   * and the page never knew. Reported three times as "the AI is not filling anything"; the values
+   * were in the database the whole time.
+   *
+   * Only while the pipeline says it is still working, so a package it has finished with is not
+   * polled for ever. Five seconds because that is fast enough that nobody sits watching an empty
+   * form, and slow enough that a reviewer reading the page is not re-fetching it twelve times a
+   * minute.
+   */
+  useEffect(() => {
+    if (!needed?.still_reading) return;
+    const timer = window.setInterval(() => setReload((count) => count + 1), 5000);
+    return () => window.clearInterval(timer);
+  }, [needed?.still_reading]);
 
   if (!selectedPackageId) {
     return (
@@ -695,6 +720,15 @@ export function EnterValuesPage({
               </li>
             )}
           </ul>
+          {needed.still_reading && (
+            <p className="measure-coverage__reading" role="status">
+              <ScanLine size={13} aria-hidden="true" />
+              <span>
+                Still reading these drawings — these counts are not final yet. The page is watching
+                and will update itself.
+              </span>
+            </p>
+          )}
           <p className="measure-coverage__caveat">
             Coverage, not accuracy. A dimension the reader could not parse, or a number with no unit,
             is not counted here at all — it was refused rather than guessed, and the field stays
@@ -780,11 +814,13 @@ export function EnterValuesPage({
                 they want completely different things done about them. */}
             {candidates.length === 0 && (
               <p className="enter-values__hint enter-values__hint--tight">
-                {confirmedCount > 0
-                  ? 'Nothing left to propose — every reading off these drawings already has a meaning.'
-                  : 'Nothing was read off these drawings, so there is nothing to propose from. ' +
-                    'Check on Documents that both drawings finished uploading and that the AI ' +
-                    'reading has run.'}
+                {needed.still_reading
+                  ? `The AI is still reading these drawings (${needed.revision_state.toLowerCase().replace(/_/g, ' ')}). This page is watching, and will fill itself in when the reading finishes.`
+                  : confirmedCount > 0
+                    ? 'Nothing left to propose — every reading off these drawings already has a meaning.'
+                    : 'Nothing was read off these drawings, so there is nothing to propose from. ' +
+                      'Check on Documents that both drawings finished uploading and that the AI ' +
+                      'reading has run.'}
               </p>
             )}
           </div>
