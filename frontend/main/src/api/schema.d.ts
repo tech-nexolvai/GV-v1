@@ -2307,8 +2307,12 @@ export interface components {
             proposed_readings: components["schemas"]["ProposedFieldOut"][];
             /** Quantities */
             quantities: components["schemas"]["QuantityOut"][];
+            /** Revision State */
+            revision_state: string;
             /** Rules Published */
             rules_published: number;
+            /** Still Reading */
+            still_reading: boolean;
         };
         /**
          * ReviewActionKind

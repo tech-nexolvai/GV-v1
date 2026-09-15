@@ -258,6 +258,11 @@ class RequiredInputsOut(BaseModel):
     #: How many rules are published. Zero means the form is empty because nothing is published, which
     #: is a different problem from a rulebook that asks for nothing.
     rules_published: int
+    #: The package revision's own lifecycle state. The UI shows this name while it is watching the
+    #: reader rather than inventing a progress percentage.
+    revision_state: str
+    #: True only while the drawing-reading pipeline can still add readings or filed proposals.
+    still_reading: bool
 
 
 class CheckRequest(BaseModel):
