@@ -166,6 +166,10 @@ def _run_checks(
     stages = _stages(discriminators=discriminators)
     workflow_run_id = UUID(idempotency_key)
     _ensure_workflow_run(session, package_revision_id, workflow_run_id, WorkflowRun)
+    # **Named by the row that asked, so asking twice runs twice.** Without it the key is the stage
+    # and the revision, so a reviewer who supplied a missing value and pressed Run checks again was
+    # indistinguishable from a redelivery of the first request: nothing ran, nothing moved, and the
+    # findings stayed as they were. Redelivering *this* row keeps this key and stays idempotent.
     outcome = run_stage(
         session,
         stage="run_checks",
@@ -173,6 +177,7 @@ def _run_checks(
         package_revision_id=package_revision_id,
         workflow_run_id=workflow_run_id,
         stages=stages,  # type: ignore[arg-type]
+        request=idempotency_key,
     )
     output = run_stage(
         session,
@@ -181,14 +186,20 @@ def _run_checks(
         package_revision_id=package_revision_id,
         workflow_run_id=workflow_run_id,
         stages=stages,  # type: ignore[arg-type]
+        request=idempotency_key,
     )
-    transition(
-        session,
-        package_revision_id,
-        PackageState.AWAITING_REVIEW,
-        actor="local review worker",
-        reason="reviewer-confirmed readings were checked and handoff artifacts generated",
-    )
+    # **Only hand over if this run actually got there.** A stage that recognised itself as already
+    # done moved nothing, so the revision is still wherever it was — and declaring a hand-over from
+    # there asked the machine for `AWAITING_REVIEW -> AWAITING_REVIEW`, which it refuses, so a
+    # redelivery failed for ever instead of returning quietly.
+    if not (outcome.already_done and output.already_done):
+        transition(
+            session,
+            package_revision_id,
+            PackageState.AWAITING_REVIEW,
+            actor="local review worker",
+            reason="reviewer-confirmed readings were checked and handoff artifacts generated",
+        )
     return {"checks": dict(outcome.payload), "outputs": dict(output.payload)}
 
 
