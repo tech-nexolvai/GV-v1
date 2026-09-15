@@ -40,6 +40,7 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
 from io import BytesIO
+from typing import Protocol, cast
 from uuid import UUID
 
 from opentelemetry.trace import Status, StatusCode
@@ -82,6 +83,7 @@ from app.models.rules import RuleSnapshot as RuleSnapshotRow
 from app.models.runs import ExtractionRun, TaskRun
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
+from app.runs.invocations import BedrockConverseInvocationRecorder
 from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
@@ -167,6 +169,16 @@ ASSOCIATION_EXTRACTOR_VERSION = "extraction.geometry.text_association/1"
 #: real drawings. One is the only value that is not a guess: it separates a page with text from a page
 #: with none, which is the distinction the reader already reports.
 MINIMUM_VECTOR_CHARACTERS = 1
+
+
+class _RecordingFindingsLanguageModel(FindingsLanguageModel, Protocol):
+    """Optional extension supplied by the configured Bedrock narration adapter."""
+
+    def with_invocation_recorder(
+        self, recorder: BedrockConverseInvocationRecorder
+    ) -> FindingsLanguageModel:
+        """Return the same model adapter with per-call persistence attached."""
+
 
 #: The pixel ceiling for one rendered page, used only by the OCR route.
 #:
@@ -1401,7 +1413,14 @@ class DatabaseStages:
                 _finding_facts(key=str(finding.id), check_name=check_name, finding=stored_finding)
             )
 
-        composition = compose_findings(composition_facts, self._findings_composer)
+        findings_composer = self._findings_composer
+        if findings_composer is not None and hasattr(findings_composer, "with_invocation_recorder"):
+            recording_composer = cast(_RecordingFindingsLanguageModel, findings_composer)
+            findings_composer = recording_composer.with_invocation_recorder(
+                BedrockConverseInvocationRecorder(session, package_revision_id)
+            )
+
+        composition = compose_findings(composition_facts, findings_composer)
         narratives = {narrative.finding_key: narrative.text for narrative in composition.narratives}
         rendered_findings = [
             replace(finding, reviewer_summary=narratives[facts.key])
@@ -1515,6 +1534,7 @@ class DatabaseStages:
         reader ever sees two sets of findings for one revision.
         """
         register_all()
+        reviewer_operands: Mapping[str, Mapping[str, VerdictOperand]]
         if self._operands is None:
             from workflow.measurements import operands_for
 

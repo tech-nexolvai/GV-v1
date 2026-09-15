@@ -60,24 +60,92 @@ Design: `docs/DESIGN_AI.md` §4.5 · Verification: `tests/extraction/models/test
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from decimal import Decimal
+from importlib import import_module
+from time import monotonic_ns
+from typing import Any, Protocol
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.evidence import EvidenceArtifact
-from app.models.runs import ModelInvocation
-from extraction.models.invocations import InvocationRecord
+from app.models.runs import (
+    ExtractionRun,
+    ModelInvocation,
+    ModelInvocationOutcome,
+    TaskRun,
+    WorkflowRun,
+)
 
 __all__ = [
+    "BedrockConverseInvocationRecorder",
     "candidate_id_for",
     "crop_for",
     "invocations_for_candidate",
     "record",
 ]
 
+REFUSAL_STOP_REASONS = frozenset({"content_filtered", "guardrail_intervened"})
 
-def record(session: Session, invocation: InvocationRecord) -> ModelInvocation:
+
+class _AsRecord(Protocol):
+    def as_record(self) -> dict[str, object]:
+        """Return JSON-safe context data."""
+
+
+class _InvocationRecordLike(Protocol):
+    @property
+    def extraction_run_id(self) -> UUID: ...
+
+    @property
+    def model_id(self) -> str: ...
+
+    @property
+    def prompt_id(self) -> str: ...
+
+    @property
+    def template_id(self) -> str: ...
+
+    @property
+    def crop_artifact_id(self) -> UUID | None: ...
+
+    @property
+    def node_invocation_key(self) -> str | None: ...
+
+    @property
+    def candidate_id(self) -> UUID | None: ...
+
+    @property
+    def assembled_context(self) -> _AsRecord | None: ...
+
+    @property
+    def bound_pt(self) -> Decimal | None: ...
+
+    @property
+    def input_tokens(self) -> int: ...
+
+    @property
+    def output_tokens(self) -> int: ...
+
+    @property
+    def cost_micros(self) -> int: ...
+
+    @property
+    def latency_ms(self) -> int: ...
+
+    @property
+    def outcome(self) -> str: ...
+
+
+def _invocation_record_type() -> Any:
+    """Load the validated call shape only when a caller is about to persist one."""
+    return import_module("extraction.models.invocations").InvocationRecord
+
+
+def record(session: Session, invocation: _InvocationRecordLike) -> ModelInvocation:
     """Write one model call — successful or not — and return the stored row.
 
     Takes a validated `InvocationRecord` rather than loose keyword arguments, so there is no route
@@ -124,6 +192,128 @@ def record(session: Session, invocation: InvocationRecord) -> ModelInvocation:
     session.add(stored)
     session.flush()
     return stored
+
+
+def _latest_extraction_run_id(session: Session, package_revision_id: UUID) -> UUID:
+    """Return the newest existing run anchor for package-scoped presentation calls."""
+    statement = (
+        select(ExtractionRun.id)
+        .join(TaskRun, ExtractionRun.task_run_id == TaskRun.id)
+        .join(WorkflowRun, TaskRun.workflow_run_id == WorkflowRun.id)
+        .where(WorkflowRun.package_revision_id == package_revision_id)
+        .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
+        .limit(1)
+    )
+    result = session.execute(statement).scalar_one_or_none()
+    if result is None:
+        raise ValueError(
+            f"no extraction run for package revision {package_revision_id}: "
+            "a model invocation needs the run chain for package usage attribution"
+        )
+    return result
+
+
+def _milliseconds_since(started_ns: int) -> int:
+    return max(0, (monotonic_ns() - started_ns) // 1_000_000)
+
+
+def _usage(response: Mapping[str, Any] | None) -> tuple[int, int]:
+    if response is None:
+        return 0, 0
+    usage = response.get("usage")
+    if not isinstance(usage, Mapping):
+        return 0, 0
+    input_tokens = usage.get("inputTokens", 0)
+    output_tokens = usage.get("outputTokens", 0)
+    if isinstance(input_tokens, bool) or not isinstance(input_tokens, int):
+        input_tokens = 0
+    if isinstance(output_tokens, bool) or not isinstance(output_tokens, int):
+        output_tokens = 0
+    return max(0, input_tokens), max(0, output_tokens)
+
+
+def _error_code(error: BaseException) -> str | None:
+    response = getattr(error, "response", None)
+    if not isinstance(response, Mapping):
+        return None
+    details = response.get("Error")
+    if not isinstance(details, Mapping):
+        return None
+    code = details.get("Code")
+    return code if isinstance(code, str) else None
+
+
+def _is_timeout(error: BaseException) -> bool:
+    return (
+        isinstance(error, TimeoutError)
+        or error.__class__.__name__
+        in {
+            "ConnectTimeoutError",
+            "ReadTimeoutError",
+        }
+        or _error_code(error) == "ModelTimeoutException"
+    )
+
+
+def _stop_reason(response: Mapping[str, Any] | None) -> str | None:
+    if response is None:
+        return None
+    value = response.get("stopReason")
+    return value if isinstance(value, str) else None
+
+
+def _outcome(response: Mapping[str, Any] | None, error: BaseException | None) -> str:
+    if _stop_reason(response) in REFUSAL_STOP_REASONS:
+        return ModelInvocationOutcome.REFUSED.value
+    if error is None:
+        return ModelInvocationOutcome.OK.value
+    if _is_timeout(error):
+        return ModelInvocationOutcome.TIMEOUT.value
+    if response is not None:
+        return ModelInvocationOutcome.REJECTED.value
+    return ModelInvocationOutcome.FAILED.value
+
+
+@dataclass(frozen=True, slots=True)
+class BedrockConverseInvocationRecorder:
+    """Persist one Bedrock converse call against an existing package run chain.
+
+    Bedrock returns token usage, not invoice cost. Until a caller supplies an exact rate card, the
+    only honest money value is zero; the model call and tokens are still counted by package ceilings.
+    """
+
+    session: Session
+    package_revision_id: UUID
+
+    def record(
+        self,
+        *,
+        model_id: str,
+        prompt_id: str,
+        template_id: str,
+        started_ns: int,
+        response: Mapping[str, Any] | None,
+        error: BaseException | None,
+    ) -> ModelInvocation:
+        outcome = _outcome(response, error)
+        input_tokens, output_tokens = _usage(response)
+        if outcome in {ModelInvocationOutcome.REFUSED.value, ModelInvocationOutcome.TIMEOUT.value}:
+            output_tokens = 0
+        return record(
+            self.session,
+            _invocation_record_type()(
+                extraction_run_id=_latest_extraction_run_id(self.session, self.package_revision_id),
+                model_id=model_id,
+                prompt_id=prompt_id,
+                template_id=template_id,
+                crop_artifact_id=None,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_micros=0,
+                latency_ms=_milliseconds_since(started_ns),
+                outcome=outcome,
+            ),
+        )
 
 
 def crop_for(session: Session, invocation: ModelInvocation) -> EvidenceArtifact | None:

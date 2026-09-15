@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from time import monotonic_ns
 from typing import Any, Final, cast
 
 from app.config import Settings
+from app.runs.invocations import BedrockConverseInvocationRecorder
 from extraction.models.nova import (
     INFERENCE_PROFILE_PREFIX,
     BedrockRuntimeClient,
@@ -82,9 +84,15 @@ class FindingsBedrockError(RuntimeError):
 class BedrockFindingsComposer:
     """One configured Bedrock call over a complete deterministic finding batch."""
 
-    def __init__(self, config: NovaConfig, client: BedrockRuntimeClient | None = None) -> None:
+    def __init__(
+        self,
+        config: NovaConfig,
+        client: BedrockRuntimeClient | None = None,
+        recorder: BedrockConverseInvocationRecorder | None = None,
+    ) -> None:
         self._config = config
         self._client = client
+        self._recorder = recorder
 
     @classmethod
     def from_environment(cls, config: NovaConfig) -> BedrockFindingsComposer:
@@ -95,6 +103,11 @@ class BedrockFindingsComposer:
         deterministic stage before a finding even existed.
         """
         return cls(config)
+
+    def with_invocation_recorder(
+        self, recorder: BedrockConverseInvocationRecorder
+    ) -> BedrockFindingsComposer:
+        return BedrockFindingsComposer(self._config, self._client, recorder)
 
     def _runtime_client(self) -> BedrockRuntimeClient:
         if self._client is not None:
@@ -131,8 +144,22 @@ class BedrockFindingsComposer:
                 raise FindingsBedrockError("Bedrock findings composition failed") from profile_error
 
     def _attempt(self, findings: Sequence[ComposerFinding], model_id: str) -> ModelComposition:
-        response = self._runtime_client().converse(**self._request(findings, model_id))
-        batch = self._batch(response)
+        started_ns = monotonic_ns()
+        response: Mapping[str, Any] | None = None
+        error: BaseException | None = None
+        try:
+            response = self._runtime_client().converse(**self._request(findings, model_id))
+            batch = self._batch(response)
+        except Exception as raised:
+            error = raised
+            raise
+        finally:
+            self._record_invocation(
+                model_id=model_id,
+                started_ns=started_ns,
+                response=response,
+                error=error,
+            )
         return ModelComposition(
             # Prepended in code rather than transcribed by the provider — see
             # `ProposedExplanation` for what that replaced and why.
@@ -142,6 +169,34 @@ class BedrockFindingsComposer:
             template_id=self._config.template_id,
             summary=batch.summary.strip() or None,
         )
+
+    def _record_invocation(
+        self,
+        *,
+        model_id: str,
+        started_ns: int,
+        response: Mapping[str, Any] | None,
+        error: BaseException | None,
+    ) -> None:
+        if self._recorder is None:
+            return
+        try:
+            self._recorder.record(
+                model_id=model_id,
+                prompt_id=self._config.prompt_id,
+                template_id=self._config.template_id,
+                started_ns=started_ns,
+                response=response,
+                error=error,
+            )
+        except Exception as record_error:
+            if error is not None:
+                error.add_note(
+                    "the findings narration invocation could not be recorded: "
+                    f"{type(record_error).__name__}: {record_error}"
+                )
+                return
+            raise
 
     def _request(self, findings: Sequence[ComposerFinding], model_id: str) -> dict[str, object]:
         facts = [
