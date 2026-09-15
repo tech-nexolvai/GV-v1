@@ -2158,16 +2158,26 @@
             "title": "Quantities",
             "type": "array"
           },
+          "revision_state": {
+            "title": "Revision State",
+            "type": "string"
+          },
           "rules_published": {
             "title": "Rules Published",
             "type": "integer"
+          },
+          "still_reading": {
+            "title": "Still Reading",
+            "type": "boolean"
           }
         },
         "required": [
           "quantities",
           "parameters",
           "discriminators",
-          "rules_published"
+          "rules_published",
+          "revision_state",
+          "still_reading"
         ],
         "title": "RequiredInputsOut",
         "type": "object"
