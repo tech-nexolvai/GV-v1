@@ -48,8 +48,8 @@ class _Model:
         return ModelComposition(
             narratives=self._narratives,
             model_id="configured-model",
-            prompt_id="reviewer-chat-v1",
-            template_id="grounded-deterministic-findings-v1",
+            prompt_id="reviewer-chat-v2",
+            template_id="grounded-deterministic-findings-v2",
         )
 
 

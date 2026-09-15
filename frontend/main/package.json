@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test:chat-render": "tsc -p tsconfig.test.json && node node_modules/.tmp/chat-render-test/tests/chat-render.test.js",
     "preview": "vite preview",
     "api:schema": "python ../../scripts/export_openapi.py",
     "api:types": "npm run api:schema && npx -y openapi-typescript@7.13.0 openapi.json -o src/api/schema.d.ts",

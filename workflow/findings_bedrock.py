@@ -36,8 +36,8 @@ __all__ = ["BedrockFindingsComposer", "configured_findings_composer"]
 logger = logging.getLogger("gv.workflow.findings_bedrock")
 
 TOOL_NAME: Final = "compose_review_findings"
-PROMPT_ID: Final = "findings-composer-v2"
-TEMPLATE_ID: Final = "reviewer-language-v2"
+PROMPT_ID: Final = "findings-composer-v3"
+TEMPLATE_ID: Final = "reviewer-language-v3"
 
 SYSTEM_INSTRUCTION: Final = (
     "You are a language-only findings composer. The supplied findings are immutable deterministic "
@@ -46,7 +46,10 @@ SYSTEM_INSTRUCTION: Final = (
     "exact selected-finding count and outcome counts using digits. Group the overview into what looks "
     "right, what needs correction, what needs a reviewer decision, and what is waiting for a value. "
     "Use the supplied check_name and reason, never internal field keys, derivation names, or raw rule IDs "
-    "as a headline. Return exactly one tool item per finding_key and no other text. Copy each opaque "
+    "as a headline. The overview summary has a hard 600-character budget; if you exceed it, the "
+    "overview is dropped rather than truncated. Keep it short enough to survive. Include the supplied "
+    "sheet or evidence page when it helps the reviewer locate the issue. State the next action as an "
+    "instruction to the reviewer. Return exactly one tool item per finding_key and no other text. Copy each opaque "
     "`finding_key` character-for-character from its input; it is an identifier, not prose, and must never "
     "be corrected, shortened, regenerated, or retyped. The deterministic facts in `required_text` are "
     "placed ahead of your words by the system, so do NOT copy, quote, or restate them. Write "
@@ -65,7 +68,9 @@ USER_TASK: Final = (
     "keys, derivation names, or database-style outcome codes. Set `summary` to a skimmable reviewer "
     "summary using the exact counts in `overview_context` (use digits, do not calculate them; do not name "
     "individual rule IDs in the summary), then name "
-    "the concrete reviewer decisions and missing values in plain language. Do not invent a conclusion, "
+    "the concrete reviewer decisions and missing values in plain language. The summary must stay within "
+    "600 characters; an over-long summary is dropped, not truncated. Name supplied sheet or evidence page "
+    "details when relevant, and state the next action as an instruction. Do not invent a conclusion, "
     "a value, a measurement, or a verdict."
 )
 

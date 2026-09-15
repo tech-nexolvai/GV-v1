@@ -28,8 +28,8 @@ from workflow.findings_composer import (
 __all__ = ["BedrockReviewerChat", "configured_reviewer_chat"]
 
 TOOL_NAME: Final = "compose_grounded_review_chat"
-PROMPT_ID: Final = "reviewer-chat-v1"
-TEMPLATE_ID: Final = "grounded-deterministic-findings-v1"
+PROMPT_ID: Final = "reviewer-chat-v2"
+TEMPLATE_ID: Final = "grounded-deterministic-findings-v2"
 
 SYSTEM_INSTRUCTION: Final = (
     "You are the Graniti + Nexolv reviewer chat. The supplied findings are immutable deterministic "
@@ -46,6 +46,9 @@ SYSTEM_INSTRUCTION: Final = (
     "naming every unresolved_inputs entry. Do not merely list check ids or say that something needs attention. "
     "An outcome word not present in `overview_context` is forbidden, even in a negation or comparison "
     "(for example, do not say PASS or FAIL when absent). It may name only supplied check ids and outcomes. "
+    "The overview summary has a hard 600-character budget; if you exceed it, the overview is dropped "
+    "rather than truncated. Keep it short enough to survive. Include the supplied sheet or evidence page "
+    "when it helps answer the question. State the next action as an instruction to the reviewer. "
     "Return exactly one tool item per finding_key and no other text. For each finding, `explanation` is "
     "one or two plain sentences telling the reviewer what happened and what to do about it. The "
     "deterministic facts are added ahead of your sentences by the system, so do NOT restate, copy, or "
@@ -125,6 +128,9 @@ class BedrockReviewerChat:
                                 "means for the reviewer and what to do next. Use no number or verdict word not "
                                 "already supplied for that finding. Set "
                                 "`summary` to two or three reviewer-ready sentences before the audit cards. "
+                                "The summary must stay within 600 characters; an over-long summary is dropped, "
+                                "not truncated. Name supplied sheet or evidence page details when relevant, and "
+                                "state the next action as an instruction to the reviewer. "
                                 "Begin with the exact counts in `overview_context` (use digits; do not calculate "
                                 "them). You MUST include a 'Reviewer decisions:' clause for every entry in "
                                 "reviewer_decisions and a 'Missing inputs:' clause that names every "

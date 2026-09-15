@@ -115,6 +115,55 @@
   font-weight: var(--weight-semi);
 }
 
+.chat-message__text code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  padding: 1px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.chat-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: var(--space-3) 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+}
+
+.chat-table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.chat-table th,
+.chat-table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.chat-table th {
+  color: var(--text-primary);
+  font-weight: var(--weight-semi);
+  background: var(--bg-surface);
+}
+
+.chat-table td {
+  color: var(--text-body);
+}
+
+.chat-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
 /* The assistant's answer is unboxed: it is the page's main content, and wrapping the longest text
    in the product in a bubble made every answer look like a chat quip rather than a review note. */
 .chat-message--assistant .chat-message__text {
@@ -306,6 +355,7 @@
 @media (max-width: 720px) {
   .chat-thread { padding: var(--space-4) var(--space-3) var(--space-8); }
   .chat-message__text { max-width: 100%; }
+  .chat-table { min-width: 520px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

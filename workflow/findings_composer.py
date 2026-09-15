@@ -18,7 +18,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Final, Protocol
+from typing import Final, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -821,17 +821,19 @@ def _guard_overview(findings: Sequence[ComposerFinding], summary: str | None) ->
     if len(text) > 600:
         raise NarrativeGuardError("AI overview is longer than 600 characters")
     context = narration_overview_context(findings)
+    selected_finding_count = cast(int, context["selected_finding_count"])
+    outcome_counts = cast(Mapping[str, int], context["outcome_counts"])
     permitted_digits = set().union(
         *(_digit_numbers(finding.guarded_text()) for finding in findings),
-        _digit_numbers(str(context["selected_finding_count"])),
-        *(_digit_numbers(str(count)) for count in context["outcome_counts"].values()),
+        _digit_numbers(str(selected_finding_count)),
+        *(_digit_numbers(str(count)) for count in outcome_counts.values()),
     )
     invented_digits = sorted(_digit_numbers(text) - permitted_digits)
     if invented_digits:
         raise NarrativeGuardError(f"AI overview introduced numeric claim(s) {invented_digits}")
     aggregate_numbers = {
-        str(context["selected_finding_count"]),
-        *(str(count) for count in context["outcome_counts"].values()),
+        str(selected_finding_count),
+        *(str(count) for count in outcome_counts.values()),
     }
     # Nova occasionally spells the aggregate counts despite the prompt's digit-only request.
     # Accept that benign surface variation only when the word maps to an exact supplied aggregate;
