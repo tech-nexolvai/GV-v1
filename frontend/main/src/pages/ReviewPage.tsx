@@ -176,11 +176,23 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
       // An empty selection is the honest, common case, and saying so is a better answer than an
       // apology for a capability that is working.
       const nothingSelected = response.findings.length === 0;
+      // **The reason is for us, not for the reviewer.**
+      //
+      // This printed `response.fallback_reason` verbatim, and a reviewer asking "why did this
+      // fail?" was shown a Pydantic ValidationError quoting its own documentation URL. That is a
+      // developer's diagnostic in a reviewer's face: it reads as the product breaking, when what
+      // actually happened is the safety net working exactly as designed — the narration was
+      // refused and the deterministic findings, which are the audit record anyway, were shown
+      // instead.
+      //
+      // The reason is kept on the message's `narration` badge, where somebody diagnosing can still
+      // read it, and out of the prose.
       const fallback = response.mode !== 'structured_fallback'
         ? ''
         : nothingSelected
           ? ''
-          : `The AI explanation was not used for this answer, so these are the plain deterministic findings.\n\n${response.fallback_reason ?? 'No provider-configured narration is currently available.'}\n\n`;
+          : 'These are the exact recorded findings. The optional AI wording was not used for this ' +
+            'answer, so nothing below has been rephrased — the facts are unchanged either way.\n\n';
       // A guarded Bedrock overview is deliberately shown before the immutable cards.  In LLM mode
       // the cards are the exact audit record, so repeating every provider narration above them only
       // makes the answer look hard-coded.  A provider that predates the overview field still has its

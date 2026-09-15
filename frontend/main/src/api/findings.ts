@@ -127,5 +127,35 @@ function _evidenceFor(
 /** Every finding for a package, in the order the API ranks them. */
 export async function loadFindings(projectId: string, packageId: string): Promise<Finding[]> {
   const page = await listFindings(projectId, packageId);
-  return page.items.map(toFinding);
+  const base = page.items.map(toFinding);
+
+  // **Every finding arrives with its evidence, rather than one at a time on request.**
+  //
+  // The list endpoint carries a finding's identity and outcome and nothing about where its numbers
+  // came from — that lives on the chain. So until somebody clicked "Evidence & facts" on a
+  // particular card, every card on the page showed no sheet, no page and no operand: a review
+  // screen that could not answer "where did this number come from?" without being asked nine
+  // separate times. A reviewer's first question about a failure is exactly that question.
+  //
+  // One request per finding, in parallel. These are small reads of already-computed rows, and a
+  // review has single figures of findings — the cost is a fraction of a second against a page that
+  // otherwise cannot show its own evidence.
+  //
+  // **A chain that will not load costs its own card's detail and nothing else.** The finding is
+  // still shown, with its outcome and rule, because an evidence lookup failing is not a reason to
+  // hide a recorded failure from the person reviewing it.
+  const chains = await Promise.all(
+    base.map(async (finding) => {
+      try {
+        return await getFindingChain(projectId, packageId, finding.id);
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return base.map((finding, index) => {
+    const chain = chains[index];
+    return chain === null ? finding : withChain(finding, chain);
+  });
 }
