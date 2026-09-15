@@ -43,6 +43,23 @@ def test_pairs_by_identifier_not_mapping_position() -> None:
     )
 
 
+def test_ordered_inputs_pair_by_position_for_reviewer_entered_runs() -> None:
+    result = pairwise_within_tolerance(
+        left=(inch(24), inch(30), inch(36)),
+        right=(inch(24), inch(31), inch(36)),
+        tolerance=mm(0),
+    )
+
+    pairs = pair_results(result)
+    assert [(pair.identifier, pair.outcome) for pair in pairs] == [
+        ("#0", Outcome.PASS),
+        ("#1", Outcome.FAIL),
+        ("#2", Outcome.PASS),
+    ]
+    assert pairs[1].comparison == "#1: |30 - 31| = 1 > 0 in"
+    assert result.outcome is Outcome.FAIL
+
+
 @pytest.mark.parametrize(
     ("right_value", "outcome"),
     [(mm(598), Outcome.PASS), (mm(597), Outcome.FAIL)],
@@ -158,12 +175,12 @@ def test_rejects_mixed_units_including_an_unmatched_value() -> None:
         )
 
 
-def test_rejects_negative_tolerance_and_wrong_mapping_shapes() -> None:
+def test_rejects_negative_tolerance_and_bad_pair_inputs() -> None:
     with pytest.raises(RuleAuthoringError, match="negative"):
         pairwise_within_tolerance(left={"CAB-1": mm(1)}, right={"CAB-1": mm(1)}, tolerance=mm(-1))
-    with pytest.raises(RuleAuthoringError, match="mapping"):
+    with pytest.raises(RuleAuthoringError, match="Measurement"):
         pairwise_within_tolerance(
-            left=[mm(1)], right={"CAB-1": mm(1)}, tolerance=mm(1)  # type: ignore[arg-type]
+            left=[object()], right={"CAB-1": mm(1)}, tolerance=mm(1)  # type: ignore[list-item]
         )
     with pytest.raises(RuleAuthoringError, match="invalid identifier"):
         pairwise_within_tolerance(left={"": mm(1)}, right={}, tolerance=mm(1))

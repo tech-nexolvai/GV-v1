@@ -368,9 +368,9 @@ def execute(
                 variant=variant_name,
                 notes=notes,
             )
-        validate_operands(spec, call_args)
         if tolerance is not None:
             call_args["tolerance"] = tolerance.as_measurement()
+        validate_operands(spec, call_args)
         result = spec.fn(**call_args)
     except MixedUnitError as error:
         # Defence in depth: step 4 should have caught this. If an operation still raises it,

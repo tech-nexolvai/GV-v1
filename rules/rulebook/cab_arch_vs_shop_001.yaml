@@ -1,9 +1,9 @@
 id: CAB-ARCH-VS-SHOP-001
-version: 1.0.1
+version: 1.1.0
 product_type: cabinet
 check_type: arch_vs_shop
 severity: FLAG
-arithmetic_unit: mm
+arithmetic_unit: in
 
 name: Architectural versus shop cabinet widths
 description: >
@@ -32,7 +32,8 @@ operation:
     left: architectural_cabinets
     right: shop_cabinets
   tolerance:
-    value: UNCONFIRMED
+    value: 0
+    unit: mm
 
 on_missing: NOT_FOUND
 on_ambiguous: REVIEW_REQUIRED
