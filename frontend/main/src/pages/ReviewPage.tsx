@@ -4,6 +4,7 @@ import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { StatusBadge } from '../components/ui/Badge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
+import { findingsTableMarkdown } from '../components/chat/findingsTable';
 import {
   getPackage,
   askReviewerChat,
@@ -200,6 +201,11 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
       const overview = response.mode === 'llm' && response.summary
         ? `**AI review overview**\n${response.summary}\n\n`
         : '';
+      // The model never writes this table. It is composed here from already-loaded stored findings
+      // selected by backend ids, so the cells match the deterministic cards below.
+      const findingsTable = matched.length > 0
+        ? `\n\n**Recorded findings table**\n${findingsTableMarkdown(matched)}`
+        : '';
       // Show the guarded per-finding explanation in every mode. Hiding it in LLM mode made the
       // chat look like a generic summary followed by raw engine cards, despite Bedrock having
       // already produced the reviewer-readable explanation.
@@ -207,7 +213,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
       const replyMsg: ChatMessage = {
         id: `msg-a-${Date.now()}`,
         role: 'assistant',
-        content: `${overview}${fallback}${response.answer}${auditText}`,
+        content: `${overview}${fallback}${response.answer}${findingsTable}${auditText}`,
         timestamp: new Date().toISOString(),
         findings: matched,
         // Omitted when nothing was selected, so no provenance badge is rendered. The badge exists

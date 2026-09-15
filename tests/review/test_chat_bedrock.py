@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from app.review.chat_bedrock import TOOL_NAME, BedrockReviewerChat, _Config
+from app.review.chat_bedrock import PROMPT_ID, TEMPLATE_ID, TOOL_NAME, BedrockReviewerChat, _Config
 from workflow.findings_composer import ComposerFinding, NarrationFact, narration_overview_context
 
 
@@ -79,6 +79,8 @@ def test_transport_uses_the_configured_provider_and_forces_its_only_tool() -> No
     result = composer.compose((_finding(),))
 
     assert result.model_id == "configured-model"
+    assert result.prompt_id == PROMPT_ID == "reviewer-chat-v2"
+    assert result.template_id == TEMPLATE_ID == "grounded-deterministic-findings-v2"
     assert result.summary == "1 FAIL needs attention: CT-DEPTH-001 records 25 1/2 in versus 25 in."
     request = client.requests[0]
     assert request["modelId"] == "configured-model"
@@ -113,6 +115,9 @@ def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
     # transcription it used to be asked for is done by `ground_explanations`.
     assert "do NOT restate, copy, or summarise `required_text`" in text
     assert "one or two plain sentences" in text
+    assert "600-character budget" in text
+    assert "dropped rather than truncated" in text
+    assert "State the next action as an instruction" in text
     assert "CT-DEPTH-001: FAIL." not in text
     assert "Do not merely list check ids" in text
     messages = request["messages"]
@@ -121,6 +126,8 @@ def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
     assert isinstance(user_text, str)
     assert "the system places ahead of your words" in user_text
     assert "Do not copy it, quote it, or restate its values." in user_text
+    assert "within 600 characters" in user_text
+    assert "not truncated" in user_text
     question_payload = messages[0]["content"][1]["text"]
     assert isinstance(question_payload, str)
     assert json.loads(question_payload) == {"reviewer_question": ""}

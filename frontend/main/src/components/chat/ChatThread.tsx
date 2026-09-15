@@ -5,6 +5,7 @@ import { FindingCard } from './FindingCard';
 import { GVMark } from '../brand/GVMark';
 import { ThinkingStream } from './ThinkingStream';
 import { StreamingText } from './StreamingText';
+import { ChatMarkdown } from './ChatMarkdown';
 import './ChatThread.css';
 
 interface ChatThreadProps {
@@ -116,7 +117,7 @@ export function ChatThread({
                 <StreamingText
                   text={msg.content}
                   stream={msg.id === streamingId}
-                  render={renderMarkdown}
+                  render={(text) => <ChatMarkdown text={text} />}
                 />
               </div>
             )}
@@ -261,19 +262,4 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString('en-US', {
     hour: '2-digit', minute: '2-digit',
   });
-}
-
-function renderMarkdown(text: string) {
-  // Simple bold + newline support — good enough for the prototype
-  const parts = text.split(/(\*\*[^*]+\*\*|\n)/g);
-  return (
-    <p>
-      {parts.map((part, i) => {
-        if (part.startsWith('**') && part.endsWith('**'))
-          return <strong key={i}>{part.slice(2, -2)}</strong>;
-        if (part === '\n') return <br key={i} />;
-        return part;
-      })}
-    </p>
-  );
 }
