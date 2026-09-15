@@ -62,13 +62,36 @@ def _spy(**kwargs: object) -> OperationResult:
     )
 
 
+def _spy_with_tolerance(**kwargs: object) -> OperationResult:
+    CALLS.append(kwargs)
+    tolerance = kwargs["tolerance"]
+    assert isinstance(tolerance, Measurement)
+    return OperationResult(
+        outcome=Outcome.PASS,
+        delta=None,
+        intermediates=(),
+        comparison="spy passed with tolerance",
+        tolerance=tolerance,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _clean_registry() -> object:
     CALLS.clear()
     REGISTRY.pop("spy", None)
+    REGISTRY.pop("spy_with_tolerance", None)
     register(OperationSpec(name="spy", version="1.0.0", operands={"x": Arity.SCALAR}, fn=_spy))
+    register(
+        OperationSpec(
+            name="spy_with_tolerance",
+            version="1.0.0",
+            operands={"x": Arity.SCALAR, "tolerance": Arity.SCALAR},
+            fn=_spy_with_tolerance,
+        )
+    )
     yield
     REGISTRY.pop("spy", None)
+    REGISTRY.pop("spy_with_tolerance", None)
     CALLS.clear()
 
 
@@ -136,7 +159,8 @@ def _with_variants() -> Rule:
                     when="back_left_right", tolerance=Tolerance(value="1/8", unit=Unit.INCH)
                 ),
             ),
-        )
+        ),
+        operation=OperationRef(type="spy_with_tolerance", operands={"x": "width"}),
     )
 
 
@@ -178,6 +202,22 @@ def test_an_unconfirmed_tolerance_can_never_decide() -> None:
     assert finding.outcome is Outcome.REVIEW_REQUIRED
     assert "not zero" in finding.reason
     assert not CALLS
+
+
+def test_a_confirmed_authored_tolerance_reaches_signature_validation() -> None:
+    """The engine adds reviewed rule tolerances before validating the operation signature."""
+    rule = _rule(
+        operation=OperationRef(
+            type="spy_with_tolerance",
+            operands={"x": "width"},
+            tolerance=Tolerance(value=0, unit=Unit.MM),
+        )
+    )
+
+    finding = execute(publish(rule), {"width": _operand()})
+
+    assert finding.outcome is Outcome.PASS
+    assert CALLS == [{"x": _operand().value, "tolerance": Measurement(Fraction(0), Unit.MM, None)}]
 
 
 # ---------------------------------------------------------------------------
