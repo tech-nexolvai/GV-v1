@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
@@ -23,6 +24,7 @@ from app.auth import Principal, require_project_access
 from app.models import CheckRun, Finding, Package, PackageRevision, RuleDefinition, RuleSnapshot
 from app.review.chat import ChatReply, answer_question
 from app.review.chat_bedrock import configured_reviewer_chat
+from app.runs.invocations import BedrockConverseInvocationRecorder
 from workflow.findings_composer import ComposerFinding, ComposerOperand, reviewer_reason
 
 router = APIRouter(tags=["reviewer chat"])
@@ -58,6 +60,13 @@ class ReviewerChatOut(BaseModel):
     fallback_reason: str | None = None
     summary: str | None = None
     findings: tuple[ReviewerChatNarrative, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _LiveRunFacts:
+    revision_id: UUID
+    findings: tuple[ComposerFinding, ...]
+    checks_have_run: bool
 
 
 def _text(value: object) -> str:
@@ -161,9 +170,7 @@ def _checks_have_run(session: Session, revision_id: UUID) -> bool:
     )
 
 
-def _live_run_facts(
-    session: Session, project_id: UUID, package_id: UUID
-) -> tuple[tuple[ComposerFinding, ...], bool] | None:
+def _live_run_facts(session: Session, project_id: UUID, package_id: UUID) -> _LiveRunFacts | None:
     """One revision's unsuperseded findings and whether anything was checked, or no such package.
 
     Both, because the findings alone cannot tell the caller which of the two empty cases it is in.
@@ -216,7 +223,7 @@ def _live_run_facts(
                 ),
             )
         )
-    return tuple(result), checked
+    return _LiveRunFacts(revision_id=revision, findings=tuple(result), checks_have_run=checked)
 
 
 @router.post(
@@ -236,13 +243,16 @@ def reviewer_chat(
     live = _live_run_facts(session, project_id, package_id)
     if live is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
-    facts, checks_have_run = live
+    facts = live.findings
 
     reply: ChatReply = answer_question(
         body.question,
         facts,
-        configured_reviewer_chat(request.app.state.settings),
-        checks_have_run=checks_have_run,
+        configured_reviewer_chat(
+            request.app.state.settings,
+            recorder=BedrockConverseInvocationRecorder(session, live.revision_id),
+        ),
+        checks_have_run=live.checks_have_run,
     )
     keys = {item.key for item in facts}
     # This is redundant with ``compose_findings`` deliberately: an API response with an unbacked id

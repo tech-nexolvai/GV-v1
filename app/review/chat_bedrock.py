@@ -11,9 +11,11 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from time import monotonic_ns
 from typing import Any, Final, cast
 
 from app.config import Settings
+from app.runs.invocations import BedrockConverseInvocationRecorder
 from workflow.findings_composer import (
     ComposerFinding,
     ModelComposition,
@@ -70,9 +72,20 @@ class _Config:
 class BedrockReviewerChat:
     """One forced-tool call over facts selected from a single deterministic run."""
 
-    def __init__(self, config: _Config, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: _Config,
+        client: Any | None = None,
+        recorder: BedrockConverseInvocationRecorder | None = None,
+    ) -> None:
         self._config = config
         self._client = client
+        self._recorder = recorder
+
+    def with_invocation_recorder(
+        self, recorder: BedrockConverseInvocationRecorder
+    ) -> BedrockReviewerChat:
+        return BedrockReviewerChat(self._config, self._client, recorder)
 
     def _client_for_request(self) -> Any:
         if self._client is not None:
@@ -93,8 +106,17 @@ class BedrockReviewerChat:
     def compose(
         self, findings: Sequence[ComposerFinding], *, question: str | None = None
     ) -> ModelComposition:
-        response = self._client_for_request().converse(**self._request(findings, question))
-        batch = self._batch(response)
+        started_ns = monotonic_ns()
+        response: Mapping[str, Any] | None = None
+        error: BaseException | None = None
+        try:
+            response = self._client_for_request().converse(**self._request(findings, question))
+            batch = self._batch(response)
+        except Exception as raised:
+            error = raised
+            raise
+        finally:
+            self._record_invocation(started_ns=started_ns, response=response, error=error)
         return ModelComposition(
             # The deterministic summary is prepended here, not transcribed by the provider. See
             # `ProposedExplanation` for what that replaced and why.
@@ -104,6 +126,33 @@ class BedrockReviewerChat:
             template_id=TEMPLATE_ID,
             summary=batch.summary.strip() or None,
         )
+
+    def _record_invocation(
+        self,
+        *,
+        started_ns: int,
+        response: Mapping[str, Any] | None,
+        error: BaseException | None,
+    ) -> None:
+        if self._recorder is None:
+            return
+        try:
+            self._recorder.record(
+                model_id=self._config.model_id,
+                prompt_id=PROMPT_ID,
+                template_id=TEMPLATE_ID,
+                started_ns=started_ns,
+                response=response,
+                error=error,
+            )
+        except Exception as record_error:
+            if error is not None:
+                error.add_note(
+                    "the reviewer chat invocation could not be recorded: "
+                    f"{type(record_error).__name__}: {record_error}"
+                )
+                return
+            raise
 
     def _request(
         self, findings: Sequence[ComposerFinding], question: str | None = None
@@ -212,7 +261,10 @@ class BedrockReviewerChat:
         return NarrativeBatch.model_validate(tool.get("input"), strict=True)
 
 
-def configured_reviewer_chat(settings: Settings) -> BedrockReviewerChat | None:
+def configured_reviewer_chat(
+    settings: Settings,
+    recorder: BedrockConverseInvocationRecorder | None = None,
+) -> BedrockReviewerChat | None:
     """Build the deployment-configured provider, or make the endpoint use its plain fallback."""
     if not settings.bedrock_chat_enabled or not settings.bedrock_model.strip():
         return None
@@ -222,5 +274,6 @@ def configured_reviewer_chat(settings: Settings) -> BedrockReviewerChat | None:
             region_name=settings.bedrock_region,
             connect_timeout_seconds=settings.bedrock_connect_timeout,
             read_timeout_seconds=settings.bedrock_read_timeout,
-        )
+        ),
+        recorder=recorder,
     )
