@@ -258,7 +258,6 @@ class RequiredInputsOut(BaseModel):
     #: How many rules are published. Zero means the form is empty because nothing is published, which
     #: is a different problem from a rulebook that asks for nothing.
     rules_published: int
-
     #: Whether something is still working on this package.
     #:
     #: **The form loads once, and reading a drawing takes the better part of a minute.** Opening

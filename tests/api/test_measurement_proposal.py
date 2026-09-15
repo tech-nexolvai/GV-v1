@@ -50,6 +50,7 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 
 PROJECT = uuid4()
 PROPOSE = "/api/v1/projects/{project}/packages/{package}/measurements/propose"
+REQUIRED = "/api/v1/projects/{project}/packages/{package}/required-inputs"
 
 
 def _settings() -> Settings:
@@ -116,6 +117,7 @@ def _package_with_readings(
     readings: tuple[tuple[str, int, int, str | None, int | None], ...],
     kind: str = DocumentKind.SHOP.value,
     attached: bool = True,
+    state: PackageState = PackageState.RUNNING_CHECKS,
 ) -> tuple[UUID, dict[str, UUID]]:
     """A package whose shop drawing has one page of readings, each attached to a dimension line.
 
@@ -135,9 +137,7 @@ def _package_with_readings(
     package = Package(project_id=PROJECT, vendor="Apex Glass & Stone")
     session.add(package)
     session.flush()
-    revision = PackageRevision(
-        package_id=package.id, revision_number=1, state=PackageState.RUNNING_CHECKS
-    )
+    revision = PackageRevision(package_id=package.id, revision_number=1, state=state)
     session.add(revision)
 
     artifact = SourceArtifact(storage_key=f"s/{uuid4()}", sha256="0" * 64, size=1)
@@ -249,6 +249,39 @@ def _stream(session: Session, package: UUID, model: Any) -> list[dict[str, Any]]
         return _frames(response)
     finally:
         endpoint.configured_assignment_model = original  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# The required-inputs form contract
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    (
+        (PackageState.UPLOADED, True),
+        (PackageState.INGESTING, True),
+        (PackageState.EXTRACTING, True),
+        (PackageState.MATCHING, True),
+        (PackageState.VALIDATING_EVIDENCE, True),
+        (PackageState.NEEDS_INPUT, False),
+        (PackageState.AWAITING_REVIEW, False),
+        (PackageState.FAILED_RETRYABLE, False),
+    ),
+)
+def test_required_inputs_reports_only_the_explicit_reading_states(
+    session: Session, state: PackageState, expected: bool
+) -> None:
+    """Outcome: Measure watches only while the drawing reader can still add values."""
+    _publish_rulebook(session)
+    package, _ = _package_with_readings(session, readings=(), state=state)
+
+    response = _client(session).get(REQUIRED.format(project=PROJECT, package=package))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["revision_state"] == state.value
+    assert body["still_reading"] is expected
 
 
 # ---------------------------------------------------------------------------

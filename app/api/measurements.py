@@ -113,20 +113,16 @@ NOT_FOUND_DETAIL: Final = "Not found"
 #: no consumer recognises and that then sits in the outbox looking accepted.
 RUN_CHECKS_WORKFLOW: Final = "run_checks"
 
-#: The states in which something is still working on a package, so an empty form is not yet an
-#: answer about the drawings.
-#:
-#: Listed rather than inferred from "is it not a terminal state", because the two ends of that
-#: sentence drift: a state added later would silently become "still reading" and a reviewer would be
-#: told to wait for something nobody is doing. A member here is a state the pipeline moves *out* of
-#: on its own.
-READING_STATES: Final[frozenset[str]] = frozenset(
+#: States where the Measure page should keep watching because drawing readings or filed proposals may
+#: still appear. Written out rather than derived from "not terminal": review/check states, failures
+#: and human handoffs are not reading states, even though some are non-terminal.
+READING_STATES: Final[frozenset[PackageState]] = frozenset(
     {
-        PackageState.UPLOADED.value,
-        PackageState.INGESTING.value,
-        PackageState.EXTRACTING.value,
-        PackageState.MATCHING.value,
-        PackageState.VALIDATING_EVIDENCE.value,
+        PackageState.UPLOADED,
+        PackageState.INGESTING,
+        PackageState.EXTRACTING,
+        PackageState.MATCHING,
+        PackageState.VALIDATING_EVIDENCE,
     }
 )
 
@@ -372,27 +368,31 @@ def read_required_inputs(
         .order_by(Page.index, ObservationCandidate.created_at, CanonicalObservation.id)
     ).all()
 
+    seen_observations: set[UUID] = set()
+    confirmed_readings_list: list[ConfirmedReadingOut] = []
     # One canonical observation can have a primary candidate plus corroborating candidates.  It is
     # still one qualified reading, especially for a many-valued rule input.
-    seen_observations: set[UUID] = set()
-    confirmed_readings = tuple(
-        ConfirmedReadingOut(
-            key=f"{observation.document_role}:{observation.semantic_type}",
-            source=observation.document_role,
-            semantic_type=observation.semantic_type,
-            value=(
-                f"{format_inches(Fraction(observation.value_numerator, observation.value_denominator))} "
-                f"{observation.unit}"
-            ),
-            qualification=(
-                "exact_vector_tag"
-                if observation.status == EvidenceStatus.CORROBORATED.value
-                else "reviewer_confirmed"
-            ),
+    for observation, _page_index, _created_at in confirmed_rows:
+        if observation.id in seen_observations:
+            continue
+        seen_observations.add(observation.id)
+        confirmed_readings_list.append(
+            ConfirmedReadingOut(
+                key=f"{observation.document_role}:{observation.semantic_type}",
+                source=observation.document_role,
+                semantic_type=observation.semantic_type,
+                value=(
+                    f"{format_inches(Fraction(observation.value_numerator, observation.value_denominator))} "
+                    f"{observation.unit}"
+                ),
+                qualification=(
+                    "exact_vector_tag"
+                    if observation.status == EvidenceStatus.CORROBORATED.value
+                    else "reviewer_confirmed"
+                ),
+            )
         )
-        for observation, _page_index, _created_at in confirmed_rows
-        if not (observation.id in seen_observations or seen_observations.add(observation.id))
-    )
+    confirmed_readings = tuple(confirmed_readings_list)
 
     return RequiredInputsOut(
         proposed_readings=_stored_proposal_out(session, revision),
@@ -430,7 +430,7 @@ def read_required_inputs(
         ),
         rules_published=len(rules),
         revision_state=revision.state,
-        still_reading=revision.state in READING_STATES,
+        still_reading=PackageState(revision.state) in READING_STATES,
     )
 
 

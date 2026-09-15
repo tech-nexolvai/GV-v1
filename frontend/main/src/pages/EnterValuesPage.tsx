@@ -96,10 +96,11 @@ type Needed = {
   parameters: Parameter[];
   discriminators: Discriminator[];
   rules_published: number;
-  /** Whether something is still working on this package, so an empty form is not yet an answer. */
-  still_reading: boolean;
   revision_state: string;
+  still_reading: boolean;
 };
+
+const REQUIRED_INPUTS_POLL_MS = 2000;
 
 /** Which sheet a measurement is read from, in the words a reviewer uses. */
 const SOURCE_LABEL: Record<string, string> = {
@@ -263,9 +264,11 @@ export function EnterValuesPage({
    * the moment they type in the field: it is theirs from then on.
    */
   const [aiFilled, setAiFilled] = useState<Record<string, string[]>>({});
+  const reviewerEditedSinglesRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
+    let poll: ReturnType<typeof window.setTimeout> | undefined;
     // A package switch must never leave the prior package's fields enabled while the new contract is
     // loading. The reviewer could otherwise submit a value against the wrong drawing pair.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -273,7 +276,9 @@ export function EnterValuesPage({
     setNeeded(null);
     setRuns({});
     setSingles({});
-    setReviewerEditedSingles(new Set());
+    const freshEdits = new Set<string>();
+    reviewerEditedSinglesRef.current = freshEdits;
+    setReviewerEditedSingles(freshEdits);
     setChoices({});
     setCandidates([]);
     setSemanticTypes([]);
@@ -283,88 +288,94 @@ export function EnterValuesPage({
     setProposal(null);
     setProposalError(null);
     setAiFilled({});
-    (async () => {
+    const applyRequiredInputs = (required: Needed) => {
+      const confirmedByKey = required.confirmed_readings.reduce<Record<string, string[]>>(
+        (grouped, reading) => ({
+          ...grouped,
+          [reading.key]: [...(grouped[reading.key] ?? []), reading.value],
+        }),
+        {},
+      );
+      const nextMarks: Record<string, string[]> = {};
+
+      setSingles((prior) => {
+        const next = { ...prior };
+        for (const quantity of required.quantities.filter((q) => !q.many)) {
+          const confirmed = confirmedByKey[quantity.key] ?? [];
+          if (
+            confirmed.length === 1 &&
+            !reviewerEditedSinglesRef.current.has(quantity.key) &&
+            !(next[quantity.key] ?? '').trim()
+          ) {
+            next[quantity.key] = confirmed[0];
+          }
+        }
+        for (const field of required.proposed_readings ?? []) {
+          if (field.many) continue;
+          const values = field.values.map((reading) => reading.value);
+          if (!values.length) continue;
+          if (confirmedByKey[field.field_key]?.length) continue;
+          if (reviewerEditedSinglesRef.current.has(field.field_key)) continue;
+          if ((next[field.field_key] ?? '').trim()) continue;
+          next[field.field_key] = values[0];
+          nextMarks[field.field_key] = field.values.map((reading) => reading.candidate_id);
+        }
+        return next;
+      });
+
+      setRuns((prior) => {
+        const next = { ...prior };
+        for (const quantity of required.quantities.filter((q) => q.many)) {
+          const existing = next[quantity.key] ?? [''];
+          if (existing.some((value) => value.trim())) continue;
+          const confirmed = (confirmedByKey[quantity.key] ?? []).filter((value) => value.trim());
+          next[quantity.key] = confirmed.length ? confirmed : [''];
+        }
+        for (const field of required.proposed_readings ?? []) {
+          if (!field.many) continue;
+          const values = field.values.map((reading) => reading.value).filter((value) => value.trim());
+          if (!values.length) continue;
+          if (confirmedByKey[field.field_key]?.length) continue;
+          if ((next[field.field_key] ?? []).some((value) => value.trim())) continue;
+          next[field.field_key] = values;
+          nextMarks[field.field_key] = field.values.map((reading) => reading.candidate_id);
+        }
+        return next;
+      });
+
+      setAiFilled((prior) => ({ ...prior, ...nextMarks }));
+    };
+
+    const load = async (includeVocabulary: boolean) => {
       try {
         if (!selectedPackageId) return;
         const [fields, read, vocabulary] = await Promise.all([
           getRequiredInputs(projectId(), selectedPackageId),
           listCandidates(projectId(), selectedPackageId),
-          listSemanticTypes(),
+          includeVocabulary ? listSemanticTypes() : Promise.resolve<string[]>([]),
         ]);
         if (cancelled) return;
         const required = fields as unknown as Needed;
         setPackageId(selectedPackageId);
         setNeeded(required);
         setCandidates(read.candidates);
-        setSemanticTypes(vocabulary);
-        const confirmedByKey = required.confirmed_readings.reduce<Record<string, string[]>>(
-          (grouped, reading) => ({
-            ...grouped,
-            [reading.key]: [...(grouped[reading.key] ?? []), reading.value],
-          }),
-          {},
-        );
-        const prefilledSingles = Object.fromEntries(
-          required.quantities
-            .filter((q) => !q.many)
-            // A scalar with two confirmed readings is a real ambiguity.  Leave it empty for the
-            // reviewer instead of choosing the first result based on insertion order.
-            .map(
-              (q): [string, string] => [
-                q.key,
-                (confirmedByKey[q.key] ?? []).length === 1 ? confirmedByKey[q.key][0] : '',
-              ],
-            ),
-        );
-        const prefilledRuns = Object.fromEntries(
-          required.quantities
-            .filter((q) => q.many)
-            .map((q) => [
-              q.key,
-              confirmedByKey[q.key]?.filter((value) => value.trim())?.length
-                ? confirmedByKey[q.key].filter((value) => value.trim())
-                : [''],
-            ]) as Array<[string, string[]]>,
-        );
-        // **What a model proposed when the drawings were read.**
-        //
-        // Applied *under* the confirmed readings, never over them: a reading a person confirmed on
-        // the crop is a stronger claim than a proposal, and the two reach the same box. A field
-        // that already has a confirmed value keeps it and is not marked as proposed.
-        const proposedSingles: Record<string, string> = {};
-        const proposedRuns: Record<string, string[]> = {};
-        const marks: Record<string, string[]> = {};
-        for (const field of required.proposed_readings ?? []) {
-          const values = field.values.map((reading) => reading.value);
-          if (!values.length) continue;
-          if (field.many) {
-            if ((prefilledRuns[field.field_key] ?? []).length > 0) continue;
-            proposedRuns[field.field_key] = values;
-          } else {
-            if ((prefilledSingles[field.field_key] ?? '').trim()) continue;
-            proposedSingles[field.field_key] = values[0];
-          }
-          marks[field.field_key] = field.values.map((reading) => reading.candidate_id);
+        if (includeVocabulary) {
+          setSemanticTypes(vocabulary);
         }
-
-        setSingles((prior) => ({ ...prior, ...prefilledSingles, ...proposedSingles }));
-        setRuns(
-          Object.fromEntries(
-            required.quantities.filter((q) => q.many).map((q) => [q.key, ['']]),
-          ),
-        );
-        if (Object.keys(prefilledRuns).length > 0 || Object.keys(proposedRuns).length > 0) {
-          setRuns((prior) => ({ ...prior, ...prefilledRuns, ...proposedRuns }));
+        applyRequiredInputs(required);
+        if (required.still_reading) {
+          poll = window.setTimeout(() => void load(false), REQUIRED_INPUTS_POLL_MS);
         }
-        setAiFilled(marks);
       } catch (caught) {
         if (!cancelled) {
           setLoadError(caught instanceof ApiError ? caught.message : String(caught));
         }
       }
-    })();
+    };
+    void load(true);
     return () => {
       cancelled = true;
+      if (poll !== undefined) window.clearTimeout(poll);
     };
     // Re-fetch only when the selected package changes, never on a keystroke within its form.
   }, [selectedPackageId, reload]);
@@ -460,11 +471,12 @@ export function EnterValuesPage({
       } else {
         // A reviewer-entered value has priority in the editable form; do not erase it behind their
         // back merely because they later confirm an AI proposal.
-      setSingles((prior) => {
-        const readingCount = (needed.confirmed_readings.filter((item) => item.key === key).length) + 1;
-        if (reviewerEditedSingles.has(target.key)) return prior;
-        return { ...prior, [target.key]: readingCount === 1 ? reading.value : '' };
-      });
+        setSingles((prior) => {
+          const readingCount =
+            needed.confirmed_readings.filter((item) => item.key === key).length + 1;
+          if (reviewerEditedSingles.has(target.key)) return prior;
+          return { ...prior, [target.key]: readingCount === 1 ? reading.value : '' };
+        });
       }
       setCandidates((current) =>
         current.filter((item) => item.candidate_id !== candidate.candidate_id),
@@ -815,9 +827,15 @@ export function EnterValuesPage({
             <span className="measure-coverage__bar" style={{ width: `${coveragePercent}%` }} />
           </div>
           <ul className="measure-coverage__counts">
-            <li>
-              <strong>{candidates.length + confirmedCount}</strong> dimensions read off the drawings
-            </li>
+            {needed.still_reading && candidates.length + confirmedCount === 0 ? (
+              <li>
+                <strong>Reading</strong> dimensions from the drawings
+              </li>
+            ) : (
+              <li>
+                <strong>{candidates.length + confirmedCount}</strong> dimensions read off the drawings
+              </li>
+            )}
             <li>
               <strong>{confirmedCount}</strong> confirmed by a reviewer
             </li>
@@ -852,7 +870,19 @@ export function EnterValuesPage({
             offer panel came back, `proposalError` was rendered nowhere, and pressing Fill with AI
             looked like pressing a button that does nothing. Keyed on whether anything was attempted
             instead, so a failure is shown rather than swallowed. */}
-        {!attempted && storedProposalCount > 0 ? (
+        {needed.still_reading ? (
+          <div className="measure-fill measure-fill--reading">
+            <div className="measure-fill__text">
+              <h3>
+                <ScanLine size={15} aria-hidden="true" /> Still reading, watching
+              </h3>
+              <p>
+                Current stage: <code>{needed.revision_state}</code>. This page will check again
+                while the reader is working.
+              </p>
+            </div>
+          </div>
+        ) : !attempted && storedProposalCount > 0 ? (
           /* **Already done, before the reviewer arrived.** The proposal is made when the drawings
              are read and filed, so this panel reports a completed step rather than offering one.
              The offer below is what a package with no filed proposal still shows. */
@@ -1149,7 +1179,11 @@ export function EnterValuesPage({
                         value={singles[quantity.key] ?? ''}
                         onChange={(e) => {
                           releaseField(quantity.key);
-                          setReviewerEditedSingles((prior) => new Set(prior).add(quantity.key));
+                          const nextEdits = new Set(reviewerEditedSinglesRef.current).add(
+                            quantity.key,
+                          );
+                          reviewerEditedSinglesRef.current = nextEdits;
+                          setReviewerEditedSingles(nextEdits);
                           setSingles((prior) => ({ ...prior, [quantity.key]: e.target.value }));
                         }}
                       />

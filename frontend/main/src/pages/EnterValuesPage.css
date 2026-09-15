@@ -259,6 +259,18 @@
   color: var(--status-pass);
 }
 
+.measure-fill--reading {
+  border-color: var(--role-arch-border);
+  border-left-color: var(--role-arch);
+  background: linear-gradient(var(--role-arch-bg), var(--role-arch-bg)), var(--bg-base);
+}
+
+.measure-fill--reading .measure-fill__text h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .measure-fill__text { flex: 1 1 20rem; min-width: 0; }
 
 .measure-fill__text h3 {
