@@ -1,5 +1,5 @@
 id: CAB-ARCH-VS-SHOP-001
-version: 1.0.1
+version: 1.1.0
 product_type: cabinet
 check_type: arch_vs_shop
 severity: FLAG
@@ -8,8 +8,10 @@ arithmetic_unit: mm
 name: Architectural versus shop cabinet widths
 description: >
   Compare every shop cabinet width with the cabinet carrying the same identifier
-  in the approved architectural drawing. Missing counterparts remain visible and
-  are never treated as passing comparisons.
+  in the approved architectural drawing, for exact equality — Raj's Q2 answer is
+  exact match with no tolerance band, so the two widths must agree to the
+  millimetre. Missing counterparts remain visible and are never treated as
+  passing comparisons.
 
 applicability:
   scope: global
@@ -31,8 +33,12 @@ operation:
   operands:
     left: architectural_cabinets
     right: shop_cabinets
+  # Exact match (Q2): no tolerance band. Zero is a confirmed tolerance, not an
+  # unset one — the two widths must be equal to the millimetre. A float's
+  # rounding would *be* the verdict here, which is why arithmetic stays exact.
   tolerance:
-    value: UNCONFIRMED
+    value: 0
+    unit: mm
 
 on_missing: NOT_FOUND
 on_ambiguous: REVIEW_REQUIRED

@@ -1,6 +1,12 @@
-"""The real arch-versus-shop cabinet rule is safe before Q2 is answered.
+"""The real arch-versus-shop cabinet rule compares widths for exact equality.
 
-Source: issue #62 and the client vocabulary in plan section 3.
+Q2 is answered — exact match, no tolerance band — so the rule's tolerance is a
+confirmed ``0 mm`` and the two widths must agree to the millimetre. This file
+guards that the authored tolerance is exact (not unset), that the rule is now
+production-ready, and that the comparison still abstains honestly on a missing
+counterpart.
+
+Source: issue #619, Q2 (``docs/CLIENT_FACTS.md``), ``docs/V1_TO_WORKING_PLAN.md`` §3 Phase B.
 Verification: ``rules/rulebook/cab_arch_vs_shop_001.yaml``.
 """
 
@@ -12,7 +18,7 @@ from pathlib import Path
 import yaml
 
 from rules.publication import is_production_ready, unconfirmed_tolerance_count
-from rules.schema import TOLERANCE_UNCONFIRMED, Cardinality, CheckType, Rule
+from rules.schema import Cardinality, CheckType, Rule
 from rules.semantic_types import OperandSource, SemanticType
 from units.measurement import Measurement, Unit
 from verdict.operations.pairwise import CountComparison, PairComparison, pairwise_within_tolerance
@@ -60,14 +66,42 @@ def test_rule_selects_identifier_keyed_cabinets_from_both_documents() -> None:
     assert arch.scope == shop.scope
 
 
-def test_rule_keeps_q2_as_an_unconfirmed_tolerance() -> None:
+def test_rule_is_exact_equality_now_that_q2_is_answered() -> None:
     rule = _load_rule()
 
+    assert rule.version == "1.1.0"
     assert rule.operation.tolerance is not None
-    assert rule.operation.tolerance.value == TOLERANCE_UNCONFIRMED
-    assert rule.operation.tolerance.unit is None
-    assert unconfirmed_tolerance_count(rule) == 1
-    assert not is_production_ready(rule)
+    # Zero is a *confirmed* tolerance — exact match, not an unset one.
+    assert rule.operation.tolerance.value == Fraction(0)
+    assert rule.operation.tolerance.unit is Unit.MM
+    assert rule.operation.tolerance.is_confirmed
+    assert unconfirmed_tolerance_count(rule) == 0
+    assert is_production_ready(rule)
+
+
+def test_exact_tolerance_passes_equal_widths_and_fails_any_difference() -> None:
+    # The verdict is driven by the rule's *own* authored tolerance, so this proves
+    # exactness flows from the YAML, not from a tolerance a test happened to pass in.
+    rule = _load_rule()
+    assert rule.operation.tolerance is not None
+    tolerance = rule.operation.tolerance.as_measurement()
+
+    equal = pairwise_within_tolerance(
+        left={"CAB-1": _mm(600)},
+        right={"CAB-1": _mm(600)},
+        tolerance=tolerance,
+    )
+    assert equal.outcome is Outcome.PASS
+
+    # One millimetre apart is the smallest whole-mm difference and must fail under an
+    # exact (zero) tolerance — the boundary just past equality.
+    off_by_one = pairwise_within_tolerance(
+        left={"CAB-1": _mm(600)},
+        right={"CAB-1": _mm(601)},
+        tolerance=tolerance,
+    )
+    assert off_by_one.outcome is Outcome.FAIL
+    assert _pairs(off_by_one)["CAB-1"].delta == Measurement(Fraction(1), Unit.MM, None)
 
 
 def test_cabinets_pair_by_identifier_and_not_mapping_position() -> None:
