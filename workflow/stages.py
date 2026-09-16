@@ -35,13 +35,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 from io import BytesIO
 from typing import Protocol, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import select
@@ -51,6 +52,7 @@ from app.api.documents import storage_key
 from app.db.base import utc_now
 from app.evidence.automatic_typing import AutomaticTypingSettings, qualify_exact_tags_for_revision
 from app.evidence.record import (
+    UNPARSED_FLAG,
     open_extraction_run,
     persist_manifest,
     record_associations,
@@ -83,10 +85,16 @@ from app.models.rules import RuleSnapshot as RuleSnapshotRow
 from app.models.runs import ExtractionRun, TaskRun
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
-from app.runs.invocations import BedrockConverseInvocationRecorder
+from app.runs.invocations import (
+    BedrockConverseInvocationRecorder,
+)
+from app.runs.invocations import (
+    record as record_model_invocation,
+)
 from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
+from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.coordinates import PageTransform, StoredPoint
 from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
 from evidence.polygon import Polygon
@@ -101,6 +109,18 @@ from extraction.geometry.dimension_lines import DetectedDimensions, detect
 from extraction.geometry.text_association import DimensionText, associate
 from extraction.localized_ocr import read_localized_vendor_regions
 from extraction.manifest import build_manifest
+from extraction.models.context import AssembledContext
+from extraction.models.invocations import InvocationRecord
+from extraction.models.nova import (
+    NovaAdapter,
+    NovaAdapterError,
+    NovaConfig,
+    NovaInvocation,
+    NovaInvocationOutcome,
+    NovaRequest,
+    vision_configs_from_environment,
+)
+from extraction.models.validation import ValidationRejection
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, read_page
 from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
 from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
@@ -117,6 +137,7 @@ from rules.snapshot import RuleSnapshot
 from storage.hashing import ArtifactCorrupt, content_key, sha256_stream
 from storage.store import ArtifactStore
 from units.imperial import format_inches
+from units.normalise import UnitNormalisationError, normalise_to_inches
 from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
@@ -180,6 +201,100 @@ class _RecordingFindingsLanguageModel(FindingsLanguageModel, Protocol):
         """Return the same model adapter with per-call persistence attached."""
 
 
+class _VisionReader(Protocol):
+    """One bounded model reader route."""
+
+    @property
+    def config(self) -> NovaConfig:
+        """The model identity and extractor name this route records under."""
+
+    def extract(self, request: NovaRequest, recorder: _BufferedVisionRecorder) -> DomainCandidate:
+        """Return one raw model candidate or raise an adapter error."""
+
+
+@dataclass(frozen=True, slots=True)
+class BedrockVisionReader:
+    """A Bedrock Converse reader using the existing strict Nova adapter contract."""
+
+    config: NovaConfig
+
+    def extract(self, request: NovaRequest, recorder: _BufferedVisionRecorder) -> DomainCandidate:
+        return NovaAdapter.from_environment(self.config, recorder).extract(request)
+
+
+def configured_vision_readers_from_environment() -> tuple[BedrockVisionReader, ...]:
+    """Return the two Phase C Bedrock readers when a deployment explicitly enables them."""
+
+    if os.environ.get(VISION_READERS_ENV, "").lower() not in {"1", "true", "yes"}:
+        return ()
+    return tuple(BedrockVisionReader(config) for config in vision_configs_from_environment())
+
+
+def _stored_invocation_outcome(outcome: NovaInvocationOutcome) -> str:
+    if outcome is NovaInvocationOutcome.OK:
+        return "ok"
+    if outcome is NovaInvocationOutcome.REFUSED:
+        return "refused"
+    if outcome is NovaInvocationOutcome.REJECTED:
+        return "rejected"
+    if outcome is NovaInvocationOutcome.TIMEOUT:
+        return "timeout"
+    return "failed"
+
+
+@dataclass(slots=True)
+class _BufferedVisionRecorder:
+    """Collect adapter attempt records until the workflow can persist them with run context."""
+
+    session: Session
+    extraction_run_id: UUID
+    request_candidate_id: UUID
+    crop_artifact_id: UUID | None = None
+    _invocations: list[NovaInvocation] = field(init=False, default_factory=list)
+    _rejections: list[ValidationRejection] = field(init=False, default_factory=list)
+
+    def record(self, invocation: NovaInvocation) -> None:
+        self._invocations.append(invocation)
+
+    def record_rejection(self, rejection: ValidationRejection) -> None:
+        self._rejections.append(rejection)
+
+    @property
+    def rejections(self) -> tuple[ValidationRejection, ...]:
+        return tuple(self._rejections)
+
+    def persist(self, *, candidate_id: UUID | None) -> int:
+        written = 0
+        for invocation in self._invocations:
+            record_model_invocation(
+                self.session,
+                InvocationRecord(
+                    extraction_run_id=self.extraction_run_id,
+                    model_id=invocation.model_id,
+                    prompt_id=invocation.prompt_id,
+                    template_id=invocation.template_id,
+                    crop_artifact_id=self.crop_artifact_id,
+                    input_tokens=invocation.input_tokens,
+                    output_tokens=(
+                        0
+                        if invocation.outcome
+                        in {NovaInvocationOutcome.REFUSED, NovaInvocationOutcome.TIMEOUT}
+                        else invocation.output_tokens
+                    ),
+                    cost_micros=0,
+                    latency_ms=invocation.latency_ms,
+                    outcome=_stored_invocation_outcome(invocation.outcome),
+                    candidate_id=(
+                        candidate_id if invocation.outcome is NovaInvocationOutcome.OK else None
+                    ),
+                    assembled_context=invocation.context,
+                    bound_pt=invocation.bound_pt,
+                ),
+            )
+            written += 1
+        return written
+
+
 #: The pixel ceiling for one rendered page, used only by the OCR route.
 #:
 #: 40 megapixels is about 120 MB of raw RGB. The 300-DPI reader fits the measured Board Room sheet,
@@ -197,6 +312,15 @@ MAXIMUM_RENDER_PIXELS = 40_000_000
 #: smallest one that shows a dimension line either side of its text. **Expect to tune it against the
 #: real GV drawings when #274 lands**; it is a starting point chosen deliberately, not a measured one.
 CROP_CONTEXT_MARGIN_PT = Decimal(9)
+
+#: The bounded crop and context sent to vision readers. It deliberately reuses the evidence crop
+#: margin so the model sees a region, not a full page, and no model chooses its own context.
+VISION_CROP_CONTEXT_MARGIN_PT = CROP_CONTEXT_MARGIN_PT
+VISION_CONTEXT_BOUND_PT = CROP_CONTEXT_MARGIN_PT
+
+#: Explicit opt-in for paid/network vision reads in the local worker path. Tests and local extraction
+#: stay deterministic unless a caller injects readers or a deployment opts in.
+VISION_READERS_ENV = "GV_BEDROCK_VISION_ENABLED"
 
 #: How many individual refusals a stage payload carries, before it reports only the count.
 #:
@@ -262,6 +386,7 @@ class DatabaseStages:
         localized_ocr: LocalizedOcrSettings | None = None,
         automatic_typing: AutomaticTypingSettings | None = None,
         findings_composer: FindingsLanguageModel | None = None,
+        vision_readers: Sequence[_VisionReader] | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -288,6 +413,11 @@ class DatabaseStages:
         # ``generate_outputs``; it is unreachable from ``run_checks`` and an error falls back to a
         # complete deterministic summary rather than delaying or changing a verdict.
         self._findings_composer = findings_composer
+        self._vision_readers = (
+            tuple(configured_vision_readers_from_environment())
+            if vision_readers is None
+            else tuple(vision_readers)
+        )
         # Injected so a test can pass a stub: building the real one loads ONNX models, and a suite
         # that loaded them to test row-writing would be paying for a model it is not testing.
         self._ocr_engine = ocr_engine
@@ -510,6 +640,9 @@ class DatabaseStages:
             vector_rows: list[ObservationCandidate] = []
             ocr_items: tuple[OcrItem, ...] = ()
             ocr_rows: list[ObservationCandidate] = []
+            vision_rows: list[ObservationCandidate] = []
+            vision_invocations = 0
+            vision_refusals: list[str] = []
             read: PageContents | None = None
             if page.has_vector_text:
                 with traced(
@@ -612,6 +745,16 @@ class DatabaseStages:
                     )
                 written = len(ocr_rows)
 
+            if self._vision_readers:
+                vision_rows, vision_invocations, vision_refusals = self._read_page_by_vision(
+                    session,
+                    version_id=version_id,
+                    data=data,
+                    page=page,
+                    task_run_id=run.task_run_id,
+                    regions=tuple(vector_rows + ocr_rows),
+                )
+
             # **Both routes' readings against all of the page's lines, in one pass.** A reviewer's
             # correction labels a line the vendor drew, so judging the two layers against separate
             # sets of geometry would refuse exactly the associations that matter most.
@@ -635,8 +778,11 @@ class DatabaseStages:
                 PageResult(
                     index=page.index,
                     payload={
-                        "candidates": written,
+                        "candidates": written + len(vision_rows),
                         "markup_candidates": len(markup_rows),
+                        "vision_candidates": len(vision_rows),
+                        "vision_invocations": vision_invocations,
+                        "vision_refusals": vision_refusals[:REPORTED_REFUSALS],
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
                         "associations": associated,
@@ -1038,6 +1184,167 @@ class DatabaseStages:
                 page_index=page.index,
             )
             return items, self._ordered_ocr_rows(items, rows)
+
+    def _read_page_by_vision(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        task_run_id: UUID,
+        regions: Sequence[ObservationCandidate],
+    ) -> tuple[list[ObservationCandidate], int, list[str]]:
+        """Read each existing candidate region with every configured vision reader.
+
+        This route is additive: a model output is another raw candidate, never a fact, and a failed
+        model call leaves the fixed readers' candidates untouched. The crop bound and one-call-per
+        reader-per-region loop live here rather than in the prompt.
+        """
+        if not regions or self._store is None:
+            return [], 0, []
+
+        try:
+            rendered = render_page(
+                data,
+                page.index,
+                document_version_id=version_id,
+                page_content_hash=page.content_hash,
+                dpi=self._dpi,
+                maximum_pixels=MAXIMUM_RENDER_PIXELS,
+            )
+        except (PageTooLarge, UnreadablePdf, ValueError) as error:
+            return [], 0, [f"page {page.index}: {error}"]
+
+        rows: list[ObservationCandidate] = []
+        invocations = 0
+        refusals: list[str] = []
+        for reader in self._vision_readers:
+            run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=reader.config.extractor,
+                extractor_version=reader.config.model_id,
+                config_hash=(
+                    f"dpi={self._dpi};route=vision;"
+                    f"crop_margin_pt={VISION_CROP_CONTEXT_MARGIN_PT};"
+                    f"context_bound_pt={VISION_CONTEXT_BOUND_PT}"
+                ),
+                dpi=self._dpi,
+            )
+            existing = list(
+                session.execute(
+                    select(ObservationCandidate).where(
+                        ObservationCandidate.extraction_run_id == run.id,
+                        ObservationCandidate.page_id == page.id,
+                    )
+                ).scalars()
+            )
+            if existing:
+                rows.extend(existing)
+                continue
+
+            for region in regions:
+                crop = self._vision_crop(rendered, region)
+                if crop is None:
+                    refusals.append(
+                        f"page {page.index}: a candidate's polygon could not be cropped for vision"
+                    )
+                    continue
+                request_candidate_id = uuid4()
+                recorder = _BufferedVisionRecorder(
+                    session=session,
+                    extraction_run_id=run.id,
+                    request_candidate_id=request_candidate_id,
+                )
+                request = NovaRequest(
+                    candidate_id=str(request_candidate_id),
+                    page=page.index,
+                    crop=crop,
+                    image_format="png",
+                    context=AssembledContext(nearby_text=(), nearby_geometry=()),
+                    bound_pt=VISION_CONTEXT_BOUND_PT,
+                )
+                try:
+                    candidate = reader.extract(request, recorder)
+                except NovaAdapterError as error:
+                    invocations += recorder.persist(candidate_id=None)
+                    refusals.append(f"page {page.index}: {reader.config.extractor}: {error}")
+                    continue
+                row = self._record_vision_candidate(
+                    session,
+                    candidate,
+                    document_version_id=version_id,
+                    page_id=page.id,
+                    extraction_run_id=run.id,
+                    page_polygon=region.polygon,
+                )
+                invocations += recorder.persist(candidate_id=row.id)
+                rows.append(row)
+        session.flush()
+        return rows, invocations, refusals
+
+    def _vision_crop(self, rendered: RenderedPage, candidate: ObservationCandidate) -> bytes | None:
+        if self._store is None:
+            return None
+        polygon = _stored_polygon(candidate, rendered)
+        if polygon is None:
+            return None
+        result = generate_crop(
+            rendered,
+            CropSpec(
+                polygon=polygon,
+                context_margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
+                dpi=self._dpi,
+            ),
+            self._store,
+        )
+        if result.status is not CropStatus.AVAILABLE or result.artifact is None:
+            return None
+        with self._store.get(result.artifact.key) as stored:
+            return stored.read()
+
+    @staticmethod
+    def _record_vision_candidate(
+        session: Session,
+        candidate: DomainCandidate,
+        *,
+        document_version_id: UUID,
+        page_id: UUID,
+        extraction_run_id: UUID,
+        page_polygon: list[list[int]],
+    ) -> ObservationCandidate:
+        try:
+            row_id = UUID(candidate.candidate_id)
+        except ValueError as error:
+            raise ValueError("vision candidate ids must be UUID strings") from error
+
+        measurement = None
+        flags = list(candidate.ambiguity_flags)
+        try:
+            measurement = normalise_to_inches(candidate.raw_text)
+        except UnitNormalisationError:
+            flags.append(UNPARSED_FLAG)
+
+        row = ObservationCandidate(
+            id=row_id,
+            document_version_id=document_version_id,
+            page_id=page_id,
+            extraction_run_id=extraction_run_id,
+            raw_text=candidate.raw_text,
+            value_numerator=None if measurement is None else measurement.exact.numerator,
+            value_denominator=None if measurement is None else measurement.exact.denominator,
+            unit=None if measurement is None else measurement.unit.value,
+            unit_guess=None if candidate.unit_guess is None else candidate.unit_guess.value,
+            semantic_guess=None,
+            polygon=[list(point) for point in page_polygon],
+            coordinate_space="image",
+            confidence=candidate.confidence,
+            ambiguity_flags=flags,
+        )
+        session.add(row)
+        session.flush()
+        return row
 
     def _ocr(self) -> OcrEngine:
         """The OCR engine, built once and only when a page actually needs it.
