@@ -61,7 +61,7 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -585,6 +585,8 @@ def _run_pipeline(
     association: AssociationSettings,
     localized_ocr: LocalizedOcrSettings | None,
     vendor_stamps_only: bool,
+    seed_project_parameters: Callable[[Session, Any, Any], None] | None = None,
+    project_id: UUID | None = None,
 ) -> PipelineResult:
     """Put the package's shop drawing through the real stages and return what they wrote.
 
@@ -641,7 +643,11 @@ def _run_pipeline(
     with tempfile.TemporaryDirectory() as root:
         store = LocalStore(root=Path(root), ticket_secret=b"offline grader")
 
-        project = Project(name=f"goldset {case.id}")
+        project = (
+            Project(id=project_id, name=f"goldset {case.id}")
+            if project_id
+            else Project(name=f"goldset {case.id}")
+        )
         session.add(project)
         session.flush()
         package = Package(project_id=project.id, vendor=None)
@@ -764,6 +770,10 @@ def _run_pipeline(
                 used.add(candidate.id)
                 typed += 1
         session.commit()
+
+        if seed_project_parameters is not None:
+            seed_project_parameters(session, project, revision)
+            session.commit()
 
         stages.run_checks(session, revision.id)
         session.commit()
