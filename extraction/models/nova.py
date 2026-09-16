@@ -41,6 +41,13 @@ DEFAULT_REGION = "us-east-1"
 #: from a family name once the family has moved on.
 DEFAULT_MODEL_ID = "amazon.nova-lite-v1:0"
 
+#: Phase C's production vision readers. The issue choosing these models names Nova Pro directly;
+#: Claude Haiku's Bedrock model id is the one AWS documents for programmatic access.
+NOVA_PRO_MODEL_ID = "amazon.nova-pro-v1:0"
+CLAUDE_HAIKU_4_5_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"
+NOVA_PRO_EXTRACTOR = "bedrock-nova-pro"
+CLAUDE_HAIKU_4_5_EXTRACTOR = "bedrock-claude-haiku-4-5"
+
 #: What turns a foundation-model id into a cross-region inference profile id.
 #:
 #: **Measured, not read off a document.** On this account the plain `amazon.nova-lite-v1:0` is
@@ -73,9 +80,10 @@ class NovaConfig:
     read_timeout_seconds: int
     max_attempts: int
     region_name: str | None = None
+    extractor: str = "nova"
 
     def __post_init__(self) -> None:
-        for name in ("model_id", "prompt_id", "template_id"):
+        for name in ("model_id", "prompt_id", "template_id", "extractor"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string")
@@ -118,6 +126,46 @@ def config_from_environment(
         read_timeout_seconds=int(os.environ.get("GV_BEDROCK_READ_TIMEOUT", "120")),
         max_attempts=1,
         region_name=os.environ.get("GV_BEDROCK_REGION", DEFAULT_REGION),
+    )
+
+
+def vision_configs_from_environment(
+    *,
+    prompt_id: str = "dimension-reader-v1",
+    template_id: str = "bounded-crop-v1",
+) -> tuple[NovaConfig, NovaConfig]:
+    """The two Bedrock vision readers selected for Phase C.
+
+    They share the same forced-tool adapter and differ only by model identity and extractor name.
+    The extractor names are deliberately stable and distinct because the second-reader lane counts
+    reader independence by extractor, not by model version.
+    """
+    import os
+
+    connect_timeout_seconds = int(os.environ.get("GV_BEDROCK_CONNECT_TIMEOUT", "10"))
+    read_timeout_seconds = int(os.environ.get("GV_BEDROCK_READ_TIMEOUT", "120"))
+    region_name = os.environ.get("GV_BEDROCK_REGION", DEFAULT_REGION)
+    return (
+        NovaConfig(
+            model_id=os.environ.get("GV_BEDROCK_NOVA_PRO_MODEL", NOVA_PRO_MODEL_ID),
+            prompt_id=prompt_id,
+            template_id=template_id,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            max_attempts=1,
+            region_name=region_name,
+            extractor=NOVA_PRO_EXTRACTOR,
+        ),
+        NovaConfig(
+            model_id=os.environ.get("GV_BEDROCK_CLAUDE_HAIKU_MODEL", CLAUDE_HAIKU_4_5_MODEL_ID),
+            prompt_id=prompt_id,
+            template_id=template_id,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            max_attempts=1,
+            region_name=region_name,
+            extractor=CLAUDE_HAIKU_4_5_EXTRACTOR,
+        ),
     )
 
 
@@ -474,6 +522,7 @@ class NovaAdapter:
                 candidate_id=request.candidate_id,
                 extractor_version=self._config.model_id,
                 page=request.page,
+                extractor=self._config.extractor,
             ),
             recorder=self._recorder,
         )
