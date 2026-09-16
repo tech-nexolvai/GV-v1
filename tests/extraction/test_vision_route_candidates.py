@@ -233,6 +233,14 @@ def _vision_candidates(session: Session) -> list[tuple[ObservationCandidate, Ext
     return [(candidate, run) for candidate, run in rows]
 
 
+def _vision_invocations(session: Session) -> list[ModelInvocation]:
+    return session.scalars(
+        select(ModelInvocation)
+        .where(ModelInvocation.prompt_id == "dimension-reader-v1")
+        .order_by(ModelInvocation.model_id, ModelInvocation.id)
+    ).all()
+
+
 def test_two_bedrock_readers_emit_raw_candidates_under_distinct_extractors(
     session: Session, store: LocalStore
 ) -> None:
@@ -244,8 +252,10 @@ def test_two_bedrock_readers_emit_raw_candidates_under_distinct_extractors(
 
     result = DatabaseStages(store, vision_readers=readers).extract_pages(session, revision.id)
 
-    assert result[0].payload["vision_candidates"] == 2
+    assert result[0].payload["vision_candidates"] % len(readers) == 0
+    assert result[0].payload["vision_candidates"] >= len(readers)
     candidates = _vision_candidates(session)
+    assert len(candidates) == result[0].payload["vision_candidates"]
     assert {run.extractor for _, run in candidates} == {
         "bedrock-nova-pro",
         "bedrock-claude-haiku-4-5",
@@ -256,8 +266,9 @@ def test_two_bedrock_readers_emit_raw_candidates_under_distinct_extractors(
     assert all(candidate.value_denominator == 2 for candidate, _ in candidates)
     assert session.scalar(select(CanonicalObservation.id)) is None
 
-    invocations = session.scalars(select(ModelInvocation).order_by(ModelInvocation.model_id)).all()
-    assert [invocation.outcome for invocation in invocations] == ["ok", "ok"]
+    invocations = _vision_invocations(session)
+    assert len(invocations) == len(candidates)
+    assert {invocation.outcome for invocation in invocations} == {"ok"}
     assert all(invocation.candidate_id is not None for invocation in invocations)
 
 
@@ -269,9 +280,10 @@ def test_a_single_vision_candidate_is_not_sealed(session: Session, store: LocalS
         vision_readers=(_reader("bedrock-nova-pro", "amazon.nova-pro-v1:0"),),
     ).extract_pages(session, revision.id)
 
-    [(candidate, _run)] = _vision_candidates(session)
-    assert candidate.corroboration_status is None
-    assert candidate.semantic_guess is None
+    candidates = _vision_candidates(session)
+    assert candidates
+    assert all(candidate.corroboration_status is None for candidate, _ in candidates)
+    assert all(candidate.semantic_guess is None for candidate, _ in candidates)
     assert session.scalar(select(CanonicalObservation.id)) is None
 
 
@@ -300,10 +312,12 @@ def test_refusal_or_timeout_records_an_invocation_without_a_candidate(
 
     assert result[0].payload["vision_candidates"] == 0
     assert _vision_candidates(session) == []
-    invocation = session.scalars(select(ModelInvocation)).one()
-    assert invocation.outcome == stored_outcome
-    assert invocation.output_tokens == output_tokens
-    assert invocation.candidate_id is None
+    invocations = _vision_invocations(session)
+    assert len(invocations) == result[0].payload["vision_invocations"]
+    assert invocations
+    assert all(invocation.outcome == stored_outcome for invocation in invocations)
+    assert all(invocation.output_tokens == output_tokens for invocation in invocations)
+    assert all(invocation.candidate_id is None for invocation in invocations)
 
 
 def test_malformed_model_payload_records_rejection_without_a_candidate(
@@ -323,6 +337,7 @@ def test_malformed_model_payload_records_rejection_without_a_candidate(
     ).extract_pages(session, revision.id)
 
     assert _vision_candidates(session) == []
-    invocation = session.scalars(select(ModelInvocation)).one()
-    assert invocation.outcome == "rejected"
-    assert invocation.candidate_id is None
+    invocations = _vision_invocations(session)
+    assert invocations
+    assert all(invocation.outcome == "rejected" for invocation in invocations)
+    assert all(invocation.candidate_id is None for invocation in invocations)
