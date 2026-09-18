@@ -45,7 +45,7 @@ from typing import Protocol, cast
 from uuid import UUID, uuid4
 
 from opentelemetry.trace import Status, StatusCode
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
 from app.api.documents import storage_key
@@ -95,7 +95,8 @@ from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
 from evidence.candidate import ObservationCandidate as DomainCandidate
-from evidence.coordinates import PageTransform, StoredPoint
+from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
+from evidence.corroborate import corroborate
 from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
 from evidence.polygon import Polygon
 from extraction.annotations import (
@@ -137,6 +138,7 @@ from rules.snapshot import RuleSnapshot
 from storage.hashing import ArtifactCorrupt, content_key, sha256_stream
 from storage.store import ArtifactStore
 from units.imperial import format_inches
+from units.measurement import Measurement, Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from verdict.engine import execute
 from verdict.finding import Finding
@@ -263,7 +265,7 @@ class _BufferedVisionRecorder:
     def rejections(self) -> tuple[ValidationRejection, ...]:
         return tuple(self._rejections)
 
-    def persist(self, *, candidate_id: UUID | None) -> int:
+    def persist(self, *, candidate_id: UUID | None, flush: bool = True) -> int:
         written = 0
         for invocation in self._invocations:
             record_model_invocation(
@@ -290,9 +292,38 @@ class _BufferedVisionRecorder:
                     assembled_context=invocation.context,
                     bound_pt=invocation.bound_pt,
                 ),
+                flush=flush,
             )
             written += 1
         return written
+
+
+def _stored_measurement(row: ObservationCandidate) -> Measurement | None:
+    if row.value_numerator is None or row.value_denominator is None or row.unit is None:
+        return None
+    return Measurement(
+        Fraction(row.value_numerator, row.value_denominator),
+        Unit(row.unit),
+        row.raw_text,
+    )
+
+
+def _domain_candidate_from_row(
+    row: ObservationCandidate, run: ExtractionRun, page_index: int
+) -> DomainCandidate:
+    return DomainCandidate(
+        candidate_id=str(row.id),
+        extractor=run.extractor,
+        extractor_version=run.extractor_version,
+        raw_text=row.raw_text,
+        parsed_value=_stored_measurement(row),
+        unit_guess=None if row.unit_guess is None else Unit(row.unit_guess),
+        semantic_guess=None,
+        page=page_index,
+        polygon=tuple(ImagePoint(x=int(x), y=int(y)) for x, y in row.polygon),
+        confidence=row.confidence,
+        ambiguity_flags=tuple(row.ambiguity_flags),
+    )
 
 
 #: The pixel ceiling for one rendered page, used only by the OCR route.
@@ -677,6 +708,7 @@ class DatabaseStages:
                             page_id=page.id,
                             extraction_run_id=run.id,
                             page_index=page.index,
+                            flush=False,
                         )
                         written = len(vector_rows)
                         read = contents
@@ -754,6 +786,13 @@ class DatabaseStages:
                     task_run_id=run.task_run_id,
                     regions=tuple(vector_rows + ocr_rows),
                 )
+
+            self._apply_cross_route_corroboration(
+                session,
+                page_index=page.index,
+                candidates=tuple(vector_rows + ocr_rows + markup_rows + vision_rows),
+            )
+            session.flush()
 
             # **Both routes' readings against all of the page's lines, in one pass.** A reviewer's
             # correction labels a line the vendor drew, so judging the two layers against separate
@@ -844,6 +883,50 @@ class DatabaseStages:
                 raise ValueError("a persisted OCR row does not match the reading that produced it")
             ordered.append(matches.pop())
         return ordered
+
+    @staticmethod
+    def _apply_cross_route_corroboration(
+        session: Session,
+        *,
+        page_index: int,
+        candidates: Sequence[ObservationCandidate],
+    ) -> None:
+        """Run the second-reader lane across same-region readings before first insert."""
+
+        pending_ids = {row.id for row in candidates if inspect(row).pending}
+        if not pending_ids:
+            return
+
+        by_region: dict[tuple[UUID, tuple[tuple[int, int], ...]], list[ObservationCandidate]] = {}
+        for row in candidates:
+            if row.corroboration_lane is not None:
+                continue
+            key = (row.page_id, tuple((int(x), int(y)) for x, y in row.polygon))
+            by_region.setdefault(key, []).append(row)
+
+        run_ids = {row.extraction_run_id for rows in by_region.values() for row in rows}
+        with session.no_autoflush:
+            runs = {
+                run.id: run
+                for run in session.execute(
+                    select(ExtractionRun).where(ExtractionRun.id.in_(run_ids))
+                ).scalars()
+            }
+        for rows in by_region.values():
+            if not any(row.id in pending_ids for row in rows):
+                continue
+            result = corroborate(
+                tuple(
+                    _domain_candidate_from_row(row, runs[row.extraction_run_id], page_index)
+                    for row in rows
+                )
+            )
+            if result.lane is None:
+                continue
+            for row in rows:
+                if row.id in pending_ids:
+                    row.corroboration_status = result.status.value
+                    row.corroboration_lane = result.lane.value
 
     def _associate_page(
         self,
@@ -1032,6 +1115,7 @@ class DatabaseStages:
                     page_id=page.id,
                     extraction_run_id=markup_run.id,
                     page_index=page.index,
+                    flush=False,
                 ),
                 layers,
             )
@@ -1093,6 +1177,7 @@ class DatabaseStages:
                 page_id=page.id,
                 extraction_run_id=ocr_run.id,
                 page_index=page.index,
+                flush=False,
             )
             return read.items, self._ordered_ocr_rows(read.items, rows)
 
@@ -1182,6 +1267,7 @@ class DatabaseStages:
                 page_id=page.id,
                 extraction_run_id=ocr_run.id,
                 page_index=page.index,
+                flush=False,
             )
             return items, self._ordered_ocr_rows(items, rows)
 
@@ -1232,14 +1318,15 @@ class DatabaseStages:
                 ),
                 dpi=self._dpi,
             )
-            existing = list(
-                session.execute(
-                    select(ObservationCandidate).where(
-                        ObservationCandidate.extraction_run_id == run.id,
-                        ObservationCandidate.page_id == page.id,
-                    )
-                ).scalars()
-            )
+            with session.no_autoflush:
+                existing = list(
+                    session.execute(
+                        select(ObservationCandidate).where(
+                            ObservationCandidate.extraction_run_id == run.id,
+                            ObservationCandidate.page_id == page.id,
+                        )
+                    ).scalars()
+                )
             if existing:
                 rows.extend(existing)
                 continue
@@ -1268,7 +1355,7 @@ class DatabaseStages:
                 try:
                     candidate = reader.extract(request, recorder)
                 except NovaAdapterError as error:
-                    invocations += recorder.persist(candidate_id=None)
+                    invocations += recorder.persist(candidate_id=None, flush=False)
                     refusals.append(f"page {page.index}: {reader.config.extractor}: {error}")
                     continue
                 row = self._record_vision_candidate(
@@ -1278,10 +1365,10 @@ class DatabaseStages:
                     page_id=page.id,
                     extraction_run_id=run.id,
                     page_polygon=region.polygon,
+                    flush=False,
                 )
-                invocations += recorder.persist(candidate_id=row.id)
+                invocations += recorder.persist(candidate_id=row.id, flush=False)
                 rows.append(row)
-        session.flush()
         return rows, invocations, refusals
 
     def _vision_crop(self, rendered: RenderedPage, candidate: ObservationCandidate) -> bytes | None:
@@ -1313,6 +1400,7 @@ class DatabaseStages:
         page_id: UUID,
         extraction_run_id: UUID,
         page_polygon: list[list[int]],
+        flush: bool = True,
     ) -> ObservationCandidate:
         try:
             row_id = UUID(candidate.candidate_id)
@@ -1343,7 +1431,8 @@ class DatabaseStages:
             ambiguity_flags=flags,
         )
         session.add(row)
-        session.flush()
+        if flush:
+            session.flush()
         return row
 
     def _ocr(self) -> OcrEngine:
