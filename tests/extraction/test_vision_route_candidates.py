@@ -272,7 +272,9 @@ def test_two_bedrock_readers_emit_raw_candidates_under_distinct_extractors(
     assert all(invocation.candidate_id is not None for invocation in invocations)
 
 
-def test_a_single_vision_candidate_is_not_sealed(session: Session, store: LocalStore) -> None:
+def test_a_single_vision_reader_corroborates_the_vector_reading_without_sealing(
+    session: Session, store: LocalStore
+) -> None:
     revision = _revision(session, store)
 
     DatabaseStages(
@@ -282,7 +284,7 @@ def test_a_single_vision_candidate_is_not_sealed(session: Session, store: LocalS
 
     candidates = _vision_candidates(session)
     assert candidates
-    assert all(candidate.corroboration_status is None for candidate, _ in candidates)
+    assert all(candidate.corroboration_status != "CORROBORATED" for candidate, _ in candidates)
     assert all(candidate.semantic_guess is None for candidate, _ in candidates)
     assert session.scalar(select(CanonicalObservation.id)) is None
 

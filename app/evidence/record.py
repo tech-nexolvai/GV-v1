@@ -110,14 +110,15 @@ def open_extraction_run(
     produce it. Nothing downstream could detect that, because both the geometry and the hash are
     individually well-formed. A different configuration is a different run.
     """
-    existing = session.execute(
-        select(ExtractionRun).where(
-            ExtractionRun.task_run_id == task_run_id,
-            ExtractionRun.extractor == extractor,
-            ExtractionRun.extractor_version == extractor_version,
-            ExtractionRun.config_hash == config_hash,
-        )
-    ).scalar_one_or_none()
+    with session.no_autoflush:
+        existing = session.execute(
+            select(ExtractionRun).where(
+                ExtractionRun.task_run_id == task_run_id,
+                ExtractionRun.extractor == extractor,
+                ExtractionRun.extractor_version == extractor_version,
+                ExtractionRun.config_hash == config_hash,
+            )
+        ).scalar_one_or_none()
     if existing is not None:
         return existing
 
@@ -129,7 +130,7 @@ def open_extraction_run(
         dpi=dpi,
     )
     session.add(run)
-    session.flush()
+    session.flush([run])
     return run
 
 
@@ -150,6 +151,7 @@ def record_candidates(
     page_id: UUID,
     extraction_run_id: UUID,
     page_index: int,
+    flush: bool = True,
 ) -> list[ObservationCandidate]:
     """Persist every text run the reader found on one page.
 
@@ -179,14 +181,15 @@ def record_candidates(
     # the same characters are ordinary and must both survive. A re-read under a different
     # configuration is a *different* `ExtractionRun` now that `config_hash` is part of its identity,
     # so this suppresses only the repeat of work already recorded. Found in review on #484 (#487).
-    already = list(
-        session.execute(
-            select(ObservationCandidate).where(
-                ObservationCandidate.extraction_run_id == extraction_run_id,
-                ObservationCandidate.page_id == page_id,
-            )
-        ).scalars()
-    )
+    with session.no_autoflush:
+        already = list(
+            session.execute(
+                select(ObservationCandidate).where(
+                    ObservationCandidate.extraction_run_id == extraction_run_id,
+                    ObservationCandidate.page_id == page_id,
+                )
+            ).scalars()
+        )
     if already:
         return already
 
@@ -230,7 +233,8 @@ def record_candidates(
         session.add(row)
         written.append(row)
 
-    session.flush()
+    if flush:
+        session.flush()
     return written
 
 
@@ -242,6 +246,7 @@ def record_ocr_candidates(
     page_id: UUID,
     extraction_run_id: UUID,
     page_index: int,
+    flush: bool = True,
 ) -> list[ObservationCandidate]:
     """The same rows, from the other reading route.
 
@@ -262,14 +267,15 @@ def record_ocr_candidates(
     Idempotent per run and page, for the reason `record_candidates` gives: a redelivery is the same
     work arriving twice, not a second reading.
     """
-    already = list(
-        session.execute(
-            select(ObservationCandidate).where(
-                ObservationCandidate.extraction_run_id == extraction_run_id,
-                ObservationCandidate.page_id == page_id,
-            )
-        ).scalars()
-    )
+    with session.no_autoflush:
+        already = list(
+            session.execute(
+                select(ObservationCandidate).where(
+                    ObservationCandidate.extraction_run_id == extraction_run_id,
+                    ObservationCandidate.page_id == page_id,
+                )
+            ).scalars()
+        )
     if already:
         return already
 
@@ -307,7 +313,8 @@ def record_ocr_candidates(
         session.add(row)
         written.append(row)
 
-    session.flush()
+    if flush:
+        session.flush()
     return written
 
 
@@ -319,6 +326,7 @@ def record_markup_candidates(
     page_id: UUID,
     extraction_run_id: UUID,
     page_index: int,
+    flush: bool = True,
 ) -> list[ObservationCandidate]:
     """The same rows, from the layer that needed no reading at all.
 
@@ -352,14 +360,15 @@ def record_markup_candidates(
     own `ExtractionRun`, so this guard and the other two never see each other's rows — which is what
     makes recording both routes for one page additive rather than a collision.
     """
-    already = list(
-        session.execute(
-            select(ObservationCandidate).where(
-                ObservationCandidate.extraction_run_id == extraction_run_id,
-                ObservationCandidate.page_id == page_id,
-            )
-        ).scalars()
-    )
+    with session.no_autoflush:
+        already = list(
+            session.execute(
+                select(ObservationCandidate).where(
+                    ObservationCandidate.extraction_run_id == extraction_run_id,
+                    ObservationCandidate.page_id == page_id,
+                )
+            ).scalars()
+        )
     if already:
         return already
 
@@ -398,7 +407,8 @@ def record_markup_candidates(
         session.add(row)
         written.append(row)
 
-    session.flush()
+    if flush:
+        session.flush()
     return written
 
 

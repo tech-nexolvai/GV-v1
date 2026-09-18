@@ -145,7 +145,9 @@ def _invocation_record_type() -> Any:
     return import_module("extraction.models.invocations").InvocationRecord
 
 
-def record(session: Session, invocation: _InvocationRecordLike) -> ModelInvocation:
+def record(
+    session: Session, invocation: _InvocationRecordLike, *, flush: bool = True
+) -> ModelInvocation:
     """Write one model call — successful or not — and return the stored row.
 
     Takes a validated `InvocationRecord` rather than loose keyword arguments, so there is no route
@@ -153,15 +155,19 @@ def record(session: Session, invocation: _InvocationRecordLike) -> ModelInvocati
     the fields directly; the field set and the meaning of every one of them are unchanged, but the
     validation now happens somewhere it cannot be bypassed.
 
-    The row is flushed before returning. Without that, a row the database refuses — a blank model id,
-    a negative cost, an outcome outside the closed set, an extraction run that does not exist — would
-    raise at a later commit, somewhere the caller cannot tell which write caused it.
+    The row is flushed before returning unless the caller is deliberately assembling several
+    immutable rows that must land together. Without the default flush, a row the database refuses —
+    a blank model id, a negative cost, an outcome outside the closed set, an extraction run that does
+    not exist — would raise at a later commit, somewhere the caller cannot tell which write caused
+    it.
 
     Args:
         session: the caller's session. This function never commits. Writing the invocation in the
             same transaction as the candidate it explains is what keeps the two consistent — either
             both rows land or neither does.
         invocation: the complete record of the call, including the ones that failed.
+        flush: keep the historic immediate database check unless a caller needs to fill pending
+            immutable rows before their first insert.
 
     Returns:
         The persisted invocation, with its id and `created_at` populated.
@@ -190,7 +196,8 @@ def record(session: Session, invocation: _InvocationRecordLike) -> ModelInvocati
         outcome=invocation.outcome,
     )
     session.add(stored)
-    session.flush()
+    if flush:
+        session.flush()
     return stored
 
 
