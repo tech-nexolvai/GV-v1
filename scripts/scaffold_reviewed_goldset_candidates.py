@@ -1,4 +1,4 @@
-"""Prepare unverified gold-set candidates from reviewed-PDF FreeText markup.
+"""Prepare unverified gold-set candidates from reviewed-PDF markup annotations.
 
 This is an exploratory annotation aid, not a gold-case author. It does not copy the source PDF or
 create an ``answer_key.json``. Instead, it writes a rendered page and mechanical candidate crops to
@@ -33,7 +33,7 @@ DIMENSION_TEXT = re.compile(r'(?<![A-Za-z0-9])\d+(?:-\d+/\d+|/\d+|\.\d+)?"')
 
 @dataclass(frozen=True)
 class Candidate:
-    """One dimension-looking reviewer annotation, retained verbatim and untyped."""
+    """One reviewer-selected dimension annotation, retained verbatim and untyped."""
 
     candidate_id: str
     project: str
@@ -41,10 +41,18 @@ class Candidate:
     author: str
     raw_text: str
     rect: tuple[float, float, float, float]
+    annotation_subtype: str
+    annotation_index: int
+    reviewer_label: str
+    scope_confidence: str
 
 
 def _read_candidates(csv_path: Path, *, page: int) -> list[Candidate]:
-    """Select dimension-shaped reviewer annotations without assigning semantics."""
+    """Select dimension-shaped FreeText markup without assigning semantics.
+
+    This is the deliberately broad legacy fallback. A focused review batch should pass a selection
+    manifest, rather than let syntax decide whether a dimension is in scope.
+    """
     candidates: list[Candidate] = []
     with csv_path.open(encoding="utf-8", newline="") as stream:
         rows = csv.DictReader(stream)
@@ -70,10 +78,125 @@ def _read_candidates(csv_path: Path, *, page: int) -> list[Candidate]:
                     author=row["author_T"],
                     raw_text=raw_text,
                     rect=(rect[0], rect[1], rect[2], rect[3]),
+                    annotation_subtype="/FreeText",
+                    annotation_index=0,
+                    reviewer_label="dimension-looking reviewer markup",
+                    scope_confidence="UNCERTAIN_REVIEWER_TO_CLASSIFY",
                 )
             )
     if not candidates:
         raise ValueError(f"no dimension-looking /FreeText annotations found on page {page}")
+    return candidates
+
+
+def _rect_from_csv(row: dict[str, str]) -> tuple[float, float, float, float]:
+    """Parse an extraction CSV rectangle without changing its coordinate system."""
+    rect = tuple(
+        float(value.strip()) for value in row["rect"].removeprefix("[").removesuffix("]").split(",")
+    )
+    if len(rect) != 4:
+        raise ValueError(f"annotation /Rect is not four coordinates: {row['rect']!r}")
+    return rect[0], rect[1], rect[2], rect[3]
+
+
+def _selection_entries(selection_path: Path, *, page: int) -> list[dict[str, str | int]]:
+    """Load a human-authored scope selection; labels are not semantic types."""
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    if selection.get("page") != page:
+        raise ValueError(f"selection page {selection.get('page')!r} does not match --page {page}")
+    entries = selection.get("candidates")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("selection must name at least one candidate annotation")
+    required = {"annotation_index", "reviewer_label", "scope_confidence"}
+    seen: set[int] = set()
+    validated: list[dict[str, str | int]] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or required - set(entry):
+            raise ValueError(f"selection entry is missing {sorted(required)}: {entry!r}")
+        index = entry["annotation_index"]
+        label, confidence = entry["reviewer_label"], entry["scope_confidence"]
+        if not isinstance(index, int) or index < 1 or index in seen:
+            raise ValueError(f"annotation_index must be a unique positive integer: {index!r}")
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError("reviewer_label must be non-empty text")
+        if confidence not in {"CONFIDENT", "UNCERTAIN_REVIEWER_TO_CLASSIFY"}:
+            raise ValueError("scope_confidence must be CONFIDENT or UNCERTAIN_REVIEWER_TO_CLASSIFY")
+        seen.add(index)
+        validated.append(
+            {
+                "annotation_index": index,
+                "reviewer_label": label,
+                "scope_confidence": confidence,
+            }
+        )
+    return validated
+
+
+def _selection_notes(selection_path: Path, *, page: int) -> list[str]:
+    """Return reviewer-visible omissions that must not silently disappear from a focused cut."""
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    if selection.get("page") != page:
+        raise ValueError(f"selection page {selection.get('page')!r} does not match --page {page}")
+    notes = selection.get("unscaffolded_visible_dimension_notes", [])
+    if not isinstance(notes, list) or not all(
+        isinstance(note, str) and note.strip() for note in notes
+    ):
+        raise ValueError("unscaffolded_visible_dimension_notes must be a list of non-empty text")
+    return notes
+
+
+def _vendor_boundary(csv_path: Path, *, page: int) -> float:
+    """Return the bottom edge of the vendor label from the reviewed-markup CSV."""
+    with csv_path.open(encoding="utf-8", newline="") as stream:
+        for row in csv.DictReader(stream):
+            if row["page"] == str(page) and row["annotation_role"] == "vendor_section_label":
+                return _rect_from_csv(row)[1]
+    raise ValueError(f"page {page} has no vendor section label in {csv_path}")
+
+
+def _read_selected_candidates(
+    pdf_path: Path, csv_path: Path, *, page: int, selection_path: Path, project: str
+) -> list[Candidate]:
+    """Read exact `/Contents` from human-selected vendor markup without assigning semantics."""
+    annotation_refs = PdfReader(pdf_path).pages[page - 1].get("/Annots", [])
+    annotations = (
+        annotation_refs.get_object() if hasattr(annotation_refs, "get_object") else annotation_refs
+    )
+    vendor_boundary = _vendor_boundary(csv_path, page=page)
+    candidates: list[Candidate] = []
+    for entry in _selection_entries(selection_path, page=page):
+        index = int(entry["annotation_index"])
+        if index > len(annotations):
+            raise ValueError(
+                f"selection annotation {index} is outside page {page}'s annotation list"
+            )
+        annotation = annotations[index - 1].get_object()
+        subtype = str(annotation.get("/Subtype"))
+        raw_text = annotation.get("/Contents")
+        rect_values = annotation.get("/Rect")
+        if subtype not in {"/FreeText", "/Line"}:
+            raise ValueError(f"annotation {index} is {subtype}, not exact-text reviewer markup")
+        if not isinstance(raw_text, str) or DIMENSION_TEXT.search(raw_text) is None:
+            raise ValueError(f"annotation {index} has no dimension-shaped exact /Contents")
+        if rect_values is None or len(rect_values) != 4:
+            raise ValueError(f"annotation {index} has no four-coordinate /Rect")
+        rect = tuple(float(value) for value in rect_values)
+        if max(rect[1], rect[3]) >= vendor_boundary:
+            raise ValueError(f"annotation {index} is not below the vendor section label")
+        candidates.append(
+            Candidate(
+                candidate_id=f"page-{page:02d}-candidate-{len(candidates) + 1:02d}",
+                project=project,
+                page=page,
+                author=str(annotation.get("/T") or ""),
+                raw_text=raw_text,
+                rect=(rect[0], rect[1], rect[2], rect[3]),
+                annotation_subtype=subtype,
+                annotation_index=index,
+                reviewer_label=str(entry["reviewer_label"]),
+                scope_confidence=str(entry["scope_confidence"]),
+            )
+        )
     return candidates
 
 
@@ -202,8 +325,15 @@ def _candidate_payload(
             "raw_text": candidate.raw_text,
             "comment": "from reviewer markup, confirm against the drawing",
             "author_T": candidate.author,
+            "annotation_subtype": candidate.annotation_subtype,
+            "annotation_index": candidate.annotation_index,
             "rect_pdf_points": list(candidate.rect),
             "evidence_crop_relative_to_exploration_dir": crop_file,
+        },
+        "reviewer_scope": {
+            "label": candidate.reviewer_label,
+            "confidence": candidate.scope_confidence,
+            "comment": "scope label only; it is not a semantic type",
         },
         "gold_set_answer_key_fields": {
             "semantic_type": PENDING,
@@ -232,45 +362,34 @@ def _write_checklist(
     output_path: Path,
     sheet_title: str,
     sheet_number: str,
+    unscaffolded_notes: list[str],
 ) -> None:
     """Write a human checklist using the crop references recorded in candidate JSON."""
     lines = [
-        "# Gold-set candidate annotation checklist",
+        "# Board Room 1 cabinet-run candidate review",
         "",
-        (
-            "These are reviewer-markup candidates, not gold truth. Do not rename any candidate to "
-            "`answer_key.json` or run it through the real grader until every pending field has been "
-            "confirmed by a human."
-        ),
+        "For each row, compare the crop with the full page, then fill the blanks; every candidate is UNVERIFIED until GVI-007 confirms it.",
         "",
         f"Sheet: {sheet_title}; identifier: {sheet_number}; reviewed-set page: {candidates[0].page}.",
         "",
-        "For each candidate:",
-        "",
-        "1. Open the full rendered page and its linked crop; verify the full reviewer text against ink.",
-        "2. Have a reviewer state the authoritative exact value (or record a disagreement).",
-        "3. Have a reviewer assign the semantic type and source; do not infer either from the text.",
-        "4. Have a reviewer identify the item and any ARCH-to-SHOP match.",
-        "5. Have a reviewer state the check, outcome, and plain-English reason, or leave it absent.",
-        (
-            "6. Only then create a real `answer_key.json` with exact values, source-document hashes, "
-            "and both source PDFs as required by `docs/GOLD_SET_FORMAT.md`."
-        ),
-        "",
-        "| Candidate | Reviewer markup status | PDF /Rect | Crop | Gold-set fields |",
-        "| --- | --- | --- | --- | --- |",
+        "| Candidate | Cabinet-run label | Scope confidence | Crop | Exact value | What it is (type) | Vendor right/wrong | Correct value if wrong |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for candidate in candidates:
         rect = "[" + ", ".join(f"{coordinate:g}" for coordinate in candidate.rect) + "]"
         lines.append(
-            f"| {candidate.candidate_id} | {UNVERIFIED} | `{rect}` | "
-            f"`{crop_files[candidate.candidate_id]}` | all PENDING human confirmation |"
+            f"| {candidate.candidate_id} | {candidate.reviewer_label} | "
+            f"{candidate.scope_confidence} | `{crop_files[candidate.candidate_id]}` |  |  |  |  |"
         )
+        lines.append(f"<!-- {candidate.candidate_id}: markup {UNVERIFIED}; /Rect {rect} -->")
+    if unscaffolded_notes:
+        lines.extend(["", "## Visible dimensions requiring manual addition", ""])
+        lines.extend(f"- {note}" for note in unscaffolded_notes)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _load_candidate_scaffold(path: Path) -> dict[str, Any]:
+def load_candidate_scaffold(path: Path) -> dict[str, Any]:
     """Validate the deliberate pending shape; it is not the production GoldCase loader."""
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema") != "reviewed-goldset-candidate/v1":
@@ -297,33 +416,44 @@ def _load_candidate_scaffold(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _write_dry_run(candidate_paths: list[Path], output_path: Path) -> None:
-    """Load candidate scaffolds and exercise the scorecard's all-pending rendering safely."""
-    payloads = [_load_candidate_scaffold(path) for path in candidate_paths]
-    # score_package only reads `id` and `ground_truth`; model_construct avoids pretending this
-    # candidate-only scaffold has the complete provenance and confirmed fields GoldCase requires.
+def dry_run_candidate_scaffolds(directory: Path) -> str:
+    """Load pending candidate files and render an explicitly unmeasured scorecard."""
+    candidate_paths = sorted(directory.glob("*.candidate.json"))
+    if not candidate_paths:
+        raise ValueError(f"{directory} contains no candidate scaffold files")
+    payloads = [load_candidate_scaffold(path) for path in candidate_paths]
+    # `model_construct` avoids pretending a pending scaffold has confirmed fields or provenance.
     pending_case = GoldCase.model_construct(
         id="pending-human-confirmation",
         ground_truth=GroundTruth(observations=(), matches=(), expected_findings=()),
     )
     scorecard = score_package(pending_case, findings=(), observations=())
-    lines = [
-        "Candidate gold-set scaffold dry run — PENDING CONFIRMATION",
-        "",
-        f"Loaded {len(payloads)} candidate scaffold file(s).",
-        "Eligible real GoldCase answer keys: 0.",
-        (
-            "No candidate was passed to scripts/evaluate_goldset.py: its real pipeline would apply "
-            "answer-key semantic labels, and every candidate label is intentionally pending."
-        ),
-        "",
-        render(scorecard),
-        "",
-        (
-            "Pending confirmation: authoritative value, semantic type, source, item, ARCH-to-SHOP "
-            "match, expected check/outcome/reason, two source PDFs, and provenance hashes."
-        ),
-    ]
+    return "\n".join(
+        [
+            "Candidate gold-set scaffold dry run — PENDING CONFIRMATION",
+            "",
+            f"Loaded {len(payloads)} candidate scaffold file(s).",
+            "Eligible real GoldCase answer keys: 0.",
+            (
+                "No candidate was passed to the real pipeline: it would apply answer-key semantic "
+                "labels, and every candidate label is intentionally pending."
+            ),
+            "",
+            render(scorecard),
+            "",
+            (
+                "Pending confirmation: authoritative value, semantic type, source, item, ARCH-to-SHOP "
+                "match, expected check/outcome/reason, two source PDFs, and provenance hashes."
+            ),
+        ]
+    )
+
+
+def _write_dry_run(candidate_paths: list[Path], output_path: Path) -> None:
+    """Load candidate scaffolds and exercise the scorecard's all-pending rendering safely."""
+    if not candidate_paths:
+        raise ValueError("no candidate paths to dry-run")
+    lines = dry_run_candidate_scaffolds(candidate_paths[0].parent).splitlines()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -340,6 +470,15 @@ def _arguments() -> argparse.Namespace:
     )
     parser.add_argument("--sheet-title", required=True, help="Human-established sheet title")
     parser.add_argument("--sheet-number", required=True, help="Human-established sheet identifier")
+    parser.add_argument("--project", required=True, help="Human-established project identity")
+    parser.add_argument(
+        "--selection",
+        type=Path,
+        help=(
+            "Ignored JSON manifest naming selected annotation indices and reviewer-facing scope labels. "
+            "Required for a focused batch."
+        ),
+    )
     parser.add_argument(
         "--exploration-dir",
         type=Path,
@@ -360,7 +499,6 @@ def main() -> None:
     args = _arguments()
     if args.page < 1 or args.dpi < 1 or args.margin_pt < 1:
         raise ValueError("page, dpi, and crop margin must be positive")
-    candidates = _read_candidates(args.csv, page=args.page)
     reader = PdfReader(args.pdf)
     if args.page > len(reader.pages):
         raise ValueError(f"page {args.page} is outside this {len(reader.pages)}-page PDF")
@@ -372,6 +510,17 @@ def main() -> None:
     crop_box = tuple(float(value) for value in page.cropbox)
     if len(crop_box) != 4:
         raise ValueError("PDF crop box is not four coordinates")
+
+    candidates = (
+        _read_selected_candidates(
+            args.pdf, args.csv, page=args.page, selection_path=args.selection, project=args.project
+        )
+        if args.selection is not None
+        else _read_candidates(args.csv, page=args.page)
+    )
+    unscaffolded_notes = (
+        _selection_notes(args.selection, page=args.page) if args.selection is not None else []
+    )
 
     full_page = args.exploration_dir / f"page-{args.page:02d}.png"
     width, height, rgb = _render_page(args.pdf, page=args.page, dpi=args.dpi, output_path=full_page)
@@ -411,6 +560,7 @@ def main() -> None:
         output_path=args.exploration_dir / "annotation_checklist.md",
         sheet_title=args.sheet_title,
         sheet_number=args.sheet_number,
+        unscaffolded_notes=unscaffolded_notes,
     )
     _write_dry_run(candidate_paths, args.exploration_dir / "dry_run_scorecard.txt")
     print(
