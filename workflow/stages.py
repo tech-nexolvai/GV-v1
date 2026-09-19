@@ -36,7 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
@@ -52,6 +52,7 @@ from app.api.documents import storage_key
 from app.db.base import utc_now
 from app.evidence.automatic_typing import AutomaticTypingSettings, qualify_exact_tags_for_revision
 from app.evidence.record import (
+    UNKNOWN_UNIT_FLAG,
     UNPARSED_FLAG,
     open_extraction_run,
     persist_manifest,
@@ -95,10 +96,24 @@ from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
 from evidence.candidate import ObservationCandidate as DomainCandidate
+from evidence.canonical import EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
 from evidence.corroborate import corroborate
 from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
 from evidence.polygon import Polygon
+from extraction.agent.graph import (
+    AbstentionTerminal,
+    BoundedAgentGraph,
+    BoundedRegionContext,
+    CandidateTerminal,
+)
+from extraction.agent.tools import (
+    AbstainArguments,
+    OcrVerificationArguments,
+    ToolCall,
+    VlmReadingArguments,
+)
+from extraction.agent.trigger import AmbiguityReason, RegionContext, evaluate_trigger
 from extraction.annotations import (
     OutlinedTextRegion,
     PageLayers,
@@ -244,6 +259,22 @@ def _stored_invocation_outcome(outcome: NovaInvocationOutcome) -> str:
     return "failed"
 
 
+def _candidate_evidence_status(row: ObservationCandidate) -> EvidenceStatus:
+    if row.corroboration_status is None:
+        return EvidenceStatus.RAW_CANDIDATE
+    return EvidenceStatus(row.corroboration_status)
+
+
+def _ambiguity_reasons(row: ObservationCandidate) -> frozenset[AmbiguityReason]:
+    flags = set(row.ambiguity_flags)
+    reasons: set[AmbiguityReason] = set()
+    if UNKNOWN_UNIT_FLAG in flags:
+        reasons.add(AmbiguityReason.UNKNOWN_UNIT)
+    if UNPARSED_FLAG in flags:
+        reasons.add(AmbiguityReason.UNREADABLE_TEXT)
+    return frozenset(reasons)
+
+
 @dataclass(slots=True)
 class _BufferedVisionRecorder:
     """Collect adapter attempt records until the workflow can persist them with run context."""
@@ -387,6 +418,34 @@ MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
 
 __all__ = ["DatabaseStages"]
 
+type _AgentActionFactory = Callable[[BoundedRegionContext], tuple[ToolCall, ...]]
+
+
+def _default_bounded_agent_actions(context: BoundedRegionContext) -> tuple[ToolCall, ...]:
+    """Retry a bounded region through allowed extraction tools, then abstain plainly."""
+
+    return (
+        ToolCall(
+            f"{context.region_id}:ocr-1",
+            OcrVerificationArguments(context.region_id, context.crop_artifact_id),
+        ),
+        ToolCall(
+            f"{context.region_id}:ocr-2",
+            OcrVerificationArguments(context.region_id, context.crop_artifact_id),
+        ),
+        ToolCall(
+            f"{context.region_id}:vlm-1",
+            VlmReadingArguments(context.region_id, context.crop_artifact_id),
+        ),
+        ToolCall(
+            f"{context.region_id}:abstain",
+            AbstainArguments(
+                context.region_id,
+                "the bounded agent did not produce a reliable reading",
+            ),
+        ),
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class _LocatedOcrReading:
@@ -418,6 +477,8 @@ class DatabaseStages:
         automatic_typing: AutomaticTypingSettings | None = None,
         findings_composer: FindingsLanguageModel | None = None,
         vision_readers: Sequence[_VisionReader] | None = None,
+        bounded_agent: BoundedAgentGraph | None = None,
+        bounded_agent_actions: _AgentActionFactory | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -448,6 +509,14 @@ class DatabaseStages:
             tuple(configured_vision_readers_from_environment())
             if vision_readers is None
             else tuple(vision_readers)
+        )
+        if bounded_agent is None and bounded_agent_actions is not None:
+            raise ValueError("bounded_agent_actions cannot be supplied without a bounded_agent")
+        self._bounded_agent = bounded_agent
+        self._bounded_agent_actions = (
+            _default_bounded_agent_actions
+            if bounded_agent is not None and bounded_agent_actions is None
+            else bounded_agent_actions
         )
         # Injected so a test can pass a stub: building the real one loads ONNX models, and a suite
         # that loaded them to test row-writing would be paying for a model it is not testing.
@@ -792,6 +861,22 @@ class DatabaseStages:
                 page_index=page.index,
                 candidates=tuple(vector_rows + ocr_rows + markup_rows + vision_rows),
             )
+            agent_rows, agent_abstentions = self._run_bounded_agent_for_ambiguous_regions(
+                session,
+                version_id=version_id,
+                data=data,
+                page=page,
+                task_run_id=run.task_run_id,
+                candidates=tuple(vector_rows + ocr_rows + markup_rows + vision_rows),
+            )
+            if agent_rows:
+                self._apply_cross_route_corroboration(
+                    session,
+                    page_index=page.index,
+                    candidates=tuple(
+                        vector_rows + ocr_rows + markup_rows + vision_rows + agent_rows
+                    ),
+                )
             session.flush()
 
             # **Both routes' readings against all of the page's lines, in one pass.** A reviewer's
@@ -817,9 +902,11 @@ class DatabaseStages:
                 PageResult(
                     index=page.index,
                     payload={
-                        "candidates": written + len(vision_rows),
+                        "candidates": written + len(vision_rows) + len(agent_rows),
                         "markup_candidates": len(markup_rows),
                         "vision_candidates": len(vision_rows),
+                        "agent_candidates": len(agent_rows),
+                        "agent_abstentions": agent_abstentions,
                         "vision_invocations": vision_invocations,
                         "vision_refusals": vision_refusals[:REPORTED_REFUSALS],
                         # `None` when no thresholds were configured: the step did not run, which is
@@ -927,6 +1014,139 @@ class DatabaseStages:
                 if row.id in pending_ids:
                     row.corroboration_status = result.status.value
                     row.corroboration_lane = result.lane.value
+
+    def _run_bounded_agent_for_ambiguous_regions(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        task_run_id: UUID,
+        candidates: Sequence[ObservationCandidate],
+    ) -> tuple[list[ObservationCandidate], int]:
+        """Run the bounded agent only for rows that the deterministic trigger permits."""
+
+        if (
+            self._bounded_agent is None
+            or self._bounded_agent_actions is None
+            or self._store is None
+            or not candidates
+        ):
+            return [], 0
+
+        try:
+            rendered = render_page(
+                data,
+                page.index,
+                document_version_id=version_id,
+                page_content_hash=page.content_hash,
+                dpi=self._dpi,
+                maximum_pixels=MAXIMUM_RENDER_PIXELS,
+            )
+        except (PageTooLarge, UnreadablePdf, ValueError):
+            return [], 0
+
+        rows: list[ObservationCandidate] = []
+        abstentions = 0
+        for candidate in candidates:
+            status = _candidate_evidence_status(candidate)
+            reasons = _ambiguity_reasons(candidate)
+            if status is not EvidenceStatus.RAW_CANDIDATE or not reasons:
+                continue
+
+            crop_artifact_id = self._agent_crop_artifact_id(rendered, candidate)
+            trigger_context = RegionContext(
+                region_id=str(candidate.id),
+                fixed_extraction_complete=True,
+                crop_available=crop_artifact_id is not None,
+                ambiguity_reasons=reasons,
+            )
+            decision = evaluate_trigger(status, trigger_context)
+            if not decision.triggered:
+                continue
+            if crop_artifact_id is None:
+                raise AssertionError("triggered agent region without a crop artifact")
+
+            graph_context = BoundedRegionContext(
+                region_id=decision.region_id,
+                crop_artifact_id=crop_artifact_id,
+                nearby_text=(),
+                nearby_geometry_refs=(),
+            )
+            terminal = self._bounded_agent.run(
+                graph_context,
+                self._bounded_agent_actions(graph_context),
+            )
+            if isinstance(terminal, CandidateTerminal):
+                rows.append(
+                    self._record_agent_candidate(
+                        session,
+                        terminal.candidate,
+                        document_version_id=version_id,
+                        page_id=page.id,
+                        task_run_id=task_run_id,
+                        source_candidate=candidate,
+                        flush=False,
+                    )
+                )
+            elif isinstance(terminal, AbstentionTerminal):
+                abstentions += 1
+            else:
+                raise TypeError("bounded agent returned an unknown terminal")
+        return rows, abstentions
+
+    def _agent_crop_artifact_id(
+        self, rendered: RenderedPage, candidate: ObservationCandidate
+    ) -> str | None:
+        if self._store is None:
+            return None
+        polygon = _stored_polygon(candidate, rendered)
+        if polygon is None:
+            return None
+        result = generate_crop(
+            rendered,
+            CropSpec(
+                polygon=polygon,
+                context_margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
+                dpi=self._dpi,
+            ),
+            self._store,
+        )
+        if result.status is not CropStatus.AVAILABLE or result.artifact is None:
+            return None
+        return result.artifact.key
+
+    def _record_agent_candidate(
+        self,
+        session: Session,
+        candidate: DomainCandidate,
+        *,
+        document_version_id: UUID,
+        page_id: UUID,
+        task_run_id: UUID,
+        source_candidate: ObservationCandidate,
+        flush: bool = True,
+    ) -> ObservationCandidate:
+        run = open_extraction_run(
+            session,
+            task_run_id=task_run_id,
+            extractor=candidate.extractor,
+            extractor_version=candidate.extractor_version,
+            config_hash=(
+                f"dpi={self._dpi};route=bounded_agent;" f"source_candidate_id={source_candidate.id}"
+            ),
+            dpi=self._dpi,
+        )
+        return self._record_vision_candidate(
+            session,
+            candidate,
+            document_version_id=document_version_id,
+            page_id=page_id,
+            extraction_run_id=run.id,
+            page_polygon=source_candidate.polygon,
+            flush=flush,
+        )
 
     def _associate_page(
         self,
@@ -1406,6 +1626,11 @@ class DatabaseStages:
             row_id = UUID(candidate.candidate_id)
         except ValueError as error:
             raise ValueError("vision candidate ids must be UUID strings") from error
+
+        with session.no_autoflush:
+            existing = session.get(ObservationCandidate, row_id)
+        if existing is not None:
+            return existing
 
         measurement = None
         flags = list(candidate.ambiguity_flags)
