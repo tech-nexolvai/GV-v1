@@ -137,6 +137,50 @@ def _has_crop(session: Session, candidate_id: UUID) -> bool:
     )
 
 
+def _second_reader_candidate_ids(
+    session: Session, reading: ObservationCandidate
+) -> tuple[UUID, ...]:
+    """Return same-region numeric candidates when two independent readers agreed."""
+
+    agreement_statuses = {
+        EvidenceStatus.RAW_CANDIDATE.value,
+        EvidenceStatus.CORROBORATED.value,
+    }
+    if (
+        reading.corroboration_lane != CorroborationLane.SECOND_READER.value
+        or reading.corroboration_status not in agreement_statuses
+        or reading.value_numerator is None
+        or reading.value_denominator is None
+        or reading.unit is None
+    ):
+        return ()
+
+    rows = session.execute(
+        select(ObservationCandidate, ExtractionRun)
+        .join(ExtractionRun, ObservationCandidate.extraction_run_id == ExtractionRun.id)
+        .where(
+            ObservationCandidate.document_version_id == reading.document_version_id,
+            ObservationCandidate.page_id == reading.page_id,
+            ObservationCandidate.value_numerator == reading.value_numerator,
+            ObservationCandidate.value_denominator == reading.value_denominator,
+            ObservationCandidate.unit == reading.unit,
+            ObservationCandidate.corroboration_lane == CorroborationLane.SECOND_READER.value,
+        )
+        .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
+    ).all()
+    matching = tuple(
+        (candidate, run)
+        for candidate, run in rows
+        if candidate.polygon == reading.polygon
+        and candidate.corroboration_status in agreement_statuses
+    )
+    candidate_ids = tuple(candidate.id for candidate, _run in matching)
+    extractors = {run.extractor for _candidate, run in matching}
+    if reading.id not in candidate_ids or len(candidate_ids) < 2 or len(extractors) < 2:
+        return ()
+    return candidate_ids
+
+
 def _review(
     *, candidate_id: UUID, reason: str, semantic_type: SemanticType | None = None
 ) -> SemanticTypingDecision:
@@ -201,6 +245,13 @@ def qualify_exact_tag_pair(
     )
     if decision.disposition is not TypingDisposition.QUALIFIED:
         return decision
+    second_reader_ids = _second_reader_candidate_ids(session, reading)
+    if not second_reader_ids:
+        return _review(
+            candidate_id=candidate_id,
+            semantic_type=decision.semantic_type,
+            reason="the reading needs second-reader agreement before it can become evidence",
+        )
 
     page = session.get(Page, reading.page_id)
     run = session.get(ExtractionRun, reading.extraction_run_id)
@@ -265,17 +316,27 @@ def qualify_exact_tag_pair(
     )
     session.add(observation)
     session.flush()
+    support_rows = [
+        EvidenceSupportingCandidate(
+            canonical_observation_id=observation.id,
+            candidate_id=supporting_id,
+            role="primary" if supporting_id == reading.id else "corroborating",
+        )
+        for supporting_id in second_reader_ids
+    ]
+    support_rows.append(
+        EvidenceSupportingCandidate(
+            canonical_observation_id=observation.id,
+            candidate_id=tag.id,
+            role="corroborating",
+        )
+    )
     session.add_all(
         (
-            EvidenceSupportingCandidate(
+            *support_rows,
+            EvidenceCorroborationLane(
                 canonical_observation_id=observation.id,
-                candidate_id=reading.id,
-                role="primary",
-            ),
-            EvidenceSupportingCandidate(
-                canonical_observation_id=observation.id,
-                candidate_id=tag.id,
-                role="corroborating",
+                lane=CorroborationLane.SECOND_READER.value,
             ),
             EvidenceCorroborationLane(
                 canonical_observation_id=observation.id,

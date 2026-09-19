@@ -42,6 +42,8 @@ def _observation(
     if status is EvidenceStatus.HUMAN_CONFIRMED:
         supported_by = ()
         corroborated_by = (CorroborationLane.HUMAN,)
+    elif status is EvidenceStatus.CORROBORATED:
+        corroborated_by = (CorroborationLane.SECOND_READER,)
     elif status is EvidenceStatus.RAW_CANDIDATE:
         supported_by = ("vector",)
     elif status is EvidenceStatus.CONFLICTING:

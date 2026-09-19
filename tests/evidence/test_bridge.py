@@ -55,6 +55,9 @@ from app.models import (
     SourceArtifact,
 )
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+from evidence.candidate import ObservationCandidate as DomainCandidate
+from evidence.coordinates import ImagePoint
+from extraction.models.nova import NovaConfig, NovaRequest
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import _pdf
@@ -63,6 +66,7 @@ from tests.workflow.test_stages import (
     _project_depth_parameters,
     _publish_rulebook,
 )
+from units.measurement import Unit
 from vocabulary.semantic_types import SemanticType
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
@@ -86,6 +90,45 @@ DEPTH_TYPE = "CT010"
 #: by the reader (#528), which is the shape a real sheet uses anyway.
 EXACT_DEPTH = "648 [25 1/2]"
 WRONG_DEPTH = "641 [25 1/4]"
+EXACT_DEPTH_SINGLE_UNIT = '25.5"'
+
+
+class _AgreeingVisionReader:
+    """A scripted independent reader for the automatic two-read path."""
+
+    config = NovaConfig(
+        model_id="test-vision-reader",
+        prompt_id="dimension-reader-v1",
+        template_id="bounded-crop-v1",
+        connect_timeout_seconds=1,
+        read_timeout_seconds=1,
+        max_attempts=1,
+        extractor="test-vision-reader",
+    )
+
+    def __init__(self, reading: str) -> None:
+        self._reading = reading
+
+    def extract(self, request: NovaRequest, recorder: object) -> DomainCandidate:
+        del recorder
+        return DomainCandidate(
+            candidate_id=request.candidate_id,
+            extractor=self.config.extractor,
+            extractor_version=self.config.model_id,
+            raw_text=self._reading,
+            parsed_value=None,
+            unit_guess=Unit.INCH,
+            semantic_guess=None,
+            page=request.page,
+            polygon=(
+                ImagePoint(0, 0),
+                ImagePoint(10, 0),
+                ImagePoint(10, 5),
+                ImagePoint(0, 5),
+            ),
+            confidence=None,
+            ambiguity_flags=("scripted second reader",),
+        )
 
 
 def _upgrade(engine: Engine) -> None:
@@ -170,10 +213,13 @@ def _revision(session: Session, store: LocalStore, *, token: str) -> PackageRevi
     return revision
 
 
-def _extract(session: Session, store: LocalStore, *, token: str) -> tuple[PackageRevision, UUID]:
+def _extract(
+    session: Session, store: LocalStore, *, token: str, second_reader: bool = False
+) -> tuple[PackageRevision, UUID]:
     """Read the drawing and return the revision with the candidate carrying its dimension."""
     revision = _revision(session, store, token=token)
-    DatabaseStages(store).extract_pages(session, revision.id)
+    readers = (_AgreeingVisionReader(token),) if second_reader else ()
+    DatabaseStages(store, vision_readers=readers).extract_pages(session, revision.id)
     version_id = session.execute(
         select(PackageRevisionDocument.document_version_id).where(
             PackageRevisionDocument.package_revision_id == revision.id
@@ -181,14 +227,18 @@ def _extract(session: Session, store: LocalStore, *, token: str) -> tuple[Packag
     ).scalar_one()
     candidate = (
         session.execute(
-            select(ObservationCandidate).where(
+            select(ObservationCandidate)
+            .where(
                 ObservationCandidate.document_version_id == version_id,
                 ObservationCandidate.value_numerator.is_not(None),
+                ObservationCandidate.raw_text == token,
             )
+            .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
         )
         .scalars()
-        .one()
+        .first()
     )
+    assert candidate is not None
     return revision, candidate.id
 
 
@@ -270,7 +320,9 @@ def test_exact_vector_tag_on_same_line_becomes_operand_without_a_reviewer_typing
     line.  `run_checks` then qualifies the evidence and the unchanged deterministic depth rule
     decides PASS.  No caller supplies an operand, and the raw candidate remains untyped.
     """
-    revision, candidate_id = _extract(session, store, token=EXACT_DEPTH)
+    revision, candidate_id = _extract(
+        session, store, token=EXACT_DEPTH_SINGLE_UNIT, second_reader=True
+    )
     reading = session.get(ObservationCandidate, candidate_id)
     assert reading is not None
     source_run = session.get(ExtractionRun, reading.extraction_run_id)
