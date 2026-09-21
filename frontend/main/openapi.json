@@ -205,6 +205,40 @@
         "title": "ApprovalOut",
         "type": "object"
       },
+      "AssemblyInput": {
+        "additionalProperties": false,
+        "description": "The ordered cabinet/filler assembly used to derive the design width.",
+        "properties": {
+          "cabinets": {
+            "items": {
+              "$ref": "#/components/schemas/CabinetInput"
+            },
+            "minItems": 1,
+            "title": "Cabinets",
+            "type": "array"
+          },
+          "fillers": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "$ref": "#/components/schemas/FillerInput"
+              },
+              {
+                "$ref": "#/components/schemas/FillerInput"
+              }
+            ],
+            "title": "Fillers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cabinets",
+          "fillers"
+        ],
+        "title": "AssemblyInput",
+        "type": "object"
+      },
       "AssignmentEvent": {
         "description": "One frame of the assignment stream: a phase beginning, or the finished result.\n\nThe endpoint returns `text/event-stream` and each frame's `data:` is one of these. A stream\nrather than a single response because the model call is the slow part, and a screen that shows\na real phase name while it waits is telling the truth about what is happening \u2014 where a bar\nmoving on a timer would not be.",
         "properties": {
@@ -323,6 +357,58 @@
           "unconfirmed"
         ],
         "title": "AwaitingToleranceOut",
+        "type": "object"
+      },
+      "CabinetInput": {
+        "additionalProperties": false,
+        "description": "One cabinet in the ordered run the reviewer is checking.",
+        "properties": {
+          "id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "width": {
+            "description": "Authored dimension with its unit, e.g. 30\" or 762 mm.",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Width",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "width"
+        ],
+        "title": "CabinetInput",
+        "type": "object"
+      },
+      "CabinetProposalOut": {
+        "description": "One cabinet before and after the distribution calculation.",
+        "properties": {
+          "adjustable": {
+            "title": "Adjustable",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "original": {
+            "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          },
+          "proposed": {
+            "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          }
+        },
+        "required": [
+          "id",
+          "original",
+          "proposed",
+          "adjustable"
+        ],
+        "title": "CabinetProposalOut",
         "type": "object"
       },
       "CalculationTraceOut": {
@@ -1060,6 +1146,203 @@
         "title": "ExtractionRequestOut",
         "type": "object"
       },
+      "FillerDistributionRequest": {
+        "additionalProperties": false,
+        "description": "Inputs for the deterministic filler-first distribution proposal.\n\n``field_width`` is nullable on purpose: a missing on-site field dimension is a business\nabstention (NOT_FOUND), not a guessed zero or a selected default.",
+        "properties": {
+          "adjustable_cabinet_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adjustable Cabinet Id"
+          },
+          "assembly": {
+            "$ref": "#/components/schemas/AssemblyInput"
+          },
+          "field_width": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reviewer-entered site dimension with its unit, e.g. 96 1/2\".",
+            "title": "Field Width"
+          },
+          "filler_max": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Filler Max",
+            "type": "string"
+          },
+          "filler_min": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Filler Min",
+            "type": "string"
+          }
+        },
+        "required": [
+          "assembly",
+          "filler_min",
+          "filler_max"
+        ],
+        "title": "FillerDistributionRequest",
+        "type": "object"
+      },
+      "FillerDistributionResponse": {
+        "description": "A deterministic proposal, or an honest abstention.",
+        "properties": {
+          "cabinets": {
+            "items": {
+              "$ref": "#/components/schemas/CabinetProposalOut"
+            },
+            "title": "Cabinets",
+            "type": "array"
+          },
+          "calculation": {
+            "title": "Calculation",
+            "type": "string"
+          },
+          "condition": {
+            "title": "Condition",
+            "type": "string"
+          },
+          "design_width": {
+            "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          },
+          "field_dimension": {
+            "$ref": "#/components/schemas/OperandTraceOut"
+          },
+          "fillers": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "$ref": "#/components/schemas/FillerProposalOut"
+              },
+              {
+                "$ref": "#/components/schemas/FillerProposalOut"
+              }
+            ],
+            "title": "Fillers",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "operands": {
+            "items": {
+              "$ref": "#/components/schemas/OperandTraceOut"
+            },
+            "title": "Operands",
+            "type": "array"
+          },
+          "outcome": {
+            "enum": [
+              "PASS",
+              "REVIEW_REQUIRED",
+              "NOT_FOUND"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "selected_adjustable_cabinet_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Adjustable Cabinet Id"
+          },
+          "site_difference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "outcome",
+          "condition",
+          "message",
+          "design_width",
+          "site_difference",
+          "field_dimension",
+          "selected_adjustable_cabinet_id",
+          "fillers",
+          "cabinets",
+          "operands",
+          "calculation"
+        ],
+        "title": "FillerDistributionResponse",
+        "type": "object"
+      },
+      "FillerInput": {
+        "additionalProperties": false,
+        "description": "One filler, ordered left then right in the request.",
+        "properties": {
+          "id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "width": {
+            "description": "Authored dimension with its unit, e.g. 2\" or 51 mm.",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Width",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "width"
+        ],
+        "title": "FillerInput",
+        "type": "object"
+      },
+      "FillerProposalOut": {
+        "description": "One filler before and after the distribution calculation.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "original": {
+            "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          },
+          "proposed": {
+            "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          }
+        },
+        "required": [
+          "id",
+          "original",
+          "proposed"
+        ],
+        "title": "FillerProposalOut",
+        "type": "object"
+      },
       "FindingChain": {
         "description": "Everything persisted to explain and recompute one finding.",
         "properties": {
@@ -1511,6 +1794,48 @@
           "package_revision_id"
         ],
         "title": "OpenReviewSession",
+        "type": "object"
+      },
+      "OperandTraceOut": {
+        "description": "The source record the response gives for an input value.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "ARCH",
+              "SHOP",
+              "USER_INPUT",
+              "LITERAL"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "HUMAN_CONFIRMED",
+            "title": "Status",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "source",
+          "status",
+          "value"
+        ],
+        "title": "OperandTraceOut",
         "type": "object"
       },
       "OperationOut": {
@@ -2046,46 +2371,6 @@
         "title": "PublicationTarget",
         "type": "string"
       },
-      "QuantityOut": {
-        "description": "One physical measurement the reviewer must read off a drawing.",
-        "properties": {
-          "consumers": {
-            "items": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "title": "Consumers",
-            "type": "array"
-          },
-          "key": {
-            "title": "Key",
-            "type": "string"
-          },
-          "many": {
-            "title": "Many",
-            "type": "boolean"
-          },
-          "semantic_type": {
-            "title": "Semantic Type",
-            "type": "string"
-          },
-          "source": {
-            "title": "Source",
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "semantic_type",
-          "source",
-          "many",
-          "consumers"
-        ],
-        "title": "QuantityOut",
-        "type": "object"
-      },
       "RecordAction": {
         "additionalProperties": false,
         "description": "One thing a reviewer did to one finding.\n\nNo `actor` and no `package_revision_id`. The actor is the authenticated caller, and the revision\nis read off the finding the server loaded \u2014 a caller cannot state which revision they were\nlooking at, which is what makes the trail worth keeping.",
@@ -2153,7 +2438,7 @@
           },
           "quantities": {
             "items": {
-              "$ref": "#/components/schemas/QuantityOut"
+              "$ref": "#/components/schemas/app__schemas__measurements__QuantityOut"
             },
             "title": "Quantities",
             "type": "array"
@@ -2973,6 +3258,90 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "app__schemas__distribution__QuantityOut": {
+        "description": "One exact dimension, rendered without a JSON float.",
+        "properties": {
+          "as_typed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Typed"
+          },
+          "denominator": {
+            "title": "Denominator",
+            "type": "string"
+          },
+          "display": {
+            "title": "Display",
+            "type": "string"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "string"
+          },
+          "unit": {
+            "enum": [
+              "in",
+              "mm"
+            ],
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "numerator",
+          "denominator",
+          "unit",
+          "display"
+        ],
+        "title": "QuantityOut",
+        "type": "object"
+      },
+      "app__schemas__measurements__QuantityOut": {
+        "description": "One physical measurement the reviewer must read off a drawing.",
+        "properties": {
+          "consumers": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Consumers",
+            "type": "array"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "many": {
+            "title": "Many",
+            "type": "boolean"
+          },
+          "semantic_type": {
+            "title": "Semantic Type",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "semantic_type",
+          "source",
+          "many",
+          "consumers"
+        ],
+        "title": "QuantityOut",
+        "type": "object"
       }
     }
   },
@@ -3188,6 +3557,60 @@
         "summary": "Get an upload ticket for a new version of an existing document",
         "tags": [
           "documents"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/filler-distribution": {
+      "post": {
+        "description": "Return the filler-first proposal, abstaining when reviewer input is missing.",
+        "operationId": "calculate_filler_distribution_api_v1_projects__project_id__filler_distribution_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FillerDistributionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FillerDistributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Calculate a reviewer-confirmed filler/cabinet distribution",
+        "tags": [
+          "distribution"
         ]
       }
     },

@@ -123,6 +123,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/filler-distribution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Calculate a reviewer-confirmed filler/cabinet distribution
+         * @description Return the filler-first proposal, abstaining when reviewer input is missing.
+         */
+        post: operations["calculate_filler_distribution_api_v1_projects__project_id__filler_distribution_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages": {
         parameters: {
             query?: never;
@@ -1200,6 +1220,19 @@ export interface components {
             state: string;
         };
         /**
+         * AssemblyInput
+         * @description The ordered cabinet/filler assembly used to derive the design width.
+         */
+        AssemblyInput: {
+            /** Cabinets */
+            cabinets: components["schemas"]["CabinetInput"][];
+            /** Fillers */
+            fillers: [
+                components["schemas"]["FillerInput"],
+                components["schemas"]["FillerInput"]
+            ];
+        };
+        /**
          * AssignmentEvent
          * @description One frame of the assignment stream: a phase beginning, or the finished result.
          *
@@ -1266,6 +1299,31 @@ export interface components {
             unconfirmed: number;
             /** Version */
             version: string;
+        };
+        /**
+         * CabinetInput
+         * @description One cabinet in the ordered run the reviewer is checking.
+         */
+        CabinetInput: {
+            /** Id */
+            id: string;
+            /**
+             * Width
+             * @description Authored dimension with its unit, e.g. 30" or 762 mm.
+             */
+            width: string;
+        };
+        /**
+         * CabinetProposalOut
+         * @description One cabinet before and after the distribution calculation.
+         */
+        CabinetProposalOut: {
+            /** Adjustable */
+            adjustable: boolean;
+            /** Id */
+            id: string;
+            original: components["schemas"]["app__schemas__distribution__QuantityOut"];
+            proposed: components["schemas"]["app__schemas__distribution__QuantityOut"];
         };
         /**
          * CalculationTraceOut
@@ -1697,6 +1755,81 @@ export interface components {
             package_revision_id: string;
         };
         /**
+         * FillerDistributionRequest
+         * @description Inputs for the deterministic filler-first distribution proposal.
+         *
+         *     ``field_width`` is nullable on purpose: a missing on-site field dimension is a business
+         *     abstention (NOT_FOUND), not a guessed zero or a selected default.
+         */
+        FillerDistributionRequest: {
+            /** Adjustable Cabinet Id */
+            adjustable_cabinet_id?: string | null;
+            assembly: components["schemas"]["AssemblyInput"];
+            /**
+             * Field Width
+             * @description Reviewer-entered site dimension with its unit, e.g. 96 1/2".
+             */
+            field_width?: string | null;
+            /** Filler Max */
+            filler_max: string;
+            /** Filler Min */
+            filler_min: string;
+        };
+        /**
+         * FillerDistributionResponse
+         * @description A deterministic proposal, or an honest abstention.
+         */
+        FillerDistributionResponse: {
+            /** Cabinets */
+            cabinets: components["schemas"]["CabinetProposalOut"][];
+            /** Calculation */
+            calculation: string;
+            /** Condition */
+            condition: string;
+            design_width: components["schemas"]["app__schemas__distribution__QuantityOut"];
+            field_dimension: components["schemas"]["OperandTraceOut"];
+            /** Fillers */
+            fillers: [
+                components["schemas"]["FillerProposalOut"],
+                components["schemas"]["FillerProposalOut"]
+            ];
+            /** Message */
+            message: string;
+            /** Operands */
+            operands: components["schemas"]["OperandTraceOut"][];
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "PASS" | "REVIEW_REQUIRED" | "NOT_FOUND";
+            /** Selected Adjustable Cabinet Id */
+            selected_adjustable_cabinet_id: string | null;
+            site_difference: components["schemas"]["app__schemas__distribution__QuantityOut"] | null;
+        };
+        /**
+         * FillerInput
+         * @description One filler, ordered left then right in the request.
+         */
+        FillerInput: {
+            /** Id */
+            id: string;
+            /**
+             * Width
+             * @description Authored dimension with its unit, e.g. 2" or 51 mm.
+             */
+            width: string;
+        };
+        /**
+         * FillerProposalOut
+         * @description One filler before and after the distribution calculation.
+         */
+        FillerProposalOut: {
+            /** Id */
+            id: string;
+            original: components["schemas"]["app__schemas__distribution__QuantityOut"];
+            proposed: components["schemas"]["app__schemas__distribution__QuantityOut"];
+        };
+        /**
          * FindingChain
          * @description Everything persisted to explain and recompute one finding.
          */
@@ -1944,6 +2077,25 @@ export interface components {
              * Format: uuid
              */
             package_revision_id: string;
+        };
+        /**
+         * OperandTraceOut
+         * @description The source record the response gives for an input value.
+         */
+        OperandTraceOut: {
+            /** Name */
+            name: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "ARCH" | "SHOP" | "USER_INPUT" | "LITERAL";
+            /**
+             * Status
+             * @constant
+             */
+            status: "HUMAN_CONFIRMED";
+            value: components["schemas"]["app__schemas__distribution__QuantityOut"] | null;
         };
         /**
          * OperationOut
@@ -2248,24 +2400,6 @@ export interface components {
          */
         PublicationTarget: "development" | "production";
         /**
-         * QuantityOut
-         * @description One physical measurement the reviewer must read off a drawing.
-         */
-        QuantityOut: {
-            /** Consumers */
-            consumers: {
-                [key: string]: string;
-            }[];
-            /** Key */
-            key: string;
-            /** Many */
-            many: boolean;
-            /** Semantic Type */
-            semantic_type: string;
-            /** Source */
-            source: string;
-        };
-        /**
          * RecordAction
          * @description One thing a reviewer did to one finding.
          *
@@ -2306,7 +2440,7 @@ export interface components {
              */
             proposed_readings: components["schemas"]["ProposedFieldOut"][];
             /** Quantities */
-            quantities: components["schemas"]["QuantityOut"][];
+            quantities: components["schemas"]["app__schemas__measurements__QuantityOut"][];
             /**
              * Revision State
              * @default
@@ -2765,6 +2899,43 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * QuantityOut
+         * @description One exact dimension, rendered without a JSON float.
+         */
+        app__schemas__distribution__QuantityOut: {
+            /** As Typed */
+            as_typed?: string | null;
+            /** Denominator */
+            denominator: string;
+            /** Display */
+            display: string;
+            /** Numerator */
+            numerator: string;
+            /**
+             * Unit
+             * @enum {string}
+             */
+            unit: "in" | "mm";
+        };
+        /**
+         * QuantityOut
+         * @description One physical measurement the reviewer must read off a drawing.
+         */
+        app__schemas__measurements__QuantityOut: {
+            /** Consumers */
+            consumers: {
+                [key: string]: string;
+            }[];
+            /** Key */
+            key: string;
+            /** Many */
+            many: boolean;
+            /** Semantic Type */
+            semantic_type: string;
+            /** Source */
+            source: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -2885,6 +3056,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PresignedUpload"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    calculate_filler_distribution_api_v1_projects__project_id__filler_distribution_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FillerDistributionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FillerDistributionResponse"];
                 };
             };
             /** @description Validation Error */
