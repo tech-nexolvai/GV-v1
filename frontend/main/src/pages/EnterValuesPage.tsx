@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import {
   ApiError,
+  calculateFillerDistribution,
   confirmCandidate,
   downloadCandidateCrop,
   enterMeasurements,
@@ -24,6 +25,8 @@ import {
 } from '../api/client';
 import { projectId } from '../api/config';
 import { AssignmentProgress } from '../components/measure/AssignmentProgress';
+import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
+import { distributionFieldWidthKey } from '../components/measure/fillerDistribution';
 import './EnterValuesPage.css';
 
 /**
@@ -781,6 +784,7 @@ export function EnterValuesPage({
     (seen, quantity) => (seen.includes(quantity.source) ? seen : [...seen, quantity.source]),
     [],
   );
+  const fieldDimensionKey = distributionFieldWidthKey(needed.quantities);
 
   return (
     <div className="enter-values">
@@ -1065,6 +1069,21 @@ export function EnterValuesPage({
             value below.
           </p>
         )}
+        <FillerDistributionPanel
+          quantities={needed.quantities}
+          parameters={needed.parameters}
+          singles={singles}
+          runs={runs}
+          fieldWidth={fieldDimensionKey ? (singles[fieldDimensionKey] ?? '') : ''}
+          onFieldWidthChange={(value) => {
+            if (!fieldDimensionKey) return;
+            const nextEdits = new Set(reviewerEditedSinglesRef.current).add(fieldDimensionKey);
+            reviewerEditedSinglesRef.current = nextEdits;
+            setReviewerEditedSingles(nextEdits);
+            setSingles((prior) => ({ ...prior, [fieldDimensionKey]: value }));
+          }}
+          onCalculate={(request) => calculateFillerDistribution(projectId(), request)}
+        />
         {/* **Grouped by the sheet the value is read from.**
             A flat list of fourteen fields asked the reviewer to jump between two drawings on every
             row. Grouped, they fill the shop drawing's fields with the shop drawing open, which is

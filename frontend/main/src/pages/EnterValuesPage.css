@@ -294,6 +294,168 @@
 }
 
 /* ============================================================
+   FILLER DISTRIBUTION
+
+   A reviewer-facing calculator, but not a browser calculation. The page gathers the explicit
+   reviewer input and renders only the deterministic response it receives.
+   ============================================================ */
+
+.distribution-panel {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-base);
+  box-shadow: var(--elevation-1);
+}
+
+.distribution-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.distribution-panel__head .enter-values__hint {
+  margin-bottom: 0;
+}
+
+.distribution-panel__head svg {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+
+.distribution-panel__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.distribution-panel__field {
+  margin-bottom: 0;
+}
+
+.distribution-panel__missing {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--status-review-bg);
+  color: var(--status-review);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.distribution-panel__missing svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.distribution-result {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.distribution-result__message {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--text-body);
+}
+
+.distribution-result__message svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--status-review);
+}
+
+.distribution-result[data-outcome='PASS'] .distribution-result__message svg {
+  color: var(--status-pass);
+}
+
+.distribution-result__message strong {
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.distribution-result__facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.distribution-result__facts div {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.distribution-result__facts dt {
+  margin: 0 0 2px;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-muted);
+}
+
+.distribution-result__facts dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.distribution-result__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.distribution-result__table th,
+.distribution-result__table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+}
+
+.distribution-result__table th {
+  font-weight: var(--weight-semi);
+  color: var(--text-primary);
+}
+
+.distribution-result__table td {
+  font-family: var(--font-mono);
+  color: var(--text-body);
+}
+
+.distribution-result__table tr[data-adjustable='true'] {
+  background: var(--status-pass-bg);
+}
+
+.distribution-result__calculation {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: var(--text-muted);
+}
+
+@media (max-width: 48rem) {
+  .distribution-panel__grid,
+  .distribution-result__facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================
    SHEET GROUPS
 
    Fields grouped by the drawing they are read from, so a reviewer fills one sheet's fields with
