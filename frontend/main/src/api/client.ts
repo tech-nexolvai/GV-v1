@@ -147,12 +147,26 @@ export function getFindingCounts(projectId: string, packageId: string) {
  * Ask about the currently live deterministic run. The backend owns the finding scope and accepts
  * only a question; it never accepts client-supplied values, finding ids, or verdicts.
  */
-export function askReviewerChat(projectId: string, packageId: string, question: string) {
+export function askReviewerChat(
+  projectId: string,
+  packageId: string,
+  question: string,
+  modelId?: string | null,
+) {
   type Body =
     paths['/api/v1/projects/{project_id}/packages/{package_id}/chat']['post']['requestBody']['content']['application/json'];
-  return send<ReviewerChatReply>(`/projects/${projectId}/packages/${packageId}/chat`, {
-    question,
-  } satisfies Body);
+  // model_id is an optional presentation choice; the backend refuses any id not on its allow-list.
+  // Omit it entirely (rather than sending null) when no model is picked, so the default is used.
+  const body: Body = modelId ? { question, model_id: modelId } : { question };
+  return send<ReviewerChatReply>(`/projects/${projectId}/packages/${packageId}/chat`, body);
+}
+
+export type ChatModels =
+  paths['/api/v1/projects/{project_id}/packages/{package_id}/chat/models']['get']['responses'][200]['content']['application/json'];
+
+/** The narration models a reviewer may pick from, and which one answers by default. */
+export function getChatModels(projectId: string, packageId: string) {
+  return request<ChatModels>(`/projects/${projectId}/packages/${packageId}/chat/models`);
 }
 
 /**

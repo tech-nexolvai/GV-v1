@@ -615,6 +615,58 @@
         "title": "CandidatesOut",
         "type": "object"
       },
+      "ChatModelChoice": {
+        "additionalProperties": false,
+        "description": "One selectable model: the exact Bedrock id, and the name a reviewer reads.",
+        "properties": {
+          "id": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "ChatModelChoice",
+        "type": "object"
+      },
+      "ChatModelsOut": {
+        "description": "The models a reviewer may choose from, and which one answers by default.",
+        "properties": {
+          "default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ChatModelChoice"
+            },
+            "title": "Models",
+            "type": "array"
+          }
+        },
+        "required": [
+          "models"
+        ],
+        "title": "ChatModelsOut",
+        "type": "object"
+      },
       "CheckRequest": {
         "additionalProperties": false,
         "description": "Asking for the checks, and what the reviewer says about the layout.\n\n**Discriminators travel with the request rather than being stored as evidence**, because that is\nwhat they are: a statement about how to read this package on this run. A rule with a discriminator\nnobody stated abstains with REVIEW_REQUIRED however complete the measurements are, so without\nthese two `CT-WIDTH-001` and `CAB-FILLER-001` could never reach a verdict.",
@@ -2770,8 +2822,21 @@
       },
       "ReviewerChatRequest": {
         "additionalProperties": false,
-        "description": "A reviewer question; it cannot carry findings, values, rules, or verdicts.",
+        "description": "A reviewer question; it cannot carry findings, values, rules, or verdicts.\n\n``model_id`` is an optional presentation choice \u2014 which allow-listed model narrates. It changes\nno fact: the answer is still composed from stored findings and the narration guard is unchanged.\nAn id the deployment did not allow-list is refused (422), so a reviewer cannot select an\nunapproved model. ``None`` uses the deployment default.",
         "properties": {
+          "model_id": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
           "question": {
             "maxLength": 1000,
             "minLength": 1,
@@ -4046,6 +4111,60 @@
           }
         },
         "summary": "Ask about one deterministic review run",
+        "tags": [
+          "reviewer chat"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat/models": {
+      "get": {
+        "description": "List the allow-listed narration models and the default, for the chat model picker.\n\nAn empty list means the deployment configured no chat model; the chat then serves its plain\ndeterministic findings view and the picker has nothing to offer.",
+        "operationId": "reviewer_chat_models_api_v1_projects__project_id__packages__package_id__chat_models_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatModelsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The models a reviewer may pick to narrate this run",
         "tags": [
           "reviewer chat"
         ]
