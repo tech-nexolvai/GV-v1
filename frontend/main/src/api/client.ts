@@ -93,6 +93,10 @@ export type GrantedException =
   Created<'/api/v1/projects/{project_id}/review-sessions/{review_session_id}/exceptions'>;
 export type ReviewerChatReply =
   paths['/api/v1/projects/{project_id}/packages/{package_id}/chat']['post']['responses'][200]['content']['application/json'];
+export type FillerDistributionRequest =
+  paths['/api/v1/projects/{project_id}/filler-distribution']['post']['requestBody']['content']['application/json'];
+export type FillerDistributionResponse =
+  paths['/api/v1/projects/{project_id}/filler-distribution']['post']['responses'][200]['content']['application/json'];
 
 export function listPackages(projectId: string, query?: { cursor?: string; limit?: number }) {
   const search = new URLSearchParams();
@@ -149,6 +153,23 @@ export function askReviewerChat(projectId: string, packageId: string, question: 
   return send<ReviewerChatReply>(`/projects/${projectId}/packages/${packageId}/chat`, {
     question,
   } satisfies Body);
+}
+
+/**
+ * Ask the deterministic distribution endpoint for the filler-first proposal.
+ *
+ * The caller supplies the reviewer-entered site width and the reviewer-selected adjustable cabinet.
+ * This helper does not derive dimensions or pick a cabinet; it only carries the explicit payload to
+ * the backend operation that owns the arithmetic.
+ */
+export function calculateFillerDistribution(
+  projectId: string,
+  payload: FillerDistributionRequest,
+) {
+  return send<FillerDistributionResponse>(
+    `/projects/${projectId}/filler-distribution`,
+    payload,
+  );
 }
 
 /**
