@@ -24,6 +24,13 @@ from app.auth import Principal, require_project_access
 from app.models import CheckRun, Finding, Package, PackageRevision, RuleDefinition, RuleSnapshot
 from app.review.chat import ChatReply, answer_question
 from app.review.chat_bedrock import configured_reviewer_chat
+from app.review.chat_models import (
+    ChatModelChoice,
+    ChatModelNotAllowed,
+    allowed_chat_models,
+    default_chat_model,
+    resolve_requested_model,
+)
 from app.runs.invocations import BedrockConverseInvocationRecorder
 from workflow.findings_composer import ComposerFinding, ComposerOperand, reviewer_reason
 
@@ -33,11 +40,27 @@ MAX_QUESTION_LENGTH = 1000
 
 
 class ReviewerChatRequest(BaseModel):
-    """A reviewer question; it cannot carry findings, values, rules, or verdicts."""
+    """A reviewer question; it cannot carry findings, values, rules, or verdicts.
+
+    ``model_id`` is an optional presentation choice — which allow-listed model narrates. It changes
+    no fact: the answer is still composed from stored findings and the narration guard is unchanged.
+    An id the deployment did not allow-list is refused (422), so a reviewer cannot select an
+    unapproved model. ``None`` uses the deployment default.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     question: str = Field(min_length=1, max_length=MAX_QUESTION_LENGTH)
+    model_id: str | None = Field(default=None, min_length=1, max_length=300)
+
+
+class ChatModelsOut(BaseModel):
+    """The models a reviewer may choose from, and which one answers by default."""
+
+    model_config = ConfigDict(frozen=True)
+
+    models: tuple[ChatModelChoice, ...]
+    default: str | None = None
 
 
 class ReviewerChatNarrative(BaseModel):
@@ -226,6 +249,29 @@ def _live_run_facts(session: Session, project_id: UUID, package_id: UUID) -> _Li
     return _LiveRunFacts(revision_id=revision, findings=tuple(result), checks_have_run=checked)
 
 
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/chat/models",
+    response_model=ChatModelsOut,
+    summary="The models a reviewer may pick to narrate this run",
+)
+def reviewer_chat_models(
+    request: Request,
+    _: Annotated[Principal, Depends(require_project_access)],
+    project_id: UUID,
+    package_id: UUID,
+) -> ChatModelsOut:
+    """List the allow-listed narration models and the default, for the chat model picker.
+
+    An empty list means the deployment configured no chat model; the chat then serves its plain
+    deterministic findings view and the picker has nothing to offer.
+    """
+    settings = request.app.state.settings
+    return ChatModelsOut(
+        models=allowed_chat_models(settings.bedrock_chat_models, settings.bedrock_model),
+        default=default_chat_model(settings.bedrock_chat_models, settings.bedrock_model),
+    )
+
+
 @router.post(
     "/projects/{project_id}/packages/{package_id}/chat",
     response_model=ReviewerChatOut,
@@ -245,12 +291,26 @@ def reviewer_chat(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
     facts = live.findings
 
+    settings = request.app.state.settings
+    try:
+        chosen_model = resolve_requested_model(
+            settings.bedrock_chat_models, settings.bedrock_model, body.model_id
+        )
+    except ChatModelNotAllowed:
+        # The reviewer asked for a model the deployment did not allow-list. Refuse rather than
+        # invoke it — the allow-list is the whole point (a model id is untrusted input).
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="that model is not available for this deployment",
+        ) from None
+
     reply: ChatReply = answer_question(
         body.question,
         facts,
         configured_reviewer_chat(
-            request.app.state.settings,
+            settings,
             recorder=BedrockConverseInvocationRecorder(session, live.revision_id),
+            model_id=chosen_model,
         ),
         checks_have_run=live.checks_have_run,
     )

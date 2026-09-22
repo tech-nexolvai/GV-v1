@@ -166,3 +166,16 @@
   .chat-input-area__quick-btn:hover,
   .chat-input-area__send:hover svg { transform: none; }
 }
+
+/* Narration model picker — shown only when the deployment allow-lists more than one model.
+   A quiet control: which model writes the prose is a presentation choice, not a verdict input. */
+.chat-input-area__model {
+  align-self: stretch;
+  max-width: 12rem;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}

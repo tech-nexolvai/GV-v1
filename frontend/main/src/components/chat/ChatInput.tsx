@@ -2,10 +2,21 @@ import { useEffect, useRef, useState } from 'react';
 import { Send } from 'lucide-react';
 import './ChatInput.css';
 
+/** One selectable narration model, as the models endpoint returns it. */
+export interface ChatModelOption {
+  id: string;
+  label: string;
+}
+
 interface ChatInputProps {
   onSend: (text: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  /** The allow-listed narration models. Empty (or one) hides the picker — there is nothing to choose. */
+  models?: ChatModelOption[];
+  /** The model id currently selected, or '' for the deployment default. */
+  selectedModel?: string;
+  onSelectModel?: (id: string) => void;
 }
 
 /**
@@ -20,7 +31,14 @@ const QUICK_PROMPTS = [
   'Why did this fail?',
 ];
 
-export function ChatInput({ onSend, disabled, placeholder = 'Ask about this package…' }: ChatInputProps) {
+export function ChatInput({
+  onSend,
+  disabled,
+  placeholder = 'Ask about this package…',
+  models = [],
+  selectedModel = '',
+  onSelectModel,
+}: ChatInputProps) {
   const [value, setValue] = useState('');
   const textarea = useRef<HTMLTextAreaElement>(null);
 
@@ -92,6 +110,26 @@ export function ChatInput({ onSend, disabled, placeholder = 'Ask about this pack
             aria-label="Message input"
           />
         </div>
+
+        {/* Model picker — only when the deployment allow-lists more than one narration model, so a
+            single-model deployment shows no needless control. Which model writes the prose changes
+            no verdict; the backend refuses any id not on its allow-list. */}
+        {models.length > 1 && onSelectModel && (
+          <select
+            className="chat-input-area__model"
+            value={selectedModel}
+            onChange={e => onSelectModel(e.target.value)}
+            disabled={disabled}
+            aria-label="Answering model"
+            title="Which model narrates the findings"
+          >
+            {models.map(model => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+        )}
 
         <button
           className={`btn btn--action btn--icon chat-input-area__send ${!value.trim() ? 'chat-input-area__send--disabled' : ''}`}

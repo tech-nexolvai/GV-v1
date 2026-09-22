@@ -8,6 +8,7 @@ import { findingsTableMarkdown } from '../components/chat/findingsTable';
 import {
   getPackage,
   askReviewerChat,
+  getChatModels,
   listReviewSessions,
   openReviewSession,
   recordReviewAction,
@@ -65,6 +66,27 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSigningOff, setIsSigningOff] = useState(false);
   const [approved, setApproved] = useState(false);
+  // The narration models a reviewer may pick, and the current choice ('' = deployment default).
+  const [chatModels, setChatModels] = useState<{ id: string; label: string }[]>([]);
+  const [selectedModel, setSelectedModel] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    getChatModels(projectId(), packageId)
+      .then((available) => {
+        if (cancelled) return;
+        setChatModels(available.models);
+        setSelectedModel(available.default ?? '');
+      })
+      // A missing or failing picker is not worth blocking the chat over — it falls back to the
+      // deployment default model, exactly as before this control existed.
+      .catch(() => {
+        if (!cancelled) setChatModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [packageId]);
   const isLoading = remote.status === 'loading';
 
   // The fetched findings are the starting point; reviewer actions below are applied on top, so they
@@ -155,7 +177,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
     setIsProcessing(true);
 
     try {
-      const response = await askReviewerChat(projectId(), packageId, text);
+      const response = await askReviewerChat(projectId(), packageId, text, selectedModel || undefined);
       // The backend's ids are the authoritative run scope.  Map them back to the already-loaded
       // cards so evidence/actions remain the same grounded objects the rest of the reviewer loop uses.
       const byId = new Map(source.map((finding) => [finding.id, finding]));
@@ -655,7 +677,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
       />
 
       {/* Input */}
-      <ChatInput onSend={handleSend} disabled={isProcessing} />
+      <ChatInput
+        onSend={handleSend}
+        disabled={isProcessing}
+        models={chatModels}
+        selectedModel={selectedModel}
+        onSelectModel={setSelectedModel}
+      />
     </div>
   );
 }

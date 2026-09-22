@@ -16,6 +16,8 @@ from __future__ import annotations
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.review.chat_models import ChatModelChoice
+
 
 class Settings(BaseSettings):
     """Everything the API needs, stated rather than discovered.
@@ -62,6 +64,11 @@ class Settings(BaseSettings):
     bedrock_region: str = Field(default="us-east-1", min_length=1)
     bedrock_connect_timeout: int = Field(default=10, ge=1)
     bedrock_read_timeout: int = Field(default=120, ge=1)
+    # The models a reviewer may pick from in the chat, as a JSON list of {id, label}. This is an
+    # allow-list, not a free choice: the endpoint refuses any id not in it, so a reviewer can never
+    # reach an unapproved or unmetered model. Empty means "only the default `bedrock_model`" — the
+    # picker then offers that single model, which is exactly today's behaviour made visible.
+    bedrock_chat_models: tuple[ChatModelChoice, ...] = ()
 
     hatchet_token: str = Field(default="", description="Hatchet client token")
     """Empty by default, and the emptiness is caught where it matters. `workflow/hatchet_app.py` builds a

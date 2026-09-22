@@ -264,13 +264,21 @@ class BedrockReviewerChat:
 def configured_reviewer_chat(
     settings: Settings,
     recorder: BedrockConverseInvocationRecorder | None = None,
+    model_id: str | None = None,
 ) -> BedrockReviewerChat | None:
-    """Build the deployment-configured provider, or make the endpoint use its plain fallback."""
-    if not settings.bedrock_chat_enabled or not settings.bedrock_model.strip():
+    """Build the deployment-configured provider, or make the endpoint use its plain fallback.
+
+    ``model_id`` overrides the deployment default when a reviewer has picked an allow-listed model
+    (the endpoint validates the id against the allow-list before it reaches here). ``None`` keeps the
+    deployment default. Either way an empty effective id disables the provider, so the endpoint falls
+    back to its plain structured findings view.
+    """
+    effective = (model_id or settings.bedrock_model).strip()
+    if not settings.bedrock_chat_enabled or not effective:
         return None
     return BedrockReviewerChat(
         _Config(
-            model_id=settings.bedrock_model,
+            model_id=effective,
             region_name=settings.bedrock_region,
             connect_timeout_seconds=settings.bedrock_connect_timeout,
             read_timeout_seconds=settings.bedrock_read_timeout,
