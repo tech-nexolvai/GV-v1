@@ -520,3 +520,76 @@ class MeasurementProposal(Base, TimestampedUUID, Immutable):
         # A position is an index into a run, so it starts at zero and counts up.
         CheckConstraint("position >= 0", name="position_not_negative"),
     )
+
+
+class LayoutProposal(Base, TimestampedUUID, Immutable):
+    """Which closed layout answer a model proposed, with the crop it inspected.
+
+    A layout proposal is not a discriminator input. It can pre-select a closed choice for the
+    reviewer, but the value that reaches ``run_checks`` is recorded separately by
+    ``LayoutConfirmation`` when a person confirms it.
+    """
+
+    __tablename__ = "layout_proposals"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    discriminator_name: Mapped[str] = mapped_column(String(100))
+    proposed_value: Mapped[str] = mapped_column(String(200))
+    crop_artifact_id: Mapped[UUID] = mapped_column(
+        ForeignKey("evidence_artifacts.id", ondelete="RESTRICT"), index=True
+    )
+    model_id: Mapped[str] = mapped_column(String(200))
+    prompt_id: Mapped[str] = mapped_column(String(100))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "package_revision_id",
+            "discriminator_name",
+            "proposed_value",
+            "crop_artifact_id",
+            "model_id",
+            "prompt_id",
+            name="uq_layout_proposals_same_evidence",
+        ),
+        CheckConstraint(
+            "discriminator_name !~ '^[[:space:]]*$'",
+            name="layout_proposal_discriminator_not_blank",
+        ),
+        CheckConstraint(
+            "proposed_value !~ '^[[:space:]]*$'",
+            name="layout_proposal_value_not_blank",
+        ),
+        CheckConstraint("model_id !~ '^[[:space:]]*$'", name="layout_proposal_model_not_blank"),
+        CheckConstraint("prompt_id !~ '^[[:space:]]*$'", name="layout_proposal_prompt_not_blank"),
+    )
+
+
+class LayoutConfirmation(Base, TimestampedUUID, Immutable):
+    """A reviewer-confirmed discriminator value for one package revision.
+
+    This is the human gate for layout applicability. A model may propose a value in
+    ``layout_proposals``; only this row is allowed to supply a discriminator to checks.
+    """
+
+    __tablename__ = "layout_confirmations"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    discriminator_name: Mapped[str] = mapped_column(String(100))
+    value: Mapped[str] = mapped_column(String(200))
+    confirmed_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint(
+            "discriminator_name !~ '^[[:space:]]*$'",
+            name="layout_confirmation_discriminator_not_blank",
+        ),
+        CheckConstraint("value !~ '^[[:space:]]*$'", name="layout_confirmation_value_not_blank"),
+        CheckConstraint(
+            "confirmed_by !~ '^[[:space:]]*$'",
+            name="layout_confirmation_actor_not_blank",
+        ),
+    )

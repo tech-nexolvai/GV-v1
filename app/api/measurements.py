@@ -70,6 +70,7 @@ from app.schemas.measurements import (
     CheckRequest,
     ConfirmedReadingOut,
     DiscriminatorOut,
+    LayoutProposalOut,
     ParameterOut,
     ProposedFieldOut,
     ProposedMeasurementsOut,
@@ -93,6 +94,11 @@ from workflow.assignment_bedrock import (
     AssignmentProgress,
     configured_assignment_model,
     propose_and_guard,
+)
+from workflow.layout_proposals import (
+    confirmed_discriminators,
+    record_layout_confirmation,
+    stored_layout_proposals,
 )
 from workflow.measurements import LIST_MARKER
 from workflow.outbox import enqueue
@@ -305,6 +311,23 @@ def _stored_proposal_out(
     )
 
 
+def _stored_layout_proposal_out(
+    session: Session, revision: PackageRevision
+) -> dict[str, LayoutProposalOut]:
+    """Current layout proposals, keyed by discriminator name for the required-inputs response."""
+    confirmed = confirmed_discriminators(session, revision.id)
+    return {
+        proposal.discriminator_name: LayoutProposalOut(
+            value=proposal.proposed_value,
+            crop_artifact_id=proposal.crop_artifact_id,
+            model_id=proposal.model_id,
+            prompt_id=proposal.prompt_id,
+            confirmed=confirmed.get(proposal.discriminator_name) == proposal.proposed_value,
+        )
+        for proposal in stored_layout_proposals(session, revision.id)
+    }
+
+
 @router.get(
     "/projects/{project_id}/packages/{package_id}/required-inputs",
     response_model=RequiredInputsOut,
@@ -339,6 +362,7 @@ def read_required_inputs(
         if snapshot is not None
     ]
     needs = required_inputs(rules)
+    layout_proposals = _stored_layout_proposal_out(session, revision)
 
     # The Confirm screen is the human gate.  Once a reviewer has confirmed both what the drawing
     # says and what it means, asking them to type that exact value again is pure transcription risk.
@@ -425,6 +449,7 @@ def read_required_inputs(
                 name=discriminator.name,
                 rule_ids=discriminator.rule_ids,
                 choices=discriminator.choices,
+                proposal=layout_proposals.get(discriminator.name),
             )
             for discriminator in needs.discriminators
         ),
@@ -602,7 +627,7 @@ def _check_discriminators(session: Session, stated: dict[str, str]) -> None:
     summary="Ask for the checks to be run against this package",
 )
 def request_checks(
-    _access: Annotated[Principal, Depends(require_project_access)],
+    principal: Annotated[Principal, Depends(require_project_access)],
     _action: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
@@ -624,10 +649,20 @@ def request_checks(
     revision = _revision(session, project_id, package_id)
     stated = dict((body.discriminators if body else {}) or {})
     _check_discriminators(session, stated)
+    for name, value in stated.items():
+        record_layout_confirmation(
+            session,
+            package_revision_id=revision.id,
+            discriminator_name=name,
+            value=value,
+            actor=principal.id,
+        )
+    confirmed = confirmed_discriminators(session, revision.id)
+    _check_discriminators(session, confirmed)
     accepted = enqueue(
         session,
         workflow=RUN_CHECKS_WORKFLOW,
-        payload={"package_revision_id": str(revision.id), "discriminators": stated},
+        payload={"package_revision_id": str(revision.id), "discriminators": confirmed},
     )
     try:
         session.commit()
