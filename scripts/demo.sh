@@ -118,9 +118,19 @@ API_PID=$!
 # These are still this demo's numbers rather than a deployment's, and still measured rather than
 # chosen — the difference is that they are now measured against the drawings somebody actually
 # uploads instead of one sheet.
+# **The two Bedrock vision readers, and what turning them on costs (#651).** They were built in
+# #622/#623 and PC.3 and this flag is the only thing that starts them; until it was set here the
+# whole reading rebuild had never executed, and the demo ran the vector+OCR path alone. They are
+# what makes the cross-route SECOND_READER lane possible: a number read by two *different*
+# extractors that agree exactly is the only reading this system will seal without a human.
+#
+# It is a paid call per candidate region, so the cost is real and belongs next to the switch rather
+# than in a runbook. `scripts/reading_funnel.py` reports `model_invocations` alongside the reading
+# counts for exactly that reason — the benefit and the bill are read off the same table.
 GV_DATABASE_URL="$BARE_URL" \
 GV_DEV_STORAGE=".dev-storage" \
 GV_LOCALIZED_OCR_ENABLED=1 \
+GV_BEDROCK_VISION_ENABLED=1 \
 GV_READER_LINE_MINIMUM_PT=6 \
 GV_READER_GLYPH_MAXIMUM_PT=5 \
 GV_READER_GLYPH_GAP_PT=4 \
