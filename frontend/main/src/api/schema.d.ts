@@ -1594,6 +1594,7 @@ export interface components {
             choices: string[];
             /** Name */
             name: string;
+            proposal?: components["schemas"]["LayoutProposalOut"] | null;
             /** Rule Ids */
             rule_ids: string[];
         };
@@ -2062,6 +2063,28 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * LayoutProposalOut
+         * @description A model-proposed discriminator answer, still waiting for reviewer confirmation.
+         */
+        LayoutProposalOut: {
+            /**
+             * Confirmed
+             * @default false
+             */
+            confirmed: boolean;
+            /**
+             * Crop Artifact Id
+             * Format: uuid
+             */
+            crop_artifact_id: string;
+            /** Model Id */
+            model_id: string;
+            /** Prompt Id */
+            prompt_id: string;
+            /** Value */
+            value: string;
         };
         /**
          * MeasurementEntry

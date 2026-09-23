@@ -849,6 +849,16 @@
             "title": "Name",
             "type": "string"
           },
+          "proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LayoutProposalOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "rule_ids": {
             "items": {
               "type": "string"
@@ -1756,6 +1766,41 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "LayoutProposalOut": {
+        "description": "A model-proposed discriminator answer, still waiting for reviewer confirmation.",
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "crop_artifact_id": {
+            "format": "uuid",
+            "title": "Crop Artifact Id",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "crop_artifact_id",
+          "model_id",
+          "prompt_id"
+        ],
+        "title": "LayoutProposalOut",
         "type": "object"
       },
       "MeasurementEntry": {
