@@ -190,6 +190,16 @@ class ParameterOut(BaseModel):
     blocked: bool
 
 
+class LayoutProposalOut(BaseModel):
+    """A model-proposed discriminator answer, still waiting for reviewer confirmation."""
+
+    value: str
+    crop_artifact_id: UUID
+    model_id: str
+    prompt_id: str
+    confirmed: bool = False
+
+
 class DiscriminatorOut(BaseModel):
     """A judgement about the drawing that decides which variant of a rule applies."""
 
@@ -199,6 +209,7 @@ class DiscriminatorOut(BaseModel):
     #: nothing and the rule reports NO_APPLICABLE_RULE — which reads as "does not apply here" rather
     #: than "you mistyped the layout".
     choices: tuple[str, ...]
+    proposal: LayoutProposalOut | None = None
 
 
 class ProposedReadingOut(BaseModel):
