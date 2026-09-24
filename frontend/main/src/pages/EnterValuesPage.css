@@ -790,6 +790,64 @@ select.value-input {
   cursor: pointer;
 }
 
+/* ============================================================
+   LAYOUT PROPOSALS
+   ============================================================ */
+
+.layout-confirm-note {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--status-pass-border);
+  border-radius: var(--radius-md);
+  background: var(--status-pass-bg);
+  color: var(--text-body);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.layout-field {
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) minmax(10rem, auto);
+  gap: var(--space-3);
+  align-items: start;
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+}
+
+.layout-field[data-proposed='true'] {
+  border-left: 2px solid var(--gv-crimson-border);
+}
+
+.layout-field__control {
+  min-width: 0;
+}
+
+.layout-field__empty {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: var(--text-muted);
+}
+
+.layout-crop {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.layout-crop figcaption {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+@media (max-width: 48rem) {
+  .layout-field {
+    grid-template-columns: 1fr;
+  }
+}
+
 
 /* ============================================================
    AI READINGS, offered at the field that wants one

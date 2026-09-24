@@ -681,5 +681,31 @@ export async function downloadCandidateCrop(
   return response.blob();
 }
 
+/** The immutable crop behind a proposed closed layout answer. */
+export async function downloadLayoutProposalCrop(
+  projectId: string,
+  packageId: string,
+  cropArtifactId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/layout-proposals/${cropArtifactId}/crop`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The layout proposal crop could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
 export type ApprovalOut =
   paths['/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve']['post']['responses'][201]['content']['application/json'];

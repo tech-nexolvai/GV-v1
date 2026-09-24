@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import pathlib
 from collections.abc import Iterator
 from decimal import Decimal
+from io import BytesIO
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -15,7 +17,7 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.dependencies import get_session
+from app.api.dependencies import get_artifact_store, get_session
 from app.config import Settings
 from app.db.session import session_factory
 from app.main import create_app
@@ -40,6 +42,7 @@ from app.models.evidence import LayoutConfirmation, LayoutProposal
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from rules.schema import Rule
 from rules.snapshot import publish
+from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from workflow.layout_proposals import record_layout_proposal
 
@@ -74,7 +77,7 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
         opened.close()
 
 
-def _client(session: Session) -> Any:
+def _client(session: Session, store: LocalStore | None = None) -> Any:
     from fastapi.testclient import TestClient
 
     from app.auth import authenticate
@@ -82,6 +85,8 @@ def _client(session: Session) -> Any:
     app = create_app(_settings())
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[authenticate] = _principal
+    if store is not None:
+        app.dependency_overrides[get_artifact_store] = lambda: store
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -106,7 +111,7 @@ def _publish_rulebook(session: Session) -> None:
     session.flush()
 
 
-def _package_with_crop(session: Session) -> tuple[UUID, UUID, UUID]:
+def _package_with_crop(session: Session, *, crop_sha: str = "2" * 64) -> tuple[UUID, UUID, UUID]:
     if session.get(Project, PROJECT) is None:
         session.add(Project(id=PROJECT, name="layout proposal tests"))
         session.flush()
@@ -188,7 +193,7 @@ def _package_with_crop(session: Session) -> tuple[UUID, UUID, UUID]:
         page_id=page.id,
         kind=EvidenceArtifactKind.CROP.value,
         storage_key=f"evidence-crops/{uuid4()}.png",
-        sha256="2" * 64,
+        sha256=crop_sha,
         media_type="image/png",
         coordinate_space="image",
     )
@@ -272,6 +277,28 @@ def test_the_recorded_crop_artifact_is_retrievable(session: Session) -> None:
     assert artifact is not None
     assert artifact.id == crop_id
     assert artifact.media_type == "image/png"
+
+
+def test_the_layout_proposal_crop_bytes_are_retrievable(
+    session: Session, tmp_path: pathlib.Path
+) -> None:
+    crop_bytes = b"layout crop pixels"
+    crop_sha = hashlib.sha256(crop_bytes).hexdigest()
+    package_id, revision_id, crop_id = _package_with_crop(session, crop_sha=crop_sha)
+    _record_wall_config_proposal(session, revision_id, crop_id)
+    artifact = session.get(EvidenceArtifact, crop_id)
+    assert artifact is not None
+    store = LocalStore(tmp_path / "artifacts")
+    store.put(artifact.storage_key, BytesIO(crop_bytes), content_type=artifact.media_type)
+    session.commit()
+
+    response = _client(session, store).get(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}/layout-proposals/{crop_id}/crop"
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "image/png"
+    assert response.content == crop_bytes
 
 
 def test_confirming_a_discriminator_records_who_and_when(session: Session) -> None:

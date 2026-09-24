@@ -12,11 +12,13 @@
     "rootDir": "."
   },
   "include": [
+    "tests/**/*.ts",
     "tests/**/*.tsx",
     "src/components/chat/ChatMarkdown.tsx",
     "src/components/chat/findingsTable.ts",
     "src/components/measure/FillerDistributionPanel.tsx",
     "src/components/measure/fillerDistribution.ts",
+    "src/pages/layoutChoices.ts",
     "src/api/schema.d.ts",
     "src/data/types.ts"
   ]
