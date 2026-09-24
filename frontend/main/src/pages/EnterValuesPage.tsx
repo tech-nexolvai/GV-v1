@@ -13,6 +13,7 @@ import {
   calculateFillerDistribution,
   confirmCandidate,
   downloadCandidateCrop,
+  downloadLayoutProposalCrop,
   enterMeasurements,
   getRequiredInputs,
   listCandidates,
@@ -27,6 +28,7 @@ import { projectId } from '../api/config';
 import { AssignmentProgress } from '../components/measure/AssignmentProgress';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { distributionFieldWidthKey } from '../components/measure/fillerDistribution';
+import { layoutChoiceDefaults } from './layoutChoices';
 import './EnterValuesPage.css';
 
 /**
@@ -66,7 +68,19 @@ type Parameter = {
   declared_default: string | null;
   blocked: boolean;
 };
-type Discriminator = { name: string; rule_ids: string[]; choices: string[] };
+type LayoutProposal = {
+  value: string;
+  crop_artifact_id: string;
+  model_id: string;
+  prompt_id: string;
+  confirmed: boolean;
+};
+type Discriminator = {
+  name: string;
+  rule_ids: string[];
+  choices: string[];
+  proposal?: LayoutProposal | null;
+};
 type ConfirmedReading = {
   key: string;
   source: string;
@@ -347,6 +361,11 @@ export function EnterValuesPage({
       });
 
       setAiFilled((prior) => ({ ...prior, ...nextMarks }));
+      setChoices((prior) => {
+        const defaults = layoutChoiceDefaults(required.discriminators);
+        if (Object.keys(defaults).length === 0) return prior;
+        return { ...defaults, ...prior };
+      });
     };
 
     const load = async (includeVocabulary: boolean) => {
@@ -1274,30 +1293,59 @@ export function EnterValuesPage({
         <section className="enter-values__section">
           <h2>Layout</h2>
           <p className="enter-values__hint">
-            What the drawing shows. A check whose layout nobody states cannot choose which version of
-            itself applies, and reports that instead of a verdict.
+            What the drawing shows. Proposed answers are pre-selected with the crop that supports
+            them. A blank field means the reader abstained, so choose the value from the drawing or
+            leave it unstated.
           </p>
+          {Object.keys(layoutChoiceDefaults(needed.discriminators)).length > 0 && (
+            <p className="layout-confirm-note" role="status">
+              Run checks records the selected layout answers together. Change either select before
+              running checks when the crop shows a different layout.
+            </p>
+          )}
           {needed.discriminators.map((discriminator) => (
-            <div className="value-field" key={discriminator.name}>
-              <label className="value-label" htmlFor={`d-${discriminator.name}`}>
-                {discriminator.name}
-                <span className="value-feeds">{discriminator.rule_ids.join(', ')}</span>
-              </label>
-              <select
-                className="value-input value-input--wide"
-                id={`d-${discriminator.name}`}
-                value={choices[discriminator.name] ?? ''}
-                onChange={(e) =>
-                  setChoices((prior) => ({ ...prior, [discriminator.name]: e.target.value }))
-                }
-              >
-                <option value="">Not stated</option>
-                {discriminator.choices.map((choice) => (
-                  <option key={choice} value={choice}>
-                    {choice}
-                  </option>
-                ))}
-              </select>
+            <div
+              className="value-field layout-field"
+              data-proposed={discriminator.proposal ? 'true' : 'false'}
+              key={discriminator.name}
+            >
+              <div className="layout-field__control">
+                <label className="value-label" htmlFor={`d-${discriminator.name}`}>
+                  {discriminator.name}
+                  {discriminator.proposal ? (
+                    <span className="value-origin value-origin--proposed">proposed</span>
+                  ) : (
+                    <span className="value-origin value-origin--empty">needs you</span>
+                  )}
+                  <span className="value-feeds">{discriminator.rule_ids.join(', ')}</span>
+                </label>
+                <select
+                  className="value-input value-input--wide"
+                  id={`d-${discriminator.name}`}
+                  value={choices[discriminator.name] ?? ''}
+                  onChange={(e) =>
+                    setChoices((prior) => ({ ...prior, [discriminator.name]: e.target.value }))
+                  }
+                >
+                  <option value="">Not stated</option>
+                  {discriminator.choices.map((choice) => (
+                    <option key={choice} value={choice}>
+                      {choice}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {discriminator.proposal ? (
+                <LayoutProposalCrop
+                  packageId={packageId ?? ''}
+                  proposal={discriminator.proposal}
+                  discriminatorName={discriminator.name}
+                />
+              ) : (
+                <p className="layout-field__empty">
+                  No proposed answer was recorded for this layout question.
+                </p>
+              )}
             </div>
           ))}
         </section>
@@ -1453,5 +1501,58 @@ function MeasureCandidateCrop({ candidate, packageId }: { candidate: CandidateOu
       src={state.url}
       alt={`Mechanical crop for ${candidate.raw_text} on page ${candidate.page_index + 1}`}
     />
+  );
+}
+
+function LayoutProposalCrop({
+  packageId,
+  proposal,
+  discriminatorName,
+}: {
+  packageId: string;
+  proposal: LayoutProposal;
+  discriminatorName: string;
+}) {
+  const [state, setState] = useState<{ url: string } | { error: string } | null>(null);
+
+  useEffect(() => {
+    if (!packageId) return;
+    let live = true;
+    let objectUrl: string | null = null;
+    void downloadLayoutProposalCrop(projectId(), packageId, proposal.crop_artifact_id).then(
+      (blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (live) setState({ url: objectUrl });
+        else URL.revokeObjectURL(objectUrl);
+      },
+      () => {
+        if (live) setState({ error: 'The stored layout crop could not be loaded.' });
+      },
+    );
+    return () => {
+      live = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [packageId, proposal.crop_artifact_id]);
+
+  if (state && 'error' in state) {
+    return <p className="layout-field__empty">{state.error}</p>;
+  }
+  if (!state || !('url' in state)) {
+    return (
+      <span className="ai-proposal__crop-loading">
+        <ScanLine size={14} aria-hidden="true" /> Loading crop…
+      </span>
+    );
+  }
+  return (
+    <figure className="layout-crop">
+      <img
+        className="ai-proposal__crop"
+        src={state.url}
+        alt={`Plan-view crop for ${discriminatorName}: ${proposal.value}`}
+      />
+      <figcaption>Read from the plan view</figcaption>
+    </figure>
   );
 }

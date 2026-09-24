@@ -553,6 +553,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/layout-proposals/{crop_artifact_id}/crop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the crop behind a proposed closed layout answer
+         * @description Return a layout proposal's stored crop through the current package boundary.
+         */
+        get: operations["layout_proposal_crop_api_v1_projects__project_id__packages__package_id__layout_proposals__crop_artifact_id__crop_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/measurements": {
         parameters: {
             query?: never;
@@ -3716,6 +3736,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingChain"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    layout_proposal_crop_api_v1_projects__project_id__packages__package_id__layout_proposals__crop_artifact_id__crop_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                crop_artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The integrity-checked crop behind a proposed layout answer. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "image/png": unknown;
                 };
             };
             /** @description Validation Error */

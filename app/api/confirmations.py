@@ -37,6 +37,7 @@ from app.models.evidence import (
     EvidenceArtifact,
     EvidenceArtifactKind,
     EvidenceSupportingCandidate,
+    LayoutProposal,
     ObservationCandidate,
 )
 from app.models.package import Package, PackageRevision
@@ -257,6 +258,47 @@ def candidate_crop(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="no mechanical crop is available for this AI proposal",
+        )
+    content = _verified_crop_content(store, artifact)
+    return Response(
+        content=content, media_type=artifact.media_type, headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/layout-proposals/{crop_artifact_id}/crop",
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "The integrity-checked crop behind a proposed layout answer.",
+        }
+    },
+    summary="View the crop behind a proposed closed layout answer",
+)
+def layout_proposal_crop(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+    project_id: UUID,
+    package_id: UUID,
+    crop_artifact_id: UUID,
+) -> Response:
+    """Return a layout proposal's stored crop through the current package boundary."""
+    revision = _revision(session, project_id, package_id)
+    artifact = session.execute(
+        select(EvidenceArtifact)
+        .join(LayoutProposal, LayoutProposal.crop_artifact_id == EvidenceArtifact.id)
+        .where(
+            LayoutProposal.package_revision_id == revision.id,
+            LayoutProposal.crop_artifact_id == crop_artifact_id,
+            EvidenceArtifact.kind == EvidenceArtifactKind.CROP.value,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no mechanical crop is available for this layout proposal",
         )
     content = _verified_crop_content(store, artifact)
     return Response(

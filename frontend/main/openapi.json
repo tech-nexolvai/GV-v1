@@ -4813,6 +4813,69 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/layout-proposals/{crop_artifact_id}/crop": {
+      "get": {
+        "description": "Return a layout proposal's stored crop through the current package boundary.",
+        "operationId": "layout_proposal_crop_api_v1_projects__project_id__packages__package_id__layout_proposals__crop_artifact_id__crop_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "crop_artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Crop Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "image/png": {}
+            },
+            "description": "The integrity-checked crop behind a proposed layout answer."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View the crop behind a proposed closed layout answer",
+        "tags": [
+          "confirmations"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/measurements": {
       "post": {
         "description": "Store what the reviewer typed, exactly, and say back what the system understood.\n\nTwo checks for two questions, as `create_package` does: `require_project_access` says the caller\nmay see this project, `require_action` says entering values is something their role may do.\n\nNothing is run here. A submission records values; asking for the checks is a separate call, so a\nreviewer can correct a typo without a verdict being computed from the first attempt.",
