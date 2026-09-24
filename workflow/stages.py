@@ -123,6 +123,15 @@ from extraction.annotations import (
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import DetectedDimensions, detect
 from extraction.geometry.text_association import DimensionText, associate
+from extraction.layout import (
+    BedrockClosedQuestionConfig,
+    BedrockClosedQuestionReader,
+    LayoutClassification,
+    LayoutReader,
+    LayoutStatus,
+    classify_layout,
+    question_from_discriminator,
+)
 from extraction.localized_ocr import read_localized_vendor_regions
 from extraction.manifest import build_manifest
 from extraction.models.context import AssembledContext
@@ -148,6 +157,7 @@ from retrieval.matching import MatchableItem, MatchDocumentRole, exact_match
 from rules.applicability import Abstention, CheckContext, resolve
 from rules.parameters import ParameterSet, resolve_all
 from rules.project import ProjectScope
+from rules.required_inputs import DiscriminatorNeed, required_inputs
 from rules.semantic_types import ProductType
 from rules.snapshot import RuleSnapshot
 from storage.hashing import ArtifactCorrupt, content_key, sha256_stream
@@ -175,6 +185,7 @@ from workflow.findings_composer import (
     reviewer_reason,
 )
 from workflow.idempotency import stage_idempotency_key
+from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
@@ -230,6 +241,15 @@ class _VisionReader(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class _LayoutReaderRoute:
+    """One closed-question reader plus the identity persisted with its proposal."""
+
+    reader: LayoutReader
+    model_id: str
+    prompt_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class BedrockVisionReader:
     """A Bedrock Converse reader using the existing strict Nova adapter contract."""
 
@@ -245,6 +265,32 @@ def configured_vision_readers_from_environment() -> tuple[BedrockVisionReader, .
     if os.environ.get(VISION_READERS_ENV, "").lower() not in {"1", "true", "yes"}:
         return ()
     return tuple(BedrockVisionReader(config) for config in vision_configs_from_environment())
+
+
+def configured_layout_readers_from_environment() -> tuple[_LayoutReaderRoute, ...]:
+    """Return the Bedrock layout reader only when a deployment explicitly configures it."""
+
+    if os.environ.get(LAYOUT_READERS_ENV, "").lower() not in {"1", "true", "yes"}:
+        return ()
+    model_id = os.environ.get(LAYOUT_MODEL_ENV) or os.environ.get("GV_BEDROCK_MODEL", "")
+    if not model_id.strip():
+        return ()
+    try:
+        import boto3  # type: ignore[import-untyped]
+    except Exception:  # noqa: BLE001
+        return ()
+    config = BedrockClosedQuestionConfig(
+        model_id=model_id,
+        prompt_id=LAYOUT_PROMPT_ID,
+        template_id=LAYOUT_TEMPLATE_ID,
+    )
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name=os.environ.get("GV_BEDROCK_REGION", "us-east-1"),
+    )
+    return (
+        _LayoutReaderRoute(BedrockClosedQuestionReader(config, client), model_id, config.prompt_id),
+    )
 
 
 def _stored_invocation_outcome(outcome: NovaInvocationOutcome) -> str:
@@ -384,6 +430,14 @@ VISION_CONTEXT_BOUND_PT = CROP_CONTEXT_MARGIN_PT
 #: stay deterministic unless a caller injects readers or a deployment opts in.
 VISION_READERS_ENV = "GV_BEDROCK_VISION_ENABLED"
 
+#: Explicit opt-in for paid/network closed-question layout reads. Without this and a model id, the
+#: stage still records an abstention for each discriminator instead of failing extraction.
+LAYOUT_READERS_ENV = "GV_BEDROCK_LAYOUT_ENABLED"
+LAYOUT_MODEL_ENV = "GV_BEDROCK_LAYOUT_MODEL"
+LAYOUT_PROMPT_ID = "layout-discriminator-v1"
+LAYOUT_TEMPLATE_ID = "closed-question-page-v1"
+UNCONFIGURED_LAYOUT_MODEL_ID = "layout-reader-unconfigured"
+
 #: How many individual refusals a stage payload carries, before it reports only the count.
 #:
 #: The payload is stored as JSON on the task run. A document whose pages will not render produces one
@@ -477,6 +531,9 @@ class DatabaseStages:
         automatic_typing: AutomaticTypingSettings | None = None,
         findings_composer: FindingsLanguageModel | None = None,
         vision_readers: Sequence[_VisionReader] | None = None,
+        layout_readers: Sequence[LayoutReader] | None = None,
+        layout_model_id: str = "injected-layout-reader",
+        layout_prompt_id: str = LAYOUT_PROMPT_ID,
         bounded_agent: BoundedAgentGraph | None = None,
         bounded_agent_actions: _AgentActionFactory | None = None,
     ) -> None:
@@ -509,6 +566,14 @@ class DatabaseStages:
             tuple(configured_vision_readers_from_environment())
             if vision_readers is None
             else tuple(vision_readers)
+        )
+        self._layout_reader_routes = (
+            tuple(configured_layout_readers_from_environment())
+            if layout_readers is None
+            else tuple(
+                _LayoutReaderRoute(reader, layout_model_id, layout_prompt_id)
+                for reader in layout_readers
+            )
         )
         if bounded_agent is None and bounded_agent_actions is not None:
             raise ValueError("bounded_agent_actions cannot be supplied without a bounded_agent")
@@ -660,6 +725,7 @@ class DatabaseStages:
             config_hash=f"dpi={self._dpi}",
             dpi=self._dpi,
         )
+        layout_discriminators = _layout_discriminators(session)
 
         results: list[PageResult] = []
         for version, key, sha256, _ in documents:
@@ -695,7 +761,12 @@ class DatabaseStages:
                 # ordinal, so page 0 of the architectural PDF and page 0 of the shop PDF are two
                 # distinct work results rather than a false duplicate.
                 for document_page in self._read_document(
-                    session, version_id=version, data=data, run=run
+                    session,
+                    package_revision_id=package_revision_id,
+                    version_id=version,
+                    data=data,
+                    run=run,
+                    layout_discriminators=layout_discriminators,
                 ):
                     results.append(
                         PageResult(
@@ -710,7 +781,14 @@ class DatabaseStages:
         return tuple(results)
 
     def _read_document(
-        self, session: Session, *, version_id: UUID, data: bytes, run: ExtractionRun
+        self,
+        session: Session,
+        *,
+        package_revision_id: UUID,
+        version_id: UUID,
+        data: bytes,
+        run: ExtractionRun,
+        layout_discriminators: Sequence[DiscriminatorNeed],
     ) -> list[PageResult]:
         """One document: its manifest, then its text, page by page."""
         try:
@@ -877,6 +955,15 @@ class DatabaseStages:
                         vector_rows + ocr_rows + markup_rows + vision_rows + agent_rows
                     ),
                 )
+            layout_written, layout_refusals = self._classify_page_layouts(
+                session,
+                package_revision_id=package_revision_id,
+                version_id=version_id,
+                data=data,
+                page=page,
+                extraction_run_id=run.id,
+                discriminators=layout_discriminators,
+            )
             session.flush()
 
             # **Both routes' readings against all of the page's lines, in one pass.** A reviewer's
@@ -907,6 +994,8 @@ class DatabaseStages:
                         "vision_candidates": len(vision_rows),
                         "agent_candidates": len(agent_rows),
                         "agent_abstentions": agent_abstentions,
+                        "layout_proposals": layout_written,
+                        "layout_refusals": layout_refusals[:REPORTED_REFUSALS],
                         "vision_invocations": vision_invocations,
                         "vision_refusals": vision_refusals[:REPORTED_REFUSALS],
                         # `None` when no thresholds were configured: the step did not run, which is
@@ -920,6 +1009,128 @@ class DatabaseStages:
                 )
             )
         return results
+
+    def _classify_page_layouts(
+        self,
+        session: Session,
+        *,
+        package_revision_id: UUID,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        extraction_run_id: UUID,
+        discriminators: Sequence[DiscriminatorNeed],
+    ) -> tuple[int, list[str]]:
+        """Ask each rulebook layout discriminator as a closed question for this rendered page."""
+
+        if self._store is None or not discriminators:
+            return 0, []
+        try:
+            rendered = render_page(
+                data,
+                page.index,
+                document_version_id=version_id,
+                page_content_hash=page.content_hash,
+                dpi=self._dpi,
+                maximum_pixels=MAXIMUM_RENDER_PIXELS,
+            )
+        except (PageTooLarge, UnreadablePdf, ValueError) as error:
+            reason = str(error).strip() or type(error).__name__
+            return 0, [f"page {page.index}: {reason}"]
+
+        written = 0
+        refused: list[str] = []
+        readers = tuple(route.reader for route in self._layout_reader_routes)
+        model_id, prompt_id = _layout_proposal_identity(self._layout_reader_routes)
+        for discriminator in discriminators:
+            classification = classify_layout(
+                rendered,
+                question_from_discriminator(discriminator),
+                readers,
+            )
+            crop_artifact_id = self._layout_crop_artifact_id(
+                session,
+                rendered=rendered,
+                page=page,
+                extraction_run_id=extraction_run_id,
+                discriminator_name=discriminator.name,
+                classification=classification,
+            )
+            if crop_artifact_id is None:
+                refused.append(f"page {page.index}: {discriminator.name}: crop was not available")
+                continue
+            record_layout_proposal(
+                session,
+                package_revision_id=package_revision_id,
+                discriminator_name=discriminator.name,
+                proposed_value=_layout_proposed_value(classification),
+                crop_artifact_id=crop_artifact_id,
+                model_id=model_id,
+                prompt_id=prompt_id,
+            )
+            written += 1
+        return written, refused
+
+    def _layout_crop_artifact_id(
+        self,
+        session: Session,
+        *,
+        rendered: RenderedPage,
+        page: Page,
+        extraction_run_id: UUID,
+        discriminator_name: str,
+        classification: LayoutClassification,
+    ) -> UUID | None:
+        if self._store is None:
+            return None
+        crop = generate_crop(
+            rendered,
+            CropSpec(
+                polygon=classification.region,
+                context_margin_pt=CROP_CONTEXT_MARGIN_PT,
+                dpi=self._dpi,
+            ),
+            self._store,
+        )
+        if crop.status is not CropStatus.AVAILABLE or crop.artifact is None:
+            return None
+
+        existing = session.execute(
+            select(EvidenceArtifact).where(
+                EvidenceArtifact.storage_key == crop.artifact.key,
+                EvidenceArtifact.sha256 == crop.artifact.sha256,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing.id
+
+        candidate = ObservationCandidate(
+            document_version_id=rendered.document_version_id,
+            page_id=page.id,
+            extraction_run_id=extraction_run_id,
+            raw_text=(
+                f"layout {discriminator_name}: {classification.status.value}: "
+                f"{classification.reason}"
+            ),
+            polygon=_image_polygon(classification.region, rendered),
+            ambiguity_flags=[],
+        )
+        session.add(candidate)
+        session.flush()
+        artifact = EvidenceArtifact(
+            candidate_id=candidate.id,
+            canonical_observation_id=None,
+            document_version_id=page.document_version_id,
+            page_id=page.id,
+            kind=EvidenceArtifactKind.CROP.value,
+            storage_key=crop.artifact.key,
+            sha256=crop.artifact.sha256,
+            media_type="image/png",
+            coordinate_space="image",
+        )
+        session.add(artifact)
+        session.flush()
+        return artifact.id
 
     @staticmethod
     def _ocr_association_inputs(
@@ -2510,6 +2721,52 @@ def _document_records_for(
     return [
         (version_id, storage_key(document_id, sha), sha, page_count)
         for version_id, document_id, sha, page_count in rows
+    ]
+
+
+def _layout_discriminators(session: Session) -> tuple[DiscriminatorNeed, ...]:
+    """The closed layout questions declared by the currently published rulebook."""
+
+    store = snapshot_store(session)
+    rules = tuple(
+        snapshot.rule
+        for rule_id in store.rule_ids()
+        for snapshot in (store.latest(rule_id),)
+        if snapshot is not None
+    )
+    return required_inputs(rules).discriminators
+
+
+def _layout_proposal_identity(routes: Sequence[_LayoutReaderRoute]) -> tuple[str, str]:
+    """The model/prompt identity stored beside a layout proposal."""
+
+    if not routes:
+        return UNCONFIGURED_LAYOUT_MODEL_ID, LAYOUT_PROMPT_ID
+    return (
+        "+".join(route.model_id for route in routes),
+        "+".join(dict.fromkeys(route.prompt_id for route in routes)),
+    )
+
+
+def _layout_proposed_value(classification: LayoutClassification) -> str:
+    """A closed answer, or a visible non-choice marker for abstention/disagreement."""
+
+    if classification.status is LayoutStatus.ANSWERED:
+        if classification.answer is None:
+            raise ValueError("answered layout classification did not carry an answer")
+        return classification.answer
+    return classification.status.value
+
+
+def _image_polygon(polygon: Polygon, rendered: RenderedPage) -> list[list[int]]:
+    """Convert stored-space layout evidence into the image-space shape the artifact owner needs."""
+
+    return [
+        [
+            int((point.x * Decimal(rendered.width_px)).to_integral_value()),
+            int((point.y * Decimal(rendered.height_px)).to_integral_value()),
+        ]
+        for point in polygon.points
     ]
 
 
