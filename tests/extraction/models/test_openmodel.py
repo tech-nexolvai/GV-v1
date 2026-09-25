@@ -152,7 +152,10 @@ def _payload() -> dict[str, object]:
     return {
         "reading": KNOWN_READING,
         "unit_guess": "in",
-        "polygon": [["0", "0"], ["10", "0"], ["10", "4"], ["0", "4"]],
+        "x1": 0,
+        "y1": 0,
+        "x2": 8,
+        "y2": 4,
     }
 
 
@@ -593,13 +596,11 @@ def test_the_schema_route_asks_for_a_constrained_reply_and_validates_it() -> Non
     assert [record.outcome for record in sink.items] == [OpenModelInvocationOutcome.OK]
 
 
-def test_a_float_in_a_schema_reply_survives_as_an_exact_decimal() -> None:
-    """**Measured, not anticipated.** `minicpm-v` returns its polygon as `112.0`.
+def test_a_float_in_a_schema_reply_is_rejected_after_exact_parsing() -> None:
+    """**Measured, not anticipated.** `minicpm-v` can return coordinates as `112.0`.
 
-    A JSON number with a decimal point is a `float`, and the validator rejects floats outright —
-    a dimension that passed through binary floating point is one the units layer can no longer call
-    exact (ADR-0001). Parsing with `parse_float=Decimal` is what keeps a real model's reply usable,
-    and without it this seam would reject the very model it was built to prove.
+    Parsing with `parse_float=Decimal` keeps the diagnostic payload exact, and the validator then
+    rejects it because the wire contract requires integer rectangle scalars.
     """
     sink = RecordingSink()
     endpoint = FakeEndpoint(
@@ -612,7 +613,7 @@ def test_a_float_in_a_schema_reply_survives_as_an_exact_decimal() -> None:
                         "role": "assistant",
                         # Written as a literal so the floats are real, the way the model sends them.
                         "content": '{"reading": "24 1/2\\"", "unit_guess": "in", '
-                        '"polygon": [[112.0, 112.0], [140.0, 112.0], [140.0, 130.0]]}',
+                        '"x1": 1.0, "y1": 0, "x2": 8, "y2": 4}',
                     },
                 }
             ],
@@ -621,10 +622,11 @@ def test_a_float_in_a_schema_reply_survives_as_an_exact_decimal() -> None:
     )
     adapter = OpenModelAdapter(_config(max_attempts=1), endpoint, sink)
 
-    candidate = adapter.extract(_request())
+    with pytest.raises(OpenModelPayloadRejectedError):
+        adapter.extract(_request())
 
-    assert candidate.raw_text == KNOWN_READING
-    assert sink.rejections == [], "a float in the reply was rejected instead of parsed exactly"
+    assert sink.rejections
+    assert sink.rejections[0].reason == "schema_validation_failed"
 
 
 def test_prose_on_the_schema_route_is_still_a_protocol_error() -> None:

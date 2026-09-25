@@ -29,6 +29,7 @@ Source: issue #534. Verification: ``tests/extraction/models/test_openmodel.py``.
 from __future__ import annotations
 
 import json
+import struct
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -41,6 +42,8 @@ from extraction.models.context import AssembledContext
 from extraction.models.sanitisation import InjectionAttempt, prepare_prompt
 from extraction.models.validation import (
     CandidateContext,
+    CoordinateMode,
+    CropSize,
     NovaToolPayload,
     RejectionRecorder,
     ValidationRejection,
@@ -50,6 +53,7 @@ from extraction.models.validation import (
 #: The one function the model may call. Named identically to Nova's, because the two adapters are
 #: deliberately the same seam and a reader comparing them should find nothing that differs by accident.
 TOOL_NAME = "report_drawing_reading"
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 #: Where a local Ollama listens. A default rather than a guess: it is the address Ollama binds by
 #: default, and every other setting has to be given explicitly.
@@ -204,6 +208,55 @@ class ChatCompletionsClient(Protocol):
         not an endpoint whose models have none, and the difference decides whether the adapter may
         pick a strategy from the answer or has to find out by being refused.
         """
+
+
+def _crop_size(data: bytes, image_format: Literal["jpeg", "png"]) -> CropSize:
+    """Read dimensions from the exact image bytes sent to the endpoint."""
+
+    if image_format == "png":
+        if len(data) < 24 or not data.startswith(_PNG_SIGNATURE) or data[12:16] != b"IHDR":
+            raise ValueError("PNG crop has no readable IHDR dimensions")
+        width, height = struct.unpack(">II", data[16:24])
+        return CropSize(width, height)
+
+    offset = 2
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        raise ValueError("JPEG crop has no readable SOI marker")
+    while offset < len(data):
+        while offset < len(data) and data[offset] == 0xFF:
+            offset += 1
+        if offset >= len(data):
+            break
+        marker = data[offset]
+        offset += 1
+        if marker in {0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
+            continue
+        if offset + 2 > len(data):
+            break
+        segment_length = struct.unpack(">H", data[offset : offset + 2])[0]
+        if segment_length < 2 or offset + segment_length > len(data):
+            break
+        if marker in {
+            0xC0,
+            0xC1,
+            0xC2,
+            0xC3,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC9,
+            0xCA,
+            0xCB,
+            0xCD,
+            0xCE,
+            0xCF,
+        }:
+            if segment_length < 7:
+                break
+            height, width = struct.unpack(">HH", data[offset + 3 : offset + 7])
+            return CropSize(width, height)
+        offset += segment_length
+    raise ValueError("JPEG crop has no readable frame dimensions")
 
 
 class OpenModelAdapterError(Exception):
@@ -507,7 +560,7 @@ class OpenModelAdapter:
                     "type": "function",
                     "function": {
                         "name": TOOL_NAME,
-                        "description": "Report one visible dimension reading and polygon.",
+                        "description": "Report one visible dimension reading and rectangle.",
                         "parameters": schema,
                     },
                 }
@@ -560,6 +613,8 @@ class OpenModelAdapter:
                 # `model_invocations` can tell a Bedrock reading from a local one.
                 extractor="openmodel",
             ),
+            crop_size=_crop_size(request.crop, request.image_format),
+            coordinate_mode=CoordinateMode.PIXELS,
             recorder=self._recorder,
         )
         if isinstance(outcome, ValidationRejection):

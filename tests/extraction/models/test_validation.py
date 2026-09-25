@@ -10,6 +10,8 @@ from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
 from extraction.models.validation import (
     CandidateContext,
+    CoordinateMode,
+    CropSize,
     ValidationRejection,
     validate_payload,
 )
@@ -38,8 +40,27 @@ def _valid_payload() -> dict[str, object]:
     return {
         "reading": "984",
         "unit_guess": "mm",
-        "polygon": [[10, 20], [30, 20], [30, 40]],
+        "x1": 10,
+        "y1": 20,
+        "x2": 30,
+        "y2": 40,
     }
+
+
+def _validate(
+    payload: object,
+    *,
+    recorder: RecordingRejections,
+    crop_size: CropSize | None = None,
+    coordinate_mode: CoordinateMode = CoordinateMode.PIXELS,
+) -> ObservationCandidate | ValidationRejection:
+    return validate_payload(
+        payload,
+        context=_context(),
+        crop_size=crop_size if crop_size is not None else CropSize(100, 80),
+        coordinate_mode=coordinate_mode,
+        recorder=recorder,
+    )
 
 
 def test_valid_payload_becomes_an_uncorroborated_candidate() -> None:
@@ -47,14 +68,20 @@ def test_valid_payload_becomes_an_uncorroborated_candidate() -> None:
 
     recorder = RecordingRejections()
 
-    outcome = validate_payload(_valid_payload(), context=_context(), recorder=recorder)
+    outcome = _validate(_valid_payload(), recorder=recorder)
 
     assert isinstance(outcome, ObservationCandidate)
     assert outcome.raw_text == "984"
     assert outcome.unit_guess is Unit.MM
     assert outcome.parsed_value is None
     assert outcome.confidence is None
-    assert outcome.polygon == (ImagePoint(10, 20), ImagePoint(30, 20), ImagePoint(30, 40))
+    assert outcome.polygon == (
+        ImagePoint(10, 20),
+        ImagePoint(30, 20),
+        ImagePoint(30, 40),
+        ImagePoint(10, 40),
+    )
+    assert "nova_rectangle_polygon_derived" in outcome.ambiguity_flags
     assert recorder.items == []
 
 
@@ -66,7 +93,7 @@ def test_unknown_field_is_recorded_and_rejected(unknown_field: str) -> None:
     payload[unknown_field] = "PASS"
     recorder = RecordingRejections()
 
-    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+    outcome = _validate(payload, recorder=recorder)
 
     assert isinstance(outcome, ValidationRejection)
     assert outcome.reason == "schema_validation_failed"
@@ -82,7 +109,7 @@ def test_missing_required_field_never_produces_a_partial_candidate() -> None:
     del payload["reading"]
     recorder = RecordingRejections()
 
-    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+    outcome = _validate(payload, recorder=recorder)
 
     assert isinstance(outcome, ValidationRejection)
     assert outcome.reason == "schema_validation_failed"
@@ -94,16 +121,14 @@ def test_every_float_is_rejected_before_pydantic_conversion(coordinate: float) -
     """Input: decimal or integral float. Outcome: abstention. Why: coercion cannot erase origin."""
 
     payload = _valid_payload()
-    payload["polygon"] = [[coordinate, 20], [30, 20], [30, 40]]
+    payload["x1"] = coordinate
     recorder = RecordingRejections()
 
-    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+    outcome = _validate(payload, recorder=recorder)
 
     assert isinstance(outcome, ValidationRejection)
     assert outcome.reason == "float_not_allowed"
-    assert outcome.errors == (
-        "$.polygon[0][0] contains a float; model numeric values must remain exact",
-    )
+    assert outcome.errors == ("$.x1 contains a float; model numeric values must remain exact",)
     assert recorder.items == [outcome]
 
 
@@ -114,39 +139,31 @@ def test_float_in_an_unknown_nested_field_is_still_rejected_first() -> None:
     payload["metadata"] = {"score": 0.9}
     recorder = RecordingRejections()
 
-    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+    outcome = _validate(payload, recorder=recorder)
 
     assert isinstance(outcome, ValidationRejection)
     assert outcome.reason == "float_not_allowed"
     assert "$.metadata.score" in outcome.errors[0]
 
 
-def test_exact_integral_coordinate_strings_are_accepted() -> None:
-    """Input: exact numeric strings. Outcome: candidate. Why: no binary float path is involved."""
+def test_coordinate_strings_are_rejected_by_the_wire_schema() -> None:
+    """Input: string coordinate. Outcome: abstention. Why: arity and type are structural."""
 
     payload = _valid_payload()
-    payload["polygon"] = [["10", "20"], ["30", "20"], ["30", "40"]]
+    payload["x1"] = "10"
 
-    outcome = validate_payload(
-        payload,
-        context=_context(),
-        recorder=RecordingRejections(),
-    )
+    outcome = _validate(payload, recorder=RecordingRejections())
 
-    assert isinstance(outcome, ObservationCandidate)
-    assert outcome.polygon[0] == ImagePoint(10, 20)
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == "schema_validation_failed"
 
 
 @pytest.mark.parametrize(
     ("field", "value", "reason"),
     [
         ("unit_guess", "cm", "candidate_conversion_failed"),
-        ("polygon", [[10, 20], [30, 20]], "schema_validation_failed"),
-        (
-            "polygon",
-            [["10.25", "20"], ["30", "20"], ["30", "40"]],
-            "candidate_conversion_failed",
-        ),
+        ("x2", 10, "candidate_conversion_failed"),
+        ("x2", 101, "coordinate_out_of_bounds"),
     ],
 )
 def test_unsupported_unit_or_polygon_abstains(field: str, value: object, reason: str) -> None:
@@ -156,7 +173,7 @@ def test_unsupported_unit_or_polygon_abstains(field: str, value: object, reason:
     payload[field] = value
     recorder = RecordingRejections()
 
-    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+    outcome = _validate(payload, recorder=recorder)
 
     assert isinstance(outcome, ValidationRejection)
     assert outcome.reason == reason
@@ -169,13 +186,52 @@ def test_rejection_retains_raw_response_and_trusted_provenance() -> None:
     payload: dict[str, Any] = {"reading": "984", "unexpected": "field"}
     recorder = RecordingRejections()
 
-    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+    outcome = _validate(payload, recorder=recorder)
 
     assert isinstance(outcome, ValidationRejection)
     assert outcome.raw_response == '{"reading":"984","unexpected":"field"}'
     assert outcome.candidate_id == "candidate-250"
     assert outcome.extractor_version == "amazon.nova-2-lite-v1:0"
     assert recorder.items == [outcome]
+
+
+def test_coordinate_outside_crop_is_refused_with_crop_size_and_value() -> None:
+    """Input: pixel coordinate past the crop. Outcome: abstention naming the unsafe value."""
+
+    payload = _valid_payload() | {"x2": 101}
+    recorder = RecordingRejections()
+
+    outcome = _validate(payload, recorder=recorder, crop_size=CropSize(100, 80))
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == "coordinate_out_of_bounds"
+    assert "100x80 crop" in outcome.errors[0]
+    assert "101" in outcome.errors[0]
+    assert '"x2":101' in outcome.raw_response
+    assert recorder.items == [outcome]
+
+
+def test_nova_grid_coordinates_are_remapped_against_the_crop_size() -> None:
+    """Input: 0-1000 grid rectangle on a small crop. Outcome: crop-pixel polygon."""
+
+    payload = _valid_payload() | {"x1": 250, "y1": 500, "x2": 750, "y2": 1000}
+    recorder = RecordingRejections()
+
+    outcome = _validate(
+        payload,
+        recorder=recorder,
+        crop_size=CropSize(20, 10),
+        coordinate_mode=CoordinateMode.NOVA_GRID,
+    )
+
+    assert isinstance(outcome, ObservationCandidate)
+    assert outcome.polygon == (
+        ImagePoint(5, 5),
+        ImagePoint(15, 5),
+        ImagePoint(15, 10),
+        ImagePoint(5, 10),
+    )
+    assert recorder.items == []
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +266,7 @@ def test_a_dimension_reading_is_accepted(reading: str) -> None:
     payload = _valid_payload() | {"reading": reading}
     recorder = RecordingRejections()
 
-    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+    outcome = _validate(payload, recorder=recorder)
 
     assert isinstance(outcome, ObservationCandidate), outcome
     assert outcome.raw_text == reading
@@ -226,7 +282,7 @@ def test_the_reading_keeps_the_characters_the_model_produced() -> None:
     """
     payload = _valid_payload() | {"reading": "8'-6''"}
 
-    outcome = validate_payload(payload, context=_context(), recorder=RecordingRejections())
+    outcome = _validate(payload, recorder=RecordingRejections())
 
     assert isinstance(outcome, ObservationCandidate)
     assert outcome.raw_text == "8'-6''"
@@ -251,7 +307,7 @@ def test_a_reading_that_is_not_a_dimension_is_refused(reading: str) -> None:
     payload = _valid_payload() | {"reading": reading}
     recorder = RecordingRejections()
 
-    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+    outcome = _validate(payload, recorder=recorder)
 
     assert isinstance(outcome, ValidationRejection)
     assert outcome.reason == "reading_not_a_dimension"
@@ -274,7 +330,7 @@ def test_a_bare_fraction_abstains_rather_than_being_accepted(reading: str) -> No
     payload = _valid_payload() | {"reading": reading}
     recorder = RecordingRejections()
 
-    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+    outcome = _validate(payload, recorder=recorder)
 
     assert isinstance(outcome, ValidationRejection)
     assert outcome.reason == "reading_not_a_dimension"
@@ -290,7 +346,7 @@ def test_a_refused_reading_keeps_the_payload_that_produced_it() -> None:
     """
     payload = _valid_payload() | {"reading": "1/2"}
 
-    outcome = validate_payload(payload, context=_context(), recorder=RecordingRejections())
+    outcome = _validate(payload, recorder=RecordingRejections())
 
     assert isinstance(outcome, ValidationRejection)
     assert '"1/2"' in outcome.raw_response
@@ -303,11 +359,7 @@ def test_the_dimension_check_produces_no_value() -> None:
     does not convert, and `evidence/normalize.py` is where a unit becomes authoritative — under a
     caller who knows what the sheet is drawn in, rather than a model that guessed.
     """
-    outcome = validate_payload(
-        _valid_payload() | {"reading": '33"'},
-        context=_context(),
-        recorder=RecordingRejections(),
-    )
+    outcome = _validate(_valid_payload() | {"reading": '33"'}, recorder=RecordingRejections())
 
     assert isinstance(outcome, ObservationCandidate)
     assert outcome.parsed_value is None
@@ -325,7 +377,7 @@ def test_a_reading_that_measures_zero_is_refused(reading: str) -> None:
     payload = _valid_payload() | {"reading": reading}
     recorder = RecordingRejections()
 
-    outcome = validate_payload(payload, context=_context(), recorder=recorder)
+    outcome = _validate(payload, recorder=recorder)
 
     assert isinstance(outcome, ValidationRejection)
     assert outcome.reason == "reading_not_a_dimension"
@@ -339,10 +391,6 @@ def test_a_small_reading_is_not_mistaken_for_zero() -> None:
     The zero refusal is about zero, not about smallness. `1/16"` is a real dimension and the check
     is exact — a float comparison here could have made a small value round into a refusal.
     """
-    outcome = validate_payload(
-        _valid_payload() | {"reading": '1 1/16"'},
-        context=_context(),
-        recorder=RecordingRejections(),
-    )
+    outcome = _validate(_valid_payload() | {"reading": '1 1/16"'}, recorder=RecordingRejections())
 
     assert isinstance(outcome, ObservationCandidate)
