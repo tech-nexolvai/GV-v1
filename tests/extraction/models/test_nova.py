@@ -19,7 +19,11 @@ from extraction.models.nova import (
     CLAUDE_HAIKU_4_5_MODEL_ID,
     DEFAULT_MODEL_ID,
     DEFAULT_REGION,
+    MINISTRAL_3_3B_MODEL_ID,
+    NOVA_2_LITE_MODEL_ID,
+    NOVA_PRO_MODEL_ID,
     TOOL_NAME,
+    VISION_READERS,
     BedrockRuntimeClient,
     NovaAdapter,
     NovaAdapterError,
@@ -32,8 +36,9 @@ from extraction.models.nova import (
     NovaServiceError,
     NovaTimeoutError,
     config_from_environment,
+    vision_configs_from_environment,
 )
-from extraction.models.validation import ValidationRejection
+from extraction.models.validation import CoordinateMode, ValidationRejection
 from units.measurement import Unit
 
 
@@ -67,13 +72,21 @@ class FakeBedrock:
 
 
 def _config(*, max_attempts: int = 2) -> NovaConfig:
+    """A reader that answers on the 0-1000 grid, said so rather than inferred from its name.
+
+    The model id changed with #668. It was `amazon.nova-2-lite-v1:0`, whose payloads here are
+    grid-scale — but a measured run has Nova 2 Lite answering in *pixels*, so the fixture was
+    describing a model that does not behave the way its own data assumed. Nova Pro is the reader
+    these coordinates actually belong to.
+    """
     return NovaConfig(
-        model_id="amazon.nova-2-lite-v1:0",
+        model_id="amazon.nova-pro-v1:0",
         prompt_id="dimension-reader-v1",
         template_id="bounded-crop-v1",
         connect_timeout_seconds=2,
         read_timeout_seconds=8,
         max_attempts=max_attempts,
+        coordinate_mode=CoordinateMode.NOVA_GRID,
     )
 
 
@@ -149,7 +162,7 @@ def test_valid_tool_call_produces_only_an_observation_candidate() -> None:
     )
     assert "nova_rectangle_polygon_derived" in candidate.ambiguity_flags
     assert sink.items[0].outcome is NovaInvocationOutcome.OK
-    assert sink.items[0].model_id == "amazon.nova-2-lite-v1:0"
+    assert sink.items[0].model_id == "amazon.nova-pro-v1:0"
     assert sink.items[0].prompt_id == "dimension-reader-v1"
     assert sink.items[0].template_id == "bounded-crop-v1"
 
@@ -481,14 +494,14 @@ def test_a_model_that_needs_its_inference_profile_is_retried_once(code: str, mes
 
     assert isinstance(candidate, ObservationCandidate)
     assert [request["modelId"] for request in client.requests] == [
-        "amazon.nova-2-lite-v1:0",
-        "us.amazon.nova-2-lite-v1:0",
+        "amazon.nova-pro-v1:0",
+        "us.amazon.nova-pro-v1:0",
     ]
     # The refused attempt is still recorded: it happened, it cost time, and a record showing only
     # the id that worked would hide from the next operator that the configured id needs changing.
     assert [record.model_id for record in sink.items] == [
-        "amazon.nova-2-lite-v1:0",
-        "us.amazon.nova-2-lite-v1:0",
+        "amazon.nova-pro-v1:0",
+        "us.amazon.nova-pro-v1:0",
     ]
     assert sink.items[0].outcome is NovaInvocationOutcome.ERROR
     assert sink.items[1].outcome is NovaInvocationOutcome.OK
@@ -535,4 +548,109 @@ def test_an_unrelated_failure_is_not_retried_against_another_model() -> None:
     # Two calls, because a throttle *is* retryable and `max_attempts` is two — but both against the
     # configured id. What must not happen is a second *model*: that would make a transient error
     # look like a configuration one.
-    assert {request["modelId"] for request in client.requests} == {"amazon.nova-2-lite-v1:0"}
+    assert {request["modelId"] for request in client.requests} == {"amazon.nova-pro-v1:0"}
+
+
+# ---------------------------------------------------------------------------
+# #668 — the readers are chosen, and their coordinate space is stated
+# ---------------------------------------------------------------------------
+
+
+def test_a_pixel_model_named_nova_is_not_remapped() -> None:
+    """**The defect this issue exists to remove.**
+
+    Coordinate space used to be inferred from whether `"nova"` appeared in the model id. Nova 2 Lite
+    carries the word and answers in pixels, so it was remapped as a 0-1000 grid: divided by a
+    thousand, landing near the origin, and *passing* the bounds check, because a small number is in
+    range. A reading pointing at the wrong part of the drawing, with nothing downstream able to
+    question it.
+    """
+    reader = next(r for r in VISION_READERS if r.model_id == NOVA_2_LITE_MODEL_ID)
+
+    assert reader.coordinate_mode is CoordinateMode.PIXELS
+
+
+def test_an_unstated_coordinate_mode_fails_loudly_rather_than_silently() -> None:
+    """The default is the mistake that gets caught, because the two are not symmetric.
+
+    Grid values read as pixels exceed the crop and the bounds check refuses them. Pixel values read
+    as a grid shrink toward the origin and pass. One costs a rejected reading; the other costs a
+    wrong location nobody notices.
+    """
+    config = NovaConfig(
+        model_id="some.new-model-v1:0",
+        prompt_id="dimension-reader-v1",
+        template_id="bounded-crop-v1",
+        connect_timeout_seconds=2,
+        read_timeout_seconds=8,
+        max_attempts=1,
+    )
+
+    assert config.coordinate_mode is CoordinateMode.PIXELS
+
+
+def test_every_configured_reader_has_a_distinct_extractor_name() -> None:
+    """`evidence/corroborate.py` counts independence by extractor, not by model.
+
+    Two readers sharing a name would agree with themselves, and the SECOND_READER lane would record
+    a corroboration that never happened — the one thing the agreement gate exists to prevent.
+    """
+    names = [reader.extractor for reader in VISION_READERS]
+
+    assert len(names) == len(set(names))
+
+
+def test_claude_is_configured_and_switched_off_until_its_account_form_lands() -> None:
+    """#665 is an AWS account action, so it must not require a code change to undo.
+
+    Left enabled it produced 46 zero-token failures per extraction run while the agreement lane
+    stayed empty, because one working reader is not two.
+    """
+    claude = next(r for r in VISION_READERS if r.model_id == CLAUDE_HAIKU_4_5_MODEL_ID)
+
+    assert claude.enabled is False
+    assert claude.key in {r.key for r in VISION_READERS}
+
+
+def test_the_default_readers_are_the_ones_this_account_can_invoke(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Three readers, two vendors — the widest independence available without #665."""
+    monkeypatch.delenv("GV_BEDROCK_VISION_READERS", raising=False)
+
+    configs = vision_configs_from_environment()
+
+    assert [config.model_id for config in configs] == [
+        NOVA_PRO_MODEL_ID,
+        MINISTRAL_3_3B_MODEL_ID,
+        NOVA_2_LITE_MODEL_ID,
+    ]
+    assert CLAUDE_HAIKU_4_5_MODEL_ID not in {config.model_id for config in configs}
+
+
+def test_a_deployment_selects_its_readers_by_key(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Resolving #665 is then a change to configuration, not to this module."""
+    monkeypatch.setenv("GV_BEDROCK_VISION_READERS", "nova-pro,claude-haiku-4-5")
+
+    configs = vision_configs_from_environment()
+
+    assert [config.model_id for config in configs] == [
+        NOVA_PRO_MODEL_ID,
+        CLAUDE_HAIKU_4_5_MODEL_ID,
+    ]
+
+
+def test_an_unknown_reader_key_is_refused_by_name(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A typo that silently selected nothing would leave the lane empty and look configured."""
+    monkeypatch.setenv("GV_BEDROCK_VISION_READERS", "nova-pro,haiku")
+
+    with pytest.raises(ValueError, match="unknown vision reader key"):
+        vision_configs_from_environment()
+
+
+def test_each_reader_carries_its_own_model_override(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Derived from the key, so a rename cannot leave an override quietly not applying."""
+    monkeypatch.delenv("GV_BEDROCK_VISION_READERS", raising=False)
+    monkeypatch.setenv("GV_BEDROCK_MINISTRAL_3_3B_MODEL", "mistral.something-else")
+
+    configs = vision_configs_from_environment()
+
+    assert "mistral.something-else" in {config.model_id for config in configs}

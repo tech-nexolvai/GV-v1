@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from time import monotonic_ns
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 
 from evidence.candidate import ObservationCandidate
 from extraction.models.context import AssembledContext
@@ -46,11 +46,19 @@ DEFAULT_REGION = "us-east-1"
 #: from a family name once the family has moved on.
 DEFAULT_MODEL_ID = "amazon.nova-lite-v1:0"
 
-#: Phase C's production vision readers. The issue choosing these models names Nova Pro directly;
-#: Claude Haiku's Bedrock model id is the one AWS documents for programmatic access.
+#: Phase C's production vision readers, chosen from what this account can actually invoke (#668).
+#:
+#: **Claude Haiku is configured and disabled rather than removed.** It cannot be invoked at all —
+#: Anthropic's first-time-use form has never been submitted for this account (#665) — and leaving it
+#: enabled cost 46 zero-token failures per extraction run while the agreement lane stayed empty.
+#: Keeping the definition means #665 landing is a change to `GV_BEDROCK_VISION_READERS`, not to code.
 NOVA_PRO_MODEL_ID = "amazon.nova-pro-v1:0"
+NOVA_2_LITE_MODEL_ID = "amazon.nova-2-lite-v1:0"
+MINISTRAL_3_3B_MODEL_ID = "mistral.ministral-3-3b-instruct"
 CLAUDE_HAIKU_4_5_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"
 NOVA_PRO_EXTRACTOR = "bedrock-nova-pro"
+NOVA_2_LITE_EXTRACTOR = "bedrock-nova-2-lite"
+MINISTRAL_3_3B_EXTRACTOR = "bedrock-ministral-3-3b"
 CLAUDE_HAIKU_4_5_EXTRACTOR = "bedrock-claude-haiku-4-5"
 
 #: What turns a foundation-model id into a cross-region inference profile id.
@@ -86,6 +94,26 @@ class NovaConfig:
     max_attempts: int
     region_name: str | None = None
     extractor: str = "nova"
+    coordinate_mode: CoordinateMode = CoordinateMode.PIXELS
+    """Which space this model answers its rectangle in — **measured, never inferred**.
+
+    **The default is the one that fails loudly.** The two mistakes are not symmetric. A model that
+    answers on the 0-1000 grid, read as pixels, returns values larger than the crop and the bounds
+    check refuses it — a visible refusal naming the crop size. A model that answers in pixels, read
+    as a grid, is divided by a thousand, lands near the origin, and *passes* that same check, because
+    a small number is in range. One costs a rejected reading; the other records a reading pointing at
+    the wrong part of the drawing and says nothing. So an unstated mode gets the first.
+
+    It was inferred once, from whether `"nova"` appeared in the model id, and that is wrong for
+    `amazon.nova-2-lite-v1:0`: it carries the word and answers in pixels. A pixel value read as a
+    0-1000 grid value is divided by a thousand, lands near the origin, and *passes* the bounds check
+    #664 added, because a small number is in range. The result is a reading pointing at the wrong
+    place that nothing downstream can question — which is the exact failure #664 exists to prevent,
+    reintroduced by its own fix.
+
+    So it is a field, supplied per reader from a measured run, and a model's name says nothing about
+    it. `docs/NEXT_BUILD_PLAN.md` records where the current values came from.
+    """
 
     def __post_init__(self) -> None:
         for name in ("model_id", "prompt_id", "template_id", "extractor"):
@@ -100,6 +128,8 @@ class NovaConfig:
             not isinstance(self.region_name, str) or not self.region_name.strip()
         ):
             raise ValueError("region_name must be a non-empty string or None")
+        if not isinstance(self.coordinate_mode, CoordinateMode):
+            raise TypeError("coordinate_mode must be a CoordinateMode")
 
 
 def config_from_environment(
@@ -134,43 +164,127 @@ def config_from_environment(
     )
 
 
+#: Which readers a deployment runs, as a comma-separated list of `_ReaderDefinition.key`. Unset
+#: means every reader marked enabled below.
+VISION_READER_KEYS_ENV: Final = "GV_BEDROCK_VISION_READERS"
+
+
+@dataclass(frozen=True, slots=True)
+class _ReaderDefinition:
+    """One candidate vision reader and the measured facts about how it answers."""
+
+    key: str
+    model_id: str
+    extractor: str
+    coordinate_mode: CoordinateMode
+    enabled: bool
+
+    @property
+    def model_env(self) -> str:
+        """The variable that overrides this reader's model id, derived rather than hand-written.
+
+        Hand-writing it invited the pair to drift: a key renamed without its variable leaves an
+        override that silently stops applying, and an override that stops applying is a deployment
+        running a model it believes it replaced.
+        """
+        return f"GV_BEDROCK_{self.key.upper().replace('-', '_')}_MODEL"
+
+
+#: The readers Phase C runs, and the one it keeps switched off.
+#:
+#: **Every coordinate mode here was measured**, on four crops from `demo_pair/shop.pdf` on
+#: 2026-09-26, by sending each model the four-scalar schema and comparing what came back against the
+#: crop's own pixel dimensions. Nova Pro answered outside the crop on every one; Nova 2 Lite and
+#: Ministral answered inside it. A model's name is not evidence of either.
+#:
+#: **Only two vendors answer at all.** Google, Meta, Moonshot, Qwen, xAI, Writer and Nvidia all
+#: refuse forced tool use with an image, so the independence available to the agreement lane is
+#: narrower than we would like. Widening it is what #665 buys: Claude would be a third vendor.
+VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
+    _ReaderDefinition(
+        key="nova-pro",
+        model_id=NOVA_PRO_MODEL_ID,
+        extractor=NOVA_PRO_EXTRACTOR,
+        coordinate_mode=CoordinateMode.NOVA_GRID,
+        enabled=True,
+    ),
+    # A different vendor, which is the strongest independence on offer here. Also the cheapest and
+    # fastest of the seven that conform — 1,430 tokens and 3.0s against Nova Pro's 5,374 and 4.7s.
+    _ReaderDefinition(
+        key="ministral-3-3b",
+        model_id=MINISTRAL_3_3B_MODEL_ID,
+        extractor=MINISTRAL_3_3B_EXTRACTOR,
+        coordinate_mode=CoordinateMode.PIXELS,
+        enabled=True,
+    ),
+    # Same vendor as Nova Pro and a different answer space, which is the clearest evidence available
+    # that the two were trained separately rather than sharing a lineage.
+    _ReaderDefinition(
+        key="nova-2-lite",
+        model_id=NOVA_2_LITE_MODEL_ID,
+        extractor=NOVA_2_LITE_EXTRACTOR,
+        coordinate_mode=CoordinateMode.PIXELS,
+        enabled=True,
+    ),
+    # Off until #665. Its space is unmeasured because it has never returned a reading on this
+    # account; Anthropic documents absolute pixels, and that stays a claim until a run confirms it.
+    _ReaderDefinition(
+        key="claude-haiku-4-5",
+        model_id=CLAUDE_HAIKU_4_5_MODEL_ID,
+        extractor=CLAUDE_HAIKU_4_5_EXTRACTOR,
+        coordinate_mode=CoordinateMode.PIXELS,
+        enabled=False,
+    ),
+)
+
+
 def vision_configs_from_environment(
     *,
     prompt_id: str = "dimension-reader-v1",
     template_id: str = "bounded-crop-v1",
-) -> tuple[NovaConfig, NovaConfig]:
-    """The two Bedrock vision readers selected for Phase C.
+) -> tuple[NovaConfig, ...]:
+    """The vision readers this deployment runs, in `VISION_READERS` order.
 
-    They share the same forced-tool adapter and differ only by model identity and extractor name.
-    The extractor names are deliberately stable and distinct because the second-reader lane counts
-    reader independence by extractor, not by model version.
+    Returns a variable-length tuple because the set is configuration: `GV_BEDROCK_VISION_READERS`
+    names the keys to run, and a deployment that has resolved #665 adds `claude-haiku-4-5` without a
+    code change.
+
+    Extractor names stay distinct and stable. `evidence/corroborate.py` counts reader independence by
+    extractor, so two readers sharing a name would agree with themselves and manufacture the
+    corroboration the gate exists to require.
     """
     import os
 
     connect_timeout_seconds = int(os.environ.get("GV_BEDROCK_CONNECT_TIMEOUT", "10"))
     read_timeout_seconds = int(os.environ.get("GV_BEDROCK_READ_TIMEOUT", "120"))
     region_name = os.environ.get("GV_BEDROCK_REGION", DEFAULT_REGION)
-    return (
+
+    requested = os.environ.get(VISION_READER_KEYS_ENV, "").strip()
+    if requested:
+        wanted = {key.strip() for key in requested.split(",") if key.strip()}
+        known = {reader.key for reader in VISION_READERS}
+        unknown = sorted(wanted - known)
+        if unknown:
+            raise ValueError(
+                f"unknown vision reader key(s): {unknown}. Known keys: {sorted(known)}"
+            )
+        chosen = tuple(reader for reader in VISION_READERS if reader.key in wanted)
+    else:
+        chosen = tuple(reader for reader in VISION_READERS if reader.enabled)
+
+    return tuple(
         NovaConfig(
-            model_id=os.environ.get("GV_BEDROCK_NOVA_PRO_MODEL", NOVA_PRO_MODEL_ID),
+            model_id=os.environ.get(reader.model_env, reader.model_id),
             prompt_id=prompt_id,
             template_id=template_id,
             connect_timeout_seconds=connect_timeout_seconds,
             read_timeout_seconds=read_timeout_seconds,
             max_attempts=1,
             region_name=region_name,
-            extractor=NOVA_PRO_EXTRACTOR,
-        ),
-        NovaConfig(
-            model_id=os.environ.get("GV_BEDROCK_CLAUDE_HAIKU_MODEL", CLAUDE_HAIKU_4_5_MODEL_ID),
-            prompt_id=prompt_id,
-            template_id=template_id,
-            connect_timeout_seconds=connect_timeout_seconds,
-            read_timeout_seconds=read_timeout_seconds,
-            max_attempts=1,
-            region_name=region_name,
-            extractor=CLAUDE_HAIKU_4_5_EXTRACTOR,
-        ),
+            extractor=reader.extractor,
+            coordinate_mode=reader.coordinate_mode,
+        )
+        for reader in chosen
     )
 
 
@@ -404,8 +518,13 @@ def _crop_size(data: bytes, image_format: Literal["jpeg", "png"]) -> CropSize:
 
 
 def _coordinate_mode(config: NovaConfig) -> CoordinateMode:
-    identity = f"{config.extractor} {config.model_id}".casefold()
-    return CoordinateMode.NOVA_GRID if "nova" in identity else CoordinateMode.PIXELS
+    """The space this reader answers in, as its configuration states it.
+
+    A function rather than an attribute read at each call site, because that is what the three call
+    sites already use and because the indirection is where the old substring guess lived. Deleting
+    the guess without deleting the seam keeps the diff honest about what changed.
+    """
+    return config.coordinate_mode
 
 
 def _coordinate_instruction(mode: CoordinateMode) -> CoordinateInstruction:
