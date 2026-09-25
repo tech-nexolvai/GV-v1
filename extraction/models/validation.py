@@ -14,10 +14,11 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
+from enum import StrEnum
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
@@ -32,7 +33,33 @@ class NovaToolPayload(BaseModel):
 
     reading: str = Field(min_length=1)
     unit_guess: str | None
-    polygon: list[tuple[Decimal, Decimal]] = Field(min_length=3)
+    x1: StrictInt
+    y1: StrictInt
+    x2: StrictInt
+    y2: StrictInt
+
+
+class CoordinateMode(StrEnum):
+    """How the model's rectangle coordinates should be read."""
+
+    PIXELS = "pixels"
+    NOVA_GRID = "nova_grid"
+
+
+@dataclass(frozen=True, slots=True)
+class CropSize:
+    """Trusted dimensions of the exact crop image sent to the reader."""
+
+    width_px: int
+    height_px: int
+
+    def __post_init__(self) -> None:
+        for name in ("width_px", "height_px"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than zero")
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,17 +231,74 @@ def _reading_refusal(reading: str) -> str | None:
     return None
 
 
-def _pixel(value: Decimal) -> int:
-    integral = value.to_integral_value()
-    if value != integral:
-        raise ValueError("image-space coordinates must be integral pixels")
-    return int(integral)
+def _round_pixel(value: Decimal) -> int:
+    return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def _bounds_error(axis: str, value: int, maximum: int, crop_size: CropSize) -> ValueError | None:
+    if 0 <= value <= maximum:
+        return None
+    return ValueError(
+        f"{axis} coordinate {value} is outside the {crop_size.width_px}x{crop_size.height_px} "
+        f"crop; expected 0..{maximum}"
+    )
+
+
+def _pixel_coordinate(value: int, *, axis: str, crop_size: CropSize) -> int:
+    maximum = crop_size.width_px if axis == "x" else crop_size.height_px
+    error = _bounds_error(axis, value, maximum, crop_size)
+    if error is not None:
+        raise error
+    return value
+
+
+def _nova_grid_coordinate(value: int, *, axis: str, crop_size: CropSize) -> int:
+    grid_limit = 1000
+    error = _bounds_error(axis, value, grid_limit, crop_size)
+    if error is not None:
+        raise error
+    maximum = crop_size.width_px if axis == "x" else crop_size.height_px
+    mapped = Decimal(value) * Decimal(maximum) / Decimal(grid_limit)
+    pixel = _round_pixel(mapped)
+    pixel_error = _bounds_error(axis, pixel, maximum, crop_size)
+    if pixel_error is not None:
+        raise pixel_error
+    return pixel
+
+
+def _rectangle_polygon(
+    payload: NovaToolPayload,
+    *,
+    crop_size: CropSize,
+    coordinate_mode: CoordinateMode,
+) -> tuple[ImagePoint, ...]:
+    coordinate = (
+        _nova_grid_coordinate if coordinate_mode is CoordinateMode.NOVA_GRID else _pixel_coordinate
+    )
+    left = coordinate(payload.x1, axis="x", crop_size=crop_size)
+    top = coordinate(payload.y1, axis="y", crop_size=crop_size)
+    right = coordinate(payload.x2, axis="x", crop_size=crop_size)
+    bottom = coordinate(payload.y2, axis="y", crop_size=crop_size)
+    if right <= left or bottom <= top:
+        raise ValueError(
+            f"rectangle must have positive width and height inside the "
+            f"{crop_size.width_px}x{crop_size.height_px} crop; got "
+            f"x1={payload.x1}, y1={payload.y1}, x2={payload.x2}, y2={payload.y2}"
+        )
+    return (
+        ImagePoint(left, top),
+        ImagePoint(right, top),
+        ImagePoint(right, bottom),
+        ImagePoint(left, bottom),
+    )
 
 
 def validate_payload(
     payload: object,
     *,
     context: CandidateContext,
+    crop_size: CropSize,
+    coordinate_mode: CoordinateMode,
     recorder: RejectionRecorder,
 ) -> ValidationOutcome:
     """Return a complete candidate or a recorded abstention, never a partial result."""
@@ -243,13 +327,21 @@ def validate_payload(
 
     try:
         unit = Unit(validated.unit_guess) if validated.unit_guess is not None else None
-        polygon = tuple(ImagePoint(_pixel(x), _pixel(y)) for x, y in validated.polygon)
+        polygon = _rectangle_polygon(
+            validated,
+            crop_size=crop_size,
+            coordinate_mode=coordinate_mode,
+        )
     except (TypeError, ValueError) as error:
         return _record_rejection(
             payload=payload,
             context=context,
             recorder=recorder,
-            reason="candidate_conversion_failed",
+            reason=(
+                "coordinate_out_of_bounds"
+                if "outside the" in str(error)
+                else "candidate_conversion_failed"
+            ),
             errors=(str(error),),
         )
 
@@ -279,5 +371,8 @@ def validate_payload(
         # one adapter now and a reading from a local model was being flagged `nova_model_reading`.
         # Nova's own value is unchanged — its context defaults `extractor` to "nova" — so this
         # corrects the misnomer without moving anything that already depended on it.
-        ambiguity_flags=(f"{context.extractor}_model_reading",),
+        ambiguity_flags=(
+            f"{context.extractor}_model_reading",
+            f"{context.extractor}_rectangle_polygon_derived",
+        ),
     )

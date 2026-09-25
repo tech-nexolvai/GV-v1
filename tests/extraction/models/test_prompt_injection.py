@@ -10,8 +10,11 @@ import pytest
 from extraction.agent.tools import PERMITTED_TOOLS
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.sanitisation import (
+    NOVA_GRID_COORDINATE_INSTRUCTION,
+    PIXEL_COORDINATE_INSTRUCTION,
     SYSTEM_INSTRUCTION,
     USER_TASK,
+    CoordinateInstruction,
     InjectionSignal,
     prepare_prompt,
 )
@@ -100,6 +103,25 @@ def test_the_task_states_the_coordinate_space() -> None:
     assert "whole pixel" in task
     assert "top-left" in task
     assert "never fractions" in task
+    assert "x1, y1, x2 and y2" in task
+
+
+def test_nova_gets_its_own_grid_coordinate_instruction() -> None:
+    """Outcome: Nova is asked for the convention it is trained to emit."""
+
+    pixel_task = prepare_prompt(
+        AssembledContext(nearby_text=(), nearby_geometry=()),
+        coordinate_instruction=CoordinateInstruction.PIXELS,
+    ).user_task
+    nova_task = prepare_prompt(
+        AssembledContext(nearby_text=(), nearby_geometry=()),
+        coordinate_instruction=CoordinateInstruction.NOVA_GRID,
+    ).user_task
+
+    assert PIXEL_COORDINATE_INSTRUCTION in pixel_task
+    assert NOVA_GRID_COORDINATE_INSTRUCTION in nova_task
+    assert "0-1000" in nova_task
+    assert "whole pixel" not in nova_task
 
 
 def test_the_task_states_the_two_unit_spellings() -> None:

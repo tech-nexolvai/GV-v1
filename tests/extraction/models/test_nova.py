@@ -12,8 +12,11 @@ import pytest
 
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
+from evidence.crop import encode_png
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.nova import (
+    CLAUDE_HAIKU_4_5_EXTRACTOR,
+    CLAUDE_HAIKU_4_5_MODEL_ID,
     DEFAULT_MODEL_ID,
     DEFAULT_REGION,
     TOOL_NAME,
@@ -78,7 +81,7 @@ def _request() -> NovaRequest:
     return NovaRequest(
         candidate_id="candidate-249",
         page=3,
-        crop=b"png bytes",
+        crop=_crop(),
         image_format="png",
         context=AssembledContext(
             nearby_text=(NearbyText("984", Decimal(4)),),
@@ -86,6 +89,25 @@ def _request() -> NovaRequest:
         ),
         bound_pt=Decimal(12),
     )
+
+
+def _crop(width: int = 100, height: int = 80) -> bytes:
+    return encode_png(width, height, bytes([255, 255, 255]) * width * height)
+
+
+def _valid_payload(
+    *,
+    reading: str = "984",
+    unit_guess: str | None = "mm",
+) -> dict[str, object]:
+    return {
+        "reading": reading,
+        "unit_guess": unit_guess,
+        "x1": 100,
+        "y1": 250,
+        "x2": 300,
+        "y2": 500,
+    }
 
 
 def _tool_response(payload: object) -> dict[str, Any]:
@@ -111,15 +133,7 @@ def _adapter(client: BedrockRuntimeClient) -> tuple[NovaAdapter, RecordingSink]:
 def test_valid_tool_call_produces_only_an_observation_candidate() -> None:
     """Input: valid tool payload. Outcome: raw candidate. Why: Nova never creates evidence."""
 
-    client = FakeBedrock(
-        _tool_response(
-            {
-                "reading": "984",
-                "unit_guess": "mm",
-                "polygon": [[10, 20], [30, 20], [30, 40]],
-            }
-        )
-    )
+    client = FakeBedrock(_tool_response(_valid_payload()))
     adapter, sink = _adapter(client)
 
     candidate = adapter.extract(_request())
@@ -127,7 +141,13 @@ def test_valid_tool_call_produces_only_an_observation_candidate() -> None:
     assert candidate.raw_text == "984"
     assert candidate.unit_guess is Unit.MM
     assert candidate.parsed_value is None
-    assert candidate.polygon == (ImagePoint(10, 20), ImagePoint(30, 20), ImagePoint(30, 40))
+    assert candidate.polygon == (
+        ImagePoint(10, 20),
+        ImagePoint(30, 20),
+        ImagePoint(30, 40),
+        ImagePoint(10, 40),
+    )
+    assert "nova_rectangle_polygon_derived" in candidate.ambiguity_flags
     assert sink.items[0].outcome is NovaInvocationOutcome.OK
     assert sink.items[0].model_id == "amazon.nova-2-lite-v1:0"
     assert sink.items[0].prompt_id == "dimension-reader-v1"
@@ -137,6 +157,52 @@ def test_valid_tool_call_produces_only_an_observation_candidate() -> None:
     tool_config = submitted["toolConfig"]
     assert isinstance(tool_config, dict)
     assert tool_config["toolChoice"] == {"tool": {"name": TOOL_NAME}}
+    assert submitted["inferenceConfig"] == {"temperature": 0, "maxTokens": 1024}
+    assert submitted["additionalModelRequestFields"] == {"inferenceConfig": {"topK": 1}}
+    assert "0-1000 crop grid" in repr(submitted["messages"])
+    tools = tool_config["tools"]
+    assert isinstance(tools, list)
+    schema = tools[0]["toolSpec"]["inputSchema"]["json"]
+    assert {"title", "description", "additionalProperties"}.isdisjoint(schema)
+    assert schema["required"] == ["reading", "unit_guess", "x1", "y1", "x2", "y2"]
+
+
+def test_claude_reader_uses_absolute_pixel_coordinates() -> None:
+    """Input: Claude config and pixel payload. Outcome: coordinates are not Nova-remapped."""
+
+    config = NovaConfig(
+        model_id=CLAUDE_HAIKU_4_5_MODEL_ID,
+        prompt_id="dimension-reader-v1",
+        template_id="bounded-crop-v1",
+        connect_timeout_seconds=2,
+        read_timeout_seconds=8,
+        max_attempts=1,
+        extractor=CLAUDE_HAIKU_4_5_EXTRACTOR,
+    )
+    client = FakeBedrock(
+        _tool_response(
+            {
+                "reading": "984",
+                "unit_guess": "mm",
+                "x1": 10,
+                "y1": 20,
+                "x2": 30,
+                "y2": 40,
+            }
+        )
+    )
+    sink = RecordingSink()
+
+    candidate = NovaAdapter(config, client, sink).extract(_request())
+
+    assert candidate.polygon == (
+        ImagePoint(10, 20),
+        ImagePoint(30, 20),
+        ImagePoint(30, 40),
+        ImagePoint(10, 40),
+    )
+    assert "whole pixel counts" in repr(client.requests[0]["messages"])
+    assert "0-1000 crop grid" not in repr(client.requests[0]["messages"])
 
 
 def test_drawing_text_is_sent_as_data_and_never_changes_instructions() -> None:
@@ -146,7 +212,7 @@ def test_drawing_text_is_sent_as_data_and_never_changes_instructions() -> None:
     request = NovaRequest(
         candidate_id="candidate-hostile",
         page=3,
-        crop=b"png bytes",
+        crop=_crop(),
         image_format="png",
         context=AssembledContext(
             nearby_text=(NearbyText(hostile, Decimal(2)),),
@@ -154,15 +220,7 @@ def test_drawing_text_is_sent_as_data_and_never_changes_instructions() -> None:
         ),
         bound_pt=Decimal(8),
     )
-    client = FakeBedrock(
-        _tool_response(
-            {
-                "reading": "984",
-                "unit_guess": "mm",
-                "polygon": [[10, 20], [30, 20], [30, 40]],
-            }
-        )
-    )
+    client = FakeBedrock(_tool_response(_valid_payload()))
     adapter, sink = _adapter(client)
 
     adapter.extract(request)
@@ -214,12 +272,16 @@ def test_plain_model_text_is_never_parsed_as_structured_output() -> None:
         {
             "reading": "984",
             "unit_guess": "mm",
-            "polygon": [[10, 20], [30, 20], [30, 40]],
+            "x1": 100,
+            "y1": 250,
+            "x2": 300,
+            "y2": 500,
             "verdict": "PASS",
         },
-        {"unit_guess": "mm", "polygon": [[10, 20], [30, 20], [30, 40]]},
-        {"reading": "984", "unit_guess": "cm", "polygon": [[10, 20], [30, 20], [30, 40]]},
-        {"reading": "984", "unit_guess": "mm", "polygon": [[10.5, 20], [30, 20], [30, 40]]},
+        {"unit_guess": "mm", "x1": 100, "y1": 250, "x2": 300, "y2": 500},
+        {"reading": "984", "unit_guess": "cm", "x1": 100, "y1": 250, "x2": 300, "y2": 500},
+        {"reading": "984", "unit_guess": "mm", "x1": 10.5, "y1": 250, "x2": 300, "y2": 500},
+        {"reading": "984", "unit_guess": "mm", "x1": 100, "y1": 250, "x2": 1001, "y2": 500},
     ],
 )
 def test_invalid_tool_payload_fails_closed_without_retry(payload: object) -> None:
@@ -240,13 +302,7 @@ def test_timeout_retries_within_bound_and_records_every_attempt() -> None:
 
     client = FakeBedrock(
         TimeoutError("temporary timeout"),
-        _tool_response(
-            {
-                "reading": "38 3/4",
-                "unit_guess": "in",
-                "polygon": [[1, 2], [3, 2], [3, 4]],
-            }
-        ),
+        _tool_response(_valid_payload(reading="38 3/4", unit_guess="in")),
     )
     adapter, sink = _adapter(client)
 
@@ -347,7 +403,10 @@ def test_bedrock_sdk_is_reachable_only_through_the_nova_adapter() -> None:
 _VALID_PAYLOAD = {
     "reading": '24 1/2"',
     "unit_guess": "in",
-    "polygon": [[10, 20], [30, 20], [30, 40]],
+    "x1": 100,
+    "y1": 250,
+    "x2": 300,
+    "y2": 500,
 }
 
 

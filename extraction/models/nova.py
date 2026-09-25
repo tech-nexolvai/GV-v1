@@ -9,6 +9,7 @@ Verification: ``tests/extraction/models/test_nova.py``.
 
 from __future__ import annotations
 
+import struct
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -18,9 +19,11 @@ from typing import Any, Literal, Protocol, cast
 
 from evidence.candidate import ObservationCandidate
 from extraction.models.context import AssembledContext
-from extraction.models.sanitisation import InjectionAttempt, prepare_prompt
+from extraction.models.sanitisation import CoordinateInstruction, InjectionAttempt, prepare_prompt
 from extraction.models.validation import (
     CandidateContext,
+    CoordinateMode,
+    CropSize,
     NovaToolPayload,
     RejectionRecorder,
     ValidationRejection,
@@ -28,6 +31,8 @@ from extraction.models.validation import (
 )
 
 TOOL_NAME = "report_drawing_reading"
+DIMENSION_READER_MAX_TOKENS = 1024
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 #: The region Nova is invoked in unless a deployment says otherwise.
 #:
@@ -349,6 +354,75 @@ def _is_retryable(error: Exception) -> bool:
     }
 
 
+def _crop_size(data: bytes, image_format: Literal["jpeg", "png"]) -> CropSize:
+    """Read dimensions from the exact image bytes sent to Bedrock."""
+
+    if image_format == "png":
+        if len(data) < 24 or not data.startswith(_PNG_SIGNATURE) or data[12:16] != b"IHDR":
+            raise ValueError("PNG crop has no readable IHDR dimensions")
+        width, height = struct.unpack(">II", data[16:24])
+        return CropSize(width, height)
+
+    offset = 2
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        raise ValueError("JPEG crop has no readable SOI marker")
+    while offset < len(data):
+        while offset < len(data) and data[offset] == 0xFF:
+            offset += 1
+        if offset >= len(data):
+            break
+        marker = data[offset]
+        offset += 1
+        if marker in {0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
+            continue
+        if offset + 2 > len(data):
+            break
+        segment_length = struct.unpack(">H", data[offset : offset + 2])[0]
+        if segment_length < 2 or offset + segment_length > len(data):
+            break
+        if marker in {
+            0xC0,
+            0xC1,
+            0xC2,
+            0xC3,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC9,
+            0xCA,
+            0xCB,
+            0xCD,
+            0xCE,
+            0xCF,
+        }:
+            if segment_length < 7:
+                break
+            height, width = struct.unpack(">HH", data[offset + 3 : offset + 7])
+            return CropSize(width, height)
+        offset += segment_length
+    raise ValueError("JPEG crop has no readable frame dimensions")
+
+
+def _coordinate_mode(config: NovaConfig) -> CoordinateMode:
+    identity = f"{config.extractor} {config.model_id}".casefold()
+    return CoordinateMode.NOVA_GRID if "nova" in identity else CoordinateMode.PIXELS
+
+
+def _coordinate_instruction(mode: CoordinateMode) -> CoordinateInstruction:
+    return (
+        CoordinateInstruction.NOVA_GRID
+        if mode is CoordinateMode.NOVA_GRID
+        else CoordinateInstruction.PIXELS
+    )
+
+
+def _bedrock_tool_schema() -> dict[str, object]:
+    schema = dict(NovaToolPayload.model_json_schema())
+    for unsupported in ("title", "description", "additionalProperties"):
+        schema.pop(unsupported, None)
+    return schema
+
+
 class NovaAdapter:
     """Invoke Nova through one forced tool and return only an uncertain candidate."""
 
@@ -406,7 +480,11 @@ class NovaAdapter:
         """One model id, with its own bounded retry loop and its own records."""
 
         last_error: Exception | None = None
-        prepared = prepare_prompt(request.context)
+        coordinate_mode = _coordinate_mode(self._config)
+        prepared = prepare_prompt(
+            request.context,
+            coordinate_instruction=_coordinate_instruction(coordinate_mode),
+        )
         for attempt in range(1, self._config.max_attempts + 1):
             started_ns = monotonic_ns()
             response: Mapping[str, Any] | None = None
@@ -463,8 +541,11 @@ class NovaAdapter:
         raise NovaRetryExhaustedError("Nova retry loop ended unexpectedly") from last_error
 
     def _request(self, request: NovaRequest, model_id: str) -> dict[str, object]:
-        schema = NovaToolPayload.model_json_schema()
-        prepared = prepare_prompt(request.context)
+        coordinate_mode = _coordinate_mode(self._config)
+        prepared = prepare_prompt(
+            request.context,
+            coordinate_instruction=_coordinate_instruction(coordinate_mode),
+        )
         return {
             "modelId": model_id,
             "system": [{"text": prepared.system_instruction}],
@@ -483,13 +564,15 @@ class NovaAdapter:
                     ],
                 }
             ],
+            "inferenceConfig": {"temperature": 0, "maxTokens": DIMENSION_READER_MAX_TOKENS},
+            "additionalModelRequestFields": {"inferenceConfig": {"topK": 1}},
             "toolConfig": {
                 "tools": [
                     {
                         "toolSpec": {
                             "name": TOOL_NAME,
-                            "description": "Report one visible dimension reading and polygon.",
-                            "inputSchema": {"json": schema},
+                            "description": "Report one visible dimension reading and rectangle.",
+                            "inputSchema": {"json": _bedrock_tool_schema()},
                         }
                     }
                 ],
@@ -516,6 +599,7 @@ class NovaAdapter:
         tool_call = cast(Mapping[str, Any], tool_calls[0])
         if tool_call.get("name") != TOOL_NAME:
             raise NovaProtocolError(f"Bedrock called an unexpected tool: {tool_call.get('name')!r}")
+        coordinate_mode = _coordinate_mode(self._config)
         outcome = validate_payload(
             tool_call.get("input"),
             context=CandidateContext(
@@ -524,6 +608,8 @@ class NovaAdapter:
                 page=request.page,
                 extractor=self._config.extractor,
             ),
+            crop_size=_crop_size(request.crop, request.image_format),
+            coordinate_mode=coordinate_mode,
             recorder=self._recorder,
         )
         if isinstance(outcome, ValidationRejection):
