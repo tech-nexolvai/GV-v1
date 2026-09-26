@@ -324,3 +324,28 @@ def test_every_condition_the_operation_can_return_has_a_reviewer_message() -> No
             # Belongs to `filler_distribution`, which this route no longer calls.
             continue
         assert condition.value in _MESSAGES, condition.value
+
+
+def test_a_run_the_operation_cannot_compare_is_a_review_not_a_server_error() -> None:
+    """#673's abstention carries no site difference, and the route must not read one anyway.
+
+    The request schema makes this hard to reach — cabinet types are a closed `Literal`, and the
+    route passes one cabinet run as both the design and the proposal, so the lengths always agree.
+    It is pinned because "hard to reach" is not "unreachable", and the failure mode would be a 500
+    on an operation that abstained politely.
+    """
+    from app.api.distribution import _MESSAGES
+    from verdict.operations.distribution import (
+        DistributionCondition,
+        UnsupportedRunShape,
+        _unsupported_shape,
+    )
+
+    refused = _unsupported_shape(
+        UnsupportedRunShape("design_fillers is empty", "this check needs at least one value")
+    )
+    facts = dict(refused.intermediates)
+
+    assert facts["condition"] == DistributionCondition.RUN_SHAPE_UNSUPPORTED.value
+    assert "site_difference" not in facts
+    assert facts["condition"] in _MESSAGES

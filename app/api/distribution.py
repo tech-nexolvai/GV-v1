@@ -65,6 +65,10 @@ _MESSAGES: dict[str, str] = {
         "Dividing the difference equally does not land on a width a drawing can carry, so the "
         "split is not settled by the rule. Confirm how it is apportioned."
     ),
+    DistributionCondition.RUN_SHAPE_UNSUPPORTED.value: (
+        "This run is a shape the check cannot compare — the parts on the two drawings do not line "
+        "up, or a cabinet has no classification. Check it by hand."
+    ),
     DistributionCondition.FILLER_APPORTIONMENT_NOT_DETERMINED.value: (
         "The fillers started unequal and have to change, and no rule says how the change is "
         "shared between them. Confirm the split."
@@ -274,8 +278,10 @@ def calculate_filler_distribution(
 
     facts = dict(result.intermediates)
     condition = str(facts["condition"])
-    site_difference = facts["site_difference"]
-    assert isinstance(site_difference, Measurement)
+    # An operation that refused the run's shape abstained before any arithmetic, so it reports no
+    # site difference. Every other path computes one.
+    site_difference = facts.get("site_difference")
+    assert site_difference is None or isinstance(site_difference, Measurement)
 
     if condition not in _MESSAGES:
         raise RuntimeError(
