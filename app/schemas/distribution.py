@@ -6,6 +6,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+#: The four categories Raj's deck names. Three regular types, each with its own width bound, plus
+#: the equipment cabinet, which has no bound here because the distribution never moves it.
+CabinetTypeName = Literal["single_door", "double_door", "drawer", "equipment"]
+
 
 class CabinetInput(BaseModel):
     """One cabinet in the ordered run the reviewer is checking."""
@@ -17,6 +21,13 @@ class CabinetInput(BaseModel):
         min_length=1,
         max_length=100,
         description='Authored dimension with its unit, e.g. 30" or 762 mm.',
+    )
+    type: CabinetTypeName = Field(
+        description=(
+            "The reviewer's classification of this cabinet. Slide 11 of the 2026-09-21 deck puts "
+            "this with the reviewer — they categorise a cabinet and confirm whether its width may "
+            "change — so it is a required input and the server never infers it."
+        )
     )
 
 
@@ -39,7 +50,9 @@ class AssemblyInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     cabinets: tuple[CabinetInput, ...] = Field(min_length=1)
-    fillers: tuple[FillerInput, FillerInput]
+    #: Any number, ordered left to right. Raj's examples show two, and slide 12 names layouts with
+    #: a wall on only one side, so an arity of exactly two would refuse a run the deck describes.
+    fillers: tuple[FillerInput, ...] = Field(min_length=1)
 
 
 class FillerDistributionRequest(BaseModel):
@@ -59,7 +72,15 @@ class FillerDistributionRequest(BaseModel):
     )
     filler_min: str = Field(min_length=1, max_length=100)
     filler_max: str = Field(min_length=1, max_length=100)
-    adjustable_cabinet_id: str | None = Field(default=None, min_length=1, max_length=100)
+    #: The three regular types' bounds, all required and **none defaulted**. CLIENT_FACTS Q21 is
+    #: explicit that the values are unsettled — the email said 1"/2", the 2026-08-25 call said
+    #: 3-4" — so an absent bound is a missing reviewer input, never a number this service chooses.
+    single_door_cab_width_min: str = Field(min_length=1, max_length=100)
+    single_door_cab_width_max: str = Field(min_length=1, max_length=100)
+    double_door_cab_width_min: str = Field(min_length=1, max_length=100)
+    double_door_cab_width_max: str = Field(min_length=1, max_length=100)
+    drawer_cab_width_min: str = Field(min_length=1, max_length=100)
+    drawer_cab_width_max: str = Field(min_length=1, max_length=100)
 
 
 class QuantityOut(BaseModel):
@@ -93,8 +114,12 @@ class CabinetProposalOut(BaseModel):
     """One cabinet before and after the distribution calculation."""
 
     id: str
+    type: CabinetTypeName
     original: QuantityOut
     proposed: QuantityOut
+    #: Whether this cabinet's width may change at all — true for every regular cabinet, false for
+    #: an equipment cabinet. It is no longer "the one cabinet the reviewer picked": the remainder
+    #: divides equally across all of them, so more than one can be true.
     adjustable: bool
 
 
@@ -102,13 +127,19 @@ class FillerDistributionResponse(BaseModel):
     """A deterministic proposal, or an honest abstention."""
 
     outcome: Literal["PASS", "REVIEW_REQUIRED", "NOT_FOUND"]
+    #: The operation's own condition, passed through rather than translated, so the reviewer's
+    #: screen and a stored finding use one vocabulary.
     condition: str
     message: str
     design_width: QuantityOut
     site_difference: QuantityOut | None
     field_dimension: OperandTraceOut
-    selected_adjustable_cabinet_id: str | None
-    fillers: tuple[FillerProposalOut, FillerProposalOut]
+    fillers: tuple[FillerProposalOut, ...]
     cabinets: tuple[CabinetProposalOut, ...]
+    #: True when the fillers absorbed the whole difference — slide 12, outcome 3: "mark the
+    #: cabinets with green checks and change only the fillers".
+    cabinets_retained: bool
+    #: What the reviewer must do when the calculation abstained, in their words. Null otherwise.
+    reviewer_action: str | None = None
     operands: tuple[OperandTraceOut, ...]
     calculation: str

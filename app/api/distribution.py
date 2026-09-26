@@ -1,9 +1,20 @@
-"""Reviewer-facing filler distribution calculator for Q9/Q21.
+"""Reviewer-facing cabinet distribution calculator for Q8/Q9/Q21.
 
-The arithmetic is the reviewed ``filler_distribution`` operation. This route wraps it in the
-product shape Raj asked for: the reviewer supplies the site field width and, only when fillers
-cannot absorb the difference, the cabinet they are willing to adjust. The route never chooses that
-cabinet itself.
+The arithmetic is the reviewed ``cabinet_run_distribution`` operation and none of it is repeated
+here. This route only shapes that operation's result into the product form: parse the authored
+dimensions, hand them over, and render what came back.
+
+**The operation judges a drawing; this route asks it what the drawing should say.** They are the
+same calculation read two ways. The reviewer has no corrected shop drawing yet, so the run they
+hold — the architectural one — is submitted as the proposal, and the operation's *expectation* is
+the answer they wanted. Its verdict on that submission is therefore not the reviewer's verdict:
+a FAIL means only "the architectural layout is not the site-corrected one", which is exactly the
+case where there is a proposal worth showing. What travels to the screen unchanged is the
+operation's ``condition``, so the route and a stored finding speak one vocabulary.
+
+**Nothing here decides which cabinet may move.** That is the reviewer's classification, arriving
+per cabinet as ``type`` (slide 11 of the 2026-09-21 deck). The route never infers it, and the
+remainder divides equally across every regular cabinet rather than landing on one.
 """
 
 from __future__ import annotations
@@ -17,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.auth import Principal, require_project_access
 from app.schemas.distribution import (
     CabinetProposalOut,
+    CabinetTypeName,
     FillerDistributionRequest,
     FillerDistributionResponse,
     FillerProposalOut,
@@ -26,10 +38,38 @@ from app.schemas.distribution import (
 from units.imperial import format_inches
 from units.measurement import Measurement, Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
-from verdict.operations.distribution import DistributionCondition, filler_distribution
+from verdict.operations.distribution import DistributionCondition, cabinet_run_distribution
 from verdict.outcomes import Outcome
+from verdict.registry import RuleAuthoringError
 
 router = APIRouter(tags=["distribution"])
+
+#: What each condition means to a reviewer. Keyed by the operation's own vocabulary so a condition
+#: it gains without a line here fails loudly in tests rather than reaching a screen unexplained.
+_MESSAGES: dict[str, str] = {
+    DistributionCondition.NO_CHANGE_REQUIRED.value: (
+        "The site matches the architectural drawing, so no width needs to change."
+    ),
+    DistributionCondition.FILLERS_ABSORB.value: (
+        "The fillers can absorb the site difference on their own; no cabinet changes."
+    ),
+    DistributionCondition.CABINETS_ABSORB_REMAINDER.value: (
+        "The fillers reached their limit, so the rest is divided equally between the regular "
+        "cabinets. The equipment cabinets keep their width."
+    ),
+    DistributionCondition.CANNOT_BE_RESOLVED.value: (
+        "The site difference cannot be absorbed within the stated limits. This needs an RFI to "
+        "the architect rather than a forced fix."
+    ),
+    DistributionCondition.SHARE_DOES_NOT_DIVIDE.value: (
+        "Dividing the difference equally does not land on a width a drawing can carry, so the "
+        "split is not settled by the rule. Confirm how it is apportioned."
+    ),
+    DistributionCondition.FILLER_APPORTIONMENT_NOT_DETERMINED.value: (
+        "The fillers started unequal and have to change, and no rule says how the change is "
+        "shared between them. Confirm the split."
+    ),
+}
 
 
 def _parse(value: str, *, field: str) -> Measurement:
@@ -87,257 +127,195 @@ def _operand(
     )
 
 
-def _design_width(
-    cabinets: tuple[Measurement, ...], fillers: tuple[Measurement, Measurement]
-) -> Measurement:
-    total = sum((measurement.exact for measurement in cabinets), Fraction(0))
-    total += fillers[0].exact + fillers[1].exact
-    return _derived(total)
-
-
-def _equal_fillers(total: Measurement) -> tuple[Measurement, Measurement]:
-    each = _derived(total.exact * Fraction(1, 2), total.unit)
-    return (each, each)
+def _total(measurements: tuple[Measurement, ...]) -> Measurement:
+    return _derived(sum((measurement.exact for measurement in measurements), Fraction(0)))
 
 
 @router.post(
     "/projects/{project_id}/filler-distribution",
     response_model=FillerDistributionResponse,
-    summary="Calculate a reviewer-confirmed filler/cabinet distribution",
+    summary="Calculate the site-corrected layout for one cabinet run",
 )
 def calculate_filler_distribution(
     project_id: UUID,
     payload: FillerDistributionRequest,
     principal: Annotated[Principal, Depends(require_project_access)],
 ) -> FillerDistributionResponse:
-    """Return the filler-first proposal, abstaining when reviewer input is missing."""
+    """Return the two-step proposal, abstaining when reviewer input is missing."""
 
-    del principal
+    del principal, project_id
 
     cabinets = tuple(
         _parse(cabinet.width, field=f"assembly.cabinets[{index}].width")
         for index, cabinet in enumerate(payload.assembly.cabinets)
     )
-    design_fillers = (
-        _parse(payload.assembly.fillers[0].width, field="assembly.fillers[0].width"),
-        _parse(payload.assembly.fillers[1].width, field="assembly.fillers[1].width"),
+    design_fillers = tuple(
+        _parse(filler.width, field=f"assembly.fillers[{index}].width")
+        for index, filler in enumerate(payload.assembly.fillers)
     )
-    filler_min = _parse(payload.filler_min, field="filler_min")
-    filler_max = _parse(payload.filler_max, field="filler_max")
-    if filler_min.exact < 0:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="filler_min must not be negative",
+    types: tuple[CabinetTypeName, ...] = tuple(
+        cabinet.type for cabinet in payload.assembly.cabinets
+    )
+    bounds = {
+        name: _parse(getattr(payload, name), field=name)
+        for name in (
+            "filler_min",
+            "filler_max",
+            "single_door_cab_width_min",
+            "single_door_cab_width_max",
+            "double_door_cab_width_min",
+            "double_door_cab_width_max",
+            "drawer_cab_width_min",
+            "drawer_cab_width_max",
         )
-    if filler_min.exact > filler_max.exact:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="filler_min must not exceed filler_max",
-        )
+    }
+
     cabinet_ids = tuple(cabinet.id for cabinet in payload.assembly.cabinets)
     if len(set(cabinet_ids)) != len(cabinet_ids):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="cabinet ids must be unique so a reviewer selection identifies one cabinet",
+            detail="cabinet ids must be unique so the proposal names one cabinet each",
         )
-    design_width = _design_width(cabinets, design_fillers)
 
-    original_filler_out = (
-        FillerProposalOut(
-            id=payload.assembly.fillers[0].id,
-            original=_quantity(design_fillers[0]),
-            proposed=_quantity(design_fillers[0]),
-        ),
-        FillerProposalOut(
-            id=payload.assembly.fillers[1].id,
-            original=_quantity(design_fillers[1]),
-            proposed=_quantity(design_fillers[1]),
-        ),
-    )
-    original_cabinet_out = tuple(
-        CabinetProposalOut(
-            id=cabinet.id,
-            original=_quantity(width),
-            proposed=_quantity(width),
-            adjustable=False,
+    design_width = _derived(_total(cabinets).exact + _total(design_fillers).exact)
+    design_filler_total = _total(design_fillers)
+
+    def respond(
+        *,
+        outcome: Literal["PASS", "REVIEW_REQUIRED", "NOT_FOUND"],
+        condition: str,
+        message: str,
+        site_difference: Measurement | None,
+        field_width: Measurement | None,
+        proposed_fillers: tuple[Measurement, ...],
+        proposed_cabinets: tuple[Measurement, ...],
+        cabinets_retained: bool,
+        reviewer_action: str | None,
+        calculation: str,
+    ) -> FillerDistributionResponse:
+        return FillerDistributionResponse(
+            outcome=outcome,
+            condition=condition,
+            message=message,
+            design_width=_quantity(design_width),
+            site_difference=_nullable_quantity(site_difference),
+            field_dimension=_operand("field_width", "USER_INPUT", field_width),
+            fillers=tuple(
+                FillerProposalOut(
+                    id=filler.id,
+                    original=_quantity(original),
+                    proposed=_quantity(proposed),
+                )
+                for filler, original, proposed in zip(
+                    payload.assembly.fillers, design_fillers, proposed_fillers, strict=True
+                )
+            ),
+            cabinets=tuple(
+                CabinetProposalOut(
+                    id=cabinet.id,
+                    type=cabinet.type,
+                    original=_quantity(original),
+                    proposed=_quantity(proposed),
+                    adjustable=cabinet.type != "equipment",
+                )
+                for cabinet, original, proposed in zip(
+                    payload.assembly.cabinets, cabinets, proposed_cabinets, strict=True
+                )
+            ),
+            cabinets_retained=cabinets_retained,
+            reviewer_action=reviewer_action,
+            operands=(
+                _operand("field_width", "USER_INPUT", field_width),
+                _operand("design_width", "ARCH", design_width),
+                _operand("design_fillers", "ARCH", design_filler_total),
+                _operand("filler_bounds", "LITERAL", bounds["filler_min"]),
+            ),
+            calculation=calculation,
         )
-        for cabinet, width in zip(payload.assembly.cabinets, cabinets, strict=True)
-    )
 
     if payload.field_width is None:
-        return FillerDistributionResponse(
+        return respond(
             outcome="NOT_FOUND",
             condition="field_width_missing",
             message=(
                 "The on-site field dimension was not supplied, so the distribution cannot be "
                 "calculated."
             ),
-            design_width=_quantity(design_width),
             site_difference=None,
-            field_dimension=_operand("field_width", "USER_INPUT", None),
-            selected_adjustable_cabinet_id=payload.adjustable_cabinet_id,
-            fillers=original_filler_out,
-            cabinets=original_cabinet_out,
-            operands=(
-                _operand("field_width", "USER_INPUT", None),
-                _operand("design_fillers", "ARCH", None),
-                _operand("filler_bounds", "LITERAL", None),
-            ),
+            field_width=None,
+            proposed_fillers=design_fillers,
+            proposed_cabinets=cabinets,
+            cabinets_retained=False,
+            reviewer_action="enter the site field width",
             calculation="field width missing; no arithmetic run",
         )
 
     field_width = _parse(payload.field_width, field="field_width")
-    site_difference = _derived(field_width.exact - design_width.exact)
-    design_total = _derived(design_fillers[0].exact + design_fillers[1].exact)
-    requested_filler_total = _derived(design_total.exact + site_difference.exact)
-    lower_total = _derived(filler_min.exact * 2)
-    upper_total = _derived(filler_max.exact * 2)
 
-    if lower_total.exact <= requested_filler_total.exact <= upper_total.exact:
-        proposed_fillers = _equal_fillers(requested_filler_total)
-        operation = filler_distribution(
+    # The architectural run is submitted as the proposal because it is the run the reviewer holds.
+    # What is wanted back is the operation's expectation, not its verdict on that submission.
+    try:
+        result = cabinet_run_distribution(
             field_width=field_width,
             design_width=design_width,
-            design_fillers=design_fillers,
-            proposed_fillers=proposed_fillers,
-            filler_min=filler_min,
-            filler_max=filler_max,
-            allow_asymmetric=0,
+            design_fillers=list(design_fillers),
+            proposed_fillers=list(design_fillers),
+            design_cabinets=list(cabinets),
+            proposed_cabinets=list(cabinets),
+            cabinet_type=list(types),
+            **bounds,
         )
-        return FillerDistributionResponse(
-            outcome="PASS",
-            condition=DistributionCondition.FILLERS_ABSORB.value,
-            message="The fillers can absorb the site difference; no cabinet adjustment is needed.",
-            design_width=_quantity(design_width),
-            site_difference=_quantity(site_difference),
-            field_dimension=_operand("field_width", "USER_INPUT", field_width),
-            selected_adjustable_cabinet_id=None,
-            fillers=(
-                FillerProposalOut(
-                    id=payload.assembly.fillers[0].id,
-                    original=_quantity(design_fillers[0]),
-                    proposed=_quantity(proposed_fillers[0]),
-                ),
-                FillerProposalOut(
-                    id=payload.assembly.fillers[1].id,
-                    original=_quantity(design_fillers[1]),
-                    proposed=_quantity(proposed_fillers[1]),
-                ),
-            ),
-            cabinets=original_cabinet_out,
-            operands=(
-                _operand("field_width", "USER_INPUT", field_width),
-                _operand("design_width", "ARCH", design_width),
-                _operand("design_fillers", "ARCH", design_total),
-                _operand("filler_bounds", "LITERAL", _derived(filler_min.exact)),
-            ),
-            calculation=operation.comparison,
-        )
-
-    bounded_total = lower_total if requested_filler_total.exact < lower_total.exact else upper_total
-    bounded_fillers = _equal_fillers(bounded_total)
-    operation = filler_distribution(
-        field_width=field_width,
-        design_width=design_width,
-        design_fillers=design_fillers,
-        proposed_fillers=bounded_fillers,
-        filler_min=filler_min,
-        filler_max=filler_max,
-        allow_asymmetric=0,
-    )
-    if operation.outcome is not Outcome.REVIEW_REQUIRED:
-        raise RuntimeError("filler_distribution did not abstain when filler bounds were exceeded")
-
-    if payload.adjustable_cabinet_id is None:
-        return FillerDistributionResponse(
-            outcome="REVIEW_REQUIRED",
-            condition=DistributionCondition.CABINET_SELECTION_REQUIRED.value,
-            message=(
-                "Fillers cannot absorb the site difference within their bounds. A reviewer must "
-                "choose the adjustable cabinet; the system did not pick one."
-            ),
-            design_width=_quantity(design_width),
-            site_difference=_quantity(site_difference),
-            field_dimension=_operand("field_width", "USER_INPUT", field_width),
-            selected_adjustable_cabinet_id=None,
-            fillers=(
-                FillerProposalOut(
-                    id=payload.assembly.fillers[0].id,
-                    original=_quantity(design_fillers[0]),
-                    proposed=_quantity(bounded_fillers[0]),
-                ),
-                FillerProposalOut(
-                    id=payload.assembly.fillers[1].id,
-                    original=_quantity(design_fillers[1]),
-                    proposed=_quantity(bounded_fillers[1]),
-                ),
-            ),
-            cabinets=original_cabinet_out,
-            operands=(
-                _operand("field_width", "USER_INPUT", field_width),
-                _operand("design_width", "ARCH", design_width),
-                _operand("design_fillers", "ARCH", design_total),
-                _operand("filler_bounds", "LITERAL", _derived(filler_min.exact)),
-            ),
-            calculation=operation.comparison,
-        )
-
-    try:
-        selected_index = cabinet_ids.index(payload.adjustable_cabinet_id)
-    except ValueError as error:
+    except RuleAuthoringError as refused:
+        # Bounds that contradict each other are a reviewer's input mistake here, not a rule wired
+        # wrongly, so they come back as 422 rather than reaching the client as a server fault.
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="adjustable_cabinet_id must name one of the supplied cabinets",
-        ) from error
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(refused)
+        ) from refused
 
-    cabinet_delta = _derived(requested_filler_total.exact - bounded_total.exact)
-    proposed_cabinets = tuple(
-        CabinetProposalOut(
-            id=cabinet.id,
-            original=_quantity(width),
-            proposed=_quantity(
-                _derived(width.exact + cabinet_delta.exact) if index == selected_index else width
-            ),
-            adjustable=index == selected_index,
+    facts = dict(result.intermediates)
+    condition = str(facts["condition"])
+    site_difference = facts["site_difference"]
+    assert isinstance(site_difference, Measurement)
+
+    if condition not in _MESSAGES:
+        raise RuntimeError(
+            f"cabinet_run_distribution returned condition {condition!r}, which this route has no "
+            "reviewer-facing message for"
         )
-        for index, (cabinet, width) in enumerate(
-            zip(payload.assembly.cabinets, cabinets, strict=True)
+
+    if result.outcome is Outcome.REVIEW_REQUIRED:
+        return respond(
+            outcome="REVIEW_REQUIRED",
+            condition=condition,
+            message=_MESSAGES[condition],
+            site_difference=site_difference,
+            field_width=field_width,
+            proposed_fillers=design_fillers,
+            proposed_cabinets=cabinets,
+            # False on every abstention, whatever the reason. The flag drives green checks on the
+            # cabinets, and a calculation that declined to reach an answer has not cleared them.
+            cabinets_retained=False,
+            reviewer_action=str(facts.get("reviewer_action", "")) or None,
+            calculation=result.comparison,
         )
-    )
-    return FillerDistributionResponse(
+
+    expected_fillers = facts["expected_fillers"]
+    expected_cabinets = facts["expected_cabinets"]
+    assert isinstance(expected_fillers, tuple)
+    assert isinstance(expected_cabinets, tuple)
+    return respond(
+        # PASS reports that the calculation reached an answer, not that a drawing was approved.
+        # The operation's FAIL on the architectural run is what makes the proposal non-trivial.
         outcome="PASS",
-        condition="cabinet_adjusted_by_reviewer_selection",
-        message=(
-            "Fillers were set to their bounds and the remaining difference was assigned to the "
-            "reviewer-chosen adjustable cabinet."
-        ),
-        design_width=_quantity(design_width),
-        site_difference=_quantity(site_difference),
-        field_dimension=_operand("field_width", "USER_INPUT", field_width),
-        selected_adjustable_cabinet_id=payload.adjustable_cabinet_id,
-        fillers=(
-            FillerProposalOut(
-                id=payload.assembly.fillers[0].id,
-                original=_quantity(design_fillers[0]),
-                proposed=_quantity(bounded_fillers[0]),
-            ),
-            FillerProposalOut(
-                id=payload.assembly.fillers[1].id,
-                original=_quantity(design_fillers[1]),
-                proposed=_quantity(bounded_fillers[1]),
-            ),
-        ),
-        cabinets=proposed_cabinets,
-        operands=(
-            _operand("field_width", "USER_INPUT", field_width),
-            _operand("design_width", "ARCH", design_width),
-            _operand("design_fillers", "ARCH", design_total),
-            _operand("adjustable_cabinet", "USER_INPUT", cabinets[selected_index]),
-        ),
-        calculation=(
-            f"{operation.comparison}; reviewer selected {payload.adjustable_cabinet_id}, so the "
-            f'remaining {format_inches(cabinet_delta.exact)}" is applied to that cabinet'
-        ),
+        condition=condition,
+        message=_MESSAGES[condition],
+        site_difference=site_difference,
+        field_width=field_width,
+        proposed_fillers=expected_fillers,
+        proposed_cabinets=expected_cabinets,
+        cabinets_retained=bool(facts["cabinets_retained"]),
+        reviewer_action=None,
+        calculation=result.comparison,
     )
 
 

@@ -3,6 +3,10 @@ import { AlertTriangle, Calculator, CheckCircle2 } from 'lucide-react';
 
 import {
   buildFillerDistributionRequest,
+  CABINET_BOUND_NAMES,
+  CABINET_TYPE_LABELS,
+  type CabinetBoundName,
+  type CabinetTypeName,
   type DistributionParameter,
   type DistributionQuantity,
   type FillerDistributionRequest,
@@ -60,22 +64,33 @@ export function FillerDistributionPanel({
   onCalculate: (request: FillerDistributionRequest) => Promise<FillerDistributionResponse>;
   initialResult?: FillerDistributionResponse | null;
 }) {
-  const [selectedCabinet, setSelectedCabinet] = useState('');
+  // The reviewer's classification, one per cabinet, indexed by position in the run. Empty until
+  // they choose: nothing here guesses a type from a width, and the request is withheld until every
+  // cabinet has one.
+  const [cabinetTypes, setCabinetTypes] = useState<CabinetTypeName[]>([]);
   const [result, setResult] = useState<FillerDistributionResponse | null>(initialResult);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const cabinetWidths = useMemo(
+    () => valueRun(quantities, singles, runs, DESIGN_CABINET_KEY).filter((width) => width.trim()),
+    [quantities, runs, singles],
+  );
+
   const built = useMemo(
     () =>
       buildFillerDistributionRequest({
-        cabinetWidths: valueRun(quantities, singles, runs, DESIGN_CABINET_KEY),
+        cabinetWidths,
+        cabinetTypes: cabinetTypes.slice(0, cabinetWidths.length),
         fillerWidths: valueRun(quantities, singles, runs, DESIGN_FILLER_KEY),
         fieldWidth,
         fillerMin: parameterValue(parameters, singles, 'filler_min'),
         fillerMax: parameterValue(parameters, singles, 'filler_max'),
-        adjustableCabinetId: selectedCabinet || null,
+        cabinetBounds: Object.fromEntries(
+          CABINET_BOUND_NAMES.map((name) => [name, parameterValue(parameters, singles, name)]),
+        ) as Record<CabinetBoundName, string>,
       }),
-    [fieldWidth, parameters, quantities, runs, selectedCabinet, singles],
+    [cabinetTypes, cabinetWidths, fieldWidth, parameters, quantities, runs, singles],
   );
 
   async function calculate() {
@@ -86,22 +101,26 @@ export function FillerDistributionPanel({
     try {
       setResult(await onCalculate(built.request));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The distribution could not be calculated.');
+      setError(
+        caught instanceof Error ? caught.message : 'The distribution could not be calculated.',
+      );
     } finally {
       setBusy(false);
     }
   }
 
-  const cabinetOptions = built.request?.assembly.cabinets ?? [];
-
   return (
-    <section className="enter-values__section distribution-panel" aria-labelledby="distribution-heading">
+    <section
+      className="enter-values__section distribution-panel"
+      aria-labelledby="distribution-heading"
+    >
       <div className="distribution-panel__head">
         <div>
           <h2 id="distribution-heading">Filler distribution</h2>
           <p className="enter-values__hint">
-            Enter the site field width and choose the cabinet a reviewer allows to move. The
-            proposal below is returned by the backend calculation.
+            Enter the site field width and classify each cabinet. Equipment cabinets keep their
+            width; the difference the fillers cannot absorb is divided equally between the regular
+            ones. The proposal below is returned by the backend calculation.
           </p>
         </div>
         <Calculator size={18} aria-hidden="true" />
@@ -122,25 +141,39 @@ export function FillerDistributionPanel({
           />
         </label>
 
-        <label className="value-field distribution-panel__field" htmlFor="distribution-cabinet">
-          <span className="value-label">
-            <span className="value-name">Adjustable cabinet</span>
-            <span className="value-source">reviewer choice</span>
-          </span>
-          <select
-            className="value-input value-input--wide"
-            id="distribution-cabinet"
-            value={selectedCabinet}
-            onChange={(event) => setSelectedCabinet(event.target.value)}
+        {cabinetWidths.map((width, index) => (
+          <label
+            className="value-field distribution-panel__field"
+            htmlFor={`distribution-cabinet-type-${index}`}
+            key={`cabinet-${index + 1}`}
           >
-            <option value="">No cabinet selected</option>
-            {cabinetOptions.map((cabinet, index) => (
-              <option key={cabinet.id} value={cabinet.id}>
-                Cabinet {index + 1} — {cabinet.width}
-              </option>
-            ))}
-          </select>
-        </label>
+            <span className="value-label">
+              <span className="value-name">
+                Cabinet {index + 1} — {width}
+              </span>
+              <span className="value-source">reviewer classification</span>
+            </span>
+            <select
+              className="value-input value-input--wide"
+              id={`distribution-cabinet-type-${index}`}
+              value={cabinetTypes[index] ?? ''}
+              onChange={(event) =>
+                setCabinetTypes((current) => {
+                  const next = [...current];
+                  next[index] = event.target.value as CabinetTypeName;
+                  return next;
+                })
+              }
+            >
+              <option value="">Not classified</option>
+              {CABINET_TYPE_LABELS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ))}
       </div>
 
       {built.missing.length > 0 && (
@@ -188,8 +221,8 @@ export function FillerDistributionPanel({
               <dd>{quantityDisplay(result.site_difference)}</dd>
             </div>
             <div>
-              <dt>Selected cabinet</dt>
-              <dd>{result.selected_adjustable_cabinet_id ?? 'none selected'}</dd>
+              <dt>Cabinets</dt>
+              <dd>{result.cabinets_retained ? 'unchanged' : 'adjusted'}</dd>
             </div>
           </dl>
 
@@ -213,7 +246,7 @@ export function FillerDistributionPanel({
                 <tr key={cabinet.id} data-adjustable={cabinet.adjustable}>
                   <th scope="row">
                     {cabinet.id}
-                    {cabinet.adjustable ? ' (adjusted)' : ''}
+                    {cabinet.adjustable ? '' : ' (equipment — width fixed)'}
                   </th>
                   <td>{quantityDisplay(cabinet.original)}</td>
                   <td>{quantityDisplay(cabinet.proposed)}</td>
@@ -221,6 +254,12 @@ export function FillerDistributionPanel({
               ))}
             </tbody>
           </table>
+
+          {result.reviewer_action && (
+            <p className="distribution-result__action" role="status">
+              <AlertTriangle size={14} aria-hidden="true" /> {result.reviewer_action}
+            </p>
+          )}
 
           <p className="distribution-result__calculation">{result.calculation}</p>
         </div>
