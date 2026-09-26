@@ -133,8 +133,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Calculate a reviewer-confirmed filler/cabinet distribution
-         * @description Return the filler-first proposal, abstaining when reviewer input is missing.
+         * Calculate the site-corrected layout for one cabinet run
+         * @description Return the two-step proposal, abstaining when reviewer input is missing.
          */
         post: operations["calculate_filler_distribution_api_v1_projects__project_id__filler_distribution_post"];
         delete?: never;
@@ -1270,10 +1270,7 @@ export interface components {
             /** Cabinets */
             cabinets: components["schemas"]["CabinetInput"][];
             /** Fillers */
-            fillers: [
-                components["schemas"]["FillerInput"],
-                components["schemas"]["FillerInput"]
-            ];
+            fillers: components["schemas"]["FillerInput"][];
         };
         /**
          * AssignmentEvent
@@ -1351,6 +1348,12 @@ export interface components {
             /** Id */
             id: string;
             /**
+             * Type
+             * @description The reviewer's classification of this cabinet. Slide 11 of the 2026-09-21 deck puts this with the reviewer — they categorise a cabinet and confirm whether its width may change — so it is a required input and the server never infers it.
+             * @enum {string}
+             */
+            type: "single_door" | "double_door" | "drawer" | "equipment";
+            /**
              * Width
              * @description Authored dimension with its unit, e.g. 30" or 762 mm.
              */
@@ -1367,6 +1370,11 @@ export interface components {
             id: string;
             original: components["schemas"]["app__schemas__distribution__QuantityOut"];
             proposed: components["schemas"]["app__schemas__distribution__QuantityOut"];
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "single_door" | "double_door" | "drawer" | "equipment";
         };
         /**
          * CalculationTraceOut
@@ -1826,9 +1834,15 @@ export interface components {
          *     abstention (NOT_FOUND), not a guessed zero or a selected default.
          */
         FillerDistributionRequest: {
-            /** Adjustable Cabinet Id */
-            adjustable_cabinet_id?: string | null;
             assembly: components["schemas"]["AssemblyInput"];
+            /** Double Door Cab Width Max */
+            double_door_cab_width_max: string;
+            /** Double Door Cab Width Min */
+            double_door_cab_width_min: string;
+            /** Drawer Cab Width Max */
+            drawer_cab_width_max: string;
+            /** Drawer Cab Width Min */
+            drawer_cab_width_min: string;
             /**
              * Field Width
              * @description Reviewer-entered site dimension with its unit, e.g. 96 1/2".
@@ -1838,6 +1852,10 @@ export interface components {
             filler_max: string;
             /** Filler Min */
             filler_min: string;
+            /** Single Door Cab Width Max */
+            single_door_cab_width_max: string;
+            /** Single Door Cab Width Min */
+            single_door_cab_width_min: string;
         };
         /**
          * FillerDistributionResponse
@@ -1846,6 +1864,8 @@ export interface components {
         FillerDistributionResponse: {
             /** Cabinets */
             cabinets: components["schemas"]["CabinetProposalOut"][];
+            /** Cabinets Retained */
+            cabinets_retained: boolean;
             /** Calculation */
             calculation: string;
             /** Condition */
@@ -1853,10 +1873,7 @@ export interface components {
             design_width: components["schemas"]["app__schemas__distribution__QuantityOut"];
             field_dimension: components["schemas"]["OperandTraceOut"];
             /** Fillers */
-            fillers: [
-                components["schemas"]["FillerProposalOut"],
-                components["schemas"]["FillerProposalOut"]
-            ];
+            fillers: components["schemas"]["FillerProposalOut"][];
             /** Message */
             message: string;
             /** Operands */
@@ -1866,8 +1883,8 @@ export interface components {
              * @enum {string}
              */
             outcome: "PASS" | "REVIEW_REQUIRED" | "NOT_FOUND";
-            /** Selected Adjustable Cabinet Id */
-            selected_adjustable_cabinet_id: string | null;
+            /** Reviewer Action */
+            reviewer_action?: string | null;
             site_difference: components["schemas"]["app__schemas__distribution__QuantityOut"] | null;
         };
         /**

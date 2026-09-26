@@ -218,16 +218,10 @@
             "type": "array"
           },
           "fillers": {
-            "maxItems": 2,
-            "minItems": 2,
-            "prefixItems": [
-              {
-                "$ref": "#/components/schemas/FillerInput"
-              },
-              {
-                "$ref": "#/components/schemas/FillerInput"
-              }
-            ],
+            "items": {
+              "$ref": "#/components/schemas/FillerInput"
+            },
+            "minItems": 1,
             "title": "Fillers",
             "type": "array"
           }
@@ -369,6 +363,17 @@
             "title": "Id",
             "type": "string"
           },
+          "type": {
+            "description": "The reviewer's classification of this cabinet. Slide 11 of the 2026-09-21 deck puts this with the reviewer \u2014 they categorise a cabinet and confirm whether its width may change \u2014 so it is a required input and the server never infers it.",
+            "enum": [
+              "single_door",
+              "double_door",
+              "drawer",
+              "equipment"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
           "width": {
             "description": "Authored dimension with its unit, e.g. 30\" or 762 mm.",
             "maxLength": 100,
@@ -379,7 +384,8 @@
         },
         "required": [
           "id",
-          "width"
+          "width",
+          "type"
         ],
         "title": "CabinetInput",
         "type": "object"
@@ -400,10 +406,21 @@
           },
           "proposed": {
             "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          },
+          "type": {
+            "enum": [
+              "single_door",
+              "double_door",
+              "drawer",
+              "equipment"
+            ],
+            "title": "Type",
+            "type": "string"
           }
         },
         "required": [
           "id",
+          "type",
           "original",
           "proposed",
           "adjustable"
@@ -1212,21 +1229,32 @@
         "additionalProperties": false,
         "description": "Inputs for the deterministic filler-first distribution proposal.\n\n``field_width`` is nullable on purpose: a missing on-site field dimension is a business\nabstention (NOT_FOUND), not a guessed zero or a selected default.",
         "properties": {
-          "adjustable_cabinet_id": {
-            "anyOf": [
-              {
-                "maxLength": 100,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Adjustable Cabinet Id"
-          },
           "assembly": {
             "$ref": "#/components/schemas/AssemblyInput"
+          },
+          "double_door_cab_width_max": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Double Door Cab Width Max",
+            "type": "string"
+          },
+          "double_door_cab_width_min": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Double Door Cab Width Min",
+            "type": "string"
+          },
+          "drawer_cab_width_max": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Drawer Cab Width Max",
+            "type": "string"
+          },
+          "drawer_cab_width_min": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Drawer Cab Width Min",
+            "type": "string"
           },
           "field_width": {
             "anyOf": [
@@ -1252,12 +1280,30 @@
             "minLength": 1,
             "title": "Filler Min",
             "type": "string"
+          },
+          "single_door_cab_width_max": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Single Door Cab Width Max",
+            "type": "string"
+          },
+          "single_door_cab_width_min": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Single Door Cab Width Min",
+            "type": "string"
           }
         },
         "required": [
           "assembly",
           "filler_min",
-          "filler_max"
+          "filler_max",
+          "single_door_cab_width_min",
+          "single_door_cab_width_max",
+          "double_door_cab_width_min",
+          "double_door_cab_width_max",
+          "drawer_cab_width_min",
+          "drawer_cab_width_max"
         ],
         "title": "FillerDistributionRequest",
         "type": "object"
@@ -1271,6 +1317,10 @@
             },
             "title": "Cabinets",
             "type": "array"
+          },
+          "cabinets_retained": {
+            "title": "Cabinets Retained",
+            "type": "boolean"
           },
           "calculation": {
             "title": "Calculation",
@@ -1287,16 +1337,9 @@
             "$ref": "#/components/schemas/OperandTraceOut"
           },
           "fillers": {
-            "maxItems": 2,
-            "minItems": 2,
-            "prefixItems": [
-              {
-                "$ref": "#/components/schemas/FillerProposalOut"
-              },
-              {
-                "$ref": "#/components/schemas/FillerProposalOut"
-              }
-            ],
+            "items": {
+              "$ref": "#/components/schemas/FillerProposalOut"
+            },
             "title": "Fillers",
             "type": "array"
           },
@@ -1320,7 +1363,7 @@
             "title": "Outcome",
             "type": "string"
           },
-          "selected_adjustable_cabinet_id": {
+          "reviewer_action": {
             "anyOf": [
               {
                 "type": "string"
@@ -1329,7 +1372,7 @@
                 "type": "null"
               }
             ],
-            "title": "Selected Adjustable Cabinet Id"
+            "title": "Reviewer Action"
           },
           "site_difference": {
             "anyOf": [
@@ -1349,9 +1392,9 @@
           "design_width",
           "site_difference",
           "field_dimension",
-          "selected_adjustable_cabinet_id",
           "fillers",
           "cabinets",
+          "cabinets_retained",
           "operands",
           "calculation"
         ],
@@ -3672,7 +3715,7 @@
     },
     "/api/v1/projects/{project_id}/filler-distribution": {
       "post": {
-        "description": "Return the filler-first proposal, abstaining when reviewer input is missing.",
+        "description": "Return the two-step proposal, abstaining when reviewer input is missing.",
         "operationId": "calculate_filler_distribution_api_v1_projects__project_id__filler_distribution_post",
         "parameters": [
           {
@@ -3718,7 +3761,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Calculate a reviewer-confirmed filler/cabinet distribution",
+        "summary": "Calculate the site-corrected layout for one cabinet run",
         "tags": [
           "distribution"
         ]
