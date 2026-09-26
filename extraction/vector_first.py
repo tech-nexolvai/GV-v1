@@ -34,14 +34,15 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
-from typing import Any
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
+from typing import Any, Literal, overload
 
 import pdfplumber
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
 import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
-from evidence.crop import encode_png
+from evidence.coordinates import ImagePoint
+from evidence.crop import decode_rgb_png, encode_png
 from extraction.annotations import MarkupNote, OutlinedTextRegion, PageLayers
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import lines_within
@@ -49,6 +50,7 @@ from extraction.rasterise import VISION_CROP_DPI
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = [
+    "RegionCrop",
     "RegionToRead",
     "SetAsideRegion",
     "VectorFirstPage",
@@ -66,6 +68,10 @@ _POINTS_PER_INCH = Decimal(72)
 _REFRAMED_VISIBLE_PAGE_MAX_PIXELS = 25_000_000
 
 
+def _round_pixel(value: Decimal) -> int:
+    return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
 @dataclass(frozen=True, slots=True)
 class RegionToRead:
     """One region the vision seam will be asked about, and the line-work that selected it."""
@@ -77,11 +83,80 @@ class RegionToRead:
 
 
 @dataclass(frozen=True, slots=True)
+class RegionCrop:
+    """The exact crop sent to a reader, plus the transform needed to place its rectangles back."""
+
+    png: bytes
+    width_px: int
+    height_px: int
+    unrotated_width_px: int
+    unrotated_height_px: int
+    page_left_px: int
+    page_top_px: int
+    dpi: int
+    applied_rotation_degrees: int
+
+    def __post_init__(self) -> None:
+        if self.applied_rotation_degrees not in (0, 90, 180, 270):
+            raise ValueError("applied_rotation_degrees must be one of 0, 90, 180 or 270")
+
+    def map_reader_polygon(
+        self, points: tuple[ImagePoint, ...], *, target_dpi: int | None = None
+    ) -> tuple[ImagePoint, ...]:
+        """Map crop-local reader points back into the unrotated full-page image frame."""
+        if not isinstance(points, tuple) or any(
+            not isinstance(point, ImagePoint) for point in points
+        ):
+            raise TypeError("points must be a tuple of ImagePoint values")
+        mapped = tuple(self._map_reader_point(point) for point in points)
+        if target_dpi is None or target_dpi == self.dpi:
+            return mapped
+        if isinstance(target_dpi, bool) or not isinstance(target_dpi, int) or target_dpi <= 0:
+            raise ValueError("target_dpi must be a positive integer")
+        return tuple(
+            ImagePoint(
+                _round_pixel(Decimal(point.x) * Decimal(target_dpi) / Decimal(self.dpi)),
+                _round_pixel(Decimal(point.y) * Decimal(target_dpi) / Decimal(self.dpi)),
+            )
+            for point in mapped
+        )
+
+    def _map_reader_point(self, point: ImagePoint) -> ImagePoint:
+        old_x, old_y = self._unrotated_crop_point(point)
+        return ImagePoint(
+            self.page_left_px + _round_pixel(old_x),
+            self.page_top_px + _round_pixel(old_y),
+        )
+
+    def _unrotated_crop_point(self, point: ImagePoint) -> tuple[Decimal, Decimal]:
+        x = Decimal(point.x)
+        y = Decimal(point.y)
+        width = Decimal(self.unrotated_width_px)
+        height = Decimal(self.unrotated_height_px)
+        if self.applied_rotation_degrees == 0:
+            return x, y
+        if self.applied_rotation_degrees == 90:
+            return width - y, x
+        if self.applied_rotation_degrees == 180:
+            return width - x, height - y
+        return y, height - x
+
+
+@dataclass(frozen=True, slots=True)
 class SetAsideRegion:
     """One region not being read, and why. Retained rather than dropped."""
 
     region: OutlinedTextRegion
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _UnrotatedCrop:
+    png: bytes
+    width_px: int
+    height_px: int
+    page_left_px: int
+    page_top_px: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,7 +405,7 @@ def _crop_from_visible_page(
     dpi: int,
     margin_pt: Decimal,
     raw_crop_box: tuple[Decimal, Decimal, Decimal, Decimal],
-) -> bytes:
+) -> _UnrotatedCrop:
     """Render a bounded non-zero CropBox once, then cut its stored-coordinate region.
 
     PDFium's ``Page.render(crop=...)`` takes a different coordinate frame for an isolated crop
@@ -414,7 +489,93 @@ def _crop_from_visible_page(
             rows.append(row)
         else:
             rows.append(b"".join(row[index : index + 3] for index in range(0, len(row), channels)))
-    return encode_png(right - left, bottom - top, b"".join(rows))
+    return _UnrotatedCrop(
+        png=encode_png(right - left, bottom - top, b"".join(rows)),
+        width_px=right - left,
+        height_px=bottom - top,
+        page_left_px=left,
+        page_top_px=top,
+    )
+
+
+def _rotate_rgb_ccw(rgb: bytes, *, width: int, height: int, degrees: int) -> tuple[int, int, bytes]:
+    """Rotate RGB bytes by a supported counter-clockwise quarter turn."""
+    if degrees == 0:
+        return width, height, rgb
+    pixels = [rgb[index : index + 3] for index in range(0, len(rgb), 3)]
+    if degrees == 90:
+        rotated = [
+            pixels[new_x * width + (width - 1 - new_y)]
+            for new_y in range(width)
+            for new_x in range(height)
+        ]
+        return height, width, b"".join(rotated)
+    if degrees == 180:
+        return width, height, b"".join(reversed(pixels))
+    if degrees == 270:
+        rotated = [
+            pixels[(height - 1 - new_x) * width + new_y]
+            for new_y in range(width)
+            for new_x in range(height)
+        ]
+        return height, width, b"".join(rotated)
+    raise ValueError("degrees must be one of 0, 90, 180 or 270")
+
+
+def _rotated_crop(unrotated: _UnrotatedCrop, *, degrees: int, dpi: int) -> RegionCrop:
+    if degrees == 0:
+        return RegionCrop(
+            png=unrotated.png,
+            width_px=unrotated.width_px,
+            height_px=unrotated.height_px,
+            unrotated_width_px=unrotated.width_px,
+            unrotated_height_px=unrotated.height_px,
+            page_left_px=unrotated.page_left_px,
+            page_top_px=unrotated.page_top_px,
+            dpi=dpi,
+            applied_rotation_degrees=0,
+        )
+    width, height, rgb = decode_rgb_png(unrotated.png)
+    rotated_width, rotated_height, rotated_rgb = _rotate_rgb_ccw(
+        rgb, width=width, height=height, degrees=degrees
+    )
+    return RegionCrop(
+        png=encode_png(rotated_width, rotated_height, rotated_rgb),
+        width_px=rotated_width,
+        height_px=rotated_height,
+        unrotated_width_px=unrotated.width_px,
+        unrotated_height_px=unrotated.height_px,
+        page_left_px=unrotated.page_left_px,
+        page_top_px=unrotated.page_top_px,
+        dpi=dpi,
+        applied_rotation_degrees=degrees,
+    )
+
+
+@overload
+def region_crop(
+    data: bytes,
+    page_index: int,
+    region: OutlinedTextRegion,
+    *,
+    dpi: int = VISION_CROP_DPI,
+    margin_pt: Decimal,
+    include_markup: bool = False,
+    return_metadata: Literal[False] = False,
+) -> bytes: ...
+
+
+@overload
+def region_crop(
+    data: bytes,
+    page_index: int,
+    region: OutlinedTextRegion,
+    *,
+    dpi: int = VISION_CROP_DPI,
+    margin_pt: Decimal,
+    include_markup: bool = False,
+    return_metadata: Literal[True],
+) -> RegionCrop: ...
 
 
 def region_crop(
@@ -425,7 +586,8 @@ def region_crop(
     dpi: int = VISION_CROP_DPI,
     margin_pt: Decimal,
     include_markup: bool = False,
-) -> bytes:
+    return_metadata: bool = False,
+) -> bytes | RegionCrop:
     """PNG bytes for one region of the vendor's drawing, rendered from the vector page at `dpi`.
 
     `include_markup` is `False` because a crop of the vendor's drawing should contain the vendor's
@@ -467,20 +629,32 @@ def region_crop(
         if crop_left != 0 or crop_bottom != 0:
             if not include_markup:
                 _drop_other_layers(page)
-            return _crop_from_visible_page(
-                page, region, dpi=dpi, margin_pt=margin_pt, raw_crop_box=raw_crop_box
+            result = _rotated_crop(
+                _crop_from_visible_page(
+                    page, region, dpi=dpi, margin_pt=margin_pt, raw_crop_box=raw_crop_box
+                ),
+                degrees=region.baseline_rotation_degrees,
+                dpi=dpi,
             )
+            return result if return_metadata else result.png
         width_pt, height_pt = (Decimal(str(value)) for value in page.get_size())
     finally:
         document.close()
 
-    return crop_box_pt(
-        data,
-        page_index,
-        _region_box_pt(region, width_pt, height_pt, margin_pt),
-        dpi=dpi,
-        include_markup=include_markup,
+    box = _region_box_pt(region, width_pt, height_pt, margin_pt)
+    png = crop_box_pt(data, page_index, box, dpi=dpi, include_markup=include_markup)
+    width_px, height_px, _ = decode_rgb_png(png)
+    left, _, _, top = box
+    scale = Decimal(dpi) / _POINTS_PER_INCH
+    unrotated = _UnrotatedCrop(
+        png=png,
+        width_px=width_px,
+        height_px=height_px,
+        page_left_px=int((left * scale).to_integral_value(ROUND_FLOOR)),
+        page_top_px=int(((height_pt - top) * scale).to_integral_value(ROUND_FLOOR)),
     )
+    result = _rotated_crop(unrotated, degrees=region.baseline_rotation_degrees, dpi=dpi)
+    return result if return_metadata else result.png
 
 
 def _png_from(bitmap: Any) -> bytes:
