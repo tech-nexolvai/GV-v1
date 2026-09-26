@@ -68,8 +68,12 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
 - **Back-offset shortfall — warn or fail? OURS to decide.** That deck says "warn" when the remainder
   falls below the vendor minimum; the shipped `ct_back_offset_min_001` is `severity: CRITICAL`
   (pre-dates the deck). Not changed either way yet.
-- **Cabinet-filler "distribute across adjustable cabinets"** logic + which cabinets are non-adjustable
-  (sink / equipment) — needs a typed representation; the on-site field dimension is a USER_INPUT.
+- **Uneven distribution splits — RAJ TO CONFIRM (two of them).** Both of his worked examples divide
+  evenly (6" over two cabinets), so neither says (a) how a remainder that does not divide into a
+  drawable width is apportioned — 4" over three cabinets is 22 2/3" — nor (b) how a change is shared
+  between fillers that started *unequal*, a layout slide 12 names as in scope. `cabinet_run_distribution`
+  abstains on both and hands the reviewer the exact share (#676). Under exact match a picked width is
+  a verdict, not a rounding preference, so do not infer either rule from the two examples.
 
 ## Client status (waiting on / confirmed)
 - **Waiting on Raj:** full countertop + cabinet rules (with tolerance + severity), one complete real
@@ -80,6 +84,13 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
   THREE-SIDED layout, the five-term depth decomposition, and the CT004 sink-cabinet width relation.
   Authored into the rulebook in #537. Back-only and island layouts, and the back-offset minimum
   VALUE, are still owed.
+- **Received 2026-09-21 — the cabinet deck** (`cab_Checks_Sep_21.pptx`): the whole two-step
+  distribution with two worked examples and five outcomes, implemented in #676. **Slide 11 settles
+  Q9**, which `filler_distribution` and `CAB_CHECKS_FORMAT.md` had read opposite ways: the reviewer
+  draws a box around a cabinet and *categorises* it ("confirm width should be changed or cannot be
+  changed"), and the program then computes. Reviewer picks what may move; arithmetic decides by how
+  much. Q9 is refined, not contradicted. Still owed: the bound *values* (#674) and the two uneven-split
+  rules above.
 - **Confirmed by Raj:** tolerance depends on wall layout; checklist targets vanity tops (reusable for
   kitchen if same layout); review is by category but must cross-check compatibility (countertop vs
   cabinet); dimensions live on dimension lines; inch & mm always agree (but Q12 settled that INCHES govern —
@@ -91,5 +102,10 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
 - Fillers absorb the gap between the real wall-to-wall and the sum of cabinets, split L/R, each within
   min/max; a large gap distributes across ADJUSTABLE cabinets (not sink/equipment). The on-site "field
   dimension" is on no drawing (user input).
+- **The order is fillers first, then regular cabinets only, and it is not an optimisation.** An
+  equipment cabinet that shrinks no longer fits its appliance, so `CAB_EQUIP` never moves in either
+  direction — an opening too wide is as wrong as one too narrow. The four cabinet categories are
+  `single_door`, `double_door`, `drawer` (each with its own width bound) and `equipment` (no bound,
+  because it never moves).
 - The four outcomes: PASS/FAIL (verdict engine) · NOT FOUND (missing authoritative input) ·
   REVIEW REQUIRED (conflict / ambiguity / judgment) — the last two are the honest-abstention path.
