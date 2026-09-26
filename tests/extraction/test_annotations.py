@@ -308,17 +308,50 @@ def test_glyph_sized_paths_become_one_candidate_region() -> None:
     assert region.point_count == 10
 
 
-def test_a_wider_gap_splits_the_cluster() -> None:
-    """Input: the same strokes with the gap set below their spacing. Outcome: five regions.
+def test_a_glyph_that_belongs_to_no_run_is_reported_not_cropped() -> None:
+    """Input: strokes too far apart to form a run. Outcome: named refusals, not one-glyph crops.
 
-    The clustering length is load-bearing and belongs to the caller, so this asserts it *does*
-    something: at a gap smaller than the spacing, every stroke is its own region — which is what a
-    reader would produce if the number were set as five separate labels.
+    The issue this guards against was crops containing a single character, which made every reader
+    guess at a fragment. A glyph-sized path that cannot be joined to the next glyph on its baseline
+    is still reported, but it is not sent as a crop pretending to be a label.
     """
     split = _layers(glyph_gap_pt=Decimal("0.5"))
 
-    assert len(split.outlined_regions) == 5
-    assert {region.path_count for region in split.outlined_regions} == {1}
+    assert split.outlined_regions == ()
+    assert any(
+        "did not confidently belong to a glyph run" in item.reason for item in split.refusals
+    )
+
+
+def test_close_parallel_dimension_labels_are_two_runs_not_one() -> None:
+    """Input: the close `4' - 0"` / `3' - 0"` shape. Outcome: two crop regions.
+
+    The labels are close enough vertically that distance clustering would merge them transitively.
+    They do not share a baseline, so run-building keeps them separate and each reader crop contains
+    one label rather than two labels blended together.
+    """
+    close_labels = _pdf(
+        annotations=[_stamp(appearance_object=6)],
+        extra_objects=[
+            _appearance(
+                b"110 520 m 112 524 l S\n"
+                b"113 520 m 115 524 l S\n"
+                b"116 520 m 118 524 l S\n"
+                b"119 520 m 121 524 l S\n"
+                b"122 520 m 124 524 l S\n"
+                b"110 525 m 112 529 l S\n"
+                b"113 525 m 115 529 l S\n"
+                b"116 525 m 118 529 l S\n"
+                b"119 525 m 121 529 l S\n"
+                b"122 525 m 124 529 l S\n"
+            )
+        ],
+    )
+
+    layers = _layers(close_labels)
+
+    assert len(layers.outlined_regions) == 2
+    assert [region.path_count for region in layers.outlined_regions] == [5, 5]
 
 
 def test_line_work_and_glyphs_are_split_by_the_length_the_caller_names() -> None:
