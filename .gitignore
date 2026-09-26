@@ -48,3 +48,18 @@ frontend/dist/
 
 # Subagent worktrees. Live git repos; never part of this one.
 .claude/worktrees/
+
+# --- Generated scratch output ---
+# Where flowcharts, probe dumps and rendered PDFs land while something is being worked out. They
+# are outputs, not sources: regenerated on demand and meaningless in a diff.
+#
+# Ignored because untracked-but-not-ignored is the dangerous state. On #668 a `git add -A` swept
+# 24 generated files into a commit, and CI failed on a ruff error in a file nobody had opened —
+# the error was real, the file just had no business being there. They are still the only thing
+# failing `ruff` and `black` locally today, which trains you to read a red local run as normal.
+#
+# Anchored, like /data/ above and for the same reason: unanchored, these would match a directory
+# of that name anywhere in the tree, and `output/` in particular is an ordinary name for a real
+# source directory. Nothing tracked sits under either path today, so this ignores only scratch.
+/tmp/
+/output/
