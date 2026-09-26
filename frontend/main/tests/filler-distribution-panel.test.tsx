@@ -156,7 +156,11 @@ const proposed = renderToStaticMarkup(
       // Raj's first worked example, slide 4: 90" to 82".
       outcome: 'PASS',
       condition: 'cabinets_absorb_remainder',
-      message: 'The fillers reached their limit, so the rest is divided equally.',
+      // The full explanation Raj asked for on slides 5 and 9, from the exact numbers (#682).
+      message:
+        'Wall to wall width in the architectural drawing = 90". Wall to wall width as per site ' +
+        'dimensions = 82". So 8" needs to be reduced in the shop drawing cabinet elevation.',
+      summary: 'The fillers reached their limit, so the rest is divided equally.',
       design_width: { numerator: '90', denominator: '1', unit: 'in', display: '90"' },
       site_difference: { numerator: '-8', denominator: '1', unit: 'in', display: '-8"' },
       field_dimension: {
@@ -209,6 +213,8 @@ const proposed = renderToStaticMarkup(
 );
 
 assert.match(proposed, /Proposal returned/);
+// The reviewer is told how the drawing is being corrected, not just that it was.
+assert.match(proposed, /Wall to wall width in the architectural drawing/);
 // Both regular cabinets moved, and the equipment cabinet is marked as the one that cannot.
 assert.match(proposed, /cabinet-2 \(equipment — width fixed\)/);
 assert.match(proposed, /21&quot;/);
@@ -229,7 +235,10 @@ const abstained = renderToStaticMarkup(
     initialResult={{
       outcome: 'REVIEW_REQUIRED',
       condition: 'cannot_be_resolved',
-      message: 'The site difference cannot be absorbed within the stated limits.',
+      message:
+        'It cannot be absorbed within the stated limits. The program will not force a fix — ' +
+        'this needs an RFI to the architect.',
+      summary: 'The site difference cannot be absorbed within the stated limits.',
       design_width: { numerator: '90', denominator: '1', unit: 'in', display: '90"' },
       site_difference: { numerator: '-8', denominator: '1', unit: 'in', display: '-8"' },
       field_dimension: {

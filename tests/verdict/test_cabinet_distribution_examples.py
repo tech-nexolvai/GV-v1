@@ -324,10 +324,14 @@ def test_a_regular_cabinet_is_never_taken_past_its_own_type_bound() -> None:
     assert "RFI" in str(facts["reviewer_action"])
     assert facts["unabsorbed_difference"] == _inches(6)
 
+    # Reviewer-facing prose since #682 renders it into the explanation: cabinets are counted from
+    # one the way a person counts them, the category is words rather than an identifier, and a
+    # width is written the way a drawing writes it.
     blocked_by = str(facts["blocked_by"])
-    assert "cabinet 0" in blocked_by
-    assert "double_door_cab_width_min" in blocked_by
-    assert "23" in blocked_by
+    assert "cabinet 1" in blocked_by
+    assert "double door" in blocked_by
+    assert '23"' in blocked_by
+    assert "minimum" in blocked_by
 
 
 def test_only_the_type_of_the_cabinet_that_moved_can_block_it() -> None:

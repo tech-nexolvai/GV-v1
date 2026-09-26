@@ -1383,12 +1383,17 @@
                 "type": "null"
               }
             ]
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
           }
         },
         "required": [
           "outcome",
           "condition",
           "message",
+          "summary",
           "design_width",
           "site_difference",
           "field_dimension",
