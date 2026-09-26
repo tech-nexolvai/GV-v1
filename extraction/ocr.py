@@ -92,6 +92,9 @@ class OcrItem:
     #: The same extent in stored page space. `read_page` fills this for layout-established readings;
     #: callers constructing raw engine results and unoriented readings leave it `None`.
     extent: Polygon | None = None
+    #: A crop-local de-rotation applied before this reader saw the image. Diagnostic only: it lets a
+    #: reviewer reconstruct why the candidate's rectangle needed an inverse map back to the page.
+    crop_rotation_degrees: int = 0
 
     def __post_init__(self) -> None:
         if not self.text.strip():
@@ -111,6 +114,13 @@ class OcrItem:
             270,
         ):
             raise ValueError("rotation_degrees must be None or one of 0, 90, 180 or 270")
+        if isinstance(self.crop_rotation_degrees, bool) or self.crop_rotation_degrees not in (
+            0,
+            90,
+            180,
+            270,
+        ):
+            raise ValueError("crop_rotation_degrees must be one of 0, 90, 180 or 270")
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +347,7 @@ def combine_dual_notation(items: tuple[OcrItem, ...]) -> tuple[OcrItem, ...]:
                 # The recognised layout is two horizontal text rows stacked vertically. Rotated or
                 # diagonal arrangements do not satisfy `_is_stacked_pair` and remain uncombined.
                 rotation_degrees=0,
+                crop_rotation_degrees=item.crop_rotation_degrees,
             )
         )
     return tuple(combined)
@@ -413,6 +424,7 @@ def _in_stored_space(item: OcrItem, rendered: RenderedPage) -> OcrItem:
         image_extent=item.image_extent,
         rotation_degrees=item.rotation_degrees,
         extent=extent,
+        crop_rotation_degrees=item.crop_rotation_degrees,
     )
 
 

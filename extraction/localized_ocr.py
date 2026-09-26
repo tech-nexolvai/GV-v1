@@ -17,9 +17,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import replace
 from decimal import Decimal
+from uuid import UUID
 
-from evidence.coordinates import PageTransform
+from evidence.coordinates import ImagePoint, PageTransform
 from evidence.crop import decode_rgb_png
+from evidence.polygon import Polygon
 from extraction.annotations import OutlinedTextRegion
 from extraction.ocr import OcrEngine, OcrItem, combine_dual_notation
 from extraction.rasterise import VISION_CROP_DPI
@@ -58,25 +60,36 @@ def read_localized_vendor_regions(
             dpi=VISION_CROP_DPI,
             margin_pt=margin_pt,
             include_markup=False,
+            return_metadata=True,
         )
-        width, height, rgb = decode_rgb_png(crop)
+        width, height, rgb = decode_rgb_png(crop.png)
         combined = combine_dual_notation(engine.read(rgb, width=width, height=height))
         located = [item for item in combined if item.rotation_degrees is not None]
-        image_extent = tuple(page_transform.from_stored(point) for point in region.extent.points)
 
-        # The crop is the source location.  A single recognised stacked mm[inch] pair has exactly
-        # the layout guarantee the ordinary OCR route needs; mapping it to the region preserves
-        # that source location in the full-page coordinate frame.  Multiple such pairs would leave
-        # the question "which one labels this line?" unresolved, so none is associated.
+        # The reader's rectangle is the source location. A single recognised stacked mm[inch] pair
+        # has exactly the layout guarantee the ordinary OCR route needs; mapping it through the
+        # crop's inverse transform preserves that source location in the full-page coordinate frame.
+        # Multiple such pairs would leave the question "which one labels this line?" unresolved, so
+        # none is associated.
         if len(located) == 1:
             item = located[0]
+            image_extent = crop.map_reader_polygon(item.image_extent, target_dpi=page_transform.dpi)
+            assert item.rotation_degrees is not None
             readings.append(
                 OcrItem(
                     text=item.text,
                     confidence=item.confidence,
                     image_extent=image_extent,
-                    rotation_degrees=item.rotation_degrees,
-                    extent=region.extent,
+                    rotation_degrees=(
+                        (item.rotation_degrees + crop.applied_rotation_degrees) % 360
+                    ),
+                    extent=_stored_polygon(
+                        image_extent,
+                        page_transform=page_transform,
+                        page_index=page_index,
+                        document_version_id=region.extent.document_version_id,
+                    ),
+                    crop_rotation_degrees=crop.applied_rotation_degrees,
                 )
             )
             continue
@@ -86,10 +99,28 @@ def read_localized_vendor_regions(
         readings.extend(
             replace(
                 item,
-                image_extent=image_extent,
+                image_extent=crop.map_reader_polygon(
+                    item.image_extent, target_dpi=page_transform.dpi
+                ),
                 rotation_degrees=None,
                 extent=None,
+                crop_rotation_degrees=crop.applied_rotation_degrees,
             )
             for item in combined
         )
     return tuple(readings)
+
+
+def _stored_polygon(
+    points: tuple[ImagePoint, ...],
+    *,
+    page_transform: PageTransform,
+    page_index: int,
+    document_version_id: UUID,
+) -> Polygon:
+    return Polygon(
+        points=tuple(page_transform.to_stored(point) for point in points),
+        space="stored",
+        document_version_id=document_version_id,
+        page=page_index,
+    )

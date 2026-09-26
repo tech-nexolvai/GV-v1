@@ -20,10 +20,11 @@ from decimal import Decimal
 
 import pytest
 
+from evidence.coordinates import ImagePoint
 from extraction.annotations import read_annotation_layers
 from extraction.rasterise import VISION_CROP_DPI
 from extraction.reader import UnreadablePdf
-from extraction.vector_first import plan_reads, region_crop
+from extraction.vector_first import RegionCrop, plan_reads, region_crop
 from tests.extraction.test_annotations import (
     BOTH_LAYERS,
     DOCUMENT,
@@ -46,6 +47,17 @@ FAR_FROM_ANY_LINE = _pdf(
             b"396 690 m 398 694 l S\n"
         )
     ],
+)
+
+ROTATED_VENDOR_LABEL = _pdf(
+    annotations=[_stamp(rect=b"[100 50 300 350]", appearance_object=6)],
+    extra_objects=[
+        _appearance(
+            bbox=b"[100 500 400 700]",
+            matrix=b"[0 1 -1 0 700 -100]",
+        )
+    ],
+    box=b"[0 0 400 400]",
 )
 
 
@@ -208,6 +220,12 @@ def _png_size(data: bytes) -> tuple[int, int]:
     return width, height
 
 
+def _point_bounds(points: tuple[ImagePoint, ...]) -> tuple[int, int, int, int]:
+    xs = [point.x for point in points]
+    ys = [point.y for point in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def test_a_region_crop_is_a_png_of_that_region_at_the_vision_resolution() -> None:
     """Outcome: PNG bytes whose pixel size matches the region's box at 600 dpi.
 
@@ -223,6 +241,41 @@ def test_a_region_crop_is_a_png_of_that_region_at_the_vision_resolution() -> Non
     assert 100 < width < 400, width
     assert 50 < height < 400, height
     assert zlib.decompress(crop[41 : crop.rindex(b"IEND") - 8]), "the PNG has no image data"
+
+
+def test_a_rotated_region_crop_is_turned_upright_and_records_the_rotation() -> None:
+    """Input: a stamp whose matrix turns the label baseline vertical. Outcome: horizontal crop."""
+    plan = _plan(ROTATED_VENDOR_LABEL, proximity_limit=Decimal("0.4"))
+    crop = region_crop(
+        ROTATED_VENDOR_LABEL,
+        0,
+        plan.to_read[0].region,
+        dpi=VISION_CROP_DPI,
+        margin_pt=Decimal(0),
+        return_metadata=True,
+    )
+
+    assert isinstance(crop, RegionCrop)
+    assert crop.applied_rotation_degrees == 90
+    assert crop.width_px > crop.height_px
+    assert _png_size(crop.png) == (crop.width_px, crop.height_px)
+
+
+def test_an_upright_region_is_not_resampled() -> None:
+    """Input: an already-horizontal region. Outcome: metadata records zero and bytes are unchanged."""
+    region = _plan().to_read[0].region
+    plain = region_crop(BOTH_LAYERS, 0, region, dpi=VISION_CROP_DPI, margin_pt=Decimal(2))
+    crop = region_crop(
+        BOTH_LAYERS,
+        0,
+        region,
+        dpi=VISION_CROP_DPI,
+        margin_pt=Decimal(2),
+        return_metadata=True,
+    )
+
+    assert crop.applied_rotation_degrees == 0
+    assert crop.png == plain
 
 
 def test_a_region_crop_reframes_a_nonzero_visible_page_box() -> None:
@@ -245,6 +298,32 @@ def test_a_region_crop_reframes_a_nonzero_visible_page_box() -> None:
     assert 100 < width < 400
     assert 50 < height < 400
     assert zlib.decompress(crop[41 : crop.rindex(b"IEND") - 8]), "the PNG has no image data"
+
+
+def test_a_rotated_reader_rectangle_maps_back_to_the_original_glyphs() -> None:
+    """A crop-local rectangle is inverted through de-rotation before it becomes page geometry."""
+    plan = _plan(ROTATED_VENDOR_LABEL, proximity_limit=Decimal("0.4"))
+    region = plan.to_read[0].region
+    crop = region_crop(
+        ROTATED_VENDOR_LABEL,
+        0,
+        region,
+        dpi=VISION_CROP_DPI,
+        margin_pt=Decimal(0),
+        return_metadata=True,
+    )
+    reader_box = (
+        ImagePoint(0, 0),
+        ImagePoint(crop.width_px, 0),
+        ImagePoint(crop.width_px, crop.height_px),
+        ImagePoint(0, crop.height_px),
+    )
+
+    mapped = crop.map_reader_polygon(reader_box, target_dpi=DPI)
+    expected = _point_bounds(region.image_extent)
+    actual = _point_bounds(mapped)
+
+    assert actual == pytest.approx(expected, abs=2)
 
 
 def test_the_resolution_is_what_makes_the_crop_bigger() -> None:

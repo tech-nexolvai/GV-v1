@@ -202,6 +202,10 @@ def record_candidates(
     written: list[ObservationCandidate] = []
     for item in texts:
         measurement, flags, dual = _parse(item.text)
+        stored_flags = list(flags)
+        crop_rotation_degrees = getattr(item, "crop_rotation_degrees", 0)
+        if crop_rotation_degrees:
+            stored_flags.append(f"crop_rotated_{crop_rotation_degrees}_degrees")
         row = ObservationCandidate(
             document_version_id=document_version_id,
             page_id=page_id,
@@ -221,7 +225,7 @@ def record_candidates(
             # A deterministic read of a text object is not a probabilistic one. `None` says there is
             # no confidence to report, where `1.0` would claim a certainty that means nothing here.
             confidence=None,
-            ambiguity_flags=list(flags),
+            ambiguity_flags=stored_flags,
         )
         # **Set before the insert, never after.** `observation_candidates` is append-only and 0013
         # enforces it with a trigger, so assigning these once the row exists would be an UPDATE the

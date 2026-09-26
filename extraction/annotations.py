@@ -162,6 +162,14 @@ class OutlinedTextRegion:
     """Both counts are kept because they are the only description of the cluster's shape that
     survives into the output, and a one-path, three-point "region" is worth being able to spot."""
 
+    baseline_rotation_degrees: int = 0
+    """How the appearance transform turns the text baseline on the rendered page.
+
+    This is read from the stamp's placement matrix, not from the crop pixels. ``region_crop`` uses
+    it to turn vertical labels upright before a reader sees them, and to invert reader rectangles
+    back to the unrotated page.
+    """
+
 
 @dataclass(frozen=True, slots=True)
 class LayerRefusal:
@@ -354,6 +362,30 @@ def _appearance_transform(
         scale_y * d,
         scale_x * e + offset_x,
         scale_y * f + offset_y,
+    )
+
+
+def _baseline_rotation_degrees(
+    placement: tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal],
+) -> int:
+    """Return the quarter-turn of the appearance baseline from the placement matrix.
+
+    The baseline is the appearance stream's positive x-axis after placement. Only axis-aligned
+    quarter turns are representable in the crop mapper; a skewed appearance is refused rather than
+    rounded into a direction it did not state.
+    """
+    a, b, _, _, _, _ = placement
+    if a > 0 and b == 0:
+        return 0
+    if a == 0 and b > 0:
+        return 90
+    if a < 0 and b == 0:
+        return 180
+    if a == 0 and b < 0:
+        return 270
+    raise UnreadablePdf(
+        "an appearance baseline is not an axis-aligned quarter turn, so a crop could not be "
+        "rotated upright and mapped back exactly"
     )
 
 
@@ -741,6 +773,7 @@ def _read_layers(
                     line_minimum_pt, glyph_maximum_pt, glyph_gap_pt = geometry
                     try:
                         placement = _appearance_transform(annotation, rect)
+                        baseline_rotation_degrees = _baseline_rotation_degrees(placement)
                         paths = tuple(
                             _placed(path, placement)
                             for path in _stamp_paths(pdfium_document, page_index, index)
@@ -782,6 +815,7 @@ def _read_layers(
                         line_minimum_pt=line_minimum_pt,
                         glyph_maximum_pt=glyph_maximum_pt,
                         glyph_gap_pt=glyph_gap_pt,
+                        baseline_rotation_degrees=baseline_rotation_degrees,
                     )
                     segments.extend(found[0])
                     regions.extend(found[1])
@@ -844,6 +878,7 @@ def _drawing_geometry(
     line_minimum_pt: Decimal,
     glyph_maximum_pt: Decimal,
     glyph_gap_pt: Decimal,
+    baseline_rotation_degrees: int,
 ) -> tuple[tuple[tuple[DimensionExtent, ...], tuple[OutlinedTextRegion, ...]], int]:
     """One stamp's paths split into line-work and candidate text regions, plus what was left over."""
     segments: list[DimensionExtent] = []
@@ -903,6 +938,7 @@ def _drawing_geometry(
                 image_extent=image_extent,
                 path_count=len(cluster),
                 point_count=sum(len(small_paths[index]) for index in cluster),
+                baseline_rotation_degrees=baseline_rotation_degrees,
             )
         )
 
