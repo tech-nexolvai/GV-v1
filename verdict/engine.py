@@ -90,12 +90,22 @@ def _abstain(
 
 
 def _measurements(operands: Mapping[str, VerdictOperand]) -> list[Measurement]:
+    """Every measurement among the operands, for the authored-unit check.
+
+    A many-valued operand may be a run of reviewer classifications rather than of measurements
+    (#681), so members are filtered by type rather than assumed. A classification has no unit and
+    must not be counted as one — asking a string for `.unit` was an `AttributeError`, and had it
+    silently contributed nothing instead, the mixed-unit guard would have quietly stopped covering
+    the operand it was reading.
+    """
     measurements: list[Measurement] = []
     for operand in operands.values():
         if isinstance(operand.value, Measurement):
             measurements.append(operand.value)
         elif isinstance(operand.value, tuple):
-            measurements.extend(operand.value)
+            measurements.extend(
+                member for member in operand.value if isinstance(member, Measurement)
+            )
     return measurements
 
 

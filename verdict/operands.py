@@ -22,7 +22,16 @@ from fractions import Fraction
 
 from units.measurement import Measurement, ensure_exact
 
-type OperandValue = Measurement | Fraction | str | tuple[Measurement, ...] | None
+#: What a sealed operand may carry into the verdict service.
+#:
+#: `tuple[str, ...]` is here for a run of reviewer classifications — one cabinet category per
+#: cabinet (#681). It adds no new *category* of data: `str` already crosses this boundary, so a
+#: run of them is a new arity, exactly as `tuple[Measurement, ...]` is to `Measurement`. What may
+#: not cross is unchanged — a value still reaches here only through the evidence gate, and no model
+#: output becomes an operand (`tests/test_verdict_isolation.py`).
+type OperandValue = (
+    Measurement | Fraction | str | tuple[Measurement, ...] | tuple[str, ...] | None
+)
 
 
 class EvidenceStatus(StrEnum):
@@ -89,9 +98,18 @@ class VerdictOperand:
         if not isinstance(self.status, EvidenceStatus):
             raise TypeError("status must be an EvidenceStatus")
         if isinstance(self.value, tuple):
+            # A many-valued operand is a run of measurements, or a run of the reviewer's own
+            # categories (#681). Homogeneous either way: a tuple mixing the two would be a category
+            # error, and the operation reading it indexes both by position.
+            first_is_text = bool(self.value) and isinstance(self.value[0], str)
             for index, item in enumerate(self.value):
                 ensure_exact(item, context=f"operand {self.name!r}[{index}]")
-                if not isinstance(item, Measurement):
+                if first_is_text and not isinstance(item, str):
+                    raise TypeError(
+                        f"operand {self.name!r}[{index}] must be a string; this operand is a run "
+                        "of reviewer classifications and every member has to be one"
+                    )
+                if not first_is_text and not isinstance(item, Measurement):
                     raise TypeError(
                         f"operand {self.name!r}[{index}] must be a Measurement; "
                         "many-valued verdict operands are exact measurement tuples"

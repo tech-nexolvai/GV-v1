@@ -58,6 +58,12 @@ RULEBOOK = pathlib.Path(__file__).resolve().parents[2] / "rules" / "rulebook"
 CABINETS = ('24"', '30"', '36"')
 FILLERS = ('2"', '2"')
 
+#: The reviewer's classification, one per cabinet, in the same order — the 36" cabinet is the sink
+#: cabinet, which is equipment and must not be resized. Entered by a person, never inferred (deck
+#: slide 11). **Kept here unused**, because it is the exact value this package would supply once a
+#: classification can be stored, and writing it down is what makes the gap concrete.
+CABINET_TYPES = ("single_door", "double_door", "equipment")
+
 #: Everything a reviewer reads off a drawing, keyed the way the API stores it.
 MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
     "CT-DEPTH-001:countertop_depth": '25 1/2"',
@@ -74,8 +80,14 @@ MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
     "CAB-ARCH-VS-SHOP-001:shop_cabinets": CABINETS,
     "CAB-FILLER-001:field_width": '94"',
     "CAB-FILLER-001:design_width": '94"',
-    "CAB-FILLER-001:design_fillers": FILLERS,
-    "CAB-FILLER-001:proposed_fillers": FILLERS,
+    "CAB-FILLER-001:architectural_fillers": FILLERS,
+    "CAB-FILLER-001:shop_fillers": FILLERS,
+    # v2 compares the cabinet run too, not just the fillers.
+    "CAB-FILLER-001:architectural_cabinets": CABINETS,
+    "CAB-FILLER-001:shop_cabinets": CABINETS,
+    # `cabinet_type` is missing on purpose and is why CAB-FILLER-001 appears in `UNDECIDED` below.
+    # Every reviewer input this package can store is a `Quantity` — a number and a unit — and a
+    # classification is neither. The storage path is its own issue; see the note there.
     # The sink cabinet, from the deck's own relation (#537). **It is the 36" cabinet in `CABINETS`,
     # not a fourth cabinet from nowhere.** The first version of this row said 35", which added up
     # inside its own rule and described a run that did not contain the cabinet it had just checked —
@@ -94,6 +106,18 @@ MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
 }
 
 PROJECT_PARAMETERS = {
+    # The distribution bounds. **v2 of CAB-FILLER-001 carries no defaults** — CLIENT_FACTS Q21 has
+    # the filler pair at three different values and the per-type cabinet bounds have never been
+    # given, so every one is a form field. These are this package's numbers, not the rulebook's:
+    # the point of the change is that a package states them and nobody's guess is applied silently.
+    "filler_min": '1"',
+    "filler_max": '2"',
+    "single_door_cab_width_min": '9"',
+    "single_door_cab_width_max": '36"',
+    "double_door_cab_width_min": '24"',
+    "double_door_cab_width_max": '48"',
+    "drawer_cab_width_min": '12"',
+    "drawer_cab_width_max": '36"',
     "cabinet_depth": '24"',
     "countertop_overhang": '1 1/2"',
     "field_cut": '0"',
@@ -110,12 +134,27 @@ RUN_PARAMETERS = {"sink_interior_depth": '16"', "sink_interior_width": '30"'}
 
 DISCRIMINATORS = {"wall_config": "back_only", "filler_symmetry": "equal_unless_noted"}
 
-#: Checks that cannot decide, and the reason they are waiting on somebody outside this repo.
+#: Checks that cannot decide, the text their abstention must contain, and who has to act.
 #:
 #: Named individually rather than counted, because an unchanged count could conceal a different rule
-#: abstaining for a reason the form could have fixed. Q2 resolved the cabinet arch-vs-shop tolerance
-#: to exact equality, so the set is currently empty.
-CLIENT_BLOCKED: dict[str, str] = {}
+#: abstaining for a reason the form could have fixed.
+#:
+#: **`owed_by` is the part that matters.** A rule waiting on a client value and a rule waiting on
+#: something we have not built are both abstentions, and telling them apart is the difference
+#: between "chase Raj" and "finish the work". Entering `ours` here is an admission with a date on
+#: it, not a way to make a test green.
+UNDECIDED: dict[str, tuple[str, str]] = {
+    # v2 of the rule needs the reviewer's per-cabinet classification, and no reviewer input in this
+    # system can hold one: `parameter_values` stores a `Quantity` — a number and a unit — and a
+    # category is neither. The arithmetic, the rule and the operand contract are all in place; the
+    # way for a person to say "this one is the sink cabinet" is not.
+    "CAB-FILLER-001": ("cabinet_type", "ours"),
+}
+
+#: Kept for the tests that read it: the subset genuinely waiting on the client.
+CLIENT_BLOCKED: dict[str, str] = {
+    rule: missing for rule, (missing, owed_by) in UNDECIDED.items() if owed_by == "client"
+}
 
 
 def _upgrade(engine: Engine) -> None:
@@ -243,9 +282,9 @@ def test_every_check_that_can_decide_does(session: Session, filled: PackageRevis
     outcomes = _outcomes(session, filled)
     undecided = {rule for rule, outcome in outcomes.items() if outcome not in ("PASS", "FAIL")}
 
-    assert undecided == set(CLIENT_BLOCKED), (
-        "the set of checks that cannot decide has changed. Every member must be waiting on a client "
-        f"value, not on a form field: {sorted(undecided)}"
+    assert undecided == set(UNDECIDED), (
+        "the set of checks that cannot decide has changed. Every member must be listed in UNDECIDED "
+        f"with what it waits on and who owes it: {sorted(undecided)}"
     )
     # The same glob `_publish_rulebook` iterates, so the test cannot disagree about how many rules
     # there are.
@@ -277,13 +316,12 @@ def test_any_check_that_cannot_decide_says_why_in_client_terms(
 
     for finding, snapshot in rows:
         rule_id = from_row(snapshot).rule.id
-        if rule_id not in CLIENT_BLOCKED:
+        if rule_id not in UNDECIDED:
             continue
+        missing, _owed_by = UNDECIDED[rule_id]
         trace = finding.trace or {}
         said = str(trace.get("reason") or trace.get("comparison") or "")
-        assert (
-            CLIENT_BLOCKED[rule_id] in said
-        ), f"{rule_id} abstained without naming {CLIENT_BLOCKED[rule_id]!r}: {said!r}"
+        assert missing in said, f"{rule_id} abstained without naming {missing!r}: {said!r}"
 
 
 def test_a_many_valued_input_keeps_its_order(session: Session, filled: PackageRevision) -> None:
