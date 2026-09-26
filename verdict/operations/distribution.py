@@ -14,6 +14,7 @@ from enum import StrEnum
 from fractions import Fraction
 from functools import wraps
 
+from units.imperial import format_inches
 from units.measurement import Measurement, Unit
 from units.policy import require_same_unit
 from verdict.outcomes import Outcome
@@ -443,7 +444,29 @@ def cabinet_run_distribution(
     filler_total = min(max(wanted_filler_total, filler_floor), filler_ceiling)
     remainder = difference - (filler_total - design_filler_total)
 
+    # **Step one finishes here, before anything looks at a cabinet.** Both worked examples start
+    # from equal fillers and end with equal fillers, which is the evidence for splitting a moved
+    # total equally. Slide 12 also names unequal fillers as a layout in scope, and for those the
+    # deck says only that each must honour its bound — never how the change is shared out. Ours,
+    # not his: expect nothing per filler, and abstain.
+    #
+    # Computed before the cabinets and recorded in `facts`, so every later abstention still says
+    # what the fillers became. It is also Raj's order: a step-one answer does not depend on whether
+    # step two worked.
+    fillers_must_move = filler_total != design_filler_total
+    expected_fillers: tuple[Measurement, ...] = design_filler_run
+    filler_share: Fraction | None = None
+    if fillers_must_move and len({filler.exact for filler in design_filler_run}) == 1:
+        filler_share = Fraction(filler_total, 1) / len(design_filler_run)
+        expected_fillers = tuple(measure(filler_share) for _ in design_filler_run)
+
     facts: tuple[tuple[str, object], ...] = (
+        # The run as drawn, recorded alongside what it should become. A trace that says a cabinet
+        # "is reduced to 21" without saying what it was is not reproducible months later, and the
+        # explanation a reviewer reads (#682) is assembled from these facts and nothing else.
+        ("design_width", design_width),
+        ("design_fillers", design_filler_run),
+        ("design_cabinets", design_cabinet_run),
         ("site_difference", measure(difference)),
         ("design_filler_total", measure(design_filler_total)),
         ("design_cabinet_total", measure(design_cabinet_total)),
@@ -455,7 +478,27 @@ def cabinet_run_distribution(
             tuple(index for index, kind in enumerate(types) if kind.is_equipment),
         ),
         ("remainder_after_fillers", measure(remainder)),
+        ("expected_fillers", expected_fillers),
     )
+
+    if fillers_must_move:
+        if filler_share is None:
+            return _apportionment_not_determined(
+                facts,
+                expected_total=measure(filler_total),
+                floor=measure(filler_floor),
+                ceiling=measure(filler_ceiling),
+                unit=unit,
+            )
+        if not _is_a_writable_width(filler_share):
+            return _share_does_not_divide(
+                facts,
+                share=filler_share,
+                members=tuple(range(len(design_filler_run))),
+                subject="filler",
+                widths=(filler_share,),
+                unit=unit,
+            )
 
     regulars = tuple(index for index, kind in enumerate(types) if not kind.is_equipment)
 
@@ -502,38 +545,12 @@ def cabinet_run_distribution(
                     remainder=remainder,
                     unit=unit,
                     why=(
-                        f"cabinet {index} ({types[index].value}) would become {width} "
-                        f"{unit.value}, past its {bound} of {limit} {unit.value} "
-                        f"({types[index].value}_cab_width_"
-                        f"{'min' if bound == 'minimum' else 'max'})"
+                        f"cabinet {index + 1} ({types[index].value.replace('_', ' ')}) would "
+                        f"become {_written(width, unit)}, past its {bound} of "
+                        f"{_written(limit, unit)}"
                     ),
                 )
 
-    # Both worked examples start from equal fillers and end with equal fillers, which is the
-    # evidence for splitting a moved total equally. Slide 12 also names unequal fillers as a layout
-    # in scope, and for those the deck says only that each must honour its bound — never how the
-    # change is shared out. Ours, not his: expect nothing per filler, and abstain.
-    expected_fillers: tuple[Measurement, ...] = design_filler_run
-    if filler_total != design_filler_total:
-        if len({filler.exact for filler in design_filler_run}) != 1:
-            return _apportionment_not_determined(
-                facts,
-                expected_total=measure(filler_total),
-                floor=measure(filler_floor),
-                ceiling=measure(filler_ceiling),
-                unit=unit,
-            )
-        filler_share = Fraction(filler_total, 1) / len(design_filler_run)
-        if not _is_a_writable_width(filler_share):
-            return _share_does_not_divide(
-                facts,
-                share=filler_share,
-                members=tuple(range(len(design_filler_run))),
-                subject="filler",
-                widths=(filler_share,),
-                unit=unit,
-            )
-        expected_fillers = tuple(measure(filler_share) for _ in design_filler_run)
     matched = _runs_match(proposed_filler_run, expected_fillers) and _runs_match(
         proposed_cabinet_run, tuple(expected_cabinets)
     )
@@ -588,6 +605,17 @@ def cabinet_run_distribution(
         ),
         tolerance=None,
     )
+
+
+def _written(value: Fraction, unit: Unit) -> str:
+    """One width the way a drawing writes it.
+
+    These strings reach a reviewer through the explanation (#682), so `21 1/2"` and not `43/2 in`.
+    `units.imperial` owns the rendering; this only picks the suffix.
+    """
+    if unit is Unit.INCH:
+        return f'{format_inches(value)}"'
+    return f"{format_inches(value)} {unit.value}"
 
 
 def _is_a_writable_width(value: Fraction) -> bool:
@@ -721,7 +749,7 @@ def _cannot_resolve(
         ),
         comparison=(
             f"the site difference cannot be absorbed within the stated limits: {why}. "
-            f"{abs(remainder)} {unit.value} remains unabsorbed"
+            f"{_written(abs(remainder), unit)} remains unabsorbed"
         ),
         tolerance=None,
     )
@@ -744,7 +772,7 @@ DISTRIBUTION_SPECS: tuple[OperationSpec, ...] = (
     ),
     OperationSpec(
         "cabinet_run_distribution",
-        "1.1.0",
+        "1.2.0",
         {
             "field_width": Arity.SCALAR,
             "design_width": Arity.SCALAR,

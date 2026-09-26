@@ -349,3 +349,57 @@ def test_a_run_the_operation_cannot_compare_is_a_review_not_a_server_error() -> 
     assert facts["condition"] == DistributionCondition.RUN_SHAPE_UNSUPPORTED.value
     assert "site_difference" not in facts
     assert facts["condition"] in _MESSAGES
+
+
+def test_the_reviewer_is_told_how_the_drawing_is_being_corrected() -> None:
+    """Slides 5 and 9 ask for this by name, and say why.
+
+    *"It would be better if the program identifies the variables first and provides the logic as
+    below. This explanation will help the shop drawing reviewer to understand how the program is
+    correcting the drawing."* Before #682 the response carried a fixed sentence per condition and
+    the operation's own trace — true, but not an explanation.
+    """
+    body = _client().post(PATH, json=_payload()).json()
+
+    said = body["message"]
+    for figure in ('90"', '82"', '8"', '3"', '2"', '6"', '36"', '24"', '21"'):
+        assert figure in said, f"{figure} is missing from the explanation: {said}"
+    # The short label survives alongside it, for a list of findings.
+    assert body["summary"] == (
+        "The fillers reached their limit, so the rest is divided equally between the regular "
+        "cabinets. The equipment cabinets keep their width."
+    )
+
+
+def test_the_explanation_never_shows_a_decimal() -> None:
+    """A drawing writes `1 1/2"`. A reviewer comparing the two by eye must read the same thing."""
+    import re
+
+    body = (
+        _client()
+        .post(
+            PATH,
+            json=_payload(
+                field_width='89"',
+                filler_min='1"',
+                filler_max='2"',
+                assembly={
+                    "cabinets": [
+                        {"id": "CAB-1", "width": '24"', "type": "double_door"},
+                        {"id": "CAB-EQUIP", "width": '36"', "type": "equipment"},
+                        {"id": "CAB-2", "width": '24"', "type": "double_door"},
+                    ],
+                    "fillers": [
+                        {"id": "F-L", "width": '2"'},
+                        {"id": "F-R", "width": '2"'},
+                    ],
+                },
+            ),
+        )
+        .json()
+    )
+
+    # The fillers are already at their 2" maximum, so the 1" falls to the two regular cabinets:
+    # half an inch each, and 24 1/2" is how a drawing writes it.
+    assert '24 1/2"' in body["message"]
+    assert not re.search(r"\d\.\d", body["message"]), body["message"]

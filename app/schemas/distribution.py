@@ -130,7 +130,12 @@ class FillerDistributionResponse(BaseModel):
     #: The operation's own condition, passed through rather than translated, so the reviewer's
     #: screen and a stored finding use one vocabulary.
     condition: str
+    #: The full explanation, in the shape Raj's slides 5 and 9 ask for: the two widths, what the
+    #: fillers could absorb, and what the cabinets take. Assembled from the exact numbers, never by
+    #: a model.
     message: str
+    #: One line for a list of findings, before a reviewer opens one.
+    summary: str
     design_width: QuantityOut
     site_difference: QuantityOut | None
     field_dimension: OperandTraceOut

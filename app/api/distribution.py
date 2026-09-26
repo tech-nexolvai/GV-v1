@@ -41,11 +41,15 @@ from units.normalise import UnitNormalisationError, normalise_to_inches
 from verdict.operations.distribution import DistributionCondition, cabinet_run_distribution
 from verdict.outcomes import Outcome
 from verdict.registry import RuleAuthoringError
+from workflow.distribution_narrative import explain_distribution
 
 router = APIRouter(tags=["distribution"])
 
-#: What each condition means to a reviewer. Keyed by the operation's own vocabulary so a condition
-#: it gains without a line here fails loudly in tests rather than reaching a screen unexplained.
+#: A one-line summary of each condition, kept beside the full explanation rather than replaced by
+#: it: `workflow.distribution_narrative` writes the paragraph a reviewer reads, and this is the
+#: label a list of findings shows before they open one. Keyed by the operation's own vocabulary so a
+#: condition it gains without a line here fails loudly in tests rather than reaching a screen
+#: unexplained.
 _MESSAGES: dict[str, str] = {
     DistributionCondition.NO_CHANGE_REQUIRED.value: (
         "The site matches the architectural drawing, so no width needs to change."
@@ -196,6 +200,7 @@ def calculate_filler_distribution(
         cabinets_retained: bool,
         reviewer_action: str | None,
         calculation: str,
+        summary: str,
     ) -> FillerDistributionResponse:
         return FillerDistributionResponse(
             outcome=outcome,
@@ -228,6 +233,7 @@ def calculate_filler_distribution(
             ),
             cabinets_retained=cabinets_retained,
             reviewer_action=reviewer_action,
+            summary=summary,
             operands=(
                 _operand("field_width", "USER_INPUT", field_width),
                 _operand("design_width", "ARCH", design_width),
@@ -245,6 +251,7 @@ def calculate_filler_distribution(
                 "The on-site field dimension was not supplied, so the distribution cannot be "
                 "calculated."
             ),
+            summary="the site field width is missing",
             site_difference=None,
             field_width=None,
             proposed_fillers=design_fillers,
@@ -293,7 +300,8 @@ def calculate_filler_distribution(
         return respond(
             outcome="REVIEW_REQUIRED",
             condition=condition,
-            message=_MESSAGES[condition],
+            message=explain_distribution(facts),
+            summary=_MESSAGES[condition],
             site_difference=site_difference,
             field_width=field_width,
             proposed_fillers=design_fillers,
@@ -314,7 +322,8 @@ def calculate_filler_distribution(
         # The operation's FAIL on the architectural run is what makes the proposal non-trivial.
         outcome="PASS",
         condition=condition,
-        message=_MESSAGES[condition],
+        message=explain_distribution(facts),
+        summary=_MESSAGES[condition],
         site_difference=site_difference,
         field_width=field_width,
         proposed_fillers=expected_fillers,

@@ -1886,6 +1886,8 @@ export interface components {
             /** Reviewer Action */
             reviewer_action?: string | null;
             site_difference: components["schemas"]["app__schemas__distribution__QuantityOut"] | null;
+            /** Summary */
+            summary: string;
         };
         /**
          * FillerInput
