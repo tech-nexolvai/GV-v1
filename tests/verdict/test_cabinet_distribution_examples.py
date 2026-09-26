@@ -15,11 +15,16 @@ the residual, and its docstring says the refusal is deliberate — *"Q9 assigns 
 reviewer, so no code path here can move a non-adjustable cabinet."* `CAB_CHECKS_FORMAT.md` reads the
 same Q9 the other way, as *"only regular cabinets move"*, with step two the system's job to calculate.
 
-So this file asserts two different things. The passing tests pin what the operation actually does —
-including that its residual is exactly the 6" the deck's derivation names, which is the evidence that
-step one is right and only the ownership of step two is in question. The `xfail` tests state the
-target from the deck, so the examples live in the repository as data rather than in a document, and
-turn green when step two lands rather than needing to be written then.
+**Step two landed with #676, and the disagreement is settled.** The 2026-09-21 deck decides it:
+slide 11 has the reviewer draw a box around a cabinet and *categorise* it, and the program compute
+from that. Reviewer picks what may move; arithmetic decides by how much — which is how
+`CAB_CHECKS_FORMAT.md` read Q9 all along. `cabinet_run_distribution` is that step, and the tests
+below that were `xfail(strict=True)` are now assertions.
+
+`filler_distribution` is untouched and still abstains. Its snapshot is content-addressed and a
+recorded finding cites the text that judged it, so the tests pinning its behaviour stay exactly as
+they were: the residual it hands the reviewer is the same 6" the deck derives, which is the evidence
+that step one was right and only the ownership of step two was ever in question.
 
 **The bounds here are inputs, not defaults.** `FILLER_WIDTH_MIN`/`MAX` and the per-type cabinet bounds
 are not settled — the email said 1"/2", the 2026-08-25 call said 3-4", these examples use 2"/3", and
@@ -38,8 +43,15 @@ from fractions import Fraction
 import pytest
 
 from units.measurement import Measurement, Unit
-from verdict.operations.distribution import DistributionCondition, filler_distribution
+from verdict.operations.distribution import (
+    DISTRIBUTION_SPECS,
+    CabinetType,
+    DistributionCondition,
+    cabinet_run_distribution,
+    filler_distribution,
+)
 from verdict.outcomes import Outcome
+from verdict.registry import Arity, RuleAuthoringError, validate_operands
 
 
 def _inches(value: int | Fraction) -> Measurement:
@@ -103,11 +115,12 @@ CAB_DIST_2 = DistributionExample(
 
 EXAMPLES = (CAB_DIST_1, CAB_DIST_2)
 
-# TODO(#274-adjacent, question 4 to Raj 2026-09-04): both examples divide evenly between the two
-# regular cabinets. No case here covers an uneven split, because the rounding rule — nearest 1/8" or
-# 1/4", and which cabinet takes the remainder — is unanswered, and the verdict is exact-match
-# (V1_VERDICT_MODEL), so a guess would not be a rounding preference but a wrong PASS or FAIL. Add the
-# case when the answer lands; do not infer one from these two.
+# Question 4 to Raj (2026-09-04) is still open: both examples divide evenly between the two regular
+# cabinets, and the rounding rule for a split that does not — nearest 1/8" or 1/4", and which cabinet
+# takes the remainder — is unanswered. Under exact match (V1_VERDICT_MODEL) a guess there would not
+# be a rounding preference but a wrong PASS or FAIL. #676 therefore abstains on such a run rather
+# than inferring a rule from these two cases; `test_an_uneven_split_is_not_decided_by_this_rule`
+# pins that. Replace the abstention with the real rule when the answer lands.
 
 
 @pytest.mark.parametrize("example", EXAMPLES, ids=lambda example: example.case_id)
@@ -135,11 +148,21 @@ def test_the_deck_arithmetic_is_self_consistent(example: DistributionExample) ->
 def test_the_equipment_cabinet_is_never_resized(example: DistributionExample) -> None:
     """`CAB_EQUIP` is fixed from the equipment spec — the one width no scenario may move.
 
-    Asserted on the recorded data rather than on code, because no code reaches step two yet. When it
-    does, this is the property that must survive: the equipment has to fit.
+    This was asserted on the recorded data alone while no code reached step two. #676 is that code,
+    so it now checks both: the deck's own layouts leave the equipment cabinet alone, and so does the
+    operation. Slide 3 gives the reason — *"the equipment cabinet dimensions should not be reduced
+    otherwise equipment will not fit"* — and it binds in both directions, because scenario 2 grows
+    the run and an opening too wide for the appliance is as wrong as one too narrow.
     """
     assert example.arch_layout[2] == example.equip
     assert example.expected_site_layout[2] == example.equip
+
+    facts = dict(cabinet_run_distribution(**_distribution_arguments(example)).intermediates)  # type: ignore[arg-type]
+
+    computed = facts["expected_cabinets"]
+    assert isinstance(computed, tuple)
+    assert computed[1] == _inches(example.equip)
+    assert facts["equipment_cabinets"] == (1,)
 
 
 @pytest.mark.parametrize("example", EXAMPLES, ids=lambda example: example.case_id)
@@ -188,35 +211,411 @@ def test_step_one_computes_exactly_the_residual_the_deck_derives(
     )
 
 
+#: Wide enough that no case is decided by a bound unless it sets its own. The real values are
+#: unsettled (CLIENT_FACTS Q21, question 1 to Raj) and must never acquire a default, here or in the
+#: operation — a case that needs a bound states it.
+WIDE_TYPE_BOUNDS: dict[str, Measurement] = {
+    f"{kind.value}_cab_width_{edge}": _inches(1 if edge == "min" else 96)
+    for kind in CabinetType
+    if not kind.is_equipment
+    for edge in ("min", "max")
+}
+
+
+def _distribution_arguments(
+    example: DistributionExample,
+    *,
+    regular_type: CabinetType = CabinetType.DOUBLE_DOOR,
+) -> dict[str, object]:
+    """One example as operands for `cabinet_run_distribution`.
+
+    The layout row is `filler | CAB_REGULAR | CAB_EQUIP | CAB_REGULAR | filler`, so the cabinets are
+    the middle three and the equipment cabinet is the one whose width equals `equip`.
+
+    **`regular_type` is a parameter because the deck does not say.** Slides 4 and 8 draw two 24"
+    regular cabinets without naming them single-door, double-door or drawer. With the bounds wide
+    the choice cannot change the arithmetic, and `test_the_regular_cabinet_type_does_not_change_the
+    _arithmetic` proves that rather than asserting it — so the default here is a placeholder, not a
+    reading of the deck.
+    """
+    cabinets = example.arch_layout[1:-1]
+    types = tuple(
+        CabinetType.EQUIPMENT if width == example.equip else regular_type for width in cabinets
+    )
+    return {
+        "field_width": _inches(example.site_width),
+        "design_width": _inches(example.arch_width),
+        "design_fillers": example.arch_fillers,
+        "proposed_fillers": example.site_fillers,
+        "design_cabinets": [_inches(width) for width in cabinets],
+        "proposed_cabinets": [_inches(width) for width in example.expected_site_layout[1:-1]],
+        "cabinet_type": [kind.value for kind in types],
+        **WIDE_TYPE_BOUNDS,
+        "filler_min": _inches(example.filler_min),
+        "filler_max": _inches(example.filler_max),
+    }
+
+
 @pytest.mark.parametrize("example", EXAMPLES, ids=lambda example: example.case_id)
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "step two is not implemented. filler_distribution deliberately refuses cabinet operands, "
-        "citing Q9 as assigning cabinet selection to the reviewer; CAB_CHECKS_FORMAT.md reads Q9 as "
-        "'only regular cabinets move' and makes the calculation the system's. Which reading holds is "
-        "question 2 of four sent back to Raj on 2026-09-04. strict, so this fails loudly the day the "
-        "behaviour changes rather than passing unnoticed."
-    ),
-)
 def test_the_deck_expects_a_computed_layout_rather_than_an_abstention(
     example: DistributionExample,
 ) -> None:
-    """The target from the deck, asserted on the outcome alone.
+    """The target from the deck, now reached.
 
-    Deliberately not asserting a shape for the computed cabinet widths: no API for step two exists,
-    and inventing operand names here would encode a guess about an interface nobody has designed —
-    the failure this repository keeps meeting. What the deck is unambiguous about is that a site
-    layout the rules permit is a result, not a referral.
+    **This was `xfail(strict=True)` until #676**, with the reason *"step two is not implemented…
+    which reading of Q9 holds is question 2 of four sent back to Raj on 2026-09-04"*. The
+    2026-09-21 deck answers it: slide 11 has the reviewer *classify* a cabinet — *"User should be
+    able to draw a bounding box around a cabinet and categorize that as a particular equipment
+    cabinet"* — and the program then compute. Reviewer picks what may move; arithmetic decides by
+    how much. `CAB_CHECKS_FORMAT.md` had read Q9 that way all along.
+
+    The earlier test deliberately asserted the outcome alone, because *"inventing operand names
+    here would encode a guess about an interface nobody has designed"*. The interface now exists,
+    so this asserts the computed layout too.
     """
-    result = filler_distribution(
-        field_width=_inches(example.site_width),
-        design_width=_inches(example.arch_width),
-        design_fillers=example.arch_fillers,
-        proposed_fillers=example.site_fillers,
-        filler_min=_inches(example.filler_min),
-        filler_max=_inches(example.filler_max),
-        allow_asymmetric=0,
+    result = cabinet_run_distribution(**_distribution_arguments(example))  # type: ignore[arg-type]
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.PASS
+    assert facts["expected_fillers"] == tuple(example.site_fillers)
+    assert facts["expected_cabinets"] == tuple(
+        _inches(width) for width in example.expected_site_layout[1:-1]
     )
 
+
+@pytest.mark.parametrize("example", EXAMPLES, ids=lambda example: example.case_id)
+def test_the_residual_the_deck_names_is_what_the_cabinets_absorb(
+    example: DistributionExample,
+) -> None:
+    """`cabinet_residual` is the deck's own figure. Two regular cabinets split it equally."""
+    facts = dict(cabinet_run_distribution(**_distribution_arguments(example)).intermediates)  # type: ignore[arg-type]
+
+    assert facts["remainder_after_fillers"] == _inches(example.cabinet_residual)
+    assert facts["share_per_regular_cabinet"] == _inches(Fraction(example.cabinet_residual, 2))
+
+
+def test_a_shop_drawing_that_disagrees_with_the_distribution_fails() -> None:
+    """Disagreeing with a computed expectation is a FAIL, not an abstention.
+
+    There is nothing uncertain about 20 not being 21 — the uncertainty the abstention outcomes
+    exist for is about what the drawing *says*, not about arithmetic on what it says.
+    """
+    arguments = _distribution_arguments(CAB_DIST_1)
+    arguments["proposed_cabinets"] = [_inches(20), _inches(36), _inches(22)]
+
+    assert cabinet_run_distribution(**arguments).outcome is Outcome.FAIL  # type: ignore[arg-type]
+
+
+def test_a_regular_cabinet_is_never_taken_past_its_own_type_bound() -> None:
+    """Slide 12, scenario 4. Floor the double-door minimum at 23" and the 6" cannot be absorbed.
+
+    *"The program should not force a fix. It should flag 'cannot be resolved, RFI to architect.'"*
+    The finding names the cabinet, the bound and the operand that set it, because an RFI that does
+    not say which limit was hit costs a second round trip.
+    """
+    arguments = _distribution_arguments(CAB_DIST_1, regular_type=CabinetType.DOUBLE_DOOR)
+    arguments["double_door_cab_width_min"] = _inches(23)
+
+    result = cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert facts["condition"] == DistributionCondition.CANNOT_BE_RESOLVED.value
+    assert "RFI" in str(facts["reviewer_action"])
+    assert facts["unabsorbed_difference"] == _inches(6)
+
+    blocked_by = str(facts["blocked_by"])
+    assert "cabinet 0" in blocked_by
+    assert "double_door_cab_width_min" in blocked_by
+    assert "23" in blocked_by
+
+
+def test_only_the_type_of_the_cabinet_that_moved_can_block_it() -> None:
+    """A tight bound on a type no cabinet in the run has does not touch the result.
+
+    Without a per-type lookup the six bounds would collapse into one, and a drawer minimum would
+    silently constrain a double-door cabinet.
+    """
+    arguments = _distribution_arguments(CAB_DIST_1, regular_type=CabinetType.DOUBLE_DOOR)
+    arguments["drawer_cab_width_min"] = _inches(30)
+
+    assert cabinet_run_distribution(**arguments).outcome is Outcome.PASS  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "regular_type", [kind for kind in CabinetType if not kind.is_equipment], ids=lambda k: k.value
+)
+def test_the_regular_cabinet_type_does_not_change_the_arithmetic(
+    regular_type: CabinetType,
+) -> None:
+    """The deck never names the type of its two 24" cabinets, and with wide bounds it need not.
+
+    This is what lets `_distribution_arguments` pick one: the type selects which bound is consulted
+    and nothing else, so while no bound binds, all three give the same layout.
+    """
+    result = cabinet_run_distribution(  # type: ignore[arg-type]
+        **_distribution_arguments(CAB_DIST_1, regular_type=regular_type)
+    )
+
+    facts = dict(result.intermediates)
     assert result.outcome is Outcome.PASS
+    assert facts["expected_cabinets"] == (_inches(21), _inches(36), _inches(21))
+    assert facts["cabinet_types"] == (regular_type.value, "equipment", regular_type.value)
+
+
+def test_a_run_of_only_equipment_cabinets_has_nothing_that_may_move() -> None:
+    """Every cabinet pinned, fillers at their bound: there is no distribution to propose."""
+    arguments = _distribution_arguments(CAB_DIST_1)
+    arguments["cabinet_type"] = [CabinetType.EQUIPMENT.value] * 3
+
+    result = cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert dict(result.intermediates)["condition"] == (
+        DistributionCondition.CANNOT_BE_RESOLVED.value
+    )
+
+
+def test_fillers_alone_absorb_a_small_difference() -> None:
+    """Slide 12, scenario 3: *"the fillers alone can absorb it and no cabinet changes."*"""
+    arguments = _distribution_arguments(CAB_DIST_1)
+    arguments["field_width"] = _inches(88)  # 2" smaller; the fillers cover it
+    arguments["proposed_fillers"] = [_inches(2), _inches(2)]
+    arguments["proposed_cabinets"] = [_inches(24), _inches(36), _inches(24)]
+
+    result = cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.PASS
+    assert facts["condition"] == DistributionCondition.FILLERS_ABSORB.value
+    assert facts["share_per_regular_cabinet"] is None
+    # Slide 12, outcome 3: "mark the cabinets with green checks and change only the fillers".
+    assert facts["cabinets_retained"] is True
+    assert facts["expected_cabinets"] == (_inches(24), _inches(36), _inches(24))
+
+
+def test_a_drawing_that_already_matches_the_site_passes() -> None:
+    """Slide 12, scenario 5: *"the shop drawing already matches the site… report a pass."*"""
+    arguments = _distribution_arguments(CAB_DIST_1)
+    arguments["field_width"] = _inches(90)
+    arguments["proposed_fillers"] = [_inches(3), _inches(3)]
+    arguments["proposed_cabinets"] = [_inches(24), _inches(36), _inches(24)]
+
+    result = cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+    assert result.outcome is Outcome.PASS
+    assert dict(result.intermediates)["condition"] == (
+        DistributionCondition.NO_CHANGE_REQUIRED.value
+    )
+
+
+def test_a_longer_run_divides_across_every_regular_cabinet() -> None:
+    """Slide 12 names runs of more than three cabinets and equipment at the end.
+
+    `filler_distribution` raises `RuleAuthoringError` on any run that is not exactly two, which
+    turns one of these drawings into a rule-authoring failure (#673). This operation does not
+    impose an arity: 6" over three regulars is 2" each.
+    """
+    result = cabinet_run_distribution(
+        field_width=_inches(106),
+        design_width=_inches(114),
+        design_fillers=[_inches(3), _inches(3)],
+        proposed_fillers=[_inches(2), _inches(2)],
+        design_cabinets=[_inches(24), _inches(24), _inches(24), _inches(36)],
+        proposed_cabinets=[_inches(22), _inches(22), _inches(22), _inches(36)],
+        cabinet_type=["drawer", "drawer", "drawer", "equipment"],
+        **WIDE_TYPE_BOUNDS,
+        filler_min=_inches(2),
+        filler_max=_inches(3),
+    )
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.PASS
+    assert facts["share_per_regular_cabinet"] == _inches(-2)
+    assert facts["regular_cabinets"] == (0, 1, 2)
+
+
+def test_an_uneven_split_is_not_decided_by_this_rule() -> None:
+    """6" over three regular cabinets is 2" each; 4" over three is not a width anyone can draw.
+
+    The deck's rule underdetermines this run, so the operation abstains and hands the reviewer the
+    exact share it computed. It does not FAIL the drawing — a shop drawing carrying 22 5/8, 22 5/8
+    and 22 3/4 may well be correct, and calling that a FAIL would be this system inventing the
+    rounding rule question 4 asks Raj for.
+    """
+    result = cabinet_run_distribution(
+        field_width=_inches(108),
+        design_width=_inches(114),
+        design_fillers=[_inches(3), _inches(3)],
+        proposed_fillers=[_inches(2), _inches(2)],
+        design_cabinets=[_inches(24), _inches(24), _inches(24), _inches(36)],
+        proposed_cabinets=[
+            _inches(Fraction(181, 8)),
+            _inches(Fraction(181, 8)),
+            _inches(Fraction(91, 4)),
+            _inches(36),
+        ],
+        cabinet_type=["drawer", "drawer", "drawer", "equipment"],
+        **WIDE_TYPE_BOUNDS,
+        filler_min=_inches(2),
+        filler_max=_inches(3),
+    )
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert facts["condition"] == DistributionCondition.SHARE_DOES_NOT_DIVIDE.value
+    assert facts["share_per_regular_cabinet"] == _inches(Fraction(-4, 3))
+
+
+def test_an_uneven_filler_split_abstains_under_its_own_name() -> None:
+    """Step one can land on an undrawable width too, and it is reported as a filler share.
+
+    Three fillers sharing 7" is 2 1/3" each. The key says `share_per_filler`, not
+    `share_per_regular_cabinet`: a reviewer reading the finding has to be able to tell which half of
+    the calculation stopped, and here the cabinets were never reached — the remainder is zero.
+    """
+    result = cabinet_run_distribution(
+        field_width=_inches(67),
+        design_width=_inches(66),
+        design_fillers=[_inches(2), _inches(2), _inches(2)],
+        proposed_fillers=[_inches(2), _inches(2), _inches(3)],
+        design_cabinets=[_inches(24), _inches(36)],
+        proposed_cabinets=[_inches(24), _inches(36)],
+        cabinet_type=["single_door", "equipment"],
+        **WIDE_TYPE_BOUNDS,
+        filler_min=_inches(1),
+        filler_max=_inches(3),
+    )
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert facts["condition"] == DistributionCondition.SHARE_DOES_NOT_DIVIDE.value
+    assert facts["share_per_filler"] == _inches(Fraction(7, 3))
+    assert "share_per_regular_cabinet" not in facts
+    assert facts["remainder_after_fillers"] == _inches(0)
+
+
+def test_the_reviewer_classification_must_cover_every_cabinet() -> None:
+    """A short classification is a rule-authoring fault, not a drawing that needs review.
+
+    Slide 11 puts the classification with the reviewer, so a run whose categories do not line up
+    with its cabinets means the rule was wired wrongly — and `verdict/engine.py` re-raises
+    `RuleAuthoringError` precisely so that surfaces as a defect instead of as a finding about the
+    drawing.
+    """
+    arguments = _distribution_arguments(CAB_DIST_1)
+    arguments["cabinet_type"] = [CabinetType.DOUBLE_DOOR.value, CabinetType.EQUIPMENT.value]
+
+    with pytest.raises(RuleAuthoringError, match="one value per cabinet"):
+        cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+
+def test_a_category_the_deck_does_not_name_is_refused() -> None:
+    """The set is closed, and an unknown category is never treated as a regular cabinet.
+
+    Defaulting an unrecognised word to "regular" would resize whatever it named — which, if it were
+    a misspelt equipment cabinet, is the one failure slide 3 exists to prevent.
+    """
+    arguments = _distribution_arguments(CAB_DIST_1)
+    arguments["cabinet_type"] = ["double_door", "appliance", "double_door"]
+
+    with pytest.raises(RuleAuthoringError, match="must be one of"):
+        cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+
+def test_every_type_bound_is_a_required_operand_so_a_missing_one_is_not_found() -> None:
+    """No bound may acquire a default, in the operation or in a rule.
+
+    The engine answers NOT_FOUND when a required operand cannot be resolved — *"a missing
+    intermediate or parameter is not zero"* (`verdict/engine.py`) — and that is the whole mechanism
+    behind the acceptance criterion. It only holds while all six are declared, which is what this
+    pins: an optional bound would reach `cabinet_run_distribution` as `None` and there is no honest
+    value to put in its place. CLIENT_FACTS Q21 says the numbers are still unsettled.
+    """
+    (spec,) = [s for s in DISTRIBUTION_SPECS if s.name == "cabinet_run_distribution"]
+
+    for kind in CabinetType:
+        if kind.is_equipment:
+            continue
+        for edge in ("min", "max"):
+            assert spec.operands[f"{kind.value}_cab_width_{edge}"] is Arity.SCALAR
+
+    with pytest.raises(RuleAuthoringError, match="single_door_cab_width_min"):
+        validate_operands(
+            spec,
+            {
+                name: value
+                for name, value in _distribution_arguments(CAB_DIST_1).items()
+                if name != "single_door_cab_width_min"
+            },
+        )
+
+
+def test_unequal_fillers_that_must_move_are_not_apportioned_by_this_rule() -> None:
+    """Slide 12 names unequal fillers; slides 3 and 7 never say how a change is shared.
+
+    2" and 4" losing 2" between them could be 1"+3", 2"+2" or 1 1/2"+2 1/2", all inside the bound.
+    Picking one would be this system inventing the rule, and under exact match the pick *is* the
+    verdict — so the finding carries the total the fillers must reach and leaves the split open.
+    """
+    result = cabinet_run_distribution(
+        field_width=_inches(58),
+        design_width=_inches(60),
+        design_fillers=[_inches(2), _inches(4)],
+        proposed_fillers=[_inches(1), _inches(3)],
+        design_cabinets=[_inches(18), _inches(36)],
+        proposed_cabinets=[_inches(18), _inches(36)],
+        cabinet_type=["single_door", "equipment"],
+        **WIDE_TYPE_BOUNDS,
+        filler_min=_inches(1),
+        filler_max=_inches(4),
+    )
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert facts["condition"] == (DistributionCondition.FILLER_APPORTIONMENT_NOT_DETERMINED.value)
+    assert facts["expected_filler_total"] == _inches(4)
+    assert facts["filler_width_bounds"] == (_inches(2), _inches(8))
+
+
+def test_unequal_fillers_are_still_judged_when_nothing_has_to_move() -> None:
+    """The abstention is about sharing a *change*, not about unequal fillers as such.
+
+    The site matches the architectural drawing here, so the expected layout is the design layout —
+    2" and 4", unequal and untouched. The shop drawing evened them to 3" and 3", a change the site
+    never justified, and that is a FAIL rather than a review: nothing about it is uncertain.
+    """
+    result = cabinet_run_distribution(
+        field_width=_inches(60),
+        design_width=_inches(60),
+        design_fillers=[_inches(2), _inches(4)],
+        proposed_fillers=[_inches(3), _inches(3)],
+        design_cabinets=[_inches(18), _inches(36)],
+        proposed_cabinets=[_inches(18), _inches(36)],
+        cabinet_type=["single_door", "equipment"],
+        **WIDE_TYPE_BOUNDS,
+        filler_min=_inches(1),
+        filler_max=_inches(4),
+    )
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.FAIL
+    assert facts["condition"] == DistributionCondition.NO_CHANGE_REQUIRED.value
+    assert facts["expected_fillers"] == (_inches(2), _inches(4))
+    assert facts["cabinets_retained"] is True
+
+
+def test_a_drawing_that_closes_but_distributes_wrongly_reports_a_real_delta() -> None:
+    """A FAIL whose delta is zero tells the reviewer the opposite of what the finding says.
+
+    This drawing totals the site width exactly and still puts the inches on the wrong cabinets, so
+    the delta is the distance from the expectation — 1" moved off each regular — not from the wall.
+    """
+    arguments = _distribution_arguments(CAB_DIST_1)
+    arguments["proposed_cabinets"] = [_inches(20), _inches(36), _inches(22)]
+
+    result = cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+    assert result.outcome is Outcome.FAIL
+    assert dict(result.intermediates)["proposed_run_total"] == _inches(CAB_DIST_1.site_width)
+    assert result.delta == _inches(2)
