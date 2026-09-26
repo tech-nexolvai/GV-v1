@@ -9,9 +9,10 @@ Source: issue #61; Cabinet_Checks.xlsx H18-H25 and N18-N22; client facts Q8, Q9 
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import StrEnum
 from fractions import Fraction
+from functools import wraps
 
 from units.measurement import Measurement, Unit
 from units.policy import require_same_unit
@@ -37,6 +38,69 @@ class DistributionCondition(StrEnum):
     #: Ours, not the deck's: unequal fillers must move and no rule says how. See
     #: `_apportionment_not_determined`.
     FILLER_APPORTIONMENT_NOT_DETERMINED = "filler_apportionment_not_determined"
+    #: The run is a shape this operation cannot compare. Data, not a broken rule — see
+    #: `UnsupportedRunShape`.
+    RUN_SHAPE_UNSUPPORTED = "run_shape_unsupported"
+
+
+class UnsupportedRunShape(Exception):
+    """The operands are well-formed but their shape is not one this operation can compare.
+
+    **The distinction this exists to draw.** `RuleAuthoringError` is deliberately fatal —
+    `verdict/engine.py` re-raises it while every other failure abstains, because a rule whose text
+    is wrong should fail loudly rather than quietly judge nothing. A cabinet run with three fillers
+    is not a rule whose text is wrong. It is a kitchen. Letting it take down the package reports the
+    rulebook as broken and stops every other check on the job (#673).
+
+    So: the wrong *kind* of operand — a scalar where a list is declared, something that is not a
+    `Measurement`, a bound above its own maximum — can only come from the rule or the registry, and
+    still raises. A count that disagrees with another count, an empty run, or a category outside the
+    set came from what was read or entered, and abstains with the shape it found.
+    """
+
+    def __init__(self, found: str, supported: str) -> None:
+        super().__init__(f"{found}; {supported}")
+        self.found = found
+        self.supported = supported
+
+
+def _abstains_on_unsupported_shape(
+    operation: Callable[..., OperationResult],
+) -> Callable[..., OperationResult]:
+    """Turn `UnsupportedRunShape` into an abstention at the operation boundary.
+
+    A decorator rather than a `try` inside each body, so the guards stay readable and neither
+    operation can grow a path that raises this past the engine. `RuleAuthoringError` is not caught:
+    it is meant to reach `verdict/engine.py` and stop the run.
+    """
+
+    @wraps(operation)
+    def guarded(**operands: object) -> OperationResult:
+        try:
+            return operation(**operands)
+        except UnsupportedRunShape as refused:
+            return _unsupported_shape(refused)
+
+    return guarded
+
+
+def _unsupported_shape(refused: UnsupportedRunShape) -> OperationResult:
+    """Turn a shape this operation cannot compare into an abstention a reviewer can read."""
+    return OperationResult(
+        outcome=Outcome.REVIEW_REQUIRED,
+        delta=None,
+        intermediates=(
+            ("condition", DistributionCondition.RUN_SHAPE_UNSUPPORTED.value),
+            ("shape_found", refused.found),
+            ("shape_supported", refused.supported),
+            (
+                "reviewer_action",
+                "check this run by hand; the shape of it is outside what this check compares",
+            ),
+        ),
+        comparison=f"{refused.found}, and {refused.supported}",
+        tolerance=None,
+    )
 
 
 class CabinetType(StrEnum):
@@ -63,8 +127,11 @@ def _pair(values: Sequence[Measurement], name: str) -> tuple[Measurement, Measur
     if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Sequence):
         raise RuleAuthoringError(f"{name} must have list arity")
     if len(values) != 2:
-        raise RuleAuthoringError(
-            f"{name} must contain exactly two ordered values: left filler, then right filler"
+        # #673: the count came off a drawing. A wall on one side, or a run with three fillers, is a
+        # job this operation cannot compare — not a rule whose text is wrong.
+        raise UnsupportedRunShape(
+            f"{name} has {len(values)} value(s)",
+            "this check compares exactly two, left filler then right filler",
         )
     left, right = values
     if not isinstance(left, Measurement) or not isinstance(right, Measurement):
@@ -88,7 +155,8 @@ def _sequence(values: object, name: str) -> tuple[Measurement, ...]:
     if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Sequence):
         raise RuleAuthoringError(f"{name} must have list arity")
     if not values:
-        raise RuleAuthoringError(f"{name} must not be empty")
+        # Nothing was read for this run. That is the drawing, or the reading of it — never the rule.
+        raise UnsupportedRunShape(f"{name} is empty", "this check needs at least one value")
     for value in values:
         if not isinstance(value, Measurement):
             raise RuleAuthoringError(f"{name} values must be Measurements")
@@ -106,21 +174,26 @@ def _types(values: object, name: str, *, length: int) -> tuple[CabinetType, ...]
     if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Sequence):
         raise RuleAuthoringError(f"{name} must have list arity")
     if len(values) != length:
-        raise RuleAuthoringError(
-            f"{name} must carry one value per cabinet: got {len(values)} for {length} cabinet(s)"
+        raise UnsupportedRunShape(
+            f"{name} covers {len(values)} cabinet(s) but the run has {length}",
+            "every cabinet needs a classification before the run can be compared",
         )
     classified: list[CabinetType] = []
     for value in values:
         try:
             classified.append(CabinetType(value))
         except ValueError:
-            raise RuleAuthoringError(
-                f"{name} values must be one of "
-                f"{', '.join(sorted(member.value for member in CabinetType))}: got {value!r}"
+            # An unrecognised category is a reviewer input this operation does not know, so it
+            # abstains. It must never fall through to "regular": a misspelt equipment cabinet
+            # would then be resized, which is the one failure slide 3 exists to prevent.
+            raise UnsupportedRunShape(
+                f"{name} contains {value!r}",
+                "the categories are " + ", ".join(sorted(member.value for member in CabinetType)),
             ) from None
     return tuple(classified)
 
 
+@_abstains_on_unsupported_shape
 def filler_distribution(
     *,
     field_width: Measurement,
@@ -241,6 +314,7 @@ def filler_distribution(
     )
 
 
+@_abstains_on_unsupported_shape
 def cabinet_run_distribution(
     *,
     field_width: Measurement,
@@ -325,9 +399,10 @@ def cabinet_run_distribution(
             len(design_filler_run) if name == "proposed_fillers" else len(design_cabinet_run)
         )
         if len(run) != expected_length:
-            raise RuleAuthoringError(
-                f"{name} must be the same length as its design run: "
-                f"got {len(run)} for {expected_length}"
+            raise UnsupportedRunShape(
+                f"{name} has {len(run)} value(s) against {expected_length} on the design run",
+                "the shop drawing and the architectural drawing must describe the same parts "
+                "before their widths can be compared",
             )
 
     unit = require_same_unit(
@@ -655,7 +730,7 @@ def _cannot_resolve(
 DISTRIBUTION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         "filler_distribution",
-        "1.0.0",
+        "1.1.0",
         {
             "field_width": Arity.SCALAR,
             "design_width": Arity.SCALAR,
@@ -669,7 +744,7 @@ DISTRIBUTION_SPECS: tuple[OperationSpec, ...] = (
     ),
     OperationSpec(
         "cabinet_run_distribution",
-        "1.0.0",
+        "1.1.0",
         {
             "field_width": Arity.SCALAR,
             "design_width": Arity.SCALAR,

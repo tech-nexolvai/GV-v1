@@ -259,18 +259,40 @@ def test_missing_and_unqualified_fillers_abstain_before_distribution() -> None:
     assert ambiguous_finding.trace is None
 
 
-def test_operation_refuses_malformed_pairs_modes_and_bounds() -> None:
-    """Input: unsafe authoring values. Output: loud errors rather than guessed distribution."""
-    with pytest.raises(RuleAuthoringError, match="exactly two ordered values"):
-        filler_distribution(
-            field_width=_inch(90),
-            design_width=_inch(88),
-            design_fillers=(_inch(1),),
-            proposed_fillers=(_inch(2), _inch(2)),
-            filler_min=_inch(1),
-            filler_max=_inch(2),
-            allow_asymmetric=0,
-        )
+def test_a_filler_count_this_check_cannot_compare_abstains_instead_of_raising() -> None:
+    """A one-filler run is a wall on one side, not a rule whose text is wrong (#673).
+
+    This used to raise `RuleAuthoringError`, which `verdict/engine.py` re-raises rather than
+    abstaining — so one such drawing stopped every other check on the package and reported the
+    rulebook as broken. The count came off a drawing, so the operation now says what shape it
+    found and the package carries on.
+    """
+    result = filler_distribution(
+        field_width=_inch(90),
+        design_width=_inch(88),
+        design_fillers=(_inch(1),),
+        proposed_fillers=(_inch(2), _inch(2)),
+        filler_min=_inch(1),
+        filler_max=_inch(2),
+        allow_asymmetric=0,
+    )
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert facts["condition"] == DistributionCondition.RUN_SHAPE_UNSUPPORTED.value
+    # The reason names both halves: what arrived, and what this check handles.
+    assert "1 value(s)" in str(facts["shape_found"])
+    assert "exactly two" in str(facts["shape_supported"])
+
+
+def test_operation_still_refuses_malformed_modes_and_bounds() -> None:
+    """Input: unsafe authoring values. Output: loud errors rather than guessed distribution.
+
+    #673 moved data-shaped refusals to abstentions; it must not have turned `RuleAuthoringError`
+    into a catch-all. These two can only come from the rule text or the registry — a boolean where
+    a reviewed integer is required, and a minimum above its own maximum — so they still stop the
+    run.
+    """
     with pytest.raises(RuleAuthoringError, match="reviewed integer 0 or 1"):
         filler_distribution(
             field_width=_inch(90),
@@ -291,3 +313,27 @@ def test_operation_refuses_malformed_pairs_modes_and_bounds() -> None:
             filler_max=_inch(1),
             allow_asymmetric=0,
         )
+
+
+def test_a_three_filler_drawing_produces_a_finding_instead_of_stopping_the_package() -> None:
+    """#673 end to end: the shape reaches the engine and comes back as a finding.
+
+    This is the property the issue is actually about. `verdict/engine.py` re-raises
+    `RuleAuthoringError` rather than abstaining, so before this change a single drawing with a wall
+    on one side — or three fillers, or an unequal pair — raised out of `execute` and took every
+    other check on the job with it, reporting the rulebook as broken. It now returns a finding the
+    reviewer can act on, and the run continues.
+    """
+    finding = execute(
+        publish(_load_rule()),
+        _operands(design_fillers=(1, 1, 1), proposed_fillers=(2, 2, 2)),
+        _parameters(),
+        discriminators={"filler_symmetry": "equal_unless_noted"},
+    )
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+    assert _intermediate(finding, "condition") == (
+        DistributionCondition.RUN_SHAPE_UNSUPPORTED.value
+    )
+    assert "3 value(s)" in str(_intermediate(finding, "shape_found"))
+    assert "exactly two" in str(_intermediate(finding, "shape_supported"))

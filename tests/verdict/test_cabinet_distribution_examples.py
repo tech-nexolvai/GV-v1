@@ -495,32 +495,100 @@ def test_an_uneven_filler_split_abstains_under_its_own_name() -> None:
     assert facts["remainder_after_fillers"] == _inches(0)
 
 
-def test_the_reviewer_classification_must_cover_every_cabinet() -> None:
-    """A short classification is a rule-authoring fault, not a drawing that needs review.
+def test_a_classification_that_misses_a_cabinet_abstains() -> None:
+    """Both counts come from the drawing and the reviewer, so a mismatch is data (#673).
 
-    Slide 11 puts the classification with the reviewer, so a run whose categories do not line up
-    with its cabinets means the rule was wired wrongly — and `verdict/engine.py` re-raises
-    `RuleAuthoringError` precisely so that surfaces as a defect instead of as a finding about the
-    drawing.
+    This raised `RuleAuthoringError` when #676 shipped, on the reading that the rule must have been
+    wired wrongly. But the cabinets are read off a sheet and the categories are entered by a
+    person, so the two can disagree on a perfectly well-authored rule — and raising stopped every
+    other check on the package.
     """
     arguments = _distribution_arguments(CAB_DIST_1)
     arguments["cabinet_type"] = [CabinetType.DOUBLE_DOOR.value, CabinetType.EQUIPMENT.value]
 
-    with pytest.raises(RuleAuthoringError, match="one value per cabinet"):
-        cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+    result = cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert facts["condition"] == DistributionCondition.RUN_SHAPE_UNSUPPORTED.value
+    assert "2 cabinet(s)" in str(facts["shape_found"])
+    assert "3" in str(facts["shape_found"])
 
 
 def test_a_category_the_deck_does_not_name_is_refused() -> None:
     """The set is closed, and an unknown category is never treated as a regular cabinet.
 
-    Defaulting an unrecognised word to "regular" would resize whatever it named — which, if it were
-    a misspelt equipment cabinet, is the one failure slide 3 exists to prevent.
+    Abstaining rather than raising (#673) — it is a reviewer's input, not the rule's text — but the
+    safety property is the one that matters and it is unchanged: an unrecognised word must never
+    fall through to "regular", because a misspelt equipment cabinet would then be resized, which is
+    the one failure slide 3 exists to prevent.
     """
     arguments = _distribution_arguments(CAB_DIST_1)
     arguments["cabinet_type"] = ["double_door", "appliance", "double_door"]
 
-    with pytest.raises(RuleAuthoringError, match="must be one of"):
-        cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+    result = cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert facts["condition"] == DistributionCondition.RUN_SHAPE_UNSUPPORTED.value
+    assert "appliance" in str(facts["shape_found"])
+    # No width was proposed for anything: the run was never compared.
+    assert "expected_cabinets" not in facts
+
+
+def test_a_shop_run_of_a_different_length_abstains_rather_than_raising() -> None:
+    """Two drawings that describe different parts cannot have their widths compared.
+
+    That is a real pair of drawings — a shop drawing with a cabinet the architect did not draw —
+    and it must not take the package down with it.
+    """
+    arguments = _distribution_arguments(CAB_DIST_1)
+    arguments["proposed_cabinets"] = [_inches(21), _inches(36)]
+
+    result = cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert facts["condition"] == DistributionCondition.RUN_SHAPE_UNSUPPORTED.value
+    assert "proposed_cabinets" in str(facts["shape_found"])
+
+
+def test_an_empty_run_abstains_because_nothing_was_read() -> None:
+    """No fillers read is a statement about the reading, never about the rule."""
+    arguments = _distribution_arguments(CAB_DIST_1)
+    arguments["design_fillers"] = []
+    arguments["proposed_fillers"] = []
+
+    result = cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert dict(result.intermediates)["condition"] == (
+        DistributionCondition.RUN_SHAPE_UNSUPPORTED.value
+    )
+
+
+def test_a_genuinely_malformed_rule_still_stops_the_run() -> None:
+    """#673 must not have turned `RuleAuthoringError` into a catch-all.
+
+    A bound above its own maximum, and a measurement that is not one, can only come from the rule
+    text or the registry — no drawing produces them — so they still reach `verdict/engine.py` and
+    fail loudly rather than quietly judging nothing.
+    """
+    inverted = _distribution_arguments(CAB_DIST_1)
+    inverted["double_door_cab_width_min"] = _inches(40)
+    inverted["double_door_cab_width_max"] = _inches(20)
+    with pytest.raises(RuleAuthoringError, match="must not exceed"):
+        cabinet_run_distribution(**inverted)  # type: ignore[arg-type]
+
+    wrong_kind = _distribution_arguments(CAB_DIST_1)
+    wrong_kind["field_width"] = 82
+    with pytest.raises(RuleAuthoringError, match="must be a Measurement"):
+        cabinet_run_distribution(**wrong_kind)  # type: ignore[arg-type]
+
+    not_a_list = _distribution_arguments(CAB_DIST_1)
+    not_a_list["design_cabinets"] = _inches(24)
+    with pytest.raises(RuleAuthoringError, match="must have list arity"):
+        cabinet_run_distribution(**not_a_list)  # type: ignore[arg-type]
 
 
 def test_every_type_bound_is_a_required_operand_so_a_missing_one_is_not_found() -> None:
