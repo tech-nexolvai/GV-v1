@@ -134,17 +134,20 @@ def test_the_proximity_limit_is_what_decides_it() -> None:
     assert near.set_aside == ()
 
 
-def test_a_cluster_too_small_to_be_a_label_is_set_aside_with_its_count() -> None:
-    """Input: single-path clusters against a minimum of two. Outcome: set aside, counted.
+def test_a_single_glyph_refusal_stays_out_of_the_crop_plan() -> None:
+    """Input: single glyphs that do not form runs. Outcome: annotation refusals, no crops.
 
-    A lone path is a dot in a hatch pattern far more often than a digit. The reason names the count
-    so a reviewer can see how close it was to being read.
+    A lone path is exactly the fragmentary crop this route must not hand to a reader. It is still
+    visible in the annotation-layer refusals, so the planner can stay silent without dropping it.
     """
+    layers = _layers(glyph_gap_pt=Decimal("0.5"))
     plan = _plan(glyph_gap_pt=Decimal("0.5"), minimum_paths=2)
 
     assert plan.to_read == ()
-    assert len(plan.set_aside) == 5
-    assert all("below the 2" in entry.reason for entry in plan.set_aside)
+    assert plan.set_aside == ()
+    assert any(
+        "did not confidently belong to a glyph run" in item.reason for item in layers.refusals
+    )
 
 
 def test_every_region_is_either_read_or_set_aside_exactly_once() -> None:

@@ -564,56 +564,102 @@ def _bounds(
     return (min(xs), min(ys), max(xs), max(ys))
 
 
-def _clusters(
-    boxes: list[tuple[Decimal, Decimal, Decimal, Decimal]], gap_pt: Decimal
-) -> list[list[int]]:
-    """Group boxes that are within `gap_pt` of each other, transitively.
+def _advance_interval(
+    box: tuple[Decimal, Decimal, Decimal, Decimal], baseline_rotation_degrees: int
+) -> tuple[Decimal, Decimal]:
+    """The box extent along the text baseline, in reading-independent order."""
+    left, bottom, right, top = box
+    if baseline_rotation_degrees in (0, 180):
+        return (left, right)
+    return (bottom, top)
 
-    Union-find over a grid rather than every pair: a stamp holds thousands of paths, and comparing
-    all of them against all of them is the difference between a second and an hour. Boxes are bucketed
-    by `gap_pt`, and only the nine buckets around each one are consulted — which is exact rather than
-    approximate, because two boxes further apart than `gap_pt` cannot be in the same or an adjacent
-    bucket and touch.
 
-    The result is ordered by first appearance so the same file always produces the same regions in
-    the same order; a caller comparing two runs must not see a set reordering as a change.
+def _baseline_interval(
+    box: tuple[Decimal, Decimal, Decimal, Decimal], baseline_rotation_degrees: int
+) -> tuple[Decimal, Decimal]:
+    """The box extent perpendicular to the text baseline."""
+    left, bottom, right, top = box
+    if baseline_rotation_degrees in (0, 180):
+        return (bottom, top)
+    return (left, right)
+
+
+def _intervals_overlap(left: tuple[Decimal, Decimal], right: tuple[Decimal, Decimal]) -> bool:
+    """Whether two closed intervals share any stated span, without inventing a tolerance."""
+    return left[0] <= right[1] and right[0] <= left[1]
+
+
+def _glyph_runs(
+    boxes: list[tuple[Decimal, Decimal, Decimal, Decimal]],
+    gap_pt: Decimal,
+    baseline_rotation_degrees: int,
+) -> tuple[list[list[int]], int]:
+    """Group glyph-sized boxes into ordered text runs.
+
+    The old grouping answered only "are these boxes close in two dimensions?" and did that
+    transitively, so two dimension labels on nearby baselines could become one crop. A run is
+    stricter: consecutive glyph boxes must share the same baseline interval, and advance along that
+    baseline with no gap larger than the caller's stated glyph gap. Single glyphs are reported
+    separately rather than promoted into model crops; they are the exact fragments this issue is
+    removing from the reader input.
     """
-    parent = list(range(len(boxes)))
+    ordered = sorted(
+        range(len(boxes)),
+        key=lambda index: (
+            _baseline_interval(boxes[index], baseline_rotation_degrees)[0],
+            _advance_interval(boxes[index], baseline_rotation_degrees)[0],
+            index,
+        ),
+    )
+    runs: list[list[int]] = []
+    orphaned = 0
+    while ordered:
+        seed = ordered.pop(0)
+        run = [seed]
+        baseline = _baseline_interval(boxes[seed], baseline_rotation_degrees)
+        last_advance = _advance_interval(boxes[seed], baseline_rotation_degrees)
 
-    def find(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
+        changed = True
+        while changed:
+            changed = False
+            best_position: int | None = None
+            best_index: int | None = None
+            best_advance: tuple[Decimal, Decimal] | None = None
+            for position, candidate in enumerate(ordered):
+                candidate_baseline = _baseline_interval(boxes[candidate], baseline_rotation_degrees)
+                if not _intervals_overlap(baseline, candidate_baseline):
+                    continue
+                candidate_advance = _advance_interval(boxes[candidate], baseline_rotation_degrees)
+                gap = candidate_advance[0] - last_advance[1]
+                if gap < 0 or gap > gap_pt:
+                    continue
+                if best_advance is None or candidate_advance[0] < best_advance[0]:
+                    best_position = position
+                    best_index = candidate
+                    best_advance = candidate_advance
+            if best_position is not None and best_index is not None and best_advance is not None:
+                ordered.pop(best_position)
+                run.append(best_index)
+                baseline = (
+                    max(
+                        baseline[0],
+                        _baseline_interval(boxes[best_index], baseline_rotation_degrees)[0],
+                    ),
+                    min(
+                        baseline[1],
+                        _baseline_interval(boxes[best_index], baseline_rotation_degrees)[1],
+                    ),
+                )
+                last_advance = (last_advance[0], max(last_advance[1], best_advance[1]))
+                changed = True
 
-    def union(left: int, right: int) -> None:
-        left_root, right_root = find(left), find(right)
-        if left_root != right_root:
-            parent[max(left_root, right_root)] = min(left_root, right_root)
+        if len(run) == 1:
+            orphaned += 1
+        else:
+            runs.append(sorted(run))
 
-    buckets: dict[tuple[int, int], list[int]] = {}
-    for index, (left, bottom, _, _) in enumerate(boxes):
-        key = (int(left / gap_pt), int(bottom / gap_pt))
-        buckets.setdefault(key, []).append(index)
-
-    for index, box in enumerate(boxes):
-        key_x = int(box[0] / gap_pt)
-        key_y = int(box[1] / gap_pt)
-        for offset_x in (-1, 0, 1):
-            for offset_y in (-1, 0, 1):
-                for other in buckets.get((key_x + offset_x, key_y + offset_y), ()):
-                    if other <= index:
-                        continue
-                    candidate = boxes[other]
-                    near_x = box[0] - gap_pt <= candidate[2] and candidate[0] - gap_pt <= box[2]
-                    near_y = box[1] - gap_pt <= candidate[3] and candidate[1] - gap_pt <= box[3]
-                    if near_x and near_y:
-                        union(index, other)
-
-    grouped: dict[int, list[int]] = {}
-    for index in range(len(boxes)):
-        grouped.setdefault(find(index), []).append(index)
-    return [grouped[key] for key in sorted(grouped)]
+    runs.sort(key=lambda run: min(run))
+    return runs, orphaned
 
 
 def read_markup_layer(
@@ -807,7 +853,7 @@ def _read_layers(
                             )
                         )
                     paths = inside
-                    found, ignored = _drawing_geometry(
+                    found, ignored, orphaned_glyphs = _drawing_geometry(
                         paths,
                         transform=transform,
                         document_version_id=document_version_id,
@@ -826,6 +872,15 @@ def _read_layers(
                                 subtype,
                                 f"{ignored} paths were neither line-work nor glyph-sized and were "
                                 "not used",
+                            )
+                        )
+                    if orphaned_glyphs:
+                        refusals.append(
+                            LayerRefusal(
+                                index,
+                                subtype,
+                                f"{orphaned_glyphs} glyph-sized paths did not confidently belong "
+                                "to a glyph run and were not used",
                             )
                         )
                     continue
@@ -879,7 +934,7 @@ def _drawing_geometry(
     glyph_maximum_pt: Decimal,
     glyph_gap_pt: Decimal,
     baseline_rotation_degrees: int,
-) -> tuple[tuple[tuple[DimensionExtent, ...], tuple[OutlinedTextRegion, ...]], int]:
+) -> tuple[tuple[tuple[DimensionExtent, ...], tuple[OutlinedTextRegion, ...]], int, int]:
     """One stamp's paths split into line-work and candidate text regions, plus what was left over."""
     segments: list[DimensionExtent] = []
     ignored_segments = 0
@@ -917,7 +972,8 @@ def _drawing_geometry(
             ignored += 1
 
     regions: list[OutlinedTextRegion] = []
-    for cluster in _clusters(small, glyph_gap_pt):
+    runs, orphaned_glyphs = _glyph_runs(small, glyph_gap_pt, baseline_rotation_degrees)
+    for cluster in runs:
         boxes = [small[index] for index in cluster]
         rect = (
             min(box[0] for box in boxes),
@@ -942,4 +998,4 @@ def _drawing_geometry(
             )
         )
 
-    return (tuple(segments), tuple(regions)), ignored
+    return (tuple(segments), tuple(regions)), ignored, orphaned_glyphs
