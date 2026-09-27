@@ -58,7 +58,10 @@ assert.match(html, /<th scope="col">Reading<\/th>/);
 assert.match(html, /<td>25 1\/2 in<\/td>/);
 assert.match(html, /<td>Shop p\.13<\/td>/);
 assert.match(html, /<td>25 in<\/td>/);
-assert.match(html, /<td>Fail<\/td>/);
+// The reviewer-facing wording, not the engine's — `src/data/outcomeLabels.ts` is the one list,
+// and `tests/test_outcome_labels.py` holds it to what the backend narration says.
+assert.match(html, /<td>Needs correction<\/td>/);
+assert.doesNotMatch(html, /<td>Fail<\/td>/);
 assert.doesNotMatch(html, /\| Check \| Reading \|/);
 
 console.log('chat-render component test passed');

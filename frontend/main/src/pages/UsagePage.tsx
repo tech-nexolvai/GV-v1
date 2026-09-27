@@ -16,6 +16,7 @@
 import { listPackages, getFindingCounts } from '../api/client';
 import type { FindingCounts } from '../api/client';
 import { projectId } from '../api/config';
+import { OUTCOME_LABELS } from '../data/outcomeLabels.js';
 import { useAsync } from '../api/useAsync';
 import './UsagePage.css';
 
@@ -132,11 +133,11 @@ export function UsagePage() {
                   {/* Every outcome, including the abstentions, and they sum to the total. Showing only
                       passes and failures invites a reader to treat the remainder as passing — and
                       under exact match the abstentions are the bulk of a run, not an edge case. */}
-                  <OutcomeRow label="PASS" count={totals.data.counts.passed} total={totals.data.counts.total} cls="usage-bar--pass" />
-                  <OutcomeRow label="FAIL" count={totals.data.counts.failed} total={totals.data.counts.total} cls="usage-bar--fail" />
-                  <OutcomeRow label="REVIEW" count={totals.data.counts.review_required} total={totals.data.counts.total} cls="usage-bar--review" />
-                  <OutcomeRow label="NOT FOUND" count={totals.data.counts.not_found} total={totals.data.counts.total} cls="usage-bar--missing" />
-                  <OutcomeRow label="NO RULE" count={totals.data.counts.no_applicable_rule} total={totals.data.counts.total} cls="usage-bar--missing" />
+                  <OutcomeRow label={OUTCOME_LABELS.PASS} count={totals.data.counts.passed} total={totals.data.counts.total} cls="usage-bar--pass" />
+                  <OutcomeRow label={OUTCOME_LABELS.FAIL} count={totals.data.counts.failed} total={totals.data.counts.total} cls="usage-bar--fail" />
+                  <OutcomeRow label={OUTCOME_LABELS.REVIEW_REQUIRED} count={totals.data.counts.review_required} total={totals.data.counts.total} cls="usage-bar--review" />
+                  <OutcomeRow label={OUTCOME_LABELS.NOT_FOUND} count={totals.data.counts.not_found} total={totals.data.counts.total} cls="usage-bar--missing" />
+                  <OutcomeRow label={OUTCOME_LABELS.NO_APPLICABLE_RULE} count={totals.data.counts.no_applicable_rule} total={totals.data.counts.total} cls="usage-bar--missing" />
                 </div>
               )}
             </div>
