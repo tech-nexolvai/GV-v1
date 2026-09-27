@@ -1,13 +1,18 @@
+import { OUTCOME_LABELS } from '../../data/outcomeLabels.js';
 import type { Outcome, PackageStatus } from '../../data/types';
 import '../../design/components.css';
 
 // ── Outcome → display config ─────────────────────────────────
-const OUTCOME_CONFIG: Record<Outcome, { label: string; cls: string; dot: string }> = {
-  PASS:               { label: 'PASS',        cls: 'badge--pass',    dot: '●' },
-  FAIL:               { label: 'FAIL',        cls: 'badge--fail',    dot: '✕' },
-  REVIEW_REQUIRED:    { label: 'REVIEW',      cls: 'badge--review',  dot: '◎' },
-  NOT_FOUND:          { label: 'NOT FOUND',   cls: 'badge--missing', dot: '–' },
-  NO_APPLICABLE_RULE: { label: 'N/A RULE',    cls: 'badge--none',    dot: '—' },
+//
+// The colour and the dot are this file's business; the **word** is not. It comes from
+// `OUTCOME_LABELS`, which the backend narration is also written against, so the badge and the
+// sentence underneath it cannot say two different things about the same finding.
+const OUTCOME_CONFIG: Record<Outcome, { cls: string; dot: string }> = {
+  PASS:               { cls: 'badge--pass',    dot: '●' },
+  FAIL:               { cls: 'badge--fail',    dot: '✕' },
+  REVIEW_REQUIRED:    { cls: 'badge--review',  dot: '◎' },
+  NOT_FOUND:          { cls: 'badge--missing', dot: '–' },
+  NO_APPLICABLE_RULE: { cls: 'badge--none',    dot: '—' },
 };
 
 const STATUS_CONFIG: Record<PackageStatus, { label: string; cls: string }> = {
@@ -44,7 +49,7 @@ export function OutcomeBadge({ outcome, size = 'md' }: OutcomeBadgeProps) {
       style={size === 'sm' ? { fontSize: '10px', padding: '1px 6px' } : undefined}
     >
       <span aria-hidden="true">{cfg.dot}</span>
-      {cfg.label}
+      {OUTCOME_LABELS[outcome]}
     </span>
   );
 }

@@ -1,12 +1,10 @@
+import { OUTCOME_LABELS } from '../../data/outcomeLabels.js';
 import type { Finding } from '../../data/types';
 
-export const OUTCOME_LABELS = {
-  PASS: 'Pass',
-  FAIL: 'Fail',
-  REVIEW_REQUIRED: 'Review required',
-  NOT_FOUND: 'Not found',
-  NO_APPLICABLE_RULE: 'Not applicable',
-} as const;
+// Re-exported rather than redefined. This file used to carry its own spelling of the same five
+// outcomes ('Pass', 'Not found'), which is how the table came to disagree with both the badge
+// beside it and the narration above it.
+export { OUTCOME_LABELS };
 
 /**
  * The cells of one finding's row, shared by the markdown table and the `FindingsTable` component
