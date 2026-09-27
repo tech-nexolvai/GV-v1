@@ -21,6 +21,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     ForeignKey,
+    Integer,
     Numeric,
     String,
     UniqueConstraint,
@@ -563,6 +564,69 @@ class LayoutProposal(Base, TimestampedUUID, Immutable):
         ),
         CheckConstraint("model_id !~ '^[[:space:]]*$'", name="layout_proposal_model_not_blank"),
         CheckConstraint("prompt_id !~ '^[[:space:]]*$'", name="layout_proposal_prompt_not_blank"),
+    )
+
+
+class ItemClassification(Base, TimestampedUUID, Immutable):
+    """What a reviewer says one item in an ordered run *is*, where its category is not a dimension.
+
+    **A third kind of reviewer input, and it needed its own table.** Two existed and neither fits.
+    `parameter_values` is strictly numeric — a numerator, a denominator, a unit and a
+    `denominator > 0` constraint — and a cabinet category is none of those; making those columns
+    nullable to admit one would weaken a guard on every measurement in the system to carry a value
+    that is not a measurement. `layout_confirmations` has exactly the right *shape*, but it is the
+    human gate for rule **applicability**: putting an operand in it would mean the engine telling
+    discriminators from inputs by reading their names.
+
+    So the role decides. `cabinet_type` is declared in a rule's `inputs:` and bound to an operand,
+    which makes it an input, and this is where an input that is a category lives.
+
+    **Position is a column, not a suffix.** A many-valued measurement is stored as `name#0`,
+    `name#1` and the index is parsed back out of the string — `workflow/measurements.py` has a
+    branch that silently drops a malformed one rather than let it reorder a cabinet run. Order is
+    load-bearing here for the same reason (slide 3's adjustment is positional), so it is an integer
+    the database can constrain.
+
+    Append-only, like every reviewer value: a correction is another row and the latest wins, because
+    a finding cites the version that judged it (ADR-0016) and superseding a value is not deleting it.
+
+    Source: issue #684. Verification: tests/app/test_item_classifications.py.
+    """
+
+    __tablename__ = "item_classifications"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    rule_id: Mapped[str] = mapped_column(String(100))
+    """Which rule's input this answers. Two rules may each declare an input called `cabinet_type`
+    and they are not the same question, exactly as `workflow/measurements.py` keys on `rule:name`."""
+
+    input_name: Mapped[str] = mapped_column(String(200))
+    position: Mapped[int] = mapped_column(Integer())
+    """Zero-based, left to right along the run. The order the drawing draws them in."""
+
+    category: Mapped[str] = mapped_column(String(50))
+    """The reviewer's answer, from the vocabulary the rule's semantic type names.
+
+    Stored as the string rather than an enum column: the allowed set belongs to the rulebook and to
+    `vocabulary/`, and a database enum would need a migration every time a rule offered a new
+    choice — which is how a stored row comes to disagree with the code that wrote it."""
+
+    confirmed_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint("position >= 0", name="item_classification_position_not_negative"),
+        CheckConstraint("rule_id !~ '^[[:space:]]*$'", name="item_classification_rule_not_blank"),
+        CheckConstraint(
+            "input_name !~ '^[[:space:]]*$'", name="item_classification_input_not_blank"
+        ),
+        CheckConstraint(
+            "category !~ '^[[:space:]]*$'", name="item_classification_category_not_blank"
+        ),
+        CheckConstraint(
+            "confirmed_by !~ '^[[:space:]]*$'", name="item_classification_actor_not_blank"
+        ),
     )
 
 

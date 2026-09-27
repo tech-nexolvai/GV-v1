@@ -25,10 +25,14 @@ Verification: `tests/rules/test_required_inputs.py`
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Final
 
 from rules.schema import Cardinality, Rule
+from vocabulary.cabinet_categories import CabinetCategory
+from vocabulary.semantic_types import SemanticType
 
 __all__ = [
     "DiscriminatorNeed",
@@ -47,6 +51,38 @@ class Consumer:
     input_name: str
 
 
+#: Semantic types whose value is a choice, with the choices.
+#:
+#: Almost everything a reviewer supplies is a dimension. These are the exceptions, and the mapping is
+#: here rather than in the rule files because the set of valid answers belongs to what a thing *is*
+#: — `vocabulary/` — and not to any one rule that asks about it. A rule names the semantic type and
+#: gets the choices; two rules asking about the same thing cannot offer different ones.
+CATEGORICAL_VALUES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+    {
+        SemanticType.CABINET_CATEGORY.value: tuple(category.value for category in CabinetCategory),
+    }
+)
+
+
+def allowed_categories_for(
+    rules: Iterable[Rule], rule_id: str, input_name: str
+) -> tuple[str, ...] | None:
+    """The choices for one rule input, or None when it is not a categorical input at all.
+
+    None and an empty tuple mean different things and the caller must tell them apart: None is "this
+    input does not take a category", which is a client sending a dimension down the wrong path;
+    empty would be "it does, and there are no valid answers", which no rule can currently produce.
+    """
+    for rule in rules:
+        if rule.id != rule_id:
+            continue
+        selector = rule.inputs.get(input_name)
+        if selector is None:
+            return None
+        return CATEGORICAL_VALUES.get(str(selector.semantic_type.value)) or None
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class QuantityNeed:
     """One physical measurement a reviewer must read off a drawing.
@@ -60,6 +96,14 @@ class QuantityNeed:
     source: str
     many: bool
     consumers: tuple[Consumer, ...] = field(default_factory=tuple)
+    categories: tuple[str, ...] = field(default_factory=tuple)
+    """The choices, when this input is a category rather than a dimension — empty otherwise.
+
+    A form that rendered a text box for `cabinet_category` would ask a reviewer to type
+    `single_door` with a unit, and the parser would refuse it (#684). Non-empty is what tells the
+    form to offer a list instead, and the server checks a submission against the same tuple so the
+    two cannot drift.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +260,7 @@ def required_inputs(rules: Iterable[Rule]) -> RequiredInputs:
                 source=source,
                 many=many,
                 consumers=tuple(sorted(consumers, key=lambda c: (c.rule_id, c.input_name))),
+                categories=CATEGORICAL_VALUES.get(semantic, ()),
             )
             for key, (semantic, source, many, consumers) in sorted(quantities.items())
         ),

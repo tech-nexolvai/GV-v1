@@ -84,8 +84,8 @@ from app.schemas.measurements import (
 )
 from app.verdicts.rulebook import snapshot_store
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
-from rules.required_inputs import required_inputs
-from rules.schema import Quantity
+from rules.required_inputs import allowed_categories_for, required_inputs
+from rules.schema import Quantity, Rule
 from units.imperial import format_inches
 from units.measurement import Measurement
 from units.normalise import UnitNormalisationError, normalise_to_inches
@@ -95,6 +95,7 @@ from workflow.assignment_bedrock import (
     configured_assignment_model,
     propose_and_guard,
 )
+from workflow.classifications import record_classifications
 from workflow.layout_proposals import (
     confirmed_discriminators,
     record_layout_confirmation,
@@ -328,6 +329,20 @@ def _stored_layout_proposal_out(
     }
 
 
+def _published_rules(session: Session) -> list[Rule]:
+    """The rulebook as published, which is what `run_checks` reads.
+
+    Shared by the form and by the submission that answers it, so a category the form offered cannot
+    be one the submission refuses.
+    """
+    store = snapshot_store(session)
+    return [
+        snapshot.rule
+        for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
+        if snapshot is not None
+    ]
+
+
 @router.get(
     "/projects/{project_id}/packages/{package_id}/required-inputs",
     response_model=RequiredInputsOut,
@@ -355,12 +370,7 @@ def read_required_inputs(
     """
     revision = _revision(session, project_id, package_id)
 
-    store = snapshot_store(session)
-    rules = [
-        snapshot.rule
-        for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
-        if snapshot is not None
-    ]
+    rules = _published_rules(session)
     needs = required_inputs(rules)
     layout_proposals = _stored_layout_proposal_out(session, revision)
 
@@ -430,6 +440,7 @@ def read_required_inputs(
                     {"rule_id": consumer.rule_id, "input_name": consumer.input_name}
                     for consumer in quantity.consumers
                 ),
+                categories=quantity.categories,
             )
             for quantity in needs.quantities
         ),
@@ -481,7 +492,7 @@ def enter_measurements(
     Nothing is run here. A submission records values; asking for the checks is a separate call, so a
     reviewer can correct a typo without a verdict being computed from the first attempt.
     """
-    _revision(session, project_id, package_id)
+    revision = _revision(session, project_id, package_id)
 
     # **Split by scope, because a layer is a claim about how long a value stays true.** A project
     # setting applies to every review of the job; a run value was true for this one. Filing the sink
@@ -522,6 +533,40 @@ def enter_measurements(
             run_values[key] = _parse(measurement.value, field=label)
             run_typed[key] = measurement.value
             measurement_keys.add(key)
+
+    # **A classification is checked against the rulebook, not against the client's list.** The form
+    # offers the choices a rule's semantic type allows; a submission naming something else is a
+    # client out of step with the rulebook, and accepting it would store a category the operation
+    # will later refuse — turning a correctable 422 into an abstention on a package the reviewer
+    # thought they had finished.
+    published = _published_rules(session) if body.classifications else []
+    for classification in body.classifications:
+        allowed = allowed_categories_for(published, classification.rule_id, classification.name)
+        if allowed is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"{classification.rule_id}.{classification.name} is not an input that takes a "
+                    "category. Send a dimension as a measurement."
+                ),
+            )
+        for position, category in enumerate(classification.categories):
+            if category not in allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"{classification.rule_id}.{classification.name}[{position}]: "
+                        f"{category!r} is not one of {', '.join(sorted(allowed))}."
+                    ),
+                )
+        record_classifications(
+            session,
+            package_revision_id=revision.id,
+            rule_id=classification.rule_id,
+            input_name=classification.name,
+            categories=classification.categories,
+            confirmed_by=principal.id,
+        )
 
     parameter_version, stored_project = _store(
         session,

@@ -19,6 +19,7 @@ from units.measurement import Measurement, Unit
 from units.policy import require_same_unit
 from verdict.outcomes import Outcome
 from verdict.registry import Arity, OperationResult, OperationSpec, RuleAuthoringError, register
+from vocabulary.cabinet_categories import CabinetCategory
 
 
 class DistributionCondition(StrEnum):
@@ -104,24 +105,10 @@ def _unsupported_shape(refused: UnsupportedRunShape) -> OperationResult:
     )
 
 
-class CabinetType(StrEnum):
-    """The cabinet categories the deck names, and no others.
-
-    Three regular types, each with its own width bound on slides 3 and 7 —
-    `SINGLE_DOOR_CAB_WIDTH_MIN`, `DOUBLE_DOOR_CAB_WIDTH_MIN`, `DRAWER_CAB_WIDTH_MIN` — plus
-    `CAB_EQUIP`, which has no bound here because it never moves.
-
-    The value strings are recorded in a finding's trace, so they are part of the data contract.
-    """
-
-    SINGLE_DOOR = "single_door"
-    DOUBLE_DOOR = "double_door"
-    DRAWER = "drawer"
-    EQUIPMENT = "equipment"
-
-    @property
-    def is_equipment(self) -> bool:
-        return self is CabinetType.EQUIPMENT
+#: The reviewer's four categories, defined in `vocabulary/` so naming one does not mean importing
+#: this engine. Aliased here because every reference in this module and its tests already reads
+#: `CabinetType`, and the deck's word for the act is "categorize" either way.
+CabinetType = CabinetCategory
 
 
 def _pair(values: Sequence[Measurement], name: str) -> tuple[Measurement, Measurement]:

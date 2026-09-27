@@ -8,6 +8,7 @@ them.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -23,6 +24,7 @@ from app.main import create_app
 from app.models import OutboxEntry, Package, PackageRevision, PackageState, Project
 from app.models.parameters import ParameterSet as StoredParameterSet
 from tests.app.postgres_fixture import alembic_config
+from workflow.classifications import confirmed_classifications
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -224,3 +226,142 @@ def test_a_package_in_another_project_is_not_found(session: Session) -> None:
         # The envelope again, not FastAPI's `detail`. The message must not name the package or say
         # it belongs to another project — a 403 that confirmed existence is what ADR-0006 forbids.
         assert response.json()["message"] == "Not found"
+
+
+def _publish_cabinet_rule(session: Session) -> None:
+    """Publish CAB-FILLER-001, because a classification is checked against the published rulebook.
+
+    The form offers the choices a rule's semantic type allows and the submission is validated
+    against the same list, so neither can accept something the other would not.
+    """
+    import yaml
+
+    from app.models.rules import RuleDefinition, RuleSnapshot
+    from rules.schema import Rule
+    from rules.snapshot import publish
+
+    path = Path("rules/rulebook/cab_filler_001.yaml")
+    rule = Rule.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+    snapshot = publish(rule)
+    definition = RuleDefinition(rule_id=rule.id)
+    session.add(definition)
+    session.flush()
+    session.add(
+        RuleSnapshot(
+            rule_definition_id=definition.id,
+            snapshot_id=snapshot.snapshot_id,
+            version=rule.version,
+            canonical_json=snapshot.canonical_json,
+            product_type=rule.product_type.value,
+            check_type=rule.check_type.value,
+            unconfirmed_tolerance_count=0,
+        )
+    )
+    session.flush()
+
+
+def test_a_reviewer_can_say_which_cabinet_is_the_equipment_cabinet(session: Session) -> None:
+    """#684: the input that is a category, and had nowhere to go.
+
+    It travels under `classifications` rather than `measurements` because it is not a dimension —
+    `normalise_to_inches` refuses `single_door`, correctly, and that refusal is what this route
+    around exists for.
+    """
+    package = _package(session)
+    _publish_cabinet_rule(session)
+
+    response = _client(session).post(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/measurements",
+        json={
+            "classifications": [
+                {
+                    "rule_id": "CAB-FILLER-001",
+                    "name": "cabinet_type",
+                    "categories": ["double_door", "equipment", "double_door"],
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    revision = session.execute(
+        select(PackageRevision).where(PackageRevision.package_id == package)
+    ).scalar_one()
+    assert confirmed_classifications(session, revision.id) == {
+        "CAB-FILLER-001": {"cabinet_type": ("double_door", "equipment", "double_door")}
+    }
+
+
+def test_a_category_outside_the_rulebook_is_refused(session: Session) -> None:
+    """Checked against the published rule, not against whatever the client believes.
+
+    Storing an unrecognised category would turn a correctable 422 into an abstention on a package
+    the reviewer thought they had finished — and a misspelt equipment cabinet is the one thing
+    slide 3 exists to keep from being resized.
+    """
+    package = _package(session)
+    _publish_cabinet_rule(session)
+
+    response = _client(session).post(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/measurements",
+        json={
+            "classifications": [
+                {
+                    "rule_id": "CAB-FILLER-001",
+                    "name": "cabinet_type",
+                    "categories": ["double_door", "appliance"],
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "appliance" in response.text
+
+
+def test_a_dimension_sent_as_a_classification_is_refused(session: Session) -> None:
+    """`field_width` is a measurement. Sending it here would store a number as a category."""
+    package = _package(session)
+    _publish_cabinet_rule(session)
+
+    response = _client(session).post(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/measurements",
+        json={
+            "classifications": [
+                {"rule_id": "CAB-FILLER-001", "name": "field_width", "categories": ['82"']}
+            ]
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+
+def test_the_form_offers_the_choices_rather_than_a_text_box(session: Session) -> None:
+    """A reviewer must not be asked to type `single_door` with a unit.
+
+    `categories` being non-empty is what tells the form to render a list, and it comes from the
+    same table the submission is validated against.
+    """
+    package = _package(session)
+    _publish_cabinet_rule(session)
+
+    body = (
+        _client(session)
+        .get(f"/api/v1/projects/{PROJECT}/packages/{package}/required-inputs")
+        .json()
+    )
+
+    quantity = next(q for q in body["quantities"] if q["semantic_type"] == "cabinet_category")
+    assert quantity["many"] is True
+    assert tuple(quantity["categories"]) == (
+        "single_door",
+        "double_door",
+        "drawer",
+        "equipment",
+    )
+    # Every other input is a dimension and must not grow a dropdown.
+    assert all(
+        q["categories"] == []
+        for q in body["quantities"]
+        if q["semantic_type"] != "cabinet_category"
+    )

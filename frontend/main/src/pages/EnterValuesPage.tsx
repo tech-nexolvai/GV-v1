@@ -28,6 +28,11 @@ import { projectId } from '../api/config';
 import { AssignmentProgress } from '../components/measure/AssignmentProgress';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { distributionFieldWidthKey } from '../components/measure/fillerDistribution';
+import {
+  categoryLabel,
+  classificationEntries,
+  isCategorical,
+} from './classificationFields';
 import { layoutChoiceDefaults } from './layoutChoices';
 import './EnterValuesPage.css';
 
@@ -60,6 +65,11 @@ type Quantity = {
   source: string;
   many: boolean;
   consumers: { rule_id?: string; input_name?: string }[];
+  /** The choices, when this input is a category rather than a dimension — empty otherwise.
+   *
+   * A text box here would ask a reviewer to type `single_door` with a unit and the server would
+   * refuse it. Non-empty means offer these, and send them back under `classifications`. */
+  categories?: string[];
 };
 type Parameter = {
   name: string;
@@ -581,6 +591,9 @@ export function EnterValuesPage({
         // Confirmed above, so it reaches the checks as drawing-backed evidence. Typing it as well
         // would shadow that with a value carrying no page, no polygon and no crop.
         if (confirmedFromDrawing.has(quantity.key)) return [];
+        // A category is not a dimension and travels under `classifications` below (#684). Sending
+        // it here would put `single_door` through the unit parser, which refuses it.
+        if (isCategorical(quantity)) return [];
         const consumers = quantity.consumers.filter((c) => c.rule_id && c.input_name);
         if (quantity.many) {
           const values = (runs[quantity.key] ?? []).map((v) => v.trim()).filter(Boolean);
@@ -600,6 +613,8 @@ export function EnterValuesPage({
         }));
       });
 
+      const classifications = classificationEntries(needed.quantities, runs);
+
       const parameters = needed.parameters
         .filter((p) => !p.blocked && (singles[p.name] ?? '').trim())
         .map((p) => ({
@@ -608,7 +623,11 @@ export function EnterValuesPage({
           scope: (p.scope === 'run' ? 'run' : 'project') as 'run' | 'project',
         }));
 
-      const result = await enterMeasurements(projectId(), packageId, { parameters, measurements });
+      const result = await enterMeasurements(projectId(), packageId, {
+        parameters,
+        measurements,
+        classifications,
+      });
       // Echo the parse, not the input: `25.5"` and `25 1/2"` are the same value and a reviewer should
       // see that the system agrees — which is also how a mistyped unit becomes visible.
       setStored([
@@ -1164,17 +1183,37 @@ export function EnterValuesPage({
                       <>
                         {(runs[quantity.key] ?? ['']).map((value, index) => (
                           <div className="value-row" key={index}>
-                            <input
-                              className="value-input value-input--wide"
-                              id={index === 0 ? `q-${quantity.key}` : undefined}
-                              aria-label={`${fieldLabel(quantity)}, item ${index + 1}, left to right`}
-                              placeholder={'25 1/2" or 648 mm'}
-                              value={value}
-                              onChange={(e) => {
-                                releaseField(quantity.key);
-                                setRun(quantity.key, index, e.target.value);
-                              }}
-                            />
+                            {isCategorical(quantity) ? (
+                              <select
+                                className="value-input value-input--wide"
+                                id={index === 0 ? `q-${quantity.key}` : undefined}
+                                aria-label={`${fieldLabel(quantity)}, item ${index + 1}, left to right`}
+                                value={value}
+                                onChange={(e) => {
+                                  releaseField(quantity.key);
+                                  setRun(quantity.key, index, e.target.value);
+                                }}
+                              >
+                                <option value="">Not classified</option>
+                                {(quantity.categories ?? []).map((category) => (
+                                  <option key={category} value={category}>
+                                    {categoryLabel(category)}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                className="value-input value-input--wide"
+                                id={index === 0 ? `q-${quantity.key}` : undefined}
+                                aria-label={`${fieldLabel(quantity)}, item ${index + 1}, left to right`}
+                                placeholder={'25 1/2" or 648 mm'}
+                                value={value}
+                                onChange={(e) => {
+                                  releaseField(quantity.key);
+                                  setRun(quantity.key, index, e.target.value);
+                                }}
+                              />
+                            )}
                             <button
                               type="button"
                               className="value-remove interactive"

@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ParameterEntry(BaseModel):
@@ -98,10 +98,53 @@ class MeasurementEntry(BaseModel):
         return self
 
 
+class ClassificationEntry(BaseModel):
+    """What a reviewer says each item in one ordered run is.
+
+    Separate from `MeasurementEntry` because a category is not a dimension: it has no unit, nothing
+    parses it, and `normalise_to_inches` correctly refuses it. Sending one through `values` was how
+    #684 was found — a reviewer had no way at all to say which cabinet was the sink cabinet.
+
+    The choices come from the rulebook, through the required-inputs form, and the server checks the
+    submission against them rather than trusting the client's list.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
+    categories: tuple[str, ...] = Field(
+        min_length=1,
+        description=(
+            "One category per item, in layout order — left to right along the run. Order is kept "
+            "because the distribution adjusts positionally: which cabinet is the equipment cabinet "
+            "is the whole question."
+        ),
+    )
+
+    @field_validator("categories")
+    @classmethod
+    def _each_one_present(cls, categories: tuple[str, ...]) -> tuple[str, ...]:
+        """An empty slot is not an answer.
+
+        A run submitted with a blank in it looks answered and is not. Leaving the item out would be
+        no better — the operation compares the run's length against the cabinets and abstains — but
+        a blank would reach it as a category nothing recognises, which is a worse way to say the
+        same thing.
+        """
+        for position, category in enumerate(categories):
+            if not category.strip():
+                raise ValueError(
+                    f"position {position} has no category. Classify every item in the run, or "
+                    "leave the run out entirely."
+                )
+        return categories
+
+
 class ReviewerEntry(BaseModel):
     """Everything one reviewer submission carries.
 
-    Both halves are optional so a reviewer can set the project's parameters once and then enter
+    Every part is optional so a reviewer can set the project's parameters once and then enter
     measurements per package without resending them.
     """
 
@@ -109,6 +152,7 @@ class ReviewerEntry(BaseModel):
 
     parameters: tuple[ParameterEntry, ...] = ()
     measurements: tuple[MeasurementEntry, ...] = ()
+    classifications: tuple[ClassificationEntry, ...] = ()
 
 
 class StoredValue(BaseModel):
@@ -154,6 +198,12 @@ class QuantityOut(BaseModel):
     #: The rule inputs this one measurement feeds, so a caller fans a single typed value out rather
     #: than asking for it once per rule.
     consumers: tuple[dict[str, str], ...]
+    #: The choices, when this input is a category rather than a dimension — empty otherwise.
+    #:
+    #: A form that rendered a text box here would ask a reviewer to type `single_door` with a unit,
+    #: and the parser would refuse it. Non-empty means offer these and send them back under
+    #: `classifications`, not `measurements`.
+    categories: tuple[str, ...] = ()
 
 
 class ConfirmedReadingOut(BaseModel):

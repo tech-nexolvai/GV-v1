@@ -34,6 +34,7 @@ from app.models.parameters import from_rows
 from rules.parameters import ParameterLayer, ParameterSet
 from units.measurement import Measurement, Unit
 from verdict.operands import EvidenceStatus, VerdictOperand
+from workflow.classifications import classification_operands
 
 __all__ = ["SOURCE", "operands_for", "run_parameters_for"]
 
@@ -162,6 +163,18 @@ def operands_for(
             source=SOURCE,
             evidence_ref=ordered[0][1],
         )
+
+    # **The other kind of reviewer input.** A classification is not a quantity and is stored
+    # separately (#684), but it is the same person answering the same form, so it arrives here
+    # rather than making the engine's caller assemble an operand map from two places.
+    #
+    # Merged and never overwriting: a rule input is either a measurement or a classification, and a
+    # name that somehow arrived as both would mean two answers to one question with no stated
+    # winner. The measurement wins and the collision is left visible rather than resolved silently —
+    # nothing in the rulebook can produce one today, because an input has one source.
+    for rule_id, classifications in classification_operands(session, package_revision_id).items():
+        for name, operand in classifications.items():
+            operands.setdefault(rule_id, {}).setdefault(name, operand)
     return operands
 
 

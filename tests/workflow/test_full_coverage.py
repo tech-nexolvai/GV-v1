@@ -39,6 +39,7 @@ from rules.snapshot import publish
 from tests.app.postgres_fixture import alembic_config
 from units.measurement import Unit
 from units.normalise import normalise_to_inches
+from workflow.classifications import record_classifications
 from workflow.measurements import operands_for, run_parameters_for
 from workflow.stages import DatabaseStages
 
@@ -60,8 +61,7 @@ FILLERS = ('2"', '2"')
 
 #: The reviewer's classification, one per cabinet, in the same order — the 36" cabinet is the sink
 #: cabinet, which is equipment and must not be resized. Entered by a person, never inferred (deck
-#: slide 11). **Kept here unused**, because it is the exact value this package would supply once a
-#: classification can be stored, and writing it down is what makes the gap concrete.
+#: slide 11).
 CABINET_TYPES = ("single_door", "double_door", "equipment")
 
 #: Everything a reviewer reads off a drawing, keyed the way the API stores it.
@@ -85,9 +85,8 @@ MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
     # v2 compares the cabinet run too, not just the fillers.
     "CAB-FILLER-001:architectural_cabinets": CABINETS,
     "CAB-FILLER-001:shop_cabinets": CABINETS,
-    # `cabinet_type` is missing on purpose and is why CAB-FILLER-001 appears in `UNDECIDED` below.
-    # Every reviewer input this package can store is a `Quantity` — a number and a unit — and a
-    # classification is neither. The storage path is its own issue; see the note there.
+    # `cabinet_type` is not here because it is not a measurement: it has no unit, and it is written
+    # to `item_classifications` by the fixture below (#684).
     # The sink cabinet, from the deck's own relation (#537). **It is the 36" cabinet in `CABINETS`,
     # not a fourth cabinet from nowhere.** The first version of this row said 35", which added up
     # inside its own rule and described a run that did not contain the cabinet it had just checked —
@@ -143,13 +142,7 @@ DISCRIMINATORS = {"wall_config": "back_only", "filler_symmetry": "equal_unless_n
 #: something we have not built are both abstentions, and telling them apart is the difference
 #: between "chase Raj" and "finish the work". Entering `ours` here is an admission with a date on
 #: it, not a way to make a test green.
-UNDECIDED: dict[str, tuple[str, str]] = {
-    # v2 of the rule needs the reviewer's per-cabinet classification, and no reviewer input in this
-    # system can hold one: `parameter_values` stores a `Quantity` — a number and a unit — and a
-    # category is neither. The arithmetic, the rule and the operand contract are all in place; the
-    # way for a person to say "this one is the sink cabinet" is not.
-    "CAB-FILLER-001": ("cabinet_type", "ours"),
-}
+UNDECIDED: dict[str, tuple[str, str]] = {}
 
 #: Kept for the tests that read it: the subset genuinely waiting on the client.
 CLIENT_BLOCKED: dict[str, str] = {
@@ -261,6 +254,17 @@ def filled(session: Session) -> PackageRevision:
     _publish_rulebook(session)
     _store(session, revision, ParameterLayer.PROJECT, PROJECT_PARAMETERS)
     _store(session, revision, ParameterLayer.RUN, {**RUN_PARAMETERS, **MEASUREMENTS})
+    # The one reviewer input that is not a dimension (#684). It goes to its own table because a
+    # category has no unit and `parameter_values` is numeric to the column level.
+    record_classifications(
+        session,
+        package_revision_id=revision.id,
+        rule_id="CAB-FILLER-001",
+        input_name="cabinet_type",
+        categories=CABINET_TYPES,
+        confirmed_by="reviewer",
+    )
+    session.flush()
     return revision
 
 
@@ -357,17 +361,180 @@ def test_a_run_scope_parameter_reaches_the_resolver(
     )
 
 
-def test_without_a_discriminator_the_two_variant_rules_cannot_decide(
+def test_without_a_discriminator_a_variant_rule_cannot_decide(
     session: Session, filled: PackageRevision
 ) -> None:
     """A rule whose variant nobody stated abstains, however complete the measurements are.
 
-    This is what made `wall_config` and `filler_symmetry` fields rather than an oversight: they are
-    judgements a reviewer makes from the drawing, and the resolver refuses to guess one.
+    This is what made `wall_config` a field rather than an oversight: it is a judgement a reviewer
+    makes from the drawing, and the resolver refuses to guess one.
+
+    **CAB-FILLER-001 used to be the second half of this test and is deliberately not any more.**
+    v2 of the rule is global (#681): its `filler_symmetry` discriminator selected an
+    `allow_asymmetric` flag the two-step operation does not have, so the question moved into the
+    arithmetic, which abstains on unequal fillers *that have to move* with the numbers in hand.
+    It decides here, with no discriminator stated, and that is the change working.
     """
     operands = operands_for(session, filled.id)
     DatabaseStages(operands=operands).run_checks(session, filled.id)
 
     outcomes = _outcomes(session, filled)
     assert outcomes["CT-WIDTH-001"] not in ("PASS", "FAIL")
-    assert outcomes["CAB-FILLER-001"] not in ("PASS", "FAIL")
+    assert outcomes["CAB-FILLER-001"] in ("PASS", "FAIL")
+
+
+#: Raj's own worked example, slide 4 — the layout his deck uses to show how they do it.
+#: 3 + 24 + 36 + 24 + 3 = 90 on the architectural drawing; the site measures 82.
+RAJ_CABINETS = ('24"', '36"', '24"')
+RAJ_FILLERS = ('3"', '3"')
+RAJ_TYPES = ("double_door", "equipment", "double_door")
+
+
+def test_rajs_worked_example_produces_his_answer_through_run_checks(session: Session) -> None:
+    """**The whole point of #676, #678, #681 and #684, asserted in one place.**
+
+    Not through the operation, and not through the reviewer's calculator — through the check a
+    package actually runs. Slide 4 says the fillers go to 2" and the two regular cabinets to 21",
+    with the equipment cabinet holding 36". Until the classification could be stored, this run
+    abstained: the arithmetic was right and nobody could tell it which cabinet was the sink cabinet.
+    """
+    revision = _revision(session)
+    _publish_rulebook(session)
+    _store(
+        session,
+        revision,
+        ParameterLayer.PROJECT,
+        # Raj's example moves two double-door cabinets from 24" to 21", so the package has to
+        # allow that. The fixture's own minimum is 24" and correctly refuses it — a reminder that
+        # the answer is only right within the bounds the package states.
+        {
+            **PROJECT_PARAMETERS,
+            "filler_min": '2"',
+            "filler_max": '3"',
+            "double_door_cab_width_min": '18"',
+        },
+    )
+    _store(
+        session,
+        revision,
+        ParameterLayer.RUN,
+        {
+            **RUN_PARAMETERS,
+            "CAB-FILLER-001:field_width": '82"',
+            "CAB-FILLER-001:design_width": '90"',
+            "CAB-FILLER-001:architectural_fillers": RAJ_FILLERS,
+            "CAB-FILLER-001:shop_fillers": RAJ_FILLERS,
+            "CAB-FILLER-001:architectural_cabinets": RAJ_CABINETS,
+            "CAB-FILLER-001:shop_cabinets": RAJ_CABINETS,
+        },
+    )
+    record_classifications(
+        session,
+        package_revision_id=revision.id,
+        rule_id="CAB-FILLER-001",
+        input_name="cabinet_type",
+        categories=RAJ_TYPES,
+        confirmed_by="reviewer",
+    )
+    session.flush()
+
+    operands = operands_for(session, revision.id)
+    DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(
+        session, revision.id
+    )
+
+    finding = next(
+        row
+        for row, snapshot in session.execute(
+            select(Finding, RuleSnapshot)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .where(Finding.package_revision_id == revision.id)
+        ).all()
+        if from_row(snapshot).rule.id == "CAB-FILLER-001"
+    )
+    trace = finding.trace or {}
+    facts = dict(trace.get("intermediates") or [])
+
+    # The shop drawing still shows the architectural widths, so it FAILs — and what it should say
+    # is the answer Raj wrote down.
+    assert finding.outcome == "FAIL"
+    # Rendered the way the trace stores a run: each value with its unit, in order.
+    assert facts["expected_fillers"] == "2 in, 2 in"
+    assert facts["expected_cabinets"] == "21 in, 36 in, 21 in"
+    assert facts["condition"] == "cabinets_absorb_remainder"
+
+    # And the reviewer is told why, in the deck's own terms (#682).
+    said = str(trace.get("explanation") or "")
+    for figure in ('90"', '82"', '8"', '2"', '6"', '36"', '24"', '21"'):
+        assert figure in said, f"{figure} is missing from the explanation: {said}"
+
+
+def test_the_equipment_cabinet_a_reviewer_named_is_the_one_that_holds(
+    session: Session,
+) -> None:
+    """Move the classification and the arithmetic follows it — nothing infers from the width.
+
+    With the *first* cabinet marked as equipment, 24" is what holds and the 36" cabinet moves. The
+    numbers are otherwise identical, so this fails if anything anywhere decided "the widest one is
+    the appliance".
+    """
+    revision = _revision(session)
+    _publish_rulebook(session)
+    _store(
+        session,
+        revision,
+        ParameterLayer.PROJECT,
+        # Raj's example moves two double-door cabinets from 24" to 21", so the package has to
+        # allow that. The fixture's own minimum is 24" and correctly refuses it — a reminder that
+        # the answer is only right within the bounds the package states.
+        {
+            **PROJECT_PARAMETERS,
+            "filler_min": '2"',
+            "filler_max": '3"',
+            "double_door_cab_width_min": '18"',
+        },
+    )
+    _store(
+        session,
+        revision,
+        ParameterLayer.RUN,
+        {
+            **RUN_PARAMETERS,
+            "CAB-FILLER-001:field_width": '82"',
+            "CAB-FILLER-001:design_width": '90"',
+            "CAB-FILLER-001:architectural_fillers": RAJ_FILLERS,
+            "CAB-FILLER-001:shop_fillers": RAJ_FILLERS,
+            "CAB-FILLER-001:architectural_cabinets": RAJ_CABINETS,
+            "CAB-FILLER-001:shop_cabinets": RAJ_CABINETS,
+        },
+    )
+    record_classifications(
+        session,
+        package_revision_id=revision.id,
+        rule_id="CAB-FILLER-001",
+        input_name="cabinet_type",
+        categories=("equipment", "double_door", "double_door"),
+        confirmed_by="reviewer",
+    )
+    session.flush()
+
+    operands = operands_for(session, revision.id)
+    DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(
+        session, revision.id
+    )
+
+    finding = next(
+        row
+        for row, snapshot in session.execute(
+            select(Finding, RuleSnapshot)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .where(Finding.package_revision_id == revision.id)
+        ).all()
+        if from_row(snapshot).rule.id == "CAB-FILLER-001"
+    )
+    facts = dict((finding.trace or {}).get("intermediates") or [])
+
+    # 24" holds; 36" and 24" each give up 3".
+    assert facts["expected_cabinets"] == "24 in, 33 in, 21 in"

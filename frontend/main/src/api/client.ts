@@ -346,6 +346,17 @@ export function enterMeasurements(
       /** A many-valued input, in layout order — the order is compared position by position. */
       values?: string[];
     }[];
+    /** Inputs answered by choosing rather than measuring (#684).
+     *
+     * Separate from `measurements` because a category has no unit: sending `single_door` as a
+     * measurement puts it through the imperial parser, which refuses it. */
+    classifications?: {
+      rule_id: string;
+      name: string;
+      /** One category per item, in layout order — which cabinet is the equipment cabinet is the
+       * whole question, so the order is the answer. */
+      categories: string[];
+    }[];
   },
 ) {
   type Stored =
