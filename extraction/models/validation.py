@@ -183,6 +183,30 @@ def _probe_text(reading: str) -> str:
     return probed
 
 
+def _stacked_fraction_refusal(reading: str, *, stacked: bool) -> str | None:
+    """Why a reading contradicts the way its label was drawn, or `None` (#541).
+
+    The one check here that does not read the string. `28 3/4"` came back from a real crop as `284`
+    and was accepted, because `284` is a perfectly good dimension token — the string carries no
+    evidence of what went wrong. The drawing does: the label was drawn in two bands, and a reading
+    with no `/` in it cannot be a reading of two bands.
+
+    **Fails closed and never corrects.** It does not say what the number should have been, only that
+    what came back does not describe what was drawn. Same trade as the bare-fraction guard: a false
+    abstention costs a reviewer one look at a crop, and the alternative is 28 3/4 inches silently
+    becoming 284.
+    """
+    if not stacked:
+        return None
+    if "/" in reading:
+        return None
+    return (
+        f"reading {reading!r} has no fraction, but the label was drawn in two bands. A stacked "
+        "fraction absorbed into the digits reads as a valid dimension, so this abstains rather "
+        "than accepting it"
+    )
+
+
 def _reading_refusal(reading: str) -> str | None:
     """Why this reading is not usable as a dimension, or `None` if it is.
 
@@ -300,8 +324,16 @@ def validate_payload(
     crop_size: CropSize,
     coordinate_mode: CoordinateMode,
     recorder: RejectionRecorder,
+    stacked_label: bool = False,
 ) -> ValidationOutcome:
-    """Return a complete candidate or a recorded abstention, never a partial result."""
+    """Return a complete candidate or a recorded abstention, never a partial result.
+
+    `stacked_label` is what the sheet's own geometry said about this crop — two glyph bands, so a
+    stacked fraction (#541). It defaults to `False` because most callers have no geometry to offer
+    and a caller that cannot say must not be treated as having said "stacked": that would refuse
+    every reading without a `/`. The default is the direction that accepts, and the guard only
+    engages where the drawing has been measured.
+    """
 
     try:
         _reject_floats(payload)
@@ -354,6 +386,19 @@ def validate_payload(
             recorder=recorder,
             reason="reading_not_a_dimension",
             errors=(refusal,),
+        )
+
+    # Recorded under its own reason, not folded into the one above. "Not a dimension" sends a
+    # reviewer to look at whether the crop holds a dimension at all; this one says the crop holds a
+    # dimension the reader got wrong, and those are different next actions.
+    stacked_refusal = _stacked_fraction_refusal(validated.reading, stacked=stacked_label)
+    if stacked_refusal is not None:
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason="stacked_fraction_absorbed",
+            errors=(stacked_refusal,),
         )
 
     return ObservationCandidate(
