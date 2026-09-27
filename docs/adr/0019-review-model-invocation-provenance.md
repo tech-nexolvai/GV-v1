@@ -1,11 +1,12 @@
 # ADR-0019 — Model-invocation provenance for review-time model calls
 
-**Status:** Proposed        <!-- Proposed | Accepted | Rejected | Superseded by ADR-NNNN -->
+**Status:** Accepted        <!-- Proposed | Accepted | Rejected | Superseded by ADR-NNNN -->
 **Date:** 2026-09-16
 **Decides:** the provenance shape of a `model_invocations` row for a call that is not an extraction (#620)
 **Deciders:** admin (AnantBisht07)
 
 > Drafted by a coding agent. Only the admin may set `Status: Accepted`.
+> Accepted by the admin (AnantBisht07) on 2026-09-27, after #694 showed the defect it fixes is live.
 > `scripts/ratify.py` and the issue gate keep #620 blocked until the status reads Accepted.
 
 ## Context
