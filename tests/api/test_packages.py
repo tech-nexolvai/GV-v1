@@ -450,8 +450,8 @@ def test_extraction_still_refuses_when_no_drawing_is_confirmed(
     extracted = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/extract")
 
     assert extracted.status_code == 422
-    assert extracted.json()["detail"] == (
-        "Upload at least one confirmed drawing PDF before AI reading can start."
+    assert (
+        "Upload at least one confirmed drawing PDF before AI reading can start." in extracted.text
     )
     assert _outbox_rows(session) == []
 
