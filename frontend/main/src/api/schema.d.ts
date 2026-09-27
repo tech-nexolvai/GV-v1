@@ -323,6 +323,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask about one deterministic review run, streamed
+         * @description The same answer as ``/chat``, sent in the order it becomes known.
+         *
+         *     1. ``facts``: the recorded findings the question selects, at once. No model is involved.
+         *     2. ``stage``: only when a provider is about to be called.
+         *     3. ``narration``: the **complete, guarded** reply, identical to ``/chat``'s response body.
+         *     4. ``done``.
+         *
+         *     **Why the narration is not streamed token by token.** The provider returns every narrative in
+         *     one structured call, and ``compose_findings`` accepts or rejects that batch as a whole. A token
+         *     stream would show a reviewer sentences the guard might then discard. So the provider's words
+         *     are sent once, after the guard has accepted them; what streams is everything that did not
+         *     need a model.
+         *
+         *     Runs in a worker thread (FastAPI iterates a sync generator in its threadpool), and the request's
+         *     session stays open until the stream ends, so the provider call is recorded exactly as ``/chat``
+         *     records it.
+         */
+        post: operations["reviewer_chat_stream_api_v1_projects__project_id__packages__package_id__chat_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/checks": {
         parameters: {
             query?: never;
@@ -3507,6 +3542,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatModelsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reviewer_chat_stream_api_v1_projects__project_id__packages__package_id__chat_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewerChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
                 };
             };
             /** @description Validation Error */

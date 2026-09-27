@@ -190,3 +190,60 @@ def test_nothing_having_run_outranks_the_outcome_filter() -> None:
     """
     for question in ("Show all findings", "Which passes?", "Show FAIL findings"):
         assert answer_question(question, (), None, checks_have_run=False).text == NOTHING_HAS_RUN
+
+
+# --- Streaming split: select first, narrate second ------------------------------------------------
+#
+# The streaming endpoint sends the selection to the reviewer before it asks a model anything. These
+# tests pin the two properties that makes safe: selecting never touches a model, and the one-shot
+# answer is exactly select-then-narrate, so the two endpoints cannot drift apart.
+
+
+class _ExplodingModel:
+    """A model that fails the test if it is asked anything."""
+
+    def compose(
+        self, findings: Sequence[ComposerFinding], *, question: str | None = None
+    ) -> ModelComposition:
+        raise AssertionError("selection must not call a language model")
+
+
+def test_selecting_never_calls_a_model() -> None:
+    from app.review.chat import select_for_question
+
+    fail = _finding(key="finding-fail", outcome="FAIL")
+    passed = _finding(key="finding-pass", outcome="PASS")
+    selection = select_for_question("why did this fail?", (fail, passed))
+
+    assert selection.selected == (fail,)
+    assert selection.total == 2
+    assert selection.final is None, "a real selection still needs narrating"
+    assert "Showing 1 of 2" in selection.intro
+
+
+def test_a_final_selection_is_returned_without_asking_a_model() -> None:
+    from app.review.chat import narrate_selection, select_for_question
+
+    nothing_run = select_for_question("why did this fail?", (), checks_have_run=False)
+    assert nothing_run.final is not None
+    assert nothing_run.intro == NOTHING_HAS_RUN
+    reply = narrate_selection(nothing_run, "why did this fail?", _ExplodingModel())
+    assert reply.text == NOTHING_HAS_RUN
+    assert reply.mode is ChatMode.STRUCTURED_FALLBACK
+
+    no_match = select_for_question("which ones passed?", (_finding(outcome="FAIL"),))
+    assert no_match.final is not None
+    assert narrate_selection(no_match, "which ones passed?", _ExplodingModel()).narratives == ()
+
+
+def test_the_one_shot_answer_is_exactly_select_then_narrate() -> None:
+    from app.review.chat import narrate_selection, select_for_question
+
+    finding = _finding()
+    model = _Model((_faithful(finding),))
+    question = "what went wrong?"
+
+    one_shot = answer_question(question, (finding,), model)
+    split = narrate_selection(select_for_question(question, (finding,)), question, model)
+
+    assert one_shot == split

@@ -4313,6 +4313,85 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat/stream": {
+      "post": {
+        "description": "The same answer as ``/chat``, sent in the order it becomes known.\n\n1. ``facts``: the recorded findings the question selects, at once. No model is involved.\n2. ``stage``: only when a provider is about to be called.\n3. ``narration``: the **complete, guarded** reply, identical to ``/chat``'s response body.\n4. ``done``.\n\n**Why the narration is not streamed token by token.** The provider returns every narrative in\none structured call, and ``compose_findings`` accepts or rejects that batch as a whole. A token\nstream would show a reviewer sentences the guard might then discard. So the provider's words\nare sent once, after the guard has accepted them; what streams is everything that did not\nneed a model.\n\nRuns in a worker thread (FastAPI iterates a sync generator in its threadpool), and the request's\nsession stays open until the stream ends, so the provider call is recorded exactly as ``/chat``\nrecords it.",
+        "operationId": "reviewer_chat_stream_api_v1_projects__project_id__packages__package_id__chat_stream_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewerChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask about one deterministic review run, streamed",
+        "tags": [
+          "reviewer chat"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/checks": {
       "post": {
         "description": "Record the intent to run the checks. Starts nothing, and cannot.\n\n**202, not 200**, and the body carries an `accepted` id rather than a run id. Nothing has started:\n`workflow/outbox.py:enqueue` says the id \"names the enqueued work, not a workflow run\", and\ncalling it a run id here would have a client poll for something that does not exist yet.\n\nThe reason this is not simply `run_checks(...)` is a guard, not a preference.\n`tests/api/test_no_heavy_work.py` walks every import under `app/api/` and refuses any path to\nextraction or rendering \u2014 and `workflow/stages.py` reaches `extraction.reader` since the OCR\nroute landed. So this module may not import the thing that does the work, which is exactly the\nseparation `DESIGN_PLATFORM.md` \u00a74.2 asks for.",

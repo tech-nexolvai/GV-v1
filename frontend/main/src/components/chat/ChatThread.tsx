@@ -123,6 +123,14 @@ export function ChatThread({
               </div>
             )}
 
+            {/* Real progress, from the server: a model is writing about the findings below. It is
+                shown only between the stream's facts and its guarded narration, never on a timer. */}
+            {msg.role === 'assistant' && msg.narrating && (
+              <p className="chat-message__narrating" role="status" aria-live="polite">
+                <span className="chat-message__narrating-dot" aria-hidden="true" />
+                Writing the explanation
+              </p>
+            )}
             {msg.role === 'assistant' && msg.narration && (
               <NarrationBadge narration={msg.narration} />
             )}

@@ -20,7 +20,15 @@ from workflow.findings_composer import (
     compose_findings,
 )
 
-__all__ = ["NOTHING_HAS_RUN", "ChatMode", "ChatReply", "answer_question"]
+__all__ = [
+    "NOTHING_HAS_RUN",
+    "ChatMode",
+    "ChatReply",
+    "ChatSelection",
+    "answer_question",
+    "narrate_selection",
+    "select_for_question",
+]
 
 
 class ChatMode(StrEnum):
@@ -119,47 +127,90 @@ def _intro(
     )
 
 
-def answer_question(
+@dataclass(frozen=True, slots=True)
+class ChatSelection:
+    """What a question selects from one run, decided before any language model is called.
+
+    Split out of ``answer_question`` so a streaming endpoint can show the reviewer *which* recorded
+    findings answer the question while the provider is still writing about them. Nothing here comes
+    from a model: the selection is the deterministic keyword filter and the intro is the
+    deterministic envelope.
+    """
+
+    intro: str
+    selected: tuple[ComposerFinding, ...]
+    total: int
+    # Set when the answer is already final and no model may be asked: nothing has been checked, or
+    # the filter matched nothing. ``narrate_selection`` returns it unchanged.
+    final: ChatReply | None = None
+
+
+def select_for_question(
     question: str,
     findings: Sequence[ComposerFinding],
-    model: FindingsLanguageModel | None,
     *,
     checks_have_run: bool = True,
-) -> ChatReply:
-    """Return guarded language over one run's facts, or the complete structured fallback.
-
-    ``compose_findings`` supplies the hard 1:1 and fact-preservation checks.  In particular, a
-    provider cannot add a PASS/FAIL phrase, alter a number, omit a supplied fact, or emit a finding
-    key that was not in the deterministic query.  Any failure falls back to the plain summaries.
+) -> ChatSelection:
+    """Decide which recorded findings answer ``question``, without calling any model.
 
     ``checks_have_run`` is the caller's answer to a question this module cannot see: an empty
     ``findings`` means "the checks found nothing" *or* "nobody has run them", and the two must not
     be answered the same way. It defaults to ``True`` so that a caller holding real findings need
     not state the obvious; a caller with none has to have looked.
     """
+    total = len(findings)
     if not checks_have_run:
-        return ChatReply(
-            text=_intro(question, (), len(findings), checks_have_run=False),
-            narratives=(),
-            mode=ChatMode.STRUCTURED_FALLBACK,
-            model_id=None,
-            fallback_reason="no checks have been run on this package",
+        text = _intro(question, (), total, checks_have_run=False)
+        return ChatSelection(
+            intro=text,
+            selected=(),
+            total=total,
+            final=ChatReply(
+                text=text,
+                narratives=(),
+                mode=ChatMode.STRUCTURED_FALLBACK,
+                model_id=None,
+                fallback_reason="no checks have been run on this package",
+            ),
         )
 
     selected = _selection(question, findings)
+    text = _intro(question, selected, total)
     if not selected:
-        return ChatReply(
-            text=_intro(question, selected, len(findings)),
-            narratives=(),
-            mode=ChatMode.STRUCTURED_FALLBACK,
-            model_id=None,
-            fallback_reason="no finding matched the deterministic outcome filter",
+        return ChatSelection(
+            intro=text,
+            selected=(),
+            total=total,
+            final=ChatReply(
+                text=text,
+                narratives=(),
+                mode=ChatMode.STRUCTURED_FALLBACK,
+                model_id=None,
+                fallback_reason="no finding matched the deterministic outcome filter",
+            ),
         )
+    return ChatSelection(intro=text, selected=selected, total=total)
+
+
+def narrate_selection(
+    selection: ChatSelection,
+    question: str,
+    model: FindingsLanguageModel | None,
+) -> ChatReply:
+    """Return guarded language over a selection, or the complete structured fallback.
+
+    ``compose_findings`` supplies the hard 1:1 and fact-preservation checks.  In particular, a
+    provider cannot add a PASS/FAIL phrase, alter a number, omit a supplied fact, or emit a finding
+    key that was not in the deterministic query.  Any failure falls back to the plain summaries,
+    and the whole batch falls back together: nothing a provider wrote is returned piecemeal.
+    """
+    if selection.final is not None:
+        return selection.final
     # The reviewer's own words reach the provider from here. They are untrusted — see
     # `FindingsLanguageModel` for why the guards, not the prompt, are what makes that safe.
-    result = compose_findings(selected, model, question=question)
+    result = compose_findings(selection.selected, model, question=question)
     return ChatReply(
-        text=_intro(question, selected, len(findings)),
+        text=selection.intro,
         narratives=result.narratives,
         mode=(
             ChatMode.LLM
@@ -169,4 +220,23 @@ def answer_question(
         model_id=(result.model_id if result.mode.value == ChatMode.LLM.value else None),
         fallback_reason=result.fallback_reason,
         summary=result.summary,
+    )
+
+
+def answer_question(
+    question: str,
+    findings: Sequence[ComposerFinding],
+    model: FindingsLanguageModel | None,
+    *,
+    checks_have_run: bool = True,
+) -> ChatReply:
+    """Select, then narrate: the one-shot form used by the non-streaming endpoint.
+
+    Behaviour is exactly ``narrate_selection(select_for_question(...))``; see those two for the
+    guarantees. Kept so the existing endpoint and its tests are unchanged.
+    """
+    return narrate_selection(
+        select_for_question(question, findings, checks_have_run=checks_have_run),
+        question,
+        model,
     )
