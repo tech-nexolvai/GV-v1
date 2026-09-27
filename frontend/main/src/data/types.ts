@@ -144,6 +144,11 @@ export interface ChatMessage {
    * reviewer opens it, instead of being joined into the message text where nobody reads it.
    */
   narratives?: Record<string, string>;
+  /**
+   * True between a streamed reply's findings and its explanation: the server has said a model is
+   * writing. Cleared when the guarded narration arrives, or when it cannot be produced.
+   */
+  narrating?: boolean;
   /** Explicit disclosure of whether Bedrock narration was accepted for this response. The
    * deterministic findings and verdicts remain the backing record in either mode. */
   narration?: {

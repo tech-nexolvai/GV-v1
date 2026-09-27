@@ -29,6 +29,9 @@
     "src/components/output/elevation.ts",
     "src/components/output/ElevationDiagram.tsx",
     "src/components/output/FindingsTable.tsx",
-    "src/components/output/findingsOrder.ts"
+    "src/components/output/findingsOrder.ts",
+    "src/api/sse.ts",
+    "src/api/chatStreamTypes.ts",
+    "src/components/chat/chatReply.ts"
   ]
 }

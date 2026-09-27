@@ -7,6 +7,7 @@ import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
   getPackage,
   askReviewerChat,
+  streamReviewerChat,
   getChatModels,
   listReviewSessions,
   openReviewSession,
@@ -19,7 +20,8 @@ import {
   downloadRedline,
   downloadReport,
 } from '../api/client';
-import type { ReviewSession } from '../api/client';
+import type { ReviewSession, ReviewerChatReply } from '../api/client';
+import { explanationUnavailable, factsMessage, replyMessage } from '../components/chat/chatReply';
 import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
@@ -175,74 +177,51 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
     setMessages(prev => [...prev, userMsg, typingMsg]);
     setIsProcessing(true);
 
+    const replyId = `msg-a-${Date.now()}`;
+    const now = () => new Date().toISOString();
+    let factsShown = false;
     try {
-      const response = await askReviewerChat(projectId(), packageId, text, selectedModel || undefined);
-      // The backend's ids are the authoritative run scope.  Map them back to the already-loaded
-      // cards so evidence/actions remain the same grounded objects the rest of the reviewer loop uses.
-      const byId = new Map(source.map((finding) => [finding.id, finding]));
-      const matched = response.findings.flatMap((item) => {
-        const finding = byId.get(item.finding_id);
-        return finding ? [finding] : [];
-      });
-      const matchedIds = new Set(matched.map((finding) => finding.id));
-      // Kept per finding, not joined into one block of prose: each opens under its own row.
-      const narratives = Object.fromEntries(
-        response.findings
-          .filter((item) => matchedIds.has(item.finding_id))
-          .map((item) => [item.finding_id, item.text]),
-      );
-      // **Two different things wore the same message.** "AI narration is off on this package" was
-      // shown whenever the mode was `structured_fallback`, including when the question simply
-      // matched no findings — ask "why did this fail?" about a package with no failures and the
-      // screen announced that the AI was switched off. It was not: Bedrock was configured,
-      // reachable, and had nothing to narrate because nothing had been selected for it.
-      //
-      // An empty selection is the honest, common case, and saying so is a better answer than an
-      // apology for a capability that is working.
-      const nothingSelected = response.findings.length === 0;
-      // **The reason is for us, not for the reviewer.**
-      //
-      // This printed `response.fallback_reason` verbatim, and a reviewer asking "why did this
-      // fail?" was shown a Pydantic ValidationError quoting its own documentation URL. That is a
-      // developer's diagnostic in a reviewer's face: it reads as the product breaking, when what
-      // actually happened is the safety net working exactly as designed — the narration was
-      // refused and the deterministic findings, which are the audit record anyway, were shown
-      // instead.
-      //
-      // The reason is kept on the message's `narration` badge, where somebody diagnosing can still
-      // read it, and out of the prose.
-      // **Minimal text.** The message carries the answer and, in LLM mode, the guarded overview.
-      // It used to also carry a fallback paragraph, a markdown copy of the findings table and every
-      // narrative joined together: the same facts three times, above cards that showed them a
-      // fourth. The table below is now the record; the narration badge says which source wrote
-      // the prose; each narrative opens under its own row.
-      const overview = response.mode === 'llm' && response.summary
-        ? `**${response.summary}**\n\n`
-        : '';
-      const replyMsg: ChatMessage = {
-        id: `msg-a-${Date.now()}`,
-        role: 'assistant',
-        content: `${overview}${response.answer}`,
-        timestamp: new Date().toISOString(),
-        findings: matched,
-        narratives,
-        // Omitted when nothing was selected, so no provenance badge is rendered. The badge exists
-        // to say which of two sources wrote the prose a reviewer is reading; where there is no
-        // prose, announcing that a model did not write it is a disclosure about nothing, and it
-        // read as a fault report.
-        narration: nothingSelected
-          ? undefined
-          : {
-              mode: response.mode === 'llm' ? 'llm' : 'structured_fallback',
-              modelId: response.model_id ?? undefined,
-              fallbackReason: response.fallback_reason ?? null,
+      let response: ReviewerChatReply;
+      try {
+        // Streamed: the findings table appears as soon as the server has selected it, while the
+        // model is still writing. The explanation then replaces the pending line.
+        response = await streamReviewerChat(
+          projectId(),
+          packageId,
+          text,
+          {
+            onFacts: (facts) => {
+              factsShown = true;
+              const shown = factsMessage(facts, source, replyId, now());
+              setMessages(prev => prev.filter(m => !m.is_typing).concat(shown));
             },
-      };
-      setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
+          },
+          selectedModel || undefined,
+        );
+      } catch (streamError) {
+        // After the facts are on screen they stay; only the explanation is reported missing.
+        if (factsShown) throw streamError;
+        // Before any facts arrived nothing has been shown, so ask once the plain way. This also
+        // keeps chat working against a server that predates the stream.
+        response = await askReviewerChat(projectId(), packageId, text, selectedModel || undefined);
+      }
+      const final = replyMessage(response, source, replyId, now());
+      setMessages(prev =>
+        factsShown
+          ? prev.map(m => (m.id === replyId ? final : m))
+          : prev.filter(m => !m.is_typing).concat(final),
+      );
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (factsShown) {
+        // The findings on screen are the recorded run and still correct; keep them.
+        setMessages(prev =>
+          prev.map(m => (m.id === replyId ? explanationUnavailable(m, message) : m)),
+        );
+        return;
+      }
       // A chat outage must not hide the already-fetched deterministic review. The page keeps its
       // ordinary finding cards and says clearly that it is showing that plain fallback.
-      const message = error instanceof Error ? error.message : String(error);
       const replyMsg: ChatMessage = {
         id: `msg-a-${Date.now()}`,
         role: 'assistant',

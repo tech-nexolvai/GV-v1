@@ -359,3 +359,33 @@
 @media (prefers-reduced-motion: reduce) {
   .ftable__expand svg { transition: none; }
 }
+
+/* ============================================================
+   STREAMING: "Writing the explanation" while a model runs
+   ============================================================ */
+
+.chat-message__narrating {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.chat-message__narrating-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--role-shop);
+  animation: narrating-pulse 1.2s var(--ease-out) infinite;
+}
+
+@keyframes narrating-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-message__narrating-dot { animation: none; }
+}
