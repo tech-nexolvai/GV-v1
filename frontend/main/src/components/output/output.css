@@ -164,6 +164,13 @@
   );
 }
 
+/* Why nothing was drawn, when nothing was. */
+.elevation__note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
 /* Unresolved outcome banner */
 .elevation__banner {
   display: flex;
@@ -257,7 +264,7 @@
 .ftable__row[data-selected] td,
 .ftable__row[data-selected] th { background: var(--bg-hover); }
 
-.ftable__col-outcome { width: 7.5rem; }
+.ftable__col-outcome { width: 9.5rem; }
 .ftable__col-actions { width: 4.5rem; }
 
 .ftable__chip {

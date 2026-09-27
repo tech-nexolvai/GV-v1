@@ -1,15 +1,20 @@
 /**
  * Layout for the cabinet elevation drawing, kept apart from the SVG so the geometry can be tested.
  *
- * **Every width here is the API's own exact value.** The response carries each quantity as a
- * numerator/denominator pair; nothing in this file rounds, estimates or invents a dimension. The
- * only arithmetic is placing boxes on a screen.
+ * **Every width is validated before it is drawn.** The API carries each quantity as an exact
+ * numerator/denominator pair of integer strings. A quantity that is not one is refused here, before
+ * any conversion, and nothing is drawn: a drawing built from a malformed width would place boxes at
+ * `NaN` and still look like a drawing.
  *
- * **Wall order, not response order.** The API lists fillers and cabinets as two separate arrays.
- * Raj's slides draw the run as it stands on the wall: left filler, the cabinets, right filler. The
- * request sends fillers ordered left then right, so with two fillers the first is the left one and
- * the last is the right one. With one filler the side is not recorded, so it is drawn first and
- * `sideKnown` is false; the caller must not label it "left".
+ * **A correction is drawn only when it closes.** It needs a PASS outcome, a measured site width, and
+ * corrected parts that sum exactly (in integers) to that width. Anything less and only the arch run
+ * is drawn, because a "corrected" run that does not add up to the wall would state a layout nobody
+ * computed.
+ *
+ * **Wall order only when it is recorded.** The API lists fillers and cabinets separately. The
+ * request sends fillers ordered left then right, so with exactly two fillers the first is the left
+ * one and the last is the right one. With one filler, or more than two, the request does not record
+ * where they stand, so `positionsKnown` is false and the caller must not draw a wall order.
  */
 
 import type { FillerDistributionResponse } from '../measure/fillerDistribution';
@@ -33,13 +38,16 @@ export interface ElevationElement {
 }
 
 export interface ElevationLayout {
+  /** In wall order when `positionsKnown`; otherwise fillers then cabinets, as the API lists them. */
   elements: ElevationElement[];
   archTotal: { value: number; display: string };
   siteTotal: { value: number; display: string } | null;
-  /** Whether a corrected run exists to draw. Only a PASS proposal is drawn; see `buildElevation`. */
+  /** A corrected run exists and closes to the measured site width. */
   hasProposal: boolean;
-  /** False when a single filler's side is unknown, so the drawing does not claim "left". */
-  sideKnown: boolean;
+  /** Whether the run's order on the wall is recorded. When false, draw no run. */
+  positionsKnown: boolean;
+  /** Every quantity was an exact integer fraction. When false, nothing may be drawn. */
+  valid: boolean;
   unit: 'in' | 'mm';
 }
 
@@ -50,21 +58,38 @@ const CABINET_CODES: Record<CabinetType, { code: string; name: string }> = {
   equipment: { code: 'EQ', name: 'Equipment cabinet' },
 };
 
-function numeric(quantity: Quantity): number {
-  return Number(quantity.numerator) / Number(quantity.denominator);
+const INTEGER = /^-?\d+$/;
+
+/** An exact fraction, or null when the quantity is not one. Nothing is converted before this. */
+function exact(quantity: Quantity | null | undefined): { n: bigint; d: bigint } | null {
+  if (!quantity || !INTEGER.test(quantity.numerator) || !INTEGER.test(quantity.denominator)) return null;
+  const d = BigInt(quantity.denominator);
+  if (d === 0n) return null;
+  return { n: BigInt(quantity.numerator), d };
 }
 
 /** a/b === c/d, decided in integers so 21/1 and 42/2 compare equal and no float drift decides it. */
 export function sameQuantity(a: Quantity, b: Quantity): boolean {
-  try {
-    return (
-      BigInt(a.numerator) * BigInt(b.denominator) === BigInt(b.numerator) * BigInt(a.denominator)
-    );
-  } catch {
-    // A numerator that is not an integer string is a contract break upstream. Treat it as changed
-    // so the drawing highlights it rather than silently calling it unchanged.
-    return false;
-  }
+  const x = exact(a);
+  const y = exact(b);
+  if (!x || !y) throw new Error('sameQuantity called with a quantity that is not an exact fraction');
+  return x.n * y.d === y.n * x.d;
+}
+
+/** Sum of exact fractions, exactly. Only called after every quantity has been validated. */
+function exactSum(quantities: readonly Quantity[]): { n: bigint; d: bigint } {
+  return quantities.reduce(
+    (sum, quantity) => {
+      const q = exact(quantity)!;
+      return { n: sum.n * q.d + q.n * sum.d, d: sum.d * q.d };
+    },
+    { n: 0n, d: 1n },
+  );
+}
+
+/** Screen geometry only, after validation. Never used to decide what changed. */
+function numeric(quantity: Quantity): number {
+  return Number(quantity.numerator) / Number(quantity.denominator);
 }
 
 function toElement(
@@ -86,58 +111,58 @@ function toElement(
   };
 }
 
-/**
- * Orders the run as it stands on the wall and marks what the correction changed.
- *
- * A proposal is only drawn when the outcome is PASS. A REVIEW_REQUIRED result is the "cannot be
- * resolved, RFI to architect" case: drawing a corrected run there would show widths the engine
- * declined to produce.
- */
 export function buildElevation(result: FillerDistributionResponse): ElevationLayout {
+  const unit = result.design_width.unit;
+  const field = result.field_dimension?.value ?? null;
+  const quantities: Array<Quantity | null | undefined> = [
+    result.design_width,
+    ...result.fillers.flatMap((filler) => [filler.original, filler.proposed]),
+    ...result.cabinets.flatMap((cabinet) => [cabinet.original, cabinet.proposed]),
+  ];
+  if (field) quantities.push(field);
+
+  if (quantities.some((quantity) => exact(quantity) === null)) {
+    return {
+      elements: [],
+      archTotal: { value: 0, display: result.design_width.display },
+      siteTotal: null,
+      hasProposal: false,
+      positionsKnown: false,
+      valid: false,
+      unit,
+    };
+  }
+
   const fillers = result.fillers.map((filler) =>
     toElement(filler.id, 'filler', 'F', fillerName(filler.id), filler.original, filler.proposed),
   );
   const cabinets = result.cabinets.map((cabinet, index) => {
     const meta = CABINET_CODES[cabinet.type];
     const kind: ElementKind = cabinet.adjustable ? 'cabinet' : 'equipment';
-    return toElement(
-      cabinet.id,
-      kind,
-      meta.code,
-      `${meta.name} ${index + 1}`,
-      cabinet.original,
-      cabinet.proposed,
-    );
+    return toElement(cabinet.id, kind, meta.code, `${meta.name} ${index + 1}`, cabinet.original, cabinet.proposed);
   });
 
-  let elements: ElevationElement[];
-  let sideKnown = true;
-  if (fillers.length === 2) {
-    elements = [fillers[0], ...cabinets, fillers[1]];
-  } else if (fillers.length === 1) {
-    elements = [fillers[0], ...cabinets];
-    sideKnown = false;
-  } else if (fillers.length === 0) {
-    elements = cabinets;
-  } else {
-    // More than two fillers: their positions between cabinets are not in the request.
-    elements = [fillers[0], ...cabinets, ...fillers.slice(1)];
-    sideKnown = false;
-  }
+  const positionsKnown = fillers.length === 2 || fillers.length === 0;
+  const elements = fillers.length === 2 ? [fillers[0], ...cabinets, fillers[1]] : [...fillers, ...cabinets];
 
-  const hasProposal = result.outcome === 'PASS';
-  const proposedTotal = elements.reduce((sum, element) => sum + element.proposed.value, 0);
-  const field = result.field_dimension?.value ?? null;
+  // The correction must close: the corrected parts sum exactly to the measured site width.
+  const proposed = [
+    ...result.fillers.map((filler) => filler.proposed),
+    ...result.cabinets.map((cabinet) => cabinet.proposed),
+  ];
+  const sum = exactSum(proposed);
+  const fieldExact = field ? exact(field) : null;
+  const closes = fieldExact !== null && sum.n * fieldExact.d === fieldExact.n * sum.d;
+  const hasProposal = result.outcome === 'PASS' && closes;
 
   return {
     elements,
     archTotal: { value: numeric(result.design_width), display: result.design_width.display },
-    siteTotal: hasProposal
-      ? { value: proposedTotal, display: field?.display ?? formatTotal(proposedTotal, result.design_width.unit) }
-      : null,
+    siteTotal: hasProposal && field ? { value: numeric(field), display: field.display } : null,
     hasProposal,
-    sideKnown,
-    unit: result.design_width.unit,
+    positionsKnown,
+    valid: true,
+    unit,
   };
 }
 
@@ -145,11 +170,6 @@ function fillerName(id: string): string {
   const trimmed = id.trim();
   if (!trimmed) return 'Filler';
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-}
-
-function formatTotal(value: number, unit: 'in' | 'mm'): string {
-  const rounded = Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/0+$/, '');
-  return unit === 'in' ? `${rounded}"` : `${rounded} mm`;
 }
 
 /** Geometry for one strip, in SVG user units. Pure, so a test can assert on it. */
@@ -164,10 +184,10 @@ export interface Segment {
 /**
  * Places each element at true scale.
  *
- * Both strips share one scale (units per pixel) so a shorter site run is visibly shorter. No
- * minimum width is imposed: a filler that is 2" of 90" is drawn 2/90 of the run, because a
- * minimum would misstate proportions on a drawing whose purpose is to show proportions. Labels
- * that do not fit are moved below the strip by the renderer instead.
+ * Both strips share one scale so a shorter site run is visibly shorter. No minimum width is
+ * imposed: a filler that is 2" of 90" is drawn 2/90 of the run, because a minimum would misstate
+ * proportions on a drawing whose purpose is to show proportions. Labels that do not fit are moved
+ * below the strip by the renderer instead.
  */
 export function placeSegments(
   elements: ElevationElement[],

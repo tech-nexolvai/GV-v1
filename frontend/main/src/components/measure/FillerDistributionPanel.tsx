@@ -226,14 +226,17 @@ export function FillerDistributionPanel({
 }
 
 /**
- * The same parts as the drawing, in the same wall order, so a row and a box are found together.
+ * The same parts as the drawing, in the same wall order when that order is recorded, so a row and
+ * a box are found together.
  * A changed row is highlighted; nothing else is coloured.
  */
 function DistributionTable({ result }: { result: FillerDistributionResponse }) {
-  const { elements, hasProposal } = buildElevation(result);
+  const { elements, hasProposal, positionsKnown } = buildElevation(result);
   if (elements.length === 0) return null;
   return (
     <table className="distribution-result__table">
+      {/* Wall order is only claimed when it is recorded (exactly two fillers). */}
+      {!positionsKnown && <caption>In the order returned; wall positions not recorded.</caption>}
       <thead>
         <tr>
           <th scope="col">Part</th>

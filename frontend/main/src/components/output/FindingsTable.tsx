@@ -11,22 +11,26 @@
  * edge; in a FAIL row the vendor's reading is highlighted, because that is the value that is
  * wrong. Nothing else is coloured.
  *
- * Every cell comes from `findingCells`, the same function the markdown table uses, so the two
- * can never disagree. No cell is written by a model.
+ * Every cell, including the outcome label, comes from `findingCells`, the function the markdown
+ * table uses. The two therefore show the same values and the same outcome wording. No cell is
+ * written by a model.
+ *
+ * **An opened row stays mounted.** Closing a row hides its detail rather than removing it, so a
+ * correction or exception a reviewer has started typing is still there when the row reopens.
  */
 
 import { useState, type ReactNode } from 'react';
 import { AlertCircle, CheckCircle2, ChevronRight, CircleDashed, Eye, MinusCircle, XCircle } from 'lucide-react';
 import type { Finding, Outcome } from '../../data/types';
 import { findingCells } from '../chat/findingsTable.js';
-import { sortFindings } from './findingsOrder.js';
+import { closedRows, sortFindings, toggleRow, type RowState } from './findingsOrder.js';
 
-const CHIP: Record<Outcome, { label: string; icon: ReactNode }> = {
-  FAIL: { label: 'Fail', icon: <XCircle size={13} aria-hidden="true" /> },
-  REVIEW_REQUIRED: { label: 'Review', icon: <AlertCircle size={13} aria-hidden="true" /> },
-  NOT_FOUND: { label: 'Not found', icon: <CircleDashed size={13} aria-hidden="true" /> },
-  PASS: { label: 'Pass', icon: <CheckCircle2 size={13} aria-hidden="true" /> },
-  NO_APPLICABLE_RULE: { label: 'N/A', icon: <MinusCircle size={13} aria-hidden="true" /> },
+const ICON: Record<Outcome, ReactNode> = {
+  FAIL: <XCircle size={13} aria-hidden="true" />,
+  REVIEW_REQUIRED: <AlertCircle size={13} aria-hidden="true" />,
+  NOT_FOUND: <CircleDashed size={13} aria-hidden="true" />,
+  PASS: <CheckCircle2 size={13} aria-hidden="true" />,
+  NO_APPLICABLE_RULE: <MinusCircle size={13} aria-hidden="true" />,
 };
 
 const NOT_RECORDED = 'Not recorded';
@@ -51,16 +55,8 @@ export function FindingsTable({
   renderDetail,
   initiallyOpen = [],
 }: FindingsTableProps) {
-  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set(initiallyOpen));
+  const [rows, setRows] = useState<RowState>(() => closedRows(initiallyOpen));
   if (findings.length === 0) return null;
-
-  const toggle = (id: string) =>
-    setOpen((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
 
   return (
     <div className="ftable-wrap">
@@ -84,28 +80,19 @@ export function FindingsTable({
           </tr>
         </thead>
         <tbody>
-          {sortFindings(findings).map((finding) => {
-            const cells = findingCells(finding);
-            const isOpen = open.has(finding.id);
-            const detailId = `ftable-detail-${finding.id}`;
-            const narrative = narratives?.[finding.id];
-            const chip = CHIP[finding.outcome];
-            return (
-              <FindingRows
-                key={finding.id}
-                finding={finding}
-                cells={cells}
-                chip={chip}
-                isOpen={isOpen}
-                isSelected={selectedFinding === finding.id}
-                detailId={detailId}
-                narrative={narrative}
-                onToggle={() => toggle(finding.id)}
-                onViewEvidence={onViewEvidence}
-                detail={isOpen && renderDetail ? renderDetail(finding) : null}
-              />
-            );
-          })}
+          {sortFindings(findings).map((finding) => (
+            <FindingRows
+              key={finding.id}
+              finding={finding}
+              isOpen={rows.open.has(finding.id)}
+              isMounted={rows.mounted.has(finding.id)}
+              isSelected={selectedFinding === finding.id}
+              narrative={narratives?.[finding.id]}
+              onToggle={() => setRows((current) => toggleRow(current, finding.id))}
+              onViewEvidence={onViewEvidence}
+              renderDetail={renderDetail}
+            />
+          ))}
         </tbody>
       </table>
     </div>
@@ -114,29 +101,32 @@ export function FindingsTable({
 
 interface FindingRowsProps {
   finding: Finding;
-  cells: ReturnType<typeof findingCells>;
-  chip: { label: string; icon: ReactNode };
   isOpen: boolean;
+  isMounted: boolean;
   isSelected: boolean;
-  detailId: string;
   narrative?: string;
   onToggle: () => void;
   onViewEvidence?: (finding: Finding) => void;
-  detail: ReactNode;
+  renderDetail?: (finding: Finding) => ReactNode;
 }
 
 function FindingRows({
   finding,
-  cells,
-  chip,
   isOpen,
+  isMounted,
   isSelected,
-  detailId,
   narrative,
   onToggle,
   onViewEvidence,
-  detail,
+  renderDetail,
 }: FindingRowsProps) {
+  const cells = findingCells(finding);
+  const detailId = `ftable-detail-${finding.id}`;
+  // The chain supplies the values. `recorded_operands` is undefined when that request did not
+  // complete, which is not the same as the chain recording no value.
+  const loaded = finding.recorded_operands !== undefined;
+  const detail = isMounted && renderDetail ? renderDetail(finding) : null;
+
   return (
     <>
       <tr
@@ -146,9 +136,9 @@ function FindingRows({
         data-open={isOpen || undefined}
       >
         <td>
-          <span className="ftable__chip" data-outcome={finding.outcome} title={cells.outcome}>
-            {chip.icon}
-            {chip.label}
+          <span className="ftable__chip" data-outcome={finding.outcome}>
+            {ICON[finding.outcome]}
+            {cells.outcome}
           </span>
         </td>
         <th scope="row" className="ftable__check">
@@ -156,13 +146,13 @@ function FindingRows({
           <span className="ftable__rule mono">{finding.check_id}</span>
         </th>
         <td className="mono ftable__value ftable__value--shop" data-mismatch={finding.outcome === 'FAIL' || undefined}>
-          <Value text={cells.reading} />
+          <Value text={cells.reading} loaded={loaded} />
         </td>
         <td className="mono ftable__value">
-          <Value text={cells.comparison} />
+          <Value text={cells.comparison} loaded={loaded} />
         </td>
         <td className="mono ftable__sheet">
-          <Value text={cells.sheet} />
+          <Value text={cells.sheet} loaded={loaded} />
         </td>
         <td className="ftable__actions">
           {onViewEvidence && (finding.shop_evidence || finding.arch_evidence) && (
@@ -181,7 +171,7 @@ function FindingRows({
             className="ftable__icon-btn ftable__expand"
             onClick={onToggle}
             aria-expanded={isOpen}
-            aria-controls={detailId}
+            aria-controls={isMounted ? detailId : undefined}
             aria-label={`${isOpen ? 'Hide' : 'Show'} details for ${cells.check}`}
             title={isOpen ? 'Hide details' : 'Details and actions'}
           >
@@ -189,8 +179,8 @@ function FindingRows({
           </button>
         </td>
       </tr>
-      {isOpen && (
-        <tr className="ftable__detail" id={detailId} data-outcome={finding.outcome}>
+      {isMounted && (
+        <tr className="ftable__detail" id={detailId} data-outcome={finding.outcome} hidden={!isOpen}>
           <td colSpan={6}>
             {narrative && <p className="ftable__narrative">{narrative}</p>}
             {detail}
@@ -204,11 +194,15 @@ function FindingRows({
   );
 }
 
-/** A missing value is a dash, not the words "Not recorded" repeated down a column. */
-function Value({ text }: { text: string }) {
+/**
+ * A missing value is a dash, not the words repeated down a column. Its accessible name says which
+ * kind of missing it is: not recorded by the chain, or not loaded because the request failed.
+ */
+function Value({ text, loaded }: { text: string; loaded: boolean }) {
   if (!text || text === NOT_RECORDED) {
+    const label = loaded ? NOT_RECORDED : 'Not loaded';
     return (
-      <span className="ftable__empty" title={NOT_RECORDED} aria-label={NOT_RECORDED}>
+      <span className="ftable__empty" data-loaded={loaded} title={label} aria-label={label}>
         —
       </span>
     );

@@ -169,12 +169,19 @@ export function ChatThread({
  */
 function NarrationBadge({ narration }: { narration: NonNullable<ChatMessage['narration']> }) {
   const isLlm = narration.mode === 'llm';
-  // One line. The full disclosure stays one hover away, where somebody diagnosing can read it.
+  // One line. The disclosure that matters to a reviewer is which source wrote the prose. The raw
+  // fallback reason is a developer's diagnostic (it can be a Pydantic error quoting its own docs),
+  // so it is kept on the badge as a data attribute for somebody inspecting the page, and is never
+  // shown or announced.
   const detail = isLlm
     ? `Written by ${narration.modelId ?? 'the configured model'}, checked against the recorded findings before it was shown.`
-    : `No model narrated this answer${narration.fallbackReason ? `: ${narration.fallbackReason}` : '.'} The findings are unchanged.`;
+    : 'No model narrated this answer. The findings are the recorded ones, unchanged.';
   return (
-    <div className={`narration narration--${narration.mode}`} title={detail}>
+    <div
+      className={`narration narration--${narration.mode}`}
+      title={detail}
+      data-fallback-reason={narration.fallbackReason ?? undefined}
+    >
       <span className="narration__icon" aria-hidden="true">
         {isLlm ? <Sparkles size={12} /> : <Shield size={12} />}
       </span>

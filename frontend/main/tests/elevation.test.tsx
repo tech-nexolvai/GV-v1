@@ -133,7 +133,47 @@ const scenario4 = response({
     fillers: [{ id: 'filler', original: inches(4), proposed: inches(4) }],
     cabinets: [cabinet('cabinet-1', 'drawer', 36, 36)],
   });
-  assert.equal(buildElevation(oneFiller).sideKnown, false, 'a lone filler is not claimed to be on the left');
+  const layout = buildElevation(oneFiller);
+  assert.equal(layout.positionsKnown, false, 'a lone filler has no recorded wall position');
+  const html = renderToStaticMarkup(<ElevationDiagram result={oneFiller} />);
+  assert.match(html, /filler positions on the wall are not recorded/);
+  assert.doesNotMatch(html, /<svg/, 'no wall order is drawn when positions are not recorded');
+}
+
+// CodeRabbit #4114736958: a malformed width must not become NaN geometry.
+{
+  const malformed = response({
+    design_width: inches(90),
+    field_dimension: scenario1.field_dimension,
+    fillers: [{ id: 'left filler', original: { ...inches(3), numerator: '3.5' }, proposed: inches(2) }, scenario1.fillers[1]],
+    cabinets: scenario1.cabinets,
+  });
+  const layout = buildElevation(malformed);
+  assert.equal(layout.valid, false, 'a non-integer numerator is refused before any conversion');
+  assert.equal(layout.elements.length, 0);
+  const html = renderToStaticMarkup(<ElevationDiagram result={malformed} />);
+  assert.match(html, /not an exact value/);
+  assert.doesNotMatch(html, /NaN/);
+  assert.doesNotMatch(html, /<svg/);
+  assert.throws(() => sameQuantity({ ...inches(1), denominator: '0' }, inches(1)), 'a zero denominator is refused');
+}
+
+// CodeRabbit #4114736976: a PASS with no measured site width is not "corrected for site".
+{
+  const noField = { ...scenario1, field_dimension: { ...scenario1.field_dimension, value: null } };
+  const layout = buildElevation(noField);
+  assert.equal(layout.hasProposal, false);
+  assert.equal(layout.siteTotal, null);
+  assert.doesNotMatch(renderToStaticMarkup(<ElevationDiagram result={noField} />), /Corrected for site/);
+}
+
+// A correction whose parts do not sum exactly to the site width is not drawn.
+{
+  const doesNotClose = {
+    ...scenario1,
+    cabinets: scenario1.cabinets.map((item, index) => (index === 0 ? { ...item, proposed: inches(22) } : item)),
+  };
+  assert.equal(buildElevation(doesNotClose).hasProposal, false, '2+22+36+21+2 = 83, not the measured 82');
 }
 
 // --- rendering ------------------------------------------------------------------------------

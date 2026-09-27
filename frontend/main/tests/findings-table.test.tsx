@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { FindingsTable } from '../src/components/output/FindingsTable.js';
-import { sortFindings } from '../src/components/output/findingsOrder.js';
+import { closedRows, sortFindings, toggleRow } from '../src/components/output/findingsOrder.js';
 import type { Finding } from '../src/data/types.js';
 
 function finding(id: string, outcome: Finding['outcome'], name: string, shop?: string, arch?: string): Finding {
@@ -84,6 +84,35 @@ assert.match(opened, /half an inch deeper/, 'an opened row shows its narrative')
 assert.match(opened, /actions for fail-1/, 'and the reviewer actions');
 assert.match(opened, /aria-expanded="true"/);
 assert.equal(opened.match(/class="ftable__detail"/g)?.length, 2);
+
+// --- CodeRabbit #4114736983: one outcome wording, shared with the markdown table -----------------
+
+assert.match(html, />Review required</, 'the chip uses the same label as the markdown table');
+assert.match(html, />Not found</);
+assert.doesNotMatch(html, />Review</, 'no shortened second wording');
+
+// --- CodeRabbit #4114736988: a failed load is not "not recorded" ---------------------------------
+
+{
+  const unloaded = { ...finding('u-1', 'PASS', 'Countertop width'), recorded_operands: undefined } as Finding;
+  const markup = renderToStaticMarkup(<FindingsTable findings={[unloaded]} />);
+  assert.match(markup, /aria-label="Not loaded">—</, 'values the chain request did not return say so');
+  assert.doesNotMatch(markup, /aria-label="Not recorded"/);
+}
+
+// --- CodeRabbit #4114736993: closing a row keeps its detail (and any draft) mounted ------------
+
+{
+  let state = closedRows();
+  assert.equal(state.mounted.has('fail-1'), false, 'a row never opened mounts nothing');
+  state = toggleRow(state, 'fail-1');
+  assert.ok(state.open.has('fail-1') && state.mounted.has('fail-1'), 'opening mounts the detail');
+  state = toggleRow(state, 'fail-1');
+  assert.equal(state.open.has('fail-1'), false, 'closing closes it');
+  assert.ok(state.mounted.has('fail-1'), 'but keeps it mounted, so a half-typed correction survives');
+  state = toggleRow(state, 'fail-1');
+  assert.ok(state.open.has('fail-1'), 'reopening shows the same mounted detail');
+}
 
 // --- empty ------------------------------------------------------------------------------------
 

@@ -38,9 +38,31 @@ interface ElevationDiagramProps {
 export function ElevationDiagram({ result, showBanner = true }: ElevationDiagramProps) {
   const uid = useId().replace(/:/g, '');
   const layout = buildElevation(result);
+  // A width that is not an exact fraction: draw nothing rather than boxes at NaN.
+  if (!layout.valid) {
+    return (
+      <figure className="elevation" data-outcome={result.outcome}>
+        <p className="elevation__note" role="status">
+          Not drawn: a width in this result is not an exact value.
+        </p>
+      </figure>
+    );
+  }
   // Nothing to draw: an abstention can return no parts at all. An empty frame would read as a
   // broken drawing, so the host's own message stands alone.
   if (layout.elements.length === 0) return null;
+  // With one filler, or more than two, the request does not record where they stand. Drawing a
+  // wall order anyway would present an unrecorded position as fact.
+  if (!layout.positionsKnown) {
+    return (
+      <figure className="elevation" data-outcome={result.outcome}>
+        {!layout.hasProposal && showBanner && <OutcomeBanner result={result} />}
+        <p className="elevation__note" role="status">
+          Not drawn: the filler positions on the wall are not recorded.
+        </p>
+      </figure>
+    );
+  }
   const usable = VIEW_WIDTH - MARGIN_X * 2;
   const longest = Math.max(layout.archTotal.value, layout.siteTotal?.value ?? 0);
   const pxPerUnit = longest > 0 ? usable / longest : 0;
@@ -125,9 +147,6 @@ export function ElevationDiagram({ result, showBanner = true }: ElevationDiagram
           Equipment, width fixed
         </span>
         <span className="elevation__key elevation__key--note">Drawn to scale</span>
-        {!layout.sideKnown && (
-          <span className="elevation__key elevation__key--note">Filler side not recorded</span>
-        )}
       </figcaption>
     </figure>
   );

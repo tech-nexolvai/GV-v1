@@ -21,3 +21,26 @@ export function sortFindings(findings: readonly Finding[]): Finding[] {
     .sort((a, b) => ORDER[a.finding.outcome] - ORDER[b.finding.outcome] || a.index - b.index)
     .map(({ finding }) => finding);
 }
+
+/**
+ * Which rows are open, and which have ever been opened.
+ *
+ * Kept separate because closing a row must not unmount its detail: the reviewer's half-typed
+ * correction lives in that subtree, and React discards a component's state when it is removed.
+ * So `mounted` only ever grows; `open` toggles.
+ */
+export interface RowState {
+  open: ReadonlySet<string>;
+  mounted: ReadonlySet<string>;
+}
+
+export function closedRows(initiallyOpen: readonly string[] = []): RowState {
+  return { open: new Set(initiallyOpen), mounted: new Set(initiallyOpen) };
+}
+
+export function toggleRow(state: RowState, id: string): RowState {
+  const open = new Set(state.open);
+  if (open.has(id)) open.delete(id);
+  else open.add(id);
+  return { open, mounted: new Set([...state.mounted, id]) };
+}
