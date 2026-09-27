@@ -33,6 +33,7 @@ Verification: `tests/db/test_drawing_models.py`
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
@@ -67,6 +68,16 @@ DENSE_CONTENT_KIND_VALUES = ", ".join(f"'{kind.value}'" for kind in DenseContent
 EXTENSION_SCHEMA: Final = "public"
 
 
+class ViewRole(StrEnum):
+    """The side of a comparison a view belongs to, once established by review."""
+
+    ARCH = "arch"
+    SHOP = "shop"
+
+
+VIEW_ROLE_VALUES = ", ".join(f"'{role.value}'" for role in ViewRole)
+
+
 class DrawingView(Base, TimestampedUUID):
     """One titled region of a page — an elevation, a plan, a section.
 
@@ -87,9 +98,21 @@ class DrawingView(Base, TimestampedUUID):
     is answered in `extraction/` where the geometry library lives, and the database's job here is to
     keep the coordinates, not to reason about them."""
 
+    role: Mapped[str | None] = mapped_column(String(16), default=None)
+    """`arch` or `shop` only after the panel role is established.
+
+    `NULL` means unknown, not "infer it from the upload". Combined sheets carry both roles in one
+    source file, so a view with no role must not silently become whichever kind the document was
+    registered as.
+    """
+
     __table_args__ = (
         UniqueConstraint("page_id", "tag", name="uq_drawing_views_page_tag"),
         CheckConstraint("tag <> ''", name="drawing_view_tag_present"),
+        CheckConstraint(
+            f"role IS NULL OR role IN ({VIEW_ROLE_VALUES})",
+            name="drawing_view_role",
+        ),
     )
 
 

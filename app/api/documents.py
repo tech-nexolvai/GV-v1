@@ -489,7 +489,7 @@ def confirm_upload(
     "/projects/{project_id}/packages/{package_id}/extract",
     response_model=ExtractionRequestOut,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Start AI reading after both drawing PDFs are confirmed",
+    summary="Start AI reading after the drawing PDFs are confirmed",
 )
 def start_extraction(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -498,42 +498,34 @@ def start_extraction(
     project_id: UUID,
     package_id: UUID,
 ) -> ExtractionRequestOut:
-    """Freeze a completed drawing pair and enqueue its read-only extraction stages.
+    """Freeze the confirmed drawing set and enqueue its read-only extraction stages.
 
-    This is intentionally separate from confirming one document: a worker must never read and freeze
-    an architectural PDF while the shop PDF is still in flight.  It performs no extraction itself;
-    the outbox record and state transition commit together, then the worker reads the two immutable
-    documents.  It also does not run checks -- OCR proposals remain untyped until a reviewer confirms
+    This is intentionally separate from confirming a document: a worker must never read and freeze a
+    package while its drawings are still in flight. It performs no extraction itself; the outbox
+    record and state transition commit together, then the worker reads the immutable document
+    versions. It also does not run checks -- OCR proposals remain untyped until a reviewer confirms
     them.
     """
     revision = _package_revision(session, project_id, package_id, lock=True)
     if revision.state != PackageState.UPLOADING:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Both PDFs must be uploaded before AI reading can start.",
+            detail="Upload at least one confirmed drawing PDF before AI reading can start.",
         )
 
-    kind_counts = {
-        str(kind): count
-        for kind, count in session.execute(
-            select(Document.kind, func.count())
-            .join(PackageRevisionDocument, PackageRevisionDocument.document_id == Document.id)
-            .where(PackageRevisionDocument.package_revision_id == revision.id)
-            .group_by(Document.kind)
-        ).all()
-    }
-    required = {DocumentKind.ARCHITECTURAL.value, DocumentKind.SHOP.value}
-    if set(kind_counts) != required or any(kind_counts.get(kind) != 1 for kind in required):
-        missing = ", ".join(sorted(kind for kind in required if kind_counts.get(kind, 0) == 0))
-        duplicates = ", ".join(sorted(kind for kind, count in kind_counts.items() if count > 1))
-        detail = "Upload exactly one confirmed architectural PDF and one confirmed shop PDF before AI reading can start."
-        if missing:
-            detail += f" Missing: {missing}."
-        if duplicates:
-            detail += f" Duplicate kinds: {duplicates}."
+    confirmed_drawings = session.scalar(
+        select(func.count())
+        .select_from(PackageRevisionDocument)
+        .join(Document, Document.id == PackageRevisionDocument.document_id)
+        .where(
+            PackageRevisionDocument.package_revision_id == revision.id,
+            Document.kind.in_((DocumentKind.ARCHITECTURAL.value, DocumentKind.SHOP.value)),
+        )
+    )
+    if confirmed_drawings == 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=detail,
+            detail="Upload at least one confirmed drawing PDF before AI reading can start.",
         )
 
     transition(
@@ -541,7 +533,7 @@ def start_extraction(
         revision.id,
         PackageState.UPLOADED,
         actor=principal.id,
-        reason="architectural and shop PDFs confirmed; reviewer requested AI reading",
+        reason="confirmed drawing PDFs present; reviewer requested AI reading",
     )
     accepted = enqueue(
         session,

@@ -14,6 +14,7 @@ import pytest
 
 from eval.gold_set.schema import GoldCase
 from scripts.author_self_verified_vendor_goldset import (
+    DEFAULT_SOURCE,
     TYPE_STATUS,
     VALUE_PROVENANCE,
     Proposal,
@@ -24,6 +25,12 @@ from scripts.author_self_verified_vendor_goldset import (
     write_pending_report,
 )
 from vocabulary.semantic_types import SemanticType
+
+
+def test_default_source_does_not_claim_a_reviewed_file() -> None:
+    """The tracked harness must not imply the byte-identical source had a human review."""
+    assert DEFAULT_SOURCE == Path("data/drawings/aiset2/AI_Set_2.pdf")
+    assert "reviewed" not in str(DEFAULT_SOURCE)
 
 
 def _proposal(
@@ -162,6 +169,7 @@ def test_authored_cases_are_reading_only_and_mark_the_type_unconfirmed(tmp_path:
     assert "semantic_type positional heuristic-unconfirmed" in case.provenance.annotator
 
     metadata = json.loads((written[0] / "case_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["value_source"] == "vendor dual notation, AI_Set_2 vendor-only p2"
     assert metadata["semantic_type_status"] == TYPE_STATUS
     assert metadata["semantic_type_basis"].startswith(
         "upstream proposal label records a mid-run segment position"

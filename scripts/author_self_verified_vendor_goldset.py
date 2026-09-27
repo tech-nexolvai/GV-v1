@@ -44,7 +44,7 @@ AGREE = "AGREE"
 TYPE_STATUS = "heuristic-unconfirmed"
 VALUE_PROVENANCE = "dual-notation self-verified (mm~=inch), NOT per-case human-read"
 DEFAULT_PROPOSAL_ROOT = Path("data/exploration/all_projects_vendor_dimension_proposals")
-DEFAULT_SOURCE = Path("data/drawings/aiset2_reviewed/AI_Set_2_reviewed.pdf")
+DEFAULT_SOURCE = Path("data/drawings/aiset2/AI_Set_2.pdf")
 DEFAULT_CASE_ROOT = Path("data/goldset/aiset2-self-verified-vendor-readings")
 DEFAULT_PENDING_REPORT = DEFAULT_PROPOSAL_ROOT / "PENDING_FOR_TRUE_REPRESENTATIVE_NUMBER.md"
 _CASE_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
@@ -232,7 +232,7 @@ def case_payload(
             "mm/in values do not independently corroborate"
         )
     case_id = _case_id(proposal)
-    source_description = f"vendor dual notation, AI_Set_2_reviewed vendor-only p{proposal.page}"
+    source_description = f"vendor dual notation, AI_Set_2 vendor-only p{proposal.page}"
     payload: dict[str, Any] = {
         "id": case_id,
         "product_type": "cabinet",
