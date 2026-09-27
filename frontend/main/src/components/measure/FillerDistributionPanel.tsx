@@ -12,16 +12,12 @@ import {
   type FillerDistributionRequest,
   type FillerDistributionResponse,
 } from './fillerDistribution.js';
-import type { components } from '../../api/schema';
+import { ElevationDiagram } from '../output/ElevationDiagram.js';
+import { buildElevation } from '../output/elevation.js';
 
-type QuantityOut = components['schemas']['app__schemas__distribution__QuantityOut'];
 
 const DESIGN_CABINET_KEY = 'ARCH:cabinet_width';
 const DESIGN_FILLER_KEY = 'ARCH:filler_width';
-
-function quantityDisplay(quantity: QuantityOut | null | undefined): string {
-  return quantity?.display ?? 'not supplied';
-}
 
 function valueRun(
   quantities: DistributionQuantity[],
@@ -201,69 +197,76 @@ export function FillerDistributionPanel({
 
       {result && (
         <div className="distribution-result" data-outcome={result.outcome}>
-          <div className="distribution-result__message" role="status">
+          <div className="distribution-result__status" role="status">
             {result.outcome === 'PASS' ? (
               <CheckCircle2 size={15} aria-hidden="true" />
             ) : (
               <AlertTriangle size={15} aria-hidden="true" />
             )}
             <strong>{result.outcome === 'PASS' ? 'Proposal returned' : 'Could not propose'}</strong>
-            <span>{result.message}</span>
+            {result.reviewer_action && <span>{result.reviewer_action}</span>}
           </div>
 
-          <dl className="distribution-result__facts">
-            <div>
-              <dt>Design width</dt>
-              <dd>{quantityDisplay(result.design_width)}</dd>
-            </div>
-            <div>
-              <dt>Site difference</dt>
-              <dd>{quantityDisplay(result.site_difference)}</dd>
-            </div>
-            <div>
-              <dt>Cabinets</dt>
-              <dd>{result.cabinets_retained ? 'unchanged' : 'adjusted'}</dd>
-            </div>
-          </dl>
+          {/* The picture first: what changed is found by eye, not by reading. */}
+          <ElevationDiagram result={result} showBanner={false} />
 
-          <table className="distribution-result__table">
-            <thead>
-              <tr>
-                <th scope="col">Part</th>
-                <th scope="col">Original</th>
-                <th scope="col">Proposed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.fillers.map((filler) => (
-                <tr key={filler.id}>
-                  <th scope="row">{filler.id}</th>
-                  <td>{quantityDisplay(filler.original)}</td>
-                  <td>{quantityDisplay(filler.proposed)}</td>
-                </tr>
-              ))}
-              {result.cabinets.map((cabinet) => (
-                <tr key={cabinet.id} data-adjustable={cabinet.adjustable}>
-                  <th scope="row">
-                    {cabinet.id}
-                    {cabinet.adjustable ? '' : ' (equipment — width fixed)'}
-                  </th>
-                  <td>{quantityDisplay(cabinet.original)}</td>
-                  <td>{quantityDisplay(cabinet.proposed)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <DistributionTable result={result} />
 
-          {result.reviewer_action && (
-            <p className="distribution-result__action" role="status">
-              <AlertTriangle size={14} aria-hidden="true" /> {result.reviewer_action}
-            </p>
-          )}
+          {/* Raj's own explanation (slides 5 and 9), composed from the exact figures. */}
+          {result.message && <p className="distribution-result__explanation">{result.message}</p>}
 
-          <p className="distribution-result__calculation">{result.calculation}</p>
+          <details className="distribution-result__trace">
+            <summary>Calculation trace</summary>
+            <p className="distribution-result__calculation">{result.calculation}</p>
+          </details>
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * The same parts as the drawing, in the same wall order when that order is recorded, so a row and
+ * a box are found together.
+ * A changed row is highlighted; nothing else is coloured.
+ */
+function DistributionTable({ result }: { result: FillerDistributionResponse }) {
+  const { elements, hasProposal, positionsKnown } = buildElevation(result);
+  if (elements.length === 0) return null;
+  return (
+    <table className="distribution-result__table">
+      {/* Wall order is only claimed when it is recorded (exactly two fillers). */}
+      {!positionsKnown && <caption>In the order returned; wall positions not recorded.</caption>}
+      <thead>
+        <tr>
+          <th scope="col">Part</th>
+          <th scope="col">Arch</th>
+          {hasProposal && <th scope="col">Corrected</th>}
+          {hasProposal && <th scope="col" aria-label="Changed">&nbsp;</th>}
+        </tr>
+      </thead>
+      <tbody>
+        {elements.map((element) => {
+          const changed = hasProposal && element.changed;
+          return (
+            <tr key={element.id} data-changed={changed || undefined} data-kind={element.kind}>
+              <th scope="row">
+                {element.id}
+                {element.kind === 'equipment' ? ' (equipment — width fixed)' : ''}
+              </th>
+              <td className="mono">{element.original.display}</td>
+              {hasProposal && (
+                <td className="mono distribution-result__proposed">{element.proposed.display}</td>
+              )}
+              {hasProposal && (
+                <td className="distribution-result__mark" aria-label={changed ? 'corrected' : 'kept'}>
+                  {changed ? '✕' : '✓'}
+                </td>
+              )}
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }

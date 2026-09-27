@@ -1,6 +1,6 @@
 import type { Finding } from '../../data/types';
 
-const OUTCOME_LABELS = {
+export const OUTCOME_LABELS = {
   PASS: 'Pass',
   FAIL: 'Fail',
   REVIEW_REQUIRED: 'Review required',
@@ -8,16 +8,35 @@ const OUTCOME_LABELS = {
   NO_APPLICABLE_RULE: 'Not applicable',
 } as const;
 
+/**
+ * The cells of one finding's row, shared by the markdown table and the `FindingsTable` component
+ * so the two can never disagree about what a finding read, where, and against what.
+ */
+export interface FindingCells {
+  check: string;
+  reading: string;
+  sheet: string;
+  comparison: string;
+  outcome: string;
+}
+
+export function findingCells(finding: Finding): FindingCells {
+  return {
+    check: finding.name || finding.check_id,
+    reading: readingFor(finding),
+    sheet: sheetFor(finding),
+    comparison: comparisonFor(finding),
+    outcome: OUTCOME_LABELS[finding.outcome],
+  };
+}
+
 export function findingsTableMarkdown(findings: readonly Finding[]): string {
   if (findings.length === 0) return '';
 
-  const rows = findings.map((finding) => [
-    finding.name || finding.check_id,
-    readingFor(finding),
-    sheetFor(finding),
-    comparisonFor(finding),
-    OUTCOME_LABELS[finding.outcome],
-  ]);
+  const rows = findings.map((finding) => {
+    const cells = findingCells(finding);
+    return [cells.check, cells.reading, cells.sheet, cells.comparison, cells.outcome];
+  });
 
   return [
     '| Check | Reading | Sheet | Compared against | Outcome |',

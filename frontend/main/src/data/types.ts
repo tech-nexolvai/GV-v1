@@ -139,6 +139,11 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   findings?: Finding[];
+  /**
+   * The guarded narrative for each finding, by finding id. Shown under that finding's row when the
+   * reviewer opens it, instead of being joined into the message text where nobody reads it.
+   */
+  narratives?: Record<string, string>;
   /** Explicit disclosure of whether Bedrock narration was accepted for this response. The
    * deterministic findings and verdicts remain the backing record in either mode. */
   narration?: {
