@@ -53,6 +53,7 @@ def _validate(
     recorder: RecordingRejections,
     crop_size: CropSize | None = None,
     coordinate_mode: CoordinateMode = CoordinateMode.PIXELS,
+    stacked_label: bool = False,
 ) -> ObservationCandidate | ValidationRejection:
     return validate_payload(
         payload,
@@ -60,6 +61,7 @@ def _validate(
         crop_size=crop_size if crop_size is not None else CropSize(100, 80),
         coordinate_mode=coordinate_mode,
         recorder=recorder,
+        stacked_label=stacked_label,
     )
 
 
@@ -392,5 +394,55 @@ def test_a_small_reading_is_not_mistaken_for_zero() -> None:
     is exact — a float comparison here could have made a small value round into a refusal.
     """
     outcome = _validate(_valid_payload() | {"reading": '1 1/16"'}, recorder=RecordingRejections())
+
+    assert isinstance(outcome, ObservationCandidate)
+
+
+def test_a_reading_with_no_fraction_is_refused_when_the_label_was_drawn_stacked() -> None:
+    """The case #541 exists for, and the one no validator reading the string can catch.
+
+    On a real crop from `AI_Set 2` page 3 a label reading `28 3/4"` came back as `284`, and the seam
+    accepted it — correctly, because `284` is a perfectly good dimension token. It is the *drawing*
+    that knows better: the label was drawn with one glyph above another, and a reading with no `/`
+    cannot be a reading of that.
+    """
+    recorder = RecordingRejections()
+
+    outcome = _validate(
+        {**_valid_payload(), "reading": "284", "unit_guess": "in"},
+        recorder=recorder,
+        stacked_label=True,
+    )
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == "stacked_fraction_absorbed"
+    assert "two bands" in outcome.errors[0]
+
+
+def test_a_stacked_label_read_with_its_fraction_is_accepted() -> None:
+    """The guard asks for a `/`, not for a particular value. It never says what the number is."""
+    recorder = RecordingRejections()
+
+    outcome = _validate(
+        {**_valid_payload(), "reading": '28 3/4"', "unit_guess": "in"},
+        recorder=recorder,
+        stacked_label=True,
+    )
+
+    assert isinstance(outcome, ObservationCandidate)
+    assert outcome.raw_text == '28 3/4"'
+
+
+def test_an_unmeasured_label_does_not_engage_the_guard() -> None:
+    """Silence is not evidence of stacking.
+
+    Most callers have no geometry to offer, and treating "did not measure" as "stacked" would refuse
+    every reading without a fraction in it — which is nearly all of them.
+    """
+    recorder = RecordingRejections()
+
+    outcome = _validate(
+        {**_valid_payload(), "reading": "284", "unit_guess": "in"}, recorder=recorder
+    )
 
     assert isinstance(outcome, ObservationCandidate)

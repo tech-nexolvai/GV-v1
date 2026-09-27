@@ -65,6 +65,7 @@ import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint
 from evidence.polygon import Polygon
 from extraction.geometry.containment import DimensionExtent
+from extraction.glyph_bands import reading_must_contain_a_fraction
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = [
@@ -161,6 +162,18 @@ class OutlinedTextRegion:
     point_count: int
     """Both counts are kept because they are the only description of the cluster's shape that
     survives into the output, and a one-path, three-point "region" is worth being able to spot."""
+
+    stacked_glyphs: bool = False
+    """Whether this cluster holds a glyph sitting above another — a stacked fraction (#541).
+
+    Recorded here because this is the only place that still has the individual glyph boxes: the
+    region keeps their union and throws the rest away, so by the time a reading comes back there is
+    nothing left to compare it against.
+
+    **Defaults to `False`, the answer that accepts.** A record built before this existed, or by a
+    path that supplied no separation, must not be read as having said "stacked" — that would refuse
+    every reading without a `/` in it.
+    """
 
     baseline_rotation_degrees: int = 0
     """How the appearance transform turns the text baseline on the rendered page.
@@ -700,8 +713,15 @@ def read_annotation_layers(
     line_minimum_pt: Decimal,
     glyph_maximum_pt: Decimal,
     glyph_gap_pt: Decimal,
+    band_separation_pt: Decimal | None = None,
 ) -> PageLayers:
     """One page's annotation layers, read apart and never merged.
+
+    `band_separation_pt` turns on the stacked-fraction measurement (#541) and is **optional, unlike
+    the three lengths above**. Those have no default because every caller must choose them for a
+    check to run at all; this one gates a guard that does not yet have a validated number. Left
+    unset, `vertical_bands` stays 1 and the guard never engages — the accepting direction, and an
+    honest one: nothing was measured, so nothing is claimed. Supplying it is what #274 unblocks.
 
     `dpi` has no default for the reason `read_page_contents` gives: stored coordinates are reached
     through integer image space, so the resolution decides how much precision survives, and a default
@@ -738,7 +758,7 @@ def read_annotation_layers(
         page_index,
         document_version_id=document_version_id,
         dpi=dpi,
-        geometry=(line_minimum_pt, glyph_maximum_pt, glyph_gap_pt),
+        geometry=(line_minimum_pt, glyph_maximum_pt, glyph_gap_pt, band_separation_pt),
     )
 
 
@@ -748,11 +768,12 @@ def _read_layers(
     *,
     document_version_id: UUID,
     dpi: int,
-    geometry: tuple[Decimal, Decimal, Decimal] | None,
+    geometry: tuple[Decimal, Decimal, Decimal, Decimal | None] | None,
 ) -> PageLayers:
     """The annotation walk both entry points share.
 
-    `geometry` carries the three lengths, or `None` to skip the vendor's path geometry entirely. One
+    `geometry` carries the three lengths and the optional band separation, or `None` to skip the
+    vendor's path geometry entirely. One
     walk rather than two, because the markup half and the geometry half read the same `/Annots` array
     and must agree about which annotation is which — two walks could drift apart, and a drift here
     attributes one annotation's geometry to another's text.
@@ -816,7 +837,7 @@ def _read_layers(
                 if layer is DrawingLayer.VENDOR_DRAWING:
                     if geometry is None:
                         continue
-                    line_minimum_pt, glyph_maximum_pt, glyph_gap_pt = geometry
+                    line_minimum_pt, glyph_maximum_pt, glyph_gap_pt, band_separation_pt = geometry
                     try:
                         placement = _appearance_transform(annotation, rect)
                         baseline_rotation_degrees = _baseline_rotation_degrees(placement)
@@ -861,6 +882,7 @@ def _read_layers(
                         line_minimum_pt=line_minimum_pt,
                         glyph_maximum_pt=glyph_maximum_pt,
                         glyph_gap_pt=glyph_gap_pt,
+                        band_separation_pt=band_separation_pt,
                         baseline_rotation_degrees=baseline_rotation_degrees,
                     )
                     segments.extend(found[0])
@@ -933,6 +955,7 @@ def _drawing_geometry(
     line_minimum_pt: Decimal,
     glyph_maximum_pt: Decimal,
     glyph_gap_pt: Decimal,
+    band_separation_pt: Decimal | None,
     baseline_rotation_degrees: int,
 ) -> tuple[tuple[tuple[DimensionExtent, ...], tuple[OutlinedTextRegion, ...]], int, int]:
     """One stamp's paths split into line-work and candidate text regions, plus what was left over."""
@@ -994,6 +1017,16 @@ def _drawing_geometry(
                 image_extent=image_extent,
                 path_count=len(cluster),
                 point_count=sum(len(small_paths[index]) for index in cluster),
+                # Measured here and nowhere else: `rect` above is the union of these boxes, so this
+                # is the last point at which the two rows of a stacked fraction are distinguishable.
+                stacked_glyphs=(
+                    band_separation_pt is not None
+                    and reading_must_contain_a_fraction(
+                        boxes,
+                        separation_pt=band_separation_pt,
+                        rotation_degrees=baseline_rotation_degrees,
+                    )
+                ),
                 baseline_rotation_degrees=baseline_rotation_degrees,
             )
         )
