@@ -4,7 +4,6 @@ import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { StatusBadge } from '../components/ui/Badge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
-import { findingsTableMarkdown } from '../components/chat/findingsTable';
 import {
   getPackage,
   askReviewerChat,
@@ -186,10 +185,12 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
         return finding ? [finding] : [];
       });
       const matchedIds = new Set(matched.map((finding) => finding.id));
-      const narratives = response.findings
-        .filter((item) => matchedIds.has(item.finding_id))
-        .map((item) => item.text)
-        .join('\n\n');
+      // Kept per finding, not joined into one block of prose: each opens under its own row.
+      const narratives = Object.fromEntries(
+        response.findings
+          .filter((item) => matchedIds.has(item.finding_id))
+          .map((item) => [item.finding_id, item.text]),
+      );
       // **Two different things wore the same message.** "AI narration is off on this package" was
       // shown whenever the mode was `structured_fallback`, including when the question simply
       // matched no findings — ask "why did this fail?" about a package with no failures and the
@@ -210,34 +211,21 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
       //
       // The reason is kept on the message's `narration` badge, where somebody diagnosing can still
       // read it, and out of the prose.
-      const fallback = response.mode !== 'structured_fallback'
-        ? ''
-        : nothingSelected
-          ? ''
-          : 'These are the exact recorded findings. The optional AI wording was not used for this ' +
-            'answer, so nothing below has been rephrased — the facts are unchanged either way.\n\n';
-      // A guarded Bedrock overview is deliberately shown before the immutable cards.  In LLM mode
-      // the cards are the exact audit record, so repeating every provider narration above them only
-      // makes the answer look hard-coded.  A provider that predates the overview field still has its
-      // per-finding narration displayed rather than being made invisible.
+      // **Minimal text.** The message carries the answer and, in LLM mode, the guarded overview.
+      // It used to also carry a fallback paragraph, a markdown copy of the findings table and every
+      // narrative joined together: the same facts three times, above cards that showed them a
+      // fourth. The table below is now the record; the narration badge says which source wrote
+      // the prose; each narrative opens under its own row.
       const overview = response.mode === 'llm' && response.summary
-        ? `**AI review overview**\n${response.summary}\n\n`
+        ? `**${response.summary}**\n\n`
         : '';
-      // The model never writes this table. It is composed here from already-loaded stored findings
-      // selected by backend ids, so the cells match the deterministic cards below.
-      const findingsTable = matched.length > 0
-        ? `\n\n**Recorded findings table**\n${findingsTableMarkdown(matched)}`
-        : '';
-      // Show the guarded per-finding explanation in every mode. Hiding it in LLM mode made the
-      // chat look like a generic summary followed by raw engine cards, despite Bedrock having
-      // already produced the reviewer-readable explanation.
-      const auditText = narratives ? `\n\n**Findings**\n${narratives}` : '';
       const replyMsg: ChatMessage = {
         id: `msg-a-${Date.now()}`,
         role: 'assistant',
-        content: `${overview}${fallback}${response.answer}${findingsTable}${auditText}`,
+        content: `${overview}${response.answer}`,
         timestamp: new Date().toISOString(),
         findings: matched,
+        narratives,
         // Omitted when nothing was selected, so no provenance badge is rendered. The badge exists
         // to say which of two sources wrote the prose a reviewer is reading; where there is no
         // prose, announcing that a model did not write it is a disclosure about nothing, and it

@@ -27,6 +27,8 @@
     "src/api/schema.d.ts",
     "src/data/types.ts",
     "src/components/output/elevation.ts",
-    "src/components/output/ElevationDiagram.tsx"
+    "src/components/output/ElevationDiagram.tsx",
+    "src/components/output/FindingsTable.tsx",
+    "src/components/output/findingsOrder.ts"
   ]
 }

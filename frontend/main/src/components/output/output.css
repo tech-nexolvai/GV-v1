@@ -186,3 +186,169 @@
 }
 
 .elevation__banner span { color: var(--text-body); }
+
+/* ============================================================
+   FINDINGS TABLE
+   Rows ordered by what they ask of the reviewer. Colour appears in
+   three places only: the outcome chip, the row's left edge, and the
+   vendor value in a FAIL row (the number that is wrong).
+   ============================================================ */
+
+.ftable-wrap {
+  margin-top: var(--space-3);
+  overflow-x: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-base);
+}
+
+.ftable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--text-body);
+}
+
+.ftable thead th {
+  position: sticky;
+  top: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+  font-family: var(--font-heading);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semi);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ftable__role {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: var(--radius-full);
+  vertical-align: 1px;
+}
+.ftable__role--shop { background: var(--role-shop); }
+.ftable__role--arch { background: var(--role-arch); }
+
+.ftable__row td,
+.ftable__row th {
+  padding: 10px var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: middle;
+}
+
+/* Status edge on the first cell. */
+.ftable__row td:first-child { box-shadow: inset 3px 0 0 transparent; }
+.ftable__row[data-outcome='FAIL'] td:first-child { box-shadow: inset 3px 0 0 var(--status-fail); }
+.ftable__row[data-outcome='REVIEW_REQUIRED'] td:first-child { box-shadow: inset 3px 0 0 var(--status-review); }
+.ftable__row[data-outcome='NOT_FOUND'] td:first-child { box-shadow: inset 3px 0 0 var(--status-missing); }
+
+.ftable__row:hover td,
+.ftable__row:hover th { background: var(--bg-surface); }
+.ftable__row[data-selected] td,
+.ftable__row[data-selected] th { background: var(--bg-hover); }
+
+.ftable__col-outcome { width: 7.5rem; }
+.ftable__col-actions { width: 4.5rem; }
+
+.ftable__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 6px;
+  border: 1px solid;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semi);
+  white-space: nowrap;
+}
+.ftable__chip[data-outcome='FAIL'] { color: var(--status-fail); background: var(--status-fail-bg); border-color: var(--status-fail-border); }
+.ftable__chip[data-outcome='REVIEW_REQUIRED'] { color: var(--status-review); background: var(--status-review-bg); border-color: var(--status-review-border); }
+.ftable__chip[data-outcome='NOT_FOUND'] { color: var(--status-missing); background: var(--status-missing-bg); border-color: var(--status-missing-border); }
+.ftable__chip[data-outcome='PASS'] { color: var(--status-pass); background: var(--status-pass-bg); border-color: var(--status-pass-border); }
+.ftable__chip[data-outcome='NO_APPLICABLE_RULE'] { color: var(--status-none); background: var(--status-none-bg); border-color: var(--status-none-border); }
+
+.ftable__check {
+  font-weight: var(--weight-semi);
+  color: var(--text-primary);
+}
+
+.ftable__rule {
+  display: block;
+  margin-top: 1px;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-regular);
+  color: var(--text-muted);
+}
+
+.ftable__value,
+.ftable__sheet {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.ftable__sheet { color: var(--text-muted); }
+
+/* The vendor's value in a FAIL row is the number that is wrong. */
+.ftable__value[data-mismatch] {
+  color: var(--status-fail);
+  font-weight: var(--weight-bold);
+  background: var(--status-fail-bg) !important;
+}
+
+/* Muted but visible in both themes: --text-faint nearly vanishes on the dark background. */
+.ftable__empty { color: var(--text-muted); opacity: 0.7; }
+
+.ftable__actions {
+  text-align: right !important;
+  white-space: nowrap;
+}
+
+.ftable__icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-left: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.ftable__icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.ftable__icon-btn:focus-visible { outline: none; box-shadow: var(--ring-focus); }
+
+.ftable__expand svg { transition: transform var(--duration-base) var(--ease-out); }
+.ftable__row[data-open] .ftable__expand svg { transform: rotate(90deg); }
+
+.ftable__detail td {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+  box-shadow: inset 3px 0 0 var(--border-strong);
+}
+
+.ftable__narrative {
+  margin: 0 0 var(--space-3);
+  max-width: 72ch;
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--text-body);
+}
+.ftable__narrative--empty { color: var(--text-muted); font-style: italic; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ftable__expand svg { transition: none; }
+}
