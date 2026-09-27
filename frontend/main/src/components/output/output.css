@@ -1,0 +1,188 @@
+/*
+ * Elevation drawing. Colour carries meaning and nothing else:
+ *   review colour  = a part the correction changed
+ *   pass colour    = a part kept from the arch drawing
+ *   hatching       = an equipment cabinet, width fixed
+ * Everything else stays neutral so the changes are what the eye finds first.
+ * Only design tokens are used, so the dark theme follows automatically.
+ */
+
+.elevation {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-4) var(--space-4) var(--space-3);
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+
+.elevation__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* Row titles */
+.elevation__title {
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: var(--weight-semi);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  fill: var(--text-primary);
+}
+
+.elevation__badge {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--weight-semi);
+  letter-spacing: 0;
+  text-transform: none;
+  fill: var(--status-review);
+}
+
+.elevation__role-dot--arch { fill: var(--role-arch); }
+.elevation__role-dot--site { fill: var(--role-shop); }
+
+/* Overall dimension line */
+.elevation__dim-line {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+}
+
+.elevation__dim-bg { fill: var(--bg-base); }
+
+.elevation__dim-total {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: var(--weight-semi);
+  fill: var(--text-primary);
+}
+
+/* Walls */
+.elevation__wall { stroke: var(--border-strong); stroke-width: 1; }
+.elevation__wall-line { stroke: var(--text-muted); stroke-width: 1; }
+
+/* Boxes */
+.elevation__box {
+  fill: var(--bg-elevated);
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
+.elevation__segment[data-state='changed'] .elevation__box {
+  fill: var(--status-review-bg);
+  stroke: var(--status-review);
+  stroke-width: 1.75;
+}
+
+.elevation__fixed { pointer-events: none; }
+.elevation__hatch-line { stroke: var(--status-missing); stroke-width: 1; opacity: 0.45; }
+
+.elevation__code {
+  font-family: var(--font-heading);
+  font-size: 12px;
+  font-weight: var(--weight-semi);
+  letter-spacing: var(--tracking-wide);
+  fill: var(--text-muted);
+}
+
+.elevation__segment[data-state='changed'] .elevation__code { fill: var(--status-review); }
+
+/* Dimension chain */
+.elevation__tick,
+.elevation__leader {
+  stroke: var(--text-faint);
+  stroke-width: 1;
+}
+
+.elevation__dim {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  fill: var(--text-body);
+}
+
+.elevation__dim-old {
+  fill: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.elevation__dim-new {
+  fill: var(--status-review);
+  font-weight: var(--weight-bold);
+}
+
+/* ✕ / ✓ marks on the corrected row */
+.elevation__badge-mark circle { stroke: var(--bg-base); stroke-width: 2; }
+.elevation__badge-mark--changed circle { fill: var(--status-review); }
+.elevation__badge-mark--kept circle { fill: var(--status-pass); }
+
+.elevation__badge-mark text {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  fill: var(--text-inverse);
+}
+
+/* Legend */
+.elevation__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.elevation__key { display: inline-flex; align-items: center; gap: 6px; }
+.elevation__key--note { font-style: italic; }
+
+.elevation__mark {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-full);
+  font-size: 9px;
+  font-weight: var(--weight-bold);
+  color: var(--text-inverse);
+}
+
+.elevation__mark--changed { background: var(--status-review); }
+.elevation__mark--kept { background: var(--status-pass); }
+
+.elevation__swatch {
+  width: 16px;
+  height: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--bg-elevated) 0 3px,
+    var(--status-missing-border) 3px 4px
+  );
+}
+
+/* Unresolved outcome banner */
+.elevation__banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--status-review-border);
+  background: var(--status-review-bg);
+  color: var(--status-review);
+  font-size: var(--text-sm);
+}
+
+.elevation__banner[data-outcome='NOT_FOUND'] {
+  border-color: var(--status-missing-border);
+  background: var(--status-missing-bg);
+  color: var(--status-missing);
+}
+
+.elevation__banner span { color: var(--text-body); }

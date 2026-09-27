@@ -1,11 +1,16 @@
 {
   "compilerOptions": {
     "target": "es2023",
-    "lib": ["ES2023", "DOM"],
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
     "module": "esnext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "skipLibCheck": true,
     "strict": true,
     "outDir": "./node_modules/.tmp/chat-render-test",
@@ -20,6 +25,8 @@
     "src/components/measure/fillerDistribution.ts",
     "src/pages/layoutChoices.ts",
     "src/api/schema.d.ts",
-    "src/data/types.ts"
+    "src/data/types.ts",
+    "src/components/output/elevation.ts",
+    "src/components/output/ElevationDiagram.tsx"
   ]
 }

@@ -361,57 +361,30 @@
   border-top: 1px solid var(--border-subtle);
 }
 
-.distribution-result__message {
+.distribution-result__status {
   display: flex;
-  align-items: flex-start;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
   font-size: var(--text-sm);
-  line-height: var(--leading-normal);
   color: var(--text-body);
 }
 
-.distribution-result__message svg {
+.distribution-result__status svg {
   flex-shrink: 0;
-  margin-top: 2px;
   color: var(--status-review);
 }
 
-.distribution-result[data-outcome='PASS'] .distribution-result__message svg {
+.distribution-result[data-outcome='PASS'] .distribution-result__status svg {
   color: var(--status-pass);
 }
 
-.distribution-result__message strong {
+.distribution-result__status strong {
+  font-family: var(--font-heading);
+  font-size: var(--text-md);
+  letter-spacing: var(--tracking-wide);
   color: var(--text-primary);
   white-space: nowrap;
-}
-
-.distribution-result__facts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-2);
-  margin: 0;
-}
-
-.distribution-result__facts div {
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-}
-
-.distribution-result__facts dt {
-  margin: 0 0 2px;
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-wide);
-  color: var(--text-muted);
-}
-
-.distribution-result__facts dd {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  color: var(--text-primary);
 }
 
 .distribution-result__table {
@@ -437,8 +410,45 @@
   color: var(--text-body);
 }
 
-.distribution-result__table tr[data-adjustable='true'] {
-  background: var(--status-pass-bg);
+/* Only a corrected row is coloured, matching the drawing above it. */
+.distribution-result__table tr[data-changed] {
+  background: var(--status-review-bg);
+}
+
+.distribution-result__table tr[data-changed] .distribution-result__proposed {
+  color: var(--status-review);
+  font-weight: var(--weight-bold);
+}
+
+.distribution-result__table tr[data-kind='equipment'] th {
+  color: var(--text-muted);
+}
+
+.distribution-result__mark {
+  width: 2rem;
+  text-align: center !important;
+  font-family: var(--font-sans) !important;
+  font-weight: var(--weight-bold);
+  color: var(--status-pass) !important;
+}
+
+.distribution-result__table tr[data-changed] .distribution-result__mark {
+  color: var(--status-review) !important;
+}
+
+.distribution-result__explanation {
+  margin: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-strong);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--text-body);
+}
+
+.distribution-result__trace summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
 }
 
 .distribution-result__calculation {
@@ -449,8 +459,7 @@
 }
 
 @media (max-width: 48rem) {
-  .distribution-panel__grid,
-  .distribution-result__facts {
+  .distribution-panel__grid {
     grid-template-columns: 1fr;
   }
 }

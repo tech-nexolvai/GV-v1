@@ -3,6 +3,7 @@
    ============================================================ */
 @import './design/tokens.css';
 @import './design/motion.css';
+@import './components/output/output.css';
 
 *, *::before, *::after {
   box-sizing: border-box;
