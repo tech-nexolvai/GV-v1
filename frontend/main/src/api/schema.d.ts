@@ -456,13 +456,13 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Start AI reading after both drawing PDFs are confirmed
-         * @description Freeze a completed drawing pair and enqueue its read-only extraction stages.
+         * Start AI reading after the drawing PDFs are confirmed
+         * @description Freeze the confirmed drawing set and enqueue its read-only extraction stages.
          *
-         *     This is intentionally separate from confirming one document: a worker must never read and freeze
-         *     an architectural PDF while the shop PDF is still in flight.  It performs no extraction itself;
-         *     the outbox record and state transition commit together, then the worker reads the two immutable
-         *     documents.  It also does not run checks -- OCR proposals remain untyped until a reviewer confirms
+         *     This is intentionally separate from confirming a document: a worker must never read and freeze a
+         *     package while its drawings are still in flight. It performs no extraction itself; the outbox
+         *     record and state transition commit together, then the worker reads the immutable document
+         *     versions. It also does not run checks -- OCR proposals remain untyped until a reviewer confirms
          *     them.
          */
         post: operations["start_extraction_api_v1_projects__project_id__packages__package_id__extract_post"];

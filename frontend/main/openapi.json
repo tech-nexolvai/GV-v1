@@ -4598,7 +4598,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/extract": {
       "post": {
-        "description": "Freeze a completed drawing pair and enqueue its read-only extraction stages.\n\nThis is intentionally separate from confirming one document: a worker must never read and freeze\nan architectural PDF while the shop PDF is still in flight.  It performs no extraction itself;\nthe outbox record and state transition commit together, then the worker reads the two immutable\ndocuments.  It also does not run checks -- OCR proposals remain untyped until a reviewer confirms\nthem.",
+        "description": "Freeze the confirmed drawing set and enqueue its read-only extraction stages.\n\nThis is intentionally separate from confirming a document: a worker must never read and freeze a\npackage while its drawings are still in flight. It performs no extraction itself; the outbox\nrecord and state transition commit together, then the worker reads the immutable document\nversions. It also does not run checks -- OCR proposals remain untyped until a reviewer confirms\nthem.",
         "operationId": "start_extraction_api_v1_projects__project_id__packages__package_id__extract_post",
         "parameters": [
           {
@@ -4644,7 +4644,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Start AI reading after both drawing PDFs are confirmed",
+        "summary": "Start AI reading after the drawing PDFs are confirmed",
         "tags": [
           "documents"
         ]
