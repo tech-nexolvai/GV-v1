@@ -699,6 +699,40 @@
         "title": "CheckRequest",
         "type": "object"
       },
+      "ClassificationEntry": {
+        "additionalProperties": false,
+        "description": "What a reviewer says each item in one ordered run is.\n\nSeparate from `MeasurementEntry` because a category is not a dimension: it has no unit, nothing\nparses it, and `normalise_to_inches` correctly refuses it. Sending one through `values` was how\n#684 was found \u2014 a reviewer had no way at all to say which cabinet was the sink cabinet.\n\nThe choices come from the rulebook, through the required-inputs form, and the server checks the\nsubmission against them rather than trusting the client's list.",
+        "properties": {
+          "categories": {
+            "description": "One category per item, in layout order \u2014 left to right along the run. Order is kept because the distribution adjusts positionally: which cabinet is the equipment cabinet is the whole question.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Categories",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "rule_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Rule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "name",
+          "categories"
+        ],
+        "title": "ClassificationEntry",
+        "type": "object"
+      },
       "ConfirmIn": {
         "description": "A reviewer naming what a reading is.",
         "properties": {
@@ -2945,8 +2979,16 @@
       },
       "ReviewerEntry": {
         "additionalProperties": false,
-        "description": "Everything one reviewer submission carries.\n\nBoth halves are optional so a reviewer can set the project's parameters once and then enter\nmeasurements per package without resending them.",
+        "description": "Everything one reviewer submission carries.\n\nEvery part is optional so a reviewer can set the project's parameters once and then enter\nmeasurements per package without resending them.",
         "properties": {
+          "classifications": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ClassificationEntry"
+            },
+            "title": "Classifications",
+            "type": "array"
+          },
           "measurements": {
             "default": [],
             "items": {
@@ -3464,6 +3506,14 @@
       "app__schemas__measurements__QuantityOut": {
         "description": "One physical measurement the reviewer must read off a drawing.",
         "properties": {
+          "categories": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
           "consumers": {
             "items": {
               "additionalProperties": {

@@ -25,10 +25,14 @@ Verification: `tests/rules/test_required_inputs.py`
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Final
 
 from rules.schema import Cardinality, Rule
+from vocabulary.cabinet_categories import CabinetCategory
+from vocabulary.semantic_types import SemanticType
 
 __all__ = [
     "DiscriminatorNeed",
@@ -47,6 +51,53 @@ class Consumer:
     input_name: str
 
 
+#: Semantic types whose value is a choice, with the choices.
+#:
+#: Almost everything a reviewer supplies is a dimension. These are the exceptions, and the mapping is
+#: here rather than in the rule files because the set of valid answers belongs to what a thing *is*
+#: — `vocabulary/` — and not to any one rule that asks about it. A rule names the semantic type and
+#: gets the choices; two rules asking about the same thing cannot offer different ones.
+CATEGORICAL_VALUES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+    {
+        SemanticType.CABINET_CATEGORY.value: tuple(category.value for category in CabinetCategory),
+    }
+)
+
+
+def categories_for(semantic_type: str) -> tuple[str, ...]:
+    """The choices for a semantic type, or empty when it is measured rather than chosen.
+
+    **Written as a membership test rather than `.get(key, default)` on purpose.** The golden rule
+    `gv-no-defaulted-parameter-lookup` bans a defaulting lookup anywhere in `rules/`, because a
+    missing project parameter must become NOT_FOUND and never a plausible stand-in. This mapping is
+    not parameters — a semantic type's absence from it is the *fact* that the type is a dimension,
+    not a value nobody supplied — but the shape is the one the rule exists to catch, and a reader
+    should not have to know which of the two they are looking at. So it does not take that shape.
+    """
+    if semantic_type not in CATEGORICAL_VALUES:
+        return ()
+    return CATEGORICAL_VALUES[semantic_type]
+
+
+def allowed_categories_for(
+    rules: Iterable[Rule], rule_id: str, input_name: str
+) -> tuple[str, ...] | None:
+    """The choices for one rule input, or None when it is not a categorical input at all.
+
+    None and an empty tuple mean different things and the caller must tell them apart: None is "this
+    input does not take a category", which is a client sending a dimension down the wrong path;
+    empty would be "it does, and there are no valid answers", which no rule can currently produce.
+    """
+    for rule in rules:
+        if rule.id != rule_id:
+            continue
+        selector = rule.inputs.get(input_name)
+        if selector is None:
+            return None
+        return categories_for(str(selector.semantic_type.value)) or None
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class QuantityNeed:
     """One physical measurement a reviewer must read off a drawing.
@@ -60,6 +111,14 @@ class QuantityNeed:
     source: str
     many: bool
     consumers: tuple[Consumer, ...] = field(default_factory=tuple)
+    categories: tuple[str, ...] = field(default_factory=tuple)
+    """The choices, when this input is a category rather than a dimension — empty otherwise.
+
+    A form that rendered a text box for `cabinet_category` would ask a reviewer to type
+    `single_door` with a unit, and the parser would refuse it (#684). Non-empty is what tells the
+    form to offer a list instead, and the server checks a submission against the same tuple so the
+    two cannot drift.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +275,7 @@ def required_inputs(rules: Iterable[Rule]) -> RequiredInputs:
                 source=source,
                 many=many,
                 consumers=tuple(sorted(consumers, key=lambda c: (c.rule_id, c.input_name))),
+                categories=categories_for(semantic),
             )
             for key, (semantic, source, many, consumers) in sorted(quantities.items())
         ),

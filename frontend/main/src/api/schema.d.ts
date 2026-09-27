@@ -1508,6 +1508,28 @@ export interface components {
             };
         };
         /**
+         * ClassificationEntry
+         * @description What a reviewer says each item in one ordered run is.
+         *
+         *     Separate from `MeasurementEntry` because a category is not a dimension: it has no unit, nothing
+         *     parses it, and `normalise_to_inches` correctly refuses it. Sending one through `values` was how
+         *     #684 was found — a reviewer had no way at all to say which cabinet was the sink cabinet.
+         *
+         *     The choices come from the rulebook, through the required-inputs form, and the server checks the
+         *     submission against them rather than trusting the client's list.
+         */
+        ClassificationEntry: {
+            /**
+             * Categories
+             * @description One category per item, in layout order — left to right along the run. Order is kept because the distribution adjusts positionally: which cabinet is the equipment cabinet is the whole question.
+             */
+            categories: string[];
+            /** Name */
+            name: string;
+            /** Rule Id */
+            rule_id: string;
+        };
+        /**
          * ConfirmIn
          * @description A reviewer naming what a reading is.
          */
@@ -2755,10 +2777,15 @@ export interface components {
          * ReviewerEntry
          * @description Everything one reviewer submission carries.
          *
-         *     Both halves are optional so a reviewer can set the project's parameters once and then enter
+         *     Every part is optional so a reviewer can set the project's parameters once and then enter
          *     measurements per package without resending them.
          */
         ReviewerEntry: {
+            /**
+             * Classifications
+             * @default []
+             */
+            classifications: components["schemas"]["ClassificationEntry"][];
             /**
              * Measurements
              * @default []
@@ -3035,6 +3062,11 @@ export interface components {
          * @description One physical measurement the reviewer must read off a drawing.
          */
         app__schemas__measurements__QuantityOut: {
+            /**
+             * Categories
+             * @default []
+             */
+            categories: string[];
             /** Consumers */
             consumers: {
                 [key: string]: string;
