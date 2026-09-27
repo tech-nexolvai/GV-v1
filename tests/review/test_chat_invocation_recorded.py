@@ -179,7 +179,7 @@ def test_reviewer_chat_success_writes_one_model_invocation(
     _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with factory() as session:
-        revision_id, run_id = _revision_with_run(session)
+        revision_id, _run_id = _revision_with_run(session)
         finding = _finding()
         chat = BedrockReviewerChat(
             _Config("configured-model", "us-east-1", 1, 2),
@@ -191,7 +191,8 @@ def test_reviewer_chat_success_writes_one_model_invocation(
 
         rows = _rows(session)
         assert len(rows) == 1
-        assert rows[0].extraction_run_id == run_id
+        assert rows[0].extraction_run_id is None
+        assert rows[0].package_revision_id == revision_id
         assert rows[0].model_id == "configured-model"
         assert rows[0].prompt_id == CHAT_PROMPT_ID
         assert rows[0].template_id == CHAT_TEMPLATE_ID
@@ -236,7 +237,7 @@ def test_findings_narration_success_writes_one_model_invocation(
     _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with factory() as session:
-        revision_id, run_id = _revision_with_run(session)
+        revision_id, _run_id = _revision_with_run(session)
         finding = _finding()
         composer = BedrockFindingsComposer(
             NovaConfig(
@@ -256,7 +257,8 @@ def test_findings_narration_success_writes_one_model_invocation(
 
         rows = _rows(session)
         assert len(rows) == 1
-        assert rows[0].extraction_run_id == run_id
+        assert rows[0].extraction_run_id is None
+        assert rows[0].package_revision_id == revision_id
         assert rows[0].model_id == "operator-configured-model"
         assert rows[0].prompt_id == FINDINGS_PROMPT_ID
         assert rows[0].template_id == FINDINGS_TEMPLATE_ID
@@ -264,3 +266,95 @@ def test_findings_narration_success_writes_one_model_invocation(
         assert rows[0].output_tokens == 33
         assert rows[0].cost_micros == 0
         assert rows[0].outcome == ModelInvocationOutcome.OK
+
+
+def _revision_without_run(session: Session) -> UUID:
+    """A package a reviewer typed values into and nobody ever extracted.
+
+    `scripts/seed_demo.py` produces exactly this without `--with-evidence`, and `CLIENT_FACTS` Q7
+    describes it as a supported flow: *"the reviewer types the values into input fields for that
+    drawing set."* It is not an exotic state.
+    """
+    project = Project(name=f"GV typed package {uuid4()}")
+    session.add(project)
+    session.flush()
+    package = Package(project_id=project.id, vendor=None)
+    session.add(package)
+    session.flush()
+    revision = PackageRevision(
+        package_id=package.id, revision_number=1, state=PackageState.AWAITING_REVIEW
+    )
+    session.add(revision)
+    session.flush()
+    return revision.id
+
+
+def test_a_chat_on_a_package_nobody_extracted_answers_and_is_recorded(
+    postgres_engine: Engine,
+) -> None:
+    """**The defect #694 reproduced**, now the property that must hold.
+
+    The recorder used to anchor a review-time call to the package's *latest* extraction run. On a
+    package with none, that lookup raised — and because the model call had succeeded,
+    `_record_invocation` re-raised rather than swallowing it. So the reviewer's question failed
+    after Bedrock had already been paid for an answer nobody saw.
+    """
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with factory() as session:
+        revision_id = _revision_without_run(session)
+        finding = _finding()
+        chat = BedrockReviewerChat(
+            _Config("configured-model", "us-east-1", 1, 2),
+            _Client(_chat_response(finding.key)),
+            BedrockConverseInvocationRecorder(session, revision_id),
+        )
+
+        reply = chat.compose((finding,), question="Why did this fail?")
+
+        assert reply is not None, "the chat did not answer"
+        rows = _rows(session)
+        assert len(rows) == 1, "exactly one row per call, whatever the origin"
+        assert rows[0].extraction_run_id is None
+        assert rows[0].package_revision_id == revision_id
+
+
+def test_a_row_with_no_origin_cannot_be_built() -> None:
+    """Neither origin means a paid call attributable to nothing, which is worse than not recording
+    it: the row exists and looks like an answer.
+    """
+    from extraction.models.invocations import InvocationRecord
+
+    with pytest.raises(ValueError, match="exactly one of"):
+        InvocationRecord(
+            extraction_run_id=None,
+            model_id="m",
+            prompt_id="p",
+            template_id="t",
+            crop_artifact_id=None,
+            input_tokens=1,
+            output_tokens=1,
+            cost_micros=0,
+            latency_ms=1,
+            outcome="succeeded",
+        )
+
+
+def test_a_row_with_both_origins_cannot_be_built() -> None:
+    """Both would let one call be counted against two packages by the cost ceiling."""
+    from extraction.models.invocations import InvocationRecord
+
+    with pytest.raises(ValueError, match="exactly one of"):
+        InvocationRecord(
+            extraction_run_id=uuid4(),
+            package_revision_id=uuid4(),
+            model_id="m",
+            prompt_id="p",
+            template_id="t",
+            crop_artifact_id=None,
+            input_tokens=1,
+            output_tokens=1,
+            cost_micros=0,
+            latency_ms=1,
+            outcome="succeeded",
+        )

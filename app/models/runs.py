@@ -199,9 +199,22 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
 
     __tablename__ = "model_invocations"
 
-    extraction_run_id: Mapped[UUID] = mapped_column(
-        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), index=True
+    extraction_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), index=True, default=None
     )
+    """The extractor run this call belongs to, or `None` for a call that is not an extraction."""
+
+    package_revision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True, default=None
+    )
+    """The package revision a review-time call belongs to — reviewer chat, findings narration.
+
+    **Added because those calls had nowhere to go (ADR-0019, #694).** They were anchored to the
+    package's *latest* extraction run, which made a narration claim provenance it did not have, and
+    raised outright on a package that had never been extracted — so a reviewer chat on a typed
+    package failed after the model had already been paid.
+    """
+
     model_id: Mapped[str] = mapped_column(String(300))
     prompt_id: Mapped[str] = mapped_column(String(300))
     template_id: Mapped[str] = mapped_column(String(300))
@@ -245,6 +258,13 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
         CheckConstraint(
             f"outcome IN ({MODEL_INVOCATION_OUTCOMES})",
             name="model_invocation_outcome",
+        ),
+        # **Exactly one origin, never both and never neither** (ADR-0019). Neither leaves a paid
+        # call attributable to nothing, which is the same as not recording it and worse, because
+        # the row looks like an answer. Both would let one call be counted against two packages.
+        CheckConstraint(
+            "(extraction_run_id IS NULL) <> (package_revision_id IS NULL)",
+            name="model_invocation_one_origin",
         ),
         Index("ix_model_invocations_created_at", "created_at"),
     )

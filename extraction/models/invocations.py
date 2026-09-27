@@ -92,8 +92,13 @@ class InvocationRecord:
     first, so the integer check below is not skippable.
 
     Attributes:
-        extraction_run_id: the version-pinned extractor run this call belongs to. It is what makes a
-            cost total attributable to a package at all.
+        extraction_run_id: the version-pinned extractor run this call belongs to, or `None` for a
+            call that is not an extraction. Exactly one of this and `package_revision_id` is set.
+        package_revision_id: the package revision a review-time call belongs to — reviewer chat and
+            findings narration, which have no extraction run. ADR-0019. Before it existed, those
+            calls were anchored to the package's *latest* extraction run, which attributed a
+            narration to work that did not make it and raised outright on a package that had never
+            been extracted (#694).
         model_id: the exact model identifier, version included. "Which model said this" is not
             answerable from a family name once the family has moved on.
         prompt_id: the identifier of the prompt this call used.
@@ -114,7 +119,7 @@ class InvocationRecord:
         TypeError: if any count, cost or duration is not a plain `int`.
     """
 
-    extraction_run_id: UUID
+    extraction_run_id: UUID | None
     model_id: str
     prompt_id: str
     template_id: str
@@ -124,6 +129,7 @@ class InvocationRecord:
     cost_micros: int
     latency_ms: int
     outcome: str
+    package_revision_id: UUID | None = None
     node_invocation_key: str | None = None
     candidate_id: UUID | None = None
     assembled_context: AssembledContext | None = None
@@ -132,6 +138,16 @@ class InvocationRecord:
     def __post_init__(self) -> None:
         """Refuse a count or a cost that is not exactly an integer, before it can be stored."""
 
+        # **Exactly one origin.** The database enforces it too, and it is enforced here as well so
+        # a call with no origin cannot be *built* — the same discipline as the integer checks below.
+        # Neither means the row is attributable to nothing; both means two different things claim to
+        # have made one call.
+        if (self.extraction_run_id is None) == (self.package_revision_id is None):
+            raise ValueError(
+                "exactly one of extraction_run_id and package_revision_id must be set: an "
+                "extraction call belongs to a run, a review-time call to a package revision, and a "
+                "call belonging to neither cannot be attributed to anything (ADR-0019)"
+            )
         _exact_count("input_tokens", self.input_tokens)
         _exact_count("output_tokens", self.output_tokens)
         _exact_count("cost_micros", self.cost_micros)

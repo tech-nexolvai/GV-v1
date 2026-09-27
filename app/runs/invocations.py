@@ -73,11 +73,8 @@ from sqlalchemy.orm import Session
 
 from app.models.evidence import EvidenceArtifact
 from app.models.runs import (
-    ExtractionRun,
     ModelInvocation,
     ModelInvocationOutcome,
-    TaskRun,
-    WorkflowRun,
 )
 
 __all__ = [
@@ -98,7 +95,13 @@ class _AsRecord(Protocol):
 
 class _InvocationRecordLike(Protocol):
     @property
-    def extraction_run_id(self) -> UUID: ...
+    def extraction_run_id(self) -> UUID | None: ...
+
+    @property
+    def package_revision_id(self) -> UUID | None: ...
+
+    """Exactly one of this and `extraction_run_id` is set (ADR-0019). The protocol cannot say so;
+    `InvocationRecord.__post_init__` and the table's `model_invocation_one_origin` check both do."""
 
     @property
     def model_id(self) -> str: ...
@@ -177,6 +180,7 @@ def record(
     """
     stored = ModelInvocation(
         extraction_run_id=invocation.extraction_run_id,
+        package_revision_id=invocation.package_revision_id,
         model_id=invocation.model_id,
         prompt_id=invocation.prompt_id,
         template_id=invocation.template_id,
@@ -199,25 +203,6 @@ def record(
     if flush:
         session.flush()
     return stored
-
-
-def _latest_extraction_run_id(session: Session, package_revision_id: UUID) -> UUID:
-    """Return the newest existing run anchor for package-scoped presentation calls."""
-    statement = (
-        select(ExtractionRun.id)
-        .join(TaskRun, ExtractionRun.task_run_id == TaskRun.id)
-        .join(WorkflowRun, TaskRun.workflow_run_id == WorkflowRun.id)
-        .where(WorkflowRun.package_revision_id == package_revision_id)
-        .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
-        .limit(1)
-    )
-    result = session.execute(statement).scalar_one_or_none()
-    if result is None:
-        raise ValueError(
-            f"no extraction run for package revision {package_revision_id}: "
-            "a model invocation needs the run chain for package usage attribution"
-        )
-    return result
 
 
 def _milliseconds_since(started_ns: int) -> int:
@@ -283,10 +268,15 @@ def _outcome(response: Mapping[str, Any] | None, error: BaseException | None) ->
 
 @dataclass(frozen=True, slots=True)
 class BedrockConverseInvocationRecorder:
-    """Persist one Bedrock converse call against an existing package run chain.
+    """Persist one Bedrock converse call against the package revision it was made for.
 
     Bedrock returns token usage, not invoice cost. Until a caller supplies an exact rate card, the
     only honest money value is zero; the model call and tokens are still counted by package ceilings.
+
+    **It needs no extraction run, and that is the point of ADR-0019.** A reviewer chat and a findings
+    narration belong to a package revision and a set of findings; they have no extraction run, and
+    the version of this that borrowed the package's newest one failed outright on a package that had
+    never been extracted (#694).
     """
 
     session: Session
@@ -309,7 +299,12 @@ class BedrockConverseInvocationRecorder:
         return record(
             self.session,
             _invocation_record_type()(
-                extraction_run_id=_latest_extraction_run_id(self.session, self.package_revision_id),
+                # **Its own origin, not a borrowed one.** This used to pass the package's *latest*
+                # extraction run, which made a narration claim provenance it did not have and
+                # raised on a package that had never been extracted — so a reviewer chat on a typed
+                # package failed after the model had been paid (#694, ADR-0019).
+                extraction_run_id=None,
+                package_revision_id=self.package_revision_id,
                 model_id=model_id,
                 prompt_id=prompt_id,
                 template_id=template_id,
