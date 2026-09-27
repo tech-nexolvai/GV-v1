@@ -64,6 +64,21 @@ CATEGORICAL_VALUES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
 )
 
 
+def categories_for(semantic_type: str) -> tuple[str, ...]:
+    """The choices for a semantic type, or empty when it is measured rather than chosen.
+
+    **Written as a membership test rather than `.get(key, default)` on purpose.** The golden rule
+    `gv-no-defaulted-parameter-lookup` bans a defaulting lookup anywhere in `rules/`, because a
+    missing project parameter must become NOT_FOUND and never a plausible stand-in. This mapping is
+    not parameters — a semantic type's absence from it is the *fact* that the type is a dimension,
+    not a value nobody supplied — but the shape is the one the rule exists to catch, and a reader
+    should not have to know which of the two they are looking at. So it does not take that shape.
+    """
+    if semantic_type not in CATEGORICAL_VALUES:
+        return ()
+    return CATEGORICAL_VALUES[semantic_type]
+
+
 def allowed_categories_for(
     rules: Iterable[Rule], rule_id: str, input_name: str
 ) -> tuple[str, ...] | None:
@@ -79,7 +94,7 @@ def allowed_categories_for(
         selector = rule.inputs.get(input_name)
         if selector is None:
             return None
-        return CATEGORICAL_VALUES.get(str(selector.semantic_type.value)) or None
+        return categories_for(str(selector.semantic_type.value)) or None
     return None
 
 
@@ -260,7 +275,7 @@ def required_inputs(rules: Iterable[Rule]) -> RequiredInputs:
                 source=source,
                 many=many,
                 consumers=tuple(sorted(consumers, key=lambda c: (c.rule_id, c.input_name))),
-                categories=CATEGORICAL_VALUES.get(semantic, ()),
+                categories=categories_for(semantic),
             )
             for key, (semantic, source, many, consumers) in sorted(quantities.items())
         ),
