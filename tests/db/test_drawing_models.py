@@ -34,6 +34,7 @@ from app.models import (
     Page,
     Project,
     SourceArtifact,
+    ViewRole,
     duplicate_identifiers,
 )
 from tests.app.postgres_fixture import alembic_config
@@ -146,6 +147,13 @@ def test_cross_view_identity_is_not_representable() -> None:
     assert not {"same_as_id", "assembly_id", "physical_item_id"} & columns
 
 
+def test_a_view_role_is_nullable_until_established() -> None:
+    """A null role means unknown; the matcher must not treat it as an inferred side."""
+    column = Base.metadata.tables["drawing_views"].columns["role"]
+
+    assert column.nullable is True
+
+
 # ---------------------------------------------------------------------------
 # Against a real database
 # ---------------------------------------------------------------------------
@@ -176,6 +184,26 @@ def test_the_same_tag_twice_on_one_page_is_refused(postgres_engine: Engine) -> N
         page = session.scalars(select(Page)).first()
         assert page is not None
         _view(session, page, "D")
+
+
+def test_a_view_can_store_a_confirmed_role(postgres_engine: Engine) -> None:
+    """The role belongs to the view, so one uploaded sheet can later carry both sides."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        view = _view(session, _page(session), "ID")
+        view.role = ViewRole.ARCH.value
+    with unit_of_work(factory) as session:
+        assert session.scalars(select(DrawingView)).one().role == "arch"
+
+
+def test_an_unknown_view_role_is_refused(postgres_engine: Engine) -> None:
+    """Closed vocabulary: a typo must not become a third side of a comparison."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError), unit_of_work(factory) as session:
+        view = _view(session, _page(session), "ID")
+        view.role = "probably_arch"
 
 
 def test_an_item_may_have_no_identifier(postgres_engine: Engine) -> None:

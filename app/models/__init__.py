@@ -31,6 +31,7 @@ from app.models.drawing import (
     DrawingItem,
     DrawingView,
     ItemIdentifier,
+    ViewRole,
     duplicate_identifiers,
 )
 from app.models.evaluation import (
@@ -164,6 +165,7 @@ __all__ = [
     "SourceArtifact",
     "TaskRun",
     "VerdictInput",
+    "ViewRole",
     "WorkflowRun",
     "duplicate_identifiers",
 ]

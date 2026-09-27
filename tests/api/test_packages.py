@@ -423,6 +423,39 @@ def test_complete_pair_enqueues_one_package_extraction(session: Session, store: 
     assert len(_outbox_rows(session)) == 1
 
 
+def test_one_combined_drawing_can_start_extraction(session: Session, store: LocalStore) -> None:
+    """ADR-0020: the client's file may contain both ID-set and shop panels on one sheet."""
+    package_id = _new_package(session)
+    client = _client(session, store)
+    _upload_and_confirm(client, store, package_id, b"%PDF-1.7 combined\n", kind=DocumentKind.SHOP)
+
+    extracted = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/extract")
+
+    assert extracted.status_code == 202, extracted.text
+    rows = _outbox_rows(session)
+    assert len(rows) == 1
+    assert rows[0].workflow == "extract_package"
+
+
+def test_extraction_still_refuses_when_no_drawing_is_confirmed(
+    session: Session, store: LocalStore
+) -> None:
+    """A combined-file intake is still an intake; there must be immutable bytes to read."""
+    package_id = _new_package(session)
+    client = _client(session, store)
+    digest = hashlib.sha256(b"%PDF-1.7 not uploaded yet\n").hexdigest()
+    registered = _register(client, digest, package_id, kind=DocumentKind.SHOP)
+    assert registered.status_code == 201, registered.text
+
+    extracted = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/extract")
+
+    assert extracted.status_code == 422
+    assert (
+        "Upload at least one confirmed drawing PDF before AI reading can start." in extracted.text
+    )
+    assert _outbox_rows(session) == []
+
+
 def test_a_hash_mismatch_is_refused_and_writes_nothing(session: Session, store: LocalStore) -> None:
     """Taking the client's word for the hash would make §2.7's byte-exact pin a restatement of their
     claim rather than a check of it."""

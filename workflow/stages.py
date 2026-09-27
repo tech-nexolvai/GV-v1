@@ -71,7 +71,7 @@ from app.models.document import (
     PackageRevisionDocument,
     Page,
 )
-from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier
+from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier, ViewRole
 from app.models.evidence import (
     EvidenceArtifact,
     EvidenceArtifactKind,
@@ -468,6 +468,10 @@ MATCHABLE_IDENTIFIER_KINDS: tuple[str, ...] = ("vendor_unique", "mark")
 MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
     DocumentKind.ARCHITECTURAL.value: MatchDocumentRole.ARCH,
     DocumentKind.SHOP.value: MatchDocumentRole.SHOP,
+}
+VIEW_MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
+    ViewRole.ARCH.value: MatchDocumentRole.ARCH,
+    ViewRole.SHOP.value: MatchDocumentRole.SHOP,
 }
 
 __all__ = ["DatabaseStages"]
@@ -1906,8 +1910,21 @@ class DatabaseStages:
         matcher and returns an honest zero with the reason, which is what it should say until item
         detection exists. The moment it does, this runs unchanged.
         """
+        role_summary = _match_role_summary(session, package_revision_id)
         items = _matchable_items(session, package_revision_id)
         if not items:
+            if role_summary.total_items:
+                missing = _missing_role_names(role_summary.roles)
+                return {
+                    "implemented": True,
+                    "ran": True,
+                    "items": role_summary.total_items,
+                    "candidates": 0,
+                    "reason": (
+                        "matching needs confirmed architectural and shop views; missing: "
+                        f"{missing}"
+                    ),
+                }
             return {
                 "implemented": True,
                 "ran": True,
@@ -1916,6 +1933,17 @@ class DatabaseStages:
                 "reason": (
                     "no drawing items exist for this revision: nothing detects views or items on a "
                     "page yet, which needs the real drawings (#274) and the vocabulary Q20 defers"
+                ),
+            }
+        missing = _missing_role_names(role_summary.roles)
+        if missing:
+            return {
+                "implemented": True,
+                "ran": True,
+                "items": len({item.item_id for item, _ in items}),
+                "candidates": 0,
+                "reason": (
+                    "matching needs confirmed architectural and shop views; missing: " f"{missing}"
                 ),
             }
 
@@ -2818,6 +2846,93 @@ def _projection(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _MatchRoleSummary:
+    total_items: int
+    roles: frozenset[MatchDocumentRole]
+
+
+def _revision_document_roles(
+    session: Session, package_revision_id: UUID
+) -> frozenset[MatchDocumentRole]:
+    roles = {
+        role
+        for (kind,) in session.execute(
+            select(Document.kind)
+            .join(PackageRevisionDocument, PackageRevisionDocument.document_id == Document.id)
+            .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        )
+        if (role := MATCH_ROLES.get(kind)) is not None
+    }
+    return frozenset(roles)
+
+
+def _fallback_to_document_kind_allowed(session: Session, package_revision_id: UUID) -> bool:
+    """Whether legacy two-PDF role inference is available for this revision."""
+
+    return _revision_document_roles(session, package_revision_id) >= {
+        MatchDocumentRole.ARCH,
+        MatchDocumentRole.SHOP,
+    }
+
+
+def _resolved_match_role(
+    view_role: str | None, document_kind: str, *, document_fallback_allowed: bool
+) -> MatchDocumentRole | None:
+    """The role to hand to matching, or None when no role has been established.
+
+    Combined documents may carry both roles under one `Document.kind`, so a null view role cannot be
+    silently replaced by that kind. The old document-kind inference remains only for genuine two-PDF
+    packages, where the revision contains both architectural and shop drawings.
+    """
+
+    if view_role is not None:
+        return VIEW_MATCH_ROLES.get(view_role)
+    if document_fallback_allowed:
+        return MATCH_ROLES.get(document_kind)
+    return None
+
+
+def _missing_role_names(roles: frozenset[MatchDocumentRole]) -> str:
+    missing: list[str] = []
+    if MatchDocumentRole.ARCH not in roles:
+        missing.append("architectural")
+    if MatchDocumentRole.SHOP not in roles:
+        missing.append("shop")
+    return ", ".join(missing)
+
+
+def _match_role_summary(session: Session, package_revision_id: UUID) -> _MatchRoleSummary:
+    document_fallback_allowed = _fallback_to_document_kind_allowed(session, package_revision_id)
+    rows = session.execute(
+        select(DrawingItem.id, DrawingView.role, Document.kind)
+        .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
+        .join(Page, Page.id == DrawingView.page_id)
+        .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
+        .join(Document, Document.id == DocumentVersion.document_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+    ).all()
+    roles = {
+        role
+        for _, view_role, document_kind in rows
+        if (
+            role := _resolved_match_role(
+                view_role,
+                document_kind,
+                document_fallback_allowed=document_fallback_allowed,
+            )
+        )
+        is not None
+    }
+    return _MatchRoleSummary(
+        total_items=len({item_id for item_id, _, _ in rows}), roles=frozenset(roles)
+    )
+
+
 def _matchable_items(
     session: Session, package_revision_id: UUID
 ) -> list[tuple[MatchableItem, str]]:
@@ -2828,8 +2943,9 @@ def _matchable_items(
     included once with `identifier=None`, because the matcher's answer for it — unmatched, for a
     stated reason — is a result a reviewer needs, not an absence to hide.
 
-    The role comes from `Document.kind`, which is the only place a drawing says whether it is the
-    architect's or the shop's. Schedules and product specs are filtered out by `MATCH_ROLES`.
+    The role comes from the view when it has been established. For legacy two-PDF packages only, a
+    null view role falls back to `Document.kind`; combined sheets must not infer every view from one
+    upload kind. Schedules and product specs are filtered out because they have no match role.
     """
     project_id = session.execute(
         select(Package.project_id)
@@ -2839,8 +2955,9 @@ def _matchable_items(
     if project_id is None:
         return []
 
+    document_fallback_allowed = _fallback_to_document_kind_allowed(session, package_revision_id)
     rows = session.execute(
-        select(DrawingItem, Document.kind, ItemIdentifier)
+        select(DrawingItem, DrawingView.role, Document.kind, ItemIdentifier)
         .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
         .join(Page, Page.id == DrawingView.page_id)
         .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
@@ -2858,15 +2975,19 @@ def _matchable_items(
     # two identifiers arrives as two rows, and an item whose only identifier is a catalogue number
     # must still appear — as unmatchable, which is a result — rather than vanish because its one row
     # was filtered out. Filtering row by row made exactly that mistake.
-    grouped: dict[UUID, tuple[DrawingItem, str, list[ItemIdentifier]]] = {}
-    for item, kind, identifier in rows:
-        entry = grouped.setdefault(item.id, (item, kind, []))
+    grouped: dict[UUID, tuple[DrawingItem, str | None, str, list[ItemIdentifier]]] = {}
+    for item, view_role, kind, identifier in rows:
+        entry = grouped.setdefault(item.id, (item, view_role, kind, []))
         if identifier is not None:
-            entry[2].append(identifier)
+            entry[3].append(identifier)
 
     items: list[tuple[MatchableItem, str]] = []
-    for item, kind, identifiers in grouped.values():
-        role = MATCH_ROLES.get(kind)
+    for item, view_role, kind, identifiers in grouped.values():
+        role = _resolved_match_role(
+            view_role,
+            kind,
+            document_fallback_allowed=document_fallback_allowed,
+        )
         if role is None:
             continue
         usable = [
