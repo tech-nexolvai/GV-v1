@@ -1139,6 +1139,8 @@ class DatabaseStages:
                 page_content_hash=page.content_hash,
                 dpi=self._dpi,
                 maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                # A model classifies this page's layout: it is shown the vendor's drawing only (#742).
+                vendor_only=True,
             )
         except (PageTooLarge, UnreadablePdf, ValueError) as error:
             reason = str(error).strip() or type(error).__name__
@@ -1360,6 +1362,8 @@ class DatabaseStages:
                 page_content_hash=page.content_hash,
                 dpi=self._dpi,
                 maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                # The bounded agent asks a model about these crops: vendor's drawing only (#742).
+                vendor_only=True,
             )
         except (PageTooLarge, UnreadablePdf, ValueError):
             return [], 0
@@ -1451,7 +1455,8 @@ class DatabaseStages:
             extractor=candidate.extractor,
             extractor_version=candidate.extractor_version,
             config_hash=(
-                f"dpi={self._dpi};route=bounded_agent;" f"source_candidate_id={source_candidate.id}"
+                f"dpi={self._dpi};route=bounded_agent;layers=vendor;"
+                f"source_candidate_id={source_candidate.id}"
             ),
             dpi=self._dpi,
         )
@@ -1692,6 +1697,9 @@ class DatabaseStages:
             # The rasteriser's own ceiling, passed explicitly because it has no default: a page that
             # would not fit in memory must raise `PageTooLarge` rather than be silently shrunk.
             maximum_pixels=MAXIMUM_RENDER_PIXELS,
+            # OCR must not read the reviewer's notes as the drawing's text; they have their own exact
+            # lane (#742).
+            vendor_only=True,
         )
         with traced(
             "extraction.page.ocr",
@@ -1705,7 +1713,9 @@ class DatabaseStages:
                 task_run_id=task_run_id,
                 extractor=engine.name,
                 extractor_version=engine.version,
-                config_hash=f"dpi={self._dpi}",
+                # `layers=vendor` because the pixels changed (#742): a run from before it read the
+                # reviewer's notes too, and must not be reused as though it had not.
+                config_hash=f"dpi={self._dpi};layers=vendor",
                 dpi=self._dpi,
             )
             rows = record_ocr_candidates(
@@ -1850,6 +1860,9 @@ class DatabaseStages:
                 page_content_hash=page.content_hash,
                 dpi=self._dpi,
                 maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                # **Vendor's drawing only (#742).** A reviewer's note painted into a crop is a number
+                # a model can return as the vendor's, and two readers doing so would seal it as one.
+                vendor_only=True,
             )
         except (PageTooLarge, UnreadablePdf, ValueError) as error:
             return [], 0, [f"page {page.index}: {error}"], ()
@@ -1865,7 +1878,7 @@ class DatabaseStages:
                 extractor=reader.config.extractor,
                 extractor_version=reader.config.model_id,
                 config_hash=(
-                    f"dpi={self._dpi};route=vision;"
+                    f"dpi={self._dpi};route=vision;layers=vendor;"
                     f"crop_margin_pt={VISION_CROP_CONTEXT_MARGIN_PT};"
                     f"context_bound_pt={VISION_CONTEXT_BOUND_PT}"
                     # Which readings are accepted depends on it, so a run under other numbers is
@@ -2223,6 +2236,9 @@ class DatabaseStages:
                     page_content_hash=page.content_hash,
                     dpi=self._dpi,
                     maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                    # **Both layers.** A person reviewing evidence is shown what the sheet shows,
+                    # reviewer notes included; only what a model or OCR reads is vendor-only (#742).
+                    vendor_only=False,
                 )
             except (PageTooLarge, UnreadablePdf, ValueError) as error:
                 # One page that will not render, in a document whose others might. Every candidate on

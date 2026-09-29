@@ -63,6 +63,7 @@ def _rendered(dpi: int = 150):
         page_content_hash="0" * 64,
         dpi=dpi,
         maximum_pixels=40_000_000,
+        vendor_only=True,
     )
 
 

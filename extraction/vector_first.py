@@ -39,14 +39,13 @@ from typing import Any, Literal, overload
 
 import pdfplumber
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
-import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
 from evidence.coordinates import ImagePoint
 from evidence.crop import decode_rgb_png, encode_png
 from extraction.annotations import MarkupNote, OutlinedTextRegion, PageLayers
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import lines_within
-from extraction.rasterise import VISION_CROP_DPI
+from extraction.rasterise import VISION_CROP_DPI, drop_reviewer_layers
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = [
@@ -293,34 +292,6 @@ def _region_box_pt(
     )
 
 
-def _drop_other_layers(page: Any) -> int:
-    """Remove every annotation that is not the vendor's drawing, and say how many.
-
-    **Because rendering flattens the layers even when the reader has kept them apart.** The vendor's
-    drawing on these sheets *is* an annotation, so a renderer cannot simply be told to leave
-    annotations out — it would produce a blank page. What it can do is remove the other ones first.
-
-    Measured on the first real sheet: a crop of the vendor's own `28 3/4"` label came out with a
-    corner of the reviewer's yellow `102"` overlay in frame, and the crop containing the drawing's
-    overall width and the markup's correction of it produced `1811 1"(4"QEQQ)` — a garbled blend of
-    two labels a model was asked to read as one. Removing the markup first is the difference between
-    asking about the vendor's number and asking about a picture of two numbers.
-
-    In memory only: the caller's bytes are untouched, and the document this mutates is one this
-    function opened and closes.
-    """
-    removed = 0
-    for index in range(pdfium_raw.FPDFPage_GetAnnotCount(page) - 1, -1, -1):
-        annotation = pdfium_raw.FPDFPage_GetAnnot(page, index)
-        if not annotation:
-            continue
-        subtype = pdfium_raw.FPDFAnnot_GetSubtype(annotation)
-        pdfium_raw.FPDFPage_CloseAnnot(annotation)
-        if subtype != pdfium_raw.FPDF_ANNOT_STAMP and pdfium_raw.FPDFPage_RemoveAnnot(page, index):
-            removed += 1
-    return removed
-
-
 def crop_box_pt(
     data: bytes,
     page_index: int,
@@ -354,7 +325,7 @@ def crop_box_pt(
             # so this catches by behaviour rather than by the type one library happens to use.
             raise UnreadablePdf(f"page {page_index} is not in this document: {error}") from error
         if not include_markup:
-            _drop_other_layers(page)
+            drop_reviewer_layers(page)
         width_pt, height_pt = (Decimal(str(value)) for value in page.get_size())
         bitmap = page.render(
             scale=float(Decimal(dpi) / _POINTS_PER_INCH),
@@ -628,7 +599,7 @@ def region_crop(
         crop_left, crop_bottom, _, _ = raw_crop_box
         if crop_left != 0 or crop_bottom != 0:
             if not include_markup:
-                _drop_other_layers(page)
+                drop_reviewer_layers(page)
             result = _rotated_crop(
                 _crop_from_visible_page(
                     page, region, dpi=dpi, margin_pt=margin_pt, raw_crop_box=raw_crop_box

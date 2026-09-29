@@ -747,6 +747,10 @@ def render_crop(
     ``polygon`` is a top-left-origin image-space box authored at ``polygon_dpi``. The PDF crop is
     computed exactly in points, then rendered directly by PDFium so the model sees only the
     bounded crop rather than a whole sheet.
+
+    **The vendor's drawing only (#742)**, through the same `drop_reviewer_layers` production's
+    renderer uses. Before, the reviewer's notes were painted in, so the pilot bake-off scored readers
+    on crops production should never send them — and a person authoring a key read those crops too.
     """
 
     if isinstance(page, bool) or not isinstance(page, int) or page < 1:
@@ -765,6 +769,9 @@ def render_crop(
             pdf_page = document[page - 1]
         except Exception as error:
             raise ModelBakeoffError(f"page {page} is not in the source PDF: {error}") from error
+        from extraction.rasterise import drop_reviewer_layers
+
+        drop_reviewer_layers(pdf_page)
         width_pt, height_pt = (Decimal(str(value)) for value in pdf_page.get_size())
         scale_to_pt = _POINTS_PER_INCH / Decimal(polygon_dpi)
         left = Decimal(left_px) * scale_to_pt

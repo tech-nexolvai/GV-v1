@@ -39,12 +39,13 @@ from uuid import UUID
 
 import pdfplumber
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
+import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
 from evidence.coordinates import SUPPORTED_ROTATIONS
 from evidence.crop import RenderedPage
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
-__all__ = ["VISION_CROP_DPI", "PageTooLarge", "render_page"]
+__all__ = ["VISION_CROP_DPI", "PageTooLarge", "drop_reviewer_layers", "render_page"]
 
 #: PDF user space is 72 units to the inch. Not a tunable.
 _POINTS_PER_INCH: Final = 72
@@ -75,6 +76,39 @@ class PageTooLarge(ValueError):
     """
 
 
+def drop_reviewer_layers(page: Any) -> int:
+    """Remove every annotation that is not the vendor's drawing, and say how many.
+
+    **Because rendering flattens the layers even when the reader has kept them apart.** The vendor's
+    drawing on these sheets *is* an annotation, so a renderer cannot simply be told to leave
+    annotations out — it would produce a blank page. What it can do is remove the other ones first.
+
+    Measured on the first real sheet: a crop of the vendor's own `28 3/4"` label came out with a
+    corner of the reviewer's yellow `102"` overlay in frame, and the crop containing the drawing's
+    overall width and the markup's correction of it produced `1811 1"(4"QEQQ)` — a garbled blend of
+    two labels a model was asked to read as one. Removing the markup first is the difference between
+    asking about the vendor's number and asking about a picture of two numbers.
+
+    In memory only: the caller's bytes are untouched, and the document this mutates is one the caller
+    opened and closes.
+
+    **Here, beside the page renderer, so both renderers strip the same layers (#742).** It began in
+    `extraction/vector_first.py`, and only the region cropper called it — so every crop cut from a
+    full-page render, which is what the vision route sends a model, still had the reviewer's notes
+    painted in: 186 of 3,613 planned vision crops on the 17-page client set.
+    """
+    removed = 0
+    for index in range(pdfium_raw.FPDFPage_GetAnnotCount(page) - 1, -1, -1):
+        annotation = pdfium_raw.FPDFPage_GetAnnot(page, index)
+        if not annotation:
+            continue
+        subtype = pdfium_raw.FPDFAnnot_GetSubtype(annotation)
+        pdfium_raw.FPDFPage_CloseAnnot(annotation)
+        if subtype != pdfium_raw.FPDF_ANNOT_STAMP and pdfium_raw.FPDFPage_RemoveAnnot(page, index):
+            removed += 1
+    return removed
+
+
 def render_page(
     data: bytes,
     page_index: int,
@@ -83,8 +117,16 @@ def render_page(
     page_content_hash: str,
     dpi: int,
     maximum_pixels: int,
+    vendor_only: bool,
 ) -> RenderedPage:
     """One page as rotation-applied RGB pixels.
+
+    **`vendor_only` has no default, because the answer depends on who will look.** A model or an OCR
+    engine is shown the vendor's drawing and nothing else (`True`): the reviewer's markup is already
+    exact text, read by its own lane, and painted into a crop it becomes a number a reader can return
+    as the vendor's — which two readers agreeing would seal as a vendor reading (#742). A reviewer
+    looking at evidence may be shown both (`False`). Defaulted either way, the wrong one would be
+    silent.
 
     `dpi` and `maximum_pixels` are both required. The first decides the coordinate frame every crop
     from this page will be expressed in; the second is what stops an E-size sheet at 300 dpi
@@ -107,6 +149,8 @@ def render_page(
         raise ValueError("dpi must be a positive integer")
     if isinstance(maximum_pixels, bool) or not isinstance(maximum_pixels, int):
         raise TypeError("maximum_pixels must be an integer")
+    if not isinstance(vendor_only, bool):
+        raise TypeError("vendor_only must be a bool: say whether a model or a person will look")
     if not _is_digest(page_content_hash):
         raise ValueError(
             "page_content_hash must be the lowercase SHA-256 the manifest recorded for this page"
@@ -145,6 +189,9 @@ def render_page(
                 "Lower the dpi or raise the budget deliberately — rendering smaller than asked "
                 "would put every crop's coordinates out of step with the transform beside them."
             )
+
+        if vendor_only:
+            drop_reviewer_layers(page)
 
         # `rev_byteorder=True` is what makes this RGB. The default is BGR, and a reviewer shown a
         # channel-swapped crop would see a colour bug rather than a byte-order one.

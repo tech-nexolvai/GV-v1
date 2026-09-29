@@ -52,6 +52,7 @@ def _render(data: bytes = DRAWING, **overrides: object) -> RenderedPage:
         "page_content_hash": _digest(data),
         "dpi": DPI,
         "maximum_pixels": BUDGET,
+        "vendor_only": True,
     }
     arguments.update(overrides)
     return render_page(data, 0, **arguments)  # type: ignore[arg-type]
@@ -204,6 +205,7 @@ def test_a_page_beyond_the_document_is_refused_by_name() -> None:
             page_content_hash=_digest(DRAWING),
             dpi=DPI,
             maximum_pixels=BUDGET,
+            vendor_only=True,
         )
 
 
@@ -217,6 +219,7 @@ def test_something_that_is_not_a_pdf_is_refused(data: bytes) -> None:
             page_content_hash="0" * 64,
             dpi=DPI,
             maximum_pixels=BUDGET,
+            vendor_only=True,
         )
 
 
@@ -368,3 +371,75 @@ def test_the_vision_crop_resolution_is_named_and_is_not_a_render_default() -> No
     parameters = inspect.signature(render_page).parameters
     assert parameters["dpi"].default is inspect.Parameter.empty
     assert parameters["maximum_pixels"].default is inspect.Parameter.empty
+
+
+# ---------------------------------------------------------------------------
+# Whose pixels: a model is shown the vendor's drawing, a person may see both (#742)
+# ---------------------------------------------------------------------------
+
+
+def _reviewed_sheet() -> bytes:
+    """A vendor stamp drawing a black square, and a reviewer's red note painted right over it.
+
+    The shape of the client's reviewed sets: the vendor's drawing is a `/Stamp`, the reviewer's
+    correction a `/FreeText` with its own appearance. Page space is appearance space minus (50, 450),
+    so the square sits at page (100..140, 100..140) and the note covers it completely.
+    """
+    from tests.extraction.test_annotations import _appearance, _pdf, _stamp
+
+    note = (
+        b"<< /Type /Annot /Subtype /FreeText /Rect [90 90 150 150] /Contents (46 1/2) "
+        b"/DA (/Helv 10 Tf 1 0 0 rg) /AP << /N 8 0 R >> >>"
+    )
+    return _pdf(
+        annotations=[_stamp(appearance_object=7), note],
+        extra_objects=[
+            _appearance(b"0 0 0 rg 150 550 40 40 re f\n"),
+            _appearance(b"1 0 0 rg 0 0 60 60 re f\n", bbox=b"[0 0 60 60]", matrix=b"[1 0 0 1 0 0]"),
+        ],
+    )
+
+
+def _colours(rendered: RenderedPage) -> tuple[int, int]:
+    """Red and black pixel counts over the square's image box (150 dpi, 300 pt tall page)."""
+    red = black = 0
+    for y in range(340, 410):
+        for x in range(215, 285):
+            offset = (y * rendered.width_px + x) * 3
+            r, g, b = rendered.rgb_bytes[offset : offset + 3]
+            red += r > 200 and g < 60 and b < 60
+            black += r < 60 and g < 60 and b < 60
+    return red, black
+
+
+def test_a_model_is_shown_the_vendor_drawing_and_not_the_reviewer_note() -> None:
+    """**#742.** Painted into a crop, the reviewer's number is one a model can return as the vendor's,
+    and two readers doing so would seal it as a vendor reading. With the note removed first, the
+    vendor's square is all there is."""
+    sheet = _reviewed_sheet()
+
+    red, black = _colours(_render(sheet, vendor_only=True))
+
+    assert red == 0, "the reviewer's note reached pixels a model will be shown"
+    assert black > 0, "removing the note must not remove the vendor's drawing with it"
+
+
+def test_a_person_reviewing_evidence_sees_both_layers() -> None:
+    """The control that proves the test above can see the note at all."""
+    red, _black = _colours(_render(_reviewed_sheet(), vendor_only=False))
+
+    assert red > 0
+
+
+def test_the_caller_must_say_who_will_look() -> None:
+    """No default: defaulted either way, the wrong choice would be silent."""
+    arguments = {
+        "document_version_id": DOCUMENT,
+        "page_content_hash": _digest(DRAWING),
+        "dpi": DPI,
+        "maximum_pixels": BUDGET,
+    }
+    with pytest.raises(TypeError, match="vendor_only"):
+        render_page(DRAWING, 0, **arguments)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="vendor_only"):
+        render_page(DRAWING, 0, **arguments, vendor_only=None)  # type: ignore[arg-type]
