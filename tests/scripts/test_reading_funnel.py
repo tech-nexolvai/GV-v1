@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import re
 import sys
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,16 @@ from sqlalchemy import Engine
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
-from reading_funnel import FUNNEL_SQL, QUERIES, collect, render
+from reading_funnel import (
+    FUNNEL_SQL,
+    QUERIES,
+    RUN_SPAN_SQL,
+    QuotaConfig,
+    collect,
+    parse_quota_config,
+    render,
+    render_markdown,
+)
 
 #: Columns whose contents are the client's drawing rather than this repository's own vocabulary.
 #: `raw_text` is the token printed on the sheet, `polygon` is where on their drawing it sits, and
@@ -32,7 +43,7 @@ from reading_funnel import FUNNEL_SQL, QUERIES, collect, render
 #: pasted into a public issue, which is this script's entire purpose.
 CLIENT_DERIVED = ("raw_text", "polygon", "semantic_guess", "source_author", "assembled_context")
 
-ALL_SQL = [*QUERIES, ("funnel", FUNNEL_SQL)]
+ALL_SQL = [*QUERIES, ("funnel", FUNNEL_SQL), ("run_span", RUN_SPAN_SQL)]
 
 
 def _identifiers(sql: str) -> set[str]:
@@ -81,7 +92,7 @@ def test_every_query_is_valid_against_the_migrated_schema(postgres_engine: Engin
     """
     report = collect(postgres_engine)
 
-    assert set(report) == {name for name, _ in QUERIES} | {"funnel"}
+    assert set(report) == {name for name, _ in QUERIES} | {"funnel", "run_span"}
 
 
 def test_an_empty_database_reports_zeroes_without_raising(postgres_engine: Engine) -> None:
@@ -187,3 +198,130 @@ def test_render_prints_rejected_model_calls_by_reason() -> None:
     assert "MODEL REJECTIONS BY REASON" in rendered
     assert "schema_validation_failed" in rendered
     assert "rows=74" in rendered
+
+
+def _markdown_report() -> dict[str, Any]:
+    return {
+        "funnel": {
+            "found": 1000,
+            "with_a_value": 100,
+            "associated": 50,
+            "sealed": 2,
+            "findings": 18,
+            "passes": 0,
+        },
+        "run_span": {"wall_minutes": Decimal(10)},
+        "candidates_by_extractor": [
+            {
+                "bucket": "bedrock-nova-2-lite",
+                "found": 20,
+                "with_a_value": 5,
+                "with_confidence": 0,
+            },
+            {
+                "bucket": "rapidocr",
+                "found": 80,
+                "with_a_value": 0,
+                "with_confidence": 80,
+            },
+        ],
+        "model_invocations": [
+            {
+                "bucket": "amazon.nova-2-lite-v1:0",
+                "status": "ok",
+                "rows": 60,
+                "input_tokens": 600,
+                "output_tokens": 30,
+                "cost_micros": 0,
+                "latency_ms": 120000,
+            },
+            {
+                "bucket": "us.amazon.nova-2-lite-v1:0",
+                "status": "rejected",
+                "rows": 140,
+                "input_tokens": 1400,
+                "output_tokens": 0,
+                "cost_micros": 0,
+                "latency_ms": 240000,
+            },
+            {
+                "bucket": "amazon.nova-2-lite-v1:0",
+                "status": "failed",
+                "rows": 100,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost_micros": 0,
+                "latency_ms": 60000,
+            },
+        ],
+    }
+
+
+def test_markdown_report_has_the_report_shape_and_refuses_accuracy() -> None:
+    """Markdown is the checked-in report shape, not a silent accuracy score."""
+    rendered = render_markdown(
+        _markdown_report(),
+        quota_config=QuotaConfig(requests_per_minute={"nova-2-lite": Decimal(20)}),
+        measured_date=date(2026, 9, 30),
+    )
+
+    assert rendered.startswith("# What the reading layer actually did — measured, 2026-09-30")
+    assert "## The run" in rendered
+    assert "## The funnel" in rendered
+    assert "## What each route contributed" in rendered
+    assert "## What the model calls cost" in rendered
+    assert "### Per reader" in rendered
+    assert "## Calls/min against the applied quota" in rendered
+    assert "## What this measurement is not" in rendered
+    assert "not an accuracy measurement" in rendered
+    assert "No client dimension appears" in rendered
+
+
+def test_markdown_reports_model_time_by_outcome() -> None:
+    """Outcome split includes ok/rejected/failed latency, so waste is visible."""
+    rendered = render_markdown(
+        _markdown_report(),
+        quota_config=QuotaConfig(requests_per_minute={"nova-2-lite": Decimal(20)}),
+        measured_date=date(2026, 9, 30),
+    )
+
+    assert "| `ok` | 60 | 20.0% | 600 | 2.0 min |" in rendered
+    assert "| `rejected` | 140 | 46.7% | 1,400 | 4.0 min |" in rendered
+    assert "| `failed` | 100 | 33.3% | 0 | 1.0 min |" in rendered
+
+
+def test_markdown_reports_calls_per_minute_against_configured_quota() -> None:
+    """The quota comparison uses supplied config instead of a baked-in service quota."""
+    rendered = render_markdown(
+        _markdown_report(),
+        quota_config=QuotaConfig(requests_per_minute={"nova-2-lite": Decimal(20)}),
+        measured_date=date(2026, 9, 30),
+    )
+
+    assert "| `nova-2-lite` | 30.0 | 20 | 150.0% |" in rendered
+
+
+def test_markdown_says_when_a_reader_quota_is_not_configured() -> None:
+    """Missing quota input abstains from comparison instead of inventing a ceiling."""
+    rendered = render_markdown(
+        _markdown_report(),
+        quota_config=QuotaConfig(requests_per_minute={}),
+        measured_date=date(2026, 9, 30),
+    )
+
+    assert "| `nova-2-lite` | — | not configured | — |" in rendered
+    assert "Quota comparison is incomplete" in rendered
+
+
+def test_quota_config_rejects_missing_or_invalid_numbers() -> None:
+    """Quota values are configuration and must be positive numeric facts."""
+
+    assert parse_quota_config('{"nova-2-lite":"20"}').requests_per_minute == {
+        "nova-2-lite": Decimal(20)
+    }
+    with pytest.raises(TypeError, match="JSON object"):
+        parse_quota_config("[]")
+    with pytest.raises(ValueError, match="greater than zero"):
+        parse_quota_config('{"nova-2-lite":0}')
+    with pytest.raises(TypeError, match="positive number"):
+        parse_quota_config('{"nova-2-lite":true}')
