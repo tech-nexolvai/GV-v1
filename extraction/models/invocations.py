@@ -114,6 +114,9 @@ class InvocationRecord:
         latency_ms: wall-clock duration in whole milliseconds.
         outcome: how the call ended. The closed set is enforced by the database; see the module
             docstring for why it is not re-stated here.
+        rejection_reason: for a rejected response, the code-authored reason it was rejected. Locally
+            known validation failures use their bounded reason code; callers that only know an
+            exception may pass a bounded diagnostic string.
 
     Raises:
         TypeError: if any count, cost or duration is not a plain `int`.
@@ -129,6 +132,7 @@ class InvocationRecord:
     cost_micros: int
     latency_ms: int
     outcome: str
+    rejection_reason: str | None = None
     package_revision_id: UUID | None = None
     node_invocation_key: str | None = None
     candidate_id: UUID | None = None
@@ -152,6 +156,15 @@ class InvocationRecord:
         _exact_count("output_tokens", self.output_tokens)
         _exact_count("cost_micros", self.cost_micros)
         _exact_count("latency_ms", self.latency_ms)
+        if self.outcome == "rejected" and self.rejection_reason is None:
+            raise ValueError("a rejected invocation must record why the local code rejected it")
+        if self.rejection_reason is not None:
+            if not isinstance(self.rejection_reason, str) or not self.rejection_reason.strip():
+                raise ValueError("rejection_reason must be a non-empty string or None")
+            if len(self.rejection_reason) > 500:
+                raise ValueError("rejection_reason must be 500 characters or fewer")
+            if self.outcome != "rejected":
+                raise ValueError("rejection_reason is only valid for rejected invocations")
         if self.node_invocation_key is not None and (
             not self.node_invocation_key.startswith("sha256:")
             or len(self.node_invocation_key) != 71

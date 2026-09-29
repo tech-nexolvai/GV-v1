@@ -126,6 +126,21 @@ QUERIES: Final[tuple[tuple[str, str], ...]] = (
         ORDER BY count(*) DESC
         """,
     ),
+    (
+        "model_rejections_by_reason",
+        """
+        SELECT coalesce(mi.rejection_reason, '(unknown)') AS bucket,
+               mi.model_id AS status,
+               count(*) AS rows,
+               coalesce(sum(mi.input_tokens), 0) AS input_tokens,
+               coalesce(sum(mi.output_tokens), 0) AS output_tokens,
+               coalesce(sum(mi.cost_micros), 0) AS cost_micros
+        FROM model_invocations mi
+        WHERE mi.outcome = 'rejected'
+        GROUP BY 1, 2
+        ORDER BY count(*) DESC
+        """,
+    ),
 )
 
 #: The headline the rest is evidence for. Separate from `QUERIES` because it is one row, not a

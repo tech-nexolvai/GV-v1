@@ -277,6 +277,9 @@ def test_plain_model_text_is_never_parsed_as_structured_output() -> None:
 
     assert len(client.requests) == 1
     assert sink.items[0].outcome is NovaInvocationOutcome.REJECTED
+    assert sink.items[0].rejection_reason == (
+        "protocol_error: Bedrock must return exactly one tool call and no model text"
+    )
 
 
 @pytest.mark.parametrize(
@@ -308,6 +311,12 @@ def test_invalid_tool_payload_fails_closed_without_retry(payload: object) -> Non
 
     assert len(client.requests) == 1
     assert sink.items[0].outcome is NovaInvocationOutcome.REJECTED
+    assert sink.items[0].rejection_reason in {
+        "schema_validation_failed",
+        "float_not_allowed",
+        "coordinate_out_of_bounds",
+        "candidate_conversion_failed",
+    }
 
 
 def test_timeout_retries_within_bound_and_records_every_attempt() -> None:

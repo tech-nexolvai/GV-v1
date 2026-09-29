@@ -368,6 +368,7 @@ class _BufferedVisionRecorder:
                     ),
                     assembled_context=invocation.context,
                     bound_pt=invocation.bound_pt,
+                    rejection_reason=invocation.rejection_reason,
                 ),
                 flush=flush,
             )
