@@ -487,3 +487,22 @@ def test_the_manifest_carries_a_stated_coordinate_space(tmp_path: Path) -> None:
     (spec,) = load_model_specs(models_path)
 
     assert spec.coordinate_mode is CoordinateMode.NOVA_GRID
+
+
+def test_a_bakeoff_crop_shows_the_vendor_drawing_and_not_the_reviewer_note() -> None:
+    """**#742.** The bake-off must score readers on the pixels production sends them — the vendor's
+    layer only. Before, the reviewer's notes were painted in, and a person authoring the key read
+    those same crops."""
+    from evidence.crop import decode_rgb_png
+    from tests.extraction.test_rasterise import _reviewed_sheet
+
+    # The square is at page (100..140, 100..140) pt on a 300 pt page: at 150 dpi, image
+    # x 208..292, y 333..417. The crop is well inside it.
+    png = render_crop(
+        _reviewed_sheet(), page=1, polygon=(220, 345, 280, 405), polygon_dpi=150, output_dpi=150
+    )
+    width, height, rgb = decode_rgb_png(png)
+    pixels = [rgb[offset : offset + 3] for offset in range(0, width * height * 3, 3)]
+
+    assert not [p for p in pixels if p[0] > 200 and p[1] < 60 and p[2] < 60], "reviewer note shown"
+    assert [p for p in pixels if max(p) < 60], "the vendor's drawing went with it"

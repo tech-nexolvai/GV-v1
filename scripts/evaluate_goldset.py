@@ -104,7 +104,7 @@ def _vendor_only_pdf(data: bytes) -> tuple[bytes, int]:
     layer in ``/FreeText``, ``/Line``, ``/Square`` and related annotations.  A reading-accuracy
     evaluation must show the reader what an unreviewed production drawing contains: the stamps,
     never the reviewer overlay.  This is the document-level equivalent of
-    ``extraction.vector_first._drop_other_layers``; doing it before the real stages run also keeps
+    ``extraction.rasterise.drop_reviewer_layers``; doing it before the real stages run also keeps
     exact annotation strings out of the candidate table instead of merely hiding their pixels.
 
     PDFs without a non-stamp annotation are returned byte-for-byte.  That preserves the synthetic
