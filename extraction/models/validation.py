@@ -25,18 +25,55 @@ from evidence.coordinates import ImagePoint
 from units.measurement import Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
 
+#: Said once, because all four coordinates carry the same contract and four near-identical
+#: sentences are how three of them end up saying something slightly different.
+_BOX_DESCRIPTION = (
+    "Pixel coordinate of the bounding box around the text you read, within the crop dimensions "
+    "given in the message. The box must have non-zero width and height."
+)
+
 
 class NovaToolPayload(BaseModel):
-    """The complete payload understood from Nova; unexpected fields are errors."""
+    """The complete payload understood from Nova; unexpected fields are errors.
+
+    **The descriptions are the contract, and they are load-bearing.** This model becomes the Bedrock
+    tool schema, so they are the only thing a reader is told about what an acceptable answer looks
+    like. Without them a model receives the bare names `reading`, `unit_guess`, `x1`..`y2` and has to
+    guess — Amazon's own models guess Amazon's conventions and pass, and a different vendor does not.
+
+    Measured on 2026-09-29 against `mistral.ministral-3-3b-instruct` on a real crop reading `12 3/4"`:
+    with bare field names **0 of 3** replies were accepted, every one rejected for answering
+    `unit_guess` as `"inch"` or `"inches"`; with these descriptions **4 of 4** were accepted. The
+    model had read the crop correctly every single time. We were discarding correct readings over the
+    spelling of a unit, and Ministral alone accounted for 851 of one run's 1,743 rejections (#718).
+
+    An `enum` on `unit_guess` was measured too and is deliberately absent: it scored *worse* than
+    descriptions alone (2 of 3), because constraining the field pushed the malformation into
+    `reading` instead.
+
+    Each description states what `validate_payload` below actually rejects. Change one and the other
+    has to move with it, or the schema starts promising something the validator will not accept.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    reading: str = Field(min_length=1)
-    unit_guess: str | None
-    x1: StrictInt
-    y1: StrictInt
-    x2: StrictInt
-    y2: StrictInt
+    reading: str = Field(
+        min_length=1,
+        description=(
+            'The dimension exactly as printed on the drawing. Use the inch mark " rather than the '
+            'word "inches". Keep a fraction as a fraction: 12 3/4", never 12.75.'
+        ),
+    )
+    unit_guess: str | None = Field(
+        description=(
+            'The unit of the reading, as a short code: "in" or "mm". Null when the drawing does '
+            "not say."
+        ),
+    )
+    x1: StrictInt = Field(description=_BOX_DESCRIPTION)
+    y1: StrictInt = Field(description=_BOX_DESCRIPTION)
+    x2: StrictInt = Field(description=_BOX_DESCRIPTION)
+    y2: StrictInt = Field(description=_BOX_DESCRIPTION)
 
 
 class CoordinateMode(StrEnum):
