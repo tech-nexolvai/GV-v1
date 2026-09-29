@@ -1050,7 +1050,8 @@ export function EnterValuesPage({
                     <strong>{candidate.value}</strong>
                     <span>{SOURCE_LABEL[candidate.source ?? ''] ?? 'drawing source unavailable'}</span>
                     <span>p{candidate.page_index + 1}</span>
-                    {candidate.confidence && <span>read confidence {candidate.confidence}</span>}
+                    {/* No confidence score — it is written only by RapidOCR, which produced 903
+                        candidates and zero values on the real drawing. #720. */}
                   </div>
                   {candidate.crop_key && packageId ? (
                     <MeasureCandidateCrop candidate={candidate} packageId={packageId} />

@@ -96,15 +96,6 @@
   opacity: 0.6;
 }
 
-.reading__confidence {
-  font-size: 0.72rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--text-muted);
-  border: 1px solid var(--border-default);
-  border-radius: 0.25rem;
-  padding: 0.05rem 0.3rem;
-}
-
 .reading__crop-image {
   display: block;
   width: 11rem;
