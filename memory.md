@@ -49,6 +49,20 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
   findings" on a failed fetch reads as *this drawing is clean*. Where nothing is on the wire the
   screen says so — including the signed-in reviewer's name, which is shown as a generic label until an
   identity endpoint exists, having previously displayed the client's name to everyone.
+- **A stacked fraction always goes to a reviewer, however many readers agree (#726, 2026-09-29).**
+  The first human-keyed bake-off found two readers from different vendors reading a stacked `3/4"`
+  as `3 3/4"` and agreeing — exactly the agreement the second-reader lane would have sealed. A
+  right and a wrong reading of a stacked fraction look the same once read, so no rule about the
+  string can guard it. Every reading of a crop that shows one is refused as
+  `stacked_fraction_requires_review`, the right answer included.
+- **The drawing, not the model, says a label is stacked: find the fraction bar (#735 option A,
+  2026-09-29; shipped in #740).** A flat stroke with a glyph-sized shape just above and just below
+  it, centred and in proportion, and not one dash of a longer line — searched among *every* path in
+  the vendor stamp, because the reader's glyph runs orphan the bar and denominator. Its six
+  thresholds are required reader configuration, never defaulted; the demo's were measured on
+  `AI_Set 2` (12 of 12 fractions found, 15 false alarms) and are #274's to confirm. **It sees paths
+  only:** `AI_Set 1` draws its labels as font text inside the stamp, which neither the reader nor
+  the detector sees (#738, open, with an interim-policy question for the admin).
 
 ## OPEN — must-fix / to resolve
 - **Rule engine can't yet express the real first rules.** Typed op set lacks aggregate/variable-input
