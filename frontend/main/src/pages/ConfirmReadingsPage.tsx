@@ -148,11 +148,17 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
                 <span className="reading__raw" title="As printed on the drawing">
                   {candidate.raw_text}
                 </span>
-                {candidate.confidence && (
-                  <span className="reading__confidence">
-                    read confidence {candidate.confidence}
-                  </span>
-                )}
+                {/* **No confidence score is shown here, deliberately.**
+
+                    Only RapidOCR writes one — every vision reader records `confidence=None` — and on
+                    the 17-page AI_Set_2 run RapidOCR produced 903 candidates and *zero* usable
+                    values, at confidences from 0.50 to 0.9999. So the number appeared on exactly the
+                    readings a reviewer should trust least, and never on the ones from our best
+                    reader. See #720.
+
+                    `V1_TARGET_AND_GAP.md` §1: confidence is what failed us — Nova read `46"` as
+                    `60` at high confidence. The gate stopped consulting it; showing it to the human
+                    who is the last line of defence was the same mistake one layer up. */}
                 {candidate.corroboration_status === 'CONFLICTING' && (
                   <span className="reading__conflict">
                     <AlertTriangle size={14} aria-hidden="true" />
