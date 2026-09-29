@@ -177,7 +177,25 @@ class _ReaderDefinition:
     model_id: str
     extractor: str
     coordinate_mode: CoordinateMode
+    coordinate_measurement: str
     enabled: bool
+    disabled_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("key", "model_id", "extractor", "coordinate_measurement"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if not isinstance(self.coordinate_mode, CoordinateMode):
+            raise TypeError("coordinate_mode must be a CoordinateMode")
+        if not isinstance(self.enabled, bool):
+            raise TypeError("enabled must be True or False")
+        if self.disabled_reason is not None and (
+            not isinstance(self.disabled_reason, str) or not self.disabled_reason.strip()
+        ):
+            raise ValueError("disabled_reason must be a non-empty string or None")
+        if not self.enabled and self.disabled_reason is None:
+            raise ValueError("disabled readers must say why they are disabled")
 
     @property
     def model_env(self) -> str:
@@ -192,10 +210,10 @@ class _ReaderDefinition:
 
 #: The readers Phase C runs, and the one it keeps switched off.
 #:
-#: **Every coordinate mode here was measured**, on four crops from `demo_pair/shop.pdf` on
-#: 2026-09-26, by sending each model the four-scalar schema and comparing what came back against the
-#: crop's own pixel dimensions. Nova Pro answered outside the crop on every one; Nova 2 Lite and
-#: Ministral answered inside it. A model's name is not evidence of either.
+#: **Every enabled coordinate mode here was measured**, and the measurement is kept on the reader
+#: definition instead of hidden in a nearby comment. A model's name is not evidence of its answer
+#: space; issue #668 records the original coordinate-mode table, and issue #699 records the Nova Pro
+#: recheck after it returned coordinate-shaped values instead of dimensions on the demo run.
 #:
 #: **Only two vendors answer at all.** Google, Meta, Moonshot, Qwen, xAI, Writer and Nvidia all
 #: refuse forced tool use with an image, so the independence available to the agreement lane is
@@ -206,6 +224,10 @@ VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
         model_id=NOVA_PRO_MODEL_ID,
         extractor=NOVA_PRO_EXTRACTOR,
         coordinate_mode=CoordinateMode.NOVA_GRID,
+        coordinate_measurement=(
+            "#668 recorded Nova Pro as 0-1000 grid; #699 rechecked a generated crop reading "
+            '24 1/2" on 2026-09-29 and the raw tool response returned that value.'
+        ),
         enabled=True,
     ),
     # A different vendor, which is the strongest independence on offer here. Also the cheapest and
@@ -215,6 +237,7 @@ VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
         model_id=MINISTRAL_3_3B_MODEL_ID,
         extractor=MINISTRAL_3_3B_EXTRACTOR,
         coordinate_mode=CoordinateMode.PIXELS,
+        coordinate_measurement="#668 recorded Ministral 3 3B as pixel coordinates.",
         enabled=True,
     ),
     # Same vendor as Nova Pro and a different answer space, which is the clearest evidence available
@@ -224,6 +247,7 @@ VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
         model_id=NOVA_2_LITE_MODEL_ID,
         extractor=NOVA_2_LITE_EXTRACTOR,
         coordinate_mode=CoordinateMode.PIXELS,
+        coordinate_measurement="#668 recorded Nova 2 Lite as pixel coordinates.",
         enabled=True,
     ),
     # Off until #665. Its space is unmeasured because it has never returned a reading on this
@@ -233,7 +257,12 @@ VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
         model_id=CLAUDE_HAIKU_4_5_MODEL_ID,
         extractor=CLAUDE_HAIKU_4_5_EXTRACTOR,
         coordinate_mode=CoordinateMode.PIXELS,
+        coordinate_measurement=(
+            "Unmeasured on this account; Anthropic documents absolute pixels, but #665 must land "
+            "before this can be verified."
+        ),
         enabled=False,
+        disabled_reason="#665: Anthropic first-time-use form has not been submitted for this account.",
     ),
 )
 
