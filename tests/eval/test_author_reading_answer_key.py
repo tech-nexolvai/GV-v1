@@ -16,7 +16,17 @@ import pytest
 
 from eval.experiments.model_bakeoff import load_crops
 from extraction.rasterise import VISION_CROP_DPI
-from scripts.author_reading_answer_key import CROPS_CSV, Candidate, _legible, _stratified, main
+from scripts.author_reading_answer_key import (
+    CROPS_CSV,
+    Candidate,
+    NotASingleValue,
+    ScaffoldError,
+    _canonical,
+    _legible,
+    _parsed,
+    _stratified,
+    main,
+)
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
 
 
@@ -379,3 +389,68 @@ def test_pages_that_plan_nothing_say_so_rather_than_writing_an_empty_set(
     )
     assert "no regions were planned" in capsys.readouterr().err
     assert not (out / CROPS_CSV).exists(), "an empty sheet is worse than no sheet"
+
+
+# --- #730: the notations the client's drawings actually use ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("typed", "inches"),
+    [
+        ('39 1/4"', "157/4"),  # plain fraction — worked before
+        ('102"', "102"),  # bare whole — worked before
+        ("648 mm", "3240/127"),  # millimetres — worked before
+        ('25-1/2"', "51/2"),  # hyphenated, how the trade writes it
+        ('5-1/4"', "21/4"),
+        ("381 [15]", "15"),  # dual unit: the bracketed inch is authoritative (Q12)
+        ("724 [28 1/2]", "57/2"),
+        ('2" (VIF)', "2"),  # a site note is not part of the number
+        ('80-1/2" (VIF)', "161/2"),  # hyphenated *and* annotated
+        ("6'-0\"", "72"),  # feet-inches keeps its hyphen
+        ("2' - 10\"", "34"),
+    ],
+)
+def test_every_notation_on_the_client_sheets_is_accepted(typed: str, inches: str) -> None:
+    """**Input: one typed value. Outcome: the exact inches the drawing means.**
+
+    Before #730 only the first three parsed. The other eight are on the client's own sheets, and a
+    person told to "type exactly what the drawing shows" had most of their work refused after the
+    fact with *"no unit could be established"* — which `25-1/2"` plainly carries.
+
+    `6'-0"` is here to hold the line the hyphen rule must not cross: a hyphen after a foot mark is
+    feet-inches, not a fraction separator.
+    """
+    from fractions import Fraction
+
+    assert _parsed(typed, crop_id="probe").exact == Fraction(inches)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("typed", ['39 1/4"+6"', '48"+3"'])
+def test_a_compound_is_refused_as_not_one_value_rather_than_added_up(typed: str) -> None:
+    """Adding them up would put *our* arithmetic into the ground truth (#730).
+
+    A reader that returned `39 1/4"+6"` exactly — which is what the drawing says — would then be
+    scored wrong against a key that recorded `45 1/4"`. The refusal is its own type so `build` can
+    count these apart from crops nobody could read.
+    """
+    with pytest.raises(NotASingleValue):
+        _parsed(typed, crop_id="probe")
+
+
+def test_a_decimal_is_still_refused_after_the_notation_rewrite() -> None:
+    """The rewrite must not open a door for a rounded answer — Q2 is exact match."""
+    with pytest.raises(ScaffoldError):
+        _parsed('28.75"', crop_id="probe")
+
+
+def test_the_rewrite_never_computes_a_value() -> None:
+    """`_canonical` drops and re-spaces characters; it must never do arithmetic.
+
+    A dual-unit token reports the millimetres it carried so the caller can record them, and returns
+    the inch *as written* — it does not convert one into the other. The moment it computes, the key
+    stops being a transcription of what a person read.
+    """
+    token, mm = _canonical("724 [28 1/2]")
+
+    assert token == '28 1/2"'
+    assert mm == "724"

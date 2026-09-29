@@ -29,6 +29,7 @@ import hashlib
 import html
 import json
 import random
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -244,6 +245,7 @@ def _write_sheet(out: Path, candidates: list[Candidate]) -> None:
                 "path_count",
                 "value",
                 "unreadable",
+                "not_a_single_value",
                 "rotated",
                 "note",
             ]
@@ -320,6 +322,14 @@ task. Nothing here has read them: every value in the file will be one you put th
     648 mm         yes
     28.75"         no  — the verdict is exact match, so a rounded answer is a wrong answer
     28 3/4         no  — a value with no unit is refused
+
+**If the crop is not one measurement, tick `not_a_single_value` instead.** Some dimensions are
+written as an instruction to add — `39 1/4"+6"`. There is no single number to type, and working it
+out yourself would put your arithmetic into the answers the readers are marked against. Tick the
+column and leave `value` empty.
+
+Everything else is accepted exactly as the drawing writes it: `25-1/2"` with a hyphen, `381 [15]`
+with millimetres and the inch in brackets, and a trailing site note like `2" (VIF)`.
 
 **If you cannot read it, put any character in `unreadable` and leave `value` empty.** That is a real
 answer and a useful one. A crop no person can read is a crop no model should be trusted on, and the
@@ -480,14 +490,66 @@ def _page_indexes(pages: str) -> list[int]:
 _BLANK: Final = ""
 
 
+class NotASingleValue(ScaffoldError):
+    """The crop carries an instruction to add, not one dimension (#730)."""
+
+
+#: `39 1/4"+6"` — two dimensions and an operator. Not a value, and not illegible either.
+_COMPOUND = re.compile(r'["\u2033]\s*[+\u2212-]\s*\d')
+
+#: `2" (VIF)` — an exact value followed by a site instruction. The note is not part of the number.
+_TRAILING_NOTE = re.compile(r"\s*\([^)]*\)\s*$")
+
+#: `381 [15]` — millimetres with the inch in brackets. **The bracket is authoritative** (Q12): mm is
+#: the vendor's machine reference and is never a verdict operand, so the inch is the value and the mm
+#: corroborates that it was read correctly.
+_DUAL_UNIT = re.compile(r"^\s*(?P<mm>\d+)\s*\[\s*(?P<inch>[\d\s/]+?)\s*\]\s*$")
+
+#: `25-1/2"` — a hyphen where the trade writes a space. Not feet-inches: `6'-0"` keeps its hyphen,
+#: which is why the pattern refuses to fire when a foot mark precedes it.
+_HYPHENATED_FRACTION = re.compile(r"(?<![\u2032'])\b(?P<whole>\d+)-(?P<fraction>\d+/\d+)")
+
+
+def _canonical(token: str) -> tuple[str, str | None]:
+    """Rewrite one typed notation into the form `units/` already accepts.
+
+    Returns the rewritten token and the millimetre reading a dual-unit token carried, if any.
+
+    **Nothing here is arithmetic.** Each rule drops or re-spaces characters the drawing uses and the
+    parser does not; none computes a value. The moment this function starts adding numbers it stops
+    being a transcription of what a person read and becomes a claim of our own (#730).
+    """
+    mm: str | None = None
+    dual = _DUAL_UNIT.match(token)
+    if dual is not None:
+        mm = dual.group("mm")
+        token = f'{dual.group("inch").strip()}"'
+    token = _TRAILING_NOTE.sub("", token)
+    token = _HYPHENATED_FRACTION.sub(r"\g<whole> \g<fraction>", token)
+    return token.strip(), mm
+
+
 def _parsed(raw: str, *, crop_id: str) -> object:
     """One typed value, exactly, or a refusal that names the crop.
 
     A decimal is refused before `units/` sees it. `normalise_to_inches` accepts `28.75"` happily and
     it is a wrong answer under exact match (Q2): the drawing says `28 3/4"`, and a key that recorded
     the decimal would score a model wrong for reading the drawing right.
+
+    **The notations the client's drawings actually use are accepted here, not in `units/`.** A
+    hyphenated fraction, a dual-unit token and a trailing site note are how the trade writes a
+    dimension; `units/` is on the verdict path and does not move for a transcription convenience
+    (#730).
     """
     token = raw.strip()
+    if _COMPOUND.search(token):
+        raise NotASingleValue(
+            f"{crop_id}: {token!r} is two dimensions and an operator, not one value. Tick "
+            "`not_a_single_value` and leave `value` empty. Do not add them up — arithmetic we "
+            "performed is not something a reader read, and a model that returned this exactly "
+            "would then be scored wrong."
+        )
+    token, _mm = _canonical(token)
     if "." in token:
         raise ScaffoldError(
             f"{crop_id}: {token!r} is a decimal. Write it the way the drawing writes it — "
@@ -498,7 +560,9 @@ def _parsed(raw: str, *, crop_id: str) -> object:
         return normalise_to_inches(token)
     except UnitNormalisationError as refused:
         raise ScaffoldError(
-            f'{crop_id}: {refused}. Give the value with its unit, for example 25 1/2" or 648 mm.'
+            f'{crop_id}: {refused}. Give the value with its unit, for example 25 1/2" or 648 mm. '
+            'A hyphenated fraction (25-1/2"), a dual-unit token (381 [15]) and a trailing note '
+            '(2" (VIF)) are all accepted as written.'
         ) from refused
 
 
@@ -526,6 +590,7 @@ def build(arguments: argparse.Namespace) -> int:
     observations: list[dict[str, object]] = []
     tags: dict[str, list[str]] = {}
     unreadable: list[str] = []
+    not_a_single_value: list[str] = []
     empty: list[str] = []
 
     for index, row in enumerate(rows):
@@ -537,6 +602,14 @@ def build(arguments: argparse.Namespace) -> int:
             # trusted on, and the count belongs in the result rather than in the difference between
             # two numbers nobody compares.
             unreadable.append(crop_id)
+            continue
+        if (row.get("not_a_single_value") or _BLANK).strip():
+            # **A different fact from `unreadable`, and kept apart from it deliberately (#730).**
+            # "I could not read it" is about legibility; "this is not one dimension" is about what
+            # the drawing says. Counting them together would hide how often these sheets carry a
+            # compound like `39 1/4"+6"`, which is itself a finding, and would make the key's
+            # unreadable rate look worse than the drawings are.
+            not_a_single_value.append(crop_id)
             continue
         if not (row.get("value") or _BLANK).strip():
             empty.append(crop_id)
@@ -579,7 +652,8 @@ def build(arguments: argparse.Namespace) -> int:
     if not observations:
         raise ScaffoldError(
             f"no values were typed in {out / CROPS_CSV}. "
-            f"{len(unreadable)} marked unreadable, {len(empty)} left blank."
+            f"{len(unreadable)} marked unreadable, {len(not_a_single_value)} marked not a "
+            f"single value, {len(empty)} left blank."
         )
 
     digest = hashlib.sha256(pdf).hexdigest()
@@ -633,6 +707,11 @@ def build(arguments: argparse.Namespace) -> int:
     for tag in HARD_CASE_TAGS:
         print(f"    {tag:<12} {tagged.get(tag, 0):>4}")
     print(f"    {'unreadable':<12} {len(unreadable):>4}  (recorded, not scored)")
+    if not_a_single_value:
+        print(
+            f"    {'compound':<12} {len(not_a_single_value):>4}  "
+            "(not one dimension — recorded, not scored)"
+        )
     if empty:
         print(f"    {'not yet read':<12} {len(empty):>4}")
     if not tagged.get("rotated"):
