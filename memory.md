@@ -60,9 +60,11 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
   it, centred and in proportion, and not one dash of a longer line — searched among *every* path in
   the vendor stamp, because the reader's glyph runs orphan the bar and denominator. Its six
   thresholds are required reader configuration, never defaulted; the demo's were measured on
-  `AI_Set 2` (12 of 12 fractions found, 15 false alarms) and are #274's to confirm. **It sees paths
-  only:** `AI_Set 1` draws its labels as font text inside the stamp, which neither the reader nor
-  the detector sees (#738, open, with an interim-policy question for the admin).
+  `AI_Set 2` (all 12 of the fractions drawn as *paths* found, 15 false alarms) and are #274's to
+  confirm. **It sees paths only.** Both client sets also draw labels as font text inside the stamp —
+  every label on `AI_Set 1`, and 1,050 text objects on `AI_Set 2`, including stacked fractions on
+  pages 15 and 17 that it misses. Neither the reader nor the detector sees those, so the rule above is
+  not yet enforced for them (#738, open, with an interim-policy question for the admin).
 
 ## OPEN — must-fix / to resolve
 - **Rule engine can't yet express the real first rules.** Typed op set lacks aggregate/variable-input

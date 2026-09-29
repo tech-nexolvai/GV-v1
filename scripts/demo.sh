@@ -122,9 +122,10 @@ API_PID=$!
 # these six say what one looks like: a flat stroke (thinner than 0.3 pt, longer than 1 pt) with a
 # glyph-sized shape starting within 3 pt above and below it, each side at least 1 pt tall, nothing
 # over 12 pt, the parts within 2.5x of each other in proportion. Measured on `AI_Set 2`'s 17 pages:
-# it finds all 12 stacked fractions drawn there, with 15 false alarms (hatching, a rotated word, a few
-# outlet symbols) that cost a reviewer a look and never a wrong number. Fractions drawn as font text
-# rather than paths — all of `AI_Set 1`'s — are not seen by it at all (#738).
+# it finds all 12 stacked fractions drawn there as paths, with 15 false alarms (hatching, a rotated
+# word, a few outlet symbols) that cost a reviewer a look and never a wrong number. Fractions drawn as
+# font text rather than paths — all of `AI_Set 1`'s, and some of `AI_Set 2`'s (pages 15 and 17) — are
+# not seen by it at all (#738).
 #
 # **The two Bedrock vision readers, and what turning them on costs (#651).** They were built in
 # #622/#623 and PC.3 and this flag is the only thing that starts them; until it was set here the

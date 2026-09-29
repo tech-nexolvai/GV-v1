@@ -25,9 +25,11 @@ values that separate a fraction from hatching were measured on one client set, a
 there would look like a detector everywhere else. What they were measured against, and what they
 found, is recorded on #735.
 
-**It sees paths only.** A label the vendor drew as font text inside the stamp — every label on
-`AI_Set 1`, whose fractions are text objects either side of a 0.58 pt filled bar — is invisible to
-it, as it is to the rest of the reader (#738).
+**It sees paths only.** A label the vendor drew as font text inside the stamp is invisible to it, as
+it is to the rest of the reader (#738). That is every label on `AI_Set 1`, whose fractions are text
+objects either side of a 0.58 pt filled bar, and some on `AI_Set 2`: its stamps hold 1,050 text
+objects, and the stacked fractions on pages 15 and 17 are drawn that way. The 12 of 12 measured on
+#735 counts the fractions drawn as paths, because the recall net searched paths too.
 
 **The error it is allowed to make is the safe one.** A false detection costs a reviewer one look at a
 crop. A missed one lets a misread fraction reach the agreement gate. Where the two trade, the rules
