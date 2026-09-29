@@ -235,6 +235,7 @@ def _persist_crop(
 
 
 def _built(extraction_run_id: UUID, **changes: object) -> InvocationRecord:
+    outcome = changes.get("outcome", ModelInvocationOutcome.OK)
     values: dict[str, object] = {
         "extraction_run_id": extraction_run_id,
         "model_id": "nova-2-lite-2026-05-14",
@@ -247,6 +248,8 @@ def _built(extraction_run_id: UUID, **changes: object) -> InvocationRecord:
         "latency_ms": 850,
         "outcome": ModelInvocationOutcome.OK,
     }
+    if outcome == ModelInvocationOutcome.REJECTED:
+        values["rejection_reason"] = "schema_validation_failed"
     values.update(changes)
     return InvocationRecord(**values)  # type: ignore[arg-type]
 
@@ -270,6 +273,20 @@ def test_absent_context_binds_as_sql_null_not_json_null() -> None:
 
     column_type = ModelInvocation.__table__.c.assembled_context.type
     assert getattr(column_type, "none_as_null", False) is True
+
+
+def test_rejected_invocation_must_name_the_local_rejection_reason() -> None:
+    """Input: rejected call with no reason. Outcome: rejection. Why: paid abstentions need a cause."""
+
+    with pytest.raises(ValueError, match="record why"):
+        _built(uuid4(), outcome=ModelInvocationOutcome.REJECTED, rejection_reason=None)
+
+
+def test_rejection_reason_belongs_only_to_rejected_invocations() -> None:
+    """Input: reason on a successful call. Outcome: rejection. Why: the field must stay meaningful."""
+
+    with pytest.raises(ValueError, match="only valid"):
+        _built(uuid4(), rejection_reason="schema_validation_failed")
 
 
 def test_the_exact_bounded_context_is_persisted_with_the_invocation(
@@ -506,6 +523,9 @@ def test_every_outcome_is_recorded_with_its_full_cost(
         stored = session.get(ModelInvocation, invocation_id)
         assert stored is not None
         assert stored.outcome == outcome
+        assert stored.rejection_reason == (
+            "schema_validation_failed" if outcome is ModelInvocationOutcome.REJECTED else None
+        )
         assert stored.input_tokens == 612
         assert stored.cost_micros == 91
         assert stored.latency_ms == 850

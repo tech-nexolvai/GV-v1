@@ -389,6 +389,7 @@ class NovaInvocation:
     context: AssembledContext
     bound_pt: Decimal
     injection_attempts: tuple[InjectionAttempt, ...]
+    rejection_reason: str | None = None
 
 
 class InvocationRecorder(RejectionRecorder, Protocol):
@@ -475,6 +476,15 @@ def _error_code(error: Exception) -> str | None:
         return None
     code = details.get("Code")
     return code if isinstance(code, str) else None
+
+
+def _rejection_reason(error: NovaProtocolError | NovaPayloadRejectedError) -> str:
+    """The reason to store on a locally rejected invocation."""
+
+    if isinstance(error, NovaPayloadRejectedError):
+        return error.rejection.reason
+    text = str(error).strip()
+    return f"protocol_error: {text}"[:500] if text else "protocol_error"
 
 
 def _is_timeout(error: Exception) -> bool:
@@ -637,6 +647,7 @@ class NovaAdapter:
             started_ns = monotonic_ns()
             response: Mapping[str, Any] | None = None
             outcome = NovaInvocationOutcome.ERROR
+            rejection_reason: str | None = None
             try:
                 response = self._client.converse(**self._request(request, model_id))
                 candidate = self._candidate(response, request)
@@ -645,8 +656,9 @@ class NovaAdapter:
             except NovaRefusalError:
                 outcome = NovaInvocationOutcome.REFUSED
                 raise
-            except (NovaProtocolError, NovaPayloadRejectedError):
+            except (NovaProtocolError, NovaPayloadRejectedError) as error:
                 outcome = NovaInvocationOutcome.REJECTED
+                rejection_reason = _rejection_reason(error)
                 raise
             except Exception as error:
                 last_error = error
@@ -684,6 +696,7 @@ class NovaAdapter:
                         context=request.context,
                         bound_pt=request.bound_pt,
                         injection_attempts=prepared.injection_attempts,
+                        rejection_reason=rejection_reason,
                     )
                 )
         raise NovaRetryExhaustedError("Nova retry loop ended unexpectedly") from last_error

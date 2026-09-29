@@ -142,6 +142,9 @@ class _InvocationRecordLike(Protocol):
     @property
     def outcome(self) -> str: ...
 
+    @property
+    def rejection_reason(self) -> str | None: ...
+
 
 def _invocation_record_type() -> Any:
     """Load the validated call shape only when a caller is about to persist one."""
@@ -198,6 +201,7 @@ def record(
         cost_micros=invocation.cost_micros,
         latency_ms=invocation.latency_ms,
         outcome=invocation.outcome,
+        rejection_reason=invocation.rejection_reason,
     )
     session.add(stored)
     if flush:
@@ -266,6 +270,13 @@ def _outcome(response: Mapping[str, Any] | None, error: BaseException | None) ->
     return ModelInvocationOutcome.FAILED.value
 
 
+def _rejection_reason(error: BaseException | None) -> str | None:
+    if error is None:
+        return None
+    text = f"{error.__class__.__name__}: {error}".strip()
+    return text[:500] if text else error.__class__.__name__
+
+
 @dataclass(frozen=True, slots=True)
 class BedrockConverseInvocationRecorder:
     """Persist one Bedrock converse call against the package revision it was made for.
@@ -314,6 +325,11 @@ class BedrockConverseInvocationRecorder:
                 cost_micros=0,
                 latency_ms=_milliseconds_since(started_ns),
                 outcome=outcome,
+                rejection_reason=(
+                    _rejection_reason(error)
+                    if outcome == ModelInvocationOutcome.REJECTED.value
+                    else None
+                ),
             ),
         )
 

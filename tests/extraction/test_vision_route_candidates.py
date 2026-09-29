@@ -169,6 +169,11 @@ class ScriptedVisionReader:
                 context=request.context,
                 bound_pt=request.bound_pt,
                 injection_attempts=(),
+                rejection_reason=(
+                    "schema_validation_failed"
+                    if self.outcome is NovaInvocationOutcome.REJECTED
+                    else None
+                ),
             )
         )
         if self.outcome is NovaInvocationOutcome.OK:

@@ -234,6 +234,12 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
     cost_micros: Mapped[int]
     latency_ms: Mapped[int]
     outcome: Mapped[str] = mapped_column(String(32))
+    rejection_reason: Mapped[str | None] = mapped_column(String(500), default=None)
+    """Code-authored reason for a locally rejected model response, when known.
+
+    Null is allowed for historic rejected rows, because this table is append-only and a migration may
+    not rewrite old invocations to invent a reason they did not record at the time.
+    """
 
     __table_args__ = (
         CheckConstraint("model_id <> ''", name="model_invocation_model_id"),
@@ -258,6 +264,10 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
         CheckConstraint(
             f"outcome IN ({MODEL_INVOCATION_OUTCOMES})",
             name="model_invocation_outcome",
+        ),
+        CheckConstraint(
+            "rejection_reason IS NULL OR (outcome = 'rejected' AND rejection_reason <> '')",
+            name="model_invocation_rejection_reason",
         ),
         # **Exactly one origin, never both and never neither** (ADR-0019). Neither leaves a paid
         # call attributable to nothing, which is the same as not recording it and worse, because

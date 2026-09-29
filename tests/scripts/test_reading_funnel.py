@@ -156,3 +156,34 @@ def test_render_tolerates_a_report_missing_a_section() -> None:
     )
 
     assert "(no rows)" in rendered
+
+
+def test_render_prints_rejected_model_calls_by_reason() -> None:
+    """Input: rejection breakdown. Outcome: visible reason. Why: counts without cause hide failures."""
+
+    rendered = render(
+        {
+            "funnel": {
+                "found": 0,
+                "with_a_value": 0,
+                "associated": 0,
+                "sealed": 0,
+                "findings": 0,
+                "passes": 0,
+            },
+            "model_rejections_by_reason": [
+                {
+                    "bucket": "schema_validation_failed",
+                    "status": "amazon.nova-2-lite-v1:0",
+                    "rows": 74,
+                    "input_tokens": 12000,
+                    "output_tokens": 0,
+                    "cost_micros": 91,
+                }
+            ],
+        }
+    )
+
+    assert "MODEL REJECTIONS BY REASON" in rendered
+    assert "schema_validation_failed" in rendered
+    assert "rows=74" in rendered
