@@ -26,7 +26,7 @@ import hashlib
 import io
 import tempfile
 from collections.abc import Iterator, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -52,12 +52,17 @@ from app.models import (
     SourceArtifact,
 )
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.coordinates import ImagePoint
+from extraction.models.context import AssembledContext
+from extraction.models.nova import NovaConfig, NovaInvocation, NovaInvocationOutcome, NovaRequest
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_annotations import BOTH_LAYERS, _appearance, _free_text, _pdf, _stamp
+from tests.extraction.test_reader import _pdf as _content_pdf
 from tests.workflow.test_markup_route import _SilentOcr
+from units.measurement import Unit
 from workflow.association import AssociationSettings, LocalizedOcrSettings, dimension_texts
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION, PageResult
@@ -213,6 +218,69 @@ FAR_FROM_THE_LINE = _pdf(
         )
     ],
 )
+
+#: A content-stream page, not an annotation, with two source text regions for the vision route. The
+#: model row created from the first source must attach; the one created from the second must not.
+VISION_SOURCE_REGIONS = _content_pdf(
+    b"1 w 100 200 m 200 200 l S\n"
+    b"1 w 100 170 m 100 230 l S\n"
+    b"1 w 200 170 m 200 230 l S\n"
+    b"BT /F1 10 Tf 1 0 0 1 120 195 Tm (near) Tj ET\n"
+    b"BT /F1 10 Tf 1 0 0 1 120 40 Tm (far) Tj ET\n",
+    box=b"[0 0 300 300]",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _AssociationVisionReader:
+    """A vision reader double that returns the same parsed dimension for each crop."""
+
+    config: NovaConfig
+
+    def extract(self, request: NovaRequest, recorder: object) -> DomainCandidate:
+        recorder.record(  # type: ignore[attr-defined]
+            NovaInvocation(
+                model_id=self.config.model_id,
+                prompt_id=self.config.prompt_id,
+                template_id=self.config.template_id,
+                attempt=1,
+                latency_ms=1,
+                input_tokens=10,
+                output_tokens=2,
+                outcome=NovaInvocationOutcome.OK,
+                request_id=f"request-{request.candidate_id}",
+                context=AssembledContext(nearby_text=(), nearby_geometry=()),
+                bound_pt=Decimal(9),
+                injection_attempts=(),
+            )
+        )
+        return DomainCandidate(
+            candidate_id=request.candidate_id,
+            extractor=self.config.extractor,
+            extractor_version=self.config.model_id,
+            raw_text='24"',
+            parsed_value=None,
+            unit_guess=Unit.INCH,
+            semantic_guess=None,
+            page=request.page,
+            polygon=(ImagePoint(0, 0), ImagePoint(1, 0), ImagePoint(1, 1), ImagePoint(0, 1)),
+            confidence=Decimal("0.92"),
+            ambiguity_flags=(),
+        )
+
+
+def _association_vision_reader() -> _AssociationVisionReader:
+    return _AssociationVisionReader(
+        NovaConfig(
+            model_id="association-vision-test/v1",
+            prompt_id="dimension-reader-v1",
+            template_id="bounded-crop-v1",
+            connect_timeout_seconds=1,
+            read_timeout_seconds=1,
+            max_attempts=1,
+            extractor="association-vision-test",
+        )
+    )
 
 
 def _upgrade(engine: Engine) -> None:
@@ -407,6 +475,51 @@ def test_an_unambiguous_split_ocr_reading_uses_the_same_production_association(
     association = next(row for row in _associations(session) if row.candidate_id == ocr.id)
     assert association.refusal_reason is None
     assert len([row for row in _associations(session) if row.candidate_id == ocr.id]) == 1
+
+
+def test_vision_readings_are_associated_through_their_source_region(
+    session: Session, store: LocalStore
+) -> None:
+    """A model-read value can attach only through fixed-reader geometry.
+
+    This is the #698 failure in miniature. A full `demo_pair` run had model-read numbers and
+    detected line-work, but `vision_rows` were never included in the association inputs, so the
+    association table stayed empty. The model still does not supply geometry here: both rows reuse
+    the source text region that caused their crop, which leaves the near reading attached and the
+    far reading refused.
+    """
+    revision = _revision(session, store, data=VISION_SOURCE_REGIONS)
+    session.commit()
+    DatabaseStages(
+        store,
+        dpi=150,
+        association=SETTINGS,
+        ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
+        vision_readers=(_association_vision_reader(),),
+    ).extract_pages(session, revision.id)
+    session.commit()
+
+    vision_run_ids = {
+        run.id
+        for run in session.execute(select(ExtractionRun)).scalars()
+        if run.extractor == "association-vision-test"
+    }
+    vision_candidate_ids = {
+        candidate.id
+        for candidate in session.execute(select(ObservationCandidate)).scalars()
+        if candidate.extraction_run_id in vision_run_ids
+    }
+    vision_rows = [
+        row for row in _associations(session) if row.candidate_id in vision_candidate_ids
+    ]
+
+    assert len(vision_rows) == 2
+    assert {row.refusal_reason is None for row in vision_rows} == {True, False}
+    attached = next(row for row in vision_rows if row.refusal_reason is None)
+    refused = next(row for row in vision_rows if row.refusal_reason is not None)
+    assert _text_of(session, attached) == '24"'
+    assert attached.signals
+    assert refused.start_x is None
 
 
 def test_a_stamp_only_vendor_region_uses_localized_ocr_and_the_same_association(
