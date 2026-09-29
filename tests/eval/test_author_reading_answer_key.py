@@ -16,7 +16,7 @@ import pytest
 
 from eval.experiments.model_bakeoff import load_crops
 from extraction.rasterise import VISION_CROP_DPI
-from scripts.author_reading_answer_key import CROPS_CSV, main
+from scripts.author_reading_answer_key import CROPS_CSV, Candidate, _legible, _stratified, main
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
 
 
@@ -28,13 +28,33 @@ from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _st
 #: rectangles on the page finds nothing at all. Reusing the helpers means this test cannot drift
 #: from what the reader actually accepts.
 def _glyph_clusters(count: int) -> bytes:
-    """One long stroke as line-work, then `count` five-stroke clusters spaced along it."""
-    strokes = [b"1 w 100 500 m 340 500 l S\n"]
+    """One detected dimension, then `count` five-stroke clusters spaced along it."""
+    strokes = [
+        b"1 w 100 550 m 340 550 l S\n",
+        b"100 510 m 100 590 l S\n",
+        b"340 510 m 340 590 l S\n",
+    ]
     for cluster in range(count):
         origin = 110 + cluster * 30
         for stroke in range(5):
             x = origin + stroke * 3
-            strokes.append(f"{x} 520 m {x + 2} 524 l S\n".encode())
+            strokes.append(f"{x} 570 m {x + 2} 574 l S\n".encode())
+    return b"".join(strokes)
+
+
+def _dimension_and_box_noise() -> bytes:
+    """Dimension-adjacent glyphs plus more glyphs near a cabinet edge."""
+    strokes = [
+        *_glyph_clusters(4).splitlines(keepends=True),
+        b"100 650 m 340 650 l S\n",
+        b"100 650 m 100 720 l S\n",
+        b"340 650 m 340 720 l S\n",
+    ]
+    for cluster in range(8):
+        origin = 110 + cluster * 24
+        for stroke in range(5):
+            x = origin + stroke * 3
+            strokes.append(f"{x} 670 m {x + 2} 674 l S\n".encode())
     return b"".join(strokes)
 
 
@@ -48,6 +68,13 @@ def _drawing_bytes(clusters: int = 6) -> bytes:
     return _pdf(
         annotations=[_free_text(), _stamp(appearance_object=7)],
         extra_objects=[_appearance(_glyph_clusters(clusters))],
+    )
+
+
+def _noisy_drawing_bytes() -> bytes:
+    return _pdf(
+        annotations=[_free_text(), _stamp(appearance_object=7)],
+        extra_objects=[_appearance(_dimension_and_box_noise())],
     )
 
 
@@ -90,8 +117,8 @@ def _fill(
     out: Path,
     values: list[str],
     *,
-    unreadable: set[str] = frozenset(),
-    rotate: set[str] = frozenset(),
+    unreadable: frozenset[str] | set[str] = frozenset(),
+    rotate: frozenset[str] | set[str] = frozenset(),
 ) -> None:
     """Stand in for the person: type a value per row, tick the odd box."""
     with (out / CROPS_CSV).open(encoding="utf-8", newline="") as handle:
@@ -126,6 +153,47 @@ def _build(out: Path, drawing: Path, *extra: str) -> int:
     )
 
 
+def _candidate(crop_id: str, *, stratum: str, width: int = 80, height: int = 20) -> Candidate:
+    return Candidate(
+        crop_id=crop_id,
+        page=1,
+        polygon=(0, 0, width, height),
+        stratum=stratum,
+        path_count=5,
+        line_count=1,
+    )
+
+
+def test_sampling_keeps_rotated_stacked_and_small_glyph_cases() -> None:
+    candidates = [
+        _candidate("easy-1", stratum="dimension_label"),
+        _candidate("easy-2", stratum="dimension_label"),
+        _candidate("rotated", stratum="rotated"),
+        _candidate("stacked", stratum="stacked_fraction"),
+        _candidate("small", stratum="small_glyph", width=40),
+    ]
+
+    chosen = _stratified(candidates, count=4, seed=0)
+
+    assert {candidate.stratum for candidate in chosen} >= {
+        "rotated",
+        "stacked_fraction",
+        "small_glyph",
+    }
+
+
+def test_regions_too_small_to_read_are_excluded_before_sampling() -> None:
+    kept, dropped = _legible(
+        [
+            _candidate("speck", stratum="small_glyph", width=12, height=5),
+            _candidate("small-but-readable", stratum="small_glyph", width=35, height=8),
+        ]
+    )
+
+    assert [candidate.crop_id for candidate in kept] == ["small-but-readable"]
+    assert dropped == 1
+
+
 def test_scaffold_writes_crops_and_an_empty_sheet(drawing: Path, tmp_path: Path) -> None:
     """The deliverable is images plus blank columns. Nothing here has read anything."""
     out = tmp_path / "key"
@@ -140,6 +208,25 @@ def test_scaffold_writes_crops_and_an_empty_sheet(drawing: Path, tmp_path: Path)
     assert all(row["value"] == "" for row in rows)
     assert all(row["unreadable"] == "" for row in rows)
     assert (out / "HOW_TO_READ_THESE.md").exists()
+    assert (out / "contact_sheet.html").exists()
+    assert "Contact Sheet" in (out / "contact_sheet.html").read_text(encoding="utf-8")
+
+
+def test_scaffold_samples_regions_next_to_detected_dimension_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Cabinet-edge clutter is line-adjacent, but it is not dimension-line-adjacent."""
+    drawing = tmp_path / "shop.pdf"
+    drawing.write_bytes(_noisy_drawing_bytes())
+    out = tmp_path / "key"
+
+    assert _scaffold(drawing, out, "--proximity-limit", "0.15") == 0
+
+    rows = list(csv.DictReader((out / CROPS_CSV).open(encoding="utf-8", newline="")))
+    assert len(rows) == 4
+    assert {row["stratum"] for row in rows} == {"dimension_label"}
+    assert all(int(row["near_dimension_lines"]) >= 1 for row in rows)
+    assert "Contact sheet:" in capsys.readouterr().out
 
 
 def test_the_whole_round_trip_ends_in_a_key_the_bakeoff_loads(
