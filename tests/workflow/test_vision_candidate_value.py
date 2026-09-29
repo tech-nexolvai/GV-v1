@@ -53,6 +53,7 @@ def _shape_check_accepts(reading: str) -> bool:
         crop_size=CropSize(100, 80),
         coordinate_mode=CoordinateMode.PIXELS,
         recorder=_Discard(),
+        stacked_label=False,
     )
     return isinstance(outcome, ObservationCandidate)
 

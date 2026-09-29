@@ -90,7 +90,7 @@ def _config(*, max_attempts: int = 2) -> NovaConfig:
     )
 
 
-def _request() -> NovaRequest:
+def _request(*, stacked_label: bool = False) -> NovaRequest:
     return NovaRequest(
         candidate_id="candidate-249",
         page=3,
@@ -101,6 +101,7 @@ def _request() -> NovaRequest:
             nearby_geometry=(),
         ),
         bound_pt=Decimal(12),
+        stacked_label=stacked_label,
     )
 
 
@@ -232,6 +233,7 @@ def test_drawing_text_is_sent_as_data_and_never_changes_instructions() -> None:
             nearby_geometry=(),
         ),
         bound_pt=Decimal(8),
+        stacked_label=False,
     )
     client = FakeBedrock(_tool_response(_valid_payload()))
     adapter, sink = _adapter(client)
@@ -258,6 +260,7 @@ def test_request_refuses_an_inexact_or_unsafe_context_bound(bound: object) -> No
             image_format="png",
             context=AssembledContext(nearby_text=(), nearby_geometry=()),
             bound_pt=bound,  # type: ignore[arg-type]
+            stacked_label=False,
         )
 
 
@@ -317,6 +320,41 @@ def test_invalid_tool_payload_fails_closed_without_retry(payload: object) -> Non
         "coordinate_out_of_bounds",
         "candidate_conversion_failed",
     }
+
+
+def test_a_stacked_crop_is_refused_by_the_adapter_and_recorded_why() -> None:
+    """**The link #735 found broken.** The adapter must hand the request's flag to the validator. It
+    did not, the flag defaulted to `False`, and #541's guard never ran in production. A reading that
+    would otherwise be accepted — `28 3/4"` — is refused here, once, and the reason is kept."""
+    client = FakeBedrock(_tool_response(_valid_payload(reading='28 3/4"', unit_guess="in")))
+    adapter, sink = _adapter(client)
+
+    with pytest.raises(NovaPayloadRejectedError):
+        adapter.extract(_request(stacked_label=True))
+
+    assert len(client.requests) == 1, "a deterministic refusal must not be retried at a cost"
+    assert sink.items[0].outcome is NovaInvocationOutcome.REJECTED
+    assert sink.items[0].rejection_reason == "stacked_fraction_requires_review"
+
+
+def test_the_same_reading_of_an_unstacked_crop_is_accepted() -> None:
+    client = FakeBedrock(_tool_response(_valid_payload(reading='28 3/4"', unit_guess="in")))
+    adapter, _sink = _adapter(client)
+
+    assert adapter.extract(_request(stacked_label=False)).raw_text == '28 3/4"'
+
+
+def test_request_refuses_a_stacked_label_that_is_not_a_bool() -> None:
+    with pytest.raises(TypeError, match="stacked_label"):
+        NovaRequest(
+            candidate_id="candidate-stacked",
+            page=3,
+            crop=b"png bytes",
+            image_format="png",
+            context=AssembledContext(nearby_text=(), nearby_geometry=()),
+            bound_pt=Decimal(8),
+            stacked_label=None,  # type: ignore[arg-type]
+        )
 
 
 def test_timeout_retries_within_bound_and_records_every_attempt() -> None:

@@ -65,7 +65,7 @@ import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint
 from evidence.polygon import Polygon
 from extraction.geometry.containment import DimensionExtent
-from extraction.glyph_bands import reading_must_contain_a_fraction
+from extraction.glyph_bands import FractionBarGeometry, GlyphBox, stacked_fractions
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = [
@@ -74,6 +74,7 @@ __all__ = [
     "MarkupNote",
     "OutlinedTextRegion",
     "PageLayers",
+    "StackedFraction",
     "read_annotation_layers",
     "read_markup_layer",
 ]
@@ -164,15 +165,14 @@ class OutlinedTextRegion:
     survives into the output, and a one-path, three-point "region" is worth being able to spot."""
 
     stacked_glyphs: bool = False
-    """Whether this cluster holds a glyph sitting above another — a stacked fraction (#541).
+    """Whether this cluster touches a stacked fraction the bar detector found (#541, #735).
 
-    Recorded here because this is the only place that still has the individual glyph boxes: the
-    region keeps their union and throws the rest away, so by the time a reading comes back there is
-    nothing left to compare it against.
+    Touches, not contains: the run a reader forms at a fraction usually holds only the numerator,
+    because the bar and denominator sit below it and are orphaned by `_glyph_runs`. A crop cut round
+    this region still shows the rest, and that is what a model reads.
 
-    **Defaults to `False`, the answer that accepts.** A record built before this existed, or by a
-    path that supplied no separation, must not be read as having said "stacked" — that would refuse
-    every reading without a `/` in it.
+    **`False` says nothing unless `PageLayers.fractions_read`.** A read that supplied no
+    `FractionBarGeometry` never looked, and its regions are all `False` for that reason alone.
     """
 
     baseline_rotation_degrees: int = 0
@@ -182,6 +182,19 @@ class OutlinedTextRegion:
     it to turn vertical labels upright before a reader sees them, and to invert reader rectangles
     back to the unrotated page.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class StackedFraction:
+    """Where the vendor drew a stacked fraction: bar, numerator and denominator together (#735).
+
+    Kept on the page rather than only on a region because the regions do not hold it — the bar and
+    the denominator were orphaned before any region was formed — and because what matters is whether
+    a *crop* shows one, and crops are cut round other readers' boxes as well as these regions.
+    """
+
+    extent: Polygon
+    image_extent: tuple[ImagePoint, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +233,13 @@ class PageLayers:
     `drawing_segments` from a markup-only read means *nobody looked*, while empty segments from
     `read_annotation_layers` means *there is no line-work on this sheet*. Those are opposite facts
     and a caller that could not tell them apart would report a drawing as having no dimensions."""
+
+    stacked_fractions: tuple[StackedFraction, ...] = ()
+    """Every stacked fraction the bar detector found on the vendor's layer (#735)."""
+
+    fractions_read: bool = False
+    """Whether the bar detector ran. `False` makes an empty `stacked_fractions` mean *nobody looked*,
+    the same distinction `geometry_read` draws for line-work."""
 
     @property
     def readable(self) -> bool:
@@ -713,15 +733,16 @@ def read_annotation_layers(
     line_minimum_pt: Decimal,
     glyph_maximum_pt: Decimal,
     glyph_gap_pt: Decimal,
-    band_separation_pt: Decimal | None = None,
+    fraction_bar: FractionBarGeometry | None = None,
 ) -> PageLayers:
     """One page's annotation layers, read apart and never merged.
 
-    `band_separation_pt` turns on the stacked-fraction measurement (#541) and is **optional, unlike
-    the three lengths above**. Those have no default because every caller must choose them for a
-    check to run at all; this one gates a guard that does not yet have a validated number. Left
-    unset, `vertical_bands` stays 1 and the guard never engages — the accepting direction, and an
-    honest one: nothing was measured, so nothing is claimed. Supplying it is what #274 unblocks.
+    `fraction_bar` turns on the stacked-fraction detector (#735). It is optional here because a
+    script exploring line-work has no use for it, and the result says whether it ran
+    (`PageLayers.fractions_read`) so an empty list from a read that never looked cannot pass for a
+    sheet with no fractions on it. **Where a reading can be accepted it is not optional:**
+    `workflow.association.AssociationSettings` requires it, because without it the rule that a
+    stacked fraction always goes to a reviewer (#726) cannot run.
 
     `dpi` has no default for the reason `read_page_contents` gives: stored coordinates are reached
     through integer image space, so the resolution decides how much precision survives, and a default
@@ -752,13 +773,15 @@ def read_annotation_layers(
             raise TypeError(f"{name} must be a Decimal, never a float")
         if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
             raise ValueError(f"{name} must be a finite positive Decimal")
+    if fraction_bar is not None and not isinstance(fraction_bar, FractionBarGeometry):
+        raise TypeError("fraction_bar must be a FractionBarGeometry")
 
     return _read_layers(
         data,
         page_index,
         document_version_id=document_version_id,
         dpi=dpi,
-        geometry=(line_minimum_pt, glyph_maximum_pt, glyph_gap_pt, band_separation_pt),
+        geometry=(line_minimum_pt, glyph_maximum_pt, glyph_gap_pt, fraction_bar),
     )
 
 
@@ -768,12 +791,12 @@ def _read_layers(
     *,
     document_version_id: UUID,
     dpi: int,
-    geometry: tuple[Decimal, Decimal, Decimal, Decimal | None] | None,
+    geometry: tuple[Decimal, Decimal, Decimal, FractionBarGeometry | None] | None,
 ) -> PageLayers:
     """The annotation walk both entry points share.
 
-    `geometry` carries the three lengths and the optional band separation, or `None` to skip the
-    vendor's path geometry entirely. One
+    `geometry` carries the three lengths and the optional fraction-bar detector, or `None` to skip
+    the vendor's path geometry entirely. One
     walk rather than two, because the markup half and the geometry half read the same `/Annots` array
     and must agree about which annotation is which — two walks could drift apart, and a drift here
     attributes one annotation's geometry to another's text.
@@ -785,6 +808,7 @@ def _read_layers(
     other: list[MarkupNote] = []
     segments: list[DimensionExtent] = []
     regions: list[OutlinedTextRegion] = []
+    fractions: list[StackedFraction] = []
     refusals: list[LayerRefusal] = []
 
     try:
@@ -837,7 +861,7 @@ def _read_layers(
                 if layer is DrawingLayer.VENDOR_DRAWING:
                     if geometry is None:
                         continue
-                    line_minimum_pt, glyph_maximum_pt, glyph_gap_pt, band_separation_pt = geometry
+                    line_minimum_pt, glyph_maximum_pt, glyph_gap_pt, fraction_bar = geometry
                     try:
                         placement = _appearance_transform(annotation, rect)
                         baseline_rotation_degrees = _baseline_rotation_degrees(placement)
@@ -882,11 +906,12 @@ def _read_layers(
                         line_minimum_pt=line_minimum_pt,
                         glyph_maximum_pt=glyph_maximum_pt,
                         glyph_gap_pt=glyph_gap_pt,
-                        band_separation_pt=band_separation_pt,
+                        fraction_bar=fraction_bar,
                         baseline_rotation_degrees=baseline_rotation_degrees,
                     )
                     segments.extend(found[0])
                     regions.extend(found[1])
+                    fractions.extend(found[2])
                     if ignored:
                         refusals.append(
                             LayerRefusal(
@@ -943,6 +968,8 @@ def _read_layers(
             else "this page carries no annotation layers to read"
         ),
         geometry_read=geometry is not None,
+        stacked_fractions=tuple(fractions),
+        fractions_read=geometry is not None and geometry[3] is not None,
     )
 
 
@@ -955,10 +982,19 @@ def _drawing_geometry(
     line_minimum_pt: Decimal,
     glyph_maximum_pt: Decimal,
     glyph_gap_pt: Decimal,
-    band_separation_pt: Decimal | None,
+    fraction_bar: FractionBarGeometry | None,
     baseline_rotation_degrees: int,
-) -> tuple[tuple[tuple[DimensionExtent, ...], tuple[OutlinedTextRegion, ...]], int, int]:
-    """One stamp's paths split into line-work and candidate text regions, plus what was left over."""
+) -> tuple[
+    tuple[
+        tuple[DimensionExtent, ...],
+        tuple[OutlinedTextRegion, ...],
+        tuple[StackedFraction, ...],
+    ],
+    int,
+    int,
+]:
+    """One stamp's paths split into line-work, candidate text regions and stacked fractions, plus
+    what was left over."""
     segments: list[DimensionExtent] = []
     ignored_segments = 0
     for start, end in _long_segments(paths, line_minimum_pt):
@@ -994,6 +1030,27 @@ def _drawing_geometry(
         elif not _long_segments((path,), line_minimum_pt):
             ignored += 1
 
+    # **Every path, not `small`.** `small` is bounded by `glyph_maximum_pt`, which is tuned for the
+    # dimension-line detector and excludes a full-height numerator, and the runs below have already
+    # orphaned the bar and denominator. The detector brings its own size bound.
+    fraction_boxes: tuple[GlyphBox, ...] = (
+        ()
+        if fraction_bar is None
+        else stacked_fractions(
+            [_bounds(path) for path in paths],
+            geometry=fraction_bar,
+            rotation_degrees=baseline_rotation_degrees,
+        )
+    )
+    fractions: list[StackedFraction] = []
+    for box in fraction_boxes:
+        try:
+            extent, image_extent = _polygon(box, transform, document_version_id, page_index)
+        except (TypeError, ValueError):
+            # Outside the visible crop box, or a line in image space. Neither can be in a crop.
+            continue
+        fractions.append(StackedFraction(extent=extent, image_extent=image_extent))
+
     regions: list[OutlinedTextRegion] = []
     runs, orphaned_glyphs = _glyph_runs(small, glyph_gap_pt, baseline_rotation_degrees)
     for cluster in runs:
@@ -1017,18 +1074,19 @@ def _drawing_geometry(
                 image_extent=image_extent,
                 path_count=len(cluster),
                 point_count=sum(len(small_paths[index]) for index in cluster),
-                # Measured here and nowhere else: `rect` above is the union of these boxes, so this
-                # is the last point at which the two rows of a stacked fraction are distinguishable.
-                stacked_glyphs=(
-                    band_separation_pt is not None
-                    and reading_must_contain_a_fraction(
-                        boxes,
-                        separation_pt=band_separation_pt,
-                        rotation_degrees=baseline_rotation_degrees,
-                    )
-                ),
+                stacked_glyphs=any(_touches(rect, box) for box in fraction_boxes),
                 baseline_rotation_degrees=baseline_rotation_degrees,
             )
         )
 
-    return (tuple(segments), tuple(regions)), ignored, orphaned_glyphs
+    return (tuple(segments), tuple(regions), tuple(fractions)), ignored, orphaned_glyphs
+
+
+def _touches(first: GlyphBox, second: GlyphBox) -> bool:
+    """Whether two boxes share any point, edges included."""
+    return (
+        first[0] <= second[2]
+        and second[0] <= first[2]
+        and first[1] <= second[3]
+        and second[1] <= first[3]
+    )

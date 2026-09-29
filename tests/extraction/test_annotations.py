@@ -30,6 +30,7 @@ from extraction.annotations import (
     read_annotation_layers,
     read_markup_layer,
 )
+from extraction.glyph_bands import FractionBarGeometry
 from extraction.reader import UnreadablePdf
 
 DOCUMENT = UUID("11111111-1111-4111-8111-111111111111")
@@ -634,9 +635,7 @@ def test_a_page_with_an_offset_media_box_is_read_rather_than_refused() -> None:
         ],
         extra_objects=[
             _appearance(
-                b"1 w 150 550 m 250 550 l S\n"
-                b"1 w 150 520 m 150 580 l S\n"
-                b"1 w 250 520 m 250 580 l S\n"
+                b"1 w 150 550 m 250 550 l S\n1 w 150 520 m 150 580 l S\n1 w 250 520 m 250 580 l S\n"
             )
         ],
         box=b"[500 500 900 800]",
@@ -682,3 +681,87 @@ def test_the_page_boxes_a_reader_uses_are_the_ones_the_pdf_declares() -> None:
     assert media == (Decimal(500), Decimal(500), Decimal(900), Decimal(800))
     assert crop == media, "a page declaring no CropBox inherits its MediaBox"
     assert media != inverted, "this page does not exercise the difference"
+
+
+# ---------------------------------------------------------------------------
+# Stacked fractions (#735): found through the real reader, not on hand-built boxes
+# ---------------------------------------------------------------------------
+
+#: `28 3/4"` drawn the way the client's plotter draws it, in the stamp's own appearance space: two
+#: full-height digits, a numerator, a bar as a zero-width stroke, the denominator as a body and a
+#: stem, and two inch-mark ticks. Synthetic digits; the shapes are measured ones.
+STACKED_APPEARANCE = (
+    b"0.2 w 110 520 m 113.6 525.5 l 110 525.5 l S\n"  # 2
+    b"114.5 520 m 118.1 525.5 l 114.5 525.5 l S\n"  # 8
+    b"120.1 526.4 m 123.7 531.9 l 120.1 531.9 l S\n"  # 3, raised
+    b"120 525.5 m 123.8 525.5 l S\n"  # the bar
+    b"120 521 m 123.8 524.6 l 120 524.6 l S\n"  # 4's body, dropped
+    b"122.5 519.2 m 122.5 524.6 l S\n"  # 4's stem
+    b"125.6 527.7 m 126.1 529.3 l S\n"  # inch mark
+    b"127.2 527.7 m 127.7 529.3 l S\n"
+)
+
+FRACTION_BAR = FractionBarGeometry(
+    bar_thickness_max_pt=Decimal("0.3"),
+    bar_length_min_pt=Decimal(1),
+    reach_pt=Decimal(3),
+    glyph_min_pt=Decimal(1),
+    glyph_max_pt=Decimal(12),
+    proportion_max=Decimal("2.5"),
+)
+
+
+def _stacked_layers(
+    fraction_bar: FractionBarGeometry | None, *, glyph_maximum_pt: Decimal = Decimal(5)
+):
+    return read_annotation_layers(
+        _pdf(
+            annotations=[_stamp(appearance_object=6)],
+            extra_objects=[_appearance(STACKED_APPEARANCE)],
+        ),
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+        # The demo's thresholds by default. At 5 pt the 5.5 pt numerator is not a glyph at all for
+        # the dimension-line reader, which is why the detector carries its own size bound.
+        line_minimum_pt=Decimal(6),
+        glyph_maximum_pt=glyph_maximum_pt,
+        glyph_gap_pt=Decimal(4),
+        fraction_bar=fraction_bar,
+    )
+
+
+def test_a_stacked_fraction_is_found_through_the_reader_itself() -> None:
+    """**The test #541 lacked.** Its detector passed every unit test and never fired on a real sheet,
+    because the reader's glyph runs orphan the bar and denominator before any region exists. This
+    reads a real stamp at the demo's thresholds and asks the page, not a list of boxes."""
+    layers = _stacked_layers(FRACTION_BAR)
+
+    assert layers.fractions_read is True
+    assert len(layers.stacked_fractions) == 1, layers.refusals
+    fraction = layers.stacked_fractions[0]
+    assert fraction.extent.document_version_id == DOCUMENT
+    assert fraction.image_extent, "a fraction with no pixels cannot be matched to a crop"
+
+
+def test_a_region_is_marked_stacked_only_when_it_touches_the_fraction() -> None:
+    """**Why the vision stage asks about the crop, not the region.** At the demo's thresholds the one
+    run the reader forms here is the inch mark: the digits are too tall to be glyphs at 5 pt, and the
+    bar and denominator are orphaned. That run does not touch the fraction, so it is not marked — yet
+    a crop cut round it, with its margin, shows the whole label. At 12 pt the run holds the numerator,
+    touches the fraction, and is marked, which is what the answer-key scaffold samples on."""
+    demo = _stacked_layers(FRACTION_BAR)
+    wide = _stacked_layers(FRACTION_BAR, glyph_maximum_pt=Decimal(12))
+
+    assert demo.outlined_regions and not any(r.stacked_glyphs for r in demo.outlined_regions)
+    assert any(region.stacked_glyphs for region in wide.outlined_regions), wide.outlined_regions
+
+
+def test_a_read_without_the_detector_says_it_never_looked() -> None:
+    """**Opposite facts again.** No fractions because none are drawn, and no fractions because
+    nobody looked, must not come back the same — the second is how #541's guard stayed silent."""
+    layers = _stacked_layers(None)
+
+    assert layers.stacked_fractions == ()
+    assert layers.fractions_read is False
+    assert not any(region.stacked_glyphs for region in layers.outlined_regions)

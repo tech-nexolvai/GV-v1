@@ -1,8 +1,13 @@
-"""Catching a stacked fraction the reader absorbed into the digits (#541).
+"""Finding a stacked fraction by its bar (#541, #735).
 
-The case: `28 3/4"` came back from a real crop as `284`, and the seam accepted it — correctly, since
-`284` parses as a dimension. No validator reading the string can catch that. The drawing can, and
-these are the tests that it does.
+The shapes here are the client's plotter shapes, measured on a real stacked fraction and moved to the
+origin: a numerator 3.6 pt wide and 5.5 pt tall, a bar 3.8 pt long drawn as a zero-width stroke, a
+denominator drawn as two strokes (a body and a stem), and an inch mark of two short ticks. No client
+dimension appears; the digits are synthetic.
+
+The detector's first version passed every test it had and could never fire on a real drawing,
+because its tests handed it boxes a real reader never produced (#735). So these hand it what the
+stamp actually holds — every path, including the orphaned bar and denominator.
 """
 
 from __future__ import annotations
@@ -11,122 +16,214 @@ from decimal import Decimal
 
 import pytest
 
-from extraction.glyph_bands import (
-    BandSeparationError,
-    reading_must_contain_a_fraction,
-    stacked_pairs,
+from extraction.glyph_bands import FractionBarGeometry, GlyphBox, stacked_fractions
+
+
+def _d(*values: str) -> GlyphBox:
+    x0, y0, x1, y1 = (Decimal(value) for value in values)
+    return (x0, y0, x1, y1)
+
+
+#: The values `scripts/demo.sh` states, measured on the client set (#735).
+GEOMETRY = FractionBarGeometry(
+    bar_thickness_max_pt=Decimal("0.3"),
+    bar_length_min_pt=Decimal(1),
+    reach_pt=Decimal(3),
+    glyph_min_pt=Decimal(1),
+    glyph_max_pt=Decimal(12),
+    proportion_max=Decimal("2.5"),
 )
 
-#: `28 3/4` as a plotter draws it: `2` and `8` on the baseline, then `3` above `4` with a bar.
-#: y increases upward, as PDF space does.
-STACKED = [
-    (Decimal(0), Decimal(0), Decimal(6), Decimal(10)),  # 2
-    (Decimal(7), Decimal(0), Decimal(13), Decimal(10)),  # 8
-    (Decimal(16), Decimal(6), Decimal(21), Decimal(11)),  # 3, raised
-    (Decimal(16), Decimal(0), Decimal(21), Decimal(5)),  # 4, dropped
-]
+NUMERATOR = _d("0.1", "6.4", "3.7", "11.9")  # one path, as the plotter draws a `3`
+BAR = _d("0", "5.5", "3.8", "5.5")  # a zero-width stroke: flat
+DENOMINATOR_BODY = _d("0", "1.0", "3.8", "4.6")  # the `4` is two strokes
+DENOMINATOR_STEM = _d("2.5", "-0.8", "2.5", "4.6")
+INCH_TICKS = [_d("5.6", "7.7", "6.1", "9.3"), _d("7.2", "7.7", "7.7", "9.3")]
 
-#: `2 - 10` on one line: four glyphs, every one sharing the baseline.
-ONE_LINE = [
-    (Decimal(0), Decimal(0), Decimal(6), Decimal(10)),
-    (Decimal(7), Decimal(0), Decimal(13), Decimal(10)),
-    (Decimal(15), Decimal(0), Decimal(21), Decimal(10)),
-    (Decimal(22), Decimal(0), Decimal(28), Decimal(10)),
-]
-
-SEPARATION = Decimal("0.5")
+FRACTION = [NUMERATOR, BAR, DENOMINATOR_BODY, DENOMINATOR_STEM, *INCH_TICKS]
 
 
-def test_a_label_on_one_line_holds_no_stacked_pair() -> None:
-    """The false positive that would matter.
+def _shifted(boxes: list[GlyphBox], dx: str) -> list[GlyphBox]:
+    step = Decimal(dx)
+    return [(box[0] + step, box[1], box[2] + step, box[3]) for box in boxes]
 
-    A wide dimension label flagged as stacked would refuse a correct reading, and the guard would be
-    worse than nothing. No two glyphs of `2' - 10"` compete for one position on the line, however
-    far apart the label runs.
+
+def test_a_stacked_fraction_is_found_as_the_plotter_draws_it() -> None:
+    """**The case #735 exists for.** Bar, numerator above, denominator below in two strokes.
+
+    The box that comes back is the whole fraction — bar, numerator and denominator — so a crop that
+    shows any of it can be told apart from one that shows none.
     """
-    assert stacked_pairs(ONE_LINE, separation_pt=SEPARATION) == 0
-    assert not reading_must_contain_a_fraction(ONE_LINE, separation_pt=SEPARATION)
+    found = stacked_fractions(FRACTION, geometry=GEOMETRY)
+
+    assert found == (_d("0", "-0.8", "3.8", "11.9"),)
 
 
-def test_a_stacked_fraction_is_found_through_its_whole_number() -> None:
-    """**The case the first implementation got wrong**, kept as the headline test.
+def test_the_whole_number_beside_it_changes_nothing() -> None:
+    """`28 3/4"`: two full-height digits to the left. They share no position with the bar, so the
+    detection is the same fraction and does not swallow the whole number."""
+    whole = [_d("-9", "0", "-5", "11.9"), _d("-4.5", "0", "-0.5", "11.9")]
 
-    Projecting every glyph onto the across-baseline axis and counting groups finds *one* band here,
-    because the full-height `2` and `8` span the numerator's row and the denominator's both — the
-    whole number bridges the gap the fraction makes. A fixture containing only `3/4` would have
-    passed that implementation and shipped it.
+    found = stacked_fractions([*whole, *FRACTION], geometry=GEOMETRY)
+
+    assert found == (_d("0", "-0.8", "3.8", "11.9"),)
+
+
+def test_a_numerator_one_drawn_as_a_single_stroke_is_still_found() -> None:
+    """**Recall, in the case that matters most.** `1/2`, `1/4`, `1/8` and `1/16` are the commonest
+    fractions in the trade, and a stroke-font `1` can be one vertical stroke with no width. Requiring
+    a two-dimensional glyph on *both* sides would miss every one of them; the rule asks for one side.
     """
-    assert stacked_pairs(STACKED, separation_pt=SEPARATION) == 1
-    assert reading_must_contain_a_fraction(STACKED, separation_pt=SEPARATION)
+    one = _d("1.9", "6.4", "1.9", "11.9")
+
+    found = stacked_fractions([one, BAR, DENOMINATOR_BODY, DENOMINATOR_STEM], geometry=GEOMETRY)
+
+    assert len(found) == 1
 
 
-def test_a_descender_is_not_a_stacked_pair() -> None:
-    """A comma dips below its neighbours and is not a second row.
+def test_a_hyphen_on_one_line_is_not_a_bar() -> None:
+    """`2' - 10"`: the hyphen is a flat stroke, but nothing sits above it or below it."""
+    label = [
+        _d("0", "0", "3.6", "5.5"),
+        _d("4.5", "3.5", "5.0", "5.5"),  # the foot mark
+        _d("6.5", "2.7", "8.5", "2.7"),  # the hyphen
+        _d("10", "0", "13.6", "5.5"),
+        _d("14", "0", "17.6", "5.5"),
+    ]
 
-    It overlaps them along the line, so the along-baseline test alone would accept it; it is the
-    requirement of clear space *across* the baseline that refuses it.
-    """
-    descender = [*ONE_LINE, (Decimal(27), Decimal(-3), Decimal(30), Decimal(2))]
-
-    assert stacked_pairs(descender, separation_pt=SEPARATION) == 0
-
-
-def test_the_separation_decides_and_is_not_guessed_here() -> None:
-    """The same glyphs are stacked or not depending on the number, which is why it is an argument.
-
-    `#541` is explicit that the threshold cannot be set from the one sheet we hold. This pins that
-    the module takes no view: raise the separation past the gap and the stack stops being one.
-    """
-    assert stacked_pairs(STACKED, separation_pt=Decimal("0.5")) == 1
-    assert stacked_pairs(STACKED, separation_pt=Decimal(3)) == 0
+    assert stacked_fractions(label, geometry=GEOMETRY) == ()
 
 
-def test_a_rotated_label_is_measured_across_its_own_baseline() -> None:
-    """Both drawings we hold carry rotated dimension text, so this is the common case.
+def test_two_lines_of_text_are_not_a_fraction() -> None:
+    """The false positive `glyph_bands` used to be exposed to: any two-line note has glyphs one above
+    another. With no bar between them there is nothing to find."""
+    note = [_d("0", "7", "3.6", "12.5"), _d("0", "0", "3.6", "5.5")]
 
-    `3' - 1"` runs vertically on `AI_Set_2.pdf` and `724 [28 1/2]` runs vertically on
-    `demo_pair/shop.pdf`. Measured down the page, a quarter-turned stack looks like two glyphs side
-    by side — which would silently switch the guard off exactly where it is needed.
-    """
-    turned = [(y, x, top, right) for (x, y, right, top) in STACKED]
-
-    assert stacked_pairs(turned, separation_pt=SEPARATION, rotation_degrees=90) == 1
-    # Read as upright, the same glyphs give a different answer entirely — the argument is load
-    # bearing, not decoration.
-    assert stacked_pairs(turned, separation_pt=SEPARATION, rotation_degrees=0) != 1
+    assert stacked_fractions(note, geometry=GEOMETRY) == ()
 
 
-def test_an_upright_label_read_as_turned_would_refuse_a_correct_reading() -> None:
-    """The dangerous direction, and the reason the rotation argument is not cosmetic.
+def test_one_dash_of_a_dashed_line_is_not_a_bar() -> None:
+    """**The false alarm isolation removes.** On the client's page 9, hatch strokes had a shape above
+    and below them just as a bar does. A bar stands alone; a dash has a neighbour on its own line a
+    short gap away."""
+    dashed = [*FRACTION, _d("5.0", "5.5", "8.8", "5.5")]
 
-    Every glyph of `2' - 10"` shares the baseline, so read a quarter turn out they all overlap
-    "along" and every gap between them becomes clear space "across". The guard then demands a
-    fraction of an ordinary label and refuses a correct reading — a false abstention on every
-    dimension on the sheet, which is worse than not having the guard.
-    """
-    assert stacked_pairs(ONE_LINE, separation_pt=SEPARATION, rotation_degrees=0) == 0
-    assert stacked_pairs(ONE_LINE, separation_pt=SEPARATION, rotation_degrees=90) > 0
+    assert stacked_fractions(dashed, geometry=GEOMETRY) == ()
 
 
-def test_one_stacked_pair_is_enough() -> None:
-    """A simple fraction contributes exactly one, so asking for more would miss `28 3/4`."""
-    assert reading_must_contain_a_fraction(STACKED, separation_pt=SEPARATION)
+def test_a_line_on_the_bar_far_beyond_reach_does_not_matter() -> None:
+    far = [*FRACTION, _d("20", "5.5", "40", "5.5")]
+
+    assert len(stacked_fractions(far, geometry=GEOMETRY)) == 1
 
 
-def test_fewer_than_two_glyphs_cannot_stack() -> None:
-    assert stacked_pairs([], separation_pt=SEPARATION) == 0
-    assert stacked_pairs([STACKED[0]], separation_pt=SEPARATION) == 0
-    assert not reading_must_contain_a_fraction([], separation_pt=SEPARATION)
+def test_the_same_stroke_drawn_twice_is_still_one_bar() -> None:
+    """PDFs embolden by drawing a path twice. The copy is not a neighbour on the bar's line."""
+    doubled = [*FRACTION, BAR]
+
+    assert len(stacked_fractions(doubled, geometry=GEOMETRY)) == 1
 
 
-@pytest.mark.parametrize("bad", [Decimal(0), Decimal(-1)])
-def test_a_separation_that_is_not_a_distance_is_refused(bad: Decimal) -> None:
-    """Zero would make every glyph its own band and every reading suspect."""
-    with pytest.raises(BandSeparationError, match="positive"):
-        stacked_pairs(STACKED, separation_pt=bad)
+def test_a_symbol_of_arc_pieces_is_not_a_fraction() -> None:
+    """**The false alarm the one-side shape rule removes.** An electrical-outlet symbol is a flat
+    stroke between two circles, and on the client's sheets each circle is drawn as dozens of short
+    arc pieces — none with real width *and* height. 28 of them passed every other rule (#735)."""
+    arcs_above = [
+        _d(str(Decimal("0.4") * index), "6.4", str(Decimal("0.4") * index + Decimal("0.3")), "7.4")
+        for index in range(9)
+    ]
+    arcs_below = [
+        _d(str(Decimal("0.4") * index), "3.6", str(Decimal("0.4") * index + Decimal("0.3")), "4.6")
+        for index in range(9)
+    ]
+
+    assert stacked_fractions([*arcs_above, BAR, *arcs_below], geometry=GEOMETRY) == ()
 
 
-def test_a_float_separation_is_refused() -> None:
-    """ADR-0001. The threshold reaches a comparison, so it is exact or it is refused."""
-    with pytest.raises(BandSeparationError, match="finite Decimal"):
-        stacked_pairs(STACKED, separation_pt=0.5)  # type: ignore[arg-type]
+def test_a_shape_far_larger_than_the_other_is_not_a_digit_over_a_digit() -> None:
+    tall = _d("0.1", "6.4", "3.7", "11.9")
+    tiny = _d("1.0", "3.0", "3.0", "4.6")  # 1.6 pt tall against 5.5 pt: beyond 2.5x
+
+    assert stacked_fractions([tall, BAR, tiny], geometry=GEOMETRY) == ()
+
+
+def test_shapes_off_to_one_side_of_the_bar_are_not_its_numerator() -> None:
+    """They overlap the bar along the baseline, but their middle is more than a bar length away."""
+    offset = _d("3.7", "6.4", "11.7", "11.9")
+
+    assert stacked_fractions([offset, BAR, DENOMINATOR_BODY], geometry=GEOMETRY) == ()
+
+
+def test_a_path_larger_than_glyph_max_is_not_part_of_a_fraction() -> None:
+    """A cabinet edge above a short stroke is line-work, whatever else is near it."""
+    edge = _d("-20", "6.4", "20", "18.5")
+
+    assert stacked_fractions([edge, BAR, DENOMINATOR_BODY], geometry=GEOMETRY) == ()
+
+
+def test_a_quarter_turned_fraction_is_measured_along_its_own_baseline() -> None:
+    """Both drawings carry vertical dimension text. Turned a quarter, the bar is vertical on the page
+    and only reads as a bar when measured across the baseline the stamp states."""
+    turned = [(box[1], box[0], box[3], box[2]) for box in FRACTION]
+
+    assert len(stacked_fractions(turned, geometry=GEOMETRY, rotation_degrees=90)) == 1
+    assert stacked_fractions(turned, geometry=GEOMETRY, rotation_degrees=0) == ()
+
+
+def test_two_fractions_are_found_separately() -> None:
+    two = [*FRACTION, *_shifted(FRACTION, "30")]
+
+    assert len(stacked_fractions(two, geometry=GEOMETRY)) == 2
+
+
+def test_no_paths_no_fractions() -> None:
+    assert stacked_fractions([], geometry=GEOMETRY) == ()
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "bar_thickness_max_pt",
+        "bar_length_min_pt",
+        "reach_pt",
+        "glyph_min_pt",
+        "glyph_max_pt",
+        "proportion_max",
+    ],
+)
+def test_every_threshold_is_a_positive_exact_decimal(field: str) -> None:
+    """ADR-0001: each reaches a comparison, so it is exact or it is refused. None has a default."""
+    values = {
+        "bar_thickness_max_pt": Decimal("0.3"),
+        "bar_length_min_pt": Decimal(1),
+        "reach_pt": Decimal(3),
+        "glyph_min_pt": Decimal(1),
+        "glyph_max_pt": Decimal(12),
+        "proportion_max": Decimal("2.5"),
+    }
+    with pytest.raises(TypeError, match="never a float"):
+        FractionBarGeometry(**(values | {field: 0.5}))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="positive"):
+        FractionBarGeometry(**(values | {field: Decimal(0)}))
+    with pytest.raises(TypeError):
+        FractionBarGeometry(**{k: v for k, v in values.items() if k != field})  # type: ignore[arg-type]
+
+
+def test_a_proportion_below_one_would_match_nothing_and_is_refused() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        FractionBarGeometry(
+            bar_thickness_max_pt=Decimal("0.3"),
+            bar_length_min_pt=Decimal(1),
+            reach_pt=Decimal(3),
+            glyph_min_pt=Decimal(1),
+            glyph_max_pt=Decimal(12),
+            proportion_max=Decimal("0.9"),
+        )
+
+
+def test_every_number_is_in_the_run_identity() -> None:
+    """A vision run under other detector numbers is another run, not this one reused."""
+    text = GEOMETRY.config_hash
+
+    for value in ("0.3", "1", "3", "12", "2.5"):
+        assert value in text

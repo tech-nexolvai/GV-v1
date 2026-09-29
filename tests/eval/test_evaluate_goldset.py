@@ -49,6 +49,7 @@ from scripts.evaluate_goldset import (
     main,
     make_fixture,
 )
+from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
 from workflow.association import AssociationSettings
 from workflow.config import READER_RASTER_DPI
 
@@ -81,6 +82,19 @@ ASSOCIATION_ARGUMENTS = [
     "0.0005",
     "--crossing-margin",
     "0.001",
+    # The stacked-fraction detector's six (#735), required with the rest for the same reason.
+    "--fraction-bar-thickness-max-pt",
+    "0.3",
+    "--fraction-bar-length-min-pt",
+    "1",
+    "--fraction-reach-pt",
+    "3",
+    "--fraction-glyph-min-pt",
+    "1",
+    "--fraction-glyph-max-pt",
+    "12",
+    "--fraction-proportion-max",
+    "2.5",
 ]
 
 
@@ -197,7 +211,7 @@ def _reviewed_overlay_with_visible_vendor_reading() -> bytes:
     """A synthetic reviewed sheet: vendor value in a stamp, different answer in FreeText."""
     from tests.extraction.test_annotations import _free_text, _pdf, _stamp
 
-    stream = b"1 w 100 500 m 300 500 l S\n" b'BT /F1 48 Tf 120 560 Td (25.5\\") Tj ET\n'
+    stream = b'1 w 100 500 m 300 500 l S\nBT /F1 48 Tf 120 560 Td (25.5\\") Tj ET\n'
     compressed = zlib.compress(stream)
     appearance = (
         b"<< /Type /XObject /Subtype /Form /FormType 1 /BBox [100 500 400 700] "
@@ -257,6 +271,7 @@ def test_the_extraction_stage_never_receives_the_reviewer_answer(
         minimum_span=Decimal("0.02"),
         straightness=Decimal("0.0005"),
         crossing_margin=Decimal("0.001"),
+        fraction_bar=FRACTION_BAR,
     )
     url = postgres_engine.url.render_as_string(hide_password=False)
 

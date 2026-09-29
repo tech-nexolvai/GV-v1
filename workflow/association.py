@@ -32,6 +32,7 @@ from uuid import UUID
 
 from evidence.polygon import Polygon
 from extraction.geometry.text_association import DimensionText
+from extraction.glyph_bands import FractionBarGeometry
 
 __all__ = ["AssociationSettings", "LocalizedOcrSettings", "ReadItem", "dimension_texts"]
 
@@ -123,7 +124,20 @@ class AssociationSettings:
     margin below that resolution never fires, and the choice goes to whichever line happened to
     round nearer. Found by writing a test for the symmetric case and watching it decide."""
 
+    fraction_bar: FractionBarGeometry
+    """The stacked-fraction detector's geometry (#735), read in the same pass as the rest.
+
+    **Here, and required, because this is what turns on reading the vendor's geometry.** A deployment
+    that reads it can have its vision readings sealed by the agreement gate, and the rule that a
+    stacked fraction always goes to a reviewer (#726) needs the detector to have looked. Optional, it
+    was never supplied: #541's guard was built, tested, and never ran (#735).
+
+    Not in `config_hash`: it changes no association. It is in the vision run's identity instead,
+    because it changes which vision readings are accepted."""
+
     def __post_init__(self) -> None:
+        if not isinstance(self.fraction_bar, FractionBarGeometry):
+            raise TypeError("fraction_bar must be a FractionBarGeometry")
         for name in (
             "line_minimum_pt",
             "glyph_maximum_pt",

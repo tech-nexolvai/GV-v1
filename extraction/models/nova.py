@@ -344,8 +344,14 @@ class NovaRequest:
     image_format: Literal["jpeg", "png"]
     context: AssembledContext
     bound_pt: Decimal
+    stacked_label: bool
+    """Whether the crop shows a stacked fraction, as the sheet's geometry says (#735). Handed to
+    `validate_payload`, which abstains on any reading of such a crop. **No default**: a request that
+    could not say is written `False` where it is built, so the gap is visible in that code."""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.stacked_label, bool):
+            raise TypeError("stacked_label must be a bool")
         if not isinstance(self.candidate_id, str) or not self.candidate_id.strip():
             raise ValueError("candidate_id must be a non-empty string")
         if isinstance(self.page, bool) or not isinstance(self.page, int) or self.page < 0:
@@ -772,6 +778,7 @@ class NovaAdapter:
             crop_size=_crop_size(request.crop, request.image_format),
             coordinate_mode=coordinate_mode,
             recorder=self._recorder,
+            stacked_label=request.stacked_label,
         )
         if isinstance(outcome, ValidationRejection):
             raise NovaPayloadRejectedError(outcome)

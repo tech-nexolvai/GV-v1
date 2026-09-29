@@ -38,6 +38,7 @@ from rules.parameters import ParameterSet as InMemoryParameterSet
 from rules.parameters import ParameterValue as InMemoryParameterValue
 from rules.schema import Quantity
 from scripts.evaluate_goldset import ANSWER_KEY, _pdf, _private_schema, _run_pipeline, load_package
+from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
 from units.measurement import Unit
 from workflow.association import AssociationSettings
 
@@ -56,6 +57,7 @@ def _association() -> AssociationSettings:
         minimum_span=Decimal("0.02"),
         straightness=Decimal("0.0005"),
         crossing_margin=Decimal("0.001"),
+        fraction_bar=FRACTION_BAR,
     )
 
 

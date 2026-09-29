@@ -9,6 +9,7 @@ import pytest
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
 from extraction.models.validation import (
+    STACKED_FRACTION_REASON,
     CandidateContext,
     CoordinateMode,
     CropSize,
@@ -53,6 +54,8 @@ def _validate(
     recorder: RecordingRejections,
     crop_size: CropSize | None = None,
     coordinate_mode: CoordinateMode = CoordinateMode.PIXELS,
+    # Defaulted in this helper only, so the tests of everything else stay about everything else.
+    # `validate_payload` itself has no default — see the test that pins it.
     stacked_label: bool = False,
 ) -> ObservationCandidate | ValidationRejection:
     return validate_payload(
@@ -398,54 +401,73 @@ def test_a_small_reading_is_not_mistaken_for_zero() -> None:
     assert isinstance(outcome, ObservationCandidate)
 
 
-def test_a_reading_with_no_fraction_is_refused_when_the_label_was_drawn_stacked() -> None:
-    """The case #541 exists for, and the one no validator reading the string can catch.
+@pytest.mark.parametrize(
+    "reading",
+    [
+        "284",  # `28 3/4"` with the fraction absorbed into the digits — the case #541 was written for
+        '3 3/4"',  # a stacked `3/4"` with its numerator promoted — two vendors agreed on this (#726)
+        '3/4"',  # the correct reading of that label, which the bare-fraction guard would also refuse
+        '28 3/4"',  # the correct reading of the first
+    ],
+)
+def test_every_reading_of_a_stacked_crop_goes_to_a_reviewer(reading: str) -> None:
+    """**The admin's rule on #726, and why it is not a rule about the string.**
 
-    On a real crop from `AI_Set 2` page 3 a label reading `28 3/4"` came back as `284`, and the seam
-    accepted it — correctly, because `284` is a perfectly good dimension token. It is the *drawing*
-    that knows better: the label was drawn with one glyph above another, and a reading with no `/`
-    cannot be a reading of that.
+    Right and wrong readings of a stacked fraction are indistinguishable once read: `3 3/4"` has its
+    `/`, parses, and two readers from different vendors returned it for a `3/4"`. The guard #541 built
+    asked only for a `/`, so it passed that exactly as it passed the right answer. So a crop that
+    shows a stacked fraction abstains on every reading, and says why.
     """
     recorder = RecordingRejections()
 
     outcome = _validate(
-        {**_valid_payload(), "reading": "284", "unit_guess": "in"},
+        {**_valid_payload(), "reading": reading, "unit_guess": "in"},
         recorder=recorder,
         stacked_label=True,
     )
 
     assert isinstance(outcome, ValidationRejection)
-    assert outcome.reason == "stacked_fraction_absorbed"
-    assert "two bands" in outcome.errors[0]
+    assert outcome.reason == STACKED_FRACTION_REASON == "stacked_fraction_requires_review"
+    assert "stacked fraction" in outcome.errors[0]
+    assert recorder.items == [outcome], "an abstention nobody recorded did not happen"
 
 
-def test_a_stacked_label_read_with_its_fraction_is_accepted() -> None:
-    """The guard asks for a `/`, not for a particular value. It never says what the number is."""
-    recorder = RecordingRejections()
-
+def test_a_reading_that_is_not_a_dimension_keeps_its_own_reason_on_a_stacked_crop() -> None:
+    """The truer reason wins. Most of the detector's false alarms are hatching beside a label, and a
+    crop of hatching that reads as `GFI` is not a dimension — which is what a reviewer needs told.
+    """
     outcome = _validate(
-        {**_valid_payload(), "reading": '28 3/4"', "unit_guess": "in"},
-        recorder=recorder,
+        {**_valid_payload(), "reading": "GFI", "unit_guess": None},
+        recorder=RecordingRejections(),
         stacked_label=True,
     )
 
-    assert isinstance(outcome, ObservationCandidate)
-    assert outcome.raw_text == '28 3/4"'
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == "reading_not_a_dimension"
 
 
-def test_an_unmeasured_label_does_not_engage_the_guard() -> None:
-    """Silence is not evidence of stacking.
-
-    Most callers have no geometry to offer, and treating "did not measure" as "stacked" would refuse
-    every reading without a fraction in it — which is nearly all of them.
-    """
-    recorder = RecordingRejections()
-
+def test_a_crop_with_no_stacked_fraction_is_not_refused_for_one() -> None:
     outcome = _validate(
-        {**_valid_payload(), "reading": "284", "unit_guess": "in"}, recorder=recorder
+        {**_valid_payload(), "reading": '28 3/4"', "unit_guess": "in"},
+        recorder=RecordingRejections(),
+        stacked_label=False,
     )
 
     assert isinstance(outcome, ObservationCandidate)
+
+
+def test_every_caller_must_say_whether_its_crop_is_stacked() -> None:
+    """**No default, because the default is how #541's guard never ran.** Both production callers
+    left it out, it defaulted to `False`, and the guard was tested, worked, and was never engaged.
+    """
+    with pytest.raises(TypeError, match="stacked_label"):
+        validate_payload(  # type: ignore[call-arg]
+            _valid_payload(),
+            context=_context(),
+            crop_size=CropSize(100, 80),
+            coordinate_mode=CoordinateMode.PIXELS,
+            recorder=RecordingRejections(),
+        )
 
 
 def test_every_tool_schema_property_tells_the_model_the_contract() -> None:

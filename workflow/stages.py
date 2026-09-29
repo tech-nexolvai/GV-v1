@@ -100,7 +100,7 @@ from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
 from evidence.corroborate import corroborate
-from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
+from evidence.crop import CropSpec, CropStatus, RenderedPage, crop_pixel_box, generate_crop
 from evidence.polygon import Polygon
 from extraction.agent.graph import (
     AbstentionTerminal,
@@ -118,6 +118,7 @@ from extraction.agent.trigger import AmbiguityReason, RegionContext, evaluate_tr
 from extraction.annotations import (
     OutlinedTextRegion,
     PageLayers,
+    StackedFraction,
     read_annotation_layers,
     read_markup_layer,
 )
@@ -1032,6 +1033,7 @@ class DatabaseStages:
                     page=page,
                     task_run_id=run.task_run_id,
                     regions=tuple(vector_rows + ocr_rows),
+                    stacked_fractions=(() if layers is None else layers.stacked_fractions),
                 )
 
             self._apply_cross_route_corroboration(
@@ -1600,6 +1602,7 @@ class DatabaseStages:
                     line_minimum_pt=self._association.line_minimum_pt,
                     glyph_maximum_pt=self._association.glyph_maximum_pt,
                     glyph_gap_pt=self._association.glyph_gap_pt,
+                    fraction_bar=self._association.fraction_bar,
                 )
         except UnreadablePdf as error:
             # The run is opened here rather than before the read, because a run is a record of work
@@ -1815,8 +1818,16 @@ class DatabaseStages:
         page: Page,
         task_run_id: UUID,
         regions: Sequence[ObservationCandidate],
+        stacked_fractions: Sequence[StackedFraction],
     ) -> tuple[list[ObservationCandidate], int, list[str], tuple[_VisionAssociationLink, ...]]:
         """Read each existing candidate region with every configured vision reader.
+
+        **Each request says whether its crop shows a stacked fraction** (#735), found on the vendor's
+        layer by `extraction/glyph_bands.py` when the page's geometry was read. The validator then
+        abstains on any reading of that crop: a stacked fraction always goes to a reviewer (#726).
+        Where the geometry was not read — no association settings — `stacked_fractions` is empty and
+        nothing is flagged; so is a label the vendor drew as font text rather than paths, which the
+        geometry reader does not see (#738).
 
         This route is additive: a model output is another raw candidate, never a fact, and a failed
         model call leaves the fixed readers' candidates untouched. The crop bound and one-call-per
@@ -1857,6 +1868,13 @@ class DatabaseStages:
                     f"dpi={self._dpi};route=vision;"
                     f"crop_margin_pt={VISION_CROP_CONTEXT_MARGIN_PT};"
                     f"context_bound_pt={VISION_CONTEXT_BOUND_PT}"
+                    # Which readings are accepted depends on it, so a run under other numbers is
+                    # another run, not this one reused.
+                    + (
+                        ""
+                        if self._association is None
+                        else f";fraction_bar={self._association.fraction_bar.config_hash}"
+                    )
                 ),
                 dpi=self._dpi,
             )
@@ -1874,12 +1892,13 @@ class DatabaseStages:
                 continue
 
             for region in regions:
-                crop = self._vision_crop(rendered, region)
-                if crop is None:
+                cropped = self._vision_crop(rendered, region)
+                if cropped is None:
                     refusals.append(
                         f"page {page.index}: a candidate's polygon could not be cropped for vision"
                     )
                     continue
+                crop, crop_box = cropped
                 request_candidate_id = uuid4()
                 recorder = _BufferedVisionRecorder(
                     session=session,
@@ -1893,6 +1912,7 @@ class DatabaseStages:
                     image_format="png",
                     context=AssembledContext(nearby_text=(), nearby_geometry=()),
                     bound_pt=VISION_CONTEXT_BOUND_PT,
+                    stacked_label=_crop_shows_a_stacked_fraction(crop_box, stacked_fractions),
                 )
                 try:
                     candidate = reader.extract(request, recorder)
@@ -1916,25 +1936,30 @@ class DatabaseStages:
                 )
         return rows, invocations, refusals, tuple(association_links)
 
-    def _vision_crop(self, rendered: RenderedPage, candidate: ObservationCandidate) -> bytes | None:
+    def _vision_crop(
+        self, rendered: RenderedPage, candidate: ObservationCandidate
+    ) -> tuple[bytes, tuple[int, int, int, int]] | None:
+        """The crop a vision reader is shown, and the page pixels it was cut from.
+
+        The pixels come back with it because what the crop *shows* is what decides whether a
+        reading of it may be accepted (#735), and `crop_pixel_box` is the one computation of that
+        rectangle — the same one `generate_crop` cuts by.
+        """
         if self._store is None:
             return None
         polygon = _stored_polygon(candidate, rendered)
         if polygon is None:
             return None
-        result = generate_crop(
-            rendered,
-            CropSpec(
-                polygon=polygon,
-                context_margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
-                dpi=self._dpi,
-            ),
-            self._store,
+        spec = CropSpec(
+            polygon=polygon,
+            context_margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
+            dpi=self._dpi,
         )
+        result = generate_crop(rendered, spec, self._store)
         if result.status is not CropStatus.AVAILABLE or result.artifact is None:
             return None
         with self._store.get(result.artifact.key) as stored:
-            return stored.read()
+            return stored.read(), crop_pixel_box(rendered, spec)
 
     @staticmethod
     def _record_vision_candidate(
@@ -2122,7 +2147,7 @@ class DatabaseStages:
         **The coordinate round trip is the delicate part, so it is exact rather than trusted.** A
         candidate's polygon is integer image pixels at the dpi the reader used. `CropSpec` wants
         stored space: the same points normalised to 0..1. Dividing by the rendered page's own pixel
-        dimensions is the exact inverse of the multiplication `_crop_box` performs, so the pixels
+        dimensions is the exact inverse of the multiplication `crop_pixel_box` performs, so the pixels
         that come back are the pixels the reader was looking at — provided the render matches the
         read. Rendering at `self._dpi`, the dpi the candidates were read at, is what makes that true,
         and `_stored_polygon` refuses rather than guesses when a point falls outside the page.
@@ -2904,6 +2929,24 @@ def _image_polygon(polygon: Polygon, rendered: RenderedPage) -> list[list[int]]:
         ]
         for point in polygon.points
     ]
+
+
+def _crop_shows_a_stacked_fraction(
+    crop_box: tuple[int, int, int, int], fractions: Sequence[StackedFraction]
+) -> bool:
+    """Whether any part of a detected stacked fraction falls inside a crop's page pixels (#735).
+
+    **Any part, edges included.** A model reads whatever it is shown, and a numerator at the crop's
+    edge is still there to be promoted into a whole number. The crop's own `(left, top, right,
+    bottom)` and the fraction's corners are both page pixels at the reader's dpi.
+    """
+    left, top, right, bottom = crop_box
+    for fraction in fractions:
+        xs = [point.x for point in fraction.image_extent]
+        ys = [point.y for point in fraction.image_extent]
+        if min(xs) <= right and left <= max(xs) and min(ys) <= bottom and top <= max(ys):
+            return True
+    return False
 
 
 def _stored_polygon(candidate: ObservationCandidate, rendered: RenderedPage) -> Polygon | None:

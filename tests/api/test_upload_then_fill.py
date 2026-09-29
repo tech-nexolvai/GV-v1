@@ -53,6 +53,7 @@ from app.models import Project
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
+from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
 from tests.workflow.test_stages import _publish_rulebook
 from workflow.association import AssociationSettings
 from workflow.review import run_all
@@ -75,6 +76,7 @@ SETTINGS = AssociationSettings(
     minimum_span=Decimal("0.02"),
     straightness=Decimal("0.0005"),
     crossing_margin=Decimal("0.001"),
+    fraction_bar=FRACTION_BAR,
 )
 
 #: Two dimensions drawn end to end at page y=100 — page x=100..200 and x=200..300 — with witness
@@ -102,9 +104,7 @@ ARCH_DRAWING = _pdf(
     annotations=[_free_text('51"', rect=b"[110 90 190 110]"), _stamp(appearance_object=7)],
     extra_objects=[
         _appearance(
-            b"1 w 150 550 m 250 550 l S\n"
-            b"1 w 150 520 m 150 580 l S\n"
-            b"1 w 250 520 m 250 580 l S\n"
+            b"1 w 150 550 m 250 550 l S\n1 w 150 520 m 150 580 l S\n1 w 250 520 m 250 580 l S\n"
         )
     ],
 )

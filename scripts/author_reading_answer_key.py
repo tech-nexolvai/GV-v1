@@ -47,6 +47,7 @@ from eval.experiments.model_bakeoff import (
 from extraction.annotations import read_annotation_layers
 from extraction.geometry.dimension_lines import detect
 from extraction.geometry.text_association import lines_within
+from extraction.glyph_bands import FractionBarGeometry
 from extraction.rasterise import VISION_CROP_DPI
 from extraction.vector_first import plan_reads
 from units.normalise import UnitNormalisationError, normalise_to_inches
@@ -88,6 +89,14 @@ DEFAULT_THRESHOLDS: Final = {
     "minimum_span": "0.01",
     "straightness": "0.0005",
     "crossing_margin": "0.0005",
+    # The stacked-fraction detector, as `scripts/demo.sh` states it (#735). Without it the
+    # `stacked_fraction` stratum below is always empty — which every key built before #735 was.
+    "fraction_bar_thickness_max_pt": "0.3",
+    "fraction_bar_length_min_pt": "1",
+    "fraction_reach_pt": "3",
+    "fraction_glyph_min_pt": "1",
+    "fraction_glyph_max_pt": "12",
+    "fraction_proportion_max": "2.5",
 }
 
 
@@ -147,6 +156,14 @@ def _candidates(pdf: bytes, *, page_index: int, thresholds: dict[str, object]) -
         line_minimum_pt=Decimal(str(thresholds["line_minimum_pt"])),
         glyph_maximum_pt=Decimal(str(thresholds["glyph_maximum_pt"])),
         glyph_gap_pt=Decimal(str(thresholds["glyph_gap_pt"])),
+        fraction_bar=FractionBarGeometry(
+            bar_thickness_max_pt=Decimal(str(thresholds["fraction_bar_thickness_max_pt"])),
+            bar_length_min_pt=Decimal(str(thresholds["fraction_bar_length_min_pt"])),
+            reach_pt=Decimal(str(thresholds["fraction_reach_pt"])),
+            glyph_min_pt=Decimal(str(thresholds["fraction_glyph_min_pt"])),
+            glyph_max_pt=Decimal(str(thresholds["fraction_glyph_max_pt"])),
+            proportion_max=Decimal(str(thresholds["fraction_proportion_max"])),
+        ),
     )
     plan = plan_reads(
         layers,

@@ -607,6 +607,10 @@ class BedrockBakeoffAdapter:
                     image_format=crop.image_format,
                     context=crop.context,
                     bound_pt=crop.bound_pt,
+                    # **The bake-off measures the reader, not the gate.** A stacked crop must come
+                    # back with what the model read, or the misreadings the gate exists for could
+                    # never be counted — `3 3/4"` for `3/4"` was found this way (#726).
+                    stacked_label=False,
                 )
             )
             attempts = self._sink.invocations[before:]
