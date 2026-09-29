@@ -28,13 +28,13 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from eval.gold_set.schema import GoldCase
-from eval.notation import canonical_notation, is_compound
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.validation import CoordinateMode, ValidationRejection
 from rules.semantic_types import OperandSource
 from units.imperial import ImperialParseError
 from units.measurement import Measurement, Unit, to_exact_fraction
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.notation import canonical_notation, is_compound
 
 HARD_CASE_TAGS = ("fraction", "rotated", "small_glyph")
 DEFAULT_PAIRINGS = (

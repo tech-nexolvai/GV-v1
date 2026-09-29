@@ -44,13 +44,13 @@ from eval.experiments.model_bakeoff import (
     load_crops,
     render_crop,
 )
-from eval.notation import canonical_notation, is_compound
 from extraction.annotations import read_annotation_layers
 from extraction.geometry.dimension_lines import detect
 from extraction.geometry.text_association import lines_within
 from extraction.rasterise import VISION_CROP_DPI
 from extraction.vector_first import plan_reads
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.notation import canonical_notation, is_compound
 
 CROPS_CSV: Final = "crops.csv"
 ANSWER_KEY: Final = "answer_key.json"
@@ -494,7 +494,7 @@ class NotASingleValue(ScaffoldError):
     """The crop carries an instruction to add, not one dimension (#730)."""
 
 
-#: The notation rules live in `eval/notation.py`, shared with the bake-off scorer: one canonicaliser,
+#: The notation rules live in `units/notation.py`, shared with every reading lane: one canonicaliser,
 #: so the key and the scorer can never disagree about what a written dimension means (#732).
 _canonical = canonical_notation
 

@@ -24,6 +24,7 @@ from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
 from units.measurement import Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.notation import canonical_notation, is_compound
 
 #: Said once, because all four coordinates carry the same contract and four near-identical
 #: sentences are how three of them end up saying something slightly different.
@@ -197,28 +198,6 @@ def _record_rejection(
 #: Deliberately not narrowed to "suspicious-looking" fractions — every bare fraction matches.
 _BARE_FRACTION_RE = re.compile(r'^\s*\d+\s*/\s*\d+\s*"?\s*$')
 
-#: Typewriter and typographic spellings of the inch and foot marks, as a model tends to emit them.
-_MARK_SPELLINGS = (("\u2033", '"'), ("\u2032", "'"), ("''", '"'))
-
-
-def _probe_text(reading: str) -> str:
-    """The reading with the inch mark spelled the way the parser knows it.
-
-    Asked for `8' - 6"` at 600 dpi, `minicpm-v` answered `8'-6''` — the same dimension with the inch
-    double-prime typed as two apostrophes, which is how it has been written on typewriters and in
-    plain ASCII for a century. `normalise_to_inches` refuses it, so a correct reading was being
-    thrown away over a character.
-
-    This is a transcription equivalence, not a value guess: `''` and `\u2033` mean inches and nothing
-    else, and no number changes. **Only this probe sees the substitution.** The candidate keeps
-    exactly the characters the model produced, because a reviewer comparing a reading with a crop
-    must see what was actually returned.
-    """
-    probed = reading
-    for spelling, canonical in _MARK_SPELLINGS:
-        probed = probed.replace(spelling, canonical)
-    return probed
-
 
 def _stacked_fraction_refusal(reading: str, *, stacked: bool) -> str | None:
     """Why a reading contradicts the way its label was drawn, or `None` (#541).
@@ -274,8 +253,14 @@ def _reading_refusal(reading: str) -> str | None:
     `parsed_value` stays `None`. Which unit the number is in remains the `unit_guess` field's
     business, and `evidence/normalize.py` already refuses a candidate that has none.
     """
+    # **The drawing's own notation, through `units.notation` (#733).** Before, only inch-mark spellings
+    # were rewritten here, so a correct `25-1/2"`, `381 [15]` or `2" (VIF)` was refused as not a
+    # dimension — every one of seven readers read `25-1/2"` right in the bake-off and every one was
+    # thrown away. The candidate keeps the characters the model produced; only this check sees the
+    # canonical form.
+    probed = canonical_notation(reading)[0]
     try:
-        measured = normalise_to_inches(_probe_text(reading), unmarked_unit=Unit.INCH)
+        measured = normalise_to_inches(probed, unmarked_unit=Unit.INCH)
     except UnitNormalisationError as error:
         return f"reading {reading!r} is not a dimension token: {error}"
     if measured.exact == 0:
@@ -284,7 +269,10 @@ def _reading_refusal(reading: str) -> str | None:
         # way to satisfy a sum — so this is the one magnitude that says the reading failed rather
         # than that the drawing is unusual.
         return f"reading {reading!r} measures zero, which is not a dimension anything drew"
-    if _BARE_FRACTION_RE.match(reading):
+    # On the canonical form, not the characters returned: `19 [3/4]` does not look like a bare
+    # fraction, but its value is one, and judging the raw text would let a dual token carry a
+    # dropped whole number straight past the check that exists to stop it.
+    if _BARE_FRACTION_RE.match(probed):
         return (
             f"reading {reading!r} is a fraction with no whole number. A dropped whole number reads "
             "as a valid dimension, so this abstains rather than accepting it"
@@ -412,6 +400,19 @@ def validate_payload(
                 else "candidate_conversion_failed"
             ),
             errors=(str(error),),
+        )
+
+    # **Its own reason, and before the shape check (#730, #733).** `39 1/4"+6"` is two dimensions and an
+    # operator: there is no single value to accept or refuse, and a reviewer's next action — read both
+    # — differs from the one "not a dimension" asks for. Adding them up would put arithmetic we did
+    # into a reading the model did not make.
+    if is_compound(validated.reading):
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason="not_a_single_value",
+            errors=(f"reading {validated.reading!r} is two dimensions and an operator",),
         )
 
     # Before the candidate exists, because a candidate is a reading somebody may act on.
