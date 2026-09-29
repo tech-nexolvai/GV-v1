@@ -252,6 +252,11 @@ def _persist(session: Session, run_id: UUID, invocation: NovaInvocation) -> Mode
             cost_micros=0,
             latency_ms=invocation.latency_ms,
             outcome=invocation.outcome.value,
+            # Forwarded, because "the way a production caller would" is the claim this docstring
+            # makes and `InvocationRecord` now enforces it: a rejected invocation without a reason
+            # raises (#701). Leaving it out turned a rejection — an outcome this test is written to
+            # accept — into a failure of the test rather than a recorded fact.
+            rejection_reason=invocation.rejection_reason,
         ),
     )
 
