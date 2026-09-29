@@ -446,3 +446,37 @@ def test_an_unmeasured_label_does_not_engage_the_guard() -> None:
     )
 
     assert isinstance(outcome, ObservationCandidate)
+
+
+def test_every_tool_schema_property_tells_the_model_the_contract() -> None:
+    """**Input: the generated Bedrock tool schema. Outcome: every property is described.**
+
+    The schema is the only thing a reader is told about what an acceptable answer looks like. With
+    bare field names, `mistral.ministral-3-3b-instruct` answered `unit_guess` as `"inch"` and had
+    every reply rejected while reading the crop correctly — 851 of one run's 1,743 rejections (#718).
+    """
+    from extraction.models.nova import _bedrock_tool_schema
+
+    schema = _bedrock_tool_schema()
+    undescribed = [
+        name
+        for name, spec in schema["properties"].items()  # type: ignore[union-attr,index]
+        if not str(spec.get("description", "")).strip()  # type: ignore[union-attr]
+    ]
+
+    assert undescribed == [], f"a reader is told nothing about: {undescribed}"
+
+
+def test_the_unit_field_is_described_rather_than_enumerated() -> None:
+    """An `enum` on `unit_guess` was measured as worse than describing it (#718).
+
+    Constraining the field did not remove the malformation, it moved it into `reading` — 2 of 3
+    accepted against 4 of 4 for the description alone. This asserts the measured choice, so that
+    "just make it an enum" is not re-tried silently.
+    """
+    from extraction.models.nova import _bedrock_tool_schema
+
+    unit = _bedrock_tool_schema()["properties"]["unit_guess"]  # type: ignore[index]
+
+    assert "enum" not in unit
+    assert '"in"' in unit["description"] and '"mm"' in unit["description"]
