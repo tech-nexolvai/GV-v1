@@ -28,8 +28,9 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from eval.gold_set.schema import GoldCase
+from eval.notation import canonical_notation, is_compound
 from extraction.models.context import AssembledContext, NearbyText
-from extraction.models.validation import ValidationRejection
+from extraction.models.validation import CoordinateMode, ValidationRejection
 from rules.semantic_types import OperandSource
 from units.imperial import ImperialParseError
 from units.measurement import Measurement, Unit, to_exact_fraction
@@ -103,6 +104,13 @@ class ModelSpec:
     model_id: str
     input_usd_per_million: Decimal
     output_usd_per_million: Decimal
+    coordinate_mode: CoordinateMode | None = None
+    """The space this model answers in, **as measured** — never inferred from its name (#668).
+
+    `None` means "take it from `VISION_READERS`", which is where production records the measured
+    space for every enabled reader. A model that is in neither is refused when its adapter is built:
+    running it in a default space would score its correct readings as bounds failures (#732).
+    """
 
     def __post_init__(self) -> None:
         for field_name in ("name", "model_id"):
@@ -113,6 +121,10 @@ class ModelSpec:
             value = getattr(self, field_name)
             if not isinstance(value, Decimal) or not value.is_finite() or value < 0:
                 raise ValueError(f"{field_name} must be a finite non-negative Decimal")
+        if self.coordinate_mode is not None and not isinstance(
+            self.coordinate_mode, CoordinateMode
+        ):
+            raise TypeError("coordinate_mode must be a CoordinateMode or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,6 +373,12 @@ def parse_dimension_reading(reading: str, unit_guess: Unit | None) -> Measuremen
     token = reading.strip()
     if not token:
         raise ReadingParseError("reading is empty")
+    # **The drawing's own notation, through the same canonicaliser the answer key used (#732).**
+    # Without it a model that returned `25-1/2"` or `381 [15]` — exactly as the sheet prints it — was
+    # recorded as a parse failure and scored wrong against a key that holds that very value.
+    if is_compound(token):
+        raise ReadingParseError(f"{reading!r} is two dimensions and an operator, not one value")
+    token, _mm = canonical_notation(token)
 
     lowered = token.lower()
     if lowered.endswith("mm"):
@@ -555,6 +573,14 @@ class BedrockBakeoffAdapter:
         nova = import_module("extraction.models.nova")
         self.spec = spec
         self._sink = _InvocationSink()
+        mode = spec.coordinate_mode or _measured_coordinate_mode(nova, spec.model_id)
+        if mode is None:
+            raise ModelBakeoffError(
+                f"{spec.name}: no measured coordinate space for {spec.model_id!r}. State "
+                "`coordinate_mode` in the model manifest from a recorded measurement — it is never "
+                "inferred from a model's name (#668), and a default would score its correct readings "
+                "as out-of-bounds rejections (#732)."
+            )
         config = nova.NovaConfig(
             model_id=spec.model_id,
             prompt_id=prompt_id,
@@ -563,6 +589,7 @@ class BedrockBakeoffAdapter:
             read_timeout_seconds=read_timeout_seconds,
             max_attempts=1,
             region_name=region_name,
+            coordinate_mode=mode,
         )
         self._adapter = nova.NovaAdapter.from_environment(config, self._sink)
 
@@ -606,6 +633,21 @@ class BedrockBakeoffAdapter:
                 latency_ms=sum(attempt.latency_ms for attempt in attempts),
                 error=error.__class__.__name__,
             )
+
+
+def _measured_coordinate_mode(nova: Any, model_id: str) -> CoordinateMode | None:
+    """The coordinate space production recorded for this model, if it runs it as an enabled reader.
+
+    Only **enabled** readers count: a disabled one's space may never have been measured — Claude Haiku's
+    has not, because it has never returned a reading on this account (#665). The inference-profile
+    prefix is ignored, since `us.amazon.nova-2-lite-v1:0` is the same model reached another way.
+    """
+    bare = model_id.removeprefix(nova.INFERENCE_PROFILE_PREFIX)
+    for reader in nova.VISION_READERS:
+        if reader.enabled and reader.model_id == bare:
+            mode: CoordinateMode = reader.coordinate_mode
+            return mode
+    return None
 
 
 class _InvocationSink:
@@ -670,6 +712,7 @@ class _ModelInput(BaseModel):
     model_id: str = Field(min_length=1)
     input_usd_per_million: Decimal
     output_usd_per_million: Decimal
+    coordinate_mode: CoordinateMode | None = None
 
     @field_validator("input_usd_per_million", "output_usd_per_million", mode="before")
     @classmethod
@@ -865,6 +908,7 @@ def load_model_specs(path: str | Path) -> tuple[ModelSpec, ...]:
             model_id=item.model_id,
             input_usd_per_million=item.input_usd_per_million,
             output_usd_per_million=item.output_usd_per_million,
+            coordinate_mode=item.coordinate_mode,
         )
         for item in manifest.models
     )
