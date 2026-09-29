@@ -60,6 +60,7 @@ from extraction.ocr import OcrItem
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_annotations import BOTH_LAYERS, _appearance, _free_text, _pdf, _stamp
+from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
 from tests.extraction.test_reader import _pdf as _content_pdf
 from tests.workflow.test_markup_route import _SilentOcr
 from units.measurement import Unit
@@ -95,6 +96,7 @@ SETTINGS = AssociationSettings(
     minimum_span=Decimal("0.02"),
     straightness=Decimal("0.0005"),
     crossing_margin=Decimal("0.001"),
+    fraction_bar=FRACTION_BAR,
 )
 
 LOCALIZED = LocalizedOcrSettings(
@@ -127,9 +129,7 @@ ONE_LINE = _pdf(
     annotations=[_free_text('185 1/4"', rect=b"[110 90 190 110]"), _stamp(appearance_object=7)],
     extra_objects=[
         _appearance(
-            b"1 w 150 550 m 250 550 l S\n"
-            b"1 w 150 520 m 150 580 l S\n"
-            b"1 w 250 520 m 250 580 l S\n"
+            b"1 w 150 550 m 250 550 l S\n1 w 150 520 m 150 580 l S\n1 w 250 520 m 250 580 l S\n"
         )
     ],
 )
@@ -212,9 +212,7 @@ FAR_FROM_THE_LINE = _pdf(
     extra_objects=[
         # The same dimension as ONE_LINE, at page y=100, with the note moved up to page y=170.
         _appearance(
-            b"1 w 150 550 m 250 550 l S\n"
-            b"1 w 150 520 m 150 580 l S\n"
-            b"1 w 250 520 m 250 580 l S\n"
+            b"1 w 150 550 m 250 550 l S\n1 w 150 520 m 150 580 l S\n1 w 250 520 m 250 580 l S\n"
         )
     ],
 )
@@ -912,6 +910,7 @@ def test_a_float_length_is_refused(name: str) -> None:
         "minimum_span": Decimal("0.02"),
         "straightness": Decimal("0.0005"),
         "crossing_margin": Decimal("0.001"),
+        "fraction_bar": FRACTION_BAR,
     }
     values[name] = 0.05  # type: ignore[assignment]
 
@@ -933,6 +932,7 @@ def test_a_length_that_admits_nothing_is_refused(value: Decimal) -> None:
             minimum_span=Decimal("0.02"),
             straightness=Decimal("0.0005"),
             crossing_margin=Decimal("0.001"),
+            fraction_bar=FRACTION_BAR,
         )
 
 

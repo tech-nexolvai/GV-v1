@@ -192,6 +192,9 @@ def _read_regions(
             # path exists to keep separate.
             context=AssembledContext(nearby_text=(), nearby_geometry=()),
             bound_pt=arguments.margin_pt,
+            # The region's own flag: the region touches a detected fraction. Only when the layers
+            # were read with a detector; otherwise `False` and the readout says nothing about it.
+            stacked_label=entry.region.stacked_glyphs,
         )
         started = time.monotonic()
         row: dict[str, Any] = {

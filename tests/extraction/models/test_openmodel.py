@@ -108,7 +108,7 @@ def _config(*, max_attempts: int = 2) -> OpenModelConfig:
     )
 
 
-def _request(crop: bytes | None = None) -> OpenModelRequest:
+def _request(crop: bytes | None = None, *, stacked_label: bool = False) -> OpenModelRequest:
     return OpenModelRequest(
         candidate_id="candidate-534",
         page=3,
@@ -119,6 +119,7 @@ def _request(crop: bytes | None = None) -> OpenModelRequest:
             nearby_geometry=(),
         ),
         bound_pt=Decimal(96),
+        stacked_label=stacked_label,
     )
 
 
@@ -316,6 +317,20 @@ def test_a_payload_that_does_not_validate_is_rejected_and_kept() -> None:
 
     assert sink.rejections, "the rejected payload was not kept for diagnosis"
     assert [record.outcome for record in sink.items] == [OpenModelInvocationOutcome.REJECTED]
+
+
+def test_a_stacked_crop_is_refused_by_the_adapter_and_recorded() -> None:
+    """The second production caller of `validate_payload`, held to the same link as Nova's (#735)."""
+    sink = RecordingSink()
+    endpoint = FakeEndpoint(_tool_response(_payload() | {"reading": '28 3/4"'}))
+    adapter = OpenModelAdapter(_config(), endpoint, sink)
+
+    with pytest.raises(OpenModelPayloadRejectedError) as raised:
+        adapter.extract(_request(stacked_label=True))
+
+    assert raised.value.rejection.reason == "stacked_fraction_requires_review"
+    assert [record.outcome for record in sink.items] == [OpenModelInvocationOutcome.REJECTED]
+    assert len(endpoint.requests) == 1
 
 
 def test_a_connection_failure_retries_to_the_configured_bound_and_stops() -> None:

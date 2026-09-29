@@ -69,10 +69,24 @@ def _reader_configuration() -> tuple[object | None, object | None]:
         "GV_READER_LOCALIZED_MINIMUM_PATHS": os.environ.get("GV_READER_LOCALIZED_MINIMUM_PATHS"),
         "GV_READER_LOCALIZED_MAXIMUM_SPAN": os.environ.get("GV_READER_LOCALIZED_MAXIMUM_SPAN"),
         "GV_READER_LOCALIZED_CROP_MARGIN_PT": os.environ.get("GV_READER_LOCALIZED_CROP_MARGIN_PT"),
+        # The stacked-fraction detector (#735). Required with the rest because the rule it enforces —
+        # a stacked fraction always goes to a reviewer (#726) — cannot run without it, and the guard
+        # it replaced was optional and was never once supplied.
+        "GV_READER_FRACTION_BAR_THICKNESS_MAX_PT": os.environ.get(
+            "GV_READER_FRACTION_BAR_THICKNESS_MAX_PT"
+        ),
+        "GV_READER_FRACTION_BAR_LENGTH_MIN_PT": os.environ.get(
+            "GV_READER_FRACTION_BAR_LENGTH_MIN_PT"
+        ),
+        "GV_READER_FRACTION_REACH_PT": os.environ.get("GV_READER_FRACTION_REACH_PT"),
+        "GV_READER_FRACTION_GLYPH_MIN_PT": os.environ.get("GV_READER_FRACTION_GLYPH_MIN_PT"),
+        "GV_READER_FRACTION_GLYPH_MAX_PT": os.environ.get("GV_READER_FRACTION_GLYPH_MAX_PT"),
+        "GV_READER_FRACTION_PROPORTION_MAX": os.environ.get("GV_READER_FRACTION_PROPORTION_MAX"),
     }
     missing = [name for name, value in required.items() if not value]
     if missing:
         raise ValueError("localized OCR is enabled but missing " + ", ".join(missing))
+    from extraction.glyph_bands import FractionBarGeometry
     from workflow.association import AssociationSettings, LocalizedOcrSettings
 
     return (
@@ -86,6 +100,16 @@ def _reader_configuration() -> tuple[object | None, object | None]:
             minimum_span=Decimal(required["GV_READER_MINIMUM_SPAN"] or ""),
             straightness=Decimal(required["GV_READER_STRAIGHTNESS"] or ""),
             crossing_margin=Decimal(required["GV_READER_CROSSING_MARGIN"] or ""),
+            fraction_bar=FractionBarGeometry(
+                bar_thickness_max_pt=Decimal(
+                    required["GV_READER_FRACTION_BAR_THICKNESS_MAX_PT"] or ""
+                ),
+                bar_length_min_pt=Decimal(required["GV_READER_FRACTION_BAR_LENGTH_MIN_PT"] or ""),
+                reach_pt=Decimal(required["GV_READER_FRACTION_REACH_PT"] or ""),
+                glyph_min_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MIN_PT"] or ""),
+                glyph_max_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MAX_PT"] or ""),
+                proportion_max=Decimal(required["GV_READER_FRACTION_PROPORTION_MAX"] or ""),
+            ),
         ),
         LocalizedOcrSettings(
             minimum_paths=int(required["GV_READER_LOCALIZED_MINIMUM_PATHS"] or ""),

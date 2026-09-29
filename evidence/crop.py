@@ -243,7 +243,12 @@ def decode_rgb_png(data: bytes) -> tuple[int, int, bytes]:
     )
 
 
-def _crop_box(rendered: RenderedPage, spec: CropSpec) -> tuple[int, int, int, int]:
+def crop_pixel_box(rendered: RenderedPage, spec: CropSpec) -> tuple[int, int, int, int]:
+    """The page pixels `(left, top, right, bottom)` a crop under `spec` is cut from.
+
+    Public because a caller deciding something about what a crop *shows* must use the rectangle the
+    crop was actually cut by, not a second computation of it that could round differently (#735).
+    """
     xs = tuple(point.x * Decimal(rendered.width_px) for point in spec.polygon.points)
     ys = tuple(point.y * Decimal(rendered.height_px) for point in spec.polygon.points)
     margin = spec.context_margin_pt * Decimal(spec.dpi) / POINTS_PER_INCH
@@ -303,7 +308,7 @@ def generate_crop(
         if rendered.dpi != spec.dpi:
             raise ValueError("crop specification DPI does not match the rendered pixels")
 
-        left, top, right, bottom = _crop_box(rendered, spec)
+        left, top, right, bottom = crop_pixel_box(rendered, spec)
         rgb = _crop_rgb(rendered, (left, top, right, bottom))
         png = encode_png(right - left, bottom - top, rgb)
         stream = BytesIO(png)

@@ -84,6 +84,7 @@ from eval.gold_set.store import content_hash
 from eval.scorecard import render, score_package
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import lines_within
+from extraction.glyph_bands import FractionBarGeometry
 from verdict.outcomes import Outcome, Severity
 from workflow.association import AssociationSettings, LocalizedOcrSettings
 from workflow.config import READER_RASTER_DPI
@@ -329,6 +330,12 @@ class Arguments(BaseModel):
     minimum_span: Decimal | None
     straightness: Decimal | None
     crossing_margin: Decimal | None
+    fraction_bar_thickness_max_pt: Decimal | None
+    fraction_bar_length_min_pt: Decimal | None
+    fraction_reach_pt: Decimal | None
+    fraction_glyph_min_pt: Decimal | None
+    fraction_glyph_max_pt: Decimal | None
+    fraction_proportion_max: Decimal | None
 
 
 def _arguments() -> Arguments:
@@ -446,6 +453,36 @@ def _arguments() -> Arguments:
             "units. This is what separates a dimension from the box it measures"
         ),
     )
+    parser.add_argument(
+        "--fraction-bar-thickness-max-pt",
+        type=Decimal,
+        help="required: the thickest stroke that can be a fraction bar, across the baseline, in PDF points (the stacked-fraction detector, #735)",
+    )
+    parser.add_argument(
+        "--fraction-bar-length-min-pt",
+        type=Decimal,
+        help="required: the shortest stroke that can be a fraction bar, along the baseline, in PDF points (the stacked-fraction detector, #735)",
+    )
+    parser.add_argument(
+        "--fraction-reach-pt",
+        type=Decimal,
+        help="required: how far above and below a bar its numerator and denominator may begin, in PDF points (the stacked-fraction detector, #735)",
+    )
+    parser.add_argument(
+        "--fraction-glyph-min-pt",
+        type=Decimal,
+        help="required: how tall a numerator and a denominator must each be, in PDF points (the stacked-fraction detector, #735)",
+    )
+    parser.add_argument(
+        "--fraction-glyph-max-pt",
+        type=Decimal,
+        help="required: the largest path that can be part of a stacked fraction, in PDF points (the stacked-fraction detector, #735)",
+    )
+    parser.add_argument(
+        "--fraction-proportion-max",
+        type=Decimal,
+        help="required: how far numerator, denominator and bar may differ in proportion, as a ratio (the stacked-fraction detector, #735)",
+    )
     return Arguments.model_validate(vars(parser.parse_args()))
 
 
@@ -466,6 +503,12 @@ def _association_settings(arguments: Arguments) -> AssociationSettings:
         "minimum-span": arguments.minimum_span,
         "straightness": arguments.straightness,
         "crossing-margin": arguments.crossing_margin,
+        "fraction-bar-thickness-max-pt": arguments.fraction_bar_thickness_max_pt,
+        "fraction-bar-length-min-pt": arguments.fraction_bar_length_min_pt,
+        "fraction-reach-pt": arguments.fraction_reach_pt,
+        "fraction-glyph-min-pt": arguments.fraction_glyph_min_pt,
+        "fraction-glyph-max-pt": arguments.fraction_glyph_max_pt,
+        "fraction-proportion-max": arguments.fraction_proportion_max,
     }
     missing = [name for name, value in supplied.items() if value is None]
     if missing:
@@ -482,6 +525,12 @@ def _association_settings(arguments: Arguments) -> AssociationSettings:
     assert arguments.minimum_span is not None
     assert arguments.straightness is not None
     assert arguments.crossing_margin is not None
+    assert arguments.fraction_bar_thickness_max_pt is not None
+    assert arguments.fraction_bar_length_min_pt is not None
+    assert arguments.fraction_reach_pt is not None
+    assert arguments.fraction_glyph_min_pt is not None
+    assert arguments.fraction_glyph_max_pt is not None
+    assert arguments.fraction_proportion_max is not None
     return AssociationSettings(
         line_minimum_pt=arguments.line_minimum_pt,
         glyph_maximum_pt=arguments.glyph_maximum_pt,
@@ -492,6 +541,14 @@ def _association_settings(arguments: Arguments) -> AssociationSettings:
         minimum_span=arguments.minimum_span,
         straightness=arguments.straightness,
         crossing_margin=arguments.crossing_margin,
+        fraction_bar=FractionBarGeometry(
+            bar_thickness_max_pt=arguments.fraction_bar_thickness_max_pt,
+            bar_length_min_pt=arguments.fraction_bar_length_min_pt,
+            reach_pt=arguments.fraction_reach_pt,
+            glyph_min_pt=arguments.fraction_glyph_min_pt,
+            glyph_max_pt=arguments.fraction_glyph_max_pt,
+            proportion_max=arguments.fraction_proportion_max,
+        ),
     )
 
 

@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
-from typing import Protocol
+from typing import Final, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
@@ -199,27 +199,31 @@ def _record_rejection(
 _BARE_FRACTION_RE = re.compile(r'^\s*\d+\s*/\s*\d+\s*"?\s*$')
 
 
+#: The reason a reading of a stacked fraction is recorded under. Its own reason, so a reviewer knows
+#: the drawing's layout sent it — not a bad reading, and not a reading that is not a dimension.
+STACKED_FRACTION_REASON: Final = "stacked_fraction_requires_review"
+
+
 def _stacked_fraction_refusal(reading: str, *, stacked: bool) -> str | None:
-    """Why a reading contradicts the way its label was drawn, or `None` (#541).
+    """Why a reading of this crop may not be accepted, or `None` (#541, #735).
 
-    The one check here that does not read the string. `28 3/4"` came back from a real crop as `284`
-    and was accepted, because `284` is a perfectly good dimension token — the string carries no
-    evidence of what went wrong. The drawing does: the label was drawn in two bands, and a reading
-    with no `/` in it cannot be a reading of two bands.
+    The one check here that does not read the string. **A crop that shows a stacked fraction always
+    abstains, whatever came back** — the admin's rule on #726. It used to abstain only when the reading
+    had no `/`, which caught `28 3/4"` read as `284`. It did not catch what the first human-keyed
+    bake-off found: a stacked `3/4"` read as `3 3/4"` by two readers from different vendors, who then
+    agreed. That reading has its `/`, parses, and would have been sealed by the agreement gate. The
+    string carries no evidence of what went wrong, so no rule about the string can be the guard.
 
-    **Fails closed and never corrects.** It does not say what the number should have been, only that
-    what came back does not describe what was drawn. Same trade as the bare-fraction guard: a false
-    abstention costs a reviewer one look at a crop, and the alternative is 28 3/4 inches silently
-    becoming 284.
+    **Fails closed and never corrects.** It does not say what the number should have been. A false
+    abstention costs a reviewer one look at a crop; a missed one is a wrong dimension with two readers
+    vouching for it.
     """
     if not stacked:
         return None
-    if "/" in reading:
-        return None
     return (
-        f"reading {reading!r} has no fraction, but the label was drawn in two bands. A stacked "
-        "fraction absorbed into the digits reads as a valid dimension, so this abstains rather "
-        "than accepting it"
+        f"reading {reading!r} comes from a crop that shows a stacked fraction. Readers mistake a "
+        "stacked numerator for a whole number and agree with each other doing it, so a stacked "
+        "fraction always goes to a reviewer"
     )
 
 
@@ -349,15 +353,15 @@ def validate_payload(
     crop_size: CropSize,
     coordinate_mode: CoordinateMode,
     recorder: RejectionRecorder,
-    stacked_label: bool = False,
+    stacked_label: bool,
 ) -> ValidationOutcome:
     """Return a complete candidate or a recorded abstention, never a partial result.
 
-    `stacked_label` is what the sheet's own geometry said about this crop — two glyph bands, so a
-    stacked fraction (#541). It defaults to `False` because most callers have no geometry to offer
-    and a caller that cannot say must not be treated as having said "stacked": that would refuse
-    every reading without a `/`. The default is the direction that accepts, and the guard only
-    engages where the drawing has been measured.
+    `stacked_label` is what the sheet's own geometry said about this crop: that it shows a stacked
+    fraction the bar detector found (`extraction/glyph_bands.py`, #735). **It has no default.** It
+    had one, `False`, and both production callers relied on it — so the guard it gates was tested,
+    worked when called, and never ran (#735). Every caller now states what it knows; a caller with
+    no geometry says `False` in its own code, where a reader can see the gap.
     """
 
     try:
@@ -417,6 +421,25 @@ def validate_payload(
 
     # Before the candidate exists, because a candidate is a reading somebody may act on.
     refusal = _reading_refusal(validated.reading)
+
+    # **On a stacked crop, the layout is the reason** — recorded under its own reason so a reviewer
+    # knows the drawing sent it, not a bad reading (#735). That holds for every dimension-shaped
+    # reading, and for a bare fraction too: `3/4"` is the *right* reading of a stacked `3/4"`, and
+    # the bare-fraction guard would otherwise refuse it as suspect on its face. Only a reading that is
+    # not a dimension at all keeps that reason: it is the truer one, and most of the detector's false
+    # alarms — hatching beside a label — land there.
+    stacked_refusal = _stacked_fraction_refusal(validated.reading, stacked=stacked_label)
+    if stacked_refusal is not None and (
+        refusal is None or _BARE_FRACTION_RE.match(canonical_notation(validated.reading)[0])
+    ):
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason=STACKED_FRACTION_REASON,
+            errors=(stacked_refusal,),
+        )
+
     if refusal is not None:
         return _record_rejection(
             payload=payload,
@@ -424,19 +447,6 @@ def validate_payload(
             recorder=recorder,
             reason="reading_not_a_dimension",
             errors=(refusal,),
-        )
-
-    # Recorded under its own reason, not folded into the one above. "Not a dimension" sends a
-    # reviewer to look at whether the crop holds a dimension at all; this one says the crop holds a
-    # dimension the reader got wrong, and those are different next actions.
-    stacked_refusal = _stacked_fraction_refusal(validated.reading, stacked=stacked_label)
-    if stacked_refusal is not None:
-        return _record_rejection(
-            payload=payload,
-            context=context,
-            recorder=recorder,
-            reason="stacked_fraction_absorbed",
-            errors=(stacked_refusal,),
         )
 
     return ObservationCandidate(

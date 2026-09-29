@@ -118,6 +118,14 @@ API_PID=$!
 # These are still this demo's numbers rather than a deployment's, and still measured rather than
 # chosen — the difference is that they are now measured against the drawings somebody actually
 # uploads instead of one sheet.
+# **The stacked-fraction detector (#735).** A stacked fraction always goes to a reviewer (#726), and
+# these six say what one looks like: a flat stroke (thinner than 0.3 pt, longer than 1 pt) with a
+# glyph-sized shape starting within 3 pt above and below it, each side at least 1 pt tall, nothing
+# over 12 pt, the parts within 2.5x of each other in proportion. Measured on `AI_Set 2`'s 17 pages:
+# it finds all 12 stacked fractions drawn there, with 15 false alarms (hatching, a rotated word, a few
+# outlet symbols) that cost a reviewer a look and never a wrong number. Fractions drawn as font text
+# rather than paths — all of `AI_Set 1`'s — are not seen by it at all (#738).
+#
 # **The two Bedrock vision readers, and what turning them on costs (#651).** They were built in
 # #622/#623 and PC.3 and this flag is the only thing that starts them; until it was set here the
 # whole reading rebuild had never executed, and the demo ran the vector+OCR path alone. They are
@@ -143,6 +151,12 @@ GV_READER_CROSSING_MARGIN=0.0005 \
 GV_READER_LOCALIZED_MINIMUM_PATHS=1 \
 GV_READER_LOCALIZED_MAXIMUM_SPAN=0.5 \
 GV_READER_LOCALIZED_CROP_MARGIN_PT=2 \
+GV_READER_FRACTION_BAR_THICKNESS_MAX_PT=0.3 \
+GV_READER_FRACTION_BAR_LENGTH_MIN_PT=1 \
+GV_READER_FRACTION_REACH_PT=3 \
+GV_READER_FRACTION_GLYPH_MIN_PT=1 \
+GV_READER_FRACTION_GLYPH_MAX_PT=12 \
+GV_READER_FRACTION_PROPORTION_MAX=2.5 \
   "$PYTHON" scripts/drain_outbox.py --watch &
 WORKER_PID=$!
 

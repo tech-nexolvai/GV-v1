@@ -229,6 +229,8 @@ def _request(crop: bytes) -> NovaRequest:
         # be handing it the answer.
         context=AssembledContext(nearby_text=(), nearby_geometry=()),
         bound_pt=Decimal(120),
+        # A live smoke test of the transport; its crop is synthetic and has no geometry read.
+        stacked_label=False,
     )
 
 
