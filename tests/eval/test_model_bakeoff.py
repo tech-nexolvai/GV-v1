@@ -13,10 +13,13 @@ from pathlib import Path
 import pytest
 
 from eval.experiments.model_bakeoff import (
+    BedrockBakeoffAdapter,
     Crop,
     ModelBakeoffError,
     ModelRead,
     ModelSpec,
+    ReadingParseError,
+    _measured_coordinate_mode,
     load_crops,
     load_model_specs,
     parse_dimension_reading,
@@ -25,6 +28,7 @@ from eval.experiments.model_bakeoff import (
     render_markdown,
     run_bakeoff,
 )
+from extraction.models.validation import CoordinateMode
 from units.measurement import Measurement, Unit
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -395,3 +399,91 @@ def test_json_manifests_load_without_client_data_or_float_prices(tmp_path: Path)
     )
     with pytest.raises(ModelBakeoffError, match="model prices must be authored as exact text"):
         load_model_specs(models_path)
+
+
+# --- #732: the scorer must read the drawing's notation, and each model runs in its measured space --
+
+
+@pytest.mark.parametrize(
+    ("returned", "inches"),
+    [
+        ('25-1/2"', "51/2"),  # hyphenated, as the trade writes it
+        ('5-1/4"', "21/4"),
+        ("381 [15]", "15"),  # dual unit — the bracketed inch is authoritative (Q12)
+        ('381mm [15"]', "15"),  # the same token with its units spelled out, as a model returns it
+        ('2" (VIF)', "2"),  # a site note is not part of the number
+        ("6'-0\"", "72"),  # feet-inches keeps its hyphen
+    ],
+)
+def test_a_model_reading_in_the_drawings_own_notation_is_parsed(returned: str, inches: str) -> None:
+    """Before #732 every one of these was a parse failure, scored as wrong.
+
+    Ten of the seventeen answers in the first human key are written this way, so a model that read
+    the sheet exactly as printed would have been recorded as unable to read it.
+    """
+    parsed = parse_dimension_reading(returned, None)
+
+    assert parsed.exact == Fraction(inches)
+    assert parsed.unit is Unit.INCH
+
+
+def test_a_compound_reading_is_refused_as_not_one_value() -> None:
+    """`39 1/4"+6"` has no single value, so it can never be scored exact against one (#730)."""
+    with pytest.raises(ReadingParseError, match="not one value"):
+        parse_dimension_reading('39 1/4"+6"', Unit.INCH)
+
+
+def test_each_production_reader_runs_in_the_space_production_measured() -> None:
+    """Nova Pro answers on the 0-1000 grid (#668, #699); the bake-off must not call it in pixels.
+
+    Called in the default space, a grid answer on a small crop is out of bounds, the call is rejected,
+    and a correct reading is scored as a miss — a configuration production never runs.
+    """
+    nova = pytest.importorskip("extraction.models.nova")
+
+    assert _measured_coordinate_mode(nova, "amazon.nova-pro-v1:0") is CoordinateMode.NOVA_GRID
+    assert _measured_coordinate_mode(nova, "amazon.nova-2-lite-v1:0") is CoordinateMode.PIXELS
+    assert _measured_coordinate_mode(nova, "us.amazon.nova-2-lite-v1:0") is CoordinateMode.PIXELS
+
+
+def test_an_unmeasured_model_is_refused_rather_than_defaulted() -> None:
+    """A model's name is not evidence of its answer space (#668); neither is a default.
+
+    Claude Haiku is a disabled reader whose space has never been measured, and a model outside
+    `VISION_READERS` has no recorded space at all. Either must state one in the manifest.
+    """
+    nova = pytest.importorskip("extraction.models.nova")
+    assert _measured_coordinate_mode(nova, "anthropic.claude-haiku-4-5-20251001-v1:0") is None
+
+    spec = ModelSpec(
+        name="unmeasured",
+        model_id="vendor.some-vision-model-v1:0",
+        input_usd_per_million=Decimal(0),
+        output_usd_per_million=Decimal(0),
+    )
+    with pytest.raises(ModelBakeoffError, match="no measured coordinate space"):
+        BedrockBakeoffAdapter(spec)
+
+
+def test_the_manifest_carries_a_stated_coordinate_space(tmp_path: Path) -> None:
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "name": "measured-elsewhere",
+                        "model_id": "vendor.some-vision-model-v1:0",
+                        "input_usd_per_million": "1",
+                        "output_usd_per_million": "2",
+                        "coordinate_mode": "nova_grid",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (spec,) = load_model_specs(models_path)
+
+    assert spec.coordinate_mode is CoordinateMode.NOVA_GRID

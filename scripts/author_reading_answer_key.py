@@ -29,7 +29,6 @@ import hashlib
 import html
 import json
 import random
-import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -45,6 +44,7 @@ from eval.experiments.model_bakeoff import (
     load_crops,
     render_crop,
 )
+from eval.notation import canonical_notation, is_compound
 from extraction.annotations import read_annotation_layers
 from extraction.geometry.dimension_lines import detect
 from extraction.geometry.text_association import lines_within
@@ -494,39 +494,9 @@ class NotASingleValue(ScaffoldError):
     """The crop carries an instruction to add, not one dimension (#730)."""
 
 
-#: `39 1/4"+6"` — two dimensions and an operator. Not a value, and not illegible either.
-_COMPOUND = re.compile(r'["\u2033]\s*[+\u2212-]\s*\d')
-
-#: `2" (VIF)` — an exact value followed by a site instruction. The note is not part of the number.
-_TRAILING_NOTE = re.compile(r"\s*\([^)]*\)\s*$")
-
-#: `381 [15]` — millimetres with the inch in brackets. **The bracket is authoritative** (Q12): mm is
-#: the vendor's machine reference and is never a verdict operand, so the inch is the value and the mm
-#: corroborates that it was read correctly.
-_DUAL_UNIT = re.compile(r"^\s*(?P<mm>\d+)\s*\[\s*(?P<inch>[\d\s/]+?)\s*\]\s*$")
-
-#: `25-1/2"` — a hyphen where the trade writes a space. Not feet-inches: `6'-0"` keeps its hyphen,
-#: which is why the pattern refuses to fire when a foot mark precedes it.
-_HYPHENATED_FRACTION = re.compile(r"(?<![\u2032'])\b(?P<whole>\d+)-(?P<fraction>\d+/\d+)")
-
-
-def _canonical(token: str) -> tuple[str, str | None]:
-    """Rewrite one typed notation into the form `units/` already accepts.
-
-    Returns the rewritten token and the millimetre reading a dual-unit token carried, if any.
-
-    **Nothing here is arithmetic.** Each rule drops or re-spaces characters the drawing uses and the
-    parser does not; none computes a value. The moment this function starts adding numbers it stops
-    being a transcription of what a person read and becomes a claim of our own (#730).
-    """
-    mm: str | None = None
-    dual = _DUAL_UNIT.match(token)
-    if dual is not None:
-        mm = dual.group("mm")
-        token = f'{dual.group("inch").strip()}"'
-    token = _TRAILING_NOTE.sub("", token)
-    token = _HYPHENATED_FRACTION.sub(r"\g<whole> \g<fraction>", token)
-    return token.strip(), mm
+#: The notation rules live in `eval/notation.py`, shared with the bake-off scorer: one canonicaliser,
+#: so the key and the scorer can never disagree about what a written dimension means (#732).
+_canonical = canonical_notation
 
 
 def _parsed(raw: str, *, crop_id: str) -> object:
@@ -542,7 +512,7 @@ def _parsed(raw: str, *, crop_id: str) -> object:
     (#730).
     """
     token = raw.strip()
-    if _COMPOUND.search(token):
+    if is_compound(token):
         raise NotASingleValue(
             f"{crop_id}: {token!r} is two dimensions and an operator, not one value. Tick "
             "`not_a_single_value` and leave `value` empty. Do not add them up — arithmetic we "
