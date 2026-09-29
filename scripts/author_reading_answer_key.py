@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import html
 import json
 import random
 import sys
@@ -44,6 +45,8 @@ from eval.experiments.model_bakeoff import (
     render_crop,
 )
 from extraction.annotations import read_annotation_layers
+from extraction.geometry.dimension_lines import detect
+from extraction.geometry.text_association import lines_within
 from extraction.rasterise import VISION_CROP_DPI
 from extraction.vector_first import plan_reads
 from units.normalise import UnitNormalisationError, normalise_to_inches
@@ -52,6 +55,7 @@ CROPS_CSV: Final = "crops.csv"
 ANSWER_KEY: Final = "answer_key.json"
 BAKEOFF_METADATA: Final = "model_bakeoff_metadata.json"
 HOW_TO: Final = "HOW_TO_READ_THESE.md"
+CONTACT_SHEET: Final = "contact_sheet.html"
 
 #: Longest axis, in pixels at the crop DPI, below which a region is a small glyph rather than a
 #: label. Measured, not chosen: on `AI_Set_2.pdf` the median planned region is 37px and a legible
@@ -59,6 +63,12 @@ HOW_TO: Final = "HOW_TO_READ_THESE.md"
 #: splitting one. It is a sampling aid only — it decides which crops a person is shown, never what
 #: any of them says.
 SMALL_GLYPH_PX: Final = 60
+
+#: Longest axis, in pixels at the crop DPI, below which the crop is a speck rather than a reading
+#: task. This is the boundary the previous scaffold only warned about. It is still just an
+#: authoring-filter: values below it are reported and excluded from the sheet; nothing here decides
+#: what any surviving crop says.
+MIN_LEGIBLE_AXIS_PX: Final = 20
 
 #: The reader thresholds this script plans with. Arguments rather than defaults for the reason
 #: `extraction/geometry/text_association.py` gives at length: they are empirical, one sheet cannot
@@ -71,6 +81,12 @@ DEFAULT_THRESHOLDS: Final = {
     "proximity_limit": "0.01",
     "minimum_paths": 2,
     "maximum_span": "0.05",
+    # The dimension-line detector values are the measured demo/client-drawing values from
+    # `scripts/demo.sh`. They select which strokes count as dimension lines for this sampling run.
+    "witness_tolerance": "0.004",
+    "minimum_span": "0.01",
+    "straightness": "0.0005",
+    "crossing_margin": "0.0005",
 }
 
 
@@ -88,6 +104,8 @@ class Candidate:
 
     polygon: tuple[int, int, int, int]
     stratum: str
+    path_count: int
+    line_count: int
 
     @property
     def width_px(self) -> int:
@@ -96,6 +114,26 @@ class Candidate:
     @property
     def height_px(self) -> int:
         return self.polygon[3] - self.polygon[1]
+
+    @property
+    def long_axis_px(self) -> int:
+        return max(self.width_px, self.height_px)
+
+
+def _stratum(
+    *,
+    long_axis_px: int,
+    stacked_glyphs: bool,
+    baseline_rotation_degrees: int,
+) -> str:
+    """Sampling bucket, chosen from geometry and glyph layout rather than parsed content."""
+    if baseline_rotation_degrees % 360:
+        return "rotated"
+    if stacked_glyphs:
+        return "stacked_fraction"
+    if long_axis_px < SMALL_GLYPH_PX:
+        return "small_glyph"
+    return "dimension_label"
 
 
 def _candidates(pdf: bytes, *, page_index: int, thresholds: dict[str, object]) -> list[Candidate]:
@@ -115,8 +153,23 @@ def _candidates(pdf: bytes, *, page_index: int, thresholds: dict[str, object]) -
         minimum_paths=int(str(thresholds["minimum_paths"])),
         maximum_span=Decimal(str(thresholds["maximum_span"])),
     )
+    detected = detect(
+        layers.drawing_segments,
+        witness_tolerance=Decimal(str(thresholds["witness_tolerance"])),
+        minimum_span=Decimal(str(thresholds["minimum_span"])),
+        straightness=Decimal(str(thresholds["straightness"])),
+        crossing_margin=Decimal(str(thresholds["crossing_margin"])),
+    )
+    dimension_lines = tuple(line.extent for line in detected.lines)
     found: list[Candidate] = []
     for index, entry in enumerate(plan.to_read):
+        near_dimension_lines = lines_within(
+            entry.region.extent,
+            dimension_lines,
+            proximity_limit=Decimal(str(thresholds["proximity_limit"])),
+        )
+        if not near_dimension_lines:
+            continue
         points = entry.region.image_extent
         left = min(point.x for point in points)
         right = max(point.x for point in points)
@@ -130,7 +183,13 @@ def _candidates(pdf: bytes, *, page_index: int, thresholds: dict[str, object]) -
                 crop_id=f"p{page_index + 1}-r{index:04d}",
                 page=page_index + 1,
                 polygon=(left, top, right, bottom),
-                stratum="small_glyph" if long_axis < SMALL_GLYPH_PX else "label",
+                stratum=_stratum(
+                    long_axis_px=long_axis,
+                    stacked_glyphs=entry.region.stacked_glyphs,
+                    baseline_rotation_degrees=entry.region.baseline_rotation_degrees,
+                ),
+                path_count=entry.region.path_count,
+                line_count=len(near_dimension_lines),
             )
         )
     return found
@@ -180,6 +239,9 @@ def _write_sheet(out: Path, candidates: list[Candidate]) -> None:
                 "bottom_px",
                 "width_px",
                 "height_px",
+                "stratum",
+                "near_dimension_lines",
+                "path_count",
                 "value",
                 "unreadable",
                 "rotated",
@@ -195,12 +257,56 @@ def _write_sheet(out: Path, candidates: list[Candidate]) -> None:
                     *candidate.polygon,
                     candidate.width_px,
                     candidate.height_px,
+                    candidate.stratum,
+                    candidate.line_count,
+                    candidate.path_count,
                     "",
                     "",
                     "",
                     "",
                 ]
             )
+
+
+def _write_contact_sheet(out: Path, candidates: list[Candidate]) -> None:
+    """A browseable sheet of the crops before anyone starts typing answers."""
+    cards = []
+    for candidate in candidates:
+        crop_id = html.escape(candidate.crop_id)
+        image = html.escape(f"{candidate.crop_id}.png")
+        meta = html.escape(
+            f"p{candidate.page} · {candidate.stratum} · "
+            f"{candidate.width_px}x{candidate.height_px}px · "
+            f"{candidate.line_count} line(s)"
+        )
+        cards.append(
+            f'<figure><img src="{image}" alt="{crop_id}"><figcaption>'
+            f"<strong>{crop_id}</strong><br>{meta}</figcaption></figure>"
+        )
+    document = """<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Reading Answer-Key Contact Sheet</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 24px; color: #222; }
+h1 { font-size: 20px; margin: 0 0 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
+figure { margin: 0; border: 1px solid #ddd; padding: 10px; background: #fafafa; }
+img { display: block; max-width: 100%; height: 120px; object-fit: contain; margin: 0 auto 8px; }
+figcaption { font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+</style>
+<h1>Reading Answer-Key Contact Sheet</h1>
+<div class="grid">
+"""
+    document += "\n".join(cards)
+    document += "\n</div>\n</html>\n"
+    (out / CONTACT_SHEET).write_text(document, encoding="utf-8")
+
+
+def _legible(candidates: list[Candidate]) -> tuple[list[Candidate], int]:
+    """Drop specks before sampling, and report the count to the person running the scaffold."""
+    kept = [candidate for candidate in candidates if candidate.long_axis_px >= MIN_LEGIBLE_AXIS_PX]
+    return kept, len(candidates) - len(kept)
 
 
 _HOW_TO_TEXT: Final = """# Reading these crops
@@ -253,9 +359,18 @@ def scaffold(arguments: argparse.Namespace) -> int:
 
     if not candidates:
         raise ScaffoldError(
-            "no regions were planned on those pages. Either the thresholds exclude everything on "
-            "this drawing or the pages carry no outlined text; try --help for the values the first "
-            "real set was read with."
+            "no regions were planned next to detected dimension lines on those pages. Either the "
+            "thresholds exclude everything on this drawing, the dimension-line detector found no "
+            "lines, or the pages carry no outlined text; try --help for the values the first real "
+            "set was read with."
+        )
+
+    candidates, too_small = _legible(candidates)
+    if not candidates:
+        raise ScaffoldError(
+            f"all planned regions were under {MIN_LEGIBLE_AXIS_PX}px on their longest axis. They "
+            "are too small to ask a person to read; widen the pages or thresholds before authoring "
+            "a key."
         )
 
     chosen = _stratified(candidates, count=arguments.count, seed=arguments.seed)
@@ -291,6 +406,7 @@ def scaffold(arguments: argparse.Namespace) -> int:
 
     chosen = written
     _write_sheet(out, chosen)
+    _write_contact_sheet(out, chosen)
     (out / HOW_TO).write_text(_HOW_TO_TEXT, encoding="utf-8")
 
     # **Printed, because a thin stratum is worth seeing before anybody reads fifty crops.** A set
@@ -299,6 +415,11 @@ def scaffold(arguments: argparse.Namespace) -> int:
     counts = Counter(candidate.stratum for candidate in chosen)
     available = Counter(candidate.stratum for candidate in candidates)
     print(f"\n  {len(chosen)} crops written to {out}")
+    if too_small:
+        print(
+            f"    {too_small} planned region(s) were under {MIN_LEGIBLE_AXIS_PX}px on their "
+            "longest axis and were dropped as too small to read"
+        )
     if unrenderable:
         print(f"    {unrenderable} sampled region(s) were too small to render and were dropped")
     for stratum in sorted(available):
@@ -317,8 +438,9 @@ def scaffold(arguments: argparse.Namespace) -> int:
             "    raising --minimum-paths drops them, at the cost of a much smaller pool."
         )
     print(
-        "\n  rotated is NOT assigned here: the geometry reports zero rotation on every region of\n"
-        "  the real client set, so it is a column for the reader to tick (#689).\n"
+        "\n  the rotated CSV column is NOT assigned here: it is still for the reader to tick when\n"
+        "  the crop itself reads sideways or upside down (#689).\n"
+        f"\n  Contact sheet: {out / CONTACT_SHEET}"
         f"\n  Next: open {out / HOW_TO}\n"
     )
     return 0
