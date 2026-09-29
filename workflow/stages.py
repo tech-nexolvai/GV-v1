@@ -513,6 +513,60 @@ class _LocatedOcrReading:
     rotation_degrees: int
 
 
+@dataclass(frozen=True, slots=True)
+class _VisionAssociationLink:
+    """A model reading and the fixed-reader region it was asked to read."""
+
+    row: ObservationCandidate
+    source_candidate_id: UUID
+
+
+def _association_source_items(
+    *groups: tuple[Sequence[ReadItem], Sequence[ObservationCandidate]],
+) -> dict[UUID, ReadItem]:
+    """The fixed-reader geometry that a later model crop is allowed to reuse.
+
+    This map is keyed by the row that bounded the model crop, not by text content. The model may
+    read a corrected value from the pixels, but it does not get to supply the page location or text
+    orientation used for association; those come only from readers that already expose deterministic
+    geometry.
+    """
+    sources: dict[UUID, ReadItem] = {}
+    for items, rows in groups:
+        if len(items) != len(rows):
+            # This map is only an extra allowance for source-backed model association. If an
+            # idempotent rerun hands back already-recorded rows that no longer line up exactly with
+            # this pass's in-memory readings, there is no safe source pairing for model rows from
+            # that route. Skipping it preserves the older fixed-reader association path, where
+            # `dimension_texts` still raises before it would silently mispair rows.
+            continue
+        for item, row in zip(items, rows, strict=True):
+            sources[row.id] = item
+    return sources
+
+
+def _vision_association_inputs(
+    links: Sequence[_VisionAssociationLink],
+    sources: Mapping[UUID, ReadItem],
+) -> tuple[tuple[ReadItem, ...], tuple[ObservationCandidate, ...]]:
+    """Make model-read values eligible for association through their source region.
+
+    Before #698, vision rows were recorded but never handed to `associate`, which made a full
+    `demo_pair` run report zero attachments even when the detector had line-work. This does not
+    promote model geometry: a model row is paired only when the fixed-reader candidate that produced
+    its crop already had a deterministic extent and rotation.
+    """
+    items: list[ReadItem] = []
+    rows: list[ObservationCandidate] = []
+    for link in links:
+        source = sources.get(link.source_candidate_id)
+        if source is None:
+            continue
+        items.append(source)
+        rows.append(link.row)
+    return tuple(items), tuple(rows)
+
+
 class DatabaseStages:
     """The pipeline as far as it is built: checks run, everything else still says it did not.
 
@@ -928,8 +982,25 @@ class DatabaseStages:
                     )
                 written = len(ocr_rows)
 
+            vector_association_inputs = (
+                (read.texts if read is not None else ()),
+                tuple(vector_rows),
+            )
+            ocr_association_inputs = self._ocr_association_inputs(ocr_items, ocr_rows)
+            association_sources: Mapping[UUID, ReadItem] = {}
+
+            vision_association_links: tuple[_VisionAssociationLink, ...] = ()
             if self._vision_readers:
-                vision_rows, vision_invocations, vision_refusals = self._read_page_by_vision(
+                association_sources = _association_source_items(
+                    vector_association_inputs,
+                    ocr_association_inputs,
+                )
+                (
+                    vision_rows,
+                    vision_invocations,
+                    vision_refusals,
+                    vision_association_links,
+                ) = self._read_page_by_vision(
                     session,
                     version_id=version_id,
                     data=data,
@@ -980,8 +1051,12 @@ class DatabaseStages:
                 page=page,
                 task_run_id=run.task_run_id,
                 readings=(
-                    (read.texts if read is not None else (), vector_rows),
-                    self._ocr_association_inputs(ocr_items, ocr_rows),
+                    vector_association_inputs,
+                    ocr_association_inputs,
+                    _vision_association_inputs(
+                        vision_association_links,
+                        association_sources,
+                    ),
                     ((layers.markup if layers is not None else ()), markup_rows),
                 ),
                 lines=(
@@ -1715,15 +1790,21 @@ class DatabaseStages:
         page: Page,
         task_run_id: UUID,
         regions: Sequence[ObservationCandidate],
-    ) -> tuple[list[ObservationCandidate], int, list[str]]:
+    ) -> tuple[list[ObservationCandidate], int, list[str], tuple[_VisionAssociationLink, ...]]:
         """Read each existing candidate region with every configured vision reader.
 
         This route is additive: a model output is another raw candidate, never a fact, and a failed
         model call leaves the fixed readers' candidates untouched. The crop bound and one-call-per
         reader-per-region loop live here rather than in the prompt.
+
+        The returned association links are deliberately source-backed. A vision reader reports a
+        string, not a trusted page location or text orientation. When association later considers a
+        model row, it may reuse only the fixed-reader region that caused this exact crop to be sent.
+        Before #698 the vision rows were left out of association entirely, so a real run could have
+        model-read numbers and detected line-work but zero `observation_associations` rows.
         """
         if not regions or self._store is None:
-            return [], 0, []
+            return [], 0, [], ()
 
         try:
             rendered = render_page(
@@ -1735,9 +1816,10 @@ class DatabaseStages:
                 maximum_pixels=MAXIMUM_RENDER_PIXELS,
             )
         except (PageTooLarge, UnreadablePdf, ValueError) as error:
-            return [], 0, [f"page {page.index}: {error}"]
+            return [], 0, [f"page {page.index}: {error}"], ()
 
         rows: list[ObservationCandidate] = []
+        association_links: list[_VisionAssociationLink] = []
         invocations = 0
         refusals: list[str] = []
         for reader in self._vision_readers:
@@ -1804,7 +1886,10 @@ class DatabaseStages:
                 )
                 invocations += recorder.persist(candidate_id=row.id, flush=False)
                 rows.append(row)
-        return rows, invocations, refusals
+                association_links.append(
+                    _VisionAssociationLink(row=row, source_candidate_id=region.id)
+                )
+        return rows, invocations, refusals, tuple(association_links)
 
     def _vision_crop(self, rendered: RenderedPage, candidate: ObservationCandidate) -> bytes | None:
         if self._store is None:
