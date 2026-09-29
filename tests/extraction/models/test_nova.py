@@ -570,6 +570,16 @@ def test_a_pixel_model_named_nova_is_not_remapped() -> None:
     assert reader.coordinate_mode is CoordinateMode.PIXELS
 
 
+def test_nova_pro_stays_enabled_after_the_known_crop_measurement() -> None:
+    """#699 measured the failing reader again before deciding whether to switch it off."""
+    reader = next(r for r in VISION_READERS if r.model_id == NOVA_PRO_MODEL_ID)
+
+    assert reader.enabled is True
+    assert reader.coordinate_mode is CoordinateMode.NOVA_GRID
+    assert "#699" in reader.coordinate_measurement
+    assert '24 1/2"' in reader.coordinate_measurement
+
+
 def test_an_unstated_coordinate_mode_fails_loudly_rather_than_silently() -> None:
     """The default is the mistake that gets caught, because the two are not symmetric.
 
@@ -600,6 +610,17 @@ def test_every_configured_reader_has_a_distinct_extractor_name() -> None:
     assert len(names) == len(set(names))
 
 
+def test_every_enabled_reader_has_a_recorded_coordinate_measurement() -> None:
+    """Coordinate space is a measurement, not an inference from provider or model name."""
+    missing = [
+        reader.key
+        for reader in VISION_READERS
+        if reader.enabled and "#" not in reader.coordinate_measurement
+    ]
+
+    assert missing == []
+
+
 def test_claude_is_configured_and_switched_off_until_its_account_form_lands() -> None:
     """#665 is an AWS account action, so it must not require a code change to undo.
 
@@ -609,6 +630,8 @@ def test_claude_is_configured_and_switched_off_until_its_account_form_lands() ->
     claude = next(r for r in VISION_READERS if r.model_id == CLAUDE_HAIKU_4_5_MODEL_ID)
 
     assert claude.enabled is False
+    assert claude.disabled_reason is not None
+    assert "#665" in claude.disabled_reason
     assert claude.key in {r.key for r in VISION_READERS}
 
 
