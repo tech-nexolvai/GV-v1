@@ -52,8 +52,10 @@ from units.dual import DualDimension, DualDimensionParseError, parse_dual
 from units.imperial import ImperialParseError, parse_imperial
 from units.measurement import Measurement, Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.notation import canonical_notation, is_compound
 
 __all__ = [
+    "NOT_A_SINGLE_VALUE_FLAG",
     "UNKNOWN_UNIT_FLAG",
     "UNPARSED_FLAG",
     "open_extraction_run",
@@ -69,6 +71,13 @@ __all__ = [
 #: Flagged rather than dropped. A token the parser could not read is still a reading that happened,
 #: and the flag is what lets a reviewer be shown it as unread rather than as absent.
 UNPARSED_FLAG = "unparsed_token"
+
+#: `39 1/4"+6"`, `2"+3"(filler)` — two dimensions and an operator (#730, #733). Kept apart from
+#: `UNPARSED_FLAG` because it is a different fact: the text is a dimension, just not *one*. On the
+#: 17-page client set there are eight, and several are a cabinet width plus a filler — exactly the
+#: structure the distribution check consumes, so a later reader should find them, not lose them in
+#: "unparsed".
+NOT_A_SINGLE_VALUE_FLAG = "not_a_single_value"
 
 #: A bare number, recorded with no value because its unit is unknown.
 #:
@@ -619,8 +628,13 @@ def _parse(text: str) -> tuple[Measurement | None, tuple[str, ...], DualDimensio
     dual = _dual(text)
     if dual is not None and dual.alternate is not None:
         return dual.alternate, (), dual
+    if is_compound(text):
+        return None, (NOT_A_SINGLE_VALUE_FLAG,), None
     try:
-        return normalise_to_inches(text), (), None
+        # **Through `units.notation` (#733).** `25-1/2"` and `181 1/4" (4EQ)` were stored with no value;
+        # on the client set that was 21 of the 38 dimensions the PDF's own text carries, 20 of them
+        # the hyphenated fractions GV's reviewers write. The row keeps the text as written.
+        return normalise_to_inches(canonical_notation(text)[0]), (), None
     except UnitNormalisationError:
         # No value, and the flag says which kind of nothing this is. Both branches abstain; neither
         # swallows, because a reading that produced no measurement still has to say why.

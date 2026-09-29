@@ -480,3 +480,50 @@ def test_the_unit_field_is_described_rather_than_enumerated() -> None:
 
     assert "enum" not in unit
     assert '"in"' in unit["description"] and '"mm"' in unit["description"]
+
+
+# --- #733: the drawing's own notation reaches the reader's shape check -------------------------
+
+
+@pytest.mark.parametrize("reading", ['10-1/4"', "300 [12]", '2" (VIF)', "8'-6''", '100 1/4" (4EQ)'])
+def test_a_reading_in_the_drawings_notation_is_accepted(reading: str) -> None:
+    """Every one of seven readers read the hyphenated fraction right in the bake-off, and every one was
+    refused here as "not a dimension" (#733). The candidate keeps exactly what the model returned.
+    """
+    recorder = RecordingRejections()
+
+    outcome = _validate(
+        {**_valid_payload(), "reading": reading, "unit_guess": "in"}, recorder=recorder
+    )
+
+    assert isinstance(outcome, ObservationCandidate), [r.reason for r in recorder.items]
+    assert outcome.raw_text == reading
+
+
+def test_a_compound_reading_is_refused_under_its_own_reason() -> None:
+    """Two dimensions and an operator is a different next action from "not a dimension"."""
+    recorder = RecordingRejections()
+
+    outcome = _validate(
+        {**_valid_payload(), "reading": '10 1/4"+6"', "unit_guess": "in"}, recorder=recorder
+    )
+
+    assert isinstance(outcome, ValidationRejection)
+    assert [r.reason for r in recorder.items] == ["not_a_single_value"]
+
+
+def test_a_dual_token_cannot_carry_a_bare_fraction_past_the_guard() -> None:
+    """`19 [3/4]` does not look like a bare fraction as written; its value is one.
+
+    The bare-fraction guard exists to stop a dropped whole number becoming a plausible small dimension.
+    Judging the raw text would let a dual token slip one straight past it, so the guard reads the
+    canonical form.
+    """
+    recorder = RecordingRejections()
+
+    outcome = _validate(
+        {**_valid_payload(), "reading": "19 [3/4]", "unit_guess": "in"}, recorder=recorder
+    )
+
+    assert isinstance(outcome, ValidationRejection)
+    assert [r.reason for r in recorder.items] == ["reading_not_a_dimension"]

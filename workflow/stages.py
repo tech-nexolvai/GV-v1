@@ -52,6 +52,7 @@ from app.api.documents import storage_key
 from app.db.base import utc_now
 from app.evidence.automatic_typing import AutomaticTypingSettings, qualify_exact_tags_for_revision
 from app.evidence.record import (
+    NOT_A_SINGLE_VALUE_FLAG,
     UNKNOWN_UNIT_FLAG,
     UNPARSED_FLAG,
     open_extraction_run,
@@ -165,6 +166,7 @@ from storage.store import ArtifactStore
 from units.imperial import format_inches
 from units.measurement import Measurement, Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.notation import canonical_notation, is_compound
 from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
@@ -311,6 +313,25 @@ def _candidate_evidence_status(row: ObservationCandidate) -> EvidenceStatus:
     return EvidenceStatus(row.corroboration_status)
 
 
+def _vision_candidate_value(raw_text: str) -> tuple[Measurement | None, str | None]:
+    """The exact value a vision reading is stored with, or the flag saying why it has none.
+
+    **It must agree with the shape check** (`extraction/models/validation.py`). Before #733 this was a
+    bare `normalise_to_inches(raw_text)` while the check canonicalised inch marks first, so the two
+    disagreed: a model's `8'-6''` passed validation and was then stored with no value, unable to take
+    part in any agreement — and `25-1/2"`, `381 [15]` and `2" (VIF)` could not be valued at all. Both
+    now read `units.notation`, and `tests/workflow/test_vision_candidate_value.py` fails if they part.
+
+    The row keeps the characters the model returned; only the value comes from the canonical form.
+    """
+    if is_compound(raw_text):
+        return None, NOT_A_SINGLE_VALUE_FLAG
+    try:
+        return normalise_to_inches(canonical_notation(raw_text)[0]), None
+    except UnitNormalisationError:
+        return None, UNPARSED_FLAG
+
+
 def _ambiguity_reasons(row: ObservationCandidate) -> frozenset[AmbiguityReason]:
     flags = set(row.ambiguity_flags)
     reasons: set[AmbiguityReason] = set()
@@ -318,6 +339,9 @@ def _ambiguity_reasons(row: ObservationCandidate) -> frozenset[AmbiguityReason]:
         reasons.add(AmbiguityReason.UNKNOWN_UNIT)
     if UNPARSED_FLAG in flags:
         reasons.add(AmbiguityReason.UNREADABLE_TEXT)
+    # `NOT_A_SINGLE_VALUE_FLAG` is deliberately **not** mapped (#733). These reasons trigger a bounded,
+    # paid agent retry; a compound like `39 1/4"+6"` was read correctly and is genuinely two values, so
+    # no retry can turn it into one. Before #733 a compound was flagged unparsed and retried for nothing.
     return frozenset(reasons)
 
 
@@ -1933,12 +1957,10 @@ class DatabaseStages:
         if existing is not None:
             return existing
 
-        measurement = None
         flags = list(candidate.ambiguity_flags)
-        try:
-            measurement = normalise_to_inches(candidate.raw_text)
-        except UnitNormalisationError:
-            flags.append(UNPARSED_FLAG)
+        measurement, flag = _vision_candidate_value(candidate.raw_text)
+        if flag is not None:
+            flags.append(flag)
 
         row = ObservationCandidate(
             id=row_id,
