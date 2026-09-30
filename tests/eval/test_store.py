@@ -26,6 +26,7 @@ from eval.gold_set.schema import (
 from eval.gold_set.store import (
     MissingDrawing,
     StaleAnnotation,
+    UnprovenReviewClaim,
     UnverifiableDocument,
     content_hash,
     load_cases,
@@ -131,6 +132,59 @@ def test_a_missing_drawing_is_a_different_failure_from_a_changed_one(tmp_path: P
     (tmp_path / "shop.pdf").unlink()
     with pytest.raises(MissingDrawing):
         verify(case, root=tmp_path)
+
+
+def test_a_reviewed_path_identical_to_its_unreviewed_counterpart_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A reviewed filename is a provenance claim; identical unreviewed bytes cannot evidence it."""
+    reviewed = b"same vendor-only drawing"
+    _write(tmp_path, "data/drawings/aiset2/AI_Set_2.pdf", reviewed)
+    _write(tmp_path, "data/drawings/aiset2_reviewed/AI_Set_2_reviewed.pdf", reviewed)
+    case = _case(tmp_path, shop=reviewed)
+    case = case.model_copy(
+        update={
+            "shop": Path("data/drawings/aiset2_reviewed/AI_Set_2_reviewed.pdf"),
+            "provenance": case.provenance.model_copy(
+                update={
+                    "documents": (
+                        case.provenance.documents[0],
+                        case.provenance.documents[1].model_copy(
+                            update={"content_hash": _hash(reviewed)}
+                        ),
+                    )
+                }
+            ),
+        }
+    )
+
+    with pytest.raises(UnprovenReviewClaim, match="byte-identical"):
+        verify(case, root=tmp_path)
+
+
+def test_a_reviewed_path_with_different_bytes_still_verifies(tmp_path: Path) -> None:
+    """Legitimate reviewed overlays are allowed; the guard is against false review claims."""
+    _write(tmp_path, "data/drawings/aiset2/AI_Set_2.pdf", b"vendor-only drawing")
+    reviewed = b"reviewed overlay bytes"
+    _write(tmp_path, "data/drawings/aiset2_reviewed/AI_Set_2_reviewed.pdf", reviewed)
+    case = _case(tmp_path, shop=reviewed)
+    case = case.model_copy(
+        update={
+            "shop": Path("data/drawings/aiset2_reviewed/AI_Set_2_reviewed.pdf"),
+            "provenance": case.provenance.model_copy(
+                update={
+                    "documents": (
+                        case.provenance.documents[0],
+                        case.provenance.documents[1].model_copy(
+                            update={"content_hash": _hash(reviewed)}
+                        ),
+                    )
+                }
+            ),
+        }
+    )
+
+    verify(case, root=tmp_path)
 
 
 def test_a_source_with_no_path_on_the_case_is_refused(tmp_path: Path) -> None:
