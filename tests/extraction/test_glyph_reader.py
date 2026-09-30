@@ -444,3 +444,57 @@ def test_a_label_that_runs_past_the_area_asked_about_abstains() -> None:
     assert "past the edge" in reading.reason
     whole = read_label(paths, paths, templates=TEMPLATES, settings=SETTINGS, within=None)
     assert isinstance(whole, GlyphReading) and whole.text == '192"'
+
+
+def _match_one_pair_at_a_time(shape, templates, settings):  # type: ignore[no-untyped-def]
+    """The matching rule written plainly, pair by pair — the oracle the vectorised one must equal."""
+    from extraction.glyph_shapes import chamfer, size_ratio
+
+    best: dict[str, Fraction] = {}
+    for label, template in zip(templates.labels, templates.shapes, strict=True):
+        if shape.dot or template.dot:
+            if shape.dot and template.dot:
+                best[label] = Fraction(0)
+            continue
+        if size_ratio(shape, template) > Fraction(settings.maximum_size_ratio):
+            continue
+        distance = chamfer(shape.raster, template.raster)
+        if label not in best or distance < best[label]:
+            best[label] = distance
+    if not best:
+        return None
+    ranked = sorted(best.items(), key=lambda entry: (entry[1], entry[0]))
+    label, distance = ranked[0]
+    if distance > Fraction(settings.maximum_distance):
+        return None
+    if len(ranked) > 1 and ranked[1][1] - distance < Fraction(settings.minimum_margin):
+        return None
+    return label
+
+
+def test_matching_every_template_at_once_decides_exactly_what_one_pair_at_a_time_does() -> None:
+    """**Outcome: the same label, character for character, over every shape in these tests.**
+
+    The vectorised matcher exists for speed on a whole drawing; it may not decide anything the
+    plain rule would not.
+    """
+    from extraction.glyph_reader import _match
+
+    labels = [
+        _row('0123456789"', 0, 0),
+        _row("[0123456789]", 0, 0),
+        _fraction("1", "3", "4"),
+        _fraction("", "7", "8"),
+        _row('12"', 0, 0),
+    ]
+    checked = 0
+    for paths, _ in labels:
+        _, bars, shapes = described(paths, settings=SETTINGS)
+        for index, shape in enumerate(shapes):
+            if index in bars or shape is None:
+                continue
+            assert _match(shape, TEMPLATES, SETTINGS) == _match_one_pair_at_a_time(
+                shape, TEMPLATES, SETTINGS
+            )
+            checked += 1
+    assert checked > 30

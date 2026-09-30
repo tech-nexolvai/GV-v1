@@ -151,6 +151,7 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
     association, localized = _reader_configuration()
     automatic_typing = _automatic_typing_configuration()
     from app.config import Settings
+    from workflow.glyph_route import glyph_route_from_environment
 
     return DatabaseStages(
         store,
@@ -160,6 +161,8 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         localized_ocr=localized,
         automatic_typing=automatic_typing,
         findings_composer=configured_findings_composer(Settings()),  # type: ignore[call-arg]
+        # Off unless GV_GLYPH_TEMPLATES names a template set a person labelled (#756).
+        glyph_route=glyph_route_from_environment(),
     )
 
 

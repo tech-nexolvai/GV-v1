@@ -37,14 +37,15 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Final
 
+import cv2
 import numpy as np
+from numpy.typing import NDArray
 
 from extraction.annotations import PathSegment, VectorPath, glyph_runs
 from extraction.glyph_shapes import (
     GlyphShape,
     ShapeSettings,
     UndrawablePath,
-    chamfer,
     describe,
     size_ratio,
 )
@@ -297,25 +298,148 @@ class _Glyph:
     """The matched template's label, or `None` where no template matched by the stated margin."""
 
 
+@dataclass(frozen=True, slots=True)
+class _TemplateIndex:
+    """A template set laid out for comparing one shape with every template at once.
+
+    Whole numbers throughout: each template's ink, its city-block distance map, and each relative
+    size's exact numerator and denominator. A chamfer distance is then a ratio of whole-number sums,
+    so every comparison can be made exactly — the vectorised path decides the same thing, template
+    for template, as `chamfer` and `size_ratio` would one pair at a time.
+    """
+
+    labels: tuple[str, ...]
+    masks: NDArray[np.int64]
+    distances: NDArray[np.int64]
+    ink: NDArray[np.int64]
+    dots: NDArray[np.bool_]
+    shapes: tuple[GlyphShape, ...]
+    heights: NDArray[np.float64]
+    widths: NDArray[np.float64]
+    """Relative sizes as floats — for settling the clear cases of the size check only. A size
+    within a hair of the limit is settled by `size_ratio`, exactly."""
+
+
+_INDEXES: dict[int, tuple[TemplateSet, _TemplateIndex]] = {}
+
+
+def _index(templates: TemplateSet) -> _TemplateIndex:
+    """The set's index, built once per set object for the life of the process."""
+    cached = _INDEXES.get(id(templates))
+    if cached is not None and cached[0] is templates:
+        return cached[1]
+    # **One copy of each distinct template.** A cluster a person labelled holds hundreds of members
+    # and many are the same raster at the same size — 2,291 identical vertical strokes on the
+    # client's set. An exact duplicate gives exactly the same distance, so keeping one per label,
+    # raster and size changes no decision and removes most of the work.
+    distinct: dict[tuple[str, bytes, Fraction, Fraction, bool], int] = {}
+    for position, (label, shape) in enumerate(zip(templates.labels, templates.shapes, strict=True)):
+        key = (
+            label,
+            shape.raster.tobytes(),
+            shape.relative_height,
+            shape.relative_width,
+            shape.dot,
+        )
+        distinct.setdefault(key, position)
+    kept = sorted(distinct.values())
+    shapes = tuple(templates.shapes[position] for position in kept)
+    rasters = np.stack([shape.raster for shape in shapes]).astype(np.int64)
+    distances = np.stack(
+        [
+            cv2.distanceTransform(
+                np.where(shape.raster, 0, 255).astype(np.uint8), cv2.DIST_L1, cv2.DIST_MASK_3
+            ).astype(np.int64)
+            for shape in shapes
+        ]
+    )
+    index = _TemplateIndex(
+        labels=tuple(templates.labels[position] for position in kept),
+        masks=rasters,
+        distances=distances,
+        ink=rasters.sum(axis=(1, 2)),
+        dots=np.array([shape.dot for shape in shapes], dtype=np.bool_),
+        shapes=shapes,
+        heights=np.array([float(shape.relative_height) for shape in shapes]),
+        widths=np.array([float(shape.relative_width) for shape in shapes]),
+    )
+    _INDEXES[id(templates)] = (templates, index)
+    return index
+
+
+def _sized(shape: GlyphShape, index: _TemplateIndex, limit: Fraction) -> list[int]:
+    """The templates whose size is within `limit` of the shape's — `size_ratio(shape, t) <= limit`.
+
+    A zero size is decided exactly and all at once: a relative size is a ratio of PDF-point
+    differences, so its float is zero exactly when it is, and `size_ratio` puts a zero beside a
+    non-zero out of reach while two zeros match. Every other template is settled by floats when it
+    is clearly in or clearly out; one within a millionth of the limit is settled by `size_ratio`
+    itself, so the answer is exactly the exact rule's.
+    """
+    candidates = np.flatnonzero(~index.dots)
+    height, width = float(shape.relative_height), float(shape.relative_width)
+    heights, widths = index.heights[candidates], index.widths[candidates]
+    mismatched = ((heights == 0) != (height == 0)) | ((widths == 0) != (width == 0))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio_h = np.where(
+            (heights != 0) & (height != 0),
+            np.maximum(heights, height) / np.minimum(heights, height),
+            1.0,
+        )
+        ratio_w = np.where(
+            (widths != 0) & (width != 0),
+            np.maximum(widths, width) / np.minimum(widths, width),
+            1.0,
+        )
+    ratio = np.maximum(ratio_h, ratio_w)
+    bound = float(limit)
+    clearly_in = ~mismatched & (ratio < bound * (1 - 1e-6))
+    unsure = ~mismatched & ~clearly_in & (ratio <= bound * (1 + 1e-6))
+    kept = [int(i) for i in candidates[clearly_in]]
+    kept += [int(i) for i in candidates[unsure] if size_ratio(shape, index.shapes[int(i)]) <= limit]
+    return sorted(kept)
+
+
 def _match(shape: GlyphShape, templates: TemplateSet, settings: ReaderSettings) -> str | None:
     """The label of the nearest template, if it is near enough and clearly nearer than any other.
 
     A dot matches only dots. A shape of any other kind is compared with every template of a
     compatible size; the nearest must be within `maximum_distance`, and the nearest template with a
     different label must be at least `minimum_margin` further away.
+
+    **Every template at once, and still exact.** Template *i*'s chamfer distance to the shape is
+    `(A_i / g + B_i / t_i) / 2`: `A_i` the template's distance summed over the shape's ink, `g` the
+    shape's ink, `B_i` the shape's distance summed over the template's ink, `t_i` the template's ink.
+    All four are whole numbers, so the distance is the exact fraction `(A_i t_i + B_i g) / 2 g t_i`
+    and each label's nearest template is found by comparing those fractions, never floats.
     """
-    ratio_limit = Fraction(settings.maximum_size_ratio)
-    best: dict[str, Fraction] = {}
-    for label, template in zip(templates.labels, templates.shapes, strict=True):
-        if shape.dot or template.dot:
-            if shape.dot and template.dot:
-                best[label] = Fraction(0)
-            continue
-        if size_ratio(shape, template) > ratio_limit:
-            continue
-        distance = chamfer(shape.raster, template.raster)
-        if label not in best or distance < best[label]:
-            best[label] = distance
+    index = _index(templates)
+    if shape.dot:
+        dots = {index.labels[i] for i in np.flatnonzero(index.dots)}
+        best: dict[str, Fraction] = {label: Fraction(0) for label in dots}
+    else:
+        sized = _sized(shape, index, Fraction(settings.maximum_size_ratio))
+        best = {}
+        if sized:
+            chosen = np.array(sized)
+            glyph = shape.raster.astype(np.int64)
+            glyph_ink = int(glyph.sum())
+            if glyph_ink:
+                glyph_distances = cv2.distanceTransform(
+                    np.where(shape.raster, 0, 255).astype(np.uint8), cv2.DIST_L1, cv2.DIST_MASK_3
+                ).astype(np.int64)
+                to_template = (index.distances[chosen] * glyph).sum(axis=(1, 2))
+                to_glyph = (index.masks[chosen] * glyph_distances).sum(axis=(1, 2))
+                ink = index.ink[chosen]
+                numerators = to_template * ink + to_glyph * glyph_ink
+                denominators = 2 * glyph_ink * ink
+                for position, template in enumerate(chosen):
+                    if not ink[position]:
+                        continue
+                    distance = Fraction(int(numerators[position]), int(denominators[position]))
+                    label = index.labels[template]
+                    if label not in best or distance < best[label]:
+                        best[label] = distance
     if not best:
         return None
     ranked = sorted(best.items(), key=lambda entry: (entry[1], entry[0]))

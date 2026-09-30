@@ -247,6 +247,22 @@ class ShapeSettings:
             f"stroke_px={self.stroke_px};dilate_px={self.dilate_px}"
         )
 
+    @classmethod
+    def from_config_hash(cls, config_hash: str) -> ShapeSettings:
+        """The settings a template set records, read back from the string `config_hash` wrote."""
+        try:
+            values = dict(part.split("=", 1) for part in config_hash.split(";"))
+            return cls(
+                size_px=int(values["size_px"]),
+                bezier_steps=int(values["bezier_steps"]),
+                stroke_px=int(values["stroke_px"]),
+                dilate_px=int(values["dilate_px"]),
+            )
+        except (KeyError, ValueError) as error:
+            raise ValueError(
+                f"shape settings {config_hash!r} could not be read: {error}"
+            ) from error
+
 
 @dataclass(frozen=True, slots=True)
 class GlyphShape:

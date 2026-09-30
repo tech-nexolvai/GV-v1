@@ -38,16 +38,10 @@ __all__ = ["GlyphBakeoffAdapter", "shape_settings_from"]
 
 
 def shape_settings_from(config_hash: str) -> ShapeSettings:
-    """The `ShapeSettings` a template set records, back from its `config_hash` string."""
+    """The `ShapeSettings` a template set records, as a bake-off error where it cannot be read."""
     try:
-        values = dict(part.split("=", 1) for part in config_hash.split(";"))
-        return ShapeSettings(
-            size_px=int(values["size_px"]),
-            bezier_steps=int(values["bezier_steps"]),
-            stroke_px=int(values["stroke_px"]),
-            dilate_px=int(values["dilate_px"]),
-        )
-    except (KeyError, ValueError) as error:
+        return ShapeSettings.from_config_hash(config_hash)
+    except ValueError as error:
         raise ModelBakeoffError(
             f"the template set's shape settings are unreadable: {error}"
         ) from error
