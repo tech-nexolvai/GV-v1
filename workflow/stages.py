@@ -149,6 +149,7 @@ from extraction.models.nova import (
 )
 from extraction.models.validation import ValidationRejection
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, read_page
+from extraction.panels import propose_panel_roles
 from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
 from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
 from extraction.vector_first import plan_reads
@@ -192,6 +193,7 @@ from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
+from workflow.view_roles import record_panel_view, revision_views
 
 #: What produced these readings, recorded on the extraction run so a candidate can say what read it.
 EXTRACTOR = "pdfplumber"
@@ -960,6 +962,10 @@ class DatabaseStages:
                 page=page,
                 task_run_id=run.task_run_id,
             )
+            # **Which drawing is which, on a combined sheet (#710).** Each drawing becomes a view, and
+            # the label the sheet prints above it gives a suggestion. Never the role: only a person's
+            # confirmation sets that, through the API.
+            panels = None if layers is None else _record_panel_views(session, page, layers)
 
             if not page.has_vector_text:
                 # A stamp-only vendor drawing has no content-stream text, but it does have exact
@@ -1101,6 +1107,8 @@ class DatabaseStages:
                         "agent_candidates": len(agent_rows),
                         "agent_abstentions": agent_abstentions,
                         "layout_proposals": layout_written,
+                        # `None` when the page's annotations could not be read at all.
+                        "panels": panels,
                         "layout_refusals": layout_refusals[:REPORTED_REFUSALS],
                         "vision_invocations": vision_invocations,
                         "vision_refusals": vision_refusals[:REPORTED_REFUSALS],
@@ -2049,12 +2057,12 @@ class DatabaseStages:
         insert that names who decided, and nothing here decides.
 
         **Today this finds nothing, and says so rather than appearing to work.** Writing a candidate
-        needs two `drawing_items` rows, an item needs a view and a type from the `CT0xx` vocabulary,
-        and nothing in the system detects a view or an item on a page — `extraction/model/` reasons
-        about items it is given and does not find them. Both missing pieces are semantic: they need
-        the real drawings (#274) and the vocabulary Q20 defers. So this stage is wired to the real
-        matcher and returns an honest zero with the reason, which is what it should say until item
-        detection exists. The moment it does, this runs unchanged.
+        needs two `drawing_items` rows, and an item needs a view and a type from the `CT0xx`
+        vocabulary. Views now exist — one per drawing on a combined sheet, each with a role a person
+        confirms (#710) — but nothing finds the cabinets and their tags on a drawing yet (#748). So
+        this stage is wired to the real matcher and returns an honest zero with the reason, naming
+        how many drawings were found and how many roles are confirmed. The moment items exist, this
+        runs unchanged.
         """
         role_summary = _match_role_summary(session, package_revision_id)
         items = _matchable_items(session, package_revision_id)
@@ -2071,14 +2079,18 @@ class DatabaseStages:
                         f"{missing}"
                     ),
                 }
+            views = revision_views(session, package_revision_id)
+            confirmed = [entry.view.role for entry in views if entry.view.role]
             return {
                 "implemented": True,
                 "ran": True,
                 "items": 0,
                 "candidates": 0,
                 "reason": (
-                    "no drawing items exist for this revision: nothing detects views or items on a "
-                    "page yet, which needs the real drawings (#274) and the vocabulary Q20 defers"
+                    "no drawing items exist for this revision: nothing finds the cabinets and their "
+                    f"tags on a drawing yet (#748). Drawings found: {len(views)}; roles confirmed "
+                    f"by a reviewer: {confirmed.count('arch')} architect, "
+                    f"{confirmed.count('shop')} vendor"
                 ),
             }
         missing = _missing_role_names(role_summary.roles)
@@ -2945,6 +2957,26 @@ def _image_polygon(polygon: Polygon, rendered: RenderedPage) -> list[list[int]]:
         ]
         for point in polygon.points
     ]
+
+
+def _record_panel_views(session: Session, page: Page, layers: PageLayers) -> dict[str, int]:
+    """One view per drawing on the page, each with what its label suggests, counted (#710)."""
+    counts = {"views": 0, "suggested_arch": 0, "suggested_shop": 0, "no_suggestion": 0}
+    for proposal, stamp in zip(
+        propose_panel_roles(layers.vendor_stamps, layers.markup), layers.vendor_stamps, strict=True
+    ):
+        record_panel_view(
+            session,
+            page_id=page.id,
+            annotation_index=stamp.annotation_index,
+            stored_points=[(point.x, point.y) for point in stamp.extent.points],
+            proposed_role=proposal.role,
+            heading=proposal.heading,
+            reason=proposal.reason,
+        )
+        counts["views"] += 1
+        counts[f"suggested_{proposal.role}" if proposal.role else "no_suggestion"] += 1
+    return counts
 
 
 def _crop_shows_a_stacked_fraction(

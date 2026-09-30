@@ -75,6 +75,7 @@ __all__ = [
     "OutlinedTextRegion",
     "PageLayers",
     "StackedFraction",
+    "VendorStamp",
     "read_annotation_layers",
     "read_markup_layer",
 ]
@@ -185,6 +186,21 @@ class OutlinedTextRegion:
 
 
 @dataclass(frozen=True, slots=True)
+class VendorStamp:
+    """One vendor-drawing stamp on the page, and where it sits (#710).
+
+    On the client's combined sheets each drawing — the ID set's elevation and the vendor's — is one
+    stamp, so this is where a drawing panel is on the page. Only its place, read from the file's own
+    rectangle: which of the two it is comes from the label the sheet prints above it
+    (`extraction/panels.py`), and a person confirms that.
+    """
+
+    annotation_index: int
+    extent: Polygon
+    image_extent: tuple[ImagePoint, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class StackedFraction:
     """Where the vendor drew a stacked fraction: bar, numerator and denominator together (#735).
 
@@ -236,6 +252,9 @@ class PageLayers:
 
     stacked_fractions: tuple[StackedFraction, ...] = ()
     """Every stacked fraction the bar detector found on the vendor's layer (#735)."""
+
+    vendor_stamps: tuple[VendorStamp, ...] = ()
+    """Every vendor-drawing stamp on the page, in `/Annots` order (#710). Filled by both reads."""
 
     fractions_read: bool = False
     """Whether the bar detector ran. `False` makes an empty `stacked_fractions` mean *nobody looked*,
@@ -809,6 +828,7 @@ def _read_layers(
     segments: list[DimensionExtent] = []
     regions: list[OutlinedTextRegion] = []
     fractions: list[StackedFraction] = []
+    stamps: list[VendorStamp] = []
     refusals: list[LayerRefusal] = []
 
     try:
@@ -859,6 +879,13 @@ def _read_layers(
                     continue
 
                 if layer is DrawingLayer.VENDOR_DRAWING:
+                    # Listed whether or not the geometry is read: where a drawing sits on the page is
+                    # a dictionary value, and the panel roles (#710) need it on every read.
+                    stamps.append(
+                        VendorStamp(
+                            annotation_index=index, extent=extent, image_extent=image_extent
+                        )
+                    )
                     if geometry is None:
                         continue
                     line_minimum_pt, glyph_maximum_pt, glyph_gap_pt, fraction_bar = geometry
@@ -970,6 +997,7 @@ def _read_layers(
         geometry_read=geometry is not None,
         stacked_fractions=tuple(fractions),
         fractions_read=geometry is not None and geometry[3] is not None,
+        vendor_stamps=tuple(stamps),
     )
 
 

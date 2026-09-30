@@ -116,6 +116,69 @@ class DrawingView(Base, TimestampedUUID):
     )
 
 
+class ViewRoleProposal(Base, TimestampedUUID, Immutable):
+    """What the sheet suggests one drawing is — the architect's or the vendor's — and why (#710).
+
+    **A suggestion, never the role.** It is read from the label the sheet prints above the drawing
+    (`extraction/panels.py`) and never written onto the view: only a person's confirmation
+    (`ViewRoleConfirmation`) sets `DrawingView.role`. A drawing with no label above it is recorded
+    with no role and the reason, so "nothing suggested" is visible rather than silent.
+
+    Append-only. A re-read that suggests the same thing finds the existing row.
+    """
+
+    __tablename__ = "view_role_proposals"
+
+    drawing_view_id: Mapped[UUID] = mapped_column(
+        ForeignKey("drawing_views.id", ondelete="RESTRICT"), index=True
+    )
+
+    proposed_role: Mapped[str | None] = mapped_column(String(16), default=None)
+    """`arch` or `shop`, or `NULL` when the sheet's labels decide nothing."""
+
+    heading: Mapped[str | None] = mapped_column(String(200), default=None)
+    """The label as the sheet prints it, when one was used."""
+
+    reason: Mapped[str] = mapped_column(String(500))
+
+    source: Mapped[str] = mapped_column(String(100))
+    """What made the suggestion, versioned — so a later, different reader is a different row."""
+
+    __table_args__ = (
+        CheckConstraint(
+            f"proposed_role IS NULL OR proposed_role IN ({VIEW_ROLE_VALUES})",
+            name="view_role_proposal_role",
+        ),
+        CheckConstraint("reason !~ '^[[:space:]]*$'", name="view_role_proposal_reason_not_blank"),
+        CheckConstraint("source !~ '^[[:space:]]*$'", name="view_role_proposal_source_not_blank"),
+    )
+
+
+class ViewRoleConfirmation(Base, TimestampedUUID, Immutable):
+    """A person saying which drawing a view is (#710). The only thing that sets `DrawingView.role`.
+
+    Append-only: a correction is another row, and the view carries the latest. Who confirmed it is
+    required, because a role decides which side of every comparison the drawing's items land on.
+    """
+
+    __tablename__ = "view_role_confirmations"
+
+    drawing_view_id: Mapped[UUID] = mapped_column(
+        ForeignKey("drawing_views.id", ondelete="RESTRICT"), index=True
+    )
+
+    role: Mapped[str] = mapped_column(String(16))
+
+    confirmed_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint(f"role IN ({VIEW_ROLE_VALUES})", name="view_role_confirmation_role"),
+        CheckConstraint(
+            "confirmed_by !~ '^[[:space:]]*$'", name="view_role_confirmation_actor_not_blank"
+        ),
+    )
+
+
 class DrawingItem(Base, TimestampedUUID):
     """One thing on a drawing that a rule can be about.
 

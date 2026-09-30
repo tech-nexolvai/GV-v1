@@ -514,7 +514,9 @@ def test_match_runs_and_reports_nothing_to_match_rather_than_claiming_success(
     assert result["ran"] is True
     assert result["items"] == 0
     assert result["candidates"] == 0
-    assert "nothing detects views or items" in str(result["reason"])
+    assert "nothing finds the cabinets and their tags" in str(result["reason"])
+    # It names what is missing, not a client deliverable that already arrived (#710).
+    assert "#274" not in str(result["reason"])
 
 
 def test_extract_pages_returns_no_pages_rather_than_a_mapping(session: Session) -> None:
