@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "app"))
 
@@ -31,3 +34,21 @@ pytest_plugins: tuple[str, ...] = ()
 
 if importlib.util.find_spec("sqlalchemy") is not None:
     pytest_plugins = ("postgres_fixture",)
+
+
+@pytest.fixture(autouse=True)
+def _forget_inference_profile_routes() -> Iterator[None]:
+    """Each test starts with no learned Bedrock inference-profile routes (#702).
+
+    `extraction.models.nova.PROFILE_ROUTES` is process-wide on purpose — production builds a new
+    adapter per crop — so a test that teaches it a route would change how the next test's calls are
+    routed. Cleared only if the module is already loaded: importing it here would put the model layer
+    into every test's `sys.modules`, including the isolation tests that check it is absent.
+    """
+    module = sys.modules.get("extraction.models.nova")
+    if module is not None:
+        module.PROFILE_ROUTES.forget()
+    yield
+    module = sys.modules.get("extraction.models.nova")
+    if module is not None:
+        module.PROFILE_ROUTES.forget()
