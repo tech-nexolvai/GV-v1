@@ -5,7 +5,7 @@ in three places — the geometry was never measured, the region's flag was never
 adapter passed it — so the guard never once ran. These tests go through `DatabaseStages` itself: a
 real stamp is read, a real crop is cut, and what arrives at the reader is what is checked.
 
-Verification for: `workflow/stages.py` (`_read_page_by_vision`, `_crop_shows_a_stacked_fraction`).
+Verification for: `workflow/stages.py` (`_read_page_by_vision`, `crop_shows_a_stacked_fraction`).
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from storage.local import LocalStore
 from tests.extraction.test_annotations import STACKED_APPEARANCE, _appearance, _pdf, _stamp
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from units.measurement import Unit
-from workflow.stages import DatabaseStages, _crop_shows_a_stacked_fraction
+from workflow.stages import DatabaseStages, crop_shows_a_stacked_fraction
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -219,22 +219,22 @@ def _fraction(left: int, top: int, right: int, bottom: int) -> StackedFraction:
 
 
 def test_a_fraction_inside_the_crop_is_shown() -> None:
-    assert _crop_shows_a_stacked_fraction((100, 100, 200, 200), [_fraction(120, 120, 140, 160)])
+    assert crop_shows_a_stacked_fraction((100, 100, 200, 200), [_fraction(120, 120, 140, 160)])
 
 
 def test_a_fraction_half_inside_the_crop_is_shown() -> None:
     """A model reads whatever it is shown, and a numerator at the edge can still be promoted into a
     whole number. Any part counts."""
-    assert _crop_shows_a_stacked_fraction((100, 100, 200, 200), [_fraction(190, 150, 230, 190)])
+    assert crop_shows_a_stacked_fraction((100, 100, 200, 200), [_fraction(190, 150, 230, 190)])
 
 
 def test_a_fraction_touching_the_crop_edge_is_shown() -> None:
-    assert _crop_shows_a_stacked_fraction((100, 100, 200, 200), [_fraction(200, 150, 230, 190)])
+    assert crop_shows_a_stacked_fraction((100, 100, 200, 200), [_fraction(200, 150, 230, 190)])
 
 
 def test_a_fraction_elsewhere_on_the_page_is_not() -> None:
-    assert not _crop_shows_a_stacked_fraction((100, 100, 200, 200), [_fraction(300, 300, 340, 360)])
+    assert not crop_shows_a_stacked_fraction((100, 100, 200, 200), [_fraction(300, 300, 340, 360)])
 
 
 def test_no_fractions_nothing_shown() -> None:
-    assert not _crop_shows_a_stacked_fraction((100, 100, 200, 200), [])
+    assert not crop_shows_a_stacked_fraction((100, 100, 200, 200), [])
