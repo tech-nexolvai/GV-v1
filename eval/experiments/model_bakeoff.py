@@ -77,6 +77,10 @@ class Crop:
         default_factory=lambda: AssembledContext(nearby_text=(), nearby_geometry=())
     )
     bound_pt: Decimal = Decimal(0)
+    pdf_box: tuple[Decimal, Decimal, Decimal, Decimal] | None = None
+    """Where the crop is on its page — left, bottom, right, top in PDF points — for a reader that
+    reads the drawing's paths rather than the crop's pixels (#756 phase D). `None` for a crop that
+    came as an image with no page behind it."""
 
     def __post_init__(self) -> None:
         if not self.crop_id.strip():
@@ -204,6 +208,16 @@ class ModelScore:
     @property
     def exact_rate(self) -> Fraction | None:
         return _rate(self.exact_count, self.total)
+
+    @property
+    def wrong_count(self) -> int:
+        """Reads that gave a value, and the wrong one. The count a reader must hold at zero."""
+        return sum(1 for read in self.reads if read.parsed is not None and not read.exact)
+
+    @property
+    def abstained_count(self) -> int:
+        """Crops the reader returned nothing for — a refusal, which a reviewer then reads."""
+        return sum(1 for read in self.reads if read.read.raw_text is None)
 
     def tag_rate(self, tag: str) -> Fraction | None:
         tagged = [read for read in self.reads if tag in self.tags_by_crop[read.read.crop_id]]
@@ -442,10 +456,10 @@ def render_markdown(scorecard: BakeoffScorecard) -> str:
         "# Model Dimension-Read Bake-Off",
         "",
         (
-            "| Model | Exact read rate | Fractions | Rotated | Small glyphs | Input tokens | "
-            "Output tokens | Avg latency ms | Cost USD | Errors |"
+            "| Model | Exact read rate | Wrong | Abstained | Fractions | Rotated | Small glyphs | "
+            "Input tokens | Output tokens | Avg latency ms | Cost USD | Errors |"
         ),
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for score in scorecard.models:
         lines.append(
@@ -454,6 +468,8 @@ def render_markdown(scorecard: BakeoffScorecard) -> str:
                 [
                     score.spec.name,
                     _format_rate(score.exact_rate),
+                    str(score.wrong_count),
+                    str(score.abstained_count),
                     _format_rate(score.tag_rate("fraction")),
                     _format_rate(score.tag_rate("rotated")),
                     _format_rate(score.tag_rate("small_glyph")),
@@ -763,6 +779,7 @@ def render_crop(
     left_px, top_px, right_px, bottom_px = polygon
     if right_px <= left_px or bottom_px <= top_px:
         raise ModelBakeoffError(f"polygon has no area: {polygon!r}")
+    left, bottom, right, top = pdf_box(pdf, page=page, polygon=polygon, polygon_dpi=polygon_dpi)
 
     pdfium = import_module("pypdfium2")
     document = pdfium.PdfDocument(pdf)
@@ -775,15 +792,6 @@ def render_crop(
 
         drop_reviewer_layers(pdf_page)
         width_pt, height_pt = (Decimal(str(value)) for value in pdf_page.get_size())
-        scale_to_pt = _POINTS_PER_INCH / Decimal(polygon_dpi)
-        left = Decimal(left_px) * scale_to_pt
-        right = Decimal(right_px) * scale_to_pt
-        top = height_pt - Decimal(top_px) * scale_to_pt
-        bottom = height_pt - Decimal(bottom_px) * scale_to_pt
-        if left < 0 or bottom < 0 or right > width_pt or top > height_pt:
-            raise ModelBakeoffError(
-                f"polygon {polygon!r} at {polygon_dpi} dpi falls outside page {page}"
-            )
         bitmap = pdf_page.render(
             scale=float(Decimal(output_dpi) / _POINTS_PER_INCH),
             crop=(
@@ -797,6 +805,41 @@ def render_crop(
         return _png_from_pdfium(bitmap)
     finally:
         document.close()
+
+
+def pdf_box(
+    pdf: bytes, *, page: int, polygon: tuple[int, int, int, int], polygon_dpi: int
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """An answer-key polygon as the PDF-point box it stands for: left, bottom, right, top.
+
+    The one computation of it: `render_crop` cuts the image a vision reader sees by it, and a path
+    reader selects the characters it reads by it (#756 phase D), so the two score the same area.
+    """
+    if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+        raise ModelBakeoffError("answer-key page must be a one-based positive integer")
+    if isinstance(polygon_dpi, bool) or not isinstance(polygon_dpi, int) or polygon_dpi <= 0:
+        raise ModelBakeoffError("polygon_dpi must be a positive integer")
+    left_px, top_px, right_px, bottom_px = polygon
+    pdfium = import_module("pypdfium2")
+    document = pdfium.PdfDocument(pdf)
+    try:
+        try:
+            pdf_page = document[page - 1]
+        except Exception as error:
+            raise ModelBakeoffError(f"page {page} is not in the source PDF: {error}") from error
+        width_pt, height_pt = (Decimal(str(value)) for value in pdf_page.get_size())
+    finally:
+        document.close()
+    scale_to_pt = _POINTS_PER_INCH / Decimal(polygon_dpi)
+    left = Decimal(left_px) * scale_to_pt
+    right = Decimal(right_px) * scale_to_pt
+    top = height_pt - Decimal(top_px) * scale_to_pt
+    bottom = height_pt - Decimal(bottom_px) * scale_to_pt
+    if left < 0 or bottom < 0 or right > width_pt or top > height_pt:
+        raise ModelBakeoffError(
+            f"polygon {polygon!r} at {polygon_dpi} dpi falls outside page {page}"
+        )
+    return left, bottom, right, top
 
 
 def load_crops(path: str | Path, *, polygon_dpi: int) -> tuple[Crop, ...]:
@@ -862,6 +905,9 @@ def _load_case_directory(case_dir: Path, *, polygon_dpi: int) -> tuple[Crop, ...
                 tags=_tags_for(crop_id, index, observation.value, metadata),
                 image_format="png",
                 page=observation.page - 1,
+                pdf_box=pdf_box(
+                    pdf, page=observation.page, polygon=observation.polygon, polygon_dpi=polygon_dpi
+                ),
             )
         )
     if not crops:
