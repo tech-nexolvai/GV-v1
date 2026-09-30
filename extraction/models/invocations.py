@@ -110,7 +110,8 @@ class InvocationRecord:
         input_tokens: tokens sent, as counted by the provider.
         output_tokens: tokens returned, as counted by the provider. Zero is the normal value for a
             refusal or a timeout, and is stated as zero rather than left out.
-        cost_micros: the cost of this call in millionths of a currency unit.
+        cost_micros: the cost of this call in millionths of a US dollar, or `None` when no price
+            was stated for the model (#700). Never a stand-in zero: `0` means no tokens were used.
         latency_ms: wall-clock duration in whole milliseconds.
         outcome: how the call ended. The closed set is enforced by the database; see the module
             docstring for why it is not re-stated here.
@@ -129,7 +130,7 @@ class InvocationRecord:
     crop_artifact_id: UUID | None
     input_tokens: int
     output_tokens: int
-    cost_micros: int
+    cost_micros: int | None
     latency_ms: int
     outcome: str
     rejection_reason: str | None = None
@@ -154,7 +155,8 @@ class InvocationRecord:
             )
         _exact_count("input_tokens", self.input_tokens)
         _exact_count("output_tokens", self.output_tokens)
-        _exact_count("cost_micros", self.cost_micros)
+        if self.cost_micros is not None:
+            _exact_count("cost_micros", self.cost_micros)
         _exact_count("latency_ms", self.latency_ms)
         if self.outcome == "rejected" and self.rejection_reason is None:
             raise ValueError("a rejected invocation must record why the local code rejected it")

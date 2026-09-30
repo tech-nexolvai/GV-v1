@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -198,7 +199,9 @@ def test_reviewer_chat_success_writes_one_model_invocation(
         assert rows[0].template_id == CHAT_TEMPLATE_ID
         assert rows[0].input_tokens == 321
         assert rows[0].output_tokens == 45
-        assert rows[0].cost_micros == 0
+        # No price file is stated in this test, so the cost of a call that used tokens is unknown —
+        # recorded as NULL, never as a free 0 (#700).
+        assert rows[0].cost_micros is None
         assert rows[0].outcome == ModelInvocationOutcome.OK
 
 
@@ -264,7 +267,9 @@ def test_findings_narration_success_writes_one_model_invocation(
         assert rows[0].template_id == FINDINGS_TEMPLATE_ID
         assert rows[0].input_tokens == 222
         assert rows[0].output_tokens == 33
-        assert rows[0].cost_micros == 0
+        # No price file is stated in this test, so the cost of a call that used tokens is unknown —
+        # recorded as NULL, never as a free 0 (#700).
+        assert rows[0].cost_micros is None
         assert rows[0].outcome == ModelInvocationOutcome.OK
 
 
@@ -358,3 +363,47 @@ def test_a_row_with_both_origins_cannot_be_built() -> None:
             latency_ms=1,
             outcome="succeeded",
         )
+
+
+def test_with_a_stated_price_the_chat_call_records_its_real_cost(
+    postgres_engine: Engine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """**#700.** The same call as above, with a price file stated: 321 input and 45 output tokens at
+    $0.0008 and $0.0032 per 1,000 is $0.0004008, recorded exactly as 401 millionths."""
+    import json
+
+    from app.runs import rates
+
+    price_file = tmp_path / "rates.json"
+    price_file.write_text(
+        json.dumps(
+            {
+                "source": "a test price list",
+                "retrieved": "2026-09-30",
+                "currency": "USD",
+                "rates": {
+                    "configured-model": {
+                        "input_per_1k_tokens": "0.0008",
+                        "output_per_1k_tokens": "0.0032",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    rates._cached.cache_clear()
+    monkeypatch.setenv(rates.MODEL_RATES_ENV, str(price_file))
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with factory() as session:
+        revision_id, _run_id = _revision_with_run(session)
+        finding = _finding()
+        chat = BedrockReviewerChat(
+            _Config("configured-model", "us-east-1", 1, 2),
+            _Client(_chat_response(finding.key)),
+            BedrockConverseInvocationRecorder(session, revision_id),
+        )
+
+        chat.compose((finding,), question="Why did this fail?")
+
+        assert _rows(session)[0].cost_micros == 401
