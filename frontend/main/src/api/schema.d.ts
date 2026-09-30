@@ -782,6 +782,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/views": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The drawings found on this package's pages, and what each one is suggested to be */
+        get: operations["list_views_api_v1_projects__project_id__packages__package_id__views_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say which drawing this is: the architect's or the vendor's
+         * @description Record a reviewer's answer and set the drawing's role. Recorded, audited, and correctable by
+         *     confirming again — the latest answer is the one that counts, and every earlier one is kept.
+         */
+        post: operations["confirm_role_api_v1_projects__project_id__packages__package_id__views__view_id__role_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/review-sessions": {
         parameters: {
             query?: never;
@@ -1574,6 +1612,14 @@ export interface components {
              * @description A member of the rulebook's vocabulary, e.g. `CT010`. Free text is refused.
              */
             semantic_type: string;
+        };
+        /** ConfirmRoleIn */
+        ConfirmRoleIn: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "arch" | "shop";
         };
         /**
          * ConfirmedOut
@@ -3074,6 +3120,34 @@ export interface components {
             type: string;
         };
         /**
+         * ViewOut
+         * @description One drawing on a page, as a reviewer needs it to say which drawing it is.
+         */
+        ViewOut: {
+            /** Page Index */
+            page_index: number;
+            /** Reason */
+            reason: string | null;
+            /** Role */
+            role: string | null;
+            /** Suggested From */
+            suggested_from: string | null;
+            /** Suggested Role */
+            suggested_role: string | null;
+            /** Tag */
+            tag: string;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
+        };
+        /** ViewsOut */
+        ViewsOut: {
+            /** Views */
+            views: components["schemas"]["ViewOut"][];
+        };
+        /**
          * QuantityOut
          * @description One exact dimension, rendered without a JSON float.
          */
@@ -4118,6 +4192,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewSessionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_views_api_v1_projects__project_id__packages__package_id__views_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_role_api_v1_projects__project_id__packages__package_id__views__view_id__role_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                view_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmRoleIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewOut"];
                 };
             };
             /** @description Validation Error */
