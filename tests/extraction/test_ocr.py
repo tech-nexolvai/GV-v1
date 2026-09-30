@@ -19,6 +19,7 @@ from extraction.ocr import (
     RapidOcrEngine,
     _confidence,
     combine_dual_notation,
+    could_be_a_reading,
     join_split_bracketed_inches,
     read_page,
 )
@@ -471,3 +472,31 @@ def test_a_whole_bracketed_token_is_not_treated_as_a_fragment() -> None:
     items = (_item("[28 1/2]", (10, 50, 90, 80)), _item("[13 1/4]", (95, 50, 175, 80)))
 
     assert join_split_bracketed_inches(items) == items
+
+
+# ---------------------------------------------------------------------------
+# #703 — what RapidOCR returns for line-work
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["一", "口", "L", "/", "√", "I", "m", "一口", "TITLE", "", "  "])
+def test_text_with_no_numeral_is_not_a_reading(text: str) -> None:
+    """**Outcome: refused.** These are the glyphs RapidOCR returned for strokes on `demo_pair`."""
+    assert could_be_a_reading(text) is False
+
+
+@pytest.mark.parametrize("text", ["724", "1", "[4]", "[1", '3/4"', "1'-2\"", "102 [4]", "½", "３"])
+def test_text_holding_a_numeral_is_kept(text: str) -> None:
+    """**Outcome: kept, including a partial read.** `[4]` may be half of `102 [4]`; the parser decides.
+
+    `½` has no ASCII digit and is a whole fractional part; `３` is a full-width digit, which a model
+    trained largely on CJK text can return for an ordinary one.
+    """
+    assert could_be_a_reading(text) is True
+
+
+def test_the_cjk_character_for_one_is_not_mistaken_for_a_digit() -> None:
+    """**The trap in the obvious rule.** Python's `str.isnumeric` says `一` is numeric — it is the
+    character for *one* — and it is exactly what RapidOCR returns for a horizontal stroke."""
+    assert "一".isnumeric()
+    assert could_be_a_reading("一") is False
