@@ -233,14 +233,17 @@ def test_two_against_one_is_still_a_disagreement_not_a_vote() -> None:
     assert "disagree" in result.abstention.reason
 
 
-def test_a_stacked_fraction_is_still_proposed_for_a_person_to_confirm() -> None:
-    """Outcome: proposed, not sealed — the rule that every stacked fraction goes to a person (#726)
-    is enforced downstream, where the proposal is still a candidate to confirm."""
+def test_a_stacked_fraction_goes_to_a_reviewer_without_a_paid_call() -> None:
+    """**Every stacked fraction reaches a person (#726).** Outcome: an abstention that says so, and no
+    reader asked — the validator refuses any reading of such a crop (#735), so a call would be paid
+    for and discarded. First in the table: it holds even for a label that is also cut off."""
     tools = _Tools(readings=[_reading('3/4"')])
 
-    result = _run(tools, _facts(stacked_fraction=True))
+    result = _run(tools, _facts(stacked_fraction=True, cut_at_edge=True))
 
-    assert isinstance(result, CandidateTerminal)
+    assert _steps(tools) == ["abstain"]
+    assert isinstance(result, AbstentionTerminal)
+    assert "stacked fraction" in result.abstention.reason
 
 
 def _progress(**changes: object) -> object:

@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol
 
 import cv2
 import numpy as np
@@ -56,6 +56,7 @@ from units.notation import canonical_notation, is_compound
 __all__ = [
     "GlyphAbstention",
     "GlyphReading",
+    "LabelReach",
     "ReaderSettings",
     "TemplateSet",
     "described",
@@ -226,8 +227,25 @@ def _near(box: Box, around: Box, gap: Decimal) -> bool:
     )
 
 
+class LabelReach(Protocol):
+    """The two lengths a label is gathered by — all `gather_label` reads from its settings.
+
+    `ReaderSettings` has both. So does the reading agent's own geometry (`extraction/agent/geometry`),
+    which finds a label's whole run to tell whether a crop cut it off (#757) and must gather it by
+    this rule, not a second copy of it.
+    """
+
+    @property
+    def label_gap_pt(self) -> Decimal:
+        """How close, in PDF points, a character must be to join a label."""
+
+    @property
+    def maximum_label_pt(self) -> Decimal:
+        """How far, in PDF points, one label may extend before its end counts as unsettled."""
+
+
 def gather_label(
-    seeds: Sequence[VectorPath], page_glyphs: Sequence[VectorPath], *, settings: ReaderSettings
+    seeds: Sequence[VectorPath], page_glyphs: Sequence[VectorPath], *, settings: LabelReach
 ) -> tuple[tuple[VectorPath, ...], str | None]:
     """The whole label the seeds belong to: every page glyph within `label_gap_pt` of it, repeatedly.
 

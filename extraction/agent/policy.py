@@ -9,6 +9,7 @@ abstain, whatever each returned — with a table that reads what the checks in
 
 | The observations say… | Next step |
 |---|---|
+| the crop shows a stacked fraction | abstain, with no call: it always goes to a reviewer |
 | the label is cut off at the crop's edge, not yet widened | `refine_crop` → **whole run** |
 | it was widened and is still cut off | abstain: the label does not fit a bounded crop |
 | the label reads sideways, not yet turned | `refine_crop` → **upright** |
@@ -19,9 +20,9 @@ abstain, whatever each returned — with a table that reads what the checks in
 **What it never does.** It never resolves a numeric disagreement: two readings that differ end in an
 abstention listing both, and a reviewer decides — the rule `DESIGN_AI.md` §3.2 states and the
 graph cannot enforce for it. It never proposes a reading no tool returned; the graph refuses that
-anyway. And a stacked fraction is proposed like any other reading, because the rule that sends
-every stacked fraction to a person (#726) is enforced downstream, where the proposal is still a
-candidate to confirm.
+anyway. And it never asks a reader about a stacked fraction: every stacked fraction goes to a
+person (#726), and since #735 the validator refuses any reading of a crop that shows one, so a
+call would be paid for and thrown away. The region is handed over at once, with that reason.
 
 **The budget is the graph's.** Before naming a step the table checks it fits what is left, so the
 abstention a budget forces says what was tried rather than only that a limit was reached.
@@ -83,6 +84,10 @@ def policy_planner(facts: RegionFacts, limits: GraphLimits) -> Planner:
 
         def tried(refinement: Refinement) -> bool:
             return f"refine_crop:{refinement.value}" in progress.attempted
+
+        # **Before anything is paid for.** Nothing a reader returns for this crop is accepted.
+        if Fact.STACKED_FRACTION in observed:
+            return abstain("a stacked fraction always goes to a reviewer")
 
         if Fact.LABEL_CUT_AT_EDGE in observed:
             if tried(Refinement.WHOLE_RUN) or steps_left < 1:
