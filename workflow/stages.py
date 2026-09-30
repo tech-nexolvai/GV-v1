@@ -634,9 +634,15 @@ class _AgentPageOutcome:
     """What the agent did on one page, for the page's payload."""
 
     rows: list[ObservationCandidate] = field(default_factory=list)
+    """Every reading the agent recorded — each look, not only the one it proposed."""
+
+    proposals: int = 0
     abstentions: int = 0
     regions: int = 0
     """Regions the trigger let in — each run once, however many readers' rows it holds."""
+
+    reused: int = 0
+    """Regions an earlier delivery of this stage already ran, whose rows were reused unpaid."""
 
     invocations: int = 0
     """Model calls the agent made and recorded, retries included."""
@@ -676,8 +682,10 @@ class _AgentReads:
     crops: RegionCrops
     readers: Mapping[VlmRole, _VisionReader]
     open_run: Callable[[_VisionReader], UUID]
-    recorders: list[tuple[_BufferedVisionRecorder, list[str]]] = field(default_factory=list)
-    """Each call's recorder, and the id of the candidate it returned (empty where it returned none)."""
+    recorders: list[tuple[_BufferedVisionRecorder, list[DomainCandidate]]] = field(
+        default_factory=list
+    )
+    """Each call's recorder, and the reading it returned (empty where it returned none)."""
 
     def read(self, arguments: VlmReadingArguments) -> DomainCandidate | RetryableToolFailure:
         reader = self.readers.get(arguments.role)
@@ -689,7 +697,7 @@ class _AgentReads:
             extraction_run_id=self.open_run(reader),
             request_candidate_id=request_candidate_id,
         )
-        produced: list[str] = []
+        produced: list[DomainCandidate] = []
         self.recorders.append((recorder, produced))
         request = NovaRequest(
             candidate_id=str(request_candidate_id),
@@ -704,7 +712,7 @@ class _AgentReads:
             candidate = reader.extract(request, recorder)
         except NovaAdapterError as error:
             return RetryableToolFailure(f"{reader.config.extractor} gave no reading: {error}")
-        produced.append(candidate.candidate_id)
+        produced.append(candidate)
         return candidate
 
 
@@ -1389,6 +1397,7 @@ class DatabaseStages:
                         ),
                         "ocr_fragment_texts": _fragment_texts(ocr_fragments),
                         "agent_candidates": len(agent_rows),
+                        "agent_proposals": agent.proposals,
                         "agent_abstentions": agent.abstentions,
                         # `None` where no agent is configured: not run, which is not zero regions.
                         "agent_regions": (
@@ -1397,6 +1406,7 @@ class DatabaseStages:
                             else agent.regions
                         ),
                         "agent_invocations": agent.invocations,
+                        "agent_regions_reused": agent.reused,
                         "layout_proposals": layout_written,
                         # `None` when the page's annotations could not be read at all.
                         "panels": panels,
@@ -1777,7 +1787,7 @@ class DatabaseStages:
                 recorded = self._recorded_agent_rows(session, task_run_id, candidate.id)
                 if recorded is not None:
                     outcome.rows.extend(recorded)
-                    outcome.abstentions += 0 if recorded else 1
+                    outcome.reused += 1
                     continue
                 source_candidate_id = candidate.id
 
@@ -1811,32 +1821,47 @@ class DatabaseStages:
                 graph_context,
                 self._bounded_agent_planner(graph_context, facts, graph.limits),
             )
-            proposed: ObservationCandidate | None = None
             if isinstance(terminal, CandidateTerminal):
-                proposed = self._record_agent_candidate(
-                    session,
-                    terminal.candidate,
-                    document_version_id=version_id,
-                    page_id=page.id,
-                    task_run_id=task_run_id,
-                    source_candidate=candidate,
-                    flush=False,
-                )
-                outcome.rows.append(proposed)
+                outcome.proposals += 1
             elif isinstance(terminal, AbstentionTerminal):
                 outcome.abstentions += 1
             else:
                 raise TypeError("bounded agent returned an unknown terminal")
-            # **Every paid call is recorded**, the proposed reading's linked to its row.
-            for recorder, produced in () if reads is None else reads.recorders:
-                linked = (
-                    proposed is not None
-                    and isinstance(terminal, CandidateTerminal)
-                    and produced == [terminal.candidate.candidate_id]
-                )
+            if reads is None:
+                # An injected graph brings its own tools, so only what it proposed is known here.
+                if isinstance(terminal, CandidateTerminal):
+                    outcome.rows.append(
+                        self._record_agent_candidate(
+                            session,
+                            terminal.candidate,
+                            document_version_id=version_id,
+                            page_id=page.id,
+                            task_run_id=task_run_id,
+                            source_candidate=candidate,
+                            flush=False,
+                        )
+                    )
+                continue
+            # **Every look is a candidate, and every paid call is recorded with it** (DESIGN_AI
+            # §3.2: a new look adds a new candidate; corroboration decides). A proposal is one of
+            # these — the graph refuses any other — and an abstention keeps them too: where the
+            # agent read the whole label and the region's other readers read the part a crop cut,
+            # it hands the region over *with* the whole reading, for the reviewer to see.
+            for recorder, produced in reads.recorders:
+                row = None
+                if produced:
+                    row = self._record_agent_candidate(
+                        session,
+                        produced[0],
+                        document_version_id=version_id,
+                        page_id=page.id,
+                        task_run_id=task_run_id,
+                        source_candidate=candidate,
+                        flush=False,
+                    )
+                    outcome.rows.append(row)
                 outcome.invocations += recorder.persist(
-                    candidate_id=proposed.id if linked and proposed is not None else None,
-                    flush=False,
+                    candidate_id=None if row is None else row.id, flush=False
                 )
         return outcome
 

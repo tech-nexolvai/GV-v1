@@ -571,3 +571,34 @@ def test_a_request_says_whether_the_crop_it_sends_shows_a_stacked_fraction(
     reads.read(VlmReadingArguments("r", key, VlmRole.PRIMARY))
 
     assert reader.stacked == [True]
+
+
+def test_the_641_case_goes_to_a_reviewer_with_the_whole_reading_beside_the_cut_ones(
+    session: Session, store: LocalStore
+) -> None:
+    """**The #641 failure as it arrives.** Both vision readers were shown the cut crop and agree on
+    `92"`. Outcome: the agent widens the crop and reads `10192"` — which disagrees with them, so it
+    looks sharper, asks the second reader, and hands the region over rather than pick. It never
+    overrides the two readings; it adds its own, both recorded, for the reviewer to see."""
+    revision = _revision(session, store, data=SHEET)
+    session.commit()
+    primary, escalation = _readers(cut_reading='92"')
+
+    results = _stages(store, (primary, escalation), _settings()).extract_pages(session, revision.id)
+    session.commit()
+
+    rows = _agent_rows(session)
+    assert sorted((row.raw_text, run.extractor) for row, run in rows) == [
+        ('10192"', "reader-a"),
+        ('10192"', "reader-b"),
+    ]
+    (payload,) = [result.payload for result in results]
+    assert (payload["agent_proposals"], payload["agent_abstentions"]) == (0, 1)
+    assert payload["agent_invocations"] == 2
+    # The cut readings are still there, unchanged: nothing was picked.
+    cut = [
+        row.raw_text
+        for row in session.execute(select(ObservationCandidate)).scalars()
+        if row.raw_text == '92"'
+    ]
+    assert cut == ['92"', '92"']
