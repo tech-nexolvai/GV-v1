@@ -28,7 +28,7 @@ from extraction.agent.graph import AgentProgress, Look
 from extraction.agent.tools import Refinement
 from extraction.agent.trigger import AmbiguityReason
 from units.dual import DualDimensionParseError, parse_dual
-from units.measurement import Measurement
+from units.measurement import Measurement, Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation, is_compound
 from units.policy import Consistency, check_dual
@@ -156,6 +156,29 @@ def _same(first: Measurement, second: Measurement) -> bool:
     return (first.exact, first.unit) == (second.exact, second.unit)
 
 
+def bare_number(candidate: ObservationCandidate) -> Measurement | None:
+    """A reading's number, read as inches, where it was set aside **only** for having no unit (#777).
+
+    `26 3/4` for a `26 3/4"` label is not a value — a bare number is the ambiguity every reader
+    refuses (`units.normalise`) — but it is not nothing either: it says which number the drawing
+    shows. Read as inches, the drawing's unit of record (CLAUDE.md, Q12), it can count *against* a
+    value that says otherwise. `None` for a reading with a unit, no digits, or two values.
+    """
+    if candidate.parsed_value is not None or is_compound(candidate.raw_text):
+        return None
+    text = canonical_notation(candidate.raw_text)[0]
+    try:
+        normalise_to_inches(text)
+    except UnitNormalisationError:
+        pass
+    else:
+        return None
+    try:
+        return normalise_to_inches(text, unmarked_unit=Unit.INCH)
+    except UnitNormalisationError:
+        return None
+
+
 def observe(facts: RegionFacts, progress: AgentProgress) -> frozenset[Fact]:
     """Every fact that holds now, from the region's geometry and the run so far."""
     found: set[Fact] = set()
@@ -181,7 +204,17 @@ def observe(facts: RegionFacts, progress: AgentProgress) -> frozenset[Fact]:
     witnesses = list(values) + list(facts.other_route_values)
     if facts.shape_reading is not None:
         witnesses.append(facts.shape_reading)
-    if len(witnesses) > 1:
+    # **A number the agent's own reader gave without a unit counts against a value, never for one
+    # (#777).** Only this run's own readings: another route's bare number is a reading of another
+    # crop — the OCR `92` of a cut-off `10192"` — and would veto the widening that fixes that crop.
+    bare = [
+        number
+        for look in progress.looks
+        if not _usable(look) and (number := bare_number(look.candidate)) is not None
+    ]
+    if any(not _same(value, number) for value in values for number in bare):
+        found.add(Fact.READINGS_DISAGREE)
+    elif len(witnesses) > 1:
         first = witnesses[0]
         if all(_same(first, other) for other in witnesses[1:]):
             found.add(Fact.READINGS_AGREE)

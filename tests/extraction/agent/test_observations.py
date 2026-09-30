@@ -233,3 +233,35 @@ def test_before_any_step_the_reviewer_is_told_no_reading_was_given() -> None:
         )
         == "no reader has given one exact value yet"
     )
+
+
+# ---------------------------------------------------------------------------
+# A number read with no unit (#777)
+# ---------------------------------------------------------------------------
+
+
+def test_a_bare_number_is_read_as_inches_only_where_it_has_no_unit() -> None:
+    from extraction.agent.observations import bare_number
+
+    assert bare_number(_reading("26 3/4")) == Measurement(Fraction(107, 4), Unit.INCH, "26 3/4")
+    assert bare_number(_reading('26 3/4"')) is None
+    assert bare_number(_reading("see detail")) is None
+    assert bare_number(_reading('39 1/4"+6"')) is None
+
+
+def test_a_bare_number_never_counts_as_a_reading() -> None:
+    """Outcome: with only `12` read, there is still no reading — a number is not a value."""
+    observed = observe(_facts(), _progress("12"))
+
+    assert Fact.NO_READING in observed and Fact.READINGS_AGREE not in observed
+
+
+def test_another_routes_bare_number_is_not_this_runs_reading() -> None:
+    """**Only the agent's own readings (#777).** Outcome: the region's other rows hold values, not
+    bare text, so an OCR `92` of a cut crop cannot veto the whole `10192"` the agent read — it never
+    reaches the facts at all; only `other_route_values`, which are values, do."""
+    facts = _facts(other_route_values=())
+
+    observed = observe(facts, _progress('10192"'))
+
+    assert Fact.READINGS_DISAGREE not in observed
