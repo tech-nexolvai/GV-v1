@@ -112,8 +112,18 @@ API_PID=$!
 #     aiset1/AI_Set_1.pdf p2          10      123      158      202
 #
 # At 6, `demo_pair` goes from filling nothing to filling its fields with the placement check
-# passing. `GLYPH_MAXIMUM_PT` moves to 5 with it: it is the longest stroke that may still be part of
-# a glyph, so leaving it at 10 would put every stroke between 6 and 10 in both categories at once.
+# passing. `GLYPH_MAXIMUM_PT` moved with it: it is the largest a path may be and still be part of a
+# glyph, and leaving it at 10 would put every stroke between 6 and 10 in both categories at once.
+#
+# **It is 6, not 5, because the client's digits are 5.4-5.5 pt tall (#715).** At 5 no digit was a
+# glyph, so a region formed from the inch mark or a tick beside the number, and the vision crop cut
+# round it showed part of the label: `91"` of `191"`, `9 1/2"` of `39 1/2"`. A reader that read that
+# crop correctly returned a wrong dimension that parses, and two vendors agreed on it. On the four
+# such crops in the human-read key (#666), 7 readers were right 6 times in 28 with the crops cut at
+# 5, and 26 times in 28 cut at 6; accepted-but-wrong fell from 19 to 1. At 6 it equals
+# `LINE_MINIMUM_PT`, so no stroke is in both categories except a short diagonal, and on the 17-page
+# set the line segments (23,069) and dimension lines (1,515) are unchanged while label-to-line
+# associations rise from 1,193 to 1,236.
 #
 # These are still this demo's numbers rather than a deployment's, and still measured rather than
 # chosen — the difference is that they are now measured against the drawings somebody actually
@@ -141,7 +151,7 @@ GV_DEV_STORAGE=".dev-storage" \
 GV_LOCALIZED_OCR_ENABLED=1 \
 GV_BEDROCK_VISION_ENABLED=1 \
 GV_READER_LINE_MINIMUM_PT=6 \
-GV_READER_GLYPH_MAXIMUM_PT=5 \
+GV_READER_GLYPH_MAXIMUM_PT=6 \
 GV_READER_GLYPH_GAP_PT=4 \
 GV_READER_PROXIMITY_LIMIT=0.05 \
 GV_READER_AMBIGUITY_MARGIN=0.005 \
