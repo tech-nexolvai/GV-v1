@@ -314,6 +314,7 @@ class Arguments(BaseModel):
 
     package: Path | None
     make_fixture: Path | None
+    candidate_scaffold_dir: Path | None
     database_url: str | None
     dpi: int
     vendor_stamps_only: bool
