@@ -2,7 +2,7 @@
 
 Verification for: `workflow/assignment_bedrock.py`.
 
-Two to read first. `test_the_schema_lists_the_real_identifiers` is why an invented field key cannot
+Two to read first. `test_the_schema_lists_this_runs_fields_and_reading_handles` is why an invented field key cannot
 be emitted rather than merely caught: the keys go into the tool schema as `enum`s, so constrained
 decoding refuses them during generation. And `test_the_rule_arithmetic_never_reaches_the_model` is
 the line that makes the whole design non-circular — a model holding `CT-WIDTH-001`'s equation could
@@ -21,13 +21,19 @@ import pytest
 from app.config import Settings
 from workflow.assignment import AssignmentContext, Field, ProposedAssignment, Reading
 from workflow.assignment_bedrock import (
+    TOKEN_CEILING,
+    TOKEN_FLOOR,
     TOOL_NAME,
     AssignmentProgress,
     BedrockAssignmentModel,
+    UnusableAnswer,
     _Config,
+    _token_limit,
     assignment_tool_schema,
     configured_assignment_model,
+    describe_failure,
     propose_and_guard,
+    reading_handles,
 )
 
 DATABASE = "postgresql+psycopg://gv:gv@localhost:5433/gvtest"
@@ -51,6 +57,7 @@ def _reading(candidate_id: str, value: str, **overrides: Any) -> Reading:
         line_key=overrides.pop("line_key", "line-1"),
         chain_key=overrides.pop("chain_key", None),
         order=overrides.pop("order", None),
+        geometry_available=overrides.pop("geometry_available", True),
     )
 
 
@@ -99,18 +106,19 @@ def _model(response: dict[str, Any] | None = None) -> BedrockAssignmentModel:
 # ---------------------------------------------------------------------------
 
 
-def test_the_schema_lists_the_real_identifiers() -> None:
-    """**Input: one run's context. Outcome: its keys and ids are the only permitted values.**
+def test_the_schema_lists_this_runs_fields_and_reading_handles() -> None:
+    """**Input: one run's context. Outcome: its keys and reading handles are the only permitted values.**
 
     Built per request rather than fixed. A static schema would accept any string and leave "is that
     a field we asked for?" to be checked afterwards; listing the actual identifiers makes the
     grammar refuse anything else *during generation*, which is the only moment the model is free.
+    Readings are listed by handle rather than candidate id since #712 — see the handle tests below.
     """
     schema = assignment_tool_schema(_context())
 
     item = schema["properties"]["assignments"]["items"]  # type: ignore[index]
     assert item["properties"]["field_key"]["enum"] == ["SHOP:CT010", "SHOP:cabinet_width"]
-    assert item["properties"]["candidate_ids"]["items"]["enum"] == ["c1", "c2"]
+    assert item["properties"]["candidate_ids"]["items"]["enum"] == ["r1", "r2"]
 
 
 def test_the_schema_is_fresh_each_call() -> None:
@@ -191,14 +199,14 @@ def test_the_model_is_told_what_the_rule_is_for() -> None:
 def test_each_reading_carries_its_sheet_line_and_place_in_the_run() -> None:
     """Outcome: the facts the guard will check against are the facts the model is given.
 
-    Telling it which readings are unattached is cheaper than letting it propose one and discarding
-    the batch — while the guard stays the thing that enforces it.
+    The unattached reading here is on a page with no line-work — the only unattached kind that is
+    ever offered, since `propose_and_guard` leaves out the kind the guard refuses outright (#712).
     """
     context = AssignmentContext(
         fields=(CABINETS,),
         readings=(
             _reading("c1", "15 in", chain_key="chain-a", order=0),
-            _reading("c2", "36 in", line_key=None),
+            _reading("c2", "36 in", line_key=None, geometry_available=False),
         ),
     )
     model = _model()
@@ -525,3 +533,319 @@ def test_a_deployment_with_no_model_says_so_rather_than_going_quiet() -> None:
 
     assert [progress.phase for progress in seen] == ["unavailable"]
     assert "no model is configured" in seen[0].detail
+
+
+# ---------------------------------------------------------------------------
+# #712 — the model was reached, and its answer did not fit
+# ---------------------------------------------------------------------------
+
+
+def _uuid_context(
+    count: int, *, fields: tuple[Field, ...] = (DEPTH, CABINETS)
+) -> AssignmentContext:
+    return AssignmentContext(
+        fields=fields,
+        readings=tuple(
+            _reading(f"00000000-0000-4000-8000-{index:012d}", f"{index} in")
+            for index in range(count)
+        ),
+    )
+
+
+def test_the_model_names_readings_by_short_handle_not_by_candidate_id() -> None:
+    """**Outcome: `r1`, `r2` in the payload and the schema; no candidate id anywhere the model looks.**
+
+    A candidate id is a 36-character UUID, about thirty tokens each time the answer names one.
+    Measured with a request the size of the client drawing's, 20 readings used 910 of 960 answer
+    tokens and 40 broke the call outright. A handle costs a few.
+    """
+    context = _uuid_context(3)
+    model = _model(_response([]))
+
+    model.propose(context)
+
+    request = model.client.calls[0]  # type: ignore[union-attr]
+    shown = json.dumps(request)
+    assert all(reading.candidate_id not in shown for reading in context.readings)
+    readings = json.loads(request["messages"][0]["content"][2]["text"])["readings"]
+    assert [reading["candidate_id"] for reading in readings] == ["r1", "r2", "r3"]
+    schema = request["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"]["json"]
+    ids = schema["properties"]["assignments"]["items"]["properties"]["candidate_ids"]["items"]
+    assert ids["enum"] == ["r1", "r2", "r3"]
+
+
+def test_a_handle_comes_back_as_the_candidate_it_names() -> None:
+    """**Outcome: the guard and the filed proposal see real candidate ids, never a handle.**"""
+    context = _uuid_context(3)
+    model = _model(_response([{"field_key": "SHOP:cabinet_width", "candidate_ids": ["r3", "r1"]}]))
+
+    proposed = model.propose(context)
+
+    assert proposed == (
+        ProposedAssignment(
+            field_key="SHOP:cabinet_width",
+            candidate_ids=(context.readings[2].candidate_id, context.readings[0].candidate_id),
+        ),
+    )
+
+
+def test_a_handle_nobody_issued_is_refused_by_name() -> None:
+    """**Input: a handle the schema never listed. Outcome: the guard refuses it as unknown.**
+
+    It cannot be emitted under the schema. If one arrives anyway it is passed through unchanged
+    rather than dropped, so the refusal names what the model actually said.
+    """
+    context = _uuid_context(2)
+    model = _model(_response([{"field_key": "SHOP:CT010", "candidate_ids": ["r9"]}]))
+    seen: list[AssignmentProgress] = []
+
+    assert propose_and_guard(context, model, observer=seen.append) == ((), ())
+
+    refusals = [progress for progress in seen if progress.phase == "refused"]
+    assert refusals and "'r9'" in refusals[0].detail
+    assert refusals[0].failure == "guard-refused"
+
+
+def test_handles_follow_context_order() -> None:
+    """Outcome: `r1` is the first reading. Stable, so a retry names the same reading the same way."""
+    context = _uuid_context(2)
+
+    assert reading_handles(context) == {
+        "r1": context.readings[0].candidate_id,
+        "r2": context.readings[1].candidate_id,
+    }
+
+
+def test_the_answer_limit_grows_with_the_readings_not_only_the_fields() -> None:
+    """**The measured failure** (#712). Outcome: 123 readings get more room than 8 did.
+
+    Sized by the fields alone, fifteen fields gave 960 tokens whatever the drawing held, and the
+    real drawing's answer did not fit. Nova does not stop a tool call at its limit; it abandons it,
+    and Bedrock reports an invalid sequence.
+    """
+    fifteen = tuple(
+        Field(key=f"SHOP:F{index}", name=f"f{index}", source="SHOP", many=True)
+        for index in range(15)
+    )
+
+    small = _token_limit(_uuid_context(8, fields=fifteen))
+    large = _token_limit(_uuid_context(123, fields=fifteen))
+
+    assert large > small > 960
+    assert _token_limit(_uuid_context(1, fields=(DEPTH,))) == TOKEN_FLOOR
+    assert _token_limit(_uuid_context(5000, fields=fifteen)) == TOKEN_CEILING
+
+
+def test_the_request_carries_the_sized_limit() -> None:
+    """Outcome: the limit the call is sent with is the one sized from this context."""
+    context = _uuid_context(40)
+    model = _model(_response([]))
+
+    model.propose(context)
+
+    assert model.client.calls[0]["inferenceConfig"]["maxTokens"] == _token_limit(context)  # type: ignore[union-attr]
+
+
+def test_a_reading_the_guard_would_refuse_outright_is_not_offered() -> None:
+    """**Outcome: unattached-with-line-work is left out; unattached-without-line-work stays.**
+
+    Measured: told a reading was unattached, the model used it anyway, and one such reading sinks
+    the whole batch. On the client's drawing 115 of 123 readings were unattached. The one the guard
+    abstains on — a page with no line-work — is still offered, because it can still fill a field.
+    """
+    context = AssignmentContext(
+        fields=(CABINETS,),
+        readings=(
+            _reading("c1", "15 in"),
+            _reading("c2", "36 in", line_key=None),
+            _reading("c3", "3 in", line_key=None, geometry_available=False),
+        ),
+    )
+    model = _model(_response([]))
+
+    propose_and_guard(context, model)
+
+    offered = json.loads(model.client.calls[0]["messages"][0]["content"][2]["text"])["readings"]  # type: ignore[union-attr]
+    assert [reading["value"] for reading in offered] == ["15 in", "3 in"]
+
+
+def test_a_page_of_only_floating_numbers_asks_nothing_and_says_why() -> None:
+    """**Outcome: no call, and a sentence a reviewer can act on.**"""
+    context = AssignmentContext(
+        fields=(CABINETS,),
+        readings=(_reading("c1", "15 in", line_key=None), _reading("c2", "36 in", line_key=None)),
+    )
+    model = _model()
+    seen: list[AssignmentProgress] = []
+
+    assert propose_and_guard(context, model, observer=seen.append) == ((), ())
+
+    assert model.client.calls == []  # type: ignore[union-attr]
+    assert seen[-1].failure == "nothing-to-ask"
+    assert "none of the 2 readings is attached to a dimension line" in seen[-1].detail
+
+
+def test_the_guard_still_checks_what_the_model_was_not_shown() -> None:
+    """**Outcome: the filter relaxes nothing.** A real id for an unoffered reading is still refused.
+
+    A second adapter might return real ids rather than handles; the pass-through makes that reach
+    the guard, and the guard checks the full context, not the narrowed one.
+    """
+    context = AssignmentContext(
+        fields=(DEPTH,),
+        readings=(_reading("c1", "25 1/2 in"), _reading("c2", "36 in", line_key=None)),
+    )
+    model = _model(_response([{"field_key": "SHOP:CT010", "candidate_ids": ["c2"]}]))
+
+    assert propose_and_guard(context, model) == ((), ())
+
+
+# ---------------------------------------------------------------------------
+# #712 — every failure named, so the fix goes the right way
+# ---------------------------------------------------------------------------
+
+
+def _client_error(code: str, message: str = "details") -> Exception:
+    from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+
+    return ClientError({"Error": {"Code": code, "Message": message}}, "Converse")
+
+
+@pytest.mark.parametrize(
+    ("code", "kind"),
+    [
+        ("ThrottlingException", "throttled"),
+        ("ServiceQuotaExceededException", "throttled"),
+        ("ModelErrorException", "answer-invalid"),
+        ("ServiceUnavailableException", "unreachable"),
+        ("ModelTimeoutException", "unreachable"),
+        ("AccessDeniedException", "call-refused"),
+        ("ValidationException", "call-refused"),
+        ("ResourceNotFoundException", "call-refused"),
+    ],
+)
+def test_each_bedrock_error_code_has_its_own_kind(code: str, kind: str) -> None:
+    """Outcome: the kind follows Bedrock's error code, and the exact error keeps the code."""
+    failure, _detail, exact = describe_failure(_client_error(code))
+
+    assert failure == kind
+    assert code in exact
+
+
+def test_the_real_drawings_error_is_named_as_an_invalid_answer_not_an_unreachable_model() -> None:
+    """**The error the real model returned** (#712), for a request the size of the client drawing's.
+
+    The drawing's run reported "the model could not be reached". Replayed, the model was reached;
+    its answer broke.
+    """
+    error = _client_error(
+        "ModelErrorException",
+        "Model produced invalid sequence as part of ToolUse. Please refer to the model tool use "
+        "troubleshooting guide.",
+    )
+
+    failure, detail, exact = describe_failure(error)
+
+    assert failure == "answer-invalid"
+    assert "could not be reached" not in detail
+    assert "invalid sequence" in exact
+
+
+def test_the_screen_sentence_never_carries_the_providers_message() -> None:
+    """**Outcome: an ARN in the AWS message reaches the log, not the reviewer's screen.**"""
+    arn = "arn:aws:iam::111122223333:user/someone"
+    error = _client_error("AccessDeniedException", f"User: {arn} is not authorized")
+
+    _failure, detail, exact = describe_failure(error)
+
+    assert arn not in detail
+    assert "AccessDeniedException" in detail
+    assert arn in exact
+
+
+def test_a_network_failure_is_unreachable() -> None:
+    from botocore.exceptions import (  # type: ignore[import-untyped]
+        EndpointConnectionError,
+        ReadTimeoutError,
+    )
+
+    for error in (
+        EndpointConnectionError(endpoint_url="https://bedrock-runtime.invalid"),
+        ReadTimeoutError(endpoint_url="https://bedrock-runtime.invalid"),
+        TimeoutError("no route to host"),
+    ):
+        assert describe_failure(error)[0] == "unreachable"
+
+
+def test_missing_credentials_is_a_refusal_not_an_outage() -> None:
+    from botocore.exceptions import NoCredentialsError  # type: ignore[import-untyped]
+
+    failure, detail, _exact = describe_failure(NoCredentialsError())
+
+    assert failure == "call-refused"
+    assert "credentials" in detail
+
+
+def test_an_answer_stopped_at_its_limit_is_cut_off() -> None:
+    """Outcome: `stopReason: max_tokens` is its own kind, so the fix — more room — is obvious."""
+    response = _response()
+    response["stopReason"] = "max_tokens"
+
+    with pytest.raises(UnusableAnswer) as raised:
+        _model(response).propose(_context())
+
+    assert describe_failure(raised.value)[0] == "answer-cut-off"
+
+
+def test_a_wrong_shaped_answer_is_malformed() -> None:
+    """Outcome: an answer whose tool input breaks the schema is `answer-malformed`."""
+    response = _response()
+    response["output"]["message"]["content"][0]["toolUse"]["input"] = {"assignments": "r1"}
+
+    with pytest.raises(UnusableAnswer) as raised:
+        _model(response).propose(_context())
+
+    assert describe_failure(raised.value)[0] == "answer-malformed"
+
+
+def test_anything_else_is_a_failed_call_with_its_type_kept() -> None:
+    failure, detail, exact = describe_failure(KeyError("surprise"))
+
+    assert failure == "call-failed"
+    assert detail == "the model call failed"
+    assert exact.startswith("KeyError")
+
+
+def test_the_exact_error_is_bounded() -> None:
+    """Outcome: a provider cannot put an unbounded message into the worker's log line."""
+    assert len(describe_failure(RuntimeError("x" * 5000))[2]) <= 500
+
+
+def test_a_throttled_call_is_reported_as_throttled_and_still_returns_nothing() -> None:
+    """**Outcome: the observer is told `throttled`; the answer is the same empty pair as ever.**"""
+
+    class _Throttled:
+        def converse(self, **_: Any) -> dict[str, Any]:
+            raise _client_error("ThrottlingException", "Too many requests")
+
+    model = BedrockAssignmentModel(
+        config=_Config(
+            model_id="m", region_name="us-east-1", connect_timeout_seconds=1, read_timeout_seconds=2
+        ),
+        client=_Throttled(),
+    )
+    seen: list[AssignmentProgress] = []
+
+    assert propose_and_guard(_context(), model, observer=seen.append) == ((), ())
+
+    assert seen[-1].phase == "unavailable"
+    assert seen[-1].failure == "throttled"
+    assert "ThrottlingException" in (seen[-1].error or "")
+
+
+def test_no_model_configured_is_its_own_kind() -> None:
+    seen: list[AssignmentProgress] = []
+
+    propose_and_guard(_context(), None, observer=seen.append)
+
+    assert seen[-1].failure == "not-configured"

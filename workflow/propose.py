@@ -320,7 +320,7 @@ def propose_for_revision(
     if revision is None:
         return {"ran": False, "reason": "no such package revision"}
     if model is None:
-        return {"ran": False, "reason": "no model is configured"}
+        return {"ran": False, "reason": "no model is configured", "failure": "not-configured"}
 
     try:
         context, _rules = assignment_context(session, revision)
@@ -342,14 +342,19 @@ def propose_for_revision(
         model_id=model.config.model_id,
         unverified_placement=unverified,
     )
-    refused = next(
-        (
-            progress.detail
-            for progress in reversed(last)
-            if progress.phase in {"refused", "unavailable"}
-        ),
+    # **What stopped it, named** (#712). `reason` is the sentence a reviewer is shown; `failure` is
+    # which of a closed set it was; `error` is the provider's own words, for whoever reads the
+    # worker's log. "The model could not be reached" once stood for all three and hid a model that
+    # had answered.
+    stopped = next(
+        (progress for progress in reversed(last) if progress.phase in {"refused", "unavailable"}),
         None,
     )
+    why: dict[str, object] = {}
+    if stopped is not None and not accepted:
+        why = {"reason": stopped.detail, "failure": stopped.failure}
+        if stopped.error is not None:
+            why["error"] = stopped.error
     return {
         "ran": True,
         "readings": len(context.readings),
@@ -358,5 +363,5 @@ def propose_for_revision(
         "filled": len(accepted),
         "unverified_placement": len(unverified),
         "proposal_id": None if proposal_id is None else str(proposal_id),
-        **({"reason": refused} if refused and not accepted else {}),
+        **why,
     }
