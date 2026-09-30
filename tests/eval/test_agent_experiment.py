@@ -20,7 +20,7 @@ from eval.experiments.agent_vs_fixed import (
 from extraction.models.invocations import InvocationRecord
 
 
-def _invocation(cost: int) -> InvocationRecord:
+def _invocation(cost: int | None) -> InvocationRecord:
     return InvocationRecord(
         extraction_run_id=UUID("00000000-0000-0000-0000-000000000001"),
         model_id="model-v1",
@@ -39,7 +39,7 @@ def _execution(
     *,
     false_pass: str = "0",
     accuracy: str = "0.90",
-    costs: tuple[int, ...] = (),
+    costs: tuple[int | None, ...] = (),
     minutes: str = "10",
 ) -> ArmExecution:
     return ArmExecution(
@@ -134,6 +134,21 @@ def test_cost_is_summed_from_real_invocation_records() -> None:
 
     assert report.fixed.cost_micros == 303
     assert report.agent.cost_micros == 33
+
+
+def test_an_arm_with_an_unpriced_call_stops_the_comparison_by_name() -> None:
+    """**#700.** A call with no stated price is `None`, not zero. Summed as zero it would make that arm
+    look cheaper, and cost is one of the grounds this comparison ships on — so it refuses."""
+    from eval.experiments.agent_vs_fixed import UnpricedArmError
+
+    with pytest.raises(UnpricedArmError, match="no stated price"):
+        compare_arms(
+            _gold(),
+            code_version="commit-abc",
+            fixed_arm=Arm(_execution(costs=(101, 202))),
+            agent_arm=Arm(_execution(costs=(11, None))),
+            recorder=Recorder(),
+        )
 
 
 def test_an_improvement_without_false_pass_regression_can_ship() -> None:

@@ -37,14 +37,32 @@ SYSTEM_INSTRUCTION = (
 #: Kept as one string rather than a template because it must be identical for every crop. A prompt
 #: that varied per call would make two readings of the same region incomparable, and comparing them
 #: is what the corroboration lane does.
-USER_TASK = (
-    "Read the dimension token and its image-space polygon from this crop. "
+_USER_TASK_PREFIX = (
+    "Read the dimension token and its image-space rectangle from this crop. "
     "Report the token exactly as written, including any inch or foot marks and any fraction, "
     "and do not convert, round, or complete it. "
     'Unit must be either "in" or "mm" — those two spellings only, or null if you cannot tell. '
-    "Polygon coordinates must be whole pixel counts measured from the top-left corner of this "
-    "crop image, never fractions of its width or height."
+    "Return the rectangle as four integer fields named x1, y1, x2 and y2."
 )
+
+PIXEL_COORDINATE_INSTRUCTION = (
+    "Measure x1, y1, x2 and y2 as whole pixel counts from the top-left corner of this crop image, "
+    "never fractions of its width or height."
+)
+
+NOVA_GRID_COORDINATE_INSTRUCTION = (
+    "Measure x1, y1, x2 and y2 on Nova's 0-1000 crop grid: 0 is the top or left edge, "
+    "1000 is the bottom or right edge, and the adapter will map that grid back to pixels."
+)
+
+USER_TASK = f"{_USER_TASK_PREFIX} {PIXEL_COORDINATE_INSTRUCTION}"
+
+
+class CoordinateInstruction(StrEnum):
+    """The coordinate convention a particular model family is asked to emit."""
+
+    PIXELS = "pixels"
+    NOVA_GRID = "nova_grid"
 
 
 class InjectionSignal(StrEnum):
@@ -88,7 +106,11 @@ def _signals(text: str) -> tuple[InjectionSignal, ...]:
     return tuple(found)
 
 
-def prepare_prompt(context: AssembledContext) -> PreparedPrompt:
+def prepare_prompt(
+    context: AssembledContext,
+    *,
+    coordinate_instruction: CoordinateInstruction = CoordinateInstruction.PIXELS,
+) -> PreparedPrompt:
     """Render exact drawing data and report instruction-like notes without obeying them."""
 
     attempts = tuple(
@@ -96,9 +118,14 @@ def prepare_prompt(context: AssembledContext) -> PreparedPrompt:
         for item in context.nearby_text
         for signal in _signals(item.text)
     )
+    coordinate_text = (
+        NOVA_GRID_COORDINATE_INSTRUCTION
+        if coordinate_instruction is CoordinateInstruction.NOVA_GRID
+        else PIXEL_COORDINATE_INSTRUCTION
+    )
     return PreparedPrompt(
         system_instruction=SYSTEM_INSTRUCTION,
-        user_task=USER_TASK,
+        user_task=f"{_USER_TASK_PREFIX} {coordinate_text}",
         drawing_data=context.as_data_text(),
         injection_attempts=attempts,
     )

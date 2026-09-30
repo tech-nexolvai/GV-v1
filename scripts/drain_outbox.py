@@ -26,13 +26,17 @@ Verification: `tests/test_drain_outbox.py`
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import sys
 import time
 from collections.abc import Mapping
+from decimal import Decimal
 from uuid import UUID
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+from app.evidence.automatic_typing import AutomaticTypingSettings
 
 #: How long `--watch` sleeps between passes. Two seconds matches `GV_OUTBOX_POLL_SECONDS`'s default,
 #: which `.env.example` describes as "the visible wait between a package being accepted and its
@@ -40,9 +44,129 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 WATCH_SECONDS = 2.0
 
 
+def _reader_configuration() -> tuple[object | None, object | None]:
+    """Read explicitly supplied localized-reader settings, or leave that optional route off.
+
+    The thresholds select pixels to OCR, so they are deployment configuration rather than product
+    defaults.  A partial configuration is refused; silently filling one value would change which
+    drawing region gets read.  The demo launcher supplies its documented synthetic-fixture values.
+    """
+    if os.environ.get("GV_LOCALIZED_OCR_ENABLED", "").lower() not in {"1", "true", "yes"}:
+        return None, None
+    required = {
+        "GV_READER_LINE_MINIMUM_PT": os.environ.get("GV_READER_LINE_MINIMUM_PT"),
+        "GV_READER_GLYPH_MAXIMUM_PT": os.environ.get("GV_READER_GLYPH_MAXIMUM_PT"),
+        "GV_READER_GLYPH_GAP_PT": os.environ.get("GV_READER_GLYPH_GAP_PT"),
+        "GV_READER_PROXIMITY_LIMIT": os.environ.get("GV_READER_PROXIMITY_LIMIT"),
+        "GV_READER_AMBIGUITY_MARGIN": os.environ.get("GV_READER_AMBIGUITY_MARGIN"),
+        # The dimension-line detector (#179). Required for the same reason as the rest: each
+        # decides which strokes a reading may attach to, and a default would be this machine's
+        # guess shipped as every deployment's.
+        "GV_READER_WITNESS_TOLERANCE": os.environ.get("GV_READER_WITNESS_TOLERANCE"),
+        "GV_READER_MINIMUM_SPAN": os.environ.get("GV_READER_MINIMUM_SPAN"),
+        "GV_READER_STRAIGHTNESS": os.environ.get("GV_READER_STRAIGHTNESS"),
+        "GV_READER_CROSSING_MARGIN": os.environ.get("GV_READER_CROSSING_MARGIN"),
+        "GV_READER_LOCALIZED_MINIMUM_PATHS": os.environ.get("GV_READER_LOCALIZED_MINIMUM_PATHS"),
+        "GV_READER_LOCALIZED_MAXIMUM_SPAN": os.environ.get("GV_READER_LOCALIZED_MAXIMUM_SPAN"),
+        "GV_READER_LOCALIZED_CROP_MARGIN_PT": os.environ.get("GV_READER_LOCALIZED_CROP_MARGIN_PT"),
+        # The stacked-fraction detector (#735). Required with the rest because the rule it enforces —
+        # a stacked fraction always goes to a reviewer (#726) — cannot run without it, and the guard
+        # it replaced was optional and was never once supplied.
+        "GV_READER_FRACTION_BAR_THICKNESS_MAX_PT": os.environ.get(
+            "GV_READER_FRACTION_BAR_THICKNESS_MAX_PT"
+        ),
+        "GV_READER_FRACTION_BAR_LENGTH_MIN_PT": os.environ.get(
+            "GV_READER_FRACTION_BAR_LENGTH_MIN_PT"
+        ),
+        "GV_READER_FRACTION_REACH_PT": os.environ.get("GV_READER_FRACTION_REACH_PT"),
+        "GV_READER_FRACTION_GLYPH_MIN_PT": os.environ.get("GV_READER_FRACTION_GLYPH_MIN_PT"),
+        "GV_READER_FRACTION_GLYPH_MAX_PT": os.environ.get("GV_READER_FRACTION_GLYPH_MAX_PT"),
+        "GV_READER_FRACTION_PROPORTION_MAX": os.environ.get("GV_READER_FRACTION_PROPORTION_MAX"),
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise ValueError("localized OCR is enabled but missing " + ", ".join(missing))
+    from extraction.glyph_bands import FractionBarGeometry
+    from workflow.association import AssociationSettings, LocalizedOcrSettings
+
+    return (
+        AssociationSettings(
+            line_minimum_pt=Decimal(required["GV_READER_LINE_MINIMUM_PT"] or ""),
+            glyph_maximum_pt=Decimal(required["GV_READER_GLYPH_MAXIMUM_PT"] or ""),
+            glyph_gap_pt=Decimal(required["GV_READER_GLYPH_GAP_PT"] or ""),
+            proximity_limit=Decimal(required["GV_READER_PROXIMITY_LIMIT"] or ""),
+            ambiguity_margin=Decimal(required["GV_READER_AMBIGUITY_MARGIN"] or ""),
+            witness_tolerance=Decimal(required["GV_READER_WITNESS_TOLERANCE"] or ""),
+            minimum_span=Decimal(required["GV_READER_MINIMUM_SPAN"] or ""),
+            straightness=Decimal(required["GV_READER_STRAIGHTNESS"] or ""),
+            crossing_margin=Decimal(required["GV_READER_CROSSING_MARGIN"] or ""),
+            fraction_bar=FractionBarGeometry(
+                bar_thickness_max_pt=Decimal(
+                    required["GV_READER_FRACTION_BAR_THICKNESS_MAX_PT"] or ""
+                ),
+                bar_length_min_pt=Decimal(required["GV_READER_FRACTION_BAR_LENGTH_MIN_PT"] or ""),
+                reach_pt=Decimal(required["GV_READER_FRACTION_REACH_PT"] or ""),
+                glyph_min_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MIN_PT"] or ""),
+                glyph_max_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MAX_PT"] or ""),
+                proportion_max=Decimal(required["GV_READER_FRACTION_PROPORTION_MAX"] or ""),
+            ),
+        ),
+        LocalizedOcrSettings(
+            minimum_paths=int(required["GV_READER_LOCALIZED_MINIMUM_PATHS"] or ""),
+            maximum_span=Decimal(required["GV_READER_LOCALIZED_MAXIMUM_SPAN"] or ""),
+            crop_margin_pt=Decimal(required["GV_READER_LOCALIZED_CROP_MARGIN_PT"] or ""),
+        ),
+    )
+
+
+def _automatic_typing_configuration() -> AutomaticTypingSettings | None:
+    """Enable only explicitly approved exact-tag types; all other readings stay for review."""
+    raw = os.environ.get("GV_AUTOMATIC_TYPES", "").strip()
+    if not raw:
+        return None
+    from vocabulary.semantic_types import SemanticType
+
+    names = [item.strip() for item in raw.split(",") if item.strip()]
+    try:
+        permitted = frozenset(SemanticType(name) for name in names)
+    except ValueError as error:
+        raise ValueError(
+            "GV_AUTOMATIC_TYPES must contain exact semantic-type tags, comma-separated"
+        ) from error
+    return AutomaticTypingSettings(permitted)
+
+
+def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
+    """Build the local worker's real stages against the same storage root as the dev API."""
+    from storage.local import LocalStore
+    from workflow.findings_bedrock import configured_findings_composer
+    from workflow.stages import DatabaseStages
+
+    # A LocalStore needs a signing key to satisfy its interface, but this worker never issues upload
+    # tickets.  It only reads already-confirmed objects from the same explicitly configured dev root.
+    store = LocalStore(
+        root=pathlib.Path(os.environ.get("GV_DEV_STORAGE", ".dev-storage")).resolve(),
+        ticket_secret=b"local-review-worker-never-issues-tickets",
+    )
+    association, localized = _reader_configuration()
+    automatic_typing = _automatic_typing_configuration()
+    from app.config import Settings
+
+    return DatabaseStages(
+        store,
+        operands=None,
+        discriminators=dict(discriminators or {}),
+        association=association,
+        localized_ocr=localized,
+        automatic_typing=automatic_typing,
+        findings_composer=configured_findings_composer(Settings()),  # type: ignore[call-arg]
+    )
+
+
 def _run_checks(
     session: object,
     package_revision_id: UUID,
+    idempotency_key: str,
     discriminators: Mapping[str, str] | None = None,
 ) -> Mapping[str, object]:
     """Run the checks for one revision, with what the reviewer supplied.
@@ -52,12 +176,181 @@ def _run_checks(
     `CAB-FILLER-001` abstain with REVIEW_REQUIRED however complete the measurements are — the
     resolver cannot choose a variant nobody stated, and refuses to guess one.
     """
-    from workflow.measurements import operands_for
-    from workflow.stages import DatabaseStages
+    # Imported here so this control-plane-safe script still has no heavy imports until it is asked
+    # to consume work.  The operands are loaded by `DatabaseStages.run_checks` only after a human has
+    # confirmed a candidate; no OCR proposal becomes a verdict operand by this path.
+    from app.lifecycle.states import transition
+    from app.models import PackageRevision, PackageState, WorkflowRun
+    from workflow.review import run_stage
 
-    operands = operands_for(session, package_revision_id)  # type: ignore[arg-type]
-    stages = DatabaseStages(operands=operands, discriminators=dict(discriminators or {}))
-    return stages.run_checks(session, package_revision_id)  # type: ignore[arg-type]
+    revision = session.get(PackageRevision, package_revision_id)  # type: ignore[arg-type]
+    if revision is None:
+        return {"implemented": True, "ran": False, "reason": "no such package revision"}
+    _resume_from_reviewer_input(session, revision)
+    stages = _stages(discriminators=discriminators)
+    workflow_run_id = UUID(idempotency_key)
+    _ensure_workflow_run(session, package_revision_id, workflow_run_id, WorkflowRun)
+    # **Named by the row that asked, so asking twice runs twice.** Without it the key is the stage
+    # and the revision, so a reviewer who supplied a missing value and pressed Run checks again was
+    # indistinguishable from a redelivery of the first request: nothing ran, nothing moved, and the
+    # findings stayed as they were. Redelivering *this* row keeps this key and stays idempotent.
+    outcome = run_stage(
+        session,
+        stage="run_checks",
+        state=PackageState.RUNNING_CHECKS,
+        package_revision_id=package_revision_id,
+        workflow_run_id=workflow_run_id,
+        stages=stages,  # type: ignore[arg-type]
+        request=idempotency_key,
+    )
+    output = run_stage(
+        session,
+        stage="generate_outputs",
+        state=PackageState.GENERATING_OUTPUTS,
+        package_revision_id=package_revision_id,
+        workflow_run_id=workflow_run_id,
+        stages=stages,  # type: ignore[arg-type]
+        request=idempotency_key,
+    )
+    # **Only hand over if this run actually got there.** A stage that recognised itself as already
+    # done moved nothing, so the revision is still wherever it was — and declaring a hand-over from
+    # there asked the machine for `AWAITING_REVIEW -> AWAITING_REVIEW`, which it refuses, so a
+    # redelivery failed for ever instead of returning quietly.
+    if not (outcome.already_done and output.already_done):
+        transition(
+            session,
+            package_revision_id,
+            PackageState.AWAITING_REVIEW,
+            actor="local review worker",
+            reason="reviewer-confirmed readings were checked and handoff artifacts generated",
+        )
+    return {"checks": dict(outcome.payload), "outputs": dict(output.payload)}
+
+
+def _resume_from_reviewer_input(session: object, revision: object) -> None:
+    """Resume the exact stage that deliberately handed control to the reviewer.
+
+    Extraction ends in ``NEEDS_INPUT`` from ``VALIDATING_EVIDENCE`` so an empty proposal set has a
+    visible, actionable handoff.  Once the reviewer submits values, the lifecycle guard correctly
+    requires resumption at that same stage before checks may run; jumping straight to
+    ``RUNNING_CHECKS`` would bypass the invariant.  Validation's task has already been recorded, so
+    the subsequent idempotent ``run_stage`` does not repeat rendering — this transition records the
+    legal return from the human handoff.
+    """
+    from app.lifecycle.states import transition
+    from app.models import PackageRevision, PackageState
+
+    if not isinstance(revision, PackageRevision):
+        raise TypeError("revision must be a PackageRevision")
+    if PackageState(revision.state) is not PackageState.NEEDS_INPUT:
+        return
+    transition(
+        session,  # type: ignore[arg-type]
+        revision.id,
+        PackageState.VALIDATING_EVIDENCE,
+        actor="local review worker",
+        reason="reviewer supplied inputs; resuming from the evidence-validation handoff",
+    )
+
+
+def _ensure_workflow_run(
+    session: object,
+    package_revision_id: UUID,
+    workflow_run_id: UUID,
+    workflow_run_type: object,
+) -> None:
+    """Create the durable parent before a stage claims its task.
+
+    ``task_runs.workflow_run_id`` is a foreign key, not a label.  The outbox id is the stable
+    idempotency key, so the local worker deliberately reuses it as the workflow id; a repeat finds
+    the same parent and lets ``run_stage`` make its normal idempotent decision.
+    """
+    if session.get(workflow_run_type, workflow_run_id) is None:  # type: ignore[union-attr]
+        session.add(  # type: ignore[union-attr]
+            workflow_run_type(
+                id=workflow_run_id,
+                package_revision_id=package_revision_id,
+                engine_run_id=str(workflow_run_id),
+            )
+        )
+        session.flush()  # type: ignore[union-attr]
+
+
+def _propose_measurements(session: object, package_revision_id: UUID) -> Mapping[str, object]:
+    """Ask a model which reading fills which field, check it, and file what survived.
+
+    **Every failure leaves the reviewer exactly where they are today**, typing the values in
+    themselves — which is what a deployment with no model configured does, and what happened before
+    this step existed. So nothing here raises: a drawing that was read successfully must not be
+    lost because a provider was unreachable.
+
+    Imported inside the function for the reason the other consumers are: this script stays
+    control-plane-safe until it is actually asked to consume work.
+    """
+    from app.config import Settings
+    from workflow.assignment_bedrock import configured_assignment_model
+    from workflow.propose import propose_for_revision
+
+    try:
+        model = configured_assignment_model(Settings())  # type: ignore[call-arg]
+        return propose_for_revision(session, package_revision_id, model)  # type: ignore[arg-type]
+    except Exception as error:  # noqa: BLE001 - reported, never fatal to a read drawing
+        return {"ran": False, "reason": f"the proposal step failed: {error}"}
+
+
+def _extract_package(
+    session: object, package_revision_id: UUID, idempotency_key: str
+) -> Mapping[str, object]:
+    """Run only the pre-verdict stages and leave OCR proposals waiting for human confirmation."""
+    from app.lifecycle.side_states import enter_needs_input
+    from app.models import PackageState, WorkflowRun
+    from workflow.review import run_stage
+
+    stages = _stages()
+    workflow_run_id = UUID(idempotency_key)
+    _ensure_workflow_run(session, package_revision_id, workflow_run_id, WorkflowRun)
+    results: dict[str, object] = {}
+    for stage, state in (
+        ("ingest", PackageState.INGESTING),
+        ("extract_pages", PackageState.EXTRACTING),
+        ("match", PackageState.MATCHING),
+        ("validate_evidence", PackageState.VALIDATING_EVIDENCE),
+    ):
+        outcome = run_stage(
+            session,
+            stage=stage,
+            state=state,
+            package_revision_id=package_revision_id,
+            workflow_run_id=workflow_run_id,
+            stages=stages,  # type: ignore[arg-type]
+        )
+        results[stage] = dict(outcome.payload)
+    # **Fill the reviewer's form, now, while the facts are in hand.**
+    #
+    # This is the whole point of doing it here rather than behind a button on the form: a reviewer
+    # opening Measure finds it already filled and marked, instead of an empty form and a request to
+    # make. It also costs one model call per upload rather than one per page load.
+    #
+    # It cannot fail the extraction. The drawings were read and the readings are recorded; a
+    # provider that will not answer leaves the form to be filled by hand, which is exactly what a
+    # deployment with no model configured does anyway. `propose_for_revision` catches its own
+    # failures and reports them; this only decides what to print.
+    results["propose_measurements"] = _propose_measurements(session, package_revision_id)
+
+    # Extraction is deliberately pre-verdict work. Whether it found many readings or none,
+    # the next actor is the reviewer: confirm the untyped proposals and supply the values the
+    # reader abstained on. Leaving a zero-result revision in VALIDATING_EVIDENCE makes that
+    # honest abstention indistinguishable from a worker that is still running.
+    enter_needs_input(
+        session,
+        package_revision_id,
+        actor="local review worker",
+        needed=(
+            "confirm any AI reading proposals, then provide the dimensions the reader abstained on "
+            "before running deterministic checks"
+        ),
+    )
+    return results
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -88,20 +381,22 @@ def main(argv: list[str] | None = None) -> int:
         runs for the revision and writes a fresh set, so running it twice leaves one live set rather
         than two.
         """
-        if workflow != "run_checks":
-            print(f"  no consumer for {workflow!r} — leaving it for the worker that owns it")
-            raise NotImplementedError(f"no local consumer for {workflow!r}")
-
         revision_id = UUID(str(payload["package_revision_id"]))
-        raw = payload.get("discriminators")
-        # Narrowed rather than cast: the payload is JSON from a database row, so its shape is a claim
-        # this process should check rather than assume. A malformed entry runs the checks without a
-        # discriminator, which abstains — visible — instead of raising here and stalling the queue.
-        stated = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
         with factory() as session:
-            result = _run_checks(session, revision_id, stated)
+            if workflow == "extract_package":
+                result = _extract_package(session, revision_id, idempotency_key)
+            elif workflow == "run_checks":
+                raw = payload.get("discriminators")
+                # Narrowed rather than cast: the payload is JSON from a database row, so its shape is
+                # a claim this process checks rather than assumes. A malformed declaration lets a
+                # rule abstain rather than selecting a layout by guess.
+                stated = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+                result = _run_checks(session, revision_id, idempotency_key, stated)
+            else:
+                print(f"  no local consumer for {workflow!r} — leaving it for its worker")
+                raise NotImplementedError(f"no local consumer for {workflow!r}")
             session.commit()
-        print(f"  run_checks {revision_id}: {dict(result)}")
+        print(f"  {workflow} {revision_id}: {dict(result)}")
 
     passes = 0
     while True:

@@ -31,6 +31,9 @@ from app.models.drawing import (
     DrawingItem,
     DrawingView,
     ItemIdentifier,
+    ViewRole,
+    ViewRoleConfirmation,
+    ViewRoleProposal,
     duplicate_identifiers,
 )
 from app.models.evaluation import (
@@ -47,6 +50,9 @@ from app.models.evidence import (
     EvidenceCandidateRole,
     EvidenceCorroborationLane,
     EvidenceSupportingCandidate,
+    LayoutConfirmation,
+    LayoutProposal,
+    MeasurementProposal,
     ObservationAssociation,
     ObservationCandidate,
 )
@@ -127,9 +133,12 @@ __all__ = [
     "GoldCase",
     "GoldSet",
     "ItemIdentifier",
+    "LayoutConfirmation",
+    "LayoutProposal",
     "LegalHold",
     "MatchCandidate",
     "MatchReviewEvent",
+    "MeasurementProposal",
     "MetricResult",
     "ModelInvocation",
     "ModelInvocationOutcome",
@@ -158,6 +167,9 @@ __all__ = [
     "SourceArtifact",
     "TaskRun",
     "VerdictInput",
+    "ViewRole",
+    "ViewRoleConfirmation",
+    "ViewRoleProposal",
     "WorkflowRun",
     "duplicate_identifiers",
 ]

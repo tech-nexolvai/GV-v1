@@ -2,17 +2,17 @@
   font-size: 16px;
   padding: 5px 10px;
   border-radius: 5px;
-  color: var(--accent);
-  background: var(--accent-bg);
+  color: var(--gv-crimson);
+  background: var(--gv-crimson-dim);
   border: 2px solid transparent;
   transition: border-color 0.3s;
   margin-bottom: 24px;
 
   &:hover {
-    border-color: var(--accent-border);
+    border-color: var(--gv-crimson-border);
   }
   &:focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 2px solid var(--gv-crimson);
     outline-offset: 2px;
   }
 }
@@ -72,7 +72,7 @@
 
 #next-steps {
   display: flex;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-default);
   text-align: left;
 
   & > div {
@@ -96,11 +96,11 @@
 }
 
 #docs {
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--border-default);
 
   @media (max-width: 1024px) {
     border-right: none;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--border-default);
   }
 }
 
@@ -116,10 +116,10 @@
   }
 
   a {
-    color: var(--text-h);
+    color: var(--text-xl);
     font-size: 16px;
     border-radius: 6px;
-    background: var(--social-bg);
+    background: var(--bg-elevated);
     display: flex;
     padding: 6px 12px;
     align-items: center;
@@ -128,7 +128,7 @@
     transition: box-shadow 0.3s;
 
     &:hover {
-      box-shadow: var(--shadow);
+      box-shadow: var(--elevation-2);
     }
     .button-icon {
       height: 18px;
@@ -155,7 +155,7 @@
 
 #spacer {
   height: 88px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-default);
   @media (max-width: 1024px) {
     height: 48px;
   }
@@ -175,27 +175,27 @@
 
   &::before {
     left: 0;
-    border-left-color: var(--border);
+    border-left-color: var(--border-default);
   }
   &::after {
     right: 0;
-    border-right-color: var(--border);
+    border-right-color: var(--border-default);
   }
 }
 
 /* What the pipeline is really doing, and what went wrong if it did not finish. */
 .pipeline-step-live {
   font-size: 0.875rem;
-  color: var(--color-text-muted, #6b7280);
+  color: var(--text-muted, #6b7280);
   margin-top: var(--space-2, 8px);
 }
 
 .upload-error {
-  color: var(--color-danger, #b42318);
+  color: var(--status-fail, #b42318);
 }
 
 .upload-error p {
-  color: var(--color-text-muted, #6b7280);
+  color: var(--text-muted, #6b7280);
   font-size: 0.875rem;
   margin-top: var(--space-2, 8px);
 }

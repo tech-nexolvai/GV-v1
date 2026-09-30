@@ -60,24 +60,101 @@ Design: `docs/DESIGN_AI.md` §4.5 · Verification: `tests/extraction/models/test
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from decimal import Decimal
+from importlib import import_module
+from time import monotonic_ns
+from typing import Any, Protocol
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.evidence import EvidenceArtifact
-from app.models.runs import ModelInvocation
-from extraction.models.invocations import InvocationRecord
+from app.models.runs import (
+    ModelInvocation,
+    ModelInvocationOutcome,
+)
+from app.runs.rates import call_cost_micros, rates_from_environment
 
 __all__ = [
+    "BedrockConverseInvocationRecorder",
     "candidate_id_for",
     "crop_for",
     "invocations_for_candidate",
     "record",
 ]
 
+REFUSAL_STOP_REASONS = frozenset({"content_filtered", "guardrail_intervened"})
 
-def record(session: Session, invocation: InvocationRecord) -> ModelInvocation:
+
+class _AsRecord(Protocol):
+    def as_record(self) -> dict[str, object]:
+        """Return JSON-safe context data."""
+
+
+class _InvocationRecordLike(Protocol):
+    @property
+    def extraction_run_id(self) -> UUID | None: ...
+
+    @property
+    def package_revision_id(self) -> UUID | None: ...
+
+    """Exactly one of this and `extraction_run_id` is set (ADR-0019). The protocol cannot say so;
+    `InvocationRecord.__post_init__` and the table's `model_invocation_one_origin` check both do."""
+
+    @property
+    def model_id(self) -> str: ...
+
+    @property
+    def prompt_id(self) -> str: ...
+
+    @property
+    def template_id(self) -> str: ...
+
+    @property
+    def crop_artifact_id(self) -> UUID | None: ...
+
+    @property
+    def node_invocation_key(self) -> str | None: ...
+
+    @property
+    def candidate_id(self) -> UUID | None: ...
+
+    @property
+    def assembled_context(self) -> _AsRecord | None: ...
+
+    @property
+    def bound_pt(self) -> Decimal | None: ...
+
+    @property
+    def input_tokens(self) -> int: ...
+
+    @property
+    def output_tokens(self) -> int: ...
+
+    @property
+    def cost_micros(self) -> int | None: ...
+
+    @property
+    def latency_ms(self) -> int: ...
+
+    @property
+    def outcome(self) -> str: ...
+
+    @property
+    def rejection_reason(self) -> str | None: ...
+
+
+def _invocation_record_type() -> Any:
+    """Load the validated call shape only when a caller is about to persist one."""
+    return import_module("extraction.models.invocations").InvocationRecord
+
+
+def record(
+    session: Session, invocation: _InvocationRecordLike, *, flush: bool = True
+) -> ModelInvocation:
     """Write one model call — successful or not — and return the stored row.
 
     Takes a validated `InvocationRecord` rather than loose keyword arguments, so there is no route
@@ -85,15 +162,19 @@ def record(session: Session, invocation: InvocationRecord) -> ModelInvocation:
     the fields directly; the field set and the meaning of every one of them are unchanged, but the
     validation now happens somewhere it cannot be bypassed.
 
-    The row is flushed before returning. Without that, a row the database refuses — a blank model id,
-    a negative cost, an outcome outside the closed set, an extraction run that does not exist — would
-    raise at a later commit, somewhere the caller cannot tell which write caused it.
+    The row is flushed before returning unless the caller is deliberately assembling several
+    immutable rows that must land together. Without the default flush, a row the database refuses —
+    a blank model id, a negative cost, an outcome outside the closed set, an extraction run that does
+    not exist — would raise at a later commit, somewhere the caller cannot tell which write caused
+    it.
 
     Args:
         session: the caller's session. This function never commits. Writing the invocation in the
             same transaction as the candidate it explains is what keeps the two consistent — either
             both rows land or neither does.
         invocation: the complete record of the call, including the ones that failed.
+        flush: keep the historic immediate database check unless a caller needs to fill pending
+            immutable rows before their first insert.
 
     Returns:
         The persisted invocation, with its id and `created_at` populated.
@@ -103,6 +184,7 @@ def record(session: Session, invocation: InvocationRecord) -> ModelInvocation:
     """
     stored = ModelInvocation(
         extraction_run_id=invocation.extraction_run_id,
+        package_revision_id=invocation.package_revision_id,
         model_id=invocation.model_id,
         prompt_id=invocation.prompt_id,
         template_id=invocation.template_id,
@@ -120,10 +202,139 @@ def record(session: Session, invocation: InvocationRecord) -> ModelInvocation:
         cost_micros=invocation.cost_micros,
         latency_ms=invocation.latency_ms,
         outcome=invocation.outcome,
+        rejection_reason=invocation.rejection_reason,
     )
     session.add(stored)
-    session.flush()
+    if flush:
+        session.flush()
     return stored
+
+
+def _milliseconds_since(started_ns: int) -> int:
+    return max(0, (monotonic_ns() - started_ns) // 1_000_000)
+
+
+def _usage(response: Mapping[str, Any] | None) -> tuple[int, int]:
+    if response is None:
+        return 0, 0
+    usage = response.get("usage")
+    if not isinstance(usage, Mapping):
+        return 0, 0
+    input_tokens = usage.get("inputTokens", 0)
+    output_tokens = usage.get("outputTokens", 0)
+    if isinstance(input_tokens, bool) or not isinstance(input_tokens, int):
+        input_tokens = 0
+    if isinstance(output_tokens, bool) or not isinstance(output_tokens, int):
+        output_tokens = 0
+    return max(0, input_tokens), max(0, output_tokens)
+
+
+def _error_code(error: BaseException) -> str | None:
+    response = getattr(error, "response", None)
+    if not isinstance(response, Mapping):
+        return None
+    details = response.get("Error")
+    if not isinstance(details, Mapping):
+        return None
+    code = details.get("Code")
+    return code if isinstance(code, str) else None
+
+
+def _is_timeout(error: BaseException) -> bool:
+    return (
+        isinstance(error, TimeoutError)
+        or error.__class__.__name__
+        in {
+            "ConnectTimeoutError",
+            "ReadTimeoutError",
+        }
+        or _error_code(error) == "ModelTimeoutException"
+    )
+
+
+def _stop_reason(response: Mapping[str, Any] | None) -> str | None:
+    if response is None:
+        return None
+    value = response.get("stopReason")
+    return value if isinstance(value, str) else None
+
+
+def _outcome(response: Mapping[str, Any] | None, error: BaseException | None) -> str:
+    if _stop_reason(response) in REFUSAL_STOP_REASONS:
+        return ModelInvocationOutcome.REFUSED.value
+    if error is None:
+        return ModelInvocationOutcome.OK.value
+    if _is_timeout(error):
+        return ModelInvocationOutcome.TIMEOUT.value
+    if response is not None:
+        return ModelInvocationOutcome.REJECTED.value
+    return ModelInvocationOutcome.FAILED.value
+
+
+def _rejection_reason(error: BaseException | None) -> str | None:
+    if error is None:
+        return None
+    text = f"{error.__class__.__name__}: {error}".strip()
+    return text[:500] if text else error.__class__.__name__
+
+
+@dataclass(frozen=True, slots=True)
+class BedrockConverseInvocationRecorder:
+    """Persist one Bedrock converse call against the package revision it was made for.
+
+    Bedrock returns token usage, not invoice cost. Until a caller supplies an exact rate card, the
+    only honest money value is zero; the model call and tokens are still counted by package ceilings.
+
+    **It needs no extraction run, and that is the point of ADR-0019.** A reviewer chat and a findings
+    narration belong to a package revision and a set of findings; they have no extraction run, and
+    the version of this that borrowed the package's newest one failed outright on a package that had
+    never been extracted (#694).
+    """
+
+    session: Session
+    package_revision_id: UUID
+
+    def record(
+        self,
+        *,
+        model_id: str,
+        prompt_id: str,
+        template_id: str,
+        started_ns: int,
+        response: Mapping[str, Any] | None,
+        error: BaseException | None,
+    ) -> ModelInvocation:
+        outcome = _outcome(response, error)
+        input_tokens, output_tokens = _usage(response)
+        if outcome in {ModelInvocationOutcome.REFUSED.value, ModelInvocationOutcome.TIMEOUT.value}:
+            output_tokens = 0
+        return record(
+            self.session,
+            _invocation_record_type()(
+                # **Its own origin, not a borrowed one.** This used to pass the package's *latest*
+                # extraction run, which made a narration claim provenance it did not have and
+                # raised on a package that had never been extracted — so a reviewer chat on a typed
+                # package failed after the model had been paid (#694, ADR-0019).
+                extraction_run_id=None,
+                package_revision_id=self.package_revision_id,
+                model_id=model_id,
+                prompt_id=prompt_id,
+                template_id=template_id,
+                crop_artifact_id=None,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_micros=call_cost_micros(
+                    rates_from_environment(), model_id, input_tokens, output_tokens
+                ),
+                latency_ms=_milliseconds_since(started_ns),
+                outcome=outcome,
+                rejection_reason=(
+                    _rejection_reason(error)
+                    if outcome == ModelInvocationOutcome.REJECTED.value
+                    else None
+                ),
+            ),
+        )
 
 
 def crop_for(session: Session, invocation: ModelInvocation) -> EvidenceArtifact | None:

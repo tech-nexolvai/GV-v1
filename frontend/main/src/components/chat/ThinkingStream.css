@@ -1,0 +1,177 @@
+/* ============================================================
+   THINKING STREAM
+   The in-flight state of a reviewer question.
+   ============================================================ */
+
+.thinking {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-4) var(--space-3);
+  border: 1px solid var(--color-primary-border);
+  border-left: 2px solid var(--gv-crimson);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(var(--color-primary-dim), var(--color-primary-dim)),
+    var(--bg-base);
+  box-shadow: var(--elevation-1);
+  animation: gv-rise var(--duration-slow) var(--ease-emphasis) both;
+  max-width: 460px;
+}
+
+/* ── Header ─────────────────────────────────────────────── */
+
+.thinking__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The halo breathes rather than spins. A spinner says "blocked"; a slow pulse says "working", and
+   the mark stays legible the whole time instead of becoming a blur. */
+.thinking__halo {
+  display: grid;
+  place-items: center;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.thinking__halo::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: var(--radius-lg);
+  background: var(--gv-crimson);
+  opacity: 0.16;
+  animation: gv-breathe 1.8s var(--ease-in-out) infinite;
+}
+
+.thinking__halo > * { position: relative; }
+
+.thinking__title {
+  font-family: var(--font-heading);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semi);
+  letter-spacing: var(--tracking-tight);
+  color: var(--text-primary);
+}
+
+/* `tabular-nums` so the tenths digit changing does not shift the label beside it. */
+.thinking__elapsed {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+/* ── Indeterminate bar ──────────────────────────────────── */
+
+.thinking__track {
+  position: relative;
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: var(--color-primary-dim);
+  overflow: hidden;
+}
+
+.thinking__bar {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--gradient-brand);
+  transform-origin: left center;
+  animation: gv-indeterminate 1.5s var(--ease-in-out) infinite;
+}
+
+/* ── Stage list ─────────────────────────────────────────── */
+
+.thinking__stages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.thinking__stage {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: 1.9;
+  transition:
+    color var(--duration-slow) var(--ease-out),
+    opacity var(--duration-slow) var(--ease-out);
+}
+
+.thinking__stage[data-state='waiting'] { color: var(--text-faint);  opacity: 0.7; }
+.thinking__stage[data-state='done']    { color: var(--text-muted);  opacity: 1; }
+.thinking__stage[data-state='active']  { color: var(--text-primary); opacity: 1; font-weight: var(--weight-medium); }
+
+/* One dot per stage, which fills as the stage becomes current. Deliberately not a tick: a tick
+   claims the stage finished, and this side of the request cannot confirm that. */
+.thinking__marker {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: currentColor;
+  opacity: 0.35;
+  transition: all var(--duration-slow) var(--ease-out);
+}
+
+.thinking__stage[data-state='active'] .thinking__marker {
+  opacity: 1;
+  background: var(--gv-crimson);
+  box-shadow: 0 0 0 3px var(--gv-crimson-dim);
+}
+
+.thinking__stage[data-state='done'] .thinking__marker {
+  opacity: 0.55;
+  background: var(--gv-crimson);
+}
+
+.thinking__dots {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: var(--space-1);
+}
+
+.thinking__dots span {
+  width: 3px;
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--gv-crimson);
+  animation: gv-dot 1.2s var(--ease-in-out) infinite;
+}
+
+.thinking__dots span:nth-child(2) { animation-delay: 0.16s; }
+.thinking__dots span:nth-child(3) { animation-delay: 0.32s; }
+
+/* ── Model line ─────────────────────────────────────────── */
+
+.thinking__model {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.thinking__model code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-body);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking__halo::before,
+  .thinking__bar,
+  .thinking__dots span {
+    animation: none;
+  }
+  /* Still distinguishable without motion: the bar reads as a filled track rather than vanishing. */
+  .thinking__bar { transform: none; opacity: 0.5; }
+}

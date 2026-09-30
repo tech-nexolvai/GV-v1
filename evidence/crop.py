@@ -172,7 +172,83 @@ def encode_png(width: int, height: int, rgb: bytes) -> bytes:
     )
 
 
-def _crop_box(rendered: RenderedPage, spec: CropSpec) -> tuple[int, int, int, int]:
+def decode_rgb_png(data: bytes) -> tuple[int, int, bytes]:
+    """Decode the deterministic RGB PNGs this module writes.
+
+    Vector-first rendering deliberately goes through :func:`encode_png`, so the localized OCR
+    route can decode that byte-identical crop without taking a Pillow dependency.  This is not a
+    general PNG decoder: accepting palette, alpha, interlaced, or filtered images here would imply
+    support we neither write nor test.  Refusing them is preferable to handing OCR scrambled pixels.
+    """
+    if not isinstance(data, bytes) or not data.startswith(PNG_SIGNATURE):
+        raise ValueError("localized OCR needs an RGB PNG produced by the crop renderer")
+
+    offset = len(PNG_SIGNATURE)
+    width: int | None = None
+    height: int | None = None
+    payloads: list[bytes] = []
+    ended = False
+    while offset < len(data):
+        if offset + 12 > len(data):
+            raise ValueError("truncated PNG chunk in localized OCR crop")
+        length = struct.unpack(">I", data[offset : offset + 4])[0]
+        kind = data[offset + 4 : offset + 8]
+        start = offset + 8
+        stop = start + length
+        if stop + 4 > len(data):
+            raise ValueError("truncated PNG payload in localized OCR crop")
+        payload = data[start:stop]
+        expected_crc = struct.unpack(">I", data[stop : stop + 4])[0]
+        if binascii.crc32(kind + payload) != expected_crc:
+            raise ValueError("corrupt PNG chunk in localized OCR crop")
+        offset = stop + 4
+        if kind == b"IHDR":
+            if width is not None or len(payload) != 13:
+                raise ValueError("localized OCR crop has an invalid PNG header")
+            width, height, depth, colour, compression, filtering, interlace = struct.unpack(
+                ">IIBBBBB", payload
+            )
+            if (
+                width <= 0
+                or height <= 0
+                or (depth, colour, compression, filtering, interlace) != (8, 2, 0, 0, 0)
+            ):
+                raise ValueError("localized OCR crop is not an eight-bit non-interlaced RGB PNG")
+        elif kind == b"IDAT":
+            payloads.append(payload)
+        elif kind == b"IEND":
+            if payload or ended:
+                raise ValueError("localized OCR crop has an invalid PNG end marker")
+            ended = True
+            break
+
+    if width is None or height is None or not payloads or not ended or offset != len(data):
+        raise ValueError("localized OCR crop is missing required PNG data")
+    try:
+        scanlines = zlib.decompress(b"".join(payloads))
+    except zlib.error as error:
+        raise ValueError("localized OCR crop has invalid compressed pixels") from error
+    stride = width * 3
+    expected = height * (stride + 1)
+    if len(scanlines) != expected:
+        raise ValueError("localized OCR crop has an unexpected pixel length")
+    if any(scanlines[row * (stride + 1)] != 0 for row in range(height)):
+        raise ValueError("localized OCR crop uses an unsupported PNG filter")
+    return (
+        width,
+        height,
+        b"".join(
+            scanlines[row * (stride + 1) + 1 : (row + 1) * (stride + 1)] for row in range(height)
+        ),
+    )
+
+
+def crop_pixel_box(rendered: RenderedPage, spec: CropSpec) -> tuple[int, int, int, int]:
+    """The page pixels `(left, top, right, bottom)` a crop under `spec` is cut from.
+
+    Public because a caller deciding something about what a crop *shows* must use the rectangle the
+    crop was actually cut by, not a second computation of it that could round differently (#735).
+    """
     xs = tuple(point.x * Decimal(rendered.width_px) for point in spec.polygon.points)
     ys = tuple(point.y * Decimal(rendered.height_px) for point in spec.polygon.points)
     margin = spec.context_margin_pt * Decimal(spec.dpi) / POINTS_PER_INCH
@@ -232,7 +308,7 @@ def generate_crop(
         if rendered.dpi != spec.dpi:
             raise ValueError("crop specification DPI does not match the rendered pixels")
 
-        left, top, right, bottom = _crop_box(rendered, spec)
+        left, top, right, bottom = crop_pixel_box(rendered, spec)
         rgb = _crop_rgb(rendered, (left, top, right, bottom))
         png = encode_png(right - left, bottom - top, rgb)
         stream = BytesIO(png)

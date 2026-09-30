@@ -55,6 +55,7 @@ from storage.hashing import ArtifactCorrupt
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import _pdf
+from workflow.config import READER_RASTER_DPI
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import EXTRACTOR_VERSION, DatabaseStages
@@ -341,6 +342,8 @@ def test_a_page_manifest_and_an_extraction_run_are_written(
     assert pages[0].width_pt == Decimal(200)
     assert len(runs) == 1
     assert runs[0].extractor == "pdfplumber"
+    assert runs[0].dpi == READER_RASTER_DPI == 300
+    assert runs[0].config_hash == "dpi=300"
 
 
 def test_running_twice_writes_nothing_the_second_time(session: Session, store: LocalStore) -> None:
@@ -675,6 +678,9 @@ def test_a_page_with_no_vector_text_is_read_by_ocr_instead_of_skipped(
     `has_vector_text` false meant the page loop did no work, so a scanned drawing was
     indistinguishable from a drawing with nothing on it — and scanned sheets are one of the six
     things #274 asks the client for.
+
+    `TITLE` holds no numeral, so since #703 it is counted rather than recorded — see the tests
+    below.
     """
     revision = _revision(session, store, data=SCANNED)
     engine = _StubOcr(
@@ -687,10 +693,11 @@ def test_a_page_with_no_vector_text_is_read_by_ocr_instead_of_skipped(
     results = DatabaseStages(store, ocr_engine=engine).extract_pages(session, revision.id)
 
     assert [result.payload["route"] for result in results] == ["ocr"]
-    assert [result.payload["candidates"] for result in results] == [2]
+    assert [result.payload["candidates"] for result in results] == [1]
+    assert [result.payload["ocr_fragments"] for result in results] == [1]
 
     candidates = _candidates(session)
-    assert set(candidates) == {"984 mm", "TITLE"}
+    assert set(candidates) == {"984 mm"}
 
 
 def test_an_ocr_reading_keeps_its_confidence_where_a_vector_one_has_none(
@@ -717,6 +724,45 @@ def test_an_ocr_reading_keeps_its_confidence_where_a_vector_one_has_none(
     # inches are the authoritative unit (Q12) and 984 mm is 4920/127", a value no float holds.
     assert row.unit == "in"
     assert (row.value_numerator, row.value_denominator) == (4920, 127)
+
+
+def test_split_vendor_dual_notation_becomes_one_untyped_inch_reading(
+    session: Session, store: LocalStore
+) -> None:
+    """RapidOCR's two boxes are one reading only when their exact stacked pattern is clear."""
+    revision = _revision(session, store, data=SCANNED)
+    engine = _StubOcr(
+        (
+            OcrItem(
+                text="76",
+                confidence=Decimal("0.81"),
+                image_extent=(
+                    ImagePoint(10, 10),
+                    ImagePoint(50, 10),
+                    ImagePoint(50, 30),
+                    ImagePoint(10, 30),
+                ),
+            ),
+            OcrItem(
+                text="[3]",
+                confidence=Decimal("0.77"),
+                image_extent=(
+                    ImagePoint(8, 28),
+                    ImagePoint(52, 28),
+                    ImagePoint(52, 52),
+                    ImagePoint(8, 52),
+                ),
+            ),
+        )
+    )
+
+    results = DatabaseStages(store, ocr_engine=engine).extract_pages(session, revision.id)
+
+    assert [result.payload["candidates"] for result in results] == [1]
+    row = _candidates(session)["76 [3]"]
+    assert (row.value_numerator, row.value_denominator, row.unit) == (3, 1, "in")
+    assert row.confidence == Decimal("0.77")
+    assert row.semantic_guess is None
 
 
 def test_an_ocr_reading_is_recorded_under_its_own_extraction_run(
@@ -825,3 +871,115 @@ def test_one_corrupt_document_does_not_stop_the_others_being_read(
     pages = list(session.execute(select(Page)).scalars())
     assert pages, "the readable document produced no pages"
     assert failure.document_version_id not in {page.document_version_id for page in pages}
+
+
+# ---------------------------------------------------------------------------
+# #703 — OCR text that could not be a reading
+# ---------------------------------------------------------------------------
+
+
+def _line_work_ocr() -> _StubOcr:
+    """What RapidOCR returned on `demo_pair`, in miniature: strokes read as glyphs, and one number."""
+    return _StubOcr(
+        tuple(
+            OcrItem(text=text, confidence=Decimal("0.5"), image_extent=_OCR_CORNERS)
+            for text in ("一", "/", "L", "口", "724 mm", "L", "[4]")
+        )
+    )
+
+
+def test_ocr_text_with_no_numeral_is_counted_and_not_recorded(
+    session: Session, store: LocalStore
+) -> None:
+    """**Outcome: `一`, `/`, `L`, `口` are not candidates; `724 mm` and `[4]` are.** (#703)
+
+    On the client's drawing RapidOCR produced 903 candidates and not one value. A reading with no
+    numeral can never become one, so it is not written — and it is counted, with what it said, so a
+    page does not simply look smaller.
+    """
+    revision = _revision(session, store, data=SCANNED)
+
+    results = DatabaseStages(store, ocr_engine=_line_work_ocr()).extract_pages(session, revision.id)
+
+    assert set(_candidates(session)) == {"724 mm", "[4]"}
+    (payload,) = [result.payload for result in results]
+    assert payload["candidates"] == 2
+    assert payload["ocr_fragments"] == 5
+    assert payload["ocr_fragment_texts"] == ["2 × 'L'", "1 × '/'", "1 × '一'", "1 × '口'"]
+
+
+def test_a_real_number_among_line_work_keeps_its_value(session: Session, store: LocalStore) -> None:
+    """**Outcome: the one real reading still parses to its exact value.** The filter costs no reading."""
+    revision = _revision(session, store, data=SCANNED)
+
+    DatabaseStages(store, ocr_engine=_line_work_ocr()).extract_pages(session, revision.id)
+
+    row = _candidates(session)["724 mm"]
+    assert row.value_numerator is not None and row.value_denominator is not None
+    assert (row.value_numerator, row.value_denominator) == (3620, 127)
+
+
+class _RecordingVisionReader:
+    """A vision reader double that answers every crop and remembers which crops it was sent."""
+
+    def __init__(self) -> None:
+        from tests.workflow.test_association import _association_vision_reader
+
+        self._inner = _association_vision_reader()
+        self.config = self._inner.config
+        self.requests: list[object] = []
+
+    def extract(self, request: object, recorder: object) -> object:
+        self.requests.append(request)
+        return self._inner.extract(request, recorder)  # type: ignore[arg-type]
+
+
+def test_a_box_whose_text_was_not_recorded_is_still_read_by_the_vision_readers(
+    session: Session, store: LocalStore
+) -> None:
+    """**The constraint that shaped the fix.** Outcome: every OCR box is still a vision crop.
+
+    The vision readers read the regions OCR found, and on the client's drawing nearly every one of
+    them was an OCR box whose text was line-work. Dropping the box with the text would have dropped
+    the readings the vision readers make there. So the text goes and the box stays.
+    """
+    revision = _revision(session, store, data=SCANNED)
+    reader = _RecordingVisionReader()
+
+    results = DatabaseStages(
+        store,
+        ocr_engine=_line_work_ocr(),
+        vision_readers=(reader,),  # type: ignore[arg-type]
+    ).extract_pages(session, revision.id)
+
+    assert len(reader.requests) == 7
+    (payload,) = [result.payload for result in results]
+    assert payload["vision_invocations"] == 7
+    assert payload["vision_candidates"] == 7
+    vision = [
+        row
+        for row in session.execute(select(ObservationCandidate)).scalars()
+        if row.raw_text == '24"'
+    ]
+    assert len(vision) == 7
+
+
+def test_a_rerun_does_not_reuse_an_ocr_run_recorded_under_the_old_rule(
+    session: Session, store: LocalStore
+) -> None:
+    """Outcome: the OCR run's identity names the rule, so a pre-#703 run is not mistaken for this one.
+
+    A run keys on extractor, version and configuration. Before #703 an OCR run held rows for text
+    that could not be a reading; reusing it would hand those rows back as though this pass had
+    written them.
+    """
+    revision = _revision(session, store, data=SCANNED)
+
+    DatabaseStages(store, ocr_engine=_line_work_ocr()).extract_pages(session, revision.id)
+
+    runs = [
+        run
+        for run in session.execute(select(ExtractionRun)).scalars()
+        if run.extractor == "stub-ocr"
+    ]
+    assert runs and all("fragments=unrecorded" in run.config_hash for run in runs)

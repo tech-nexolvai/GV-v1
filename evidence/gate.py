@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import cast
 
-from evidence.canonical import Authority, CanonicalObservation
+from evidence.canonical import Authority, CanonicalObservation, CorroborationLane
 from units.measurement import Measurement, Unit
 from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus, VerdictOperand
 
@@ -60,6 +60,17 @@ def _evidence_ref(observation: CanonicalObservation) -> str:
     )
 
 
+def _has_two_read_agreement(observation: CanonicalObservation) -> bool:
+    """Return whether a corroborated observation has independent numeric agreement."""
+
+    if observation.status is EvidenceStatus.HUMAN_CONFIRMED:
+        return True
+    return (
+        observation.status is EvidenceStatus.CORROBORATED
+        and CorroborationLane.SECOND_READER in observation.corroborated_by
+    )
+
+
 def seal(observation: CanonicalObservation, name: str) -> VerdictOperand | GateRefusal:
     """Seal qualified authoritative evidence, or state why it cannot be sealed.
 
@@ -80,6 +91,11 @@ def seal(observation: CanonicalObservation, name: str) -> VerdictOperand | GateR
         return GateRefusal(
             RefusalReason.NOT_QUALIFIED,
             f"evidence status {observation.status.value} is not qualified for a verdict",
+        )
+    if not _has_two_read_agreement(observation):
+        return GateRefusal(
+            RefusalReason.NOT_QUALIFIED,
+            "a single-route reading needs second-reader agreement or reviewer confirmation",
         )
     if observation.authority is Authority.ADVISORY:
         return GateRefusal(

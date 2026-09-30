@@ -84,3 +84,53 @@ cabinets move too. Dev to formalize as tests for the distribution module; each l
 **Record impact:** reinforces Q8, Q9, Q21 (distribution logic, now in Raj's own vocabulary) and gives
 CABINETS a clean named vocabulary; does NOT close Q20 (countertop final tags still deferred until the
 layouts and the countertop deck land). The four open questions above are the follow-ups.
+
+---
+
+## Update 2026-09-27 — the second deck (`cab_Checks_Sep_21.pptx`) answers two of the four
+
+The 2026-09-04 record above stands; this is what the 2026-09-21 deck adds. Implemented in #676 as
+`cabinet_run_distribution`. The record above is left as written — it is the account of what we knew
+on 2026-09-04, and the ambiguity it describes is real history, not an error to tidy away.
+
+**Question 2 is answered: reviewer-entered, by bounding box.** Slide 11 — *"User should be able to
+draw a bounding box around a cabinet and categorize that as a particular equipment cabinet and
+confirm width should be changed or cannot be changed."* The reviewer classifies; the program
+computes from the classification. This also settles the Q9 reading that `filler_distribution` and
+this document had taken opposite ways: that operation stopped at `CABINET_SELECTION_REQUIRED`
+because *"Q9 assigns cabinet selection to the reviewer"*, while §"Distribution logic" above read Q9
+as *"only regular cabinets move"* with the calculation ours. **Both halves are right.** Reviewer
+picks what may move; arithmetic decides by how much. Q9 is refined, not contradicted.
+
+Slide 11 also says the equipment list itself is still coming: *"For example, sink cabinet, MW
+cabinet, under counter refrigeration cabinet. We will provide the complete list we typically follow
+for the final run."* Until it arrives the reviewer's classification is the only source, which is
+what `cabinet_type` encodes — no list is hard-coded anywhere (#674).
+
+**Question 3 is answered by conduct.** The equipment cabinet holds 36" in both worked examples and
+slide 3 gives the reason — *"the equipment cabinet dimensions should not be reduced otherwise
+equipment will not fit."* It is a per-cabinet input, and the operation needs no width variable for
+it because it never moves. It binds in both directions: scenario 2 grows the run, and an opening
+too wide for the appliance is as wrong as one too narrow.
+
+**Question 1 stays open** (#674) and **question 4 has grown a sibling.** Both worked examples divide
+evenly — 6" over two cabinets — so the deck still never states:
+
+- **4a, the original.** How a remainder that does not divide into a drawable width is apportioned.
+  4" over three regular cabinets is 22 2/3", which is not a width anybody draws or cuts.
+- **4b, new.** How a change is shared between fillers that started *unequal* — a layout slide 12
+  names as in scope — *"Also unequal fillers (left vs. right), and a wall on only one side."* 2" and
+  4" losing 2" between them could be 1"+3", 2"+2" or 1 1/2"+2 1/2", all inside the bound.
+
+`cabinet_run_distribution` abstains on both rather than choosing, and hands the reviewer the exact
+share it computed. Under exact match (V1_VERDICT_MODEL) a picked width is not a rounding preference;
+it is the verdict.
+
+**The five outcomes (slide 12), and how they map.** Outcomes 1 and 2 are the two-step correction;
+3 is *"mark the cabinets with green checks and change only the fillers"*, recorded as
+`cabinets_retained`; 4 is *"should not force a fix… flag 'cannot be resolved, RFI to architect'"*,
+which is a first-class result carrying the unabsorbed amount and the bound that blocked it, never
+an exception; 5 is *"report a pass"*.
+
+**Record impact:** closes questions 2 and 3; question 1 remains with #674; question 4 splits into 4a
+and 4b, both abstained on in code and both listed in `memory.md`.

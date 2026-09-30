@@ -9,7 +9,9 @@
  * Regenerate with `npm run api:types`, and CI fails if the result differs from what is committed.
  */
 
-import type { paths } from './schema';
+import type { components, paths } from './schema';
+import { parseSseFrames } from './sse.js';
+import type { ChatStreamFacts, ChatStreamStage, ReviewerChatReply } from './chatStreamTypes';
 
 /** Every failure the API produces has this shape — `app/errors.py`. */
 export interface ErrorEnvelope {
@@ -91,6 +93,11 @@ export type DecidedEvidence =
   Created<'/api/v1/projects/{project_id}/review-sessions/{review_session_id}/evidence'>;
 export type GrantedException =
   Created<'/api/v1/projects/{project_id}/review-sessions/{review_session_id}/exceptions'>;
+export type { ChatStreamFacts, ChatStreamStage, ReviewerChatReply } from './chatStreamTypes';
+export type FillerDistributionRequest =
+  paths['/api/v1/projects/{project_id}/filler-distribution']['post']['requestBody']['content']['application/json'];
+export type FillerDistributionResponse =
+  paths['/api/v1/projects/{project_id}/filler-distribution']['post']['responses'][200]['content']['application/json'];
 
 export function listPackages(projectId: string, query?: { cursor?: string; limit?: number }) {
   const search = new URLSearchParams();
@@ -134,6 +141,133 @@ export function getFindingChain(projectId: string, packageId: string, findingId:
 export function getFindingCounts(projectId: string, packageId: string) {
   return request<FindingCounts>(
     `/projects/${projectId}/packages/${packageId}/findings/summary`,
+  );
+}
+
+/**
+ * Ask about the currently live deterministic run. The backend owns the finding scope and accepts
+ * only a question; it never accepts client-supplied values, finding ids, or verdicts.
+ */
+export function askReviewerChat(
+  projectId: string,
+  packageId: string,
+  question: string,
+  modelId?: string | null,
+) {
+  type Body =
+    paths['/api/v1/projects/{project_id}/packages/{package_id}/chat']['post']['requestBody']['content']['application/json'];
+  // model_id is an optional presentation choice; the backend refuses any id not on its allow-list.
+  // Omit it entirely (rather than sending null) when no model is picked, so the default is used.
+  const body: Body = modelId ? { question, model_id: modelId } : { question };
+  return send<ReviewerChatReply>(`/projects/${projectId}/packages/${packageId}/chat`, body);
+}
+
+export interface ChatStreamHandlers {
+  onFacts: (facts: ChatStreamFacts) => void;
+  /** Real progress: sent only when a provider is actually being called. */
+  onStage?: (stage: ChatStreamStage) => void;
+}
+
+/**
+ * Ask the reviewer chat, receiving the answer in the order it becomes known.
+ *
+ * `facts` arrives at once (it needs no model), so the findings table is on screen while the model
+ * is still writing. The `narration` frame is the complete reply, **already accepted by the
+ * narration guard**: the model's words are never shown in pieces, because the guard accepts or
+ * rejects the whole batch and a piece could be a sentence it then discards.
+ *
+ * Resolves with the same body `/chat` returns. A stream that ends without a `narration` frame, or
+ * that sends `error`, rejects: a truncated answer must not read as an answer.
+ */
+export async function streamReviewerChat(
+  projectId: string,
+  packageId: string,
+  question: string,
+  handlers: ChatStreamHandlers,
+  modelId?: string | null,
+  signal?: AbortSignal,
+): Promise<ReviewerChatReply> {
+  const body = modelId ? { question, model_id: modelId } : { question };
+  const response = await fetch(`${BASE}/projects/${projectId}/packages/${packageId}/chat/stream`, {
+    method: 'POST',
+    headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok || !response.body) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The server returned ${response.status} and a body this client could not parse.`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+
+  const requestId = response.headers.get('x-request-id') ?? 'unknown';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  let reply: ReviewerChatReply | null = null;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const parsed = parseSseFrames(buffered + decoder.decode(value, { stream: true }));
+    buffered = parsed.rest;
+    for (const frame of parsed.frames) {
+      if (frame.event === 'facts') handlers.onFacts(frame.data as ChatStreamFacts);
+      else if (frame.event === 'stage') {
+        handlers.onStage?.(frame.data as ChatStreamStage);
+      } else if (frame.event === 'narration') reply = frame.data as ReviewerChatReply;
+      else if (frame.event === 'error') {
+        // The server never puts exception text in this frame; its detail is safe to show.
+        throw new ApiError(502, {
+          error: 'chat_stream_error',
+          message: (frame.data as { detail?: string }).detail ?? 'The explanation could not be produced.',
+          request_id: requestId,
+        });
+      }
+    }
+  }
+
+  if (!reply) {
+    throw new ApiError(502, {
+      error: 'incomplete_stream',
+      message: 'The answer ended before its explanation arrived. The findings shown are the recorded ones.',
+      request_id: requestId,
+    });
+  }
+  return reply;
+}
+
+export type ChatModels =
+  paths['/api/v1/projects/{project_id}/packages/{package_id}/chat/models']['get']['responses'][200]['content']['application/json'];
+
+/** The narration models a reviewer may pick from, and which one answers by default. */
+export function getChatModels(projectId: string, packageId: string) {
+  return request<ChatModels>(`/projects/${projectId}/packages/${packageId}/chat/models`);
+}
+
+/**
+ * Ask the deterministic distribution endpoint for the filler-first proposal.
+ *
+ * The caller supplies the reviewer-entered site width and the reviewer-selected adjustable cabinet.
+ * This helper does not derive dimensions or pick a cabinet; it only carries the explicit payload to
+ * the backend operation that owns the arithmetic.
+ */
+export function calculateFillerDistribution(
+  projectId: string,
+  payload: FillerDistributionRequest,
+) {
+  return send<FillerDistributionResponse>(
+    `/projects/${projectId}/filler-distribution`,
+    payload,
   );
 }
 
@@ -190,6 +324,89 @@ export function getRequiredInputs(projectId: string, packageId: string) {
   return request<Needed>(`/projects/${projectId}/packages/${packageId}/required-inputs`);
 }
 
+/** One frame of the assignment stream. The server's own type — see `AssignmentEvent`. */
+export type AssignmentEvent = components['schemas']['AssignmentEvent'];
+/** One phase of the assignment, as it begins. */
+export type AssignmentStep = components['schemas']['AssignmentStepOut'];
+/** The accepted proposal, and the counts that say how much of the form it fills. */
+export type ProposedMeasurements = components['schemas']['ProposedMeasurementsOut'];
+/** One field and the readings proposed to fill it, in drawing order. */
+export type ProposedField = components['schemas']['ProposedFieldOut'];
+
+/**
+ * Ask which reading fills which field, and report each phase as the server reaches it.
+ *
+ * **The only streaming call in this client, and it streams for one reason.** The model call is the
+ * slow part of the request, and the alternative to real phase frames is a progress display moving
+ * on a timer — which asserts a position nothing measured. Every phase this shows, and the
+ * percentage on it, arrives from the server having actually happened.
+ *
+ * `fetch` with a body reader rather than `EventSource`, which can only issue a GET and cannot send
+ * a header. The frames are plain SSE: one `data:` line each, blank line between.
+ *
+ * Resolves with the result frame. A stream that ends without one is an error — a truncated response
+ * would otherwise read as "the model filled nothing", which is a different and reassuring answer.
+ */
+export async function proposeMeasurements(
+  projectId: string,
+  packageId: string,
+  onStep: (step: AssignmentStep) => void,
+  signal?: AbortSignal,
+): Promise<ProposedMeasurements> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/measurements/propose`,
+    { method: 'POST', headers: { Accept: 'text/event-stream' }, signal },
+  );
+
+  if (!response.ok || !response.body) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The server returned ${response.status} and a body this client could not parse.`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  let result: ProposedMeasurements | null = null;
+
+  // Frames are separated by a blank line and a frame can arrive split across two network chunks, so
+  // the tail of the buffer is kept rather than parsed. Parsing what has arrived so far would throw
+  // on a half-written frame roughly whenever a proposal is large enough to matter.
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffered += decoder.decode(value, { stream: true });
+    const frames = buffered.split('\n\n');
+    buffered = frames.pop() ?? '';
+    for (const frame of frames) {
+      const line = frame.split('\n').find((part) => part.startsWith('data:'));
+      if (!line) continue;
+      const event = JSON.parse(line.slice('data:'.length).trim()) as AssignmentEvent;
+      if (event.event === 'step' && event.step) onStep(event.step);
+      if (event.event === 'result' && event.result) result = event.result;
+    }
+  }
+
+  if (!result) {
+    throw new ApiError(502, {
+      error: 'incomplete_stream',
+      message:
+        'The proposal ended before it said what it had filled. Nothing was changed; enter the ' +
+        'values yourself, or try again.',
+      request_id: response.headers.get('x-request-id') ?? 'unknown',
+    });
+  }
+  return result;
+}
+
 /**
  * Store what the reviewer typed.
  *
@@ -213,6 +430,17 @@ export function enterMeasurements(
       value?: string;
       /** A many-valued input, in layout order — the order is compared position by position. */
       values?: string[];
+    }[];
+    /** Inputs answered by choosing rather than measuring (#684).
+     *
+     * Separate from `measurements` because a category has no unit: sending `single_door` as a
+     * measurement puts it through the imperial parser, which refuses it. */
+    classifications?: {
+      rule_id: string;
+      name: string;
+      /** One category per item, in layout order — which cabinet is the equipment cabinet is the
+       * whole question, so the order is the answer. */
+      categories: string[];
     }[];
   },
 ) {
@@ -386,7 +614,11 @@ export function confirmCandidate(
  * first version of this file.
  */
 export type CandidatesOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/candidates'>;
-export type CandidateOut = CandidatesOut['candidates'][number];
+// The generated OpenAPI type is authoritative for core fields. A locally-safe extension keeps older
+// clients working if the backend adds the new `source` field after a schema refresh.
+export type CandidateOut = CandidatesOut['candidates'][number] & {
+  source?: string | null;
+};
 export type ConfirmedOut =
   paths['/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm']['post']['responses'][201]['content']['application/json'];
 
@@ -439,6 +671,54 @@ export async function downloadReport(
   return response.blob();
 }
 
+/** The branded PDF counterpart to the workbook, generated from the same stored findings. */
+export async function downloadPdfReport(
+  projectId: string,
+  packageId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/report.pdf`,
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The PDF could not be downloaded (HTTP ${response.status}).`,
+        request_id: '',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
+/** The evidence-grounded drawing redline, available only after sign-off. */
+export async function downloadRedline(
+  projectId: string,
+  packageId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/redline.pdf`,
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The evidence-grounded redline could not be downloaded (HTTP ${response.status}).`,
+        request_id: '',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
 /**
  * The immutable crop mechanically cut around a confirmed reading.
  *
@@ -463,6 +743,58 @@ export async function downloadEvidenceCrop(
       envelope = {
         error: 'unreadable_response',
         message: `The evidence crop could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
+/** The immutable crop behind an untyped AI proposal, before a reviewer names its meaning. */
+export async function downloadCandidateCrop(
+  projectId: string,
+  packageId: string,
+  candidateId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/candidates/${candidateId}/crop`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The proposal crop could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
+/** The immutable crop behind a proposed closed layout answer. */
+export async function downloadLayoutProposalCrop(
+  projectId: string,
+  packageId: string,
+  cropArtifactId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/layout-proposals/${cropArtifactId}/crop`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The layout proposal crop could not be loaded (HTTP ${response.status}).`,
         request_id: response.headers.get('x-request-id') ?? 'unknown',
       };
     }

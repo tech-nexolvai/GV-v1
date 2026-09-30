@@ -163,6 +163,50 @@ def _box(values: object) -> PageBox:
     return (left, bottom, right, top)
 
 
+def page_boxes_in_pdf_space(page: object) -> tuple[PageBox, PageBox]:
+    """One pdfplumber page's media and crop boxes, in PDF space rather than pdfplumber's.
+
+    **The two libraries this project reads with do not agree about where the page is, and mixing
+    them silently discarded a whole drawing.** `pdfplumber` runs both boxes through its own
+    `_invert_box`, which flips `y` about the media box's height so that its coordinates run top-down.
+    Everything else here is bottom-up PDF space: an annotation's `/Rect`, a stamp's appearance
+    matrix, the path geometry pypdfium2 returns.
+
+    For the ordinary page whose media box starts at `(0, 0)` the inversion is the identity, which is
+    why this went unnoticed. For a page whose media box is offset — a sheet cropped out of a larger
+    set, which is exactly how the client's drawings are produced — it is not. Measured on one:
+
+        media box   PDF space [321.8, 477.6, 852.1, 837.6]
+                    pdfplumber [321.8, -477.6, 852.1, -117.5]
+        annotation  /Rect     [341.8, 497.6, 832.1, 817.6]
+
+    The rectangle and the crop box then share no `y` at all, `_visible_annotation_rect` found an
+    empty intersection, and a 67 KB appearance stream carrying 2,165 strokes was refused with
+    "annotation rectangle does not intersect the visible crop box". The sister drawing survived only
+    because its offset was small enough that the flipped ranges still overlapped — by luck, not by
+    correctness, and every coordinate derived from it was wrong by twice the offset.
+
+    So the raw `/MediaBox` and `/CropBox` are read from the page dictionary, which is the one place
+    they are stated in the space everything else uses. A page that declares no `/CropBox` inherits
+    the media box, as the specification says.
+    """
+    attrs = getattr(page, "page_obj", None)
+    attrs = getattr(attrs, "attrs", None)
+    if not isinstance(attrs, dict) or "MediaBox" not in attrs:
+        # Nothing to correct against. The inverted boxes are what pdfplumber offers, and on a page
+        # whose media box starts at the origin they are identical to PDF space anyway.
+        return _box(page.mediabox), _box(page.cropbox)  # type: ignore[attr-defined]
+    media = _box(_resolved(attrs["MediaBox"]))
+    crop = _box(_resolved(attrs["CropBox"])) if "CropBox" in attrs else media
+    return media, crop
+
+
+def _resolved(value: object) -> object:
+    """Follow a PDF indirect reference to the object it names, if it is one."""
+    resolve = getattr(value, "resolve", None)
+    return resolve() if callable(resolve) else value
+
+
 def _rotation(value: object) -> int:
     """A page's `/Rotate`, normalised to the four values everything downstream accepts.
 
@@ -222,6 +266,7 @@ def read_pages(data: bytes) -> tuple[RawPage, ...]:
         with pdfplumber.open(io.BytesIO(data)) as document:
             for index, page in enumerate(document.pages):
                 characters = len(page.chars)
+                media_box, crop_box = page_boxes_in_pdf_space(page)
                 pages.append(
                     RawPage(
                         index=index,
@@ -234,8 +279,8 @@ def read_pages(data: bytes) -> tuple[RawPage, ...]:
                         # Read here because here is where the page dictionary is open. Rebuilding
                         # the transform later needs both boxes, and nothing downstream can recover
                         # them from the page's size alone (#530).
-                        media_box=_box(page.mediabox),
-                        crop_box=_box(page.cropbox),
+                        media_box=media_box,
+                        crop_box=crop_box,
                     )
                 )
     except UnreadablePdf:
@@ -285,11 +330,12 @@ def read_page_contents(
                     f"page {page_index} is beyond the {len(document.pages)} pages in this document"
                 ) from error
 
+            media_box, crop_box = page_boxes_in_pdf_space(page)
             transform = PageTransform(
                 dpi=dpi,
                 rotation=_rotation(page.rotation),
-                media_box=_box(page.mediabox),
-                crop_box=_box(page.cropbox),
+                media_box=media_box,
+                crop_box=crop_box,
             )
             height = _decimal(page.height)
 

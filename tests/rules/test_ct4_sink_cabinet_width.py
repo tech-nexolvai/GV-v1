@@ -99,8 +99,8 @@ def _inputs(cabinet: int | Fraction = CABINET) -> dict[str, VerdictOperand]:
 def test_the_rule_is_an_exact_v1_flag_inch_check() -> None:
     """Q2: V1 compares exactly, so this is `equals` and carries no tolerance band.
 
-    `is_production_ready` matters here: unlike `CAB-ARCH-VS-SHOP-001`, this relation needs no value
-    the client still owes, so it is publishable to production as authored rather than held.
+    `is_production_ready` matters here: this relation needs no further value from Raj before it can
+    decide, so it is publishable to production as authored rather than held.
     """
     rule = _load()
 

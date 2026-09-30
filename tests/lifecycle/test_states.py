@@ -648,3 +648,43 @@ def test_the_entry_conditions_are_data_beside_the_table() -> None:
     assert set(PROCESSING_STATES) <= set(
         ENTRY_CONDITIONS
     ), "every processing state is a possible resume target and needs the resume condition"
+
+
+def test_a_reviewer_may_supply_a_missing_value_and_check_again() -> None:
+    """**Outcome: `AWAITING_REVIEW` may return to `RUNNING_CHECKS`.**
+
+    Without this edge a package could be checked exactly once. A reviewer reading "waiting on a
+    value", going to Measure, typing it and pressing Run checks got a 202 and then nothing: the
+    worker refused `AWAITING_REVIEW -> AWAITING_REVIEW` at the end of the run, the outbox row
+    retried for ever — 1680 attempts on one row, observed on a running demo — and the findings
+    stayed stale. Fill in what the checks asked for and check again is the loop this product is
+    built around, and it was closed.
+    """
+    assert PackageState.RUNNING_CHECKS in TRANSITIONS[PackageState.AWAITING_REVIEW]
+
+
+def test_re_checking_still_cannot_skip_evidence_validation() -> None:
+    """**The property the new edge must not weaken.**
+
+    A revision reaches `AWAITING_REVIEW` only by passing ingestion, extraction, matching and
+    evidence validation, so returning to the checks repeats work legitimately done rather than
+    bypassing it. The edge goes to `RUNNING_CHECKS` and to nothing earlier, and `AWAITING_REVIEW`
+    is not reachable from anywhere that skipped a step.
+    """
+    from_review = TRANSITIONS[PackageState.AWAITING_REVIEW]
+
+    assert PackageState.VALIDATING_EVIDENCE not in from_review
+    assert PackageState.EXTRACTING not in from_review
+    assert PackageState.MATCHING not in from_review
+    assert PackageState.INGESTING not in from_review
+
+
+def test_a_review_outcome_is_still_final() -> None:
+    """Outcome: approving or requesting changes still leaves only by being superseded.
+
+    The re-check edge is from `AWAITING_REVIEW`, which is a package in front of a reviewer — not
+    from a decision they have already taken. Letting a signed-off approval re-enter the checks would
+    rewrite a completed review, which is exactly what `REVIEW_OUTCOMES` exists to prevent.
+    """
+    for outcome in (PackageState.APPROVED, PackageState.CHANGES_REQUESTED):
+        assert TRANSITIONS[outcome] == frozenset({PackageState.SUPERSEDED}), outcome

@@ -92,8 +92,13 @@ class InvocationRecord:
     first, so the integer check below is not skippable.
 
     Attributes:
-        extraction_run_id: the version-pinned extractor run this call belongs to. It is what makes a
-            cost total attributable to a package at all.
+        extraction_run_id: the version-pinned extractor run this call belongs to, or `None` for a
+            call that is not an extraction. Exactly one of this and `package_revision_id` is set.
+        package_revision_id: the package revision a review-time call belongs to — reviewer chat and
+            findings narration, which have no extraction run. ADR-0019. Before it existed, those
+            calls were anchored to the package's *latest* extraction run, which attributed a
+            narration to work that did not make it and raised outright on a package that had never
+            been extracted (#694).
         model_id: the exact model identifier, version included. "Which model said this" is not
             answerable from a family name once the family has moved on.
         prompt_id: the identifier of the prompt this call used.
@@ -105,25 +110,31 @@ class InvocationRecord:
         input_tokens: tokens sent, as counted by the provider.
         output_tokens: tokens returned, as counted by the provider. Zero is the normal value for a
             refusal or a timeout, and is stated as zero rather than left out.
-        cost_micros: the cost of this call in millionths of a currency unit.
+        cost_micros: the cost of this call in millionths of a US dollar, or `None` when no price
+            was stated for the model (#700). Never a stand-in zero: `0` means no tokens were used.
         latency_ms: wall-clock duration in whole milliseconds.
         outcome: how the call ended. The closed set is enforced by the database; see the module
             docstring for why it is not re-stated here.
+        rejection_reason: for a rejected response, the code-authored reason it was rejected. Locally
+            known validation failures use their bounded reason code; callers that only know an
+            exception may pass a bounded diagnostic string.
 
     Raises:
         TypeError: if any count, cost or duration is not a plain `int`.
     """
 
-    extraction_run_id: UUID
+    extraction_run_id: UUID | None
     model_id: str
     prompt_id: str
     template_id: str
     crop_artifact_id: UUID | None
     input_tokens: int
     output_tokens: int
-    cost_micros: int
+    cost_micros: int | None
     latency_ms: int
     outcome: str
+    rejection_reason: str | None = None
+    package_revision_id: UUID | None = None
     node_invocation_key: str | None = None
     candidate_id: UUID | None = None
     assembled_context: AssembledContext | None = None
@@ -132,10 +143,30 @@ class InvocationRecord:
     def __post_init__(self) -> None:
         """Refuse a count or a cost that is not exactly an integer, before it can be stored."""
 
+        # **Exactly one origin.** The database enforces it too, and it is enforced here as well so
+        # a call with no origin cannot be *built* — the same discipline as the integer checks below.
+        # Neither means the row is attributable to nothing; both means two different things claim to
+        # have made one call.
+        if (self.extraction_run_id is None) == (self.package_revision_id is None):
+            raise ValueError(
+                "exactly one of extraction_run_id and package_revision_id must be set: an "
+                "extraction call belongs to a run, a review-time call to a package revision, and a "
+                "call belonging to neither cannot be attributed to anything (ADR-0019)"
+            )
         _exact_count("input_tokens", self.input_tokens)
         _exact_count("output_tokens", self.output_tokens)
-        _exact_count("cost_micros", self.cost_micros)
+        if self.cost_micros is not None:
+            _exact_count("cost_micros", self.cost_micros)
         _exact_count("latency_ms", self.latency_ms)
+        if self.outcome == "rejected" and self.rejection_reason is None:
+            raise ValueError("a rejected invocation must record why the local code rejected it")
+        if self.rejection_reason is not None:
+            if not isinstance(self.rejection_reason, str) or not self.rejection_reason.strip():
+                raise ValueError("rejection_reason must be a non-empty string or None")
+            if len(self.rejection_reason) > 500:
+                raise ValueError("rejection_reason must be 500 characters or fewer")
+            if self.outcome != "rejected":
+                raise ValueError("rejection_reason is only valid for rejected invocations")
         if self.node_invocation_key is not None and (
             not self.node_invocation_key.startswith("sha256:")
             or len(self.node_invocation_key) != 71

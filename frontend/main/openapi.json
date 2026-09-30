@@ -205,6 +205,124 @@
         "title": "ApprovalOut",
         "type": "object"
       },
+      "AssemblyInput": {
+        "additionalProperties": false,
+        "description": "The ordered cabinet/filler assembly used to derive the design width.",
+        "properties": {
+          "cabinets": {
+            "items": {
+              "$ref": "#/components/schemas/CabinetInput"
+            },
+            "minItems": 1,
+            "title": "Cabinets",
+            "type": "array"
+          },
+          "fillers": {
+            "items": {
+              "$ref": "#/components/schemas/FillerInput"
+            },
+            "minItems": 1,
+            "title": "Fillers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cabinets",
+          "fillers"
+        ],
+        "title": "AssemblyInput",
+        "type": "object"
+      },
+      "AssignmentEvent": {
+        "description": "One frame of the assignment stream: a phase beginning, or the finished result.\n\nThe endpoint returns `text/event-stream` and each frame's `data:` is one of these. A stream\nrather than a single response because the model call is the slow part, and a screen that shows\na real phase name while it waits is telling the truth about what is happening \u2014 where a bar\nmoving on a timer would not be.",
+        "properties": {
+          "event": {
+            "enum": [
+              "step",
+              "result"
+            ],
+            "title": "Event",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProposedMeasurementsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "step": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssignmentStepOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "title": "AssignmentEvent",
+        "type": "object"
+      },
+      "AssignmentStepOut": {
+        "description": "One phase of the assignment, sent as that phase begins.\n\n**`percent` is phases finished, and says so.** It is not a guess at how long the model will\ntake and not a confidence in the answer \u2014 those are two numbers nothing on this side of the\nrequest knows. A retry re-sends the phase it went back to, so the bar holds rather than\nadvancing on work that was rejected.",
+        "properties": {
+          "attempt": {
+            "default": 1,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "percent": {
+            "title": "Percent",
+            "type": "integer"
+          },
+          "sequence": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Sequence",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index",
+          "total",
+          "name",
+          "label",
+          "percent"
+        ],
+        "title": "AssignmentStepOut",
+        "type": "object"
+      },
       "AwaitingToleranceOut": {
         "additionalProperties": false,
         "description": "One rule that cannot be released, and how much of it is still a guess.",
@@ -233,6 +351,81 @@
           "unconfirmed"
         ],
         "title": "AwaitingToleranceOut",
+        "type": "object"
+      },
+      "CabinetInput": {
+        "additionalProperties": false,
+        "description": "One cabinet in the ordered run the reviewer is checking.",
+        "properties": {
+          "id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "description": "The reviewer's classification of this cabinet. Slide 11 of the 2026-09-21 deck puts this with the reviewer \u2014 they categorise a cabinet and confirm whether its width may change \u2014 so it is a required input and the server never infers it.",
+            "enum": [
+              "single_door",
+              "double_door",
+              "drawer",
+              "equipment"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "width": {
+            "description": "Authored dimension with its unit, e.g. 30\" or 762 mm.",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Width",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "width",
+          "type"
+        ],
+        "title": "CabinetInput",
+        "type": "object"
+      },
+      "CabinetProposalOut": {
+        "description": "One cabinet before and after the distribution calculation.",
+        "properties": {
+          "adjustable": {
+            "title": "Adjustable",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "original": {
+            "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          },
+          "proposed": {
+            "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          },
+          "type": {
+            "enum": [
+              "single_door",
+              "double_door",
+              "drawer",
+              "equipment"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "original",
+          "proposed",
+          "adjustable"
+        ],
+        "title": "CabinetProposalOut",
         "type": "object"
       },
       "CalculationTraceOut": {
@@ -331,6 +524,18 @@
             "title": "Candidate Id",
             "type": "string"
           },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The extractor confidence as recorded; it is not a semantic-type confidence.",
+            "title": "Confidence"
+          },
           "corroboration_lane": {
             "anyOf": [
               {
@@ -372,6 +577,17 @@
           "raw_text": {
             "title": "Raw Text",
             "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           },
           "value": {
             "anyOf": [
@@ -416,6 +632,58 @@
         "title": "CandidatesOut",
         "type": "object"
       },
+      "ChatModelChoice": {
+        "additionalProperties": false,
+        "description": "One selectable model: the exact Bedrock id, and the name a reviewer reads.",
+        "properties": {
+          "id": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "ChatModelChoice",
+        "type": "object"
+      },
+      "ChatModelsOut": {
+        "description": "The models a reviewer may choose from, and which one answers by default.",
+        "properties": {
+          "default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ChatModelChoice"
+            },
+            "title": "Models",
+            "type": "array"
+          }
+        },
+        "required": [
+          "models"
+        ],
+        "title": "ChatModelsOut",
+        "type": "object"
+      },
       "CheckRequest": {
         "additionalProperties": false,
         "description": "Asking for the checks, and what the reviewer says about the layout.\n\n**Discriminators travel with the request rather than being stored as evidence**, because that is\nwhat they are: a statement about how to read this package on this run. A rule with a discriminator\nnobody stated abstains with REVIEW_REQUIRED however complete the measurements are, so without\nthese two `CT-WIDTH-001` and `CAB-FILLER-001` could never reach a verdict.",
@@ -431,6 +699,40 @@
         "title": "CheckRequest",
         "type": "object"
       },
+      "ClassificationEntry": {
+        "additionalProperties": false,
+        "description": "What a reviewer says each item in one ordered run is.\n\nSeparate from `MeasurementEntry` because a category is not a dimension: it has no unit, nothing\nparses it, and `normalise_to_inches` correctly refuses it. Sending one through `values` was how\n#684 was found \u2014 a reviewer had no way at all to say which cabinet was the sink cabinet.\n\nThe choices come from the rulebook, through the required-inputs form, and the server checks the\nsubmission against them rather than trusting the client's list.",
+        "properties": {
+          "categories": {
+            "description": "One category per item, in layout order \u2014 left to right along the run. Order is kept because the distribution adjusts positionally: which cabinet is the equipment cabinet is the whole question.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Categories",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "rule_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Rule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "name",
+          "categories"
+        ],
+        "title": "ClassificationEntry",
+        "type": "object"
+      },
       "ConfirmIn": {
         "description": "A reviewer naming what a reading is.",
         "properties": {
@@ -444,6 +746,23 @@
           "semantic_type"
         ],
         "title": "ConfirmIn",
+        "type": "object"
+      },
+      "ConfirmRoleIn": {
+        "properties": {
+          "role": {
+            "enum": [
+              "arch",
+              "shop"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "ConfirmRoleIn",
         "type": "object"
       },
       "ConfirmedOut": {
@@ -469,6 +788,44 @@
           "status"
         ],
         "title": "ConfirmedOut",
+        "type": "object"
+      },
+      "ConfirmedReadingOut": {
+        "description": "One qualified drawing reading that can prefill this package's measurement form.\n\nThis is intentionally an *input suggestion*, not a new verdict operand.  It can be a reviewer\nconfirmation, or the deliberately narrower automatic lane: an exact vector vocabulary tag on\nthe same associated dimension line.  The latter is named explicitly on the wire so the UI never\npresents a machine qualification as if a person had performed it.  Unqualified candidates never\nappear here.",
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "qualification": {
+            "enum": [
+              "reviewer_confirmed",
+              "exact_vector_tag"
+            ],
+            "title": "Qualification",
+            "type": "string"
+          },
+          "semantic_type": {
+            "title": "Semantic Type",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "source",
+          "semantic_type",
+          "value",
+          "qualification"
+        ],
+        "title": "ConfirmedReadingOut",
         "type": "object"
       },
       "DecideEvidence": {
@@ -559,6 +916,16 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LayoutProposalOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "rule_ids": {
             "items": {
@@ -886,6 +1253,255 @@
           "abstained"
         ],
         "title": "ExportedFinding",
+        "type": "object"
+      },
+      "ExtractionRequestOut": {
+        "description": "The durable request to read a completed two-drawing package.\n\nUpload confirmation proves that one file landed. It must not start a package review while its\ncounterpart may still be arriving; this handle exists only after the architectural and shop pair\nhave both been confirmed.",
+        "properties": {
+          "accepted_id": {
+            "format": "uuid",
+            "title": "Accepted Id",
+            "type": "string"
+          },
+          "package_revision_id": {
+            "format": "uuid",
+            "title": "Package Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "accepted_id",
+          "package_revision_id"
+        ],
+        "title": "ExtractionRequestOut",
+        "type": "object"
+      },
+      "FillerDistributionRequest": {
+        "additionalProperties": false,
+        "description": "Inputs for the deterministic filler-first distribution proposal.\n\n``field_width`` is nullable on purpose: a missing on-site field dimension is a business\nabstention (NOT_FOUND), not a guessed zero or a selected default.",
+        "properties": {
+          "assembly": {
+            "$ref": "#/components/schemas/AssemblyInput"
+          },
+          "double_door_cab_width_max": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Double Door Cab Width Max",
+            "type": "string"
+          },
+          "double_door_cab_width_min": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Double Door Cab Width Min",
+            "type": "string"
+          },
+          "drawer_cab_width_max": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Drawer Cab Width Max",
+            "type": "string"
+          },
+          "drawer_cab_width_min": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Drawer Cab Width Min",
+            "type": "string"
+          },
+          "field_width": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reviewer-entered site dimension with its unit, e.g. 96 1/2\".",
+            "title": "Field Width"
+          },
+          "filler_max": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Filler Max",
+            "type": "string"
+          },
+          "filler_min": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Filler Min",
+            "type": "string"
+          },
+          "single_door_cab_width_max": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Single Door Cab Width Max",
+            "type": "string"
+          },
+          "single_door_cab_width_min": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Single Door Cab Width Min",
+            "type": "string"
+          }
+        },
+        "required": [
+          "assembly",
+          "filler_min",
+          "filler_max",
+          "single_door_cab_width_min",
+          "single_door_cab_width_max",
+          "double_door_cab_width_min",
+          "double_door_cab_width_max",
+          "drawer_cab_width_min",
+          "drawer_cab_width_max"
+        ],
+        "title": "FillerDistributionRequest",
+        "type": "object"
+      },
+      "FillerDistributionResponse": {
+        "description": "A deterministic proposal, or an honest abstention.",
+        "properties": {
+          "cabinets": {
+            "items": {
+              "$ref": "#/components/schemas/CabinetProposalOut"
+            },
+            "title": "Cabinets",
+            "type": "array"
+          },
+          "cabinets_retained": {
+            "title": "Cabinets Retained",
+            "type": "boolean"
+          },
+          "calculation": {
+            "title": "Calculation",
+            "type": "string"
+          },
+          "condition": {
+            "title": "Condition",
+            "type": "string"
+          },
+          "design_width": {
+            "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          },
+          "field_dimension": {
+            "$ref": "#/components/schemas/OperandTraceOut"
+          },
+          "fillers": {
+            "items": {
+              "$ref": "#/components/schemas/FillerProposalOut"
+            },
+            "title": "Fillers",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "operands": {
+            "items": {
+              "$ref": "#/components/schemas/OperandTraceOut"
+            },
+            "title": "Operands",
+            "type": "array"
+          },
+          "outcome": {
+            "enum": [
+              "PASS",
+              "REVIEW_REQUIRED",
+              "NOT_FOUND"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reviewer_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Action"
+          },
+          "site_difference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "condition",
+          "message",
+          "summary",
+          "design_width",
+          "site_difference",
+          "field_dimension",
+          "fillers",
+          "cabinets",
+          "cabinets_retained",
+          "operands",
+          "calculation"
+        ],
+        "title": "FillerDistributionResponse",
+        "type": "object"
+      },
+      "FillerInput": {
+        "additionalProperties": false,
+        "description": "One filler, ordered left then right in the request.",
+        "properties": {
+          "id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "width": {
+            "description": "Authored dimension with its unit, e.g. 2\" or 51 mm.",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Width",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "width"
+        ],
+        "title": "FillerInput",
+        "type": "object"
+      },
+      "FillerProposalOut": {
+        "description": "One filler before and after the distribution calculation.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "original": {
+            "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          },
+          "proposed": {
+            "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+          }
+        },
+        "required": [
+          "id",
+          "original",
+          "proposed"
+        ],
+        "title": "FillerProposalOut",
         "type": "object"
       },
       "FindingChain": {
@@ -1251,6 +1867,41 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "LayoutProposalOut": {
+        "description": "A model-proposed discriminator answer, still waiting for reviewer confirmation.",
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "crop_artifact_id": {
+            "format": "uuid",
+            "title": "Crop Artifact Id",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "crop_artifact_id",
+          "model_id",
+          "prompt_id"
+        ],
+        "title": "LayoutProposalOut",
+        "type": "object"
+      },
       "MeasurementEntry": {
         "additionalProperties": false,
         "description": "One dimension a reviewer read off a drawing, and which check input it is.\n\n**Keyed by rule and input name rather than by semantic type**, deliberately. The engine looks an\noperand up by the input name the rule declares, and the semantic vocabulary is still provisional\n(`CLIENT_FACTS` Q20) \u2014 so keying on a tag nobody has settled would bake a guess into the wire\nformat. This asks for what the rulebook already names.",
@@ -1339,6 +1990,48 @@
           "package_revision_id"
         ],
         "title": "OpenReviewSession",
+        "type": "object"
+      },
+      "OperandTraceOut": {
+        "description": "The source record the response gives for an input value.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "ARCH",
+              "SHOP",
+              "USER_INPUT",
+              "LITERAL"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "HUMAN_CONFIRMED",
+            "title": "Status",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__schemas__distribution__QuantityOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "source",
+          "status",
+          "value"
+        ],
+        "title": "OperandTraceOut",
         "type": "object"
       },
       "OperationOut": {
@@ -1624,6 +2317,154 @@
         "title": "PresignedUpload",
         "type": "object"
       },
+      "ProposedFieldOut": {
+        "description": "One field and the readings proposed to fill it, in drawing order.",
+        "properties": {
+          "field_key": {
+            "title": "Field Key",
+            "type": "string"
+          },
+          "many": {
+            "title": "Many",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "placement_verified": {
+            "default": true,
+            "title": "Placement Verified",
+            "type": "boolean"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/ProposedReadingOut"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "field_key",
+          "name",
+          "source",
+          "many",
+          "values"
+        ],
+        "title": "ProposedFieldOut",
+        "type": "object"
+      },
+      "ProposedMeasurementsOut": {
+        "description": "What survived every structural check, and enough counts to say so honestly.\n\n**Nothing here is stored.** These fill a form a reviewer then reads, edits and saves; the saving\nis what records a value, and it records it as the reviewer's. A model's proposal never becomes a\nmeasurement without a person submitting it.",
+        "properties": {
+          "assignments": {
+            "items": {
+              "$ref": "#/components/schemas/ProposedFieldOut"
+            },
+            "title": "Assignments",
+            "type": "array"
+          },
+          "fields_filled": {
+            "title": "Fields Filled",
+            "type": "integer"
+          },
+          "fields_total": {
+            "title": "Fields Total",
+            "type": "integer"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "readings_attached": {
+            "title": "Readings Attached",
+            "type": "integer"
+          },
+          "readings_considered": {
+            "title": "Readings Considered",
+            "type": "integer"
+          },
+          "unfilled_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unfilled Reason"
+          }
+        },
+        "required": [
+          "assignments",
+          "fields_total",
+          "fields_filled",
+          "readings_considered",
+          "readings_attached"
+        ],
+        "title": "ProposedMeasurementsOut",
+        "type": "object"
+      },
+      "ProposedReadingOut": {
+        "description": "One reading a model proposes for a field, named by the candidate it already is.",
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "chain_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain Key"
+          },
+          "chain_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain Position"
+          },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "value",
+          "page_index"
+        ],
+        "title": "ProposedReadingOut",
+        "type": "object"
+      },
       "PublicationOut": {
         "additionalProperties": false,
         "description": "What was published, by whom, and on what basis.\n\nCarries the approver, the author and the regression summary because \"was this approved?\" is a\nweaker question than \"who approved it, who wrote it, and what was it checked against?\", and only\nthe second is worth anything when a finding is disputed months later.",
@@ -1726,46 +2567,6 @@
         "title": "PublicationTarget",
         "type": "string"
       },
-      "QuantityOut": {
-        "description": "One physical measurement the reviewer must read off a drawing.",
-        "properties": {
-          "consumers": {
-            "items": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "title": "Consumers",
-            "type": "array"
-          },
-          "key": {
-            "title": "Key",
-            "type": "string"
-          },
-          "many": {
-            "title": "Many",
-            "type": "boolean"
-          },
-          "semantic_type": {
-            "title": "Semantic Type",
-            "type": "string"
-          },
-          "source": {
-            "title": "Source",
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "semantic_type",
-          "source",
-          "many",
-          "consumers"
-        ],
-        "title": "QuantityOut",
-        "type": "object"
-      },
       "RecordAction": {
         "additionalProperties": false,
         "description": "One thing a reviewer did to one finding.\n\nNo `actor` and no `package_revision_id`. The actor is the authenticated caller, and the revision\nis read off the finding the server loaded \u2014 a caller cannot state which revision they were\nlooking at, which is what makes the trail worth keeping.",
@@ -1801,6 +2602,14 @@
       "RequiredInputsOut": {
         "description": "Everything the published rulebook needs, grouped so a form can render it.\n\nDerived from the published rules rather than listed, which is what makes it impossible for a\nfield to be missing: a rule that gains an input gains a field here on the next publish.",
         "properties": {
+          "confirmed_readings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ConfirmedReadingOut"
+            },
+            "title": "Confirmed Readings",
+            "type": "array"
+          },
           "discriminators": {
             "items": {
               "$ref": "#/components/schemas/DiscriminatorOut"
@@ -1815,16 +2624,34 @@
             "title": "Parameters",
             "type": "array"
           },
+          "proposed_readings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ProposedFieldOut"
+            },
+            "title": "Proposed Readings",
+            "type": "array"
+          },
           "quantities": {
             "items": {
-              "$ref": "#/components/schemas/QuantityOut"
+              "$ref": "#/components/schemas/app__schemas__measurements__QuantityOut"
             },
             "title": "Quantities",
             "type": "array"
           },
+          "revision_state": {
+            "default": "",
+            "title": "Revision State",
+            "type": "string"
+          },
           "rules_published": {
             "title": "Rules Published",
             "type": "integer"
+          },
+          "still_reading": {
+            "default": false,
+            "title": "Still Reading",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2057,10 +2884,128 @@
         "title": "ReviewerActionOut",
         "type": "object"
       },
+      "ReviewerChatNarrative": {
+        "description": "One answer fragment and the deterministic finding that backs it.",
+        "properties": {
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "text"
+        ],
+        "title": "ReviewerChatNarrative",
+        "type": "object"
+      },
+      "ReviewerChatOut": {
+        "description": "Bounded chat response; every narrative has a finding id from this exact run.",
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewerChatNarrative"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "required": [
+          "answer",
+          "mode",
+          "findings"
+        ],
+        "title": "ReviewerChatOut",
+        "type": "object"
+      },
+      "ReviewerChatRequest": {
+        "additionalProperties": false,
+        "description": "A reviewer question; it cannot carry findings, values, rules, or verdicts.\n\n``model_id`` is an optional presentation choice \u2014 which allow-listed model narrates. It changes\nno fact: the answer is still composed from stored findings and the narration guard is unchanged.\nAn id the deployment did not allow-list is refused (422), so a reviewer cannot select an\nunapproved model. ``None`` uses the deployment default.",
+        "properties": {
+          "model_id": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "question": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "ReviewerChatRequest",
+        "type": "object"
+      },
       "ReviewerEntry": {
         "additionalProperties": false,
-        "description": "Everything one reviewer submission carries.\n\nBoth halves are optional so a reviewer can set the project's parameters once and then enter\nmeasurements per package without resending them.",
+        "description": "Everything one reviewer submission carries.\n\nEvery part is optional so a reviewer can set the project's parameters once and then enter\nmeasurements per package without resending them.",
         "properties": {
+          "classifications": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ClassificationEntry"
+            },
+            "title": "Classifications",
+            "type": "array"
+          },
           "measurements": {
             "default": [],
             "items": {
@@ -2530,6 +3475,187 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "ViewOut": {
+        "description": "One drawing on a page, as a reviewer needs it to say which drawing it is.",
+        "properties": {
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "suggested_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested From"
+          },
+          "suggested_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Role"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "view_id": {
+            "format": "uuid",
+            "title": "View Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view_id",
+          "page_index",
+          "tag",
+          "role",
+          "suggested_role",
+          "suggested_from",
+          "reason"
+        ],
+        "title": "ViewOut",
+        "type": "object"
+      },
+      "ViewsOut": {
+        "properties": {
+          "views": {
+            "items": {
+              "$ref": "#/components/schemas/ViewOut"
+            },
+            "title": "Views",
+            "type": "array"
+          }
+        },
+        "required": [
+          "views"
+        ],
+        "title": "ViewsOut",
+        "type": "object"
+      },
+      "app__schemas__distribution__QuantityOut": {
+        "description": "One exact dimension, rendered without a JSON float.",
+        "properties": {
+          "as_typed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Typed"
+          },
+          "denominator": {
+            "title": "Denominator",
+            "type": "string"
+          },
+          "display": {
+            "title": "Display",
+            "type": "string"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "string"
+          },
+          "unit": {
+            "enum": [
+              "in",
+              "mm"
+            ],
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "numerator",
+          "denominator",
+          "unit",
+          "display"
+        ],
+        "title": "QuantityOut",
+        "type": "object"
+      },
+      "app__schemas__measurements__QuantityOut": {
+        "description": "One physical measurement the reviewer must read off a drawing.",
+        "properties": {
+          "categories": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "consumers": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Consumers",
+            "type": "array"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "many": {
+            "title": "Many",
+            "type": "boolean"
+          },
+          "semantic_type": {
+            "title": "Semantic Type",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "semantic_type",
+          "source",
+          "many",
+          "consumers"
+        ],
+        "title": "QuantityOut",
+        "type": "object"
       }
     }
   },
@@ -2622,7 +3748,7 @@
     },
     "/api/v1/projects/{project_id}/documents/{document_id}/confirm": {
       "post": {
-        "description": "Check the bytes, then write the version and the ingestion request in one transaction.\n\nIn order:\n\n1. The stored object for your declared hash must exist. Nothing there is `409` \u2014 there is no upload\n   to confirm, which is different from a bad request.\n2. It is read and hashed. If it does not hash to what you declared, the request is refused with\n   `422` and **nothing at all is written** \u2014 no artifact row, no version, no outbox row.\n3. The `SourceArtifact`, the `DocumentVersion` and the outbox row are written in one transaction.\n   Either all three land or none do.\n\nReturns `201` when a version was created and `200` when these exact bytes had already been\nconfirmed. The repeat is a genuine no-op: the same version comes back and no second outbox row is\nwritten, so ingestion does not run twice.\n\nReading the object to hash it is the one piece of real work here, and it is bounded by the size of\none drawing. It is also the only honest way to verify: `AGENTS.md` \u00a72.7 pins a document version to\nexact bytes, and taking the client's word for the hash would make that pin a restatement of their\nclaim. A backend that computes the checksum itself can answer this without a read; the local\nfilesystem cannot, and #221 is where that becomes worth optimising.",
+        "description": "Check the bytes, then write the version in one transaction.\n\nIn order:\n\n1. The stored object for your declared hash must exist. Nothing there is `409` \u2014 there is no upload\n   to confirm, which is different from a bad request.\n2. It is read and hashed. If it does not hash to what you declared, the request is refused with\n   `422` and **nothing at all is written** \u2014 no artifact row or version.\n3. The `SourceArtifact` and `DocumentVersion` are written in one transaction. Either both land or\n   neither does. Extraction is a separate package-level request after both PDFs are confirmed.\n\nReturns `201` when a version was created and `200` when these exact bytes had already been\nconfirmed. The repeat is a genuine no-op: the same version comes back and it does not start work.\n\nReading the object to hash it is the one piece of real work here, and it is bounded by the size of\none drawing. It is also the only honest way to verify: `AGENTS.md` \u00a72.7 pins a document version to\nexact bytes, and taking the client's word for the hash would make that pin a restatement of their\nclaim. A backend that computes the checksum itself can answer this without a read; the local\nfilesystem cannot, and #221 is where that becomes worth optimising.",
         "operationId": "confirm_upload_api_v1_projects__project_id__documents__document_id__confirm_post",
         "parameters": [
           {
@@ -2678,7 +3804,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Confirm an upload landed, and start ingestion",
+        "summary": "Confirm an upload landed",
         "tags": [
           "documents"
         ]
@@ -2745,6 +3871,60 @@
         "summary": "Get an upload ticket for a new version of an existing document",
         "tags": [
           "documents"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/filler-distribution": {
+      "post": {
+        "description": "Return the two-step proposal, abstaining when reviewer input is missing.",
+        "operationId": "calculate_filler_distribution_api_v1_projects__project_id__filler_distribution_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FillerDistributionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FillerDistributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Calculate the site-corrected layout for one cabinet run",
+        "tags": [
+          "distribution"
         ]
       }
     },
@@ -3056,6 +4236,268 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/crop": {
+      "get": {
+        "description": "Return the stored pixels a reviewer must inspect before naming a proposal.\n\nThis is deliberately candidate-scoped: the reading is still untyped, so it must not be exposed\nas a finding or redline.  The SQL path proves both the candidate and its crop belong to the\npackage's current revision, then the stored digest is checked before bytes leave the service.",
+        "operationId": "candidate_crop_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__crop_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The integrity-checked mechanical crop."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View the mechanical crop behind an untyped AI reading",
+        "tags": [
+          "confirmations"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat": {
+      "post": {
+        "description": "Narrate the package's current findings without changing, calculating, or extending them.",
+        "operationId": "reviewer_chat_api_v1_projects__project_id__packages__package_id__chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewerChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewerChatOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask about one deterministic review run",
+        "tags": [
+          "reviewer chat"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat/models": {
+      "get": {
+        "description": "List the allow-listed narration models and the default, for the chat model picker.\n\nAn empty list means the deployment configured no chat model; the chat then serves its plain\ndeterministic findings view and the picker has nothing to offer.",
+        "operationId": "reviewer_chat_models_api_v1_projects__project_id__packages__package_id__chat_models_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatModelsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The models a reviewer may pick to narrate this run",
+        "tags": [
+          "reviewer chat"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat/stream": {
+      "post": {
+        "description": "The same answer as ``/chat``, sent in the order it becomes known.\n\n1. ``facts``: the recorded findings the question selects, at once. No model is involved.\n2. ``stage``: only when a provider is about to be called.\n3. ``narration``: the **complete, guarded** reply, identical to ``/chat``'s response body.\n4. ``done``.\n\n**Why the narration is not streamed token by token.** The provider returns every narrative in\none structured call, and ``compose_findings`` accepts or rejects that batch as a whole. A token\nstream would show a reviewer sentences the guard might then discard. So the provider's words\nare sent once, after the guard has accepted them; what streams is everything that did not\nneed a model.\n\nRuns in a worker thread (FastAPI iterates a sync generator in its threadpool), and the request's\nsession stays open until the stream ends, so the provider call is recorded exactly as ``/chat``\nrecords it.",
+        "operationId": "reviewer_chat_stream_api_v1_projects__project_id__packages__package_id__chat_stream_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewerChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask about one deterministic review run, streamed",
+        "tags": [
+          "reviewer chat"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/checks": {
       "post": {
         "description": "Record the intent to run the checks. Starts nothing, and cannot.\n\n**202, not 200**, and the body carries an `accepted` id rather than a run id. Nothing has started:\n`workflow/outbox.py:enqueue` says the id \"names the enqueued work, not a workflow run\", and\ncalling it a run id here would have a client poll for something that does not exist yet.\n\nThe reason this is not simply `run_checks(...)` is a guard, not a preference.\n`tests/api/test_no_heavy_work.py` walks every import under `app/api/` and refuses any path to\nextraction or rendering \u2014 and `workflow/stages.py` reaches `extraction.reader` since the OCR\nroute landed. So this module may not import the thing that does the work, which is exactly the\nseparation `DESIGN_PLATFORM.md` \u00a74.2 asks for.",
@@ -3257,6 +4699,60 @@
         "summary": "View the stored mechanical crop behind one confirmed reading",
         "tags": [
           "findings"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/extract": {
+      "post": {
+        "description": "Freeze the confirmed drawing set and enqueue its read-only extraction stages.\n\nThis is intentionally separate from confirming a document: a worker must never read and freeze a\npackage while its drawings are still in flight. It performs no extraction itself; the outbox\nrecord and state transition commit together, then the worker reads the immutable document\nversions. It also does not run checks -- OCR proposals remain untyped until a reviewer confirms\nthem.",
+        "operationId": "start_extraction_api_v1_projects__project_id__packages__package_id__extract_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractionRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start AI reading after the drawing PDFs are confirmed",
+        "tags": [
+          "documents"
         ]
       }
     },
@@ -3600,6 +5096,69 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/layout-proposals/{crop_artifact_id}/crop": {
+      "get": {
+        "description": "Return a layout proposal's stored crop through the current package boundary.",
+        "operationId": "layout_proposal_crop_api_v1_projects__project_id__packages__package_id__layout_proposals__crop_artifact_id__crop_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "crop_artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Crop Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "image/png": {}
+            },
+            "description": "The integrity-checked crop behind a proposed layout answer."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View the crop behind a proposed closed layout answer",
+        "tags": [
+          "confirmations"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/measurements": {
       "post": {
         "description": "Store what the reviewer typed, exactly, and say back what the system understood.\n\nTwo checks for two questions, as `create_package` does: `require_project_access` says the caller\nmay see this project, `require_action` says entering values is something their role may do.\n\nNothing is run here. A submission records values; asking for the checks is a separate call, so a\nreviewer can correct a typo without a verdict being computed from the first attempt.",
@@ -3664,9 +5223,111 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/measurements/propose": {
+      "post": {
+        "description": "Propose which reading fills which field, and stream the phases while it happens.\n\n**Nothing is stored and nothing is decided.** The accepted proposal fills a form the reviewer\nthen reads, edits and saves; saving is what records a value and records it as theirs. Every\nfailure \u2014 no model configured, a provider that will not answer, a proposal the deterministic\nguard refuses \u2014 ends with the same thing on screen: empty fields and a person filling them,\nwhich is what happens today. This step can make that faster; it cannot make it worse.\n\n**A stream rather than one response**, because the model call is the slow part and a screen that\nnames the phase it is waiting on is telling the truth about what is happening. The percentage is\nphases finished out of five, which is a number this endpoint knows; how long the model will take\nand how right its answer is are two it does not, and neither is on the bar.\n\nThe database work is done before the stream opens, so the session is not held across it.",
+        "operationId": "propose_measurements_api_v1_projects__project_id__packages__package_id__measurements_propose_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentEvent",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "A stream of `AssignmentEvent` frames: one per phase as it begins, then the result. Each frame is one `data:` line."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask a model which reading fills which field, and check every answer",
+        "tags": [
+          "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/redline.pdf": {
+      "get": {
+        "description": "The signed-off redline, available only for typed findings with real stored locations.",
+        "operationId": "download_redline_api_v1_projects__project_id__packages__package_id__redline_pdf_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download the signed-off evidence-grounded drawing redline",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/report": {
       "get": {
-        "description": "The findings workbook for this revision, once somebody has signed for it.\n\n**Approval is the gate, not the file's existence.** `generate_outputs` writes the workbook as soon\nas the checks have run, which is before anybody has read a finding. Serving it then would let a\nreview leave in a state nobody signed for, which is what ADR-0010 forbids \u2014 no computed dimension\nreaches a vendor without reviewer sign-off.\n\nThe bytes are streamed from the artifact store rather than rebuilt. Regenerating on download would\nproduce a file that could differ from the one the approval covers, and the approval is the record\nof what was agreed.",
+        "description": "The signed-off workbook: the tabular audit handoff.",
         "operationId": "download_report_api_v1_projects__project_id__packages__package_id__report_get",
         "parameters": [
           {
@@ -3706,6 +5367,53 @@
           }
         },
         "summary": "Download the signed-off review as a workbook",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/report.pdf": {
+      "get": {
+        "description": "The branded signed-off PDF: the readable reviewer handoff.",
+        "operationId": "download_pdf_report_api_v1_projects__project_id__packages__package_id__report_pdf_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download the signed-off review as a PDF",
         "tags": [
           "approvals"
         ]
@@ -3826,6 +5534,133 @@
         "summary": "Open a review session over one package revision",
         "tags": [
           "review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/views": {
+      "get": {
+        "operationId": "list_views_api_v1_projects__project_id__packages__package_id__views_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The drawings found on this package's pages, and what each one is suggested to be",
+        "tags": [
+          "drawing views"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/role": {
+      "post": {
+        "description": "Record a reviewer's answer and set the drawing's role. Recorded, audited, and correctable by\nconfirming again \u2014 the latest answer is the one that counts, and every earlier one is kept.",
+        "operationId": "confirm_role_api_v1_projects__project_id__packages__package_id__views__view_id__role_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "view_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "View Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmRoleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Say which drawing this is: the architect's or the vendor's",
+        "tags": [
+          "drawing views"
         ]
       }
     },
@@ -4378,18 +6213,6 @@
       "get": {
         "description": "Read from `rules/semantic_types.py` rather than listed here.\n\nA hand-kept copy is right the day it is written and wrong the first time the vocabulary changes \u2014\nand the reviewer would then be offered a type no rule reads, or denied one every rule needs.",
         "operationId": "list_semantic_types_api_v1_semantic_types_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -4404,16 +6227,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
           }
         },
         "summary": "The vocabulary a reviewer may choose from",

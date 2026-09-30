@@ -30,6 +30,7 @@ from extraction.annotations import (
     read_annotation_layers,
     read_markup_layer,
 )
+from extraction.glyph_bands import FractionBarGeometry
 from extraction.reader import UnreadablePdf
 
 DOCUMENT = UUID("11111111-1111-4111-8111-111111111111")
@@ -232,6 +233,27 @@ def test_the_stamp_line_work_is_extracted_as_page_geometry() -> None:
     assert segment.axis == "horizontal"
 
 
+def test_a_stamp_partly_outside_a_tight_visible_page_is_clipped_not_discarded() -> None:
+    """A cropped upload still exposes the part of a vendor stamp a reviewer can see.
+
+    The page box is a tight, non-zero rectangle while the original stamp rectangle extends past
+    its right edge. PDF viewers clip that stamp; the reader must use its visible geometry rather
+    than reject it because the original rectangle is not wholly inside the new page box.
+    """
+    cropped = _pdf(
+        annotations=[_stamp(appearance_object=6)],
+        extra_objects=[_appearance()],
+        box=b"[50 50 300 250]",
+    )
+
+    layers = _layers(cropped)
+
+    assert layers.readable
+    assert len(layers.drawing_segments) == 1
+    assert len(layers.outlined_regions) == 1
+    assert not any("stored page bounds" in item.reason for item in layers.refusals)
+
+
 def test_the_appearance_matrix_places_the_geometry() -> None:
     """**The bug that produced plausible geometry in the wrong place.**
 
@@ -287,17 +309,50 @@ def test_glyph_sized_paths_become_one_candidate_region() -> None:
     assert region.point_count == 10
 
 
-def test_a_wider_gap_splits_the_cluster() -> None:
-    """Input: the same strokes with the gap set below their spacing. Outcome: five regions.
+def test_a_glyph_that_belongs_to_no_run_is_reported_not_cropped() -> None:
+    """Input: strokes too far apart to form a run. Outcome: named refusals, not one-glyph crops.
 
-    The clustering length is load-bearing and belongs to the caller, so this asserts it *does*
-    something: at a gap smaller than the spacing, every stroke is its own region — which is what a
-    reader would produce if the number were set as five separate labels.
+    The issue this guards against was crops containing a single character, which made every reader
+    guess at a fragment. A glyph-sized path that cannot be joined to the next glyph on its baseline
+    is still reported, but it is not sent as a crop pretending to be a label.
     """
     split = _layers(glyph_gap_pt=Decimal("0.5"))
 
-    assert len(split.outlined_regions) == 5
-    assert {region.path_count for region in split.outlined_regions} == {1}
+    assert split.outlined_regions == ()
+    assert any(
+        "did not confidently belong to a glyph run" in item.reason for item in split.refusals
+    )
+
+
+def test_close_parallel_dimension_labels_are_two_runs_not_one() -> None:
+    """Input: the close `4' - 0"` / `3' - 0"` shape. Outcome: two crop regions.
+
+    The labels are close enough vertically that distance clustering would merge them transitively.
+    They do not share a baseline, so run-building keeps them separate and each reader crop contains
+    one label rather than two labels blended together.
+    """
+    close_labels = _pdf(
+        annotations=[_stamp(appearance_object=6)],
+        extra_objects=[
+            _appearance(
+                b"110 520 m 112 524 l S\n"
+                b"113 520 m 115 524 l S\n"
+                b"116 520 m 118 524 l S\n"
+                b"119 520 m 121 524 l S\n"
+                b"122 520 m 124 524 l S\n"
+                b"110 525 m 112 529 l S\n"
+                b"113 525 m 115 529 l S\n"
+                b"116 525 m 118 529 l S\n"
+                b"119 525 m 121 529 l S\n"
+                b"122 525 m 124 529 l S\n"
+            )
+        ],
+    )
+
+    layers = _layers(close_labels)
+
+    assert len(layers.outlined_regions) == 2
+    assert [region.path_count for region in layers.outlined_regions] == [5, 5]
 
 
 def test_line_work_and_glyphs_are_split_by_the_length_the_caller_names() -> None:
@@ -548,3 +603,233 @@ def test_an_angle_that_is_not_a_quarter_turn_is_refused_not_rounded() -> None:
 
     assert layers.markup == ()
     assert any("reads along no axis" in item.reason for item in layers.refusals)
+
+
+# ---------------------------------------------------------------------------
+# A page whose media box does not start at the origin (#600)
+# ---------------------------------------------------------------------------
+
+
+def test_a_page_with_an_offset_media_box_is_read_rather_than_refused() -> None:
+    """**The bug that threw away a whole drawing.**
+
+    `pdfplumber` runs a page's media and crop boxes through its own `_invert_box`, flipping `y`
+    about the media box height so its coordinates read top-down. Everything else here is bottom-up
+    PDF space: the annotation's `/Rect`, the appearance matrix, the paths pypdfium2 returns. For the
+    ordinary page whose media box starts at `(0, 0)` the inversion is the identity, so mixing them
+    went unnoticed for as long as every fixture did that.
+
+    The client's sheets are cut out of a larger set, so their media boxes are offset — one measured
+    at `[321.8, 477.6, 852.1, 837.6]`. Flipped, its crop box lands at negative `y` while the stamp's
+    `/Rect` stays positive, the two share no `y` at all, and `_visible_annotation_rect` refused the
+    annotation with *"does not intersect the visible crop box"*. A 67 KB appearance stream carrying
+    2,165 strokes was discarded, and the page reported itself as having no annotation layers.
+
+    The sister drawing survived only because its offset was small enough that the flipped ranges
+    still overlapped — by luck, and with every coordinate derived from it wrong by twice the offset.
+    """
+    offset = _pdf(
+        annotations=[
+            _free_text('185 1/4"', rect=b"[610 590 690 610]"),
+            _stamp(rect=b"[550 550 850 750]", appearance_object=7),
+        ],
+        extra_objects=[
+            _appearance(
+                b"1 w 150 550 m 250 550 l S\n1 w 150 520 m 150 580 l S\n1 w 250 520 m 250 580 l S\n"
+            )
+        ],
+        box=b"[500 500 900 800]",
+    )
+
+    layers = read_annotation_layers(
+        offset,
+        0,
+        document_version_id=uuid4(),
+        dpi=150,
+        line_minimum_pt=Decimal(50),
+        glyph_maximum_pt=Decimal(10),
+        glyph_gap_pt=Decimal(4),
+    )
+
+    assert layers.unreadable_reason is None, layers.refusals
+    assert not [
+        refusal for refusal in layers.refusals if "crop box" in refusal.reason
+    ], layers.refusals
+    assert layers.drawing_segments, "the vendor line-work was discarded"
+    assert layers.markup, "the reviewer note was discarded"
+
+
+def test_the_page_boxes_a_reader_uses_are_the_ones_the_pdf_declares() -> None:
+    """**Outcome: PDF space, whatever pdfplumber would have said.**
+
+    Asserted on the helper rather than only through a read, because the two boxes agree on every
+    page that starts at the origin — which is every fixture in this file but the one above. A test
+    that only exercised those would pass with the bug in place, which is how it survived.
+    """
+    import io
+
+    import pdfplumber
+
+    from extraction.reader import page_boxes_in_pdf_space
+
+    offset = _pdf(annotations=[_free_text()], box=b"[500 500 900 800]")
+    with pdfplumber.open(io.BytesIO(offset)) as document:
+        page = document.pages[0]
+        media, crop = page_boxes_in_pdf_space(page)
+        inverted = tuple(Decimal(str(value)) for value in page.mediabox)
+
+    assert media == (Decimal(500), Decimal(500), Decimal(900), Decimal(800))
+    assert crop == media, "a page declaring no CropBox inherits its MediaBox"
+    assert media != inverted, "this page does not exercise the difference"
+
+
+# ---------------------------------------------------------------------------
+# Stacked fractions (#735): found through the real reader, not on hand-built boxes
+# ---------------------------------------------------------------------------
+
+#: `28 3/4"` drawn the way the client's plotter draws it, in the stamp's own appearance space: two
+#: full-height digits, a numerator, a bar as a zero-width stroke, the denominator as a body and a
+#: stem, and two inch-mark ticks. Synthetic digits; the shapes are measured ones.
+STACKED_APPEARANCE = (
+    b"0.2 w 110 520 m 113.6 525.5 l 110 525.5 l S\n"  # 2
+    b"114.5 520 m 118.1 525.5 l 114.5 525.5 l S\n"  # 8
+    b"120.1 526.4 m 123.7 531.9 l 120.1 531.9 l S\n"  # 3, raised
+    b"120 525.5 m 123.8 525.5 l S\n"  # the bar
+    b"120 521 m 123.8 524.6 l 120 524.6 l S\n"  # 4's body, dropped
+    b"122.5 519.2 m 122.5 524.6 l S\n"  # 4's stem
+    b"125.6 527.7 m 126.1 529.3 l S\n"  # inch mark
+    b"127.2 527.7 m 127.7 529.3 l S\n"
+)
+
+FRACTION_BAR = FractionBarGeometry(
+    bar_thickness_max_pt=Decimal("0.3"),
+    bar_length_min_pt=Decimal(1),
+    reach_pt=Decimal(3),
+    glyph_min_pt=Decimal(1),
+    glyph_max_pt=Decimal(12),
+    proportion_max=Decimal("2.5"),
+)
+
+
+def _stacked_layers(
+    fraction_bar: FractionBarGeometry | None, *, glyph_maximum_pt: Decimal = Decimal(5)
+):
+    return read_annotation_layers(
+        _pdf(
+            annotations=[_stamp(appearance_object=6)],
+            extra_objects=[_appearance(STACKED_APPEARANCE)],
+        ),
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+        # The demo's thresholds by default. At 5 pt the 5.5 pt numerator is not a glyph at all for
+        # the dimension-line reader, which is why the detector carries its own size bound.
+        line_minimum_pt=Decimal(6),
+        glyph_maximum_pt=glyph_maximum_pt,
+        glyph_gap_pt=Decimal(4),
+        fraction_bar=fraction_bar,
+    )
+
+
+def test_a_stacked_fraction_is_found_through_the_reader_itself() -> None:
+    """**The test #541 lacked.** Its detector passed every unit test and never fired on a real sheet,
+    because the reader's glyph runs orphan the bar and denominator before any region exists. This
+    reads a real stamp at the demo's thresholds and asks the page, not a list of boxes."""
+    layers = _stacked_layers(FRACTION_BAR)
+
+    assert layers.fractions_read is True
+    assert len(layers.stacked_fractions) == 1, layers.refusals
+    fraction = layers.stacked_fractions[0]
+    assert fraction.extent.document_version_id == DOCUMENT
+    assert fraction.image_extent, "a fraction with no pixels cannot be matched to a crop"
+
+
+def test_a_region_is_marked_stacked_only_when_it_touches_the_fraction() -> None:
+    """**Why the vision stage asks about the crop, not the region.** At the demo's thresholds the one
+    run the reader forms here is the inch mark: the digits are too tall to be glyphs at 5 pt, and the
+    bar and denominator are orphaned. That run does not touch the fraction, so it is not marked — yet
+    a crop cut round it, with its margin, shows the whole label. At 12 pt the run holds the numerator,
+    touches the fraction, and is marked, which is what the answer-key scaffold samples on."""
+    demo = _stacked_layers(FRACTION_BAR)
+    wide = _stacked_layers(FRACTION_BAR, glyph_maximum_pt=Decimal(12))
+
+    assert demo.outlined_regions and not any(r.stacked_glyphs for r in demo.outlined_regions)
+    assert any(region.stacked_glyphs for region in wide.outlined_regions), wide.outlined_regions
+
+
+def test_a_read_without_the_detector_says_it_never_looked() -> None:
+    """**Opposite facts again.** No fractions because none are drawn, and no fractions because
+    nobody looked, must not come back the same — the second is how #541's guard stayed silent."""
+    layers = _stacked_layers(None)
+
+    assert layers.stacked_fractions == ()
+    assert layers.fractions_read is False
+    assert not any(region.stacked_glyphs for region in layers.outlined_regions)
+
+
+# ---------------------------------------------------------------------------
+# The demo's glyph limit must admit the client's digits (#715)
+# ---------------------------------------------------------------------------
+
+#: `28"` as the client's plotter draws it: two digits 3.6 pt wide and 5.5 pt tall, then the inch mark.
+#: Page space is appearance space minus (50, 450), as for every stamp in this file.
+WHOLE_LABEL_APPEARANCE = (
+    b"0.2 w 110 520 m 113.6 525.5 l 110 525.5 l S\n"  # 2
+    b"114.5 520 m 118.1 525.5 l 114.5 525.5 l S\n"  # 8
+    b"119.0 523.9 m 119.5 525.5 l S\n"  # inch mark
+    b"120.6 523.9 m 121.1 525.5 l S\n"
+)
+
+
+def _demo_setting(name: str) -> Decimal:
+    import re
+    from pathlib import Path
+
+    demo = (Path(__file__).resolve().parents[2] / "scripts" / "demo.sh").read_text(encoding="utf-8")
+    found = re.search(rf"^{name}=(\S+) \\$", demo, flags=re.MULTILINE)
+    assert found, f"{name} is not set in scripts/demo.sh"
+    return Decimal(found.group(1))
+
+
+def test_the_demo_glyph_limit_keeps_a_label_whole() -> None:
+    """**#715.** At `GLYPH_MAXIMUM_PT=5` a 5.5 pt digit is not a glyph, so the only region formed at a
+    label was its inch mark, and the vision crop cut round it showed part of the number — `91"` of
+    `191"`. Readers then read that crop correctly and returned a wrong dimension that parses.
+
+    Read from `scripts/demo.sh` itself, so lowering the shipped value fails here rather than on a
+    client's drawing."""
+    layers = read_annotation_layers(
+        _pdf(
+            annotations=[_stamp(appearance_object=6)],
+            extra_objects=[_appearance(WHOLE_LABEL_APPEARANCE)],
+        ),
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+        line_minimum_pt=_demo_setting("GV_READER_LINE_MINIMUM_PT"),
+        glyph_maximum_pt=_demo_setting("GV_READER_GLYPH_MAXIMUM_PT"),
+        glyph_gap_pt=_demo_setting("GV_READER_GLYPH_GAP_PT"),
+    )
+
+    assert [region.path_count for region in layers.outlined_regions] == [4], (
+        "the two digits and the inch mark must be one region, or a crop cut round it shows part of"
+        " the number"
+    )
+
+
+def test_at_the_old_limit_the_digits_were_not_glyphs() -> None:
+    """The control: at 5 pt the same label leaves only the inch mark, which is the #715 failure."""
+    layers = read_annotation_layers(
+        _pdf(
+            annotations=[_stamp(appearance_object=6)],
+            extra_objects=[_appearance(WHOLE_LABEL_APPEARANCE)],
+        ),
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+        line_minimum_pt=Decimal(6),
+        glyph_maximum_pt=Decimal(5),
+        glyph_gap_pt=Decimal(4),
+    )
+
+    assert [region.path_count for region in layers.outlined_regions] == [2]

@@ -75,6 +75,18 @@ class PackageOut(BaseModel):
     the state machine's job (#209, C3.1); this only reports where it is."""
 
 
+class ExtractionRequestOut(BaseModel):
+    """The durable request to read a completed two-drawing package.
+
+    Upload confirmation proves that one file landed. It must not start a package review while its
+    counterpart may still be arriving; this handle exists only after the architectural and shop pair
+    have both been confirmed.
+    """
+
+    accepted_id: UUID
+    package_revision_id: UUID
+
+
 class PackagePage(BaseModel):
     """One page of packages, plus how to ask for the next one.
 

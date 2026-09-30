@@ -655,7 +655,7 @@ def test_a_page_without_a_transform_is_rejected() -> None:
 
 
 def test_findings_must_be_findings(tmp_path: Path) -> None:
-    with pytest.raises(TypeError, match="only Finding values"):
+    with pytest.raises(TypeError, match="only Finding or RedlineFinding values"):
         _render(_package(), ["CT-1: FAIL"], tmp_path)
 
 

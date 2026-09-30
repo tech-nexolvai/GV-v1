@@ -120,6 +120,30 @@ def test_disagreeing_readers_are_conflicting_regardless_of_confidence() -> None:
     assert result.lane is CorroborationLane.SECOND_READER
 
 
+def test_cross_unit_conversion_is_not_a_second_reader() -> None:
+    """Input: 25.4 mm and 1 inch. Outcome: RAW. Why: conversion is not independence."""
+
+    millimetres = _candidate(
+        "vector-1",
+        "pdfplumber",
+        exact=Fraction(1),
+        unit=Unit.INCH,
+        raw_text="25.4 mm",
+    )
+    inches = _candidate(
+        "ocr-1",
+        "paddleocr",
+        exact=Fraction(1),
+        unit=Unit.INCH,
+        raw_text='1"',
+    )
+
+    result = corroborate((millimetres, inches))
+
+    assert result.status is EvidenceStatus.RAW_CANDIDATE
+    assert result.lane is None
+
+
 def test_single_candidate_without_an_independent_lane_stays_raw() -> None:
     """Input: one reading. Outcome: RAW. Why: one route cannot corroborate itself."""
 

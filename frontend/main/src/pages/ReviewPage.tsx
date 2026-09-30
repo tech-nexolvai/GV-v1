@@ -6,6 +6,9 @@ import { StatusBadge } from '../components/ui/Badge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
   getPackage,
+  askReviewerChat,
+  streamReviewerChat,
+  getChatModels,
   listReviewSessions,
   openReviewSession,
   recordReviewAction,
@@ -13,23 +16,27 @@ import {
   grantException,
   getFindingChain,
   approvePackage,
+  downloadPdfReport,
+  downloadRedline,
   downloadReport,
 } from '../api/client';
-import type { ReviewSession } from '../api/client';
+import type { ReviewSession, ReviewerChatReply } from '../api/client';
+import { explanationUnavailable, factsMessage, replyMessage } from '../components/chat/chatReply';
 import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
-import { FileText, CheckSquare, Download } from 'lucide-react';
+import { ArrowLeft, FileText, CheckSquare, Download, Info } from 'lucide-react';
 import './ReviewPage.css';
 
 interface ReviewPageProps {
   sessionId: string;
   onEvidenceChange: (panel: React.ReactNode) => void;
+  onBackToDocuments: () => void;
   initialMessage?: string;
   onMessageConsumed?: () => void;
 }
 
-export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMessageConsumed }: ReviewPageProps) {
+export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, initialMessage, onMessageConsumed }: ReviewPageProps) {
   // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
   const packageId = sessionId;
 
@@ -60,6 +67,27 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSigningOff, setIsSigningOff] = useState(false);
   const [approved, setApproved] = useState(false);
+  // The narration models a reviewer may pick, and the current choice ('' = deployment default).
+  const [chatModels, setChatModels] = useState<{ id: string; label: string }[]>([]);
+  const [selectedModel, setSelectedModel] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    getChatModels(projectId(), packageId)
+      .then((available) => {
+        if (cancelled) return;
+        setChatModels(available.models);
+        setSelectedModel(available.default ?? '');
+      })
+      // A missing or failing picker is not worth blocking the chat over — it falls back to the
+      // deployment default model, exactly as before this control existed.
+      .catch(() => {
+        if (!cancelled) setChatModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [packageId]);
   const isLoading = remote.status === 'loading';
 
   // The fetched findings are the starting point; reviewer actions below are applied on top, so they
@@ -102,7 +130,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
   // slow render, it is the screen stating something false about the package.
   useEffect(() => {
     if (remote.status === 'ready' && initialMessage) {
-      handleSend(initialMessage, remote.data.found);
+      void handleSend(initialMessage, remote.data.found);
       onMessageConsumed?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -126,7 +154,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     );
   }
 
-  function handleSend(text: string, source: readonly Finding[] = findings) {
+  async function handleSend(text: string, source: readonly Finding[] = findings) {
     if (isProcessing) return;
 
     // Add user message
@@ -149,28 +177,66 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     setMessages(prev => [...prev, userMsg, typingMsg]);
     setIsProcessing(true);
 
-    // Resolved from the findings already fetched for this package — no request, so no delay to
-    // stage. The previous version waited 1400 ms to imitate thinking, which dressed a local array
-    // filter up as a system doing work.
-    const filter = filterFor(text);
-    const matched =
-      filter === 'FAIL'
-        ? source.filter(f => f.outcome === 'FAIL')
-        : filter === 'REVIEW_REQUIRED'
-        ? source.filter(f => f.outcome === 'REVIEW_REQUIRED')
-        : filter === 'ALL'
-        ? [...source]
-        : undefined;
-
-    const replyMsg: ChatMessage = {
-      id: `msg-a-${Date.now()}`,
-      role: 'assistant',
-      content: describeFilter(filter, matched?.length ?? 0, source.length),
-      timestamp: new Date().toISOString(),
-      findings: matched,
-    };
-    setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
-    setIsProcessing(false);
+    const replyId = `msg-a-${Date.now()}`;
+    const now = () => new Date().toISOString();
+    let factsShown = false;
+    try {
+      let response: ReviewerChatReply;
+      try {
+        // Streamed: the findings table appears as soon as the server has selected it, while the
+        // model is still writing. The explanation then replaces the pending line.
+        response = await streamReviewerChat(
+          projectId(),
+          packageId,
+          text,
+          {
+            onFacts: (facts) => {
+              factsShown = true;
+              const shown = factsMessage(facts, source, replyId, now());
+              setMessages(prev => prev.filter(m => !m.is_typing).concat(shown));
+            },
+          },
+          selectedModel || undefined,
+        );
+      } catch (streamError) {
+        // After the facts are on screen they stay; only the explanation is reported missing.
+        if (factsShown) throw streamError;
+        // Before any facts arrived nothing has been shown, so ask once the plain way. This also
+        // keeps chat working against a server that predates the stream.
+        response = await askReviewerChat(projectId(), packageId, text, selectedModel || undefined);
+      }
+      const final = replyMessage(response, source, replyId, now());
+      setMessages(prev =>
+        factsShown
+          ? prev.map(m => (m.id === replyId ? final : m))
+          : prev.filter(m => !m.is_typing).concat(final),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (factsShown) {
+        // The findings on screen are the recorded run and still correct; keep them.
+        setMessages(prev =>
+          prev.map(m => (m.id === replyId ? explanationUnavailable(m, message) : m)),
+        );
+        return;
+      }
+      // A chat outage must not hide the already-fetched deterministic review. The page keeps its
+      // ordinary finding cards and says clearly that it is showing that plain fallback.
+      const replyMsg: ChatMessage = {
+        id: `msg-a-${Date.now()}`,
+        role: 'assistant',
+        content: `The chat service could not return narration right now, so this uses deterministic findings only.\n${message}`,
+        timestamp: new Date().toISOString(),
+        findings: [...source],
+        narration: {
+          mode: 'structured_fallback',
+          fallbackReason: message,
+        },
+      };
+      setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
+    } finally {
+      setIsProcessing(false);
+    }
   }
 
   async function handleViewEvidence(finding: Finding) {
@@ -193,6 +259,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
       const chain = await getFindingChain(projectId(), packageId, finding.id);
       const enriched = withChain(finding, chain);
       setFindings((current) => current.map((item) => (item.id === finding.id ? enriched : item)));
+      // Chat cards keep the list snapshot that produced that reply.  Update that snapshot too, or
+      // the evidence rail would have the chain while the card beside it continued to show the
+      // sparse pre-fetch row — exactly the split view a reviewer cannot audit.
+      setMessages((current) => current.map((message) => ({
+        ...message,
+        findings: message.findings?.map((item) => (item.id === finding.id ? enriched : item)),
+      })));
       if (selectedFindingRef.current !== finding.id) return;
       onEvidenceChange(
         <EvidencePanel
@@ -371,20 +444,24 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
   }
 
   /**
-   * Hand the reviewer the workbook.
+   * Hand the reviewer either signed-off handoff artifact.
    *
    * The blob is turned into a click here rather than linking straight at the endpoint, so a refusal
    * — not approved, no report generated — surfaces as a message instead of a download that silently
    * does nothing.
    */
-  async function handleDownload() {
+  async function handleDownload(format: 'pdf' | 'workbook' | 'redline') {
     setActionError(null);
     try {
-      const blob = await downloadReport(projectId(), packageId);
+      const blob = format === 'pdf'
+        ? await downloadPdfReport(projectId(), packageId)
+        : format === 'redline'
+          ? await downloadRedline(projectId(), packageId)
+          : await downloadReport(projectId(), packageId);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `gv-review-${packageId}.xlsx`;
+      link.download = `gv-review-${packageId}${format === 'redline' ? '-redline' : ''}.${format === 'workbook' ? 'xlsx' : 'pdf'}`;
       link.click();
       URL.revokeObjectURL(url);
     } catch (error) {
@@ -403,6 +480,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
     // The project id, until the API carries a human project name. An id a reviewer can quote beats
     // a friendly label that is not in any record.
     project: remote.status === 'ready' ? remote.data.detail.project_id : '',
+    revision: remote.status === 'ready' ? remote.data.detail.current_revision_number : null,
   };
   const actioned = findings.filter(f => f.reviewer_action !== null).length;
   const needsAction = findings.filter(f =>
@@ -416,14 +494,26 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
       {/* Package header bar */}
       <div className="review-page__header">
         <div className="review-page__header-left">
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm review-page__back"
+            onClick={onBackToDocuments}
+            aria-label="Back to documents"
+          >
+            <ArrowLeft size={13} />
+            Documents
+          </button>
           <div className="review-page__pkg-info">
             <span className="review-page__pkg-vendor">{pkg.vendor}</span>
             <div className="review-page__pkg-meta">
-              <div className="review-page__pkg-id">
-                <FileText size={11} />
-                {pkg.id}
-              </div>
-              <span className="review-page__pkg-project">{pkg.project}</span>
+              <span className="review-page__pkg-summary">
+                Reviewer package{pkg.revision === null ? '' : ` · Revision ${pkg.revision}`}
+              </span>
+              <details className="review-page__record-ids">
+                <summary>Record IDs</summary>
+                <span><FileText size={11} /> Package {pkg.id}</span>
+                <span>Project {pkg.project}</span>
+              </details>
             </div>
           </div>
           <StatusBadge status={pkg.status} />
@@ -431,6 +521,21 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
         </div>
 
         <div className="review-page__header-right">
+          {/* The same sentence was on screen three times: here permanently, under the chat input,
+              and again on the welcome screen. The claim matters, so it is kept — but as something
+              available on demand rather than as two lines of standing text in a header whose job is
+              to show the state of this package. The input's disclosure is the one that is always
+              visible, because that is where a verdict is being asked about. */}
+          <span
+            className="review-page__method"
+            tabIndex={0}
+            role="note"
+            aria-label="How this review works: recorded values, then deterministic checks, then optional AI narration"
+            data-tooltip="Recorded values → deterministic checks → optional AI narration"
+          >
+            <Info size={13} aria-hidden="true" />
+            How this works
+          </span>
           <div className="review-page__progress">
             <span className="review-page__progress-text">
               {actioned} / {findings.filter(f => f.outcome !== 'PASS' && f.outcome !== 'NO_APPLICABLE_RULE').length} reviewed
@@ -482,15 +587,35 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
               requires — a review that left the building unsigned is one nobody stands behind
               (ADR-0010). Before then the workbook exists and is deliberately unreachable. */}
           {(approved || pkg.status === 'APPROVED') && (
-            <button
-              type="button"
-              className="btn btn--ghost"
-              onClick={() => void handleDownload()}
-              data-tooltip="Download the signed-off review as a workbook"
-            >
-              <Download size={14} />
-              Download report
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => void handleDownload('pdf')}
+                data-tooltip="Download the signed-off review as a PDF"
+              >
+                <Download size={14} />
+                Download PDF
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => void handleDownload('workbook')}
+                data-tooltip="Download the signed-off review as a workbook"
+              >
+                <Download size={14} />
+                Download workbook
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => void handleDownload('redline')}
+                data-tooltip="Download the signed-off evidence-grounded drawing redline"
+              >
+                <Download size={14} />
+                Download redline
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -519,7 +644,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, initialMessage, onMess
       />
 
       {/* Input */}
-      <ChatInput onSend={handleSend} disabled={isProcessing} />
+      <ChatInput
+        onSend={handleSend}
+        disabled={isProcessing}
+        models={chatModels}
+        selectedModel={selectedModel}
+        onSelectModel={setSelectedModel}
+      />
     </div>
   );
 }
@@ -541,56 +672,6 @@ function ReviewProgress({ status }: { status: PackageStatus }) {
       </ol>
     </div>
   );
-}
-
-/**
- * What the app actually did with a typed message.
- *
- * This replaced `getSimulatedReply`, which invented verdicts: it would answer "explain CT-1" with
- * *"shop 5980 mm vs arch 6012 mm, tolerance ±3.175 mm, verdict FAIL"* — numbers no drawing produced,
- * a rule nobody published, and a tolerance band that V1 does not have, since Raj settled on exact
- * match. Under **the AI reads, deterministic Python decides**, a screen that composes its own verdict
- * is the exact failure the architecture exists to prevent, and it is worse here than anywhere else
- * because this panel is where a reviewer signs off.
- *
- * There is no conversational endpoint yet. So this says only what it can defend: which filter it
- * applied, and how many of the package's real findings matched.
- */
-function describeFilter(filter: FindingFilter, matched: number, total: number): string {
-  const of = `${matched} of ${total} finding${total === 1 ? '' : 's'}`;
-
-  switch (filter) {
-    case 'FAIL':
-      return `Showing the ${of} that failed. The verdicts come from the engine — nothing on this screen recomputes them.`;
-    case 'REVIEW_REQUIRED':
-      return `Showing the ${of} the engine could not decide, which are the ones needing your judgement.`;
-    case 'ALL':
-      return `Showing all ${total} finding${total === 1 ? '' : 's'} recorded for this package.`;
-    case 'NONE':
-      return (
-        'Conversational review is not wired up yet — there is no endpoint behind this box, so nothing ' +
-        'here can answer a question about a drawing. The findings below are the real ones for this ' +
-        'package. Try "fail" or "review" to filter them.'
-      );
-  }
-}
-
-type FindingFilter = 'FAIL' | 'REVIEW_REQUIRED' | 'ALL' | 'NONE';
-
-/**
- * Read off the text, so the message and the list it produces can never disagree.
- *
- * **Order matters, and the obvious order was wrong.** "run full review" contains the word `review`,
- * so testing that first classified a request for *everything* as a request for the abstentions —
- * quietly dropping the failures, which are the findings somebody asking for a full review most needs
- * to see. The whole-set phrases are checked before the single-outcome words for that reason.
- */
-function filterFor(text: string): FindingFilter {
-  const t = text.toLowerCase();
-  if (t.includes('full') || t.includes('everything') || t.includes('all')) return 'ALL';
-  if (t.includes('fail')) return 'FAIL';
-  if (t.includes('review')) return 'REVIEW_REQUIRED';
-  return 'NONE';
 }
 
 function ReviewSkeleton() {

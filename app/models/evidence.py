@@ -21,6 +21,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     ForeignKey,
+    Integer,
     Numeric,
     String,
     UniqueConstraint,
@@ -317,6 +318,21 @@ def _canonical_fraction_is_normalized(
     _require_normalized_rational(target.value_numerator, target.value_denominator)
 
 
+def line_key(start_x: object, start_y: object, end_x: object, end_y: object) -> str:
+    """One dimension line's endpoints as a single string, for looking a line up by where it is.
+
+    There is no `dimension_lines` table and no line id, deliberately — `ObservationAssociation`
+    explains why. So a caller that knows something *about* a line, such as which chain the detector
+    put it in, has only its coordinates to name it by. This is that name, built from the same strings
+    the row stores, so the two cannot drift into different spellings of the same line.
+
+    Here rather than beside the code that writes a row, because the control plane reads these keys
+    too and `tests/api/test_no_heavy_work.py` refuses `app/api/` any path to `extraction/` — which
+    `app/evidence/record.py` legitimately has.
+    """
+    return f"{start_x},{start_y},{end_x},{end_y}"
+
+
 class ObservationAssociation(Base, TimestampedUUID, Immutable):
     """Which dimension line one reading annotates — or why that could not be decided.
 
@@ -369,6 +385,40 @@ class ObservationAssociation(Base, TimestampedUUID, Immutable):
     """What the choice was between, when there was one. A reviewer told only that an association
     could not be made cannot check the geometry; shown the candidates, they can."""
 
+    chain_key: Mapped[str | None] = mapped_column(String(120), default=None)
+    """Which chain of end-to-end dimensions this reading's line belongs to, or `None` for a line
+    that stands alone.
+
+    **This is the fact that makes an ordered run checkable, and it had nowhere to live.**
+    `extraction/geometry/dimension_lines.py` has grouped dimension lines into chains since #588, and
+    `workflow/assignment.py` refuses a many-valued field whose readings come from two of them —
+    because `CT-WIDTH-001` compares two runs position by position, so values gathered from unrelated
+    places would produce a check comparing the second cabinet against the fifth. That refusal could
+    never fire in production: the detector ran in the worker and its chains were discarded on the
+    next line. This column is where they stop being discarded.
+
+    Page-scoped and deterministic: `page.id`, the axis, and the chain's index in detection order.
+    Not an identity — there is still no `dimension_lines` table, and this says only "these readings'
+    lines were drawn end to end", which is a statement about where the strokes are."""
+
+    chain_position: Mapped[int | None] = mapped_column(default=None)
+    """Its place along that chain, `0` upward, in the order the drawing draws it. Position is what
+    the check compares, so this is a fact about the sheet rather than a presentation choice."""
+
+    lines_on_page: Mapped[int | None] = mapped_column(default=None)
+    """How many dimension lines the detector found on this page when this decision was made.
+
+    **`0` and `null` are not the same as a large number, and the difference decides what a model is
+    allowed to propose.** A reading refused where twelve lines were found is a number that sits near
+    none of them — floating, possibly a title block or a scale bar, and `guard_assignment` is right
+    to refuse it. A reading refused where *zero* were found was never checked against anything: the
+    drawing is a scanned image with no vector line-work, so there was no geometry to test it
+    against, which is a different fact and reads as a different sentence.
+
+    Conflating them meant autofill was switched off entirely for scanned drawings, on the strength
+    of a check that had not run. Recorded as a count rather than inferred from the refusal text,
+    because a sentence is not a thing downstream code should be parsing."""
+
     __table_args__ = (
         # Attached or refused, never both and never neither. A row with endpoints *and* a reason
         # would be two answers to one question, and a row with neither would be a decision nobody
@@ -390,9 +440,220 @@ class ObservationAssociation(Base, TimestampedUUID, Immutable):
             "refusal_reason IS NULL OR refusal_reason !~ '^[[:space:]]*$'",
             name="refusal_reason_not_blank",
         ),
+        # A chain membership is a key *and* a position, and only on a row that was attached. Half of
+        # one is not a weaker answer, it is an unusable one: a position with no chain cannot be
+        # ordered against anything, and a chain on a refused row would claim the line it belongs to
+        # while the same row says no line was decided.
+        CheckConstraint(
+            "(chain_key IS NULL AND chain_position IS NULL)"
+            " OR (chain_key IS NOT NULL AND chain_position IS NOT NULL"
+            " AND refusal_reason IS NULL)",
+            name="chain_paired",
+        ),
         # One answer per candidate per run. A second row for the same pair would be two associations
         # for one reading, and nothing downstream could tell which was meant.
         UniqueConstraint(
             "candidate_id", "extraction_run_id", name="uq_observation_associations_candidate_run"
+        ),
+    )
+
+
+class MeasurementProposal(Base, TimestampedUUID, Immutable):
+    """Which reading a model proposed for which rule field, checked and kept.
+
+    **Stored because the reviewer should not have to ask for it.** The proposal used to be computed
+    when somebody pressed a button, which meant the form was empty every time it was opened and the
+    model was paid for again on every reload. It is computed once, when the drawings are read, and
+    a reviewer arriving at the form finds it already filled in.
+
+    **Only accepted proposals are rows.** `workflow/assignment.py` refuses a whole batch if any part
+    of it fails, and a refusal leaves the fields empty for the reviewer — which is exactly what an
+    absent row already means. Recording the refusal here would be a second way of saying nothing,
+    and the reason belongs in the worker's log where somebody diagnosing it will look.
+
+    **A proposal is not a measurement and must never be read as one.** No value is copied here: a
+    row names the candidate, and the value comes from the candidate's own exact numerator and
+    denominator. The reviewer still saves the form, and saving is what records a measurement — with
+    `Provenance.MEASURED` and their name on it, which `rules/parameters.py` keeps a closed set for.
+    """
+
+    __tablename__ = "measurement_proposals"
+
+    package_revision_id: Mapped[UUID] = mapped_column(index=True)
+
+    proposal_id: Mapped[UUID] = mapped_column(index=True)
+    """Which run of the step produced this row. Append-only means a re-proposal is a second set of
+    rows beside the first, and this is what tells them apart — the newest set is the current answer
+    and the older ones are what it replaced, which is a record rather than a leak."""
+
+    field_key: Mapped[str] = mapped_column(String(200))
+    """`SOURCE:SEMANTIC_TYPE`, the key `required-inputs` uses for the same quantity."""
+
+    position: Mapped[int]
+    """Where along the field's ordered run this reading sits, `0` upward; `0` for a field that takes
+    one value. The order is a fact about the drawing — `CT-WIDTH-001` compares two runs position by
+    position — so it is stored rather than recovered from insertion order."""
+
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), index=True
+    )
+
+    placement_verified: Mapped[bool] = mapped_column(default=True)
+    """Whether the drawing's own geometry confirmed this reading sits on a dimension line.
+
+    `False` where the page had no line-work at all, so the check could not run. The reading still
+    passed every other check — right sheet, one field, a field that takes one value, a reading this
+    run actually produced — and a reviewer still confirms it. But the screen has to say which of the
+    two it is looking at, because "the geometry agrees" and "there was no geometry" are different
+    grounds for the same number appearing in the same box."""
+
+    model_id: Mapped[str] = mapped_column(String(200))
+    prompt_id: Mapped[str] = mapped_column(String(100))
+    """Which model and which prompt, so a proposal a reviewer disagrees with can be traced to the
+    configuration that produced it rather than to "the AI"."""
+
+    __table_args__ = (
+        # One reading per position per field per run. A second row would be two answers to one
+        # slot, and nothing downstream could say which was meant.
+        UniqueConstraint(
+            "proposal_id", "field_key", "position", name="uq_measurement_proposals_slot"
+        ),
+        # A position is an index into a run, so it starts at zero and counts up.
+        CheckConstraint("position >= 0", name="position_not_negative"),
+    )
+
+
+class LayoutProposal(Base, TimestampedUUID, Immutable):
+    """Which closed layout answer a model proposed, with the crop it inspected.
+
+    A layout proposal is not a discriminator input. It can pre-select a closed choice for the
+    reviewer, but the value that reaches ``run_checks`` is recorded separately by
+    ``LayoutConfirmation`` when a person confirms it.
+    """
+
+    __tablename__ = "layout_proposals"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    discriminator_name: Mapped[str] = mapped_column(String(100))
+    proposed_value: Mapped[str] = mapped_column(String(200))
+    crop_artifact_id: Mapped[UUID] = mapped_column(
+        ForeignKey("evidence_artifacts.id", ondelete="RESTRICT"), index=True
+    )
+    model_id: Mapped[str] = mapped_column(String(200))
+    prompt_id: Mapped[str] = mapped_column(String(100))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "package_revision_id",
+            "discriminator_name",
+            "proposed_value",
+            "crop_artifact_id",
+            "model_id",
+            "prompt_id",
+            name="uq_layout_proposals_same_evidence",
+        ),
+        CheckConstraint(
+            "discriminator_name !~ '^[[:space:]]*$'",
+            name="layout_proposal_discriminator_not_blank",
+        ),
+        CheckConstraint(
+            "proposed_value !~ '^[[:space:]]*$'",
+            name="layout_proposal_value_not_blank",
+        ),
+        CheckConstraint("model_id !~ '^[[:space:]]*$'", name="layout_proposal_model_not_blank"),
+        CheckConstraint("prompt_id !~ '^[[:space:]]*$'", name="layout_proposal_prompt_not_blank"),
+    )
+
+
+class ItemClassification(Base, TimestampedUUID, Immutable):
+    """What a reviewer says one item in an ordered run *is*, where its category is not a dimension.
+
+    **A third kind of reviewer input, and it needed its own table.** Two existed and neither fits.
+    `parameter_values` is strictly numeric — a numerator, a denominator, a unit and a
+    `denominator > 0` constraint — and a cabinet category is none of those; making those columns
+    nullable to admit one would weaken a guard on every measurement in the system to carry a value
+    that is not a measurement. `layout_confirmations` has exactly the right *shape*, but it is the
+    human gate for rule **applicability**: putting an operand in it would mean the engine telling
+    discriminators from inputs by reading their names.
+
+    So the role decides. `cabinet_type` is declared in a rule's `inputs:` and bound to an operand,
+    which makes it an input, and this is where an input that is a category lives.
+
+    **Position is a column, not a suffix.** A many-valued measurement is stored as `name#0`,
+    `name#1` and the index is parsed back out of the string — `workflow/measurements.py` has a
+    branch that silently drops a malformed one rather than let it reorder a cabinet run. Order is
+    load-bearing here for the same reason (slide 3's adjustment is positional), so it is an integer
+    the database can constrain.
+
+    Append-only, like every reviewer value: a correction is another row and the latest wins, because
+    a finding cites the version that judged it (ADR-0016) and superseding a value is not deleting it.
+
+    Source: issue #684. Verification: tests/app/test_item_classifications.py.
+    """
+
+    __tablename__ = "item_classifications"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    rule_id: Mapped[str] = mapped_column(String(100))
+    """Which rule's input this answers. Two rules may each declare an input called `cabinet_type`
+    and they are not the same question, exactly as `workflow/measurements.py` keys on `rule:name`."""
+
+    input_name: Mapped[str] = mapped_column(String(200))
+    position: Mapped[int] = mapped_column(Integer())
+    """Zero-based, left to right along the run. The order the drawing draws them in."""
+
+    category: Mapped[str] = mapped_column(String(50))
+    """The reviewer's answer, from the vocabulary the rule's semantic type names.
+
+    Stored as the string rather than an enum column: the allowed set belongs to the rulebook and to
+    `vocabulary/`, and a database enum would need a migration every time a rule offered a new
+    choice — which is how a stored row comes to disagree with the code that wrote it."""
+
+    confirmed_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint("position >= 0", name="item_classification_position_not_negative"),
+        CheckConstraint("rule_id !~ '^[[:space:]]*$'", name="item_classification_rule_not_blank"),
+        CheckConstraint(
+            "input_name !~ '^[[:space:]]*$'", name="item_classification_input_not_blank"
+        ),
+        CheckConstraint(
+            "category !~ '^[[:space:]]*$'", name="item_classification_category_not_blank"
+        ),
+        CheckConstraint(
+            "confirmed_by !~ '^[[:space:]]*$'", name="item_classification_actor_not_blank"
+        ),
+    )
+
+
+class LayoutConfirmation(Base, TimestampedUUID, Immutable):
+    """A reviewer-confirmed discriminator value for one package revision.
+
+    This is the human gate for layout applicability. A model may propose a value in
+    ``layout_proposals``; only this row is allowed to supply a discriminator to checks.
+    """
+
+    __tablename__ = "layout_confirmations"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    discriminator_name: Mapped[str] = mapped_column(String(100))
+    value: Mapped[str] = mapped_column(String(200))
+    confirmed_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint(
+            "discriminator_name !~ '^[[:space:]]*$'",
+            name="layout_confirmation_discriminator_not_blank",
+        ),
+        CheckConstraint("value !~ '^[[:space:]]*$'", name="layout_confirmation_value_not_blank"),
+        CheckConstraint(
+            "confirmed_by !~ '^[[:space:]]*$'",
+            name="layout_confirmation_actor_not_blank",
         ),
     )

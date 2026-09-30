@@ -146,3 +146,73 @@
     border-top: 1px solid var(--border-default);
   }
 }
+
+/* ============================================================
+   EVIDENCE PANEL — motion and empty state
+   ============================================================ */
+
+/* The panel's own `width` transition above is what the layout needs, and width cannot be
+   composited — it relayouts the main column on every frame. So the contents additionally slide on
+   `transform`, which is composited: the eye tracks the content, and the edge arriving a frame or
+   two behind it is not something anyone sees.
+   `will-change` only while it is open, so an idle panel is not holding a layer for nothing. */
+.shell__evidence > * {
+  animation: gv-enter-right var(--duration-panel) var(--ease-emphasis) both;
+}
+
+.shell__evidence--open { will-change: width; }
+
+.evidence-placeholder {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-8);
+  text-align: center;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--text-muted);
+}
+
+.evidence-placeholder svg {
+  color: var(--text-faint);
+}
+
+/* ============================================================
+   BRAND LOCKUP
+   ============================================================ */
+
+.gv-lockup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.gv-lockup__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.gv-lockup__name {
+  font-family: var(--font-heading);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semi);
+  color: var(--text-primary);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.gv-lockup__product {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell__evidence > * { animation: none; }
+  .shell__evidence { transition: none; }
+}

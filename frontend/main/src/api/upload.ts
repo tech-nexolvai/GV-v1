@@ -79,6 +79,12 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** Freeze the completed two-PDF set and queue AI extraction. Confirmation of one PDF deliberately
+ * does not do this: the worker must never read a half-uploaded drawing pair. */
+async function startExtraction(projectId: string, packageId: string): Promise<void> {
+  await post(`/projects/${projectId}/packages/${packageId}/extract`, {});
+}
+
 export type DocumentKind = 'architectural' | 'shop' | 'schedule' | 'product_spec';
 
 export interface UploadProgress {
@@ -168,6 +174,11 @@ export async function createPackage(
 
   for (const [file, kind] of files) {
     await uploadDocument(projectId, created.id, file, kind, onProgress);
+  }
+
+  if (input.architectural && input.shop) {
+    onProgress?.({ step: 'Queuing AI reading' });
+    await startExtraction(projectId, created.id);
   }
 
   onProgress?.({ step: 'Opening review' });

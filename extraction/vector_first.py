@@ -22,30 +22,34 @@ not enough for an association (`text_association.lines_within` says so at length
 with the reason. A dimension whose line was never detected would otherwise disappear silently, and
 silence is the one failure this project treats as worse than a refusal.
 
-**This is not wired into the pipeline.** Nothing in `workflow/` imports it, deliberately: the model
-lane produces untyped readings, and until semantic typing exists (#274, Q20) those cannot become
-operands. It is the reader mechanics, built and testable, waiting above the gate.
+**This is a reader seam, not a typing seam.** `workflow/` uses its vendor-only crop renderer for
+localized OCR. That yields untyped candidate readings only; until semantic typing exists (#274, Q20)
+they cannot become operands. The crop decision therefore improves what a reviewer can read without
+deciding what any number means.
 
 Source: issue #539. Verification: `tests/extraction/test_vector_first.py`.
 """
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
-from decimal import Decimal
-from typing import Any
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
+from typing import Any, Literal, overload
 
+import pdfplumber
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
-import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
-from evidence.crop import encode_png
+from evidence.coordinates import ImagePoint
+from evidence.crop import decode_rgb_png, encode_png
 from extraction.annotations import MarkupNote, OutlinedTextRegion, PageLayers
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import lines_within
-from extraction.rasterise import VISION_CROP_DPI
-from extraction.reader import UnreadablePdf
+from extraction.rasterise import VISION_CROP_DPI, drop_reviewer_layers
+from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = [
+    "RegionCrop",
     "RegionToRead",
     "SetAsideRegion",
     "VectorFirstPage",
@@ -56,6 +60,15 @@ __all__ = [
 
 #: PDF user space is 72 units to the inch. The same definition `extraction/rasterise.py` states.
 _POINTS_PER_INCH = Decimal(72)
+
+#: A non-zero page box exposes a PDFium isolated-crop coordinate defect.  Rendering that visible
+#: page once and cutting the already-selected region is exact, but must stay bounded: a normal
+#: drawing sheet is still handled by the low-memory direct-region renderer below.
+_REFRAMED_VISIBLE_PAGE_MAX_PIXELS = 25_000_000
+
+
+def _round_pixel(value: Decimal) -> int:
+    return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,11 +82,80 @@ class RegionToRead:
 
 
 @dataclass(frozen=True, slots=True)
+class RegionCrop:
+    """The exact crop sent to a reader, plus the transform needed to place its rectangles back."""
+
+    png: bytes
+    width_px: int
+    height_px: int
+    unrotated_width_px: int
+    unrotated_height_px: int
+    page_left_px: int
+    page_top_px: int
+    dpi: int
+    applied_rotation_degrees: int
+
+    def __post_init__(self) -> None:
+        if self.applied_rotation_degrees not in (0, 90, 180, 270):
+            raise ValueError("applied_rotation_degrees must be one of 0, 90, 180 or 270")
+
+    def map_reader_polygon(
+        self, points: tuple[ImagePoint, ...], *, target_dpi: int | None = None
+    ) -> tuple[ImagePoint, ...]:
+        """Map crop-local reader points back into the unrotated full-page image frame."""
+        if not isinstance(points, tuple) or any(
+            not isinstance(point, ImagePoint) for point in points
+        ):
+            raise TypeError("points must be a tuple of ImagePoint values")
+        mapped = tuple(self._map_reader_point(point) for point in points)
+        if target_dpi is None or target_dpi == self.dpi:
+            return mapped
+        if isinstance(target_dpi, bool) or not isinstance(target_dpi, int) or target_dpi <= 0:
+            raise ValueError("target_dpi must be a positive integer")
+        return tuple(
+            ImagePoint(
+                _round_pixel(Decimal(point.x) * Decimal(target_dpi) / Decimal(self.dpi)),
+                _round_pixel(Decimal(point.y) * Decimal(target_dpi) / Decimal(self.dpi)),
+            )
+            for point in mapped
+        )
+
+    def _map_reader_point(self, point: ImagePoint) -> ImagePoint:
+        old_x, old_y = self._unrotated_crop_point(point)
+        return ImagePoint(
+            self.page_left_px + _round_pixel(old_x),
+            self.page_top_px + _round_pixel(old_y),
+        )
+
+    def _unrotated_crop_point(self, point: ImagePoint) -> tuple[Decimal, Decimal]:
+        x = Decimal(point.x)
+        y = Decimal(point.y)
+        width = Decimal(self.unrotated_width_px)
+        height = Decimal(self.unrotated_height_px)
+        if self.applied_rotation_degrees == 0:
+            return x, y
+        if self.applied_rotation_degrees == 90:
+            return width - y, x
+        if self.applied_rotation_degrees == 180:
+            return width - x, height - y
+        return y, height - x
+
+
+@dataclass(frozen=True, slots=True)
 class SetAsideRegion:
     """One region not being read, and why. Retained rather than dropped."""
 
     region: OutlinedTextRegion
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _UnrotatedCrop:
+    png: bytes
+    width_px: int
+    height_px: int
+    page_left_px: int
+    page_top_px: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,34 +292,6 @@ def _region_box_pt(
     )
 
 
-def _drop_other_layers(page: Any) -> int:
-    """Remove every annotation that is not the vendor's drawing, and say how many.
-
-    **Because rendering flattens the layers even when the reader has kept them apart.** The vendor's
-    drawing on these sheets *is* an annotation, so a renderer cannot simply be told to leave
-    annotations out — it would produce a blank page. What it can do is remove the other ones first.
-
-    Measured on the first real sheet: a crop of the vendor's own `28 3/4"` label came out with a
-    corner of the reviewer's yellow `102"` overlay in frame, and the crop containing the drawing's
-    overall width and the markup's correction of it produced `1811 1"(4"QEQQ)` — a garbled blend of
-    two labels a model was asked to read as one. Removing the markup first is the difference between
-    asking about the vendor's number and asking about a picture of two numbers.
-
-    In memory only: the caller's bytes are untouched, and the document this mutates is one this
-    function opened and closes.
-    """
-    removed = 0
-    for index in range(pdfium_raw.FPDFPage_GetAnnotCount(page) - 1, -1, -1):
-        annotation = pdfium_raw.FPDFPage_GetAnnot(page, index)
-        if not annotation:
-            continue
-        subtype = pdfium_raw.FPDFAnnot_GetSubtype(annotation)
-        pdfium_raw.FPDFPage_CloseAnnot(annotation)
-        if subtype != pdfium_raw.FPDF_ANNOT_STAMP and pdfium_raw.FPDFPage_RemoveAnnot(page, index):
-            removed += 1
-    return removed
-
-
 def crop_box_pt(
     data: bytes,
     page_index: int,
@@ -271,7 +325,7 @@ def crop_box_pt(
             # so this catches by behaviour rather than by the type one library happens to use.
             raise UnreadablePdf(f"page {page_index} is not in this document: {error}") from error
         if not include_markup:
-            _drop_other_layers(page)
+            drop_reviewer_layers(page)
         width_pt, height_pt = (Decimal(str(value)) for value in page.get_size())
         bitmap = page.render(
             scale=float(Decimal(dpi) / _POINTS_PER_INCH),
@@ -290,6 +344,186 @@ def crop_box_pt(
         document.close()
 
 
+def _declared_crop_box(data: bytes, page_index: int) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """Read the PDF-declared CropBox, before PDFium normalises its page origin.
+
+    PDFium's raw CropBox accessor returns its rendering-space box, which can already have a
+    translated origin. The region reader needs the original PDF-space box to reconcile a stored
+    polygon with that renderer's frame, so use the same parser that built the page transform.
+    """
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as document:
+            page = document.pages[page_index]
+            # `page.cropbox` is pdfplumber's own, inverted about the media box height — which is
+            # not what this function's name or its docstring promise. See
+            # `reader.page_boxes_in_pdf_space`: on an offset media box the two differ by twice the
+            # offset, and a crop taken against the wrong one is a picture of the wrong part of the
+            # drawing.
+            values = page_boxes_in_pdf_space(page)[1]
+    except (IndexError, ValueError, TypeError) as error:
+        raise UnreadablePdf(
+            f"page {page_index} has no readable declared crop box: {error}"
+        ) from error
+    if len(values) != 4 or values[2] <= values[0] or values[3] <= values[1]:
+        raise UnreadablePdf("page crop box has no area for a localized render")
+    return values
+
+
+def _crop_from_visible_page(
+    page: Any,
+    region: OutlinedTextRegion,
+    *,
+    dpi: int,
+    margin_pt: Decimal,
+    raw_crop_box: tuple[Decimal, Decimal, Decimal, Decimal],
+) -> _UnrotatedCrop:
+    """Render a bounded non-zero CropBox once, then cut its stored-coordinate region.
+
+    PDFium's ``Page.render(crop=...)`` takes a different coordinate frame for an isolated crop
+    when a page's CropBox has a non-zero origin.  The visual page itself renders correctly.  This
+    path therefore renders that *visible page*, never an uncropped sheet, and applies the same
+    stored ``0..1`` region that selected the OCR request.  Only the localized crop is returned to
+    OCR; no full-page OCR is introduced.
+    """
+    width_pt, height_pt = (Decimal(str(value)) for value in page.get_size())
+    width_px = int((width_pt * Decimal(dpi) / _POINTS_PER_INCH).to_integral_value(ROUND_CEILING))
+    height_px = int((height_pt * Decimal(dpi) / _POINTS_PER_INCH).to_integral_value(ROUND_CEILING))
+    if width_px * height_px > _REFRAMED_VISIBLE_PAGE_MAX_PIXELS:
+        raise UnreadablePdf(
+            "a non-zero CropBox needs a reframed localized render of "
+            f"{width_px}x{height_px} pixels, over the "
+            f"{_REFRAMED_VISIBLE_PAGE_MAX_PIXELS}-pixel safety bound"
+        )
+
+    bitmap = page.render(scale=float(Decimal(dpi) / _POINTS_PER_INCH), rev_byteorder=True)
+    width, height, channels, stride = (
+        int(bitmap.width),
+        int(bitmap.height),
+        int(bitmap.n_channels),
+        int(bitmap.stride),
+    )
+    # The annotation parser works in the PDF's declared CropBox frame. PDFium's rendered page
+    # reports its own bounding box, which can be translated for a non-zero (especially negative)
+    # page origin. Apply that *measured* translation before cutting pixels; treating the two origins
+    # as interchangeable is the isolated-crop bug this fallback exists to avoid.
+    bbox_left, _, _, bbox_top = (Decimal(str(value)) for value in page.get_bbox())
+    crop_left, _, _, crop_top = raw_crop_box
+    scale = Decimal(dpi) / _POINTS_PER_INCH
+    x_offset = (crop_left - bbox_left) * scale
+    y_offset = (bbox_top - crop_top) * scale
+    points = region.extent.points
+    margin_px = int((margin_pt * Decimal(dpi) / _POINTS_PER_INCH).to_integral_value(ROUND_CEILING))
+    left = max(
+        0,
+        int(
+            (min(point.x for point in points) * Decimal(width) + x_offset).to_integral_value(
+                ROUND_FLOOR
+            )
+        )
+        - margin_px,
+    )
+    top = max(
+        0,
+        int(
+            (min(point.y for point in points) * Decimal(height) + y_offset).to_integral_value(
+                ROUND_FLOOR
+            )
+        )
+        - margin_px,
+    )
+    right = min(
+        width,
+        int(
+            (max(point.x for point in points) * Decimal(width) + x_offset).to_integral_value(
+                ROUND_CEILING
+            )
+        )
+        + margin_px,
+    )
+    bottom = min(
+        height,
+        int(
+            (max(point.y for point in points) * Decimal(height) + y_offset).to_integral_value(
+                ROUND_CEILING
+            )
+        )
+        + margin_px,
+    )
+    if right <= left or bottom <= top:
+        raise UnreadablePdf("the selected region has no visible pixels to crop")
+
+    source = bytes(bitmap.buffer)
+    rows: list[bytes] = []
+    for y in range(top, bottom):
+        row = source[y * stride + left * channels : y * stride + right * channels]
+        if channels == 3:
+            rows.append(row)
+        else:
+            rows.append(b"".join(row[index : index + 3] for index in range(0, len(row), channels)))
+    return _UnrotatedCrop(
+        png=encode_png(right - left, bottom - top, b"".join(rows)),
+        width_px=right - left,
+        height_px=bottom - top,
+        page_left_px=left,
+        page_top_px=top,
+    )
+
+
+def _rotate_rgb_ccw(rgb: bytes, *, width: int, height: int, degrees: int) -> tuple[int, int, bytes]:
+    """Rotate RGB bytes by a supported counter-clockwise quarter turn."""
+    if degrees == 0:
+        return width, height, rgb
+    pixels = [rgb[index : index + 3] for index in range(0, len(rgb), 3)]
+    if degrees == 90:
+        rotated = [
+            pixels[new_x * width + (width - 1 - new_y)]
+            for new_y in range(width)
+            for new_x in range(height)
+        ]
+        return height, width, b"".join(rotated)
+    if degrees == 180:
+        return width, height, b"".join(reversed(pixels))
+    if degrees == 270:
+        rotated = [
+            pixels[(height - 1 - new_x) * width + new_y]
+            for new_y in range(width)
+            for new_x in range(height)
+        ]
+        return height, width, b"".join(rotated)
+    raise ValueError("degrees must be one of 0, 90, 180 or 270")
+
+
+def _rotated_crop(unrotated: _UnrotatedCrop, *, degrees: int, dpi: int) -> RegionCrop:
+    if degrees == 0:
+        return RegionCrop(
+            png=unrotated.png,
+            width_px=unrotated.width_px,
+            height_px=unrotated.height_px,
+            unrotated_width_px=unrotated.width_px,
+            unrotated_height_px=unrotated.height_px,
+            page_left_px=unrotated.page_left_px,
+            page_top_px=unrotated.page_top_px,
+            dpi=dpi,
+            applied_rotation_degrees=0,
+        )
+    width, height, rgb = decode_rgb_png(unrotated.png)
+    rotated_width, rotated_height, rotated_rgb = _rotate_rgb_ccw(
+        rgb, width=width, height=height, degrees=degrees
+    )
+    return RegionCrop(
+        png=encode_png(rotated_width, rotated_height, rotated_rgb),
+        width_px=rotated_width,
+        height_px=rotated_height,
+        unrotated_width_px=unrotated.width_px,
+        unrotated_height_px=unrotated.height_px,
+        page_left_px=unrotated.page_left_px,
+        page_top_px=unrotated.page_top_px,
+        dpi=dpi,
+        applied_rotation_degrees=degrees,
+    )
+
+
+@overload
 def region_crop(
     data: bytes,
     page_index: int,
@@ -298,7 +532,33 @@ def region_crop(
     dpi: int = VISION_CROP_DPI,
     margin_pt: Decimal,
     include_markup: bool = False,
-) -> bytes:
+    return_metadata: Literal[False] = False,
+) -> bytes: ...
+
+
+@overload
+def region_crop(
+    data: bytes,
+    page_index: int,
+    region: OutlinedTextRegion,
+    *,
+    dpi: int = VISION_CROP_DPI,
+    margin_pt: Decimal,
+    include_markup: bool = False,
+    return_metadata: Literal[True],
+) -> RegionCrop: ...
+
+
+def region_crop(
+    data: bytes,
+    page_index: int,
+    region: OutlinedTextRegion,
+    *,
+    dpi: int = VISION_CROP_DPI,
+    margin_pt: Decimal,
+    include_markup: bool = False,
+    return_metadata: bool = False,
+) -> bytes | RegionCrop:
     """PNG bytes for one region of the vendor's drawing, rendered from the vector page at `dpi`.
 
     `include_markup` is `False` because a crop of the vendor's drawing should contain the vendor's
@@ -335,17 +595,37 @@ def region_crop(
             page = document[page_index]
         except Exception as error:
             raise UnreadablePdf(f"page {page_index} is not in this document: {error}") from error
+        raw_crop_box = _declared_crop_box(data, page_index)
+        crop_left, crop_bottom, _, _ = raw_crop_box
+        if crop_left != 0 or crop_bottom != 0:
+            if not include_markup:
+                drop_reviewer_layers(page)
+            result = _rotated_crop(
+                _crop_from_visible_page(
+                    page, region, dpi=dpi, margin_pt=margin_pt, raw_crop_box=raw_crop_box
+                ),
+                degrees=region.baseline_rotation_degrees,
+                dpi=dpi,
+            )
+            return result if return_metadata else result.png
         width_pt, height_pt = (Decimal(str(value)) for value in page.get_size())
     finally:
         document.close()
 
-    return crop_box_pt(
-        data,
-        page_index,
-        _region_box_pt(region, width_pt, height_pt, margin_pt),
-        dpi=dpi,
-        include_markup=include_markup,
+    box = _region_box_pt(region, width_pt, height_pt, margin_pt)
+    png = crop_box_pt(data, page_index, box, dpi=dpi, include_markup=include_markup)
+    width_px, height_px, _ = decode_rgb_png(png)
+    left, _, _, top = box
+    scale = Decimal(dpi) / _POINTS_PER_INCH
+    unrotated = _UnrotatedCrop(
+        png=png,
+        width_px=width_px,
+        height_px=height_px,
+        page_left_px=int((left * scale).to_integral_value(ROUND_FLOOR)),
+        page_top_px=int(((height_pt - top) * scale).to_integral_value(ROUND_FLOOR)),
     )
+    result = _rotated_crop(unrotated, degrees=region.baseline_rotation_degrees, dpi=dpi)
+    return result if return_metadata else result.png
 
 
 def _png_from(bitmap: Any) -> bytes:

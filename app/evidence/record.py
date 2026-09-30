@@ -30,7 +30,7 @@ they cannot be recovered afterwards: `dpi`, `media_box` and `crop_box` are not p
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Final
 from uuid import UUID
 
@@ -38,7 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.document import Page
-from app.models.evidence import ObservationAssociation, ObservationCandidate
+from app.models.evidence import ObservationAssociation, ObservationCandidate, line_key
 from app.models.runs import ExtractionFailure, ExtractionRun
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.coordinates import ImagePoint, PageBox
@@ -52,8 +52,10 @@ from units.dual import DualDimension, DualDimensionParseError, parse_dual
 from units.imperial import ImperialParseError, parse_imperial
 from units.measurement import Measurement, Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.notation import canonical_notation, is_compound
 
 __all__ = [
+    "NOT_A_SINGLE_VALUE_FLAG",
     "UNKNOWN_UNIT_FLAG",
     "UNPARSED_FLAG",
     "open_extraction_run",
@@ -69,6 +71,13 @@ __all__ = [
 #: Flagged rather than dropped. A token the parser could not read is still a reading that happened,
 #: and the flag is what lets a reviewer be shown it as unread rather than as absent.
 UNPARSED_FLAG = "unparsed_token"
+
+#: `39 1/4"+6"`, `2"+3"(filler)` — two dimensions and an operator (#730, #733). Kept apart from
+#: `UNPARSED_FLAG` because it is a different fact: the text is a dimension, just not *one*. On the
+#: 17-page client set there are eight, and several are a cabinet width plus a filler — exactly the
+#: structure the distribution check consumes, so a later reader should find them, not lose them in
+#: "unparsed".
+NOT_A_SINGLE_VALUE_FLAG = "not_a_single_value"
 
 #: A bare number, recorded with no value because its unit is unknown.
 #:
@@ -110,14 +119,15 @@ def open_extraction_run(
     produce it. Nothing downstream could detect that, because both the geometry and the hash are
     individually well-formed. A different configuration is a different run.
     """
-    existing = session.execute(
-        select(ExtractionRun).where(
-            ExtractionRun.task_run_id == task_run_id,
-            ExtractionRun.extractor == extractor,
-            ExtractionRun.extractor_version == extractor_version,
-            ExtractionRun.config_hash == config_hash,
-        )
-    ).scalar_one_or_none()
+    with session.no_autoflush:
+        existing = session.execute(
+            select(ExtractionRun).where(
+                ExtractionRun.task_run_id == task_run_id,
+                ExtractionRun.extractor == extractor,
+                ExtractionRun.extractor_version == extractor_version,
+                ExtractionRun.config_hash == config_hash,
+            )
+        ).scalar_one_or_none()
     if existing is not None:
         return existing
 
@@ -129,7 +139,7 @@ def open_extraction_run(
         dpi=dpi,
     )
     session.add(run)
-    session.flush()
+    session.flush([run])
     return run
 
 
@@ -150,6 +160,7 @@ def record_candidates(
     page_id: UUID,
     extraction_run_id: UUID,
     page_index: int,
+    flush: bool = True,
 ) -> list[ObservationCandidate]:
     """Persist every text run the reader found on one page.
 
@@ -179,14 +190,15 @@ def record_candidates(
     # the same characters are ordinary and must both survive. A re-read under a different
     # configuration is a *different* `ExtractionRun` now that `config_hash` is part of its identity,
     # so this suppresses only the repeat of work already recorded. Found in review on #484 (#487).
-    already = list(
-        session.execute(
-            select(ObservationCandidate).where(
-                ObservationCandidate.extraction_run_id == extraction_run_id,
-                ObservationCandidate.page_id == page_id,
-            )
-        ).scalars()
-    )
+    with session.no_autoflush:
+        already = list(
+            session.execute(
+                select(ObservationCandidate).where(
+                    ObservationCandidate.extraction_run_id == extraction_run_id,
+                    ObservationCandidate.page_id == page_id,
+                )
+            ).scalars()
+        )
     if already:
         return already
 
@@ -199,6 +211,10 @@ def record_candidates(
     written: list[ObservationCandidate] = []
     for item in texts:
         measurement, flags, dual = _parse(item.text)
+        stored_flags = list(flags)
+        crop_rotation_degrees = getattr(item, "crop_rotation_degrees", 0)
+        if crop_rotation_degrees:
+            stored_flags.append(f"crop_rotated_{crop_rotation_degrees}_degrees")
         row = ObservationCandidate(
             document_version_id=document_version_id,
             page_id=page_id,
@@ -218,7 +234,7 @@ def record_candidates(
             # A deterministic read of a text object is not a probabilistic one. `None` says there is
             # no confidence to report, where `1.0` would claim a certainty that means nothing here.
             confidence=None,
-            ambiguity_flags=list(flags),
+            ambiguity_flags=stored_flags,
         )
         # **Set before the insert, never after.** `observation_candidates` is append-only and 0013
         # enforces it with a trigger, so assigning these once the row exists would be an UPDATE the
@@ -230,7 +246,8 @@ def record_candidates(
         session.add(row)
         written.append(row)
 
-    session.flush()
+    if flush:
+        session.flush()
     return written
 
 
@@ -242,6 +259,7 @@ def record_ocr_candidates(
     page_id: UUID,
     extraction_run_id: UUID,
     page_index: int,
+    flush: bool = True,
 ) -> list[ObservationCandidate]:
     """The same rows, from the other reading route.
 
@@ -262,14 +280,15 @@ def record_ocr_candidates(
     Idempotent per run and page, for the reason `record_candidates` gives: a redelivery is the same
     work arriving twice, not a second reading.
     """
-    already = list(
-        session.execute(
-            select(ObservationCandidate).where(
-                ObservationCandidate.extraction_run_id == extraction_run_id,
-                ObservationCandidate.page_id == page_id,
-            )
-        ).scalars()
-    )
+    with session.no_autoflush:
+        already = list(
+            session.execute(
+                select(ObservationCandidate).where(
+                    ObservationCandidate.extraction_run_id == extraction_run_id,
+                    ObservationCandidate.page_id == page_id,
+                )
+            ).scalars()
+        )
     if already:
         return already
 
@@ -307,7 +326,8 @@ def record_ocr_candidates(
         session.add(row)
         written.append(row)
 
-    session.flush()
+    if flush:
+        session.flush()
     return written
 
 
@@ -319,6 +339,7 @@ def record_markup_candidates(
     page_id: UUID,
     extraction_run_id: UUID,
     page_index: int,
+    flush: bool = True,
 ) -> list[ObservationCandidate]:
     """The same rows, from the layer that needed no reading at all.
 
@@ -352,14 +373,15 @@ def record_markup_candidates(
     own `ExtractionRun`, so this guard and the other two never see each other's rows — which is what
     makes recording both routes for one page additive rather than a collision.
     """
-    already = list(
-        session.execute(
-            select(ObservationCandidate).where(
-                ObservationCandidate.extraction_run_id == extraction_run_id,
-                ObservationCandidate.page_id == page_id,
-            )
-        ).scalars()
-    )
+    with session.no_autoflush:
+        already = list(
+            session.execute(
+                select(ObservationCandidate).where(
+                    ObservationCandidate.extraction_run_id == extraction_run_id,
+                    ObservationCandidate.page_id == page_id,
+                )
+            ).scalars()
+        )
     if already:
         return already
 
@@ -398,7 +420,8 @@ def record_markup_candidates(
         session.add(row)
         written.append(row)
 
-    session.flush()
+    if flush:
+        session.flush()
     return written
 
 
@@ -407,6 +430,8 @@ def record_associations(
     result: AssociationResult,
     *,
     extraction_run_id: UUID,
+    chains: Mapping[str, tuple[str, int]] | None = None,
+    lines_on_page: int | None = None,
 ) -> list[ObservationAssociation]:
     """Persist what the association step decided about each reading — attachment or refusal.
 
@@ -432,6 +457,13 @@ def record_associations(
     the readings actually in hand, which is exactly what the unique constraint on
     `(candidate_id, extraction_run_id)` protects. Found by running it over a real document; a
     single-page test cannot see it.
+
+    **`chains` is what the detector found and this is where it stops being discarded.** Keyed by
+    `line_key`, each entry says which run of end-to-end dimensions a line belongs to and where along
+    it — the fact `workflow/assignment.py` needs to refuse a cabinet run gathered from two places,
+    which until now was computed in the association stage and thrown away on the next line. Absent
+    for a line that stands alone, which is most of them, and absent entirely for a caller that did
+    not detect chains.
     """
     candidate_ids = [entry.text.observation_id for entry in result.associated]
     candidate_ids += [entry.text.observation_id for entry in result.unassociated]
@@ -456,15 +488,23 @@ def record_associations(
 
     written: list[ObservationAssociation] = []
     for attached in result.associated:
+        start_x = str(attached.line.start.x)
+        start_y = str(attached.line.start.y)
+        end_x = str(attached.line.end.x)
+        end_y = str(attached.line.end.y)
+        chain = (chains or {}).get(line_key(start_x, start_y, end_x, end_y))
         written.append(
             ObservationAssociation(
                 candidate_id=attached.text.observation_id,
                 extraction_run_id=extraction_run_id,
-                start_x=str(attached.line.start.x),
-                start_y=str(attached.line.start.y),
-                end_x=str(attached.line.end.x),
-                end_y=str(attached.line.end.y),
+                start_x=start_x,
+                start_y=start_y,
+                end_x=end_x,
+                end_y=end_y,
                 signals=list(attached.signals),
+                chain_key=None if chain is None else chain[0],
+                chain_position=None if chain is None else chain[1],
+                lines_on_page=lines_on_page,
             )
         )
     for refused in result.unassociated:
@@ -474,6 +514,7 @@ def record_associations(
                 extraction_run_id=extraction_run_id,
                 signals=[],
                 refusal_reason=refused.reason,
+                lines_on_page=lines_on_page,
                 # What the choice was between. A reviewer told only that an association could not be
                 # made cannot check the geometry; shown the candidates, they can.
                 candidate_lines=[
@@ -587,8 +628,13 @@ def _parse(text: str) -> tuple[Measurement | None, tuple[str, ...], DualDimensio
     dual = _dual(text)
     if dual is not None and dual.alternate is not None:
         return dual.alternate, (), dual
+    if is_compound(text):
+        return None, (NOT_A_SINGLE_VALUE_FLAG,), None
     try:
-        return normalise_to_inches(text), (), None
+        # **Through `units.notation` (#733).** `25-1/2"` and `181 1/4" (4EQ)` were stored with no value;
+        # on the client set that was 21 of the 38 dimensions the PDF's own text carries, 20 of them
+        # the hyphenated fractions GV's reviewers write. The row keeps the text as written.
+        return normalise_to_inches(canonical_notation(text)[0]), (), None
     except UnitNormalisationError:
         # No value, and the flag says which kind of nothing this is. Both branches abstain; neither
         # swallows, because a reading that produced no measurement still has to say why.

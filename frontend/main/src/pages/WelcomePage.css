@@ -1,124 +1,199 @@
-/* Welcome Page */
-.welcome-page {
-  flex: 1;
+/* ============================================================
+   WELCOME
+   The first screen. It carries the brand and nothing it does not need.
+   ============================================================ */
+
+.welcome {
+  height: 100%;
+  overflow-y: auto;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: var(--space-8);
-  background: var(--bg-base);
+  padding: var(--space-10) var(--space-6);
   position: relative;
-  overflow: hidden;
 }
 
-.welcome-page::before {
+/* A single soft brand wash behind the content, anchored above the fold. It gives the screen a
+   centre of gravity without putting a coloured panel on the page. */
+.welcome::before {
   content: '';
   position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(var(--border-subtle) 1px, transparent 1px),
-    linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px);
-  background-size: 24px 24px;
-  opacity: 0.35;
+  top: -10%;
+  left: 50%;
+  width: min(760px, 90vw);
+  height: 420px;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, var(--gv-crimson-dim) 0%, transparent 68%);
   pointer-events: none;
 }
 
-.welcome-page__inner {
+.welcome__inner {
   position: relative;
-  z-index: 1;
   width: 100%;
-  max-width: 680px;
+  max-width: 620px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/* ── Head ─────────────────────────────────────────────────── */
+
+.welcome__head {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-5);
-  animation: wFadeUp var(--duration-slow) var(--ease-out) both;
+  gap: var(--space-3);
+  text-align: center;
 }
 
-.welcome-page__greeting {
+.welcome__mark {
+  animation: gv-pop var(--duration-xl) var(--ease-emphasis) both;
+  filter: drop-shadow(0 6px 16px rgba(140, 16, 39, 0.24));
+}
+
+.welcome__greeting {
   font-family: var(--font-heading);
   font-size: var(--text-3xl);
-  font-weight: var(--weight-semi);
-  color: var(--text-primary);
+  font-weight: var(--weight-light);
   letter-spacing: var(--tracking-tight);
-  text-align: center;
-  line-height: 1.2;
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+  margin: 0;
+  animation: gv-rise var(--duration-slow) var(--ease-emphasis) both;
+  animation-delay: 70ms;
 }
 
-.welcome-page__name { color: var(--gv-crimson); }
-
-.welcome-page__subtitle {
-  font-size: var(--text-lg);
+.welcome__subtitle {
+  font-size: var(--text-md);
   color: var(--text-muted);
-  text-align: center;
-  line-height: var(--leading-normal);
-  margin-top: calc(-1 * var(--space-3));
+  margin: 0;
+  animation: gv-rise var(--duration-slow) var(--ease-emphasis) both;
+  animation-delay: 130ms;
 }
 
-.welcome-page__input-wrap {
-  width: 100%;
+/* ── Input ────────────────────────────────────────────────── */
+
+.welcome__input {
+  animation: gv-rise var(--duration-slow) var(--ease-emphasis) both;
+  animation-delay: 190ms;
+}
+
+/* ── Recent ───────────────────────────────────────────────── */
+
+.welcome__recent {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  margin-top: var(--space-3);
-}
-
-.welcome-page__input-wrap .chat-input-area {
-  padding: 0;
-  background: transparent;
-}
-
-.welcome-page__input-wrap .chat-input-area__row {
-  padding: var(--space-3) var(--space-4);
-  border-radius: 24px;
-  box-shadow: var(--shadow-md);
-}
-
-.welcome-page__input-wrap .chat-input-area__textarea {
-  font-size: var(--text-md);
-  min-height: 28px;
-}
-
-.welcome-page__input-wrap .chat-input-area__quick,
-.welcome-page__input-wrap .chat-input-area__hint {
-  display: none;
-}
-
-.welcome-page__chips {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
   gap: var(--space-2);
 }
 
-.welcome-page__chip {
-  font-size: var(--text-sm);
-  color: var(--text-body);
-  background: var(--bg-elevated);
+.welcome__card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-full);
-  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--bg-base);
+  box-shadow: var(--elevation-1);
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-out);
-  white-space: nowrap;
+  text-align: left;
 }
 
-.welcome-page__chip:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
+.welcome__card:hover {
+  border-color: var(--gv-crimson-border);
+  box-shadow: var(--elevation-2);
+}
+
+.welcome__card--skeleton {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  cursor: default;
+  pointer-events: none;
+}
+
+.welcome__card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.welcome__card-vendor {
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
   color: var(--text-primary);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-sm);
 }
 
-.welcome-page__hint {
+.welcome__card-id {
   font-size: var(--text-xs);
   color: var(--text-faint);
-  text-align: center;
-  margin-top: var(--space-1);
 }
 
-@keyframes wFadeUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to   { opacity: 1; transform: translateY(0); }
+.welcome__card-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+/* The arrow only travels on hover. A static arrow is a label; one that moves toward where it is
+   sending you is the affordance. */
+.welcome__card-arrow {
+  color: var(--text-faint);
+  transition:
+    transform var(--duration-base) var(--ease-emphasis),
+    color var(--duration-base) var(--ease-out);
+}
+
+.welcome__card:hover .welcome__card-arrow {
+  transform: translate(2px, -2px);
+  color: var(--gv-crimson);
+}
+
+/* ── Empty and error ──────────────────────────────────────── */
+
+.welcome__empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  align-self: center;
+  padding: var(--space-3) var(--space-5);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-primary-border);
+  background: var(--color-primary);
+  color: var(--text-inverse);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  box-shadow: var(--elevation-1);
+}
+
+.welcome__empty:hover { box-shadow: var(--shadow-primary); }
+
+.welcome__error {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--status-fail-border);
+  background: var(--status-fail-bg);
+  color: var(--status-fail);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .welcome { padding: var(--space-6) var(--space-4); align-items: flex-start; }
+  .welcome__greeting { font-size: var(--text-2xl); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome__mark,
+  .welcome__greeting,
+  .welcome__subtitle,
+  .welcome__input { animation: none; }
+  .welcome__card:hover .welcome__card-arrow { transform: none; }
 }

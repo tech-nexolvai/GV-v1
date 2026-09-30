@@ -13,8 +13,16 @@ from uuid import uuid4
 
 import pytest
 
-from evidence.coordinates import ImagePoint
-from extraction.ocr import OcrItem, RapidOcrEngine, _confidence, read_page
+from evidence.coordinates import ImagePoint, StoredPoint
+from extraction.ocr import (
+    OcrItem,
+    RapidOcrEngine,
+    _confidence,
+    combine_dual_notation,
+    could_be_a_reading,
+    join_split_bracketed_inches,
+    read_page,
+)
 from extraction.rasterise import render_page
 from tests.extraction.test_reader import _pdf
 
@@ -56,7 +64,26 @@ def _rendered(dpi: int = 150):
         page_content_hash="0" * 64,
         dpi=dpi,
         maximum_pixels=40_000_000,
+        vendor_only=True,
     )
+
+
+def _item(text: str, box: tuple[int, int, int, int], confidence: str = "0.9") -> OcrItem:
+    left, top, right, bottom = box
+    return OcrItem(
+        text=text,
+        confidence=Decimal(confidence),
+        image_extent=(
+            ImagePoint(left, top),
+            ImagePoint(right, top),
+            ImagePoint(right, bottom),
+            ImagePoint(left, bottom),
+        ),
+    )
+
+
+def _quadrilateral(text: str, points: tuple[ImagePoint, ...]) -> OcrItem:
+    return OcrItem(text=text, confidence=Decimal("0.9"), image_extent=points)
 
 
 def test_a_reading_names_the_engine_that_produced_it() -> None:
@@ -97,6 +124,115 @@ def test_the_engine_is_handed_the_rendered_page_at_its_real_size() -> None:
     assert engine.calls == [(rendered.width_px, rendered.height_px)]
 
 
+def test_split_vendor_dual_notation_is_one_reading_with_the_conservative_confidence() -> None:
+    """The two OCR boxes state one dimension; inches govern only after the exact pair is present."""
+    items = (
+        _item("76", (100, 100, 140, 120), "0.81"),
+        _item("381", (200, 100, 250, 120), "0.92"),
+        # Engine order is not reading order on a full page; geometry, not list adjacency, pairs.
+        _item("[15]", (198, 118, 252, 142), "0.73"),
+        _item("[3]", (98, 118, 142, 142), "0.77"),
+    )
+
+    combined = combine_dual_notation(items)
+
+    assert [item.text for item in combined] == ["76 [3]", "381 [15]"]
+    assert [item.confidence for item in combined] == [Decimal("0.77"), Decimal("0.73")]
+    assert {item.rotation_degrees for item in combined} == {0}
+    assert combined[0].image_extent == (
+        ImagePoint(98, 100),
+        ImagePoint(142, 100),
+        ImagePoint(142, 142),
+        ImagePoint(98, 142),
+    )
+
+
+def test_split_tokens_that_are_not_spatially_adjacent_still_abstain() -> None:
+    """Matching strings elsewhere on a page must not be fuzzy-merged into a fabricated dimension."""
+    items = (
+        _item("76", (100, 100, 140, 120)),
+        _item("[3]", (100, 180, 140, 205)),
+        _item("TITLE", (200, 100, 250, 120)),
+    )
+
+    assert combine_dual_notation(items) == items
+
+
+def test_an_ambiguous_split_pair_still_abstains() -> None:
+    """Two plausible inch alternates are not resolved by nearest, confidence, or input order."""
+    items = (
+        _item("76", (100, 100, 140, 120)),
+        _item("[3]", (98, 118, 125, 142)),
+        _item("[4]", (115, 118, 142, 142)),
+    )
+
+    assert combine_dual_notation(items) == items
+
+
+def test_reverse_ambiguity_still_abstains() -> None:
+    items = (
+        _item("76", (100, 100, 140, 120)),
+        _item("77", (105, 100, 145, 120)),
+        _item("[3]", (98, 118, 142, 142)),
+    )
+    assert combine_dual_notation(items) == items
+
+
+def test_whitespace_limit_is_inclusive_and_one_pixel_past_abstains() -> None:
+    at_limit = (_item("76", (100, 100, 140, 120)), _item("[3]", (100, 140, 140, 160)))
+    past = (_item("76", (100, 100, 140, 120)), _item("[3]", (100, 141, 140, 161)))
+    assert [item.text for item in combine_dual_notation(at_limit)] == ["76 [3]"]
+    assert combine_dual_notation(past) == past
+
+
+def test_invalid_bracketed_text_and_empty_input_abstain() -> None:
+    invalid = (
+        _item("76", (100, 100, 140, 120)),
+        _item("[DETAIL]", (98, 118, 142, 142)),
+    )
+    assert combine_dual_notation(invalid) == invalid
+    assert combine_dual_notation(()) == ()
+
+
+def test_a_rotated_stacked_pair_is_not_declared_horizontal() -> None:
+    items = (
+        _quadrilateral(
+            "76",
+            (ImagePoint(100, 100), ImagePoint(140, 110), ImagePoint(135, 130), ImagePoint(95, 120)),
+        ),
+        _quadrilateral(
+            "[3]",
+            (ImagePoint(95, 120), ImagePoint(140, 130), ImagePoint(135, 155), ImagePoint(90, 145)),
+        ),
+    )
+    assert combine_dual_notation(items) == items
+
+
+def test_read_page_locates_a_combined_reading_in_stored_space() -> None:
+    rendered = _rendered()
+    engine = _StubEngine(
+        (
+            _item("76", (100, 100, 140, 120)),
+            _item("[3]", (98, 118, 142, 142)),
+        )
+    )
+
+    page = read_page(rendered, engine=engine)
+
+    assert [item.text for item in page.items] == ["76 [3]"]
+    reading = page.items[0]
+    assert reading.extent is not None
+    assert reading.extent.document_version_id == rendered.document_version_id
+    assert reading.extent.page == rendered.page_index
+    assert reading.extent.points == tuple(
+        StoredPoint(
+            Decimal(point.x) / Decimal(rendered.width_px),
+            Decimal(point.y) / Decimal(rendered.height_px),
+        )
+        for point in reading.image_extent
+    )
+
+
 def test_a_blank_reading_is_refused_rather_than_stored() -> None:
     """A row saying a reading happened that cannot say what it was is worse than no row."""
     with pytest.raises(ValueError, match="blank reading"):
@@ -118,6 +254,30 @@ def test_an_extent_that_is_not_four_corners_is_refused() -> None:
     """Four points, because that is what the engine reports and what the polygon column stores."""
     with pytest.raises(ValueError, match="four corner points"):
         OcrItem(text="984 mm", confidence=Decimal("0.9"), image_extent=CORNERS[:3])
+
+
+def test_boolean_rotation_is_refused() -> None:
+    with pytest.raises(ValueError, match="rotation_degrees"):
+        OcrItem(
+            text="76 [3]",
+            confidence=Decimal("0.9"),
+            image_extent=CORNERS,
+            rotation_degrees=True,  # type: ignore[arg-type]
+        )
+
+
+def test_out_of_page_combined_geometry_is_kept_but_left_unlocated() -> None:
+    rendered = _rendered()
+    engine = _StubEngine(
+        (
+            _item("76", (rendered.width_px - 20, 100, rendered.width_px + 20, 120)),
+            _item("[3]", (rendered.width_px - 22, 118, rendered.width_px + 22, 142)),
+        )
+    )
+    reading = read_page(rendered, engine=engine).items[0]
+    assert reading.text == "76 [3]"
+    assert reading.extent is None
+    assert reading.rotation_degrees is None
 
 
 # --------------------------------------------------------------------------------------
@@ -232,3 +392,111 @@ def test_a_score_of_an_unreadable_type_is_refused() -> None:
     """An engine that returned something else has changed its contract, and that must be loud."""
     with pytest.raises(TypeError, match="cannot read an OCR confidence"):
         _confidence(object())
+
+
+# ---------------------------------------------------------------------------
+# A bracketed half split across two boxes (#598)
+# ---------------------------------------------------------------------------
+
+
+def test_a_bracketed_inch_token_split_across_two_boxes_is_put_back_together() -> None:
+    """**The fault, measured on a real uploaded sheet.**
+
+    RapidOCR read `724 [28 1/2]` as three boxes — `724`, `[28`, `1/2]` — breaking the bracketed
+    half across two detections. `combine_dual_notation` wants a *whole* bracketed token to pair the
+    millimetres with, found none, and all three fragments fell out unparsed: `724` a number with no
+    unit, the other two nothing at all. Twenty-five readings on that page, two survived.
+    """
+    items = (
+        _item("724", (10, 10, 60, 40)),
+        _item("[28", (10, 50, 55, 80)),
+        _item("1/2]", (60, 50, 110, 80)),
+    )
+
+    combined = combine_dual_notation(items)
+
+    assert [item.text for item in combined] == ["724 [28 1/2]"]
+    assert combined[0].rotation_degrees == 0, "the joined reading cannot enter association"
+
+
+def test_two_fragments_that_do_not_make_a_measurement_are_left_alone() -> None:
+    """**Outcome: untouched.**
+
+    The join has to produce a measurement, not merely a bracket-shaped string. `[ab` and `cd]`
+    concatenate into something the bracket pattern accepts and `parse_imperial` refuses, and
+    assembling it would manufacture a reading nobody wrote out of two pieces of a label.
+    """
+    items = (_item("[ab", (10, 50, 55, 80)), _item("cd]", (60, 50, 110, 80)))
+
+    assert join_split_bracketed_inches(items) == items
+
+
+def test_fragments_on_different_text_rows_are_not_joined() -> None:
+    """Outcome: untouched. Vertical neighbours are a different relationship entirely.
+
+    Two boxes stacked rather than side by side are what `combine_dual_notation` pairs, and joining
+    them here would consume the halves before it ever looked.
+    """
+    items = (_item("[28", (10, 10, 55, 40)), _item("1/2]", (10, 90, 55, 120)))
+
+    assert join_split_bracketed_inches(items) == items
+
+
+def test_a_gap_wider_than_the_row_is_tall_is_not_one_token() -> None:
+    """Outcome: untouched. A space is about as wide as the text is tall; a column apart is not."""
+    near = (_item("[28", (10, 50, 55, 80)), _item("1/2]", (80, 50, 130, 80)))
+    far = (_item("[28", (10, 50, 55, 80)), _item("1/2]", (120, 50, 170, 80)))
+
+    assert [item.text for item in join_split_bracketed_inches(near)] == ["[28 1/2]"]
+    assert join_split_bracketed_inches(far) == far
+
+
+def test_an_ambiguous_pairing_leaves_every_fragment_untouched() -> None:
+    """**Outcome: untouched, rather than the first plausible join.**
+
+    Two closing fragments equally able to finish one opening fragment is exactly the situation this
+    must not resolve by picking one — the same one-to-one rule `combine_dual_notation` applies, for
+    the same reason: an assembled number nobody wrote is worse than an abstention.
+    """
+    items = (
+        _item("[28", (10, 50, 55, 80)),
+        _item("1/2]", (60, 50, 110, 80)),
+        _item("1/4]", (60, 50, 110, 80)),
+    )
+
+    assert join_split_bracketed_inches(items) == items
+
+
+def test_a_whole_bracketed_token_is_not_treated_as_a_fragment() -> None:
+    """Outcome: untouched. `[28 1/2]` is already what the joiner is trying to produce."""
+    items = (_item("[28 1/2]", (10, 50, 90, 80)), _item("[13 1/4]", (95, 50, 175, 80)))
+
+    assert join_split_bracketed_inches(items) == items
+
+
+# ---------------------------------------------------------------------------
+# #703 — what RapidOCR returns for line-work
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["一", "口", "L", "/", "√", "I", "m", "一口", "TITLE", "", "  "])
+def test_text_with_no_numeral_is_not_a_reading(text: str) -> None:
+    """**Outcome: refused.** These are the glyphs RapidOCR returned for strokes on `demo_pair`."""
+    assert could_be_a_reading(text) is False
+
+
+@pytest.mark.parametrize("text", ["724", "1", "[4]", "[1", '3/4"', "1'-2\"", "102 [4]", "½", "３"])
+def test_text_holding_a_numeral_is_kept(text: str) -> None:
+    """**Outcome: kept, including a partial read.** `[4]` may be half of `102 [4]`; the parser decides.
+
+    `½` has no ASCII digit and is a whole fractional part; `３` is a full-width digit, which a model
+    trained largely on CJK text can return for an ordinary one.
+    """
+    assert could_be_a_reading(text) is True
+
+
+def test_the_cjk_character_for_one_is_not_mistaken_for_a_digit() -> None:
+    """**The trap in the obvious rule.** Python's `str.isnumeric` says `一` is numeric — it is the
+    character for *one* — and it is exactly what RapidOCR returns for a horizontal stroke."""
+    assert "一".isnumeric()
+    assert could_be_a_reading("一") is False

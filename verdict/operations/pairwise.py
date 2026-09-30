@@ -8,7 +8,7 @@ dominate the aggregate result, while incomplete pairs can never contribute to a 
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from units.measurement import Measurement
@@ -45,15 +45,23 @@ class PairComparison:
     comparison: str
 
 
-def _require_mapping(values: object, name: str) -> Mapping[str, Measurement]:
-    if not isinstance(values, Mapping):
-        raise RuleAuthoringError(f"{name} must be a mapping keyed by identifier")
-    for identifier, value in values.items():
+def _require_pairs(
+    values: Mapping[str, Measurement] | Sequence[Measurement],
+    name: str,
+) -> Mapping[str, Measurement]:
+    if isinstance(values, Mapping):
+        pairs = values
+    elif isinstance(values, Sequence) and not isinstance(values, (str, bytes, bytearray)):
+        pairs = {f"#{index}": value for index, value in enumerate(values)}
+    else:
+        raise RuleAuthoringError(f"{name} must be a mapping keyed by identifier or an ordered list")
+
+    for identifier, value in pairs.items():
         if not isinstance(identifier, str) or not identifier:
             raise RuleAuthoringError(f"{name} contains an invalid identifier")
         if not isinstance(value, Measurement):
             raise RuleAuthoringError(f"{name}[{identifier!r}] must be a Measurement")
-    return values
+    return pairs
 
 
 def _missing_pair(
@@ -74,29 +82,34 @@ def _missing_pair(
 
 def pairwise_within_tolerance(
     *,
-    left: Mapping[str, Measurement],
-    right: Mapping[str, Measurement],
+    left: Mapping[str, Measurement] | Sequence[Measurement],
+    right: Mapping[str, Measurement] | Sequence[Measurement],
     tolerance: Measurement,
 ) -> OperationResult:
     """Compare exact identifier-matched pairs using ``delta <= tolerance``.
 
-    Pairing is by mapping key, never insertion position. A missing counterpart produces an
-    individually addressable ``NOT_FOUND`` pair. Overall semantics are conjunction-like:
-    any verified pair failure yields ``FAIL``; otherwise any missing pair yields
-    ``NOT_FOUND``; only complete passing coverage yields ``PASS``.
+    Pairing is by mapping key when identifiers are present. Ordered reviewer-entered lists are
+    paired by position using stable ``#0``/``#1`` identifiers, preserving the layout order the
+    reviewer supplied. A missing counterpart produces an individually addressable ``NOT_FOUND``
+    pair. Overall semantics are conjunction-like: any verified pair failure yields ``FAIL``;
+    otherwise any missing pair yields ``NOT_FOUND``; only complete passing coverage yields ``PASS``.
     """
 
-    left = _require_mapping(left, "left")
-    right = _require_mapping(right, "right")
+    left = _require_pairs(left, "left")
+    right = _require_pairs(right, "right")
     if not isinstance(tolerance, Measurement):
         raise RuleAuthoringError("tolerance must be a Measurement")
     if not left and not right:
         raise ValueError("pairwise comparison requires at least one identifier")
 
-    measurements = (*left.values(), *right.values(), tolerance)
-    unit = require_same_unit(*measurements)
     if tolerance.exact < 0:
         raise RuleAuthoringError("tolerance must not be negative")
+    measurements = (*left.values(), *right.values())
+    unit = require_same_unit(*measurements)
+    if tolerance.unit is not unit:
+        if tolerance.exact != 0:
+            require_same_unit(*measurements, tolerance)
+        tolerance = Measurement(tolerance.exact * 0, unit, tolerance.raw_text)
 
     counts_match = len(left) == len(right)
     count_comparison = CountComparison(

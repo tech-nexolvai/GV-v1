@@ -11,6 +11,7 @@ from collections.abc import Collection, Sequence
 from enum import StrEnum
 from fractions import Fraction
 
+from units.imperial import format_inches
 from units.measurement import Measurement
 from units.policy import require_same_unit
 from verdict.outcomes import Outcome
@@ -58,8 +59,26 @@ def _require_measurement(value: object | None, name: str) -> Measurement:
 
 
 def _value_text(value: object) -> str:
+    """Render an operand the way the drawing writes it, for the comparison a reviewer reads.
+
+    `Fraction(101, 4)` printed itself as `101/4`, so a countertop check recorded
+    `101/4 in != 51/2 in` — exact, and a form nobody writing a dimension has ever used.
+    `units/imperial.py:format_inches` exists for precisely this and says so in its own docstring;
+    it was already used for operand values in `app/verdicts/trace.py`, so the comparison line was
+    the one place still printing improper fractions at a reviewer.
+
+    **This is not only a readability fix.** The comparison string is part of the guarded facts the
+    narration layer works from. Written `51/2`, a model explaining the finding would convert it to
+    the `25 1/2` a human writes — correct arithmetic — and `_guard_one` would reject the whole
+    answer for introducing the token `1/2`, because the facts never contained it in that form. The
+    model was being punished for reading the number correctly, and the reviewer got the plain
+    fallback every time they asked why a check failed.
+
+    Nothing about any decision changes: this alters how an exact value is written, never what it
+    is. `parse_imperial` reads back everything `format_inches` produces.
+    """
     if isinstance(value, Measurement):
-        return f"{value.exact} {value.unit.value}"
+        return f"{format_inches(value.exact)} {value.unit.value}"
     if isinstance(value, StrEnum):
         return repr(value.value)
     return repr(value)

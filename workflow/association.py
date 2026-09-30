@@ -32,8 +32,9 @@ from uuid import UUID
 
 from evidence.polygon import Polygon
 from extraction.geometry.text_association import DimensionText
+from extraction.glyph_bands import FractionBarGeometry
 
-__all__ = ["AssociationSettings", "ReadItem", "dimension_texts"]
+__all__ = ["AssociationSettings", "LocalizedOcrSettings", "ReadItem", "dimension_texts"]
 
 
 class ReadItem(Protocol):
@@ -56,9 +57,9 @@ class ReadItem(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class AssociationSettings:
-    """The five lengths the association step runs under. Stated by a deployment, never defaulted.
+    """The nine lengths the association step runs under. Stated by a deployment, never defaulted.
 
-    **All five are required and none is a guess this code makes.** `dpi` is already handled this way
+    **All nine are required and none is a guess this code makes.** `dpi` is already handled this way
     by `DatabaseStages`, and `text_association` requires its two for the reason it gives at length.
     The three geometry lengths come from `extraction/annotations.py`, which requires them because
     deciding which vector primitives are dimension lines is a detector (#179) and one sheet cannot
@@ -87,6 +88,32 @@ class AssociationSettings:
     proximity_limit: Decimal
     """How far from a line a reading may sit and still be considered its annotation."""
 
+    witness_tolerance: Decimal
+    """How near a perpendicular must come to a run's end before it bounds it, in stored units.
+
+    The four below are `extraction/geometry/dimension_lines.py` (#179), which is what this class's
+    docstring was waiting for when it said "deciding which vector primitives are dimension lines is
+    a detector". Until it existed, `associate` was handed *every* stroke on the page — so a reading
+    could attach itself to the edge of a cabinet as readily as to the dimension that measures it,
+    and the two are indistinguishable once attached."""
+
+    minimum_span: Decimal
+    """How far a run must reach to be a dimension candidate at all, in stored units. Arrowheads,
+    ticks and hatching are strokes too, and every one of them has ends other strokes pass near."""
+
+    straightness: Decimal
+    """How far off-axis a stroke may drift and still count as orthogonal, in stored units. Not a
+    tolerance on the drawing — a CAD file's coordinates are exact — but on the trip through integer
+    image pixels that brought them into stored space."""
+
+    crossing_margin: Decimal
+    """How far a witness line must extend *past* the dimension line, in stored units.
+
+    **The one that separates a dimension from the box it measures.** A witness line overshoots; a
+    rectangle's corner stops. Measured on the first real sheet: of 81 runs met at both ends by a
+    perpendicular, 21 are crossed at both ends and 53 are plain corners. Set this to the wider
+    `witness_tolerance` and every real dimension on that sheet is rejected."""
+
     ambiguity_margin: Decimal
     """How much nearer the best candidate must be than the next before the choice counts as made.
     Within it the answer is no association — which is a result, not a failure to produce one.
@@ -97,13 +124,30 @@ class AssociationSettings:
     margin below that resolution never fires, and the choice goes to whichever line happened to
     round nearer. Found by writing a test for the symmetric case and watching it decide."""
 
+    fraction_bar: FractionBarGeometry
+    """The stacked-fraction detector's geometry (#735), read in the same pass as the rest.
+
+    **Here, and required, because this is what turns on reading the vendor's geometry.** A deployment
+    that reads it can have its vision readings sealed by the agreement gate, and the rule that a
+    stacked fraction always goes to a reviewer (#726) needs the detector to have looked. Optional, it
+    was never supplied: #541's guard was built, tested, and never ran (#735).
+
+    Not in `config_hash`: it changes no association. It is in the vision run's identity instead,
+    because it changes which vision readings are accepted."""
+
     def __post_init__(self) -> None:
+        if not isinstance(self.fraction_bar, FractionBarGeometry):
+            raise TypeError("fraction_bar must be a FractionBarGeometry")
         for name in (
             "line_minimum_pt",
             "glyph_maximum_pt",
             "glyph_gap_pt",
             "proximity_limit",
             "ambiguity_margin",
+            "witness_tolerance",
+            "minimum_span",
+            "straightness",
+            "crossing_margin",
         ):
             value = getattr(self, name)
             if isinstance(value, float):
@@ -129,7 +173,47 @@ class AssociationSettings:
         return (
             f"line>={self.line_minimum_pt};glyph<={self.glyph_maximum_pt};"
             f"gap<={self.glyph_gap_pt};near<={self.proximity_limit};"
-            f"margin={self.ambiguity_margin}"
+            f"margin={self.ambiguity_margin};"
+            # The detector's four are in the identity for the same reason as the rest: each decides
+            # which strokes are offered to `associate` at all, so a re-run under a different value
+            # would reuse rows that a different set of lines produced.
+            f"witness<={self.witness_tolerance};span>={self.minimum_span};"
+            f"straight<={self.straightness};cross>{self.crossing_margin}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LocalizedOcrSettings:
+    """Explicit geometry and crop bounds for vendor-region OCR.
+
+    These do not type or rank a reading. They only state which outlined path clusters are worth an
+    OCR crop; every other cluster remains a visible geometry refusal in ``plan_reads``. They have no
+    defaults because crop selection is drawing-specific in exactly the way association is.
+    """
+
+    minimum_paths: int
+    maximum_span: Decimal
+    crop_margin_pt: Decimal
+
+    def __post_init__(self) -> None:
+        if isinstance(self.minimum_paths, bool) or not isinstance(self.minimum_paths, int):
+            raise TypeError("minimum_paths must be an integer")
+        if self.minimum_paths < 1:
+            raise ValueError("minimum_paths must be greater than zero")
+        for name in ("maximum_span", "crop_margin_pt"):
+            value = getattr(self, name)
+            if isinstance(value, float):
+                raise TypeError(f"{name} must be a Decimal, never a float")
+            if not isinstance(value, Decimal) or not value.is_finite():
+                raise ValueError(f"{name} must be a finite Decimal")
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than zero")
+
+    @property
+    def config_hash(self) -> str:
+        return (
+            f"minimum_paths={self.minimum_paths};maximum_span={self.maximum_span};"
+            f"crop_margin_pt={self.crop_margin_pt}"
         )
 
 

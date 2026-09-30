@@ -135,7 +135,7 @@
   height: 100%;
   border-radius: var(--radius-full);
   transition: width var(--duration-slow) var(--ease-out);
-  animation: slideInLeft var(--duration-slow) var(--ease-out) both;
+  animation: gv-enter-left var(--duration-slow) var(--ease-out) both;
 }
 
 .usage-bar--pass    { background: var(--status-pass); }

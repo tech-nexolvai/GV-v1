@@ -9,6 +9,7 @@ Verification: ``tests/evidence/test_corroborate.py``.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -16,6 +17,9 @@ from evidence.candidate import ObservationCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from units.dual import DualDimension
 from units.policy import Consistency, check_dual
+
+_MM_TOKEN_RE = re.compile(r"\bmm\b", re.IGNORECASE)
+_INCH_TOKEN_RE = re.compile(r"(\"|'|\bin\b|\binch\b|\binches\b|\bft\b|\bfeet\b)", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +82,19 @@ def _same_numeric_reading(candidates: tuple[ObservationCandidate, ...]) -> bool:
     )
 
 
+def _authored_unit_system(candidate: ObservationCandidate) -> str:
+    if candidate.parsed_value is None:
+        return "unknown"
+    raw_text = candidate.parsed_value.raw_text or candidate.raw_text
+    if "[" in raw_text and "]" in raw_text:
+        return "dual"
+    if _MM_TOKEN_RE.search(raw_text):
+        return "mm"
+    if _INCH_TOKEN_RE.search(raw_text):
+        return "in"
+    return candidate.parsed_value.unit.value
+
+
 def corroborate(
     candidates: Sequence[ObservationCandidate],
     *,
@@ -111,6 +128,9 @@ def corroborate(
 
     values_present = all(candidate.parsed_value is not None for candidate in candidate_tuple)
     if not values_present:
+        return CorroborationResult(EvidenceStatus.RAW_CANDIDATE, candidate_ids, (), None)
+    authored_units = {_authored_unit_system(candidate) for candidate in candidate_tuple}
+    if "dual" in authored_units or len(authored_units) != 1:
         return CorroborationResult(EvidenceStatus.RAW_CANDIDATE, candidate_ids, (), None)
     if not _same_numeric_reading(candidate_tuple):
         return CorroborationResult(

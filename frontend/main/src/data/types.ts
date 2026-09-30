@@ -106,6 +106,22 @@ export interface Finding {
   tolerance?: string;
   reason?: string;
   trace?: Trace;
+  /**
+   * The operands persisted for this finding's arithmetic run, including source/location
+   * provenance for evidence decisions.
+   *
+   * Empty means the chain did not return any persisted operands (for example, an abstention),
+   * which is a valid state.
+   */
+  recorded_operands?: Array<{
+    name: string;
+    value: string;
+    source: string;
+    status: string;
+    hasEvidence: boolean;
+    documentRole?: string;
+    canonicalObservationId?: string;
+  }>;
   arch_evidence?: Evidence | null;
   shop_evidence?: Evidence | null;
   reviewer_action: ReviewerAction | null;
@@ -123,6 +139,24 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   findings?: Finding[];
+  /**
+   * The guarded narrative for each finding, by finding id. Shown under that finding's row when the
+   * reviewer opens it, instead of being joined into the message text where nobody reads it.
+   */
+  narratives?: Record<string, string>;
+  /**
+   * True between a streamed reply's findings and its explanation: the server has said a model is
+   * writing. Cleared when the guarded narration arrives, or when it cannot be produced.
+   */
+  narrating?: boolean;
+  /** Explicit disclosure of whether Bedrock narration was accepted for this response. The
+   * deterministic findings and verdicts remain the backing record in either mode. */
+  narration?: {
+    mode: 'llm' | 'structured_fallback';
+    modelId?: string;
+    /** Why narration was not used, when applicable. */
+    fallbackReason?: string | null;
+  };
   is_typing?: boolean;
 }
 

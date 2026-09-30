@@ -15,12 +15,11 @@ supplying operands to something that already worked. The reading half (#517) fol
 principle: `evidence/crop.py` and `retrieval/matching.py` were finished, tested and unreachable from
 production, so what was missing was the connection rather than the algorithm.
 
-**The pipeline stops at untyped candidates, and that is the state rather than a shortfall.** A
-candidate is a reading with a picture of where it came from. Nothing gives it a meaning, so nothing
-mints a canonical observation, so nothing becomes eligible as a verdict operand — `evidence/gate.py`
-takes a canonical observation and there are none. Which value means "countertop depth" needs the real
-drawings (#274) and a vocabulary Q20 explicitly defers, and a heuristic here would look like progress
-and be a fabricated fact in a review. `docs/decisions/PIPELINE_SPINE.md` records the whole boundary.
+**Raw candidates stay raw.** The default pipeline stops at untyped readings. An opt-in deployment
+may additionally use the semantic-typing gate: only an exact vector vocabulary tag and numeric
+reading already attached to one deterministic line may mint a corroborated observation. Position and
+agent suggestions remain reviewer work, so the verdict still sees no operand when the proof is
+missing. `docs/decisions/SEMANTIC_TYPING_GATE.md` records the whole boundary.
 
 **A check therefore still abstains unless a reviewer supplies the reading**, which `CLIENT_FACTS` Q7
 blesses for exactly this. That is the honest result, not a broken one: no observations means no
@@ -35,19 +34,28 @@ and the domain layers side by side (`workflow/retry.py`), which is exactly what 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+import json
+import os
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 from io import BytesIO
-from uuid import UUID
+from typing import Protocol, TypeVar, cast
+from uuid import UUID, uuid4
 
 from opentelemetry.trace import Status, StatusCode
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
 from app.api.documents import storage_key
 from app.db.base import utc_now
+from app.evidence.automatic_typing import AutomaticTypingSettings, qualify_exact_tags_for_revision
 from app.evidence.record import (
+    NOT_A_SINGLE_VALUE_FLAG,
+    UNKNOWN_UNIT_FLAG,
+    UNPARSED_FLAG,
     open_extraction_run,
     persist_manifest,
     record_associations,
@@ -65,8 +73,13 @@ from app.models.document import (
     PackageRevisionDocument,
     Page,
 )
-from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier
-from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind, ObservationCandidate
+from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier, ViewRole
+from app.models.evidence import (
+    EvidenceArtifact,
+    EvidenceArtifactKind,
+    ObservationCandidate,
+    line_key,
+)
 from app.models.matching import MatchCandidate as MatchCandidateRow
 from app.models.package import Package, PackageRevision
 from app.models.parameters import declared_defaults, load_parameter_sets
@@ -75,39 +88,114 @@ from app.models.rules import RuleSnapshot as RuleSnapshotRow
 from app.models.runs import ExtractionRun, TaskRun
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
+from app.runs.invocations import (
+    BedrockConverseInvocationRecorder,
+)
+from app.runs.invocations import (
+    record as record_model_invocation,
+)
+from app.runs.rates import call_cost_micros, rates_from_environment
 from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
-from evidence.coordinates import StoredPoint
-from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
+from evidence.candidate import ObservationCandidate as DomainCandidate
+from evidence.canonical import EvidenceStatus
+from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
+from evidence.corroborate import corroborate
+from evidence.crop import CropSpec, CropStatus, RenderedPage, crop_pixel_box, generate_crop
 from evidence.polygon import Polygon
-from extraction.annotations import PageLayers, read_annotation_layers, read_markup_layer
+from extraction.agent.graph import (
+    AbstentionTerminal,
+    BoundedAgentGraph,
+    BoundedRegionContext,
+    CandidateTerminal,
+)
+from extraction.agent.tools import (
+    AbstainArguments,
+    OcrVerificationArguments,
+    ToolCall,
+    VlmReadingArguments,
+)
+from extraction.agent.trigger import AmbiguityReason, RegionContext, evaluate_trigger
+from extraction.annotations import (
+    OutlinedTextRegion,
+    PageLayers,
+    StackedFraction,
+    read_annotation_layers,
+    read_markup_layer,
+)
 from extraction.geometry.containment import DimensionExtent
+from extraction.geometry.dimension_lines import DetectedDimensions, detect
 from extraction.geometry.text_association import DimensionText, associate
+from extraction.layout import (
+    BedrockClosedQuestionConfig,
+    BedrockClosedQuestionReader,
+    LayoutClassification,
+    LayoutReader,
+    LayoutStatus,
+    classify_layout,
+    question_from_discriminator,
+)
+from extraction.localized_ocr import read_localized_vendor_regions
 from extraction.manifest import build_manifest
-from extraction.ocr import OcrEngine, RapidOcrEngine, read_page
-from extraction.rasterise import PageTooLarge, render_page
+from extraction.models.context import AssembledContext
+from extraction.models.invocations import InvocationRecord
+from extraction.models.nova import (
+    NovaAdapter,
+    NovaAdapterError,
+    NovaConfig,
+    NovaInvocation,
+    NovaInvocationOutcome,
+    NovaRequest,
+    vision_configs_from_environment,
+)
+from extraction.models.validation import ValidationRejection
+from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_reading, read_page
+from extraction.panels import propose_panel_roles
+from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
 from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
-from reports.spreadsheet import StoredFinding, write_stored_workbook
+from extraction.vector_first import plan_reads
+from reports.findings_pdf import FINDINGS_PDF_MEDIA_TYPE, FindingsPdfInput, write_findings_pdf
+from reports.spreadsheet import StoredFinding, decode_reference, write_stored_workbook
 from retrieval.identifiers import NormalizedIdentifier, normalize_identifier
 from retrieval.matching import MatchableItem, MatchDocumentRole, exact_match
 from rules.applicability import Abstention, CheckContext, resolve
 from rules.parameters import ParameterSet, resolve_all
 from rules.project import ProjectScope
+from rules.required_inputs import DiscriminatorNeed, required_inputs
 from rules.semantic_types import ProductType
 from rules.snapshot import RuleSnapshot
 from storage.hashing import ArtifactCorrupt, content_key, sha256_stream
 from storage.store import ArtifactStore
 from units.imperial import format_inches
+from units.measurement import Measurement, Unit
+from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.notation import canonical_notation, is_compound
 from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
-from workflow.association import AssociationSettings, ReadItem, dimension_texts
+from workflow.association import (
+    AssociationSettings,
+    LocalizedOcrSettings,
+    ReadItem,
+    dimension_texts,
+)
+from workflow.config import READER_RASTER_DPI
 from workflow.evidence_operands import operands_from_evidence
+from workflow.findings_composer import (
+    ComposerFinding,
+    ComposerOperand,
+    FindingsLanguageModel,
+    compose_findings,
+    reviewer_reason,
+)
 from workflow.idempotency import stage_idempotency_key
+from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
+from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
+from workflow.view_roles import record_panel_view, revision_views
 
 #: What produced these readings, recorded on the extraction run so a candidate can say what read it.
 EXTRACTOR = "pdfplumber"
@@ -138,11 +226,230 @@ ASSOCIATION_EXTRACTOR_VERSION = "extraction.geometry.text_association/1"
 #: with none, which is the distinction the reader already reports.
 MINIMUM_VECTOR_CHARACTERS = 1
 
+
+class _RecordingFindingsLanguageModel(FindingsLanguageModel, Protocol):
+    """Optional extension supplied by the configured Bedrock narration adapter."""
+
+    def with_invocation_recorder(
+        self, recorder: BedrockConverseInvocationRecorder
+    ) -> FindingsLanguageModel:
+        """Return the same model adapter with per-call persistence attached."""
+
+
+class _VisionReader(Protocol):
+    """One bounded model reader route."""
+
+    @property
+    def config(self) -> NovaConfig:
+        """The model identity and extractor name this route records under."""
+
+    def extract(self, request: NovaRequest, recorder: _BufferedVisionRecorder) -> DomainCandidate:
+        """Return one raw model candidate or raise an adapter error."""
+
+
+@dataclass(frozen=True, slots=True)
+class _LayoutReaderRoute:
+    """One closed-question reader plus the identity persisted with its proposal."""
+
+    reader: LayoutReader
+    model_id: str
+    prompt_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class BedrockVisionReader:
+    """A Bedrock Converse reader using the existing strict Nova adapter contract."""
+
+    config: NovaConfig
+
+    def extract(self, request: NovaRequest, recorder: _BufferedVisionRecorder) -> DomainCandidate:
+        return NovaAdapter.from_environment(self.config, recorder).extract(request)
+
+
+def configured_vision_readers_from_environment() -> tuple[BedrockVisionReader, ...]:
+    """Return the two Phase C Bedrock readers when a deployment explicitly enables them."""
+
+    if os.environ.get(VISION_READERS_ENV, "").lower() not in {"1", "true", "yes"}:
+        return ()
+    return tuple(BedrockVisionReader(config) for config in vision_configs_from_environment())
+
+
+def configured_layout_readers_from_environment() -> tuple[_LayoutReaderRoute, ...]:
+    """Return the Bedrock layout reader only when a deployment explicitly configures it."""
+
+    if os.environ.get(LAYOUT_READERS_ENV, "").lower() not in {"1", "true", "yes"}:
+        return ()
+    model_id = os.environ.get(LAYOUT_MODEL_ENV) or os.environ.get("GV_BEDROCK_MODEL", "")
+    if not model_id.strip():
+        return ()
+    try:
+        import boto3  # type: ignore[import-untyped]
+    except Exception:  # noqa: BLE001
+        return ()
+    config = BedrockClosedQuestionConfig(
+        model_id=model_id,
+        prompt_id=LAYOUT_PROMPT_ID,
+        template_id=LAYOUT_TEMPLATE_ID,
+    )
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name=os.environ.get("GV_BEDROCK_REGION", "us-east-1"),
+    )
+    return (
+        _LayoutReaderRoute(BedrockClosedQuestionReader(config, client), model_id, config.prompt_id),
+    )
+
+
+def _stored_invocation_outcome(outcome: NovaInvocationOutcome) -> str:
+    if outcome is NovaInvocationOutcome.OK:
+        return "ok"
+    if outcome is NovaInvocationOutcome.REFUSED:
+        return "refused"
+    if outcome is NovaInvocationOutcome.REJECTED:
+        return "rejected"
+    if outcome is NovaInvocationOutcome.TIMEOUT:
+        return "timeout"
+    return "failed"
+
+
+def _candidate_evidence_status(row: ObservationCandidate) -> EvidenceStatus:
+    if row.corroboration_status is None:
+        return EvidenceStatus.RAW_CANDIDATE
+    return EvidenceStatus(row.corroboration_status)
+
+
+def _vision_candidate_value(raw_text: str) -> tuple[Measurement | None, str | None]:
+    """The exact value a vision reading is stored with, or the flag saying why it has none.
+
+    **It must agree with the shape check** (`extraction/models/validation.py`). Before #733 this was a
+    bare `normalise_to_inches(raw_text)` while the check canonicalised inch marks first, so the two
+    disagreed: a model's `8'-6''` passed validation and was then stored with no value, unable to take
+    part in any agreement — and `25-1/2"`, `381 [15]` and `2" (VIF)` could not be valued at all. Both
+    now read `units.notation`, and `tests/workflow/test_vision_candidate_value.py` fails if they part.
+
+    The row keeps the characters the model returned; only the value comes from the canonical form.
+    """
+    if is_compound(raw_text):
+        return None, NOT_A_SINGLE_VALUE_FLAG
+    try:
+        return normalise_to_inches(canonical_notation(raw_text)[0]), None
+    except UnitNormalisationError:
+        return None, UNPARSED_FLAG
+
+
+def _ambiguity_reasons(row: ObservationCandidate) -> frozenset[AmbiguityReason]:
+    flags = set(row.ambiguity_flags)
+    reasons: set[AmbiguityReason] = set()
+    if UNKNOWN_UNIT_FLAG in flags:
+        reasons.add(AmbiguityReason.UNKNOWN_UNIT)
+    if UNPARSED_FLAG in flags:
+        reasons.add(AmbiguityReason.UNREADABLE_TEXT)
+    # `NOT_A_SINGLE_VALUE_FLAG` is deliberately **not** mapped (#733). These reasons trigger a bounded,
+    # paid agent retry; a compound like `39 1/4"+6"` was read correctly and is genuinely two values, so
+    # no retry can turn it into one. Before #733 a compound was flagged unparsed and retried for nothing.
+    return frozenset(reasons)
+
+
+@dataclass(slots=True)
+class _BufferedVisionRecorder:
+    """Collect adapter attempt records until the workflow can persist them with run context."""
+
+    session: Session
+    extraction_run_id: UUID
+    request_candidate_id: UUID
+    crop_artifact_id: UUID | None = None
+    _invocations: list[NovaInvocation] = field(init=False, default_factory=list)
+    _rejections: list[ValidationRejection] = field(init=False, default_factory=list)
+
+    def record(self, invocation: NovaInvocation) -> None:
+        self._invocations.append(invocation)
+
+    def record_rejection(self, rejection: ValidationRejection) -> None:
+        self._rejections.append(rejection)
+
+    @property
+    def rejections(self) -> tuple[ValidationRejection, ...]:
+        return tuple(self._rejections)
+
+    def persist(self, *, candidate_id: UUID | None, flush: bool = True) -> int:
+        written = 0
+        for invocation in self._invocations:
+            record_model_invocation(
+                self.session,
+                InvocationRecord(
+                    extraction_run_id=self.extraction_run_id,
+                    model_id=invocation.model_id,
+                    prompt_id=invocation.prompt_id,
+                    template_id=invocation.template_id,
+                    crop_artifact_id=self.crop_artifact_id,
+                    input_tokens=invocation.input_tokens,
+                    output_tokens=(
+                        0
+                        if invocation.outcome
+                        in {NovaInvocationOutcome.REFUSED, NovaInvocationOutcome.TIMEOUT}
+                        else invocation.output_tokens
+                    ),
+                    # From the deployment's stated price file, or unknown — never a literal zero (#700).
+                    cost_micros=call_cost_micros(
+                        rates_from_environment(),
+                        invocation.model_id,
+                        invocation.input_tokens,
+                        (
+                            0
+                            if invocation.outcome
+                            in {NovaInvocationOutcome.REFUSED, NovaInvocationOutcome.TIMEOUT}
+                            else invocation.output_tokens
+                        ),
+                    ),
+                    latency_ms=invocation.latency_ms,
+                    outcome=_stored_invocation_outcome(invocation.outcome),
+                    candidate_id=(
+                        candidate_id if invocation.outcome is NovaInvocationOutcome.OK else None
+                    ),
+                    assembled_context=invocation.context,
+                    bound_pt=invocation.bound_pt,
+                    rejection_reason=invocation.rejection_reason,
+                ),
+                flush=flush,
+            )
+            written += 1
+        return written
+
+
+def _stored_measurement(row: ObservationCandidate) -> Measurement | None:
+    if row.value_numerator is None or row.value_denominator is None or row.unit is None:
+        return None
+    return Measurement(
+        Fraction(row.value_numerator, row.value_denominator),
+        Unit(row.unit),
+        row.raw_text,
+    )
+
+
+def _domain_candidate_from_row(
+    row: ObservationCandidate, run: ExtractionRun, page_index: int
+) -> DomainCandidate:
+    return DomainCandidate(
+        candidate_id=str(row.id),
+        extractor=run.extractor,
+        extractor_version=run.extractor_version,
+        raw_text=row.raw_text,
+        parsed_value=_stored_measurement(row),
+        unit_guess=None if row.unit_guess is None else Unit(row.unit_guess),
+        semantic_guess=None,
+        page=page_index,
+        polygon=tuple(ImagePoint(x=int(x), y=int(y)) for x, y in row.polygon),
+        confidence=row.confidence,
+        ambiguity_flags=tuple(row.ambiguity_flags),
+    )
+
+
 #: The pixel ceiling for one rendered page, used only by the OCR route.
 #:
-#: 40 megapixels is roughly an ANSI E sheet at 150 dpi with room to spare, and 120 MB of RGB in one
-#: allocation. Above it `render_page` raises `PageTooLarge` rather than shrinking, because a page
-#: quietly rendered smaller is a page read at a resolution nobody chose.
+#: 40 megapixels is about 120 MB of raw RGB. The 300-DPI reader fits the measured Board Room sheet,
+#: while an ANSI E sheet at 300 DPI exceeds this ceiling and is refused instead of risking a roughly
+#: 400-MB raw RGB allocation. Above it `render_page` raises `PageTooLarge` rather than shrinking,
+#: because a page quietly rendered smaller is a page read at a resolution nobody chose.
 MAXIMUM_RENDER_PIXELS = 40_000_000
 
 #: How much page to keep around an evidence crop, in PDF points (72 to the inch).
@@ -155,12 +462,60 @@ MAXIMUM_RENDER_PIXELS = 40_000_000
 #: real GV drawings when #274 lands**; it is a starting point chosen deliberately, not a measured one.
 CROP_CONTEXT_MARGIN_PT = Decimal(9)
 
+#: The bounded crop and context sent to vision readers. It deliberately reuses the evidence crop
+#: margin so the model sees a region, not a full page, and no model chooses its own context.
+VISION_CROP_CONTEXT_MARGIN_PT = CROP_CONTEXT_MARGIN_PT
+VISION_CONTEXT_BOUND_PT = CROP_CONTEXT_MARGIN_PT
+
+#: Explicit opt-in for paid/network vision reads in the local worker path. Tests and local extraction
+#: stay deterministic unless a caller injects readers or a deployment opts in.
+VISION_READERS_ENV = "GV_BEDROCK_VISION_ENABLED"
+
+#: Explicit opt-in for paid/network closed-question layout reads. Without this and a model id, the
+#: stage still records an abstention for each discriminator instead of failing extraction.
+LAYOUT_READERS_ENV = "GV_BEDROCK_LAYOUT_ENABLED"
+LAYOUT_MODEL_ENV = "GV_BEDROCK_LAYOUT_MODEL"
+LAYOUT_PROMPT_ID = "layout-discriminator-v1"
+LAYOUT_TEMPLATE_ID = "closed-question-page-v1"
+UNCONFIGURED_LAYOUT_MODEL_ID = "layout-reader-unconfigured"
+
 #: How many individual refusals a stage payload carries, before it reports only the count.
 #:
 #: The payload is stored as JSON on the task run. A document whose pages will not render produces one
 #: refusal per candidate — thousands of near-identical sentences — and a reviewer reads the first few
 #: or none at all. The exact number is always reported alongside.
 REPORTED_REFUSALS = 20
+
+#: Part of an OCR run's identity since #703: text that could not be a reading is no longer recorded,
+#: so a run from before holds rows a run from after does not, and the two must not be one run.
+OCR_FRAGMENTS_CONFIG = "fragments=unrecorded"
+
+
+def _split_ocr_readings(
+    items: Sequence[OcrItem],
+) -> tuple[tuple[OcrItem, ...], tuple[OcrItem, ...]]:
+    """OCR items whose text could be a reading, and the ones whose text could not (#703).
+
+    Order is kept within each, because `_ordered_ocr_rows` and `dimension_texts` pair rows with
+    items by position. The rule is `could_be_a_reading`'s, and it reads only the text: no
+    confidence, no size, no position.
+    """
+    readings = tuple(item for item in items if could_be_a_reading(item.text))
+    fragments = tuple(item for item in items if not could_be_a_reading(item.text))
+    return readings, fragments
+
+
+def _fragment_texts(fragments: Sequence[OcrItem]) -> list[str]:
+    """What the unrecorded fragments said, most frequent first — `7 × 'L'` — for the page result.
+
+    Bounded like every other list a payload carries; the exact total is `ocr_fragments`.
+    """
+    counts = Counter(item.text for item in fragments)
+    return [
+        f"{count} × {text!r}"
+        for text, count in sorted(counts.items(), key=lambda entry: (-entry[1], entry[0]))
+    ][:REPORTED_REFUSALS]
+
 
 #: The media type of an `.xlsx` workbook, spelled out once.
 #:
@@ -186,8 +541,130 @@ MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
     DocumentKind.ARCHITECTURAL.value: MatchDocumentRole.ARCH,
     DocumentKind.SHOP.value: MatchDocumentRole.SHOP,
 }
+VIEW_MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
+    ViewRole.ARCH.value: MatchDocumentRole.ARCH,
+    ViewRole.SHOP.value: MatchDocumentRole.SHOP,
+}
 
 __all__ = ["DatabaseStages"]
+
+type _AgentActionFactory = Callable[[BoundedRegionContext], tuple[ToolCall, ...]]
+
+
+def _default_bounded_agent_actions(context: BoundedRegionContext) -> tuple[ToolCall, ...]:
+    """Retry a bounded region through allowed extraction tools, then abstain plainly."""
+
+    return (
+        ToolCall(
+            f"{context.region_id}:ocr-1",
+            OcrVerificationArguments(context.region_id, context.crop_artifact_id),
+        ),
+        ToolCall(
+            f"{context.region_id}:ocr-2",
+            OcrVerificationArguments(context.region_id, context.crop_artifact_id),
+        ),
+        ToolCall(
+            f"{context.region_id}:vlm-1",
+            VlmReadingArguments(context.region_id, context.crop_artifact_id),
+        ),
+        ToolCall(
+            f"{context.region_id}:abstain",
+            AbstainArguments(
+                context.region_id,
+                "the bounded agent did not produce a reliable reading",
+            ),
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _LocatedOcrReading:
+    """OCR geometry whose orientation was established by its token layout."""
+
+    extent: Polygon
+    rotation_degrees: int
+
+
+@dataclass(frozen=True, slots=True)
+class _VisionAssociationLink:
+    """A model reading and the fixed-reader region it was asked to read."""
+
+    row: ObservationCandidate
+    source_candidate_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class _VisionRegion:
+    """Where a vision reader is pointed: a recorded reading's box, or an OCR box that read as no number.
+
+    **Not every region is a reading (#703).** On the client's drawing RapidOCR returned 903 boxes on
+    2026-09-29 and not one parsed to a value — line-work read as `一`, `口`, `L`, `/`. But those
+    boxes are also where the vision readers look: 903 of the run's roughly 940 vision regions were
+    OCR boxes, and the vision readers' values were read from crops cut around them. So an OCR box
+    whose text cannot be a reading keeps its place on the vision readers' list, and its text is not
+    recorded as a candidate.
+    """
+
+    id: UUID
+    """What a vision reading is linked back to for association (`_association_source_items`). A
+    recorded reading's own id, or a fresh one for a box nothing recorded. It is never persisted."""
+
+    polygon: list[list[int]]
+    document_version_id: UUID
+
+    @classmethod
+    def of(cls, row: ObservationCandidate) -> _VisionRegion:
+        return cls(id=row.id, polygon=row.polygon, document_version_id=row.document_version_id)
+
+
+#: What an OCR item's geometry is paired with: its recorded row, or the region kept in its place.
+_Source = TypeVar("_Source", ObservationCandidate, _VisionRegion)
+
+
+def _association_source_items(
+    *groups: tuple[Sequence[ReadItem], Sequence[ObservationCandidate | _VisionRegion]],
+) -> dict[UUID, ReadItem]:
+    """The fixed-reader geometry that a later model crop is allowed to reuse.
+
+    This map is keyed by the row that bounded the model crop, not by text content. The model may
+    read a corrected value from the pixels, but it does not get to supply the page location or text
+    orientation used for association; those come only from readers that already expose deterministic
+    geometry.
+    """
+    sources: dict[UUID, ReadItem] = {}
+    for items, rows in groups:
+        if len(items) != len(rows):
+            # This map is only an extra allowance for source-backed model association. If an
+            # idempotent rerun hands back already-recorded rows that no longer line up exactly with
+            # this pass's in-memory readings, there is no safe source pairing for model rows from
+            # that route. Skipping it preserves the older fixed-reader association path, where
+            # `dimension_texts` still raises before it would silently mispair rows.
+            continue
+        for item, row in zip(items, rows, strict=True):
+            sources[row.id] = item
+    return sources
+
+
+def _vision_association_inputs(
+    links: Sequence[_VisionAssociationLink],
+    sources: Mapping[UUID, ReadItem],
+) -> tuple[tuple[ReadItem, ...], tuple[ObservationCandidate, ...]]:
+    """Make model-read values eligible for association through their source region.
+
+    Before #698, vision rows were recorded but never handed to `associate`, which made a full
+    `demo_pair` run report zero attachments even when the detector had line-work. This does not
+    promote model geometry: a model row is paired only when the fixed-reader candidate that produced
+    its crop already had a deterministic extent and rotation.
+    """
+    items: list[ReadItem] = []
+    rows: list[ObservationCandidate] = []
+    for link in links:
+        source = sources.get(link.source_candidate_id)
+        if source is None:
+            continue
+        items.append(source)
+        rows.append(link.row)
+    return tuple(items), tuple(rows)
 
 
 class DatabaseStages:
@@ -203,11 +680,20 @@ class DatabaseStages:
         self,
         store: ArtifactStore | None = None,
         *,
-        dpi: int = 150,
+        dpi: int = READER_RASTER_DPI,
         ocr_engine: OcrEngine | None = None,
         operands: Mapping[str, Mapping[str, VerdictOperand]] | None = None,
         discriminators: Mapping[str, str] | None = None,
         association: AssociationSettings | None = None,
+        localized_ocr: LocalizedOcrSettings | None = None,
+        automatic_typing: AutomaticTypingSettings | None = None,
+        findings_composer: FindingsLanguageModel | None = None,
+        vision_readers: Sequence[_VisionReader] | None = None,
+        layout_readers: Sequence[LayoutReader] | None = None,
+        layout_model_id: str = "injected-layout-reader",
+        layout_prompt_id: str = LAYOUT_PROMPT_ID,
+        bounded_agent: BoundedAgentGraph | None = None,
+        bounded_agent_actions: _AgentActionFactory | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -225,6 +711,36 @@ class DatabaseStages:
         # here would be this module choosing which line a dimension belongs to on every drawing
         # anybody ever runs, which is the guess `text_association` refuses to make for itself.
         self._association = association
+        self._localized_ocr = localized_ocr
+        # Optional and deliberately empty by default.  A deployment has to state the vocabulary
+        # final for its layout; exact tags then qualify only through the separate evidence gate.
+        # This never writes ``semantic_guess`` and an agent suggestion is not accepted here.
+        self._automatic_typing = automatic_typing
+        # Post-verdict presentation only. The composer receives frozen stored findings in
+        # ``generate_outputs``; it is unreachable from ``run_checks`` and an error falls back to a
+        # complete deterministic summary rather than delaying or changing a verdict.
+        self._findings_composer = findings_composer
+        self._vision_readers = (
+            tuple(configured_vision_readers_from_environment())
+            if vision_readers is None
+            else tuple(vision_readers)
+        )
+        self._layout_reader_routes = (
+            tuple(configured_layout_readers_from_environment())
+            if layout_readers is None
+            else tuple(
+                _LayoutReaderRoute(reader, layout_model_id, layout_prompt_id)
+                for reader in layout_readers
+            )
+        )
+        if bounded_agent is None and bounded_agent_actions is not None:
+            raise ValueError("bounded_agent_actions cannot be supplied without a bounded_agent")
+        self._bounded_agent = bounded_agent
+        self._bounded_agent_actions = (
+            _default_bounded_agent_actions
+            if bounded_agent is not None and bounded_agent_actions is None
+            else bounded_agent_actions
+        )
         # Injected so a test can pass a stub: building the real one loads ONNX models, and a suite
         # that loaded them to test row-writing would be paying for a model it is not testing.
         self._ocr_engine = ocr_engine
@@ -242,7 +758,10 @@ class DatabaseStages:
         #
         # Empty by default, so the production path is unchanged and still abstains until evidence
         # exists. Nothing here invents a value: a caller that supplies none gets the old behaviour.
-        self._operands = dict(operands or {})
+        # `None` means load reviewer-confirmed operands at check time. An explicit mapping remains
+        # useful to isolated tests and evaluators. This prevents an untyped OCR proposal from ever
+        # becoming a verdict input while allowing the live worker to see a later human confirmation.
+        self._operands = None if operands is None else dict(operands)
         self._discriminators = dict(discriminators or {})
 
     def _not_built(self, stage: str) -> Mapping[str, object]:
@@ -364,6 +883,7 @@ class DatabaseStages:
             config_hash=f"dpi={self._dpi}",
             dpi=self._dpi,
         )
+        layout_discriminators = _layout_discriminators(session)
 
         results: list[PageResult] = []
         for version, key, sha256, _ in documents:
@@ -393,11 +913,40 @@ class DatabaseStages:
                 task_run_id=str(task_run.id),
                 extractor_version=EXTRACTOR_VERSION,
             ):
-                results.extend(self._read_document(session, version_id=version, data=data, run=run))
+                # ``Page.index`` is scoped to one document.  The workflow join, however, receives
+                # every page in the package and requires a unique ordering key.  Preserve the
+                # drawing-local index in the payload and give the package fan-out a deterministic
+                # ordinal, so page 0 of the architectural PDF and page 0 of the shop PDF are two
+                # distinct work results rather than a false duplicate.
+                for document_page in self._read_document(
+                    session,
+                    package_revision_id=package_revision_id,
+                    version_id=version,
+                    data=data,
+                    run=run,
+                    layout_discriminators=layout_discriminators,
+                ):
+                    results.append(
+                        PageResult(
+                            index=len(results),
+                            payload={
+                                **document_page.payload,
+                                "document_page_index": document_page.index,
+                                "document_version_id": str(version),
+                            },
+                        )
+                    )
         return tuple(results)
 
     def _read_document(
-        self, session: Session, *, version_id: UUID, data: bytes, run: ExtractionRun
+        self,
+        session: Session,
+        *,
+        package_revision_id: UUID,
+        version_id: UUID,
+        data: bytes,
+        run: ExtractionRun,
+        layout_discriminators: Sequence[DiscriminatorNeed],
     ) -> list[PageResult]:
         """One document: its manifest, then its text, page by page."""
         try:
@@ -425,21 +974,14 @@ class DatabaseStages:
             written = 0
             route = "vector"
             vector_rows: list[ObservationCandidate] = []
+            ocr_items: tuple[OcrItem, ...] = ()
+            ocr_rows: list[ObservationCandidate] = []
+            ocr_fragments: tuple[OcrItem, ...] = ()
+            vision_rows: list[ObservationCandidate] = []
+            vision_invocations = 0
+            vision_refusals: list[str] = []
             read: PageContents | None = None
-            if not page.has_vector_text:
-                # **A scanned page, which the vector reader cannot see at all.** Until this, such a
-                # page produced no candidates and was indistinguishable from a page with nothing on
-                # it. Scanned sheets are one of the six things #274 asks the client for, so this is
-                # not a hypothetical (#499).
-                route = "ocr"
-                written = self._read_page_by_ocr(
-                    session,
-                    version_id=version_id,
-                    data=data,
-                    page=page,
-                    task_run_id=run.task_run_id,
-                )
-            elif page.has_vector_text:
+            if page.has_vector_text:
                 with traced(
                     "extraction.page",
                     document_version_id=str(version_id),
@@ -472,6 +1014,7 @@ class DatabaseStages:
                             page_id=page.id,
                             extraction_run_id=run.id,
                             page_index=page.index,
+                            flush=False,
                         )
                         written = len(vector_rows)
                         read = contents
@@ -492,6 +1035,134 @@ class DatabaseStages:
                 page=page,
                 task_run_id=run.task_run_id,
             )
+            # **Which drawing is which, on a combined sheet (#710).** Each drawing becomes a view, and
+            # the label the sheet prints above it gives a suggestion. Never the role: only a person's
+            # confirmation sets that, through the API.
+            panels = None if layers is None else _record_panel_views(session, page, layers)
+
+            if not page.has_vector_text:
+                # A stamp-only vendor drawing has no content-stream text, but it does have exact
+                # candidate geometry in its vendor layer. Read those regions as bounded 600-DPI
+                # crops rather than asking OCR to find tiny labels on a full sheet. This needs the
+                # deployment's association geometry settings: without them the pipeline would be
+                # inventing the detector configuration that turns paths into candidate regions.
+                # A page with no usable vendor regions keeps the normal full-page OCR route for
+                # scans and other non-vector inputs.
+                if (
+                    self._association is not None
+                    and self._localized_ocr is not None
+                    and layers is not None
+                ):
+                    plan = plan_reads(
+                        layers,
+                        proximity_limit=self._association.proximity_limit,
+                        minimum_paths=self._localized_ocr.minimum_paths,
+                        maximum_span=self._localized_ocr.maximum_span,
+                    )
+                    if plan.to_read:
+                        route = "localized_ocr"
+                        ocr_items, ocr_rows, ocr_fragments = self._read_page_by_localized_ocr(
+                            session,
+                            version_id=version_id,
+                            data=data,
+                            page=page,
+                            task_run_id=run.task_run_id,
+                            layers=layers,
+                            regions=tuple(entry.region for entry in plan.to_read),
+                        )
+                    else:
+                        # No line-selected region is an explicit localized abstention. Falling
+                        # back to full-page OCR would reintroduce the tiny-text failure and could
+                        # grab an unrelated number; reviewers can see the geometry set-asides.
+                        route = "localized_ocr"
+                        ocr_items, ocr_rows, ocr_fragments = (), [], ()
+                else:
+                    route = "ocr"
+                    ocr_items, ocr_rows, ocr_fragments = self._read_page_by_ocr(
+                        session,
+                        version_id=version_id,
+                        data=data,
+                        page=page,
+                        task_run_id=run.task_run_id,
+                    )
+                written = len(ocr_rows)
+
+            vector_association_inputs = (
+                (read.texts if read is not None else ()),
+                tuple(vector_rows),
+            )
+            ocr_association_inputs = self._ocr_association_inputs(ocr_items, ocr_rows)
+            # **The boxes of OCR text that could not be a reading** (#703). Not candidates, and not
+            # given to `associate` as readings. A vision reading of one is associated under the
+            # rule a recorded row's is — only where the OCR layout established an orientation,
+            # which for a box like these it usually has not — so nothing here attaches more than
+            # the recorded row would have.
+            fragment_regions = tuple(
+                _VisionRegion(
+                    id=uuid4(),
+                    polygon=[[point.x, point.y] for point in item.image_extent],
+                    document_version_id=version_id,
+                )
+                for item in ocr_fragments
+            )
+            association_sources: Mapping[UUID, ReadItem] = {}
+
+            vision_association_links: tuple[_VisionAssociationLink, ...] = ()
+            if self._vision_readers:
+                association_sources = _association_source_items(
+                    vector_association_inputs,
+                    ocr_association_inputs,
+                    self._ocr_association_inputs(ocr_fragments, fragment_regions),
+                )
+                (
+                    vision_rows,
+                    vision_invocations,
+                    vision_refusals,
+                    vision_association_links,
+                ) = self._read_page_by_vision(
+                    session,
+                    version_id=version_id,
+                    data=data,
+                    page=page,
+                    task_run_id=run.task_run_id,
+                    regions=(
+                        tuple(_VisionRegion.of(row) for row in vector_rows + ocr_rows)
+                        + fragment_regions
+                    ),
+                    stacked_fractions=(() if layers is None else layers.stacked_fractions),
+                )
+
+            self._apply_cross_route_corroboration(
+                session,
+                page_index=page.index,
+                candidates=tuple(vector_rows + ocr_rows + markup_rows + vision_rows),
+            )
+            agent_rows, agent_abstentions = self._run_bounded_agent_for_ambiguous_regions(
+                session,
+                version_id=version_id,
+                data=data,
+                page=page,
+                task_run_id=run.task_run_id,
+                candidates=tuple(vector_rows + ocr_rows + markup_rows + vision_rows),
+            )
+            if agent_rows:
+                self._apply_cross_route_corroboration(
+                    session,
+                    page_index=page.index,
+                    candidates=tuple(
+                        vector_rows + ocr_rows + markup_rows + vision_rows + agent_rows
+                    ),
+                )
+            layout_written, layout_refusals = self._classify_page_layouts(
+                session,
+                package_revision_id=package_revision_id,
+                version_id=version_id,
+                data=data,
+                page=page,
+                extraction_run_id=run.id,
+                discriminators=layout_discriminators,
+            )
+            session.flush()
 
             # **Both routes' readings against all of the page's lines, in one pass.** A reviewer's
             # correction labels a line the vendor drew, so judging the two layers against separate
@@ -503,7 +1174,12 @@ class DatabaseStages:
                 page=page,
                 task_run_id=run.task_run_id,
                 readings=(
-                    (read.texts if read is not None else (), vector_rows),
+                    vector_association_inputs,
+                    ocr_association_inputs,
+                    _vision_association_inputs(
+                        vision_association_links,
+                        association_sources,
+                    ),
                     ((layers.markup if layers is not None else ()), markup_rows),
                 ),
                 lines=(
@@ -515,8 +1191,22 @@ class DatabaseStages:
                 PageResult(
                     index=page.index,
                     payload={
-                        "candidates": written,
+                        "candidates": written + len(vision_rows) + len(agent_rows),
                         "markup_candidates": len(markup_rows),
+                        "vision_candidates": len(vision_rows),
+                        # OCR text that could not be a reading (#703): counted here because it is
+                        # not a candidate, so without this the page would simply look smaller.
+                        # Each box was still offered to the vision readers.
+                        "ocr_fragments": len(ocr_fragments),
+                        "ocr_fragment_texts": _fragment_texts(ocr_fragments),
+                        "agent_candidates": len(agent_rows),
+                        "agent_abstentions": agent_abstentions,
+                        "layout_proposals": layout_written,
+                        # `None` when the page's annotations could not be read at all.
+                        "panels": panels,
+                        "layout_refusals": layout_refusals[:REPORTED_REFUSALS],
+                        "vision_invocations": vision_invocations,
+                        "vision_refusals": vision_refusals[:REPORTED_REFUSALS],
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
                         "associations": associated,
@@ -528,6 +1218,360 @@ class DatabaseStages:
                 )
             )
         return results
+
+    def _classify_page_layouts(
+        self,
+        session: Session,
+        *,
+        package_revision_id: UUID,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        extraction_run_id: UUID,
+        discriminators: Sequence[DiscriminatorNeed],
+    ) -> tuple[int, list[str]]:
+        """Ask each rulebook layout discriminator as a closed question for this rendered page."""
+
+        if self._store is None or not discriminators:
+            return 0, []
+        try:
+            rendered = render_page(
+                data,
+                page.index,
+                document_version_id=version_id,
+                page_content_hash=page.content_hash,
+                dpi=self._dpi,
+                maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                # A model classifies this page's layout: it is shown the vendor's drawing only (#742).
+                vendor_only=True,
+            )
+        except (PageTooLarge, UnreadablePdf, ValueError) as error:
+            reason = str(error).strip() or type(error).__name__
+            return 0, [f"page {page.index}: {reason}"]
+
+        written = 0
+        refused: list[str] = []
+        readers = tuple(route.reader for route in self._layout_reader_routes)
+        model_id, prompt_id = _layout_proposal_identity(self._layout_reader_routes)
+        for discriminator in discriminators:
+            classification = classify_layout(
+                rendered,
+                question_from_discriminator(discriminator),
+                readers,
+            )
+            crop_artifact_id = self._layout_crop_artifact_id(
+                session,
+                rendered=rendered,
+                page=page,
+                extraction_run_id=extraction_run_id,
+                discriminator_name=discriminator.name,
+                classification=classification,
+            )
+            if crop_artifact_id is None:
+                refused.append(f"page {page.index}: {discriminator.name}: crop was not available")
+                continue
+            record_layout_proposal(
+                session,
+                package_revision_id=package_revision_id,
+                discriminator_name=discriminator.name,
+                proposed_value=_layout_proposed_value(classification),
+                crop_artifact_id=crop_artifact_id,
+                model_id=model_id,
+                prompt_id=prompt_id,
+            )
+            written += 1
+        return written, refused
+
+    def _layout_crop_artifact_id(
+        self,
+        session: Session,
+        *,
+        rendered: RenderedPage,
+        page: Page,
+        extraction_run_id: UUID,
+        discriminator_name: str,
+        classification: LayoutClassification,
+    ) -> UUID | None:
+        if self._store is None:
+            return None
+        crop = generate_crop(
+            rendered,
+            CropSpec(
+                polygon=classification.region,
+                context_margin_pt=CROP_CONTEXT_MARGIN_PT,
+                dpi=self._dpi,
+            ),
+            self._store,
+        )
+        if crop.status is not CropStatus.AVAILABLE or crop.artifact is None:
+            return None
+
+        existing = session.execute(
+            select(EvidenceArtifact).where(
+                EvidenceArtifact.storage_key == crop.artifact.key,
+                EvidenceArtifact.sha256 == crop.artifact.sha256,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing.id
+
+        candidate = ObservationCandidate(
+            document_version_id=rendered.document_version_id,
+            page_id=page.id,
+            extraction_run_id=extraction_run_id,
+            raw_text=(
+                f"layout {discriminator_name}: {classification.status.value}: "
+                f"{classification.reason}"
+            ),
+            polygon=_image_polygon(classification.region, rendered),
+            ambiguity_flags=[],
+        )
+        session.add(candidate)
+        session.flush()
+        artifact = EvidenceArtifact(
+            candidate_id=candidate.id,
+            canonical_observation_id=None,
+            document_version_id=page.document_version_id,
+            page_id=page.id,
+            kind=EvidenceArtifactKind.CROP.value,
+            storage_key=crop.artifact.key,
+            sha256=crop.artifact.sha256,
+            media_type="image/png",
+            coordinate_space="image",
+        )
+        session.add(artifact)
+        session.flush()
+        return artifact.id
+
+    @staticmethod
+    def _ocr_association_inputs(
+        items: tuple[OcrItem, ...], rows: Sequence[_Source]
+    ) -> tuple[tuple[_LocatedOcrReading, ...], tuple[_Source, ...]]:
+        """Keep only OCR readings whose layout states an axis; retain row pairing exactly.
+
+        Arbitrary OCR boxes carry no declared rotation, and production association deliberately
+        refuses to infer one. The tightly recognised dual-unit layout does establish that its two
+        rows read horizontally, so those readings can use the same association machinery as vector
+        and markup text. Everything else remains recorded but unassociated.
+        """
+        located: list[_LocatedOcrReading] = []
+        located_rows: list[_Source] = []
+        for item, row in zip(items, rows, strict=True):
+            if item.extent is None or item.rotation_degrees is None:
+                continue
+            located.append(_LocatedOcrReading(item.extent, item.rotation_degrees))
+            located_rows.append(row)
+        return tuple(located), tuple(located_rows)
+
+    @staticmethod
+    def _ordered_ocr_rows(
+        items: tuple[OcrItem, ...], rows: list[ObservationCandidate]
+    ) -> list[ObservationCandidate]:
+        """Match persisted rows to OCR items by stored content, never query return order."""
+        available: dict[
+            tuple[str, tuple[tuple[int, int], ...], Decimal], list[ObservationCandidate]
+        ] = {}
+        for row in rows:
+            if row.confidence is None:
+                raise ValueError("a persisted OCR row has no OCR confidence")
+            key = (
+                row.raw_text,
+                tuple((int(x), int(y)) for x, y in row.polygon),
+                row.confidence,
+            )
+            available.setdefault(key, []).append(row)
+        ordered: list[ObservationCandidate] = []
+        for item in items:
+            key = (
+                item.text,
+                tuple((point.x, point.y) for point in item.image_extent),
+                item.confidence,
+            )
+            matches = available.get(key, [])
+            if not matches:
+                raise ValueError("a persisted OCR row does not match the reading that produced it")
+            ordered.append(matches.pop())
+        return ordered
+
+    @staticmethod
+    def _apply_cross_route_corroboration(
+        session: Session,
+        *,
+        page_index: int,
+        candidates: Sequence[ObservationCandidate],
+    ) -> None:
+        """Run the second-reader lane across same-region readings before first insert."""
+
+        pending_ids = {row.id for row in candidates if inspect(row).pending}
+        if not pending_ids:
+            return
+
+        by_region: dict[tuple[UUID, tuple[tuple[int, int], ...]], list[ObservationCandidate]] = {}
+        for row in candidates:
+            if row.corroboration_lane is not None:
+                continue
+            key = (row.page_id, tuple((int(x), int(y)) for x, y in row.polygon))
+            by_region.setdefault(key, []).append(row)
+
+        run_ids = {row.extraction_run_id for rows in by_region.values() for row in rows}
+        with session.no_autoflush:
+            runs = {
+                run.id: run
+                for run in session.execute(
+                    select(ExtractionRun).where(ExtractionRun.id.in_(run_ids))
+                ).scalars()
+            }
+        for rows in by_region.values():
+            if not any(row.id in pending_ids for row in rows):
+                continue
+            result = corroborate(
+                tuple(
+                    _domain_candidate_from_row(row, runs[row.extraction_run_id], page_index)
+                    for row in rows
+                )
+            )
+            if result.lane is None:
+                continue
+            for row in rows:
+                if row.id in pending_ids:
+                    row.corroboration_status = result.status.value
+                    row.corroboration_lane = result.lane.value
+
+    def _run_bounded_agent_for_ambiguous_regions(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        task_run_id: UUID,
+        candidates: Sequence[ObservationCandidate],
+    ) -> tuple[list[ObservationCandidate], int]:
+        """Run the bounded agent only for rows that the deterministic trigger permits."""
+
+        if (
+            self._bounded_agent is None
+            or self._bounded_agent_actions is None
+            or self._store is None
+            or not candidates
+        ):
+            return [], 0
+
+        try:
+            rendered = render_page(
+                data,
+                page.index,
+                document_version_id=version_id,
+                page_content_hash=page.content_hash,
+                dpi=self._dpi,
+                maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                # The bounded agent asks a model about these crops: vendor's drawing only (#742).
+                vendor_only=True,
+            )
+        except (PageTooLarge, UnreadablePdf, ValueError):
+            return [], 0
+
+        rows: list[ObservationCandidate] = []
+        abstentions = 0
+        for candidate in candidates:
+            status = _candidate_evidence_status(candidate)
+            reasons = _ambiguity_reasons(candidate)
+            if status is not EvidenceStatus.RAW_CANDIDATE or not reasons:
+                continue
+
+            crop_artifact_id = self._agent_crop_artifact_id(rendered, candidate)
+            trigger_context = RegionContext(
+                region_id=str(candidate.id),
+                fixed_extraction_complete=True,
+                crop_available=crop_artifact_id is not None,
+                ambiguity_reasons=reasons,
+            )
+            decision = evaluate_trigger(status, trigger_context)
+            if not decision.triggered:
+                continue
+            if crop_artifact_id is None:
+                raise AssertionError("triggered agent region without a crop artifact")
+
+            graph_context = BoundedRegionContext(
+                region_id=decision.region_id,
+                crop_artifact_id=crop_artifact_id,
+                nearby_text=(),
+                nearby_geometry_refs=(),
+            )
+            terminal = self._bounded_agent.run(
+                graph_context,
+                self._bounded_agent_actions(graph_context),
+            )
+            if isinstance(terminal, CandidateTerminal):
+                rows.append(
+                    self._record_agent_candidate(
+                        session,
+                        terminal.candidate,
+                        document_version_id=version_id,
+                        page_id=page.id,
+                        task_run_id=task_run_id,
+                        source_candidate=candidate,
+                        flush=False,
+                    )
+                )
+            elif isinstance(terminal, AbstentionTerminal):
+                abstentions += 1
+            else:
+                raise TypeError("bounded agent returned an unknown terminal")
+        return rows, abstentions
+
+    def _agent_crop_artifact_id(
+        self, rendered: RenderedPage, candidate: ObservationCandidate
+    ) -> str | None:
+        if self._store is None:
+            return None
+        polygon = _stored_polygon(candidate, rendered)
+        if polygon is None:
+            return None
+        result = generate_crop(
+            rendered,
+            CropSpec(
+                polygon=polygon,
+                context_margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
+                dpi=self._dpi,
+            ),
+            self._store,
+        )
+        if result.status is not CropStatus.AVAILABLE or result.artifact is None:
+            return None
+        return result.artifact.key
+
+    def _record_agent_candidate(
+        self,
+        session: Session,
+        candidate: DomainCandidate,
+        *,
+        document_version_id: UUID,
+        page_id: UUID,
+        task_run_id: UUID,
+        source_candidate: ObservationCandidate,
+        flush: bool = True,
+    ) -> ObservationCandidate:
+        run = open_extraction_run(
+            session,
+            task_run_id=task_run_id,
+            extractor=candidate.extractor,
+            extractor_version=candidate.extractor_version,
+            config_hash=(
+                f"dpi={self._dpi};route=bounded_agent;layers=vendor;"
+                f"source_candidate_id={source_candidate.id}"
+            ),
+            dpi=self._dpi,
+        )
+        return self._record_vision_candidate(
+            session,
+            candidate,
+            document_version_id=document_version_id,
+            page_id=page_id,
+            extraction_run_id=run.id,
+            page_polygon=source_candidate.polygon,
+            flush=flush,
+        )
 
     def _associate_page(
         self,
@@ -572,9 +1616,27 @@ class DatabaseStages:
             page_index=page.index,
             extractor_version=ASSOCIATION_EXTRACTOR_VERSION,
         ):
+            # **Only the dimension lines are offered, not every stroke on the page.**
+            #
+            # `associate` was previously handed all of them, which meant a reading could attach
+            # itself to the edge of a cabinet as readily as to the dimension that measures it — and
+            # once attached the two are indistinguishable. `DESIGN_EXTRACTION.md` §6 names that as
+            # the failure this layer exists to prevent: the number reads correctly, the arithmetic
+            # is exact, and the finding is about the wrong thing.
+            #
+            # On the first real sheet this takes 136 strokes down to 11 candidates. The other 125
+            # are cabinets, borders and hatching, and every one of them used to be somewhere a
+            # number could land.
+            detected = detect(
+                lines,
+                witness_tolerance=settings.witness_tolerance,
+                minimum_span=settings.minimum_span,
+                straightness=settings.straightness,
+                crossing_margin=settings.crossing_margin,
+            )
             result = associate(
                 tuple(texts),
-                lines,
+                tuple(line.extent for line in detected.lines),
                 proximity_limit=settings.proximity_limit,
                 ambiguity_margin=settings.ambiguity_margin,
             )
@@ -586,7 +1648,18 @@ class DatabaseStages:
                 config_hash=f"dpi={self._dpi};{settings.config_hash}",
                 dpi=self._dpi,
             )
-            return len(record_associations(session, result, extraction_run_id=association_run.id))
+            return len(
+                record_associations(
+                    session,
+                    result,
+                    extraction_run_id=association_run.id,
+                    chains=_chain_membership(detected, page_id=page.id),
+                    # Zero here is the fact a scanned drawing turns on: no line-work was found, so
+                    # the attachment check could not run, and a refusal recorded against it must not
+                    # read downstream as an examination.
+                    lines_on_page=len(detected.lines),
+                )
+            )
 
     def _read_page_markup(
         self,
@@ -637,6 +1710,7 @@ class DatabaseStages:
                     line_minimum_pt=self._association.line_minimum_pt,
                     glyph_maximum_pt=self._association.glyph_maximum_pt,
                     glyph_gap_pt=self._association.glyph_gap_pt,
+                    fraction_bar=self._association.fraction_bar,
                 )
         except UnreadablePdf as error:
             # The run is opened here rather than before the read, because a run is a record of work
@@ -687,6 +1761,7 @@ class DatabaseStages:
                     page_id=page.id,
                     extraction_run_id=markup_run.id,
                     page_index=page.index,
+                    flush=False,
                 ),
                 layers,
             )
@@ -699,8 +1774,12 @@ class DatabaseStages:
         data: bytes,
         page: Page,
         task_run_id: UUID,
-    ) -> int:
+    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate], tuple[OcrItem, ...]]:
         """Render one page and read it with the OCR engine, recording what it found.
+
+        Returns the readings, their rows, and the OCR items whose text could not be a reading
+        (`could_be_a_reading`, #703): not recorded, and returned so their boxes still reach the
+        vision readers and their count still reaches the page's result.
 
         **A separate extraction run, not the vector one.** A candidate points at a run to say what
         read it, and `open_extraction_run` keys a run on extractor, version and config — so OCR
@@ -725,6 +1804,9 @@ class DatabaseStages:
             # The rasteriser's own ceiling, passed explicitly because it has no default: a page that
             # would not fit in memory must raise `PageTooLarge` rather than be silently shrunk.
             maximum_pixels=MAXIMUM_RENDER_PIXELS,
+            # OCR must not read the reviewer's notes as the drawing's text; they have their own exact
+            # lane (#742).
+            vendor_only=True,
         )
         with traced(
             "extraction.page.ocr",
@@ -733,24 +1815,328 @@ class DatabaseStages:
             extractor_version=engine.version,
         ):
             read = read_page(rendered, engine=engine)
+            readings, fragments = _split_ocr_readings(read.items)
             ocr_run = open_extraction_run(
                 session,
                 task_run_id=task_run_id,
                 extractor=engine.name,
                 extractor_version=engine.version,
-                config_hash=f"dpi={self._dpi}",
+                # `layers=vendor` because the pixels changed (#742): a run from before it read the
+                # reviewer's notes too, and must not be reused as though it had not.
+                # `fragments=unrecorded` because what is recorded changed (#703): a run from before
+                # it holds rows for text that could not be a reading.
+                config_hash=f"dpi={self._dpi};layers=vendor;{OCR_FRAGMENTS_CONFIG}",
                 dpi=self._dpi,
             )
-            return len(
-                record_ocr_candidates(
+            rows = record_ocr_candidates(
+                session,
+                readings,
+                document_version_id=version_id,
+                page_id=page.id,
+                extraction_run_id=ocr_run.id,
+                page_index=page.index,
+                flush=False,
+            )
+            return readings, self._ordered_ocr_rows(readings, rows), fragments
+
+    def _read_page_by_localized_ocr(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        task_run_id: UUID,
+        layers: PageLayers,
+        regions: Sequence[OutlinedTextRegion],
+    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate], tuple[OcrItem, ...]]:
+        """Read vendor outlined-text regions as bounded, vendor-only high-DPI crops.
+
+        Returns what `_read_page_by_ocr` returns, and splits readings from fragments the same way.
+
+        ``layers`` was read with the deployment's explicit geometry thresholds. ``region_crop``
+        independently strips non-stamp annotations from each rendered crop, so a reviewer
+        annotation cannot leak into OCR even when the original upload carries one.
+
+        Candidate polygons remain in the shared reader DPI frame. The extraction run configuration
+        separately records the 600-DPI crop pixels RapidOCR actually saw, avoiding the provenance
+        error of claiming that a 300-DPI full-page render produced a crop-local reading.
+        """
+        if page.media_box is None or page.crop_box is None:
+            # A manifest row without transform metadata cannot carry a crop reading back to page
+            # coordinates. Full-page OCR is the honest fallback rather than a made-up polygon.
+            return self._read_page_by_ocr(
+                session,
+                version_id=version_id,
+                data=data,
+                page=page,
+                task_run_id=task_run_id,
+            )
+        media = tuple(Decimal(value) for value in page.media_box)
+        crop = tuple(Decimal(value) for value in page.crop_box)
+        if len(media) != 4 or len(crop) != 4:
+            return self._read_page_by_ocr(
+                session,
+                version_id=version_id,
+                data=data,
+                page=page,
+                task_run_id=task_run_id,
+            )
+        transform = PageTransform(
+            dpi=self._dpi,
+            rotation=page.rotation,
+            media_box=(media[0], media[1], media[2], media[3]),
+            crop_box=(crop[0], crop[1], crop[2], crop[3]),
+        )
+        engine = self._ocr()
+        with traced(
+            "extraction.page.localized_ocr",
+            document_version_id=str(version_id),
+            page_index=page.index,
+            extractor_version=engine.version,
+        ):
+            items = read_localized_vendor_regions(
+                data,
+                page_index=page.index,
+                regions=regions,
+                engine=engine,
+                page_transform=transform,
+                margin_pt=(
+                    self._localized_ocr.crop_margin_pt
+                    if self._localized_ocr is not None
+                    else CROP_CONTEXT_MARGIN_PT
+                ),
+            )
+            readings, fragments = _split_ocr_readings(items)
+            ocr_run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=engine.name,
+                extractor_version=engine.version,
+                config_hash=(
+                    f"dpi={self._dpi};route=localized_vendor_regions;crop_dpi={VISION_CROP_DPI};"
+                    f"{self._localized_ocr.config_hash if self._localized_ocr is not None else ''}"
+                    f";{OCR_FRAGMENTS_CONFIG}"
+                ),
+                # Candidate polygons use this full-page frame. The actual pixel resolution used by
+                # OCR is separately retained in config_hash above.
+                dpi=self._dpi,
+            )
+            rows = record_ocr_candidates(
+                session,
+                readings,
+                document_version_id=version_id,
+                page_id=page.id,
+                extraction_run_id=ocr_run.id,
+                page_index=page.index,
+                flush=False,
+            )
+            return readings, self._ordered_ocr_rows(readings, rows), fragments
+
+    def _read_page_by_vision(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        task_run_id: UUID,
+        regions: Sequence[_VisionRegion],
+        stacked_fractions: Sequence[StackedFraction],
+    ) -> tuple[list[ObservationCandidate], int, list[str], tuple[_VisionAssociationLink, ...]]:
+        """Read each region with every configured vision reader.
+
+        **A region is a recorded reading's box or an OCR box whose text was not a reading** (#703).
+        Both are read the same way; see `_VisionRegion` for why the second kind stays on the list.
+
+        **Each request says whether its crop shows a stacked fraction** (#735), found on the vendor's
+        layer by `extraction/glyph_bands.py` when the page's geometry was read. The validator then
+        abstains on any reading of that crop: a stacked fraction always goes to a reviewer (#726).
+        Where the geometry was not read — no association settings — `stacked_fractions` is empty and
+        nothing is flagged; so is a label the vendor drew as font text rather than paths, which the
+        geometry reader does not see (#738).
+
+        This route is additive: a model output is another raw candidate, never a fact, and a failed
+        model call leaves the fixed readers' candidates untouched. The crop bound and one-call-per
+        reader-per-region loop live here rather than in the prompt.
+
+        The returned association links are deliberately source-backed. A vision reader reports a
+        string, not a trusted page location or text orientation. When association later considers a
+        model row, it may reuse only the fixed-reader region that caused this exact crop to be sent.
+        Before #698 the vision rows were left out of association entirely, so a real run could have
+        model-read numbers and detected line-work but zero `observation_associations` rows.
+        """
+        if not regions or self._store is None:
+            return [], 0, [], ()
+
+        try:
+            rendered = render_page(
+                data,
+                page.index,
+                document_version_id=version_id,
+                page_content_hash=page.content_hash,
+                dpi=self._dpi,
+                maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                # **Vendor's drawing only (#742).** A reviewer's note painted into a crop is a number
+                # a model can return as the vendor's, and two readers doing so would seal it as one.
+                vendor_only=True,
+            )
+        except (PageTooLarge, UnreadablePdf, ValueError) as error:
+            return [], 0, [f"page {page.index}: {error}"], ()
+
+        rows: list[ObservationCandidate] = []
+        association_links: list[_VisionAssociationLink] = []
+        invocations = 0
+        refusals: list[str] = []
+        for reader in self._vision_readers:
+            run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=reader.config.extractor,
+                extractor_version=reader.config.model_id,
+                config_hash=(
+                    f"dpi={self._dpi};route=vision;layers=vendor;"
+                    f"crop_margin_pt={VISION_CROP_CONTEXT_MARGIN_PT};"
+                    f"context_bound_pt={VISION_CONTEXT_BOUND_PT}"
+                    # Which readings are accepted depends on it, so a run under other numbers is
+                    # another run, not this one reused.
+                    + (
+                        ""
+                        if self._association is None
+                        else f";fraction_bar={self._association.fraction_bar.config_hash}"
+                    )
+                ),
+                dpi=self._dpi,
+            )
+            with session.no_autoflush:
+                existing = list(
+                    session.execute(
+                        select(ObservationCandidate).where(
+                            ObservationCandidate.extraction_run_id == run.id,
+                            ObservationCandidate.page_id == page.id,
+                        )
+                    ).scalars()
+                )
+            if existing:
+                rows.extend(existing)
+                continue
+
+            for region in regions:
+                cropped = self._vision_crop(rendered, region)
+                if cropped is None:
+                    refusals.append(
+                        f"page {page.index}: a candidate's polygon could not be cropped for vision"
+                    )
+                    continue
+                crop, crop_box = cropped
+                request_candidate_id = uuid4()
+                recorder = _BufferedVisionRecorder(
+                    session=session,
+                    extraction_run_id=run.id,
+                    request_candidate_id=request_candidate_id,
+                )
+                request = NovaRequest(
+                    candidate_id=str(request_candidate_id),
+                    page=page.index,
+                    crop=crop,
+                    image_format="png",
+                    context=AssembledContext(nearby_text=(), nearby_geometry=()),
+                    bound_pt=VISION_CONTEXT_BOUND_PT,
+                    stacked_label=_crop_shows_a_stacked_fraction(crop_box, stacked_fractions),
+                )
+                try:
+                    candidate = reader.extract(request, recorder)
+                except NovaAdapterError as error:
+                    invocations += recorder.persist(candidate_id=None, flush=False)
+                    refusals.append(f"page {page.index}: {reader.config.extractor}: {error}")
+                    continue
+                row = self._record_vision_candidate(
                     session,
-                    read.items,
+                    candidate,
                     document_version_id=version_id,
                     page_id=page.id,
-                    extraction_run_id=ocr_run.id,
-                    page_index=page.index,
+                    extraction_run_id=run.id,
+                    page_polygon=region.polygon,
+                    flush=False,
                 )
-            )
+                invocations += recorder.persist(candidate_id=row.id, flush=False)
+                rows.append(row)
+                association_links.append(
+                    _VisionAssociationLink(row=row, source_candidate_id=region.id)
+                )
+        return rows, invocations, refusals, tuple(association_links)
+
+    def _vision_crop(
+        self, rendered: RenderedPage, candidate: _VisionRegion
+    ) -> tuple[bytes, tuple[int, int, int, int]] | None:
+        """The crop a vision reader is shown, and the page pixels it was cut from.
+
+        The pixels come back with it because what the crop *shows* is what decides whether a
+        reading of it may be accepted (#735), and `crop_pixel_box` is the one computation of that
+        rectangle — the same one `generate_crop` cuts by.
+        """
+        if self._store is None:
+            return None
+        polygon = _stored_polygon(candidate, rendered)
+        if polygon is None:
+            return None
+        spec = CropSpec(
+            polygon=polygon,
+            context_margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
+            dpi=self._dpi,
+        )
+        result = generate_crop(rendered, spec, self._store)
+        if result.status is not CropStatus.AVAILABLE or result.artifact is None:
+            return None
+        with self._store.get(result.artifact.key) as stored:
+            return stored.read(), crop_pixel_box(rendered, spec)
+
+    @staticmethod
+    def _record_vision_candidate(
+        session: Session,
+        candidate: DomainCandidate,
+        *,
+        document_version_id: UUID,
+        page_id: UUID,
+        extraction_run_id: UUID,
+        page_polygon: list[list[int]],
+        flush: bool = True,
+    ) -> ObservationCandidate:
+        try:
+            row_id = UUID(candidate.candidate_id)
+        except ValueError as error:
+            raise ValueError("vision candidate ids must be UUID strings") from error
+
+        with session.no_autoflush:
+            existing = session.get(ObservationCandidate, row_id)
+        if existing is not None:
+            return existing
+
+        flags = list(candidate.ambiguity_flags)
+        measurement, flag = _vision_candidate_value(candidate.raw_text)
+        if flag is not None:
+            flags.append(flag)
+
+        row = ObservationCandidate(
+            id=row_id,
+            document_version_id=document_version_id,
+            page_id=page_id,
+            extraction_run_id=extraction_run_id,
+            raw_text=candidate.raw_text,
+            value_numerator=None if measurement is None else measurement.exact.numerator,
+            value_denominator=None if measurement is None else measurement.exact.denominator,
+            unit=None if measurement is None else measurement.unit.value,
+            unit_guess=None if candidate.unit_guess is None else candidate.unit_guess.value,
+            semantic_guess=None,
+            polygon=[list(point) for point in page_polygon],
+            coordinate_space="image",
+            confidence=candidate.confidence,
+            ambiguity_flags=flags,
+        )
+        session.add(row)
+        if flush:
+            session.flush()
+        return row
 
     def _ocr(self) -> OcrEngine:
         """The OCR engine, built once and only when a page actually needs it.
@@ -780,23 +2166,51 @@ class DatabaseStages:
         insert that names who decided, and nothing here decides.
 
         **Today this finds nothing, and says so rather than appearing to work.** Writing a candidate
-        needs two `drawing_items` rows, an item needs a view and a type from the `CT0xx` vocabulary,
-        and nothing in the system detects a view or an item on a page — `extraction/model/` reasons
-        about items it is given and does not find them. Both missing pieces are semantic: they need
-        the real drawings (#274) and the vocabulary Q20 defers. So this stage is wired to the real
-        matcher and returns an honest zero with the reason, which is what it should say until item
-        detection exists. The moment it does, this runs unchanged.
+        needs two `drawing_items` rows, and an item needs a view and a type from the `CT0xx`
+        vocabulary. Views now exist — one per drawing on a combined sheet, each with a role a person
+        confirms (#710) — but nothing finds the cabinets and their tags on a drawing yet (#748). So
+        this stage is wired to the real matcher and returns an honest zero with the reason, naming
+        how many drawings were found and how many roles are confirmed. The moment items exist, this
+        runs unchanged.
         """
+        role_summary = _match_role_summary(session, package_revision_id)
         items = _matchable_items(session, package_revision_id)
         if not items:
+            if role_summary.total_items:
+                missing = _missing_role_names(role_summary.roles)
+                return {
+                    "implemented": True,
+                    "ran": True,
+                    "items": role_summary.total_items,
+                    "candidates": 0,
+                    "reason": (
+                        "matching needs confirmed architectural and shop views; missing: "
+                        f"{missing}"
+                    ),
+                }
+            views = revision_views(session, package_revision_id)
+            confirmed = [entry.view.role for entry in views if entry.view.role]
             return {
                 "implemented": True,
                 "ran": True,
                 "items": 0,
                 "candidates": 0,
                 "reason": (
-                    "no drawing items exist for this revision: nothing detects views or items on a "
-                    "page yet, which needs the real drawings (#274) and the vocabulary Q20 defers"
+                    "no drawing items exist for this revision: nothing finds the cabinets and their "
+                    f"tags on a drawing yet (#748). Drawings found: {len(views)}; roles confirmed "
+                    f"by a reviewer: {confirmed.count('arch')} architect, "
+                    f"{confirmed.count('shop')} vendor"
+                ),
+            }
+        missing = _missing_role_names(role_summary.roles)
+        if missing:
+            return {
+                "implemented": True,
+                "ran": True,
+                "items": len({item.item_id for item, _ in items}),
+                "candidates": 0,
+                "reason": (
+                    "matching needs confirmed architectural and shop views; missing: " f"{missing}"
                 ),
             }
 
@@ -859,15 +2273,15 @@ class DatabaseStages:
         person cannot check against the sheet is a number they have to take on trust, which is the
         one thing this system is not supposed to ask for.
 
-        **What this does not do.** It does not qualify evidence, promote a candidate, or assign it a
-        meaning. A crop is a picture of a region; the candidate it belongs to stays exactly as
-        untyped after this stage as before it. The stage is named for the step it will eventually
-        also perform — corroboration and the evidence gate — and it performs the part that is built.
+        **What this does not do by itself.** A crop is only a picture of a region and never assigns
+        meaning.  When the deployment has explicitly enabled the exact-tag gate, this stage may
+        then qualify a candidate whose vector tag is an approved vocabulary member on the very same
+        associated dimension line.  Every other candidate stays untyped for reviewer confirmation.
 
         **The coordinate round trip is the delicate part, so it is exact rather than trusted.** A
         candidate's polygon is integer image pixels at the dpi the reader used. `CropSpec` wants
         stored space: the same points normalised to 0..1. Dividing by the rendered page's own pixel
-        dimensions is the exact inverse of the multiplication `_crop_box` performs, so the pixels
+        dimensions is the exact inverse of the multiplication `crop_pixel_box` performs, so the pixels
         that come back are the pixels the reader was looking at — provided the render matches the
         read. Rendering at `self._dpi`, the dpi the candidates were read at, is what makes that true,
         and `_stored_polygon` refuses rather than guesses when a point falls outside the page.
@@ -943,6 +2357,9 @@ class DatabaseStages:
                     page_content_hash=page.content_hash,
                     dpi=self._dpi,
                     maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                    # **Both layers.** A person reviewing evidence is shown what the sheet shows,
+                    # reviewer notes included; only what a model or OCR reads is vendor-only (#742).
+                    vendor_only=False,
                 )
             except (PageTooLarge, UnreadablePdf, ValueError) as error:
                 # One page that will not render, in a document whose others might. Every candidate on
@@ -1006,6 +2423,18 @@ class DatabaseStages:
                 written += 1
 
         session.flush()
+        # This is the only automatic route across the semantic wall: an exact, vector-extracted
+        # vocabulary tag must already be associated with the same dimension line. It runs after
+        # crops exist so any resulting prefilled field remains inspectable by the reviewer.
+        typing = (
+            qualify_exact_tags_for_revision(
+                session,
+                package_revision_id=package_revision_id,
+                settings=self._automatic_typing,
+            )
+            if self._automatic_typing is not None
+            else None
+        )
         return {
             "implemented": True,
             "ran": True,
@@ -1013,6 +2442,8 @@ class DatabaseStages:
             "crops": written,
             "already_had_one": skipped,
             "refused": len(abstained),
+            "automatic_types_qualified": 0 if typing is None else len(typing.qualified),
+            "semantic_typing_review_required": 0 if typing is None else len(typing.review_required),
             # Capped, because this payload is persisted as JSON and a document that fails to render
             # would otherwise put one sentence per candidate into it. The count above is exact; these
             # are the examples a person reads first.
@@ -1020,14 +2451,14 @@ class DatabaseStages:
         }
 
     def generate_outputs(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
-        """Turn this revision's findings into a workbook somebody can be handed.
+        """Turn this revision's findings into a workbook and branded PDF somebody can be handed.
 
         The last stage, and the one that closes the loop: until now checks ran, findings were
         recorded, and nothing produced a file. `reports/spreadsheet.py` had been finished and tested
         for months with no production caller — the same gap #517 closed for crops and matching.
 
         **Live findings only.** `run_checks` supersedes previous runs before writing new ones, and a
-        workbook containing both would show a reviewer two verdicts for one rule with nothing saying
+        handoff containing both would show a reviewer two verdicts for one rule with nothing saying
         which is in force. The join filters on `superseded_at IS NULL`, which is the same question
         the findings list asks.
 
@@ -1038,12 +2469,11 @@ class DatabaseStages:
         reason of a decision, the delta, the variant and the notes — and the workbook marks them
         `not recorded in the database` rather than leaving them blank.
 
-        **No redline, and not for want of a renderer.** `reports/redline.py` exists. An annotated
-        drawing needs each finding tied to the region of the sheet it is about, and that needs a
-        candidate to have a meaning — which is exactly what this pipeline does not do, and will not
-        until the real drawings (#274) and the vocabulary Q20 defers. A redline drawn from untyped
-        candidates would put boxes on a drawing with nothing behind their placement, which is worse
-        than no redline: it looks like evidence.
+        **Redline placement comes only from stored typed evidence.** The optional third artifact
+        joins a live finding through its sealed `VerdictInput` to a typed canonical observation and its
+        recorded page transform. It never reads a raw candidate, a trace's display string, or a
+        reviewer-entered literal to decide where to draw. When no such location exists, no redline
+        artifact is made; the workbook and findings PDF remain complete and truthful.
         """
         if self._store is None:
             return {
@@ -1078,64 +2508,147 @@ class DatabaseStages:
                 "reason": "this revision has no live findings, so there is nothing to report on",
             }
 
-        workbook = write_stored_workbook(
-            [
-                StoredFinding(
-                    rule_id=definition.rule_id,
-                    outcome=finding.outcome,
-                    severity=finding.severity,
-                    snapshot_id=snapshot.snapshot_id,
-                    engine_version=run.engine_version,
-                    trace=finding.trace,
-                    reason=finding.reason,
-                    # Rendered here rather than in the writer, because the exact rational lives in
-                    # three columns and reassembling it is this layer's job. `format_inches` writes
-                    # `1 1/2`, the way a drawing does — a reviewer is comparing this against a sheet.
-                    delta=_delta_text(finding),
-                    variant=finding.variant,
-                    notes=None if finding.notes is None else tuple(finding.notes),
+        stored_findings: list[StoredFinding] = []
+        composition_facts: list[ComposerFinding] = []
+        for finding, run, snapshot, definition in rows:
+            stored_finding = StoredFinding(
+                rule_id=definition.rule_id,
+                outcome=finding.outcome,
+                severity=finding.severity,
+                snapshot_id=snapshot.snapshot_id,
+                engine_version=run.engine_version,
+                trace=finding.trace,
+                reason=finding.reason,
+                # Rendered here rather than in the writer, because the exact rational lives in
+                # three columns and reassembling it is this layer's job. `format_inches` writes
+                # `1 1/2`, the way a drawing does — a reviewer is comparing this against a sheet.
+                delta=_delta_text(finding),
+                variant=finding.variant,
+                notes=None if finding.notes is None else tuple(finding.notes),
+            )
+            stored_findings.append(stored_finding)
+            try:
+                snapshot_data = json.loads(snapshot.canonical_json)
+                check_name_value = (
+                    snapshot_data.get("name") if isinstance(snapshot_data, Mapping) else None
                 )
+            except (TypeError, ValueError):
+                check_name_value = None
+            check_name = (
+                check_name_value
+                if isinstance(check_name_value, str) and check_name_value.strip()
+                else definition.rule_id
+            )
+            composition_facts.append(
+                _finding_facts(key=str(finding.id), check_name=check_name, finding=stored_finding)
+            )
+
+        findings_composer = self._findings_composer
+        if findings_composer is not None and hasattr(findings_composer, "with_invocation_recorder"):
+            recording_composer = cast(_RecordingFindingsLanguageModel, findings_composer)
+            findings_composer = recording_composer.with_invocation_recorder(
+                BedrockConverseInvocationRecorder(session, package_revision_id)
+            )
+
+        composition = compose_findings(composition_facts, findings_composer)
+        narratives = {narrative.finding_key: narrative.text for narrative in composition.narratives}
+        rendered_findings = [
+            replace(finding, reviewer_summary=narratives[facts.key])
+            for finding, facts in zip(stored_findings, composition_facts, strict=True)
+        ]
+        workbook = write_stored_workbook(rendered_findings)
+        revision = session.get(PackageRevision, package_revision_id)
+        if revision is None:
+            raise ValueError(f"package revision {package_revision_id} does not exist")
+        package = session.get(Package, revision.package_id)
+        if package is None:
+            raise ValueError(f"package {revision.package_id} does not exist")
+        findings_pdf = write_findings_pdf(
+            FindingsPdfInput(
+                package_revision_id=revision.id,
+                revision_number=revision.revision_number,
+                vendor=package.vendor,
+                findings=tuple(rendered_findings),
+            )
+        )
+        composition_status: dict[str, object] = {
+            "mode": composition.mode.value,
+            "model_id": composition.model_id,
+            "prompt_id": composition.prompt_id,
+            "template_id": composition.template_id,
+        }
+        if composition.fallback_reason is not None:
+            composition_status["fallback_reason"] = composition.fallback_reason
+
+        redline = render_evidence_grounded_redline(
+            session,
+            self._store,
+            package_revision_id=package_revision_id,
+            findings=tuple(
+                (finding, run, definition.rule_id, snapshot.snapshot_id)
                 for finding, run, snapshot, definition in rows
-            ]
+            ),
         )
 
-        digest, _ = sha256_stream(BytesIO(workbook))
-        key = content_key(f"outputs/{package_revision_id}", digest, suffix=".xlsx")
-        existing = session.execute(
-            select(OutputArtifact.id).where(
-                OutputArtifact.storage_key == key, OutputArtifact.sha256 == digest
-            )
-        ).first()
-        if existing is not None:
-            # Byte-identical to one already recorded, which is what regenerating an unchanged
-            # revision produces. The table is append-only and unique on (key, digest); recording it
-            # twice would claim two deliverables where there is one.
-            return {
-                "implemented": True,
-                "ran": True,
-                "findings": len(rows),
-                "outputs": 0,
-                "already_recorded": True,
-            }
-
-        stored = self._store.put(key, BytesIO(workbook), content_type=WORKBOOK_MEDIA_TYPE)
-        session.add(
-            OutputArtifact(
-                package_revision_id=package_revision_id,
-                kind=OutputArtifactKind.FINDINGS_WORKBOOK.value,
-                storage_key=stored.key,
-                sha256=stored.sha256,
-                media_type=WORKBOOK_MEDIA_TYPE,
-                findings=len(rows),
-            )
+        outputs = (
+            (OutputArtifactKind.FINDINGS_WORKBOOK, workbook, WORKBOOK_MEDIA_TYPE, ".xlsx"),
+            (OutputArtifactKind.FINDINGS_PDF, findings_pdf, FINDINGS_PDF_MEDIA_TYPE, ".pdf"),
         )
+        written: dict[str, str] = {}
+        for kind, document, media_type, suffix in outputs:
+            digest, _ = sha256_stream(BytesIO(document))
+            key = content_key(f"outputs/{package_revision_id}", digest, suffix=suffix)
+            existing = session.execute(
+                select(OutputArtifact.id).where(
+                    OutputArtifact.storage_key == key, OutputArtifact.sha256 == digest
+                )
+            ).first()
+            if existing is not None:
+                continue
+            stored = self._store.put(key, BytesIO(document), content_type=media_type)
+            session.add(
+                OutputArtifact(
+                    package_revision_id=package_revision_id,
+                    kind=kind.value,
+                    storage_key=stored.key,
+                    sha256=stored.sha256,
+                    media_type=media_type,
+                    findings=len(rows),
+                )
+            )
+            written[kind.value] = stored.key
+        if redline.artifact is not None:
+            existing = session.execute(
+                select(OutputArtifact.id).where(
+                    OutputArtifact.storage_key == redline.artifact.key,
+                    OutputArtifact.sha256 == redline.artifact.sha256,
+                )
+            ).first()
+            if existing is None:
+                session.add(
+                    OutputArtifact(
+                        package_revision_id=package_revision_id,
+                        kind=OutputArtifactKind.REDLINE.value,
+                        storage_key=redline.artifact.key,
+                        sha256=redline.artifact.sha256,
+                        media_type="application/pdf",
+                        findings=len(rows),
+                    )
+                )
+                written[OutputArtifactKind.REDLINE.value] = redline.artifact.key
         session.flush()
         return {
             "implemented": True,
             "ran": True,
             "findings": len(rows),
-            "outputs": 1,
-            "storage_key": stored.key,
+            "outputs": len(written),
+            "already_recorded": not written,
+            "storage_keys": written,
+            "findings_composition": composition_status,
+            "redline": {
+                "generated": redline.artifact is not None,
+                "reason": redline.reason,
+            },
         }
 
     def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
@@ -1151,6 +2664,13 @@ class DatabaseStages:
         reader ever sees two sets of findings for one revision.
         """
         register_all()
+        reviewer_operands: Mapping[str, Mapping[str, VerdictOperand]]
+        if self._operands is None:
+            from workflow.measurements import operands_for
+
+            reviewer_operands = operands_for(session, package_revision_id)
+        else:
+            reviewer_operands = self._operands
 
         revision = session.get(PackageRevision, package_revision_id)
         if revision is None:
@@ -1188,6 +2708,15 @@ class DatabaseStages:
             ),
         ]
         rules = [store.latest(rule_id) for rule_id in store.rule_ids()]
+        typing = (
+            qualify_exact_tags_for_revision(
+                session,
+                package_revision_id=package_revision_id,
+                settings=self._automatic_typing,
+            )
+            if self._automatic_typing is not None
+            else None
+        )
         defaults = declared_defaults(
             [snapshot.rule for snapshot in rules if snapshot is not None], when=utc_now()
         )
@@ -1276,7 +2805,7 @@ class DatabaseStages:
                 rule_id = applicable.snapshot.rule.id
                 supplied = {
                     **from_evidence.get(rule_id, {}),
-                    **self._operands.get(rule_id, {}),
+                    **reviewer_operands.get(rule_id, {}),
                 }
                 finding = execute(
                     applicable.snapshot,
@@ -1301,6 +2830,8 @@ class DatabaseStages:
             "rules_published": len(store.rule_ids()),
             "superseded_runs": superseded,
             "not_applicable": skipped,
+            "automatic_types_qualified": 0 if typing is None else len(typing.qualified),
+            "semantic_typing_review_required": 0 if typing is None else len(typing.review_required),
         }
 
 
@@ -1385,7 +2916,7 @@ def _documents_for(session: Session, package_revision_id: UUID) -> list[tuple[UU
             DocumentVersion.id == PackageRevisionDocument.document_version_id,
         )
         .where(PackageRevisionDocument.package_revision_id == package_revision_id)
-        .order_by(DocumentVersion.created_at)
+        .order_by(DocumentVersion.created_at, DocumentVersion.id)
     ).all()
     return [(version_id, storage_key(document_id, sha)) for version_id, document_id, sha in rows]
 
@@ -1401,6 +2932,64 @@ def _delta_text(finding: FindingRow) -> str | None:
         return None
     exact = Fraction(finding.delta_numerator, finding.delta_denominator)
     return f"{format_inches(exact)} {finding.delta_unit}"
+
+
+def _composer_text(value: object) -> str:
+    return "" if value is None else str(value)
+
+
+def _composer_evidence_page(reference: object) -> str | None:
+    """A human page number for narration, without document ids or hash fragments."""
+    if not isinstance(reference, str) or not reference:
+        return None
+    decoded = decode_reference(reference)
+    return None if decoded is None else decoded[0]
+
+
+def _composer_operands(trace: Mapping[str, object]) -> tuple[ComposerOperand, ...]:
+    raw = trace.get("operands")
+    if not isinstance(raw, list):
+        return ()
+    result: list[ComposerOperand] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        result.append(
+            ComposerOperand(
+                name=_composer_text(item.get("name")),
+                value=_composer_text(item.get("value")),
+                source=_composer_text(item.get("source")),
+                evidence_page=_composer_evidence_page(item.get("evidence_ref")),
+            )
+        )
+    return tuple(result)
+
+
+def _finding_facts(*, key: str, check_name: str, finding: StoredFinding) -> ComposerFinding:
+    """Build narration facts without re-parsing any value or re-running any rule."""
+    trace = finding.trace
+    operands = _composer_operands(trace)
+    pages = tuple(
+        dict.fromkeys(op.evidence_page for op in operands if op.evidence_page is not None)
+    )
+    return ComposerFinding(
+        key=key,
+        check=finding.rule_id,
+        check_name=check_name or finding.rule_id,
+        outcome=finding.outcome,
+        severity=finding.severity,
+        reason=reviewer_reason(
+            finding.reason or _composer_text(trace.get("reason")) or "No reason was recorded.",
+            finding.outcome,
+        ),
+        comparison=_composer_text(trace.get("comparison")) or None,
+        difference=finding.delta,
+        tolerance=_composer_text(trace.get("tolerance")) or None,
+        arithmetic_unit=_composer_text(trace.get("arithmetic_unit")) or None,
+        operands=operands,
+        evidence_pages=pages,
+        notes=() if finding.notes is None else finding.notes,
+    )
 
 
 def _document_records_for(
@@ -1433,7 +3022,93 @@ def _document_records_for(
     ]
 
 
-def _stored_polygon(candidate: ObservationCandidate, rendered: RenderedPage) -> Polygon | None:
+def _layout_discriminators(session: Session) -> tuple[DiscriminatorNeed, ...]:
+    """The closed layout questions declared by the currently published rulebook."""
+
+    store = snapshot_store(session)
+    rules = tuple(
+        snapshot.rule
+        for rule_id in store.rule_ids()
+        for snapshot in (store.latest(rule_id),)
+        if snapshot is not None
+    )
+    return required_inputs(rules).discriminators
+
+
+def _layout_proposal_identity(routes: Sequence[_LayoutReaderRoute]) -> tuple[str, str]:
+    """The model/prompt identity stored beside a layout proposal."""
+
+    if not routes:
+        return UNCONFIGURED_LAYOUT_MODEL_ID, LAYOUT_PROMPT_ID
+    return (
+        "+".join(route.model_id for route in routes),
+        "+".join(dict.fromkeys(route.prompt_id for route in routes)),
+    )
+
+
+def _layout_proposed_value(classification: LayoutClassification) -> str:
+    """A closed answer, or a visible non-choice marker for abstention/disagreement."""
+
+    if classification.status is LayoutStatus.ANSWERED:
+        if classification.answer is None:
+            raise ValueError("answered layout classification did not carry an answer")
+        return classification.answer
+    return classification.status.value
+
+
+def _image_polygon(polygon: Polygon, rendered: RenderedPage) -> list[list[int]]:
+    """Convert stored-space layout evidence into the image-space shape the artifact owner needs."""
+
+    return [
+        [
+            int((point.x * Decimal(rendered.width_px)).to_integral_value()),
+            int((point.y * Decimal(rendered.height_px)).to_integral_value()),
+        ]
+        for point in polygon.points
+    ]
+
+
+def _record_panel_views(session: Session, page: Page, layers: PageLayers) -> dict[str, int]:
+    """One view per drawing on the page, each with what its label suggests, counted (#710)."""
+    counts = {"views": 0, "suggested_arch": 0, "suggested_shop": 0, "no_suggestion": 0}
+    for proposal, stamp in zip(
+        propose_panel_roles(layers.vendor_stamps, layers.markup), layers.vendor_stamps, strict=True
+    ):
+        record_panel_view(
+            session,
+            page_id=page.id,
+            annotation_index=stamp.annotation_index,
+            stored_points=[(point.x, point.y) for point in stamp.extent.points],
+            proposed_role=proposal.role,
+            heading=proposal.heading,
+            reason=proposal.reason,
+        )
+        counts["views"] += 1
+        counts[f"suggested_{proposal.role}" if proposal.role else "no_suggestion"] += 1
+    return counts
+
+
+def _crop_shows_a_stacked_fraction(
+    crop_box: tuple[int, int, int, int], fractions: Sequence[StackedFraction]
+) -> bool:
+    """Whether any part of a detected stacked fraction falls inside a crop's page pixels (#735).
+
+    **Any part, edges included.** A model reads whatever it is shown, and a numerator at the crop's
+    edge is still there to be promoted into a whole number. The crop's own `(left, top, right,
+    bottom)` and the fraction's corners are both page pixels at the reader's dpi.
+    """
+    left, top, right, bottom = crop_box
+    for fraction in fractions:
+        xs = [point.x for point in fraction.image_extent]
+        ys = [point.y for point in fraction.image_extent]
+        if min(xs) <= right and left <= max(xs) and min(ys) <= bottom and top <= max(ys):
+            return True
+    return False
+
+
+def _stored_polygon(
+    candidate: ObservationCandidate | _VisionRegion, rendered: RenderedPage
+) -> Polygon | None:
     """A candidate's image-pixel polygon as the normalised one a `CropSpec` takes.
 
     Returns `None` rather than raising, and rather than clamping. A point outside the rendering means
@@ -1481,6 +3156,93 @@ def _projection(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _MatchRoleSummary:
+    total_items: int
+    roles: frozenset[MatchDocumentRole]
+
+
+def _revision_document_roles(
+    session: Session, package_revision_id: UUID
+) -> frozenset[MatchDocumentRole]:
+    roles = {
+        role
+        for (kind,) in session.execute(
+            select(Document.kind)
+            .join(PackageRevisionDocument, PackageRevisionDocument.document_id == Document.id)
+            .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        )
+        if (role := MATCH_ROLES.get(kind)) is not None
+    }
+    return frozenset(roles)
+
+
+def _fallback_to_document_kind_allowed(session: Session, package_revision_id: UUID) -> bool:
+    """Whether legacy two-PDF role inference is available for this revision."""
+
+    return _revision_document_roles(session, package_revision_id) >= {
+        MatchDocumentRole.ARCH,
+        MatchDocumentRole.SHOP,
+    }
+
+
+def _resolved_match_role(
+    view_role: str | None, document_kind: str, *, document_fallback_allowed: bool
+) -> MatchDocumentRole | None:
+    """The role to hand to matching, or None when no role has been established.
+
+    Combined documents may carry both roles under one `Document.kind`, so a null view role cannot be
+    silently replaced by that kind. The old document-kind inference remains only for genuine two-PDF
+    packages, where the revision contains both architectural and shop drawings.
+    """
+
+    if view_role is not None:
+        return VIEW_MATCH_ROLES.get(view_role)
+    if document_fallback_allowed:
+        return MATCH_ROLES.get(document_kind)
+    return None
+
+
+def _missing_role_names(roles: frozenset[MatchDocumentRole]) -> str:
+    missing: list[str] = []
+    if MatchDocumentRole.ARCH not in roles:
+        missing.append("architectural")
+    if MatchDocumentRole.SHOP not in roles:
+        missing.append("shop")
+    return ", ".join(missing)
+
+
+def _match_role_summary(session: Session, package_revision_id: UUID) -> _MatchRoleSummary:
+    document_fallback_allowed = _fallback_to_document_kind_allowed(session, package_revision_id)
+    rows = session.execute(
+        select(DrawingItem.id, DrawingView.role, Document.kind)
+        .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
+        .join(Page, Page.id == DrawingView.page_id)
+        .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
+        .join(Document, Document.id == DocumentVersion.document_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+    ).all()
+    roles = {
+        role
+        for _, view_role, document_kind in rows
+        if (
+            role := _resolved_match_role(
+                view_role,
+                document_kind,
+                document_fallback_allowed=document_fallback_allowed,
+            )
+        )
+        is not None
+    }
+    return _MatchRoleSummary(
+        total_items=len({item_id for item_id, _, _ in rows}), roles=frozenset(roles)
+    )
+
+
 def _matchable_items(
     session: Session, package_revision_id: UUID
 ) -> list[tuple[MatchableItem, str]]:
@@ -1491,8 +3253,9 @@ def _matchable_items(
     included once with `identifier=None`, because the matcher's answer for it — unmatched, for a
     stated reason — is a result a reviewer needs, not an absence to hide.
 
-    The role comes from `Document.kind`, which is the only place a drawing says whether it is the
-    architect's or the shop's. Schedules and product specs are filtered out by `MATCH_ROLES`.
+    The role comes from the view when it has been established. For legacy two-PDF packages only, a
+    null view role falls back to `Document.kind`; combined sheets must not infer every view from one
+    upload kind. Schedules and product specs are filtered out because they have no match role.
     """
     project_id = session.execute(
         select(Package.project_id)
@@ -1502,8 +3265,9 @@ def _matchable_items(
     if project_id is None:
         return []
 
+    document_fallback_allowed = _fallback_to_document_kind_allowed(session, package_revision_id)
     rows = session.execute(
-        select(DrawingItem, Document.kind, ItemIdentifier)
+        select(DrawingItem, DrawingView.role, Document.kind, ItemIdentifier)
         .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
         .join(Page, Page.id == DrawingView.page_id)
         .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
@@ -1521,15 +3285,19 @@ def _matchable_items(
     # two identifiers arrives as two rows, and an item whose only identifier is a catalogue number
     # must still appear — as unmatchable, which is a result — rather than vanish because its one row
     # was filtered out. Filtering row by row made exactly that mistake.
-    grouped: dict[UUID, tuple[DrawingItem, str, list[ItemIdentifier]]] = {}
-    for item, kind, identifier in rows:
-        entry = grouped.setdefault(item.id, (item, kind, []))
+    grouped: dict[UUID, tuple[DrawingItem, str | None, str, list[ItemIdentifier]]] = {}
+    for item, view_role, kind, identifier in rows:
+        entry = grouped.setdefault(item.id, (item, view_role, kind, []))
         if identifier is not None:
-            entry[2].append(identifier)
+            entry[3].append(identifier)
 
     items: list[tuple[MatchableItem, str]] = []
-    for item, kind, identifiers in grouped.values():
-        role = MATCH_ROLES.get(kind)
+    for item, view_role, kind, identifiers in grouped.values():
+        role = _resolved_match_role(
+            view_role,
+            kind,
+            document_fallback_allowed=document_fallback_allowed,
+        )
         if role is None:
             continue
         usable = [
@@ -1596,3 +3364,33 @@ def _fetch(store: ArtifactStore, key: str) -> bytes:
     """
     with store.get(key) as stored:
         return stored.read()
+
+
+def _chain_membership(detected: DetectedDimensions, *, page_id: UUID) -> dict[str, tuple[str, int]]:
+    """Which run each detected dimension line belongs to, keyed by where the line is.
+
+    **The grouping was being computed and thrown away.** `detect` returns chains — dimension lines
+    drawn end to end along one axis, which is what a cabinet run looks like on a sheet — and
+    `associate` is handed only the extents, so the chains went out of scope on the next line. They
+    are the fact `workflow/assignment.py` needs to refuse a many-valued field gathered from two
+    different runs, and that refusal could not fire on a real drawing without them.
+
+    The key is page-scoped and deterministic: the page's own id, the axis, and the chain's index in
+    detection order. Page-scoped because one extraction run covers every page of every document in a
+    stage execution, so two pages with the same geometry would otherwise be handed the same chain
+    name and their readings would look like one run.
+
+    A line in no chain is simply absent, which is most lines and is not a gap: a single dimension is
+    not a run, and reporting it as one would make every dimension on the sheet look like a closure
+    waiting to be validated.
+    """
+    membership: dict[str, tuple[str, int]] = {}
+    for index, chain in enumerate(detected.chains):
+        key = f"{page_id}:{chain.axis.value}:{index}"
+        for position, line in enumerate(chain.lines):
+            extent = line.extent
+            membership[line_key(extent.start.x, extent.start.y, extent.end.x, extent.end.y)] = (
+                key,
+                position,
+            )
+    return membership

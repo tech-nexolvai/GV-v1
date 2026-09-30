@@ -258,6 +258,24 @@ def test_a_changed_engine_version_is_a_different_task() -> None:
     )
 
 
+def test_the_300_dpi_reader_does_not_reuse_a_150_dpi_stage_claim() -> None:
+    """The resolution change must invalidate the workflow claim before extraction short-circuits."""
+    revision_id = uuid4()
+
+    current = stage_idempotency_key(
+        package_revision_id=revision_id,
+        stage="extract_pages",
+        engine_version=ENGINE_VERSION,
+    )
+    former_150_dpi = stage_idempotency_key(
+        package_revision_id=revision_id,
+        stage="extract_pages",
+        engine_version="1.0.0",
+    )
+
+    assert current != former_150_dpi
+
+
 # ---------------------------------------------------------------------------
 # A restart resumes rather than repeats
 # ---------------------------------------------------------------------------

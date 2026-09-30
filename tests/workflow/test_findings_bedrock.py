@@ -1,0 +1,304 @@
+"""The findings composer uses the configured Bedrock identity and one forced tool."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from dataclasses import replace
+from typing import Any
+
+import pytest
+
+from app.config import Settings
+from app.review.chat_bedrock import configured_reviewer_chat
+from extraction.models.nova import NovaConfig
+from workflow.findings_bedrock import (
+    PROMPT_ID,
+    TEMPLATE_ID,
+    TOOL_NAME,
+    BedrockFindingsComposer,
+    FindingsBedrockError,
+    configured_findings_composer,
+)
+from workflow.findings_composer import ComposerFinding, NarrationFact, narration_overview_context
+
+
+class _Client:
+    def __init__(self, response: Mapping[str, Any]) -> None:
+        self.response = response
+        self.requests: list[dict[str, object]] = []
+
+    def converse(self, **kwargs: object) -> Mapping[str, Any]:
+        self.requests.append(kwargs)
+        return self.response
+
+
+def _config() -> NovaConfig:
+    return NovaConfig(
+        model_id="operator-configured-model",
+        prompt_id="prompt-v1",
+        template_id="template-v1",
+        connect_timeout_seconds=1,
+        read_timeout_seconds=2,
+        max_attempts=1,
+        region_name="us-east-1",
+    )
+
+
+def _finding() -> ComposerFinding:
+    return ComposerFinding(
+        key="finding-a",
+        check="CAB-FILLER-001",
+        check_name="Filler width",
+        outcome="REVIEW_REQUIRED",
+        severity="FLAG",
+        reason="The required reading was not found.",
+        comparison=None,
+        difference=None,
+        tolerance=None,
+        arithmetic_unit=None,
+        operands=(),
+        evidence_pages=(),
+        notes=(),
+    )
+
+
+def _response() -> dict[str, object]:
+    return {
+        "stopReason": "tool_use",
+        "output": {
+            "message": {
+                "content": [
+                    {
+                        "toolUse": {
+                            "name": TOOL_NAME,
+                            "input": {
+                                "summary": "1 REVIEW_REQUIRED needs attention: CAB-FILLER-001 needs its reading.",
+                                "findings": [
+                                    {
+                                        "finding_key": "finding-a",
+                                        # Only the provider's own sentences. The deterministic
+                                        # facts are prepended by `ground_explanations`.
+                                        "explanation": (
+                                            "A reviewer needs to supply this reading before the "
+                                            "check can run."
+                                        ),
+                                    }
+                                ],
+                            },
+                        }
+                    }
+                ]
+            }
+        },
+    }
+
+
+def test_the_configured_model_and_forced_tool_are_used_without_free_text() -> None:
+    client = _Client(_response())
+
+    result = BedrockFindingsComposer(_config(), client).compose((_finding(),))
+
+    assert result.model_id == "operator-configured-model"
+    assert result.prompt_id == "prompt-v1"
+    assert result.summary == "1 REVIEW_REQUIRED needs attention: CAB-FILLER-001 needs its reading."
+    assert len(result.narratives) == 1
+    request = client.requests[0]
+    assert request["modelId"] == "operator-configured-model"
+    tool_config = request["toolConfig"]
+    assert isinstance(tool_config, dict)
+    assert tool_config["toolChoice"] == {"tool": {"name": TOOL_NAME}}
+    schema = tool_config["tools"][0]["toolSpec"]["inputSchema"]["json"]
+    assert "$defs" not in schema
+    assert schema["type"] == "object"
+    assert schema["required"] == ["summary", "findings"]
+    messages = request["messages"]
+    assert isinstance(messages, list)
+    assert all("text" in block for block in messages[0]["content"])
+    overview_payload = messages[0]["content"][1]["text"]
+    assert isinstance(overview_payload, str)
+    assert json.loads(overview_payload) == {
+        "overview_context": narration_overview_context((_finding(),))
+    }
+
+
+def test_full_findings_batch_gets_a_bounded_output_budget() -> None:
+    client = _Client(_response())
+
+    BedrockFindingsComposer(_config(), client).compose((_finding(),) * 9)
+
+    assert client.requests[0]["inferenceConfig"] == {"temperature": 0, "maxTokens": 4096}
+
+
+def test_model_text_beside_the_tool_call_is_rejected() -> None:
+    response = _response()
+    output = response["output"]
+    assert isinstance(output, dict)
+    message = output["message"]
+    assert isinstance(message, dict)
+    content = message["content"]
+    assert isinstance(content, list)
+    content.append({"text": "unstructured model prose"})
+
+    with pytest.raises(FindingsBedrockError) as raised:
+        BedrockFindingsComposer(_config(), _Client(response)).compose((_finding(),))
+    assert raised.value.__cause__ is not None
+    assert "exactly one findings tool call" in str(raised.value.__cause__)
+
+
+def test_transport_honours_the_configured_total_attempt_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def client_factory(service: str, **kwargs: object) -> _Client:
+        captured["service"] = service
+        captured.update(kwargs)
+        return _Client(_response())
+
+    monkeypatch.setattr("boto3.client", client_factory)
+    composer = BedrockFindingsComposer.from_environment(replace(_config(), max_attempts=3))
+
+    composer.compose((_finding(),))
+
+    assert captured["service"] == "bedrock-runtime"
+    transport = captured["config"]
+    assert transport.retries == {"total_max_attempts": 3, "mode": "standard"}  # type: ignore[attr-defined]
+
+
+def test_invalid_optional_timeout_configuration_disables_only_narration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GV_BEDROCK_CONNECT_TIMEOUT", "not-a-number")
+
+    assert configured_findings_composer() is None
+
+
+def test_settings_configure_the_same_model_and_region_as_reviewer_chat() -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://gv:gv@localhost:5433/gvtest",
+        bedrock_model="qwen.qwen3-next-80b-a3b",
+        bedrock_region="us-east-1",
+        bedrock_connect_timeout=7,
+        bedrock_read_timeout=19,
+    )
+
+    composer = configured_findings_composer(settings)
+    reviewer_chat = configured_reviewer_chat(settings)
+
+    assert composer is not None
+    assert reviewer_chat is not None
+    assert composer._config.model_id == "qwen.qwen3-next-80b-a3b"
+    assert composer._config.region_name == "us-east-1"
+    assert composer._config.connect_timeout_seconds == 7
+    assert composer._config.read_timeout_seconds == 19
+    assert composer._config.prompt_id == PROMPT_ID == "findings-composer-v3"
+    assert composer._config.template_id == TEMPLATE_ID == "reviewer-language-v3"
+    assert reviewer_chat._config.model_id == composer._config.model_id
+    assert reviewer_chat._config.region_name == composer._config.region_name
+
+
+def test_blank_model_disables_only_the_optional_bedrock_presentation() -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://gv:gv@localhost:5433/gvtest",
+        bedrock_model="",
+    )
+
+    assert configured_findings_composer(settings) is None
+    assert configured_reviewer_chat(settings) is None
+
+
+def test_whitespace_model_disables_only_the_optional_bedrock_presentation() -> None:
+    """A whitespace-only setting is no more configured than an absent model name."""
+    settings = Settings(
+        database_url="postgresql+psycopg://gv:gv@localhost:5433/gvtest",
+        bedrock_model="   ",
+    )
+
+    assert configured_findings_composer(settings) is None
+    assert configured_reviewer_chat(settings) is None
+
+
+def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:
+    request = BedrockFindingsComposer(_config(), _Client(_response()))._request(
+        (_finding(),), "operator-configured-model"
+    )
+    system = request["system"]
+    assert isinstance(system, list)
+    text = system[0]["text"]
+    assert isinstance(text, str)
+    assert "never internal field keys" in text
+    assert "Copy each opaque" in text  # the finding_key is still an identifier to copy exactly
+    # The facts, by contrast, are no longer the provider's to reproduce.
+    assert "do NOT copy, quote, or restate them" in text
+    assert "at most two short sentences" in text
+    assert "what needs correction" in text
+    assert "600-character budget" in text
+    assert "dropped rather than truncated" in text
+    assert "State the next action as an instruction" in text
+    messages = request["messages"]
+    assert isinstance(messages, list)
+    user_text = messages[0]["content"][0]["text"]
+    assert isinstance(user_text, str)
+    assert "which the system places ahead of" in user_text
+    assert "do not copy or restate it" in user_text
+    assert "within 600 characters" in user_text
+    assert "not truncated" in user_text
+    overview_payload = messages[0]["content"][1]["text"]
+    assert isinstance(overview_payload, str)
+    assert json.loads(overview_payload) == {
+        "overview_context": narration_overview_context((_finding(),))
+    }
+    fact_payload = messages[0]["content"][2]["text"]
+    assert isinstance(fact_payload, str)
+    assert json.loads(fact_payload) == [
+        NarrationFact.from_finding(_finding()).model_dump(mode="json")
+    ]
+    assert request["inferenceConfig"] == {"temperature": 0, "maxTokens": 1024}
+
+
+def test_an_overlong_summary_costs_the_summary_not_the_narratives() -> None:
+    """**Outcome: nine narratives kept, the overview dropped.**
+
+    Nova returned nine good explanations and an overview a few characters past the limit. Strict
+    validation rejected the whole payload, so a reviewer asking "why did this fail?" was shown the
+    plain fallback *and* a Pydantic ValidationError quoting its own documentation URL.
+
+    The summary is optional presentation rendered above findings that each carry their own
+    deterministic sentence. Losing it costs an overview; losing the batch costs every explanation.
+    Same disproportion `_drop_unnamed` exists to stop.
+
+    **Dropped rather than truncated**, because these sentences state outcomes: "the depth is within
+    tolerance" cut at the limit can become "the depth is". An absent summary says nothing; a severed
+    one says something the run did not.
+    """
+    from workflow.findings_composer import NarrativeBatch
+
+    batch = NarrativeBatch.model_validate(
+        {
+            "summary": "N" * 900,
+            "findings": [
+                {"finding_key": f"f{index}", "explanation": "Depth is 25 1/4 in."}
+                for index in range(9)
+            ],
+        },
+        strict=False,
+    )
+
+    assert batch.summary == ""
+    assert len(batch.findings) == 9
+
+
+def test_a_summary_within_the_limit_is_kept() -> None:
+    """Outcome: unchanged. The drop must not quietly remove every overview."""
+    from workflow.findings_composer import NarrativeBatch
+
+    batch = NarrativeBatch.model_validate(
+        {
+            "summary": "Nine findings were selected.",
+            "findings": [{"finding_key": "f1", "explanation": "x"}],
+        },
+        strict=False,
+    )
+
+    assert batch.summary == "Nine findings were selected."

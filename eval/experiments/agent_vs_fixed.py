@@ -160,8 +160,22 @@ class EvaluationRunRecorder(Protocol):
         """Persist the complete comparison and its reproducibility fields."""
 
 
+class UnpricedArmError(ValueError):
+    """An arm's cost cannot be compared, because some of its calls have no stated price (#700)."""
+
+
 def _result(execution: ArmExecution) -> ArmResult:
-    cost = sum(invocation.cost_micros for invocation in execution.invocations)
+    # **A partial cost is not a cost.** A call whose model has no stated price records `None`
+    # (#700). Adding it as zero would let an arm look cheaper for having unpriced calls, and cost is
+    # one of the grounds this comparison ships on — so an unpriced arm stops the experiment, named.
+    unpriced = sum(1 for invocation in execution.invocations if invocation.cost_micros is None)
+    if unpriced:
+        raise UnpricedArmError(
+            f"{unpriced} of this arm's {len(execution.invocations)} model calls have no stated "
+            "price, so its cost cannot be compared. State a price for every model the arm uses "
+            "(GV_MODEL_RATES_FILE) and run again."
+        )
+    cost = sum(invocation.cost_micros or 0 for invocation in execution.invocations)
     return ArmResult(
         critical_false_pass=execution.metrics.critical_false_pass,
         accuracy=execution.metrics.accuracy,

@@ -26,20 +26,29 @@ PDF committed to this repository — our own design document, not a drawing — 
 drawings are proprietary and #274 has not landed. Nothing in the mechanism asks what the document is
 about, which is exactly the property that test demonstrates.
 
-**Expect to tune it against the real GV drawings when #274 lands.** Two things in particular are
-starting points rather than measured values: `CROP_CONTEXT_MARGIN_PT` (how much page a crop keeps
-around a reading — an eighth of an inch, chosen to show a dimension line either side of its text) and
-the 150 dpi the reader and the rasteriser share. Neither is wrong; neither has been checked against a
-sheet a fabricator actually sent.
+**The reader and rasteriser now share a measured 300 dpi setting.** The original 150 dpi starting
+point missed all five PM-confirmed vendor dual-notation dimensions on Board Room 1 page 13. For a
+stamp-only vendor drawing whose deployment has supplied the association geometry settings, OCR now
+uses the line-selected outlined candidate regions as bounded vendor-only crops at the measured 600-DPI crop
+resolution, then maps the reading back to the shared 300-DPI page frame for evidence and association.
+It never rasterises reviewer markup into those crops. The localized route also requires its explicit
+minimum-path, maximum-span, and crop-context settings; a page with no selected region abstains rather
+than returning to a full-page nearest-text guess. Pages without localized settings retain the ordinary
+full-page OCR route. The 40-megapixel ceiling still protects full-page rendering; crop
+rendering keeps the high-resolution lane bounded. `CROP_CONTEXT_MARGIN_PT` remains a starting point
+(an eighth of an inch, chosen to show a dimension line either side of its text) and still needs
+broader drawing coverage.
 
 ## Where it stops, and why each stop is where it is
 
-**Candidates stay untyped.** Nothing assigns a `semantic_guess`, so nothing mints a canonical
-observation, so nothing becomes eligible as a verdict operand — `evidence/gate.py` takes a canonical
-observation and there are none. The value-to-meaning association needs the real drawings (#274) and
-the vocabulary Q20 defers, and `CLIENT_FACTS` Q20 records Raj's own words: the tags are provisional
-and final ones come after the layouts are settled. A heuristic here would look like progress and be a
-fabricated fact in a review. `test_nothing_in_the_pipeline_gives_a_candidate_a_meaning` is the guard.
+**Candidates remain raw and untyped.** Nothing writes `semantic_guess`.  A deployment may opt into
+the narrow semantic-typing gate only with an explicit layout vocabulary: an exact vector tag and a
+numeric reading must share the same already-resolved dimension line before a separate
+`CORROBORATED` observation is minted. OCR tags, position heuristics, conflicting tags and all agent
+suggestions are `REVIEW_REQUIRED`; they never become operands. Q20 is final only for the three-sided
+countertop layout, so there is no global tag configuration. `docs/decisions/SEMANTIC_TYPING_GATE.md`
+records the proof and the rollout metric. The drawing-agnostic default stays with zero canonical
+observations, and `test_nothing_in_the_pipeline_gives_a_candidate_a_meaning` still guards that state.
 
 **`match` finds nothing yet, and says so.** A `match_candidates` row needs two `drawing_items`; an
 item needs a view and a type from the `CT0xx` vocabulary; and nothing detects a view or an item on a
@@ -48,13 +57,12 @@ page. `extraction/model/` reasons about items it is *given* — `view_containing
 to the real matcher and returns an honest zero with the reason. When item detection exists this runs
 unchanged.
 
-**No redline, and not for want of a renderer.** `reports/redline.py` exists and is tested. An
-annotated drawing needs each finding tied to the region of the sheet it is about, and that needs a
-candidate to have a meaning — which is exactly what this pipeline does not do. A redline drawn from
-untyped candidates would put boxes on a drawing with nothing behind their placement, which is worse
-than no redline: it looks like evidence, and evidence is the one thing a reviewer is entitled to
-take at face value. `OutputArtifactKind` has a single member for the same reason — the enum gains
-`redline` on the day something can honestly write one, and a test asserts it has not.
+**Evidence-grounded redline output is wired.** The optional redline artifact is built only when a
+live finding has a sealed `VerdictInput` pointing to a typed canonical observation with stored-space
+geometry on a recorded page transform. It never draws from raw candidates, reviewer-entered literals
+or trace display text. Findings without a qualifying location remain in the redline summary rather
+than acquiring a plausible-looking box. The artifact is generated for internal review and, like the
+other review outputs, remains download-blocked until package sign-off.
 
 **The workbook now fills every column (#525).** `findings` stores the outcome, severity, trace and
 parameter versions, and — since #525 — a decision's prose reason, its delta, its applicability variant

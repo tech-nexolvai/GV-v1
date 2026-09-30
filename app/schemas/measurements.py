@@ -21,8 +21,9 @@ number this API emits, so a client can render `51/2` as `25 1/2` without a float
 from __future__ import annotations
 
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ParameterEntry(BaseModel):
@@ -97,10 +98,53 @@ class MeasurementEntry(BaseModel):
         return self
 
 
+class ClassificationEntry(BaseModel):
+    """What a reviewer says each item in one ordered run is.
+
+    Separate from `MeasurementEntry` because a category is not a dimension: it has no unit, nothing
+    parses it, and `normalise_to_inches` correctly refuses it. Sending one through `values` was how
+    #684 was found — a reviewer had no way at all to say which cabinet was the sink cabinet.
+
+    The choices come from the rulebook, through the required-inputs form, and the server checks the
+    submission against them rather than trusting the client's list.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
+    categories: tuple[str, ...] = Field(
+        min_length=1,
+        description=(
+            "One category per item, in layout order — left to right along the run. Order is kept "
+            "because the distribution adjusts positionally: which cabinet is the equipment cabinet "
+            "is the whole question."
+        ),
+    )
+
+    @field_validator("categories")
+    @classmethod
+    def _each_one_present(cls, categories: tuple[str, ...]) -> tuple[str, ...]:
+        """An empty slot is not an answer.
+
+        A run submitted with a blank in it looks answered and is not. Leaving the item out would be
+        no better — the operation compares the run's length against the cabinets and abstains — but
+        a blank would reach it as a category nothing recognises, which is a worse way to say the
+        same thing.
+        """
+        for position, category in enumerate(categories):
+            if not category.strip():
+                raise ValueError(
+                    f"position {position} has no category. Classify every item in the run, or "
+                    "leave the run out entirely."
+                )
+        return categories
+
+
 class ReviewerEntry(BaseModel):
     """Everything one reviewer submission carries.
 
-    Both halves are optional so a reviewer can set the project's parameters once and then enter
+    Every part is optional so a reviewer can set the project's parameters once and then enter
     measurements per package without resending them.
     """
 
@@ -108,6 +152,7 @@ class ReviewerEntry(BaseModel):
 
     parameters: tuple[ParameterEntry, ...] = ()
     measurements: tuple[MeasurementEntry, ...] = ()
+    classifications: tuple[ClassificationEntry, ...] = ()
 
 
 class StoredValue(BaseModel):
@@ -153,6 +198,32 @@ class QuantityOut(BaseModel):
     #: The rule inputs this one measurement feeds, so a caller fans a single typed value out rather
     #: than asking for it once per rule.
     consumers: tuple[dict[str, str], ...]
+    #: The choices, when this input is a category rather than a dimension — empty otherwise.
+    #:
+    #: A form that rendered a text box here would ask a reviewer to type `single_door` with a unit,
+    #: and the parser would refuse it. Non-empty means offer these and send them back under
+    #: `classifications`, not `measurements`.
+    categories: tuple[str, ...] = ()
+
+
+class ConfirmedReadingOut(BaseModel):
+    """One qualified drawing reading that can prefill this package's measurement form.
+
+    This is intentionally an *input suggestion*, not a new verdict operand.  It can be a reviewer
+    confirmation, or the deliberately narrower automatic lane: an exact vector vocabulary tag on
+    the same associated dimension line.  The latter is named explicitly on the wire so the UI never
+    presents a machine qualification as if a person had performed it.  Unqualified candidates never
+    appear here.
+    """
+
+    #: The same ``SOURCE:semantic_type`` key used by :class:`QuantityOut`.
+    key: str
+    source: str
+    semantic_type: str
+    #: Exact normalized display text, e.g. ``25 1/2 in``.  The browser never computes this value.
+    value: str
+    #: Why this value has a semantic type.  ``exact_vector_tag`` is the only automatic type route.
+    qualification: Literal["reviewer_confirmed", "exact_vector_tag"]
 
 
 class ParameterOut(BaseModel):
@@ -169,6 +240,16 @@ class ParameterOut(BaseModel):
     blocked: bool
 
 
+class LayoutProposalOut(BaseModel):
+    """A model-proposed discriminator answer, still waiting for reviewer confirmation."""
+
+    value: str
+    crop_artifact_id: UUID
+    model_id: str
+    prompt_id: str
+    confirmed: bool = False
+
+
 class DiscriminatorOut(BaseModel):
     """A judgement about the drawing that decides which variant of a rule applies."""
 
@@ -178,6 +259,41 @@ class DiscriminatorOut(BaseModel):
     #: nothing and the rule reports NO_APPLICABLE_RULE — which reads as "does not apply here" rather
     #: than "you mistyped the layout".
     choices: tuple[str, ...]
+    proposal: LayoutProposalOut | None = None
+
+
+class ProposedReadingOut(BaseModel):
+    """One reading a model proposes for a field, named by the candidate it already is."""
+
+    #: The candidate the extraction layer produced. Not a value a model composed — a model may only
+    #: *choose* one of these, and `assignment_tool_schema` puts the real ids in the tool's `enum` so
+    #: an invented one is not something it can emit.
+    candidate_id: UUID
+    value: str
+    page_index: int
+    #: Which run of end-to-end dimensions this reading's line belongs to, where the drawing draws
+    #: one. Present so a reviewer can see *why* an ordered run was accepted as one.
+    chain_key: str | None = None
+    chain_position: int | None = None
+
+
+class ProposedFieldOut(BaseModel):
+    """One field and the readings proposed to fill it, in drawing order."""
+
+    field_key: str
+    #: The rulebook's own readable name, so a form need not translate `CT004` itself.
+    name: str
+    source: str
+    many: bool
+    #: Whether the drawing's own geometry confirmed where these readings sit.
+    #:
+    #: `False` on a page with no dimension line-work — a scanned drawing — where the attachment
+    #: check had nothing to test against and abstained rather than refusing. Every other check still
+    #: applied. The distinction is on the wire because a screen showing a value has to be able to say
+    #: on what grounds it is there, and "the geometry agrees" and "there was no geometry" are not
+    #: the same grounds.
+    placement_verified: bool = True
+    values: tuple[ProposedReadingOut, ...]
 
 
 class RequiredInputsOut(BaseModel):
@@ -188,11 +304,35 @@ class RequiredInputsOut(BaseModel):
     """
 
     quantities: tuple[QuantityOut, ...]
+    #: Readings a reviewer already confirmed on the mechanical crop for this exact package revision.
+    #: They are returned separately from rule requirements so the UI can make their provenance visible.
+    confirmed_readings: tuple[ConfirmedReadingOut, ...] = ()
+    #: What a model proposed for this revision, already checked, filed when the drawings were read.
+    #:
+    #: **Here rather than behind a second request**, because a form that arrives empty and fills a
+    #: moment later is a form a reviewer starts typing into. Separate from `confirmed_readings` for
+    #: the reason those are separate from the quantities: a proposal is the weakest claim on the
+    #: screen, and the page has to be able to mark it as one.
+    proposed_readings: tuple[ProposedFieldOut, ...] = ()
     parameters: tuple[ParameterOut, ...]
     discriminators: tuple[DiscriminatorOut, ...]
     #: How many rules are published. Zero means the form is empty because nothing is published, which
     #: is a different problem from a rulebook that asks for nothing.
     rules_published: int
+    #: Whether something is still working on this package.
+    #:
+    #: **The form loads once, and reading a drawing takes the better part of a minute.** Opening
+    #: Measure straight after uploading therefore showed an empty form with "nothing was read off
+    #: these drawings" — permanently, because nothing went back to look. The readings landed thirty
+    #: seconds later and the page never knew.
+    #:
+    #: So the form says which of the two it is: the reader has not finished, or it has finished and
+    #: found nothing. They want opposite things from a reviewer — wait, or go and look at Documents.
+    still_reading: bool = False
+
+    #: The package revision's lifecycle state, as the pipeline last recorded it. The reason behind
+    #: `still_reading`, so a screen can say *what* is happening rather than only that something is.
+    revision_state: str = ""
 
 
 class CheckRequest(BaseModel):
@@ -207,3 +347,77 @@ class CheckRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     discriminators: dict[str, str] = Field(default_factory=dict)
+
+
+class ProposedMeasurementsOut(BaseModel):
+    """What survived every structural check, and enough counts to say so honestly.
+
+    **Nothing here is stored.** These fill a form a reviewer then reads, edits and saves; the saving
+    is what records a value, and it records it as the reviewer's. A model's proposal never becomes a
+    measurement without a person submitting it.
+    """
+
+    assignments: tuple[ProposedFieldOut, ...]
+    #: Every field the published rulebook asks for. The denominator of "filled".
+    fields_total: int
+    #: How many of them this proposal fills. The one genuine completion figure on the screen.
+    fields_filled: int
+    #: Readings this run produced with a value, and how many of those are attached to a dimension
+    #: line. The second is the number that could fill anything: `guard_assignment` refuses an
+    #: unattached reading, because `text_association` already declined to say what it annotates.
+    readings_considered: int
+    readings_attached: int
+    #: The model that was asked, or `None` when no model is configured — in which case the fields
+    #: stay empty and a reviewer fills them, which is what happens today.
+    model_id: str | None = None
+    #: Why nothing was filled, in the words of whatever declined — the deterministic guard's own
+    #: sentence where a guard refused the proposal, otherwise that no model is configured or that
+    #: the provider did not answer. `None` when something was filled.
+    #:
+    #: Named for the outcome rather than for a refusal, because the three causes reach the reviewer
+    #: as the same situation — empty fields to type into — and only one of them is a refusal.
+    unfilled_reason: str | None = None
+
+
+class AssignmentStepOut(BaseModel):
+    """One phase of the assignment, sent as that phase begins.
+
+    **`percent` is phases finished, and says so.** It is not a guess at how long the model will
+    take and not a confidence in the answer — those are two numbers nothing on this side of the
+    request knows. A retry re-sends the phase it went back to, so the bar holds rather than
+    advancing on work that was rejected.
+    """
+
+    index: int
+    total: int
+    #: Stable identifier for the phase, for a client that wants to style it. Prose is in `label`.
+    name: str
+    label: str
+    detail: str = ""
+    percent: int
+    #: Which attempt this is, `1` for the first. A second attempt means a deterministic check
+    #: refused the first and the model was told why.
+    attempt: int = 1
+
+    #: Every phase label in order, sent once on the first frame and empty afterwards.
+    #:
+    #: So a client can show what is still to come without keeping its own copy of the sequence —
+    #: which would be a second answer to "what are the phases", free to disagree with this one the
+    #: first time a phase is added. It also lets a client tell a phase that was *skipped* from one
+    #: still waiting: a proposal nobody made is never checked, and rendering that as "done" would
+    #: claim a check that did not run.
+    sequence: tuple[str, ...] = ()
+
+
+class AssignmentEvent(BaseModel):
+    """One frame of the assignment stream: a phase beginning, or the finished result.
+
+    The endpoint returns `text/event-stream` and each frame's `data:` is one of these. A stream
+    rather than a single response because the model call is the slow part, and a screen that shows
+    a real phase name while it waits is telling the truth about what is happening — where a bar
+    moving on a timer would not be.
+    """
+
+    event: Literal["step", "result"]
+    step: AssignmentStepOut | None = None
+    result: ProposedMeasurementsOut | None = None

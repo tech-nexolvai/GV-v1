@@ -1,26 +1,31 @@
 id: CAB-FILLER-001
-version: 1.0.1
+version: 2.0.0
 product_type: cabinet
 check_type: arch_vs_shop
 severity: FLAG
 arithmetic_unit: in
 
-name: Cabinet filler distribution
+name: Cabinet run distribution
 description: >
-  Check an ordered left/right filler response to the difference between the architectural
-  width and the reviewer-supplied site width. Fillers absorb the difference first within the
-  project bounds. If they cannot, the finding requires a reviewer to select an adjustable
-  cabinet; the engine never selects or changes a cabinet itself.
+  Check a shop drawing's cabinet run against the site. The fillers absorb the difference between
+  the architectural width and the reviewer-supplied site width first, down to their bound. What
+  they cannot absorb is divided equally between the regular cabinets. An equipment cabinet keeps
+  its width in both directions, because an opening too wide for the appliance is as wrong as one
+  too narrow. Which cabinets are equipment is the reviewer's classification, supplied per cabinet;
+  the engine computes from it and never infers it.
 
+  Where the client's specification is silent the check abstains rather than choosing: a remainder
+  that does not divide into a width a drawing can carry, and a change that has to be shared between
+  fillers that started unequal, both come back for a reviewer to settle.
+
+# Global, where version 1 discriminated on `filler_symmetry` to select an `allow_asymmetric` flag
+# for `filler_distribution`. The new operation has no such flag — it abstains on unequal fillers
+# that must move, with the numbers in hand — so a discriminator here would select nothing and
+# abstain whenever `filler_symmetry` was unknown, for no reason. The safety it provided now lives
+# in the arithmetic, which is a better place for it: applicability decides whether to look, and
+# only the arithmetic knows whether the fillers actually have to move.
 applicability:
-  discriminator: filler_symmetry
-  variants:
-    - when: equal_unless_noted
-      extras:
-        allow_asymmetric: 0
-    - when: reviewer_noted_asymmetric
-      extras:
-        allow_asymmetric: 1
+  scope: global
 
 inputs:
   field_width:
@@ -33,39 +38,78 @@ inputs:
     semantic_type: CT001
     scope: same_assembly
     cardinality: one
-  design_fillers:
+  architectural_fillers:
     source: ARCH
     semantic_type: filler_width
     scope: same_assembly
     cardinality: many
-  proposed_fillers:
+  shop_fillers:
     source: SHOP
     semantic_type: filler_width
     scope: same_assembly
     cardinality: many
+  architectural_cabinets:
+    source: ARCH
+    semantic_type: cabinet_width
+    scope: same_assembly
+    cardinality: many
+  shop_cabinets:
+    source: SHOP
+    semantic_type: cabinet_width
+    scope: same_assembly
+    cardinality: many
+  # The reviewer's own classification, for the same reason `field_width` is a USER_INPUT: it is not
+  # on either drawing as a value this system can read. Raj's deck, slide 11 — the reviewer draws a
+  # box around a cabinet and categorises it.
+  cabinet_type:
+    source: USER_INPUT
+    semantic_type: cabinet_category
+    scope: same_assembly
+    cardinality: many
 
+# **Not one of these carries a default, and that is the point.** CLIENT_FACTS Q21 records the
+# filler bounds at three different values — the email said 1"/2", the 2026-08-25 call said 3-4",
+# Raj's worked examples use 2"/3" — and the per-type cabinet bounds have never been given at all
+# ("we will provide the complete list we typically follow for the final run"). Version 1 shipped
+# 1"/2" as defaults, so every package was checked against numbers nobody confirmed. A parameter no
+# layer supplies is NOT_FOUND (#67, AGENTS.md §2.4), which sends a reviewer to find the number
+# rather than handing them a confident verdict computed from a guess.
 parameters:
   filler_min:
-    default:
-      value: "1"
-      unit: in
     scope: project
   filler_max:
-    default:
-      value: "2"
-      unit: in
+    scope: project
+  single_door_cab_width_min:
+    scope: project
+  single_door_cab_width_max:
+    scope: project
+  double_door_cab_width_min:
+    scope: project
+  double_door_cab_width_max:
+    scope: project
+  drawer_cab_width_min:
+    scope: project
+  drawer_cab_width_max:
     scope: project
 
 operation:
-  type: filler_distribution
+  type: cabinet_run_distribution
   operands:
     field_width: field_width
     design_width: design_width
-    design_fillers: design_fillers
-    proposed_fillers: proposed_fillers
+    design_fillers: architectural_fillers
+    proposed_fillers: shop_fillers
+    design_cabinets: architectural_cabinets
+    proposed_cabinets: shop_cabinets
+    cabinet_type: cabinet_type
+    single_door_cab_width_min: single_door_cab_width_min
+    single_door_cab_width_max: single_door_cab_width_max
+    double_door_cab_width_min: double_door_cab_width_min
+    double_door_cab_width_max: double_door_cab_width_max
+    drawer_cab_width_min: drawer_cab_width_min
+    drawer_cab_width_max: drawer_cab_width_max
     filler_min: filler_min
     filler_max: filler_max
-    allow_asymmetric: allow_asymmetric
 
 on_missing: NOT_FOUND
 on_ambiguous: REVIEW_REQUIRED

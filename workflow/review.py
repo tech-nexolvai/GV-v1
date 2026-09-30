@@ -79,8 +79,10 @@ WORKFLOW_NAME: Final = "process_package_revision"
 
 #: The version of *this* code, inside every stage's idempotency key. A changed engine is a different
 #: task rather than a cache hit (`AGENTS.md` §2.7), so bumping this reruns stages instead of reusing
-#: answers computed by code that no longer exists.
-ENGINE_VERSION: Final = "1.0.0"
+#: answers computed by code that no longer exists. Version 1.2.0 invalidates claims made before split
+#: vendor dual-unit OCR tokens were combined and associated; otherwise an `already_done` extraction
+#: would keep the old abstentions even though the reader now produces one usable reading.
+ENGINE_VERSION: Final = "1.2.0"
 
 #: Each stage, and the state a package reaches when it finishes. Data, in one place, so the graph and
 #: the state machine cannot disagree — the same reason `app/lifecycle/states.py` holds its table as data.
@@ -261,6 +263,7 @@ def run_stage(
     stages: Stages,
     engine_version: str = ENGINE_VERSION,
     actor: str | None = None,
+    request: str | None = None,
 ) -> StageOutcome:
     """Claim the stage, move the package into the stage's state, then do the work. Commits nothing.
 
@@ -308,10 +311,13 @@ def run_stage(
     Raises:
         UnknownRevision / IllegalTransition: from `transition`, unchanged.
     """
+    # `request` separates "run this again" from "you already ran this" — see
+    # `stage_idempotency_key`. `None` keeps the coarse identity the extraction stages need.
     key = stage_idempotency_key(
         package_revision_id=package_revision_id,
         stage=stage,
         engine_version=engine_version,
+        request=request,
     )
     taken = claim(
         session,

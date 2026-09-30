@@ -65,7 +65,8 @@ import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint
 from evidence.polygon import Polygon
 from extraction.geometry.containment import DimensionExtent
-from extraction.reader import UnreadablePdf
+from extraction.glyph_bands import FractionBarGeometry, GlyphBox, stacked_fractions
+from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = [
     "DrawingLayer",
@@ -73,6 +74,8 @@ __all__ = [
     "MarkupNote",
     "OutlinedTextRegion",
     "PageLayers",
+    "StackedFraction",
+    "VendorStamp",
     "read_annotation_layers",
     "read_markup_layer",
 ]
@@ -162,6 +165,53 @@ class OutlinedTextRegion:
     """Both counts are kept because they are the only description of the cluster's shape that
     survives into the output, and a one-path, three-point "region" is worth being able to spot."""
 
+    stacked_glyphs: bool = False
+    """Whether this cluster touches a stacked fraction the bar detector found (#541, #735).
+
+    Touches, not contains: the run a reader forms at a fraction usually holds only the numerator,
+    because the bar and denominator sit below it and are orphaned by `_glyph_runs`. A crop cut round
+    this region still shows the rest, and that is what a model reads.
+
+    **`False` says nothing unless `PageLayers.fractions_read`.** A read that supplied no
+    `FractionBarGeometry` never looked, and its regions are all `False` for that reason alone.
+    """
+
+    baseline_rotation_degrees: int = 0
+    """How the appearance transform turns the text baseline on the rendered page.
+
+    This is read from the stamp's placement matrix, not from the crop pixels. ``region_crop`` uses
+    it to turn vertical labels upright before a reader sees them, and to invert reader rectangles
+    back to the unrotated page.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class VendorStamp:
+    """One vendor-drawing stamp on the page, and where it sits (#710).
+
+    On the client's combined sheets each drawing — the ID set's elevation and the vendor's — is one
+    stamp, so this is where a drawing panel is on the page. Only its place, read from the file's own
+    rectangle: which of the two it is comes from the label the sheet prints above it
+    (`extraction/panels.py`), and a person confirms that.
+    """
+
+    annotation_index: int
+    extent: Polygon
+    image_extent: tuple[ImagePoint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StackedFraction:
+    """Where the vendor drew a stacked fraction: bar, numerator and denominator together (#735).
+
+    Kept on the page rather than only on a region because the regions do not hold it — the bar and
+    the denominator were orphaned before any region was formed — and because what matters is whether
+    a *crop* shows one, and crops are cut round other readers' boxes as well as these regions.
+    """
+
+    extent: Polygon
+    image_extent: tuple[ImagePoint, ...]
+
 
 @dataclass(frozen=True, slots=True)
 class LayerRefusal:
@@ -199,6 +249,16 @@ class PageLayers:
     `drawing_segments` from a markup-only read means *nobody looked*, while empty segments from
     `read_annotation_layers` means *there is no line-work on this sheet*. Those are opposite facts
     and a caller that could not tell them apart would report a drawing as having no dimensions."""
+
+    stacked_fractions: tuple[StackedFraction, ...] = ()
+    """Every stacked fraction the bar detector found on the vendor's layer (#735)."""
+
+    vendor_stamps: tuple[VendorStamp, ...] = ()
+    """Every vendor-drawing stamp on the page, in `/Annots` order (#710). Filled by both reads."""
+
+    fractions_read: bool = False
+    """Whether the bar detector ran. `False` makes an empty `stacked_fractions` mean *nobody looked*,
+    the same distinction `geometry_read` draws for line-work."""
 
     @property
     def readable(self) -> bool:
@@ -357,6 +417,30 @@ def _appearance_transform(
     )
 
 
+def _baseline_rotation_degrees(
+    placement: tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal],
+) -> int:
+    """Return the quarter-turn of the appearance baseline from the placement matrix.
+
+    The baseline is the appearance stream's positive x-axis after placement. Only axis-aligned
+    quarter turns are representable in the crop mapper; a skewed appearance is refused rather than
+    rounded into a direction it did not state.
+    """
+    a, b, _, _, _, _ = placement
+    if a > 0 and b == 0:
+        return 0
+    if a == 0 and b > 0:
+        return 90
+    if a < 0 and b == 0:
+        return 180
+    if a == 0 and b < 0:
+        return 270
+    raise UnreadablePdf(
+        "an appearance baseline is not an axis-aligned quarter turn, so a crop could not be "
+        "rotated upright and mapped back exactly"
+    )
+
+
 def _polygon(
     rect: tuple[Decimal, Decimal, Decimal, Decimal],
     transform: PageTransform,
@@ -382,6 +466,35 @@ def _polygon(
         ),
         image,
     )
+
+
+def _visible_annotation_rect(
+    rect: tuple[Decimal, Decimal, Decimal, Decimal], transform: PageTransform
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """Return the part of an annotation rectangle that is visible on this page.
+
+    A PDF page may use a non-zero, tight ``/CropBox`` without rewriting the page-space
+    rectangle of a stamp it clips. That is still a real drawing region: a viewer clips
+    the stamp at the page edge. Rejecting the entire annotation because one corner is
+    outside the visible box turns a valid cropped upload into a silent zero-reading
+    result.
+
+    This is deliberately an intersection, not a coordinate translation. The annotation
+    appearance still maps through its original ``/Rect``; only the part the reviewer can
+    see is admitted to the stored visible-page coordinate frame. A stamp with no visible
+    area remains unreadable rather than being moved onto the page.
+    """
+    left, bottom, right, top = rect
+    crop_left, crop_bottom, crop_right, crop_top = transform.crop_box
+    visible = (
+        max(left, crop_left),
+        max(bottom, crop_bottom),
+        min(right, crop_right),
+        min(top, crop_top),
+    )
+    if visible[2] <= visible[0] or visible[3] <= visible[1]:
+        raise UnreadablePdf("annotation rectangle does not intersect the visible crop box")
+    return visible
 
 
 def _stamp_paths(
@@ -503,56 +616,102 @@ def _bounds(
     return (min(xs), min(ys), max(xs), max(ys))
 
 
-def _clusters(
-    boxes: list[tuple[Decimal, Decimal, Decimal, Decimal]], gap_pt: Decimal
-) -> list[list[int]]:
-    """Group boxes that are within `gap_pt` of each other, transitively.
+def _advance_interval(
+    box: tuple[Decimal, Decimal, Decimal, Decimal], baseline_rotation_degrees: int
+) -> tuple[Decimal, Decimal]:
+    """The box extent along the text baseline, in reading-independent order."""
+    left, bottom, right, top = box
+    if baseline_rotation_degrees in (0, 180):
+        return (left, right)
+    return (bottom, top)
 
-    Union-find over a grid rather than every pair: a stamp holds thousands of paths, and comparing
-    all of them against all of them is the difference between a second and an hour. Boxes are bucketed
-    by `gap_pt`, and only the nine buckets around each one are consulted — which is exact rather than
-    approximate, because two boxes further apart than `gap_pt` cannot be in the same or an adjacent
-    bucket and touch.
 
-    The result is ordered by first appearance so the same file always produces the same regions in
-    the same order; a caller comparing two runs must not see a set reordering as a change.
+def _baseline_interval(
+    box: tuple[Decimal, Decimal, Decimal, Decimal], baseline_rotation_degrees: int
+) -> tuple[Decimal, Decimal]:
+    """The box extent perpendicular to the text baseline."""
+    left, bottom, right, top = box
+    if baseline_rotation_degrees in (0, 180):
+        return (bottom, top)
+    return (left, right)
+
+
+def _intervals_overlap(left: tuple[Decimal, Decimal], right: tuple[Decimal, Decimal]) -> bool:
+    """Whether two closed intervals share any stated span, without inventing a tolerance."""
+    return left[0] <= right[1] and right[0] <= left[1]
+
+
+def _glyph_runs(
+    boxes: list[tuple[Decimal, Decimal, Decimal, Decimal]],
+    gap_pt: Decimal,
+    baseline_rotation_degrees: int,
+) -> tuple[list[list[int]], int]:
+    """Group glyph-sized boxes into ordered text runs.
+
+    The old grouping answered only "are these boxes close in two dimensions?" and did that
+    transitively, so two dimension labels on nearby baselines could become one crop. A run is
+    stricter: consecutive glyph boxes must share the same baseline interval, and advance along that
+    baseline with no gap larger than the caller's stated glyph gap. Single glyphs are reported
+    separately rather than promoted into model crops; they are the exact fragments this issue is
+    removing from the reader input.
     """
-    parent = list(range(len(boxes)))
+    ordered = sorted(
+        range(len(boxes)),
+        key=lambda index: (
+            _baseline_interval(boxes[index], baseline_rotation_degrees)[0],
+            _advance_interval(boxes[index], baseline_rotation_degrees)[0],
+            index,
+        ),
+    )
+    runs: list[list[int]] = []
+    orphaned = 0
+    while ordered:
+        seed = ordered.pop(0)
+        run = [seed]
+        baseline = _baseline_interval(boxes[seed], baseline_rotation_degrees)
+        last_advance = _advance_interval(boxes[seed], baseline_rotation_degrees)
 
-    def find(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
+        changed = True
+        while changed:
+            changed = False
+            best_position: int | None = None
+            best_index: int | None = None
+            best_advance: tuple[Decimal, Decimal] | None = None
+            for position, candidate in enumerate(ordered):
+                candidate_baseline = _baseline_interval(boxes[candidate], baseline_rotation_degrees)
+                if not _intervals_overlap(baseline, candidate_baseline):
+                    continue
+                candidate_advance = _advance_interval(boxes[candidate], baseline_rotation_degrees)
+                gap = candidate_advance[0] - last_advance[1]
+                if gap < 0 or gap > gap_pt:
+                    continue
+                if best_advance is None or candidate_advance[0] < best_advance[0]:
+                    best_position = position
+                    best_index = candidate
+                    best_advance = candidate_advance
+            if best_position is not None and best_index is not None and best_advance is not None:
+                ordered.pop(best_position)
+                run.append(best_index)
+                baseline = (
+                    max(
+                        baseline[0],
+                        _baseline_interval(boxes[best_index], baseline_rotation_degrees)[0],
+                    ),
+                    min(
+                        baseline[1],
+                        _baseline_interval(boxes[best_index], baseline_rotation_degrees)[1],
+                    ),
+                )
+                last_advance = (last_advance[0], max(last_advance[1], best_advance[1]))
+                changed = True
 
-    def union(left: int, right: int) -> None:
-        left_root, right_root = find(left), find(right)
-        if left_root != right_root:
-            parent[max(left_root, right_root)] = min(left_root, right_root)
+        if len(run) == 1:
+            orphaned += 1
+        else:
+            runs.append(sorted(run))
 
-    buckets: dict[tuple[int, int], list[int]] = {}
-    for index, (left, bottom, _, _) in enumerate(boxes):
-        key = (int(left / gap_pt), int(bottom / gap_pt))
-        buckets.setdefault(key, []).append(index)
-
-    for index, box in enumerate(boxes):
-        key_x = int(box[0] / gap_pt)
-        key_y = int(box[1] / gap_pt)
-        for offset_x in (-1, 0, 1):
-            for offset_y in (-1, 0, 1):
-                for other in buckets.get((key_x + offset_x, key_y + offset_y), ()):
-                    if other <= index:
-                        continue
-                    candidate = boxes[other]
-                    near_x = box[0] - gap_pt <= candidate[2] and candidate[0] - gap_pt <= box[2]
-                    near_y = box[1] - gap_pt <= candidate[3] and candidate[1] - gap_pt <= box[3]
-                    if near_x and near_y:
-                        union(index, other)
-
-    grouped: dict[int, list[int]] = {}
-    for index in range(len(boxes)):
-        grouped.setdefault(find(index), []).append(index)
-    return [grouped[key] for key in sorted(grouped)]
+    runs.sort(key=lambda run: min(run))
+    return runs, orphaned
 
 
 def read_markup_layer(
@@ -593,8 +752,16 @@ def read_annotation_layers(
     line_minimum_pt: Decimal,
     glyph_maximum_pt: Decimal,
     glyph_gap_pt: Decimal,
+    fraction_bar: FractionBarGeometry | None = None,
 ) -> PageLayers:
     """One page's annotation layers, read apart and never merged.
+
+    `fraction_bar` turns on the stacked-fraction detector (#735). It is optional here because a
+    script exploring line-work has no use for it, and the result says whether it ran
+    (`PageLayers.fractions_read`) so an empty list from a read that never looked cannot pass for a
+    sheet with no fractions on it. **Where a reading can be accepted it is not optional:**
+    `workflow.association.AssociationSettings` requires it, because without it the rule that a
+    stacked fraction always goes to a reviewer (#726) cannot run.
 
     `dpi` has no default for the reason `read_page_contents` gives: stored coordinates are reached
     through integer image space, so the resolution decides how much precision survives, and a default
@@ -625,13 +792,15 @@ def read_annotation_layers(
             raise TypeError(f"{name} must be a Decimal, never a float")
         if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
             raise ValueError(f"{name} must be a finite positive Decimal")
+    if fraction_bar is not None and not isinstance(fraction_bar, FractionBarGeometry):
+        raise TypeError("fraction_bar must be a FractionBarGeometry")
 
     return _read_layers(
         data,
         page_index,
         document_version_id=document_version_id,
         dpi=dpi,
-        geometry=(line_minimum_pt, glyph_maximum_pt, glyph_gap_pt),
+        geometry=(line_minimum_pt, glyph_maximum_pt, glyph_gap_pt, fraction_bar),
     )
 
 
@@ -641,11 +810,12 @@ def _read_layers(
     *,
     document_version_id: UUID,
     dpi: int,
-    geometry: tuple[Decimal, Decimal, Decimal] | None,
+    geometry: tuple[Decimal, Decimal, Decimal, FractionBarGeometry | None] | None,
 ) -> PageLayers:
     """The annotation walk both entry points share.
 
-    `geometry` carries the three lengths, or `None` to skip the vendor's path geometry entirely. One
+    `geometry` carries the three lengths and the optional fraction-bar detector, or `None` to skip
+    the vendor's path geometry entirely. One
     walk rather than two, because the markup half and the geometry half read the same `/Annots` array
     and must agree about which annotation is which — two walks could drift apart, and a drift here
     attributes one annotation's geometry to another's text.
@@ -657,6 +827,8 @@ def _read_layers(
     other: list[MarkupNote] = []
     segments: list[DimensionExtent] = []
     regions: list[OutlinedTextRegion] = []
+    fractions: list[StackedFraction] = []
+    stamps: list[VendorStamp] = []
     refusals: list[LayerRefusal] = []
 
     try:
@@ -667,11 +839,17 @@ def _read_layers(
                 raise UnreadablePdf(
                     f"page {page_index} is beyond the {len(plumbed.pages)} pages in this document"
                 ) from error
+            # **PDF space, not pdfplumber's.** `page_boxes_in_pdf_space` explains at length why
+            # these cannot be `page.mediabox` / `page.cropbox`: those are inverted about the media
+            # box height, and every other coordinate in this function — the annotation `/Rect`, the
+            # appearance matrix, the paths pypdfium2 returns — is bottom-up PDF space. Mixing them
+            # threw away an entire drawing.
+            media_box, crop_box = page_boxes_in_pdf_space(page)
             transform = PageTransform(
                 dpi=dpi,
                 rotation=int(page.rotation or 0) % 360,
-                media_box=_rect(page.mediabox),
-                crop_box=_rect(page.cropbox),
+                media_box=media_box,
+                crop_box=crop_box,
             )
             annotations = [annotation["data"] for annotation in page.annots]
 
@@ -692,19 +870,28 @@ def _read_layers(
                             f"({rect} against {seen}); their /Annots order does not agree, so "
                             "geometry cannot be attributed to text"
                         )
+                    visible_rect = _visible_annotation_rect(rect, transform)
                     extent, image_extent = _polygon(
-                        rect, transform, document_version_id, page_index
+                        visible_rect, transform, document_version_id, page_index
                     )
                 except (UnreadablePdf, TypeError, ValueError) as error:
                     refusals.append(LayerRefusal(index, subtype, str(error)))
                     continue
 
                 if layer is DrawingLayer.VENDOR_DRAWING:
+                    # Listed whether or not the geometry is read: where a drawing sits on the page is
+                    # a dictionary value, and the panel roles (#710) need it on every read.
+                    stamps.append(
+                        VendorStamp(
+                            annotation_index=index, extent=extent, image_extent=image_extent
+                        )
+                    )
                     if geometry is None:
                         continue
-                    line_minimum_pt, glyph_maximum_pt, glyph_gap_pt = geometry
+                    line_minimum_pt, glyph_maximum_pt, glyph_gap_pt, fraction_bar = geometry
                     try:
                         placement = _appearance_transform(annotation, rect)
+                        baseline_rotation_degrees = _baseline_rotation_degrees(placement)
                         paths = tuple(
                             _placed(path, placement)
                             for path in _stamp_paths(pdfium_document, page_index, index)
@@ -712,16 +899,21 @@ def _read_layers(
                     except (UnreadablePdf, TypeError, ValueError) as error:
                         refusals.append(LayerRefusal(index, subtype, str(error)))
                         continue
-                    # **Clipped to the annotation's own rectangle, because a viewer clips too.**
+                    # **Clipped to the visible part of the annotation, because a viewer clips too.**
                     # An appearance stream may draw past its `/BBox`; PDF 32000-1 §12.5.5 says the
-                    # box clips it, so anything outside is not on the sheet a reviewer saw. Whole
-                    # paths are dropped rather than trimmed: a trimmed path would join two points
-                    # that were never adjacent, which is a line-work segment the drawing does not
-                    # have. Fourteen of stamp 22's 1310 paths on the first real sheet.
+                    # annotation box clips it, and a page's `/CropBox` can clip that box again.
+                    # Anything outside the visible intersection is not on the sheet a reviewer
+                    # saw. Whole paths are dropped rather than trimmed: a trimmed path would join
+                    # two points that were never adjacent, which is a line-work segment the drawing
+                    # does not have. Fourteen of stamp 22's 1310 paths on the first real sheet.
                     inside = tuple(
                         path
                         for path in paths
-                        if all(rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3] for x, y in path)
+                        if all(
+                            visible_rect[0] <= x <= visible_rect[2]
+                            and visible_rect[1] <= y <= visible_rect[3]
+                            for x, y in path
+                        )
                     )
                     if len(inside) != len(paths):
                         refusals.append(
@@ -733,7 +925,7 @@ def _read_layers(
                             )
                         )
                     paths = inside
-                    found, ignored = _drawing_geometry(
+                    found, ignored, orphaned_glyphs = _drawing_geometry(
                         paths,
                         transform=transform,
                         document_version_id=document_version_id,
@@ -741,9 +933,12 @@ def _read_layers(
                         line_minimum_pt=line_minimum_pt,
                         glyph_maximum_pt=glyph_maximum_pt,
                         glyph_gap_pt=glyph_gap_pt,
+                        fraction_bar=fraction_bar,
+                        baseline_rotation_degrees=baseline_rotation_degrees,
                     )
                     segments.extend(found[0])
                     regions.extend(found[1])
+                    fractions.extend(found[2])
                     if ignored:
                         refusals.append(
                             LayerRefusal(
@@ -751,6 +946,15 @@ def _read_layers(
                                 subtype,
                                 f"{ignored} paths were neither line-work nor glyph-sized and were "
                                 "not used",
+                            )
+                        )
+                    if orphaned_glyphs:
+                        refusals.append(
+                            LayerRefusal(
+                                index,
+                                subtype,
+                                f"{orphaned_glyphs} glyph-sized paths did not confidently belong "
+                                "to a glyph run and were not used",
                             )
                         )
                     continue
@@ -791,6 +995,9 @@ def _read_layers(
             else "this page carries no annotation layers to read"
         ),
         geometry_read=geometry is not None,
+        stacked_fractions=tuple(fractions),
+        fractions_read=geometry is not None and geometry[3] is not None,
+        vendor_stamps=tuple(stamps),
     )
 
 
@@ -803,8 +1010,19 @@ def _drawing_geometry(
     line_minimum_pt: Decimal,
     glyph_maximum_pt: Decimal,
     glyph_gap_pt: Decimal,
-) -> tuple[tuple[tuple[DimensionExtent, ...], tuple[OutlinedTextRegion, ...]], int]:
-    """One stamp's paths split into line-work and candidate text regions, plus what was left over."""
+    fraction_bar: FractionBarGeometry | None,
+    baseline_rotation_degrees: int,
+) -> tuple[
+    tuple[
+        tuple[DimensionExtent, ...],
+        tuple[OutlinedTextRegion, ...],
+        tuple[StackedFraction, ...],
+    ],
+    int,
+    int,
+]:
+    """One stamp's paths split into line-work, candidate text regions and stacked fractions, plus
+    what was left over."""
     segments: list[DimensionExtent] = []
     ignored_segments = 0
     for start, end in _long_segments(paths, line_minimum_pt):
@@ -840,8 +1058,30 @@ def _drawing_geometry(
         elif not _long_segments((path,), line_minimum_pt):
             ignored += 1
 
+    # **Every path, not `small`.** `small` is bounded by `glyph_maximum_pt`, which is tuned for the
+    # dimension-line detector and excludes a full-height numerator, and the runs below have already
+    # orphaned the bar and denominator. The detector brings its own size bound.
+    fraction_boxes: tuple[GlyphBox, ...] = (
+        ()
+        if fraction_bar is None
+        else stacked_fractions(
+            [_bounds(path) for path in paths],
+            geometry=fraction_bar,
+            rotation_degrees=baseline_rotation_degrees,
+        )
+    )
+    fractions: list[StackedFraction] = []
+    for box in fraction_boxes:
+        try:
+            extent, image_extent = _polygon(box, transform, document_version_id, page_index)
+        except (TypeError, ValueError):
+            # Outside the visible crop box, or a line in image space. Neither can be in a crop.
+            continue
+        fractions.append(StackedFraction(extent=extent, image_extent=image_extent))
+
     regions: list[OutlinedTextRegion] = []
-    for cluster in _clusters(small, glyph_gap_pt):
+    runs, orphaned_glyphs = _glyph_runs(small, glyph_gap_pt, baseline_rotation_degrees)
+    for cluster in runs:
         boxes = [small[index] for index in cluster]
         rect = (
             min(box[0] for box in boxes),
@@ -862,7 +1102,19 @@ def _drawing_geometry(
                 image_extent=image_extent,
                 path_count=len(cluster),
                 point_count=sum(len(small_paths[index]) for index in cluster),
+                stacked_glyphs=any(_touches(rect, box) for box in fraction_boxes),
+                baseline_rotation_degrees=baseline_rotation_degrees,
             )
         )
 
-    return (tuple(segments), tuple(regions)), ignored
+    return (tuple(segments), tuple(regions), tuple(fractions)), ignored, orphaned_glyphs
+
+
+def _touches(first: GlyphBox, second: GlyphBox) -> bool:
+    """Whether two boxes share any point, edges included."""
+    return (
+        first[0] <= second[2]
+        and second[0] <= first[2]
+        and first[1] <= second[3]
+        and second[1] <= first[3]
+    )

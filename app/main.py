@@ -134,7 +134,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         approvals,
         background,
         confirmations,
+        distribution,
         documents,
+        drawing_views,
         finding_chain,
         finding_export,
         findings,
@@ -142,6 +144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         operations,
         packages,
         review,
+        reviewer_chat,
         rules,
     )
 
@@ -152,9 +155,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # code that does — see the module docstring and tests/api/test_no_heavy_work.py.
     app.include_router(measurements.router, prefix=API_PREFIX)
     app.include_router(confirmations.router, prefix=API_PREFIX)
+    # Which drawing on a combined sheet is which: listed with a suggestion, set only by a reviewer
+    # (#710).
+    app.include_router(drawing_views.router, prefix=API_PREFIX)
     app.include_router(approvals.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(finding_chain.router, prefix=API_PREFIX)
+    app.include_router(distribution.router, prefix=API_PREFIX)
     # The versioned export downstream consumers read (#224, D1.3). Same prefix as the rest, so the shape a
     # report or spreadsheet pins is served from the path the API documents.
     app.include_router(finding_export.router, prefix=API_PREFIX)
@@ -170,6 +177,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Review sessions and the actions a reviewer takes (#229). The service has existed since
     # D4.1; this is what lets the workspace reach it.
     app.include_router(review.router, prefix=API_PREFIX)
+    app.include_router(reviewer_chat.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def _request_id(

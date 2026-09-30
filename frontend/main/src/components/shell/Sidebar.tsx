@@ -6,7 +6,6 @@ import {
   Plus,
   ChevronRight,
   Ruler,
-  ScanLine,
 } from 'lucide-react';
 import { listReviewSessions } from '../../api/client';
 import { projectId } from '../../api/config';
@@ -26,13 +25,9 @@ interface SidebarProps {
 const NAV_ITEMS = [
   { id: 'review',    label: 'Review',    icon: MessageSquare },
   { id: 'documents', label: 'Documents', icon: Files },
-  // The reviewer enters the dimensions here. No AI and no drawing is involved — Q7 blesses a person
-  // doing the reading, and the engine decides from what they type.
+  // The reviewer enters dimensions here.  AI proposals, if any, stay visibly separate until the
+  // reviewer chooses their meaning; that same choice fills the appropriate editable field.
   { id: 'measure',   label: 'Measure',   icon: Ruler },
-  // What the extractor read, waiting for a person to say what each reading is. The other half of
-  // 'Measure': there a reviewer supplies the number, here they confirm one already read off the
-  // drawing — which is what lets the machine's reading reach a verdict at all (#530).
-  { id: 'confirm',   label: 'Confirm',   icon: ScanLine },
   { id: 'rulebook',  label: 'Rulebook',  icon: BookOpen },
   { id: 'usage',     label: 'Usage',     icon: BarChart2 },
 ];

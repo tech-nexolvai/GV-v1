@@ -58,6 +58,12 @@ class AttributedUsage:
     output_tokens: int
     latency_ms: int
     cost_usd_micros: int
+    """The cost of the priced calls. Calls with no stated price are not in it — see below."""
+    unpriced_invocations: int = 0
+    """Calls whose cost is unknown because no price was stated for the model (#700).
+
+    Counted, never added as zero: while this is above zero, `cost_usd_micros` is a lower bound, and
+    a report that showed it as the total would understate the bill by exactly those calls."""
 
     def __post_init__(self) -> None:
         for name in (
@@ -66,6 +72,7 @@ class AttributedUsage:
             "output_tokens",
             "latency_ms",
             "cost_usd_micros",
+            "unpriced_invocations",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -102,11 +109,15 @@ def _window(window: timedelta, as_of: datetime) -> datetime:
     return as_of - window
 
 
-def _usage(rows: Iterable[tuple[UUID, int, int, int, int]]) -> AttributedUsage:
-    """Aggregate rows already deduplicated by invocation identity."""
+def _usage(rows: Iterable[tuple[UUID, int, int, int, int | None]]) -> AttributedUsage:
+    """Aggregate rows already deduplicated by invocation identity.
+
+    A row with no cost (`NULL`: no price stated for its model, #700) is counted as unpriced and left
+    out of the total — adding it as zero is exactly how the system reported costing nothing.
+    """
 
     seen: set[UUID] = set()
-    input_tokens = output_tokens = latency_ms = cost = 0
+    input_tokens = output_tokens = latency_ms = cost = unpriced = 0
     for invocation_id, row_input, row_output, row_latency, row_cost in rows:
         if invocation_id in seen:
             continue
@@ -114,8 +125,11 @@ def _usage(rows: Iterable[tuple[UUID, int, int, int, int]]) -> AttributedUsage:
         input_tokens += int(row_input)
         output_tokens += int(row_output)
         latency_ms += int(row_latency)
-        cost += int(row_cost)
-    return AttributedUsage(len(seen), input_tokens, output_tokens, latency_ms, cost)
+        if row_cost is None:
+            unpriced += 1
+        else:
+            cost += int(row_cost)
+    return AttributedUsage(len(seen), input_tokens, output_tokens, latency_ms, cost, unpriced)
 
 
 def usage_by_package(
@@ -143,7 +157,7 @@ def usage_by_package(
         .where(ModelInvocation.created_at >= since, ModelInvocation.created_at <= as_of)
         .order_by(WorkflowRun.package_revision_id, ModelInvocation.id)
     )
-    grouped: dict[UUID, list[tuple[UUID, int, int, int, int]]] = {}
+    grouped: dict[UUID, list[tuple[UUID, int, int, int, int | None]]] = {}
     for package_id, invocation_id, inputs, outputs, latency, cost in session.execute(
         statement
     ).tuples():

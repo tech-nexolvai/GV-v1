@@ -29,8 +29,9 @@ Render the ALREADY-STORED crop image for each finding in `EvidencePanel`, so a f
 in the actual region of the drawing it came from. The crops already exist (`evidence/crop.py` →
 `evidence_artifacts`); this is a *display* gap, not new extraction.
 - **Boundary:** this shows a MECHANICAL crop of a real candidate (the pixels the reading came from). It is
-  NOT the redline — no boxes or annotations asserting *meaning* or placement on the full drawing; redline
-  stays blocked on semantic typing.
+  NOT the redline — no boxes or annotations asserting *meaning* or placement on the full drawing. The
+  separate redline output is permitted only after a typed canonical observation is sealed into a finding
+  and carries a recorded page location.
 - Crops render at runtime from the evidence store; no client crop is committed. Tests use the committed
   non-drawing PDF / synthetic fixtures.
 
@@ -54,12 +55,15 @@ across every screen.
   green (`model_invocations = 0`, nothing types a candidate on its own).
 - The evidence viewer shows REAL mechanical crops of real candidates; it does NOT fabricate meaning or
   placement, and is NOT the redline.
-- No wiring the model or the agent into anything.
+- No model or agent wiring into extraction, semantic typing, evidence qualification, or verdicts.
+  The reviewer chat may narrate one completed run's immutable findings only when its response passes
+  the deterministic 1:1 fact-preservation guard; provider failure shows the plain findings view.
 - Proprietary data (drawings, crops, dimensions) stays under `data/` (gitignored) or the runtime store;
   nothing client is committed (repo-hygiene guard green). Demo/test content uses the committed
   non-drawing PDF or synthetic fixtures.
 
 ## Out of scope / deferred
-- **Redline** (annotated drawing) — blocked on semantic typing (#274 + Q20).
+- **Broader redline coverage** — the evidence-grounded redline is available for typed, located finding
+  operands; incomplete typing/locations remain an explicit summary item rather than a box.
 - **The AI reading half** (semantic typing, matching, agentic reader) — at the wall; see
   `docs/V1_LAYERS_STATUS.md`.

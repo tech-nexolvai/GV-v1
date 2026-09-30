@@ -13,22 +13,37 @@ signature for something nobody looked at.
 
 from __future__ import annotations
 
+import hashlib
 from fractions import Fraction
 from typing import Annotated, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_session
-from app.auth import Principal, require_project_access
+from app.api.dependencies import get_artifact_store, get_session
+from app.auth import Principal, authenticate, require_project_access
 from app.evidence.confirm import ConfirmationRefused, RefusalReason, confirm_candidate_type
-from app.models.document import DocumentVersion, PackageRevisionDocument, Page
-from app.models.evidence import EvidenceArtifact, ObservationCandidate
+from app.models.document import (
+    Document,
+    DocumentKind,
+    DocumentVersion,
+    PackageRevisionDocument,
+    Page,
+)
+from app.models.evidence import (
+    EvidenceArtifact,
+    EvidenceArtifactKind,
+    EvidenceSupportingCandidate,
+    LayoutProposal,
+    ObservationCandidate,
+)
 from app.models.package import Package, PackageRevision
 from rules.semantic_types import SemanticType
+from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
+from storage.store import ArtifactStore
 from units.imperial import format_inches
 
 router = APIRouter(tags=["confirmations"])
@@ -67,8 +82,28 @@ class CandidateOut(BaseModel):
         default=None,
         description="Storage key of the crop of this reading's region, when one was cut.",
     )
+    confidence: str | None = Field(
+        default=None,
+        description="The extractor confidence as recorded; it is not a semantic-type confidence.",
+    )
     corroboration_status: str | None = None
     corroboration_lane: str | None = None
+    source: str | None = None
+
+
+def document_source(document_kind: str | None) -> str | None:
+    """Normalize a document kind to the document-role vocabulary used by rule inputs.
+
+    Only architecturally-meaningful documents are candidates for rulebook quantities.
+    """
+    if document_kind is None:
+        return None
+    kind = str(document_kind)
+    if kind == DocumentKind.ARCHITECTURAL.value:
+        return "ARCH"
+    if kind == DocumentKind.SHOP.value:
+        return "SHOP"
+    return None
 
 
 class CandidatesOut(BaseModel):
@@ -132,9 +167,15 @@ def list_candidates(
     revision = _revision(session, project_id, package_id)
 
     rows = session.execute(
-        select(ObservationCandidate, Page.index, EvidenceArtifact.storage_key)
+        select(
+            ObservationCandidate,
+            Page.index,
+            EvidenceArtifact.storage_key,
+            Document.kind,
+        )
         .join(Page, Page.id == ObservationCandidate.page_id)
         .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
+        .join(Document, Document.id == DocumentVersion.document_id)
         .join(
             PackageRevisionDocument,
             PackageRevisionDocument.document_version_id == DocumentVersion.id,
@@ -143,6 +184,10 @@ def list_candidates(
         .where(
             PackageRevisionDocument.package_revision_id == revision.id,
             ObservationCandidate.value_numerator.is_not(None),
+            # A confirmation seals this exact candidate as a canonical observation.  It must leave
+            # the proposal queue on the next load; showing it again would invite a second type and
+            # turn the review screen into a conflict the reviewer did not create.
+            ObservationCandidate.id.not_in(select(EvidenceSupportingCandidate.candidate_id)),
         )
         .order_by(Page.index, ObservationCandidate.created_at, ObservationCandidate.id)
         .limit(MAX_CANDIDATES + 1)
@@ -171,13 +216,133 @@ def list_candidates(
                     f"{row.unit}"
                 ),
                 crop_key=crop_key,
+                confidence=None if row.confidence is None else str(row.confidence),
                 corroboration_status=row.corroboration_status,
                 corroboration_lane=row.corroboration_lane,
+                source=document_source(document_kind),
             )
-            for row, page_index, crop_key in rows
+            for row, page_index, crop_key, document_kind in rows
         ),
         total=len(rows),
     )
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/crop",
+    response_class=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "The integrity-checked mechanical crop.",
+        }
+    },
+    summary="View the mechanical crop behind an untyped AI reading",
+)
+def candidate_crop(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+    project_id: UUID,
+    package_id: UUID,
+    candidate_id: UUID,
+) -> Response:
+    """Return the stored pixels a reviewer must inspect before naming a proposal.
+
+    This is deliberately candidate-scoped: the reading is still untyped, so it must not be exposed
+    as a finding or redline.  The SQL path proves both the candidate and its crop belong to the
+    package's current revision, then the stored digest is checked before bytes leave the service.
+    """
+    revision = _revision(session, project_id, package_id)
+    artifact = _candidate_crop_artifact(session, revision, candidate_id)
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no mechanical crop is available for this AI proposal",
+        )
+    content = _verified_crop_content(store, artifact)
+    return Response(
+        content=content, media_type=artifact.media_type, headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/layout-proposals/{crop_artifact_id}/crop",
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "The integrity-checked crop behind a proposed layout answer.",
+        }
+    },
+    summary="View the crop behind a proposed closed layout answer",
+)
+def layout_proposal_crop(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+    project_id: UUID,
+    package_id: UUID,
+    crop_artifact_id: UUID,
+) -> Response:
+    """Return a layout proposal's stored crop through the current package boundary."""
+    revision = _revision(session, project_id, package_id)
+    artifact = session.execute(
+        select(EvidenceArtifact)
+        .join(LayoutProposal, LayoutProposal.crop_artifact_id == EvidenceArtifact.id)
+        .where(
+            LayoutProposal.package_revision_id == revision.id,
+            LayoutProposal.crop_artifact_id == crop_artifact_id,
+            EvidenceArtifact.kind == EvidenceArtifactKind.CROP.value,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no mechanical crop is available for this layout proposal",
+        )
+    content = _verified_crop_content(store, artifact)
+    return Response(
+        content=content, media_type=artifact.media_type, headers={"Cache-Control": "no-store"}
+    )
+
+
+def _candidate_crop_artifact(
+    session: Session, revision: PackageRevision, candidate_id: UUID
+) -> EvidenceArtifact | None:
+    """Return this revision's mechanical crop for a candidate, never one from another package."""
+    return session.execute(
+        select(EvidenceArtifact)
+        .join(ObservationCandidate, ObservationCandidate.id == EvidenceArtifact.candidate_id)
+        .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(
+            ObservationCandidate.id == candidate_id,
+            PackageRevisionDocument.package_revision_id == revision.id,
+            EvidenceArtifact.kind == EvidenceArtifactKind.CROP.value,
+        )
+        .order_by(EvidenceArtifact.created_at, EvidenceArtifact.id)
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _verified_crop_content(store: ArtifactStore, artifact: EvidenceArtifact) -> bytes:
+    """Read an evidence crop only when its immutable storage digest still agrees."""
+    try:
+        content = store.get(artifact.storage_key).read()
+    except (ArtifactCorrupt, FileNotFoundError, IntegrityRecordMissing) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the stored proposal crop is unavailable, so it cannot be shown",
+        ) from error
+    if hashlib.sha256(content).hexdigest() != artifact.sha256:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the stored proposal crop does not match its recorded digest, so it cannot be shown",
+        )
+    return content
 
 
 @router.get(
@@ -186,7 +351,7 @@ def list_candidates(
     summary="The vocabulary a reviewer may choose from",
 )
 def list_semantic_types(
-    _access: Annotated[Principal, Depends(require_project_access)],
+    _principal: Annotated[Principal, Depends(authenticate)],
 ) -> tuple[str, ...]:
     """Read from `rules/semantic_types.py` rather than listed here.
 
@@ -205,6 +370,7 @@ def list_semantic_types(
 def confirm_candidate(
     principal: Annotated[Principal, Depends(require_project_access)],
     session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     project_id: UUID,
     package_id: UUID,
     candidate_id: UUID,
@@ -219,7 +385,36 @@ def confirm_candidate(
     Runs in the request rather than a background task because it is one row's worth of work and a
     reviewer is waiting on the answer — and because the audit event naming them has to commit with it.
     """
-    _revision(session, project_id, package_id)
+    revision = _revision(session, project_id, package_id)
+
+    # Lock this raw candidate before checking its package membership and creating evidence.  A second
+    # confirmation waits, then sees the first one's supporting-evidence row and is refused as already
+    # confirmed instead of minting a conflicting human assertion of the same reading.
+    candidate = session.execute(
+        select(ObservationCandidate)
+        .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(
+            ObservationCandidate.id == candidate_id,
+            PackageRevisionDocument.package_revision_id == revision.id,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if candidate is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="no such reading in this package"
+        )
+
+    artifact = _candidate_crop_artifact(session, revision, candidate.id)
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="this reading has no mechanical crop, so it cannot be human-confirmed",
+        )
+    _verified_crop_content(store, artifact)
 
     result = confirm_candidate_type(
         session,
@@ -236,6 +431,15 @@ def confirm_candidate(
             ),
             detail=result.detail,
         )
+
+    # The confirmation joins a raw candidate to the evidence plane and emits its audit event in this
+    # request's transaction.  Without this commit FastAPI closes the session after returning 201 and
+    # rolls both rows back, leaving a reviewer who clicked Confirm staring at the same proposal again.
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
     return ConfirmedOut(
         canonical_observation_id=result.id,

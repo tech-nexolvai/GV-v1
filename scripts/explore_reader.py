@@ -236,6 +236,9 @@ def main() -> int:
             # either.
             context=AssembledContext(nearby_text=(), nearby_geometry=()),
             bound_pt=box[2] - box[0],
+            # An exploration of what a model reads, from a hand-written manifest with no geometry
+            # read. Nothing it returns is accepted anywhere, so the guard has nothing to protect.
+            stacked_label=False,
         )
         started = time.monotonic()
         row: dict[str, Any] = {

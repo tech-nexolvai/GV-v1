@@ -14,25 +14,90 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal
-from typing import Protocol
+from decimal import ROUND_HALF_UP, Decimal
+from enum import StrEnum
+from typing import Final, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
 from units.measurement import Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.notation import canonical_notation, is_compound
+
+#: Said once, because all four coordinates carry the same contract and four near-identical
+#: sentences are how three of them end up saying something slightly different.
+_BOX_DESCRIPTION = (
+    "Pixel coordinate of the bounding box around the text you read, within the crop dimensions "
+    "given in the message. The box must have non-zero width and height."
+)
 
 
 class NovaToolPayload(BaseModel):
-    """The complete payload understood from Nova; unexpected fields are errors."""
+    """The complete payload understood from Nova; unexpected fields are errors.
+
+    **The descriptions are the contract, and they are load-bearing.** This model becomes the Bedrock
+    tool schema, so they are the only thing a reader is told about what an acceptable answer looks
+    like. Without them a model receives the bare names `reading`, `unit_guess`, `x1`..`y2` and has to
+    guess — Amazon's own models guess Amazon's conventions and pass, and a different vendor does not.
+
+    Measured on 2026-09-29 against `mistral.ministral-3-3b-instruct` on a real crop reading `12 3/4"`:
+    with bare field names **0 of 3** replies were accepted, every one rejected for answering
+    `unit_guess` as `"inch"` or `"inches"`; with these descriptions **4 of 4** were accepted. The
+    model had read the crop correctly every single time. We were discarding correct readings over the
+    spelling of a unit, and Ministral alone accounted for 851 of one run's 1,743 rejections (#718).
+
+    An `enum` on `unit_guess` was measured too and is deliberately absent: it scored *worse* than
+    descriptions alone (2 of 3), because constraining the field pushed the malformation into
+    `reading` instead.
+
+    Each description states what `validate_payload` below actually rejects. Change one and the other
+    has to move with it, or the schema starts promising something the validator will not accept.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    reading: str = Field(min_length=1)
-    unit_guess: str | None
-    polygon: list[tuple[Decimal, Decimal]] = Field(min_length=3)
+    reading: str = Field(
+        min_length=1,
+        description=(
+            'The dimension exactly as printed on the drawing. Use the inch mark " rather than the '
+            'word "inches". Keep a fraction as a fraction: 12 3/4", never 12.75.'
+        ),
+    )
+    unit_guess: str | None = Field(
+        description=(
+            'The unit of the reading, as a short code: "in" or "mm". Null when the drawing does '
+            "not say."
+        ),
+    )
+    x1: StrictInt = Field(description=_BOX_DESCRIPTION)
+    y1: StrictInt = Field(description=_BOX_DESCRIPTION)
+    x2: StrictInt = Field(description=_BOX_DESCRIPTION)
+    y2: StrictInt = Field(description=_BOX_DESCRIPTION)
+
+
+class CoordinateMode(StrEnum):
+    """How the model's rectangle coordinates should be read."""
+
+    PIXELS = "pixels"
+    NOVA_GRID = "nova_grid"
+
+
+@dataclass(frozen=True, slots=True)
+class CropSize:
+    """Trusted dimensions of the exact crop image sent to the reader."""
+
+    width_px: int
+    height_px: int
+
+    def __post_init__(self) -> None:
+        for name in ("width_px", "height_px"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than zero")
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,27 +198,33 @@ def _record_rejection(
 #: Deliberately not narrowed to "suspicious-looking" fractions — every bare fraction matches.
 _BARE_FRACTION_RE = re.compile(r'^\s*\d+\s*/\s*\d+\s*"?\s*$')
 
-#: Typewriter and typographic spellings of the inch and foot marks, as a model tends to emit them.
-_MARK_SPELLINGS = (("\u2033", '"'), ("\u2032", "'"), ("''", '"'))
+
+#: The reason a reading of a stacked fraction is recorded under. Its own reason, so a reviewer knows
+#: the drawing's layout sent it — not a bad reading, and not a reading that is not a dimension.
+STACKED_FRACTION_REASON: Final = "stacked_fraction_requires_review"
 
 
-def _probe_text(reading: str) -> str:
-    """The reading with the inch mark spelled the way the parser knows it.
+def _stacked_fraction_refusal(reading: str, *, stacked: bool) -> str | None:
+    """Why a reading of this crop may not be accepted, or `None` (#541, #735).
 
-    Asked for `8' - 6"` at 600 dpi, `minicpm-v` answered `8'-6''` — the same dimension with the inch
-    double-prime typed as two apostrophes, which is how it has been written on typewriters and in
-    plain ASCII for a century. `normalise_to_inches` refuses it, so a correct reading was being
-    thrown away over a character.
+    The one check here that does not read the string. **A crop that shows a stacked fraction always
+    abstains, whatever came back** — the admin's rule on #726. It used to abstain only when the reading
+    had no `/`, which caught `28 3/4"` read as `284`. It did not catch what the first human-keyed
+    bake-off found: a stacked `3/4"` read as `3 3/4"` by two readers from different vendors, who then
+    agreed. That reading has its `/`, parses, and would have been sealed by the agreement gate. The
+    string carries no evidence of what went wrong, so no rule about the string can be the guard.
 
-    This is a transcription equivalence, not a value guess: `''` and `\u2033` mean inches and nothing
-    else, and no number changes. **Only this probe sees the substitution.** The candidate keeps
-    exactly the characters the model produced, because a reviewer comparing a reading with a crop
-    must see what was actually returned.
+    **Fails closed and never corrects.** It does not say what the number should have been. A false
+    abstention costs a reviewer one look at a crop; a missed one is a wrong dimension with two readers
+    vouching for it.
     """
-    probed = reading
-    for spelling, canonical in _MARK_SPELLINGS:
-        probed = probed.replace(spelling, canonical)
-    return probed
+    if not stacked:
+        return None
+    return (
+        f"reading {reading!r} comes from a crop that shows a stacked fraction. Readers mistake a "
+        "stacked numerator for a whole number and agree with each other doing it, so a stacked "
+        "fraction always goes to a reviewer"
+    )
 
 
 def _reading_refusal(reading: str) -> str | None:
@@ -186,8 +257,14 @@ def _reading_refusal(reading: str) -> str | None:
     `parsed_value` stays `None`. Which unit the number is in remains the `unit_guess` field's
     business, and `evidence/normalize.py` already refuses a candidate that has none.
     """
+    # **The drawing's own notation, through `units.notation` (#733).** Before, only inch-mark spellings
+    # were rewritten here, so a correct `25-1/2"`, `381 [15]` or `2" (VIF)` was refused as not a
+    # dimension — every one of seven readers read `25-1/2"` right in the bake-off and every one was
+    # thrown away. The candidate keeps the characters the model produced; only this check sees the
+    # canonical form.
+    probed = canonical_notation(reading)[0]
     try:
-        measured = normalise_to_inches(_probe_text(reading), unmarked_unit=Unit.INCH)
+        measured = normalise_to_inches(probed, unmarked_unit=Unit.INCH)
     except UnitNormalisationError as error:
         return f"reading {reading!r} is not a dimension token: {error}"
     if measured.exact == 0:
@@ -196,7 +273,10 @@ def _reading_refusal(reading: str) -> str | None:
         # way to satisfy a sum — so this is the one magnitude that says the reading failed rather
         # than that the drawing is unusual.
         return f"reading {reading!r} measures zero, which is not a dimension anything drew"
-    if _BARE_FRACTION_RE.match(reading):
+    # On the canonical form, not the characters returned: `19 [3/4]` does not look like a bare
+    # fraction, but its value is one, and judging the raw text would let a dual token carry a
+    # dropped whole number straight past the check that exists to stop it.
+    if _BARE_FRACTION_RE.match(probed):
         return (
             f"reading {reading!r} is a fraction with no whole number. A dropped whole number reads "
             "as a valid dimension, so this abstains rather than accepting it"
@@ -204,20 +284,85 @@ def _reading_refusal(reading: str) -> str | None:
     return None
 
 
-def _pixel(value: Decimal) -> int:
-    integral = value.to_integral_value()
-    if value != integral:
-        raise ValueError("image-space coordinates must be integral pixels")
-    return int(integral)
+def _round_pixel(value: Decimal) -> int:
+    return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def _bounds_error(axis: str, value: int, maximum: int, crop_size: CropSize) -> ValueError | None:
+    if 0 <= value <= maximum:
+        return None
+    return ValueError(
+        f"{axis} coordinate {value} is outside the {crop_size.width_px}x{crop_size.height_px} "
+        f"crop; expected 0..{maximum}"
+    )
+
+
+def _pixel_coordinate(value: int, *, axis: str, crop_size: CropSize) -> int:
+    maximum = crop_size.width_px if axis == "x" else crop_size.height_px
+    error = _bounds_error(axis, value, maximum, crop_size)
+    if error is not None:
+        raise error
+    return value
+
+
+def _nova_grid_coordinate(value: int, *, axis: str, crop_size: CropSize) -> int:
+    grid_limit = 1000
+    error = _bounds_error(axis, value, grid_limit, crop_size)
+    if error is not None:
+        raise error
+    maximum = crop_size.width_px if axis == "x" else crop_size.height_px
+    mapped = Decimal(value) * Decimal(maximum) / Decimal(grid_limit)
+    pixel = _round_pixel(mapped)
+    pixel_error = _bounds_error(axis, pixel, maximum, crop_size)
+    if pixel_error is not None:
+        raise pixel_error
+    return pixel
+
+
+def _rectangle_polygon(
+    payload: NovaToolPayload,
+    *,
+    crop_size: CropSize,
+    coordinate_mode: CoordinateMode,
+) -> tuple[ImagePoint, ...]:
+    coordinate = (
+        _nova_grid_coordinate if coordinate_mode is CoordinateMode.NOVA_GRID else _pixel_coordinate
+    )
+    left = coordinate(payload.x1, axis="x", crop_size=crop_size)
+    top = coordinate(payload.y1, axis="y", crop_size=crop_size)
+    right = coordinate(payload.x2, axis="x", crop_size=crop_size)
+    bottom = coordinate(payload.y2, axis="y", crop_size=crop_size)
+    if right <= left or bottom <= top:
+        raise ValueError(
+            f"rectangle must have positive width and height inside the "
+            f"{crop_size.width_px}x{crop_size.height_px} crop; got "
+            f"x1={payload.x1}, y1={payload.y1}, x2={payload.x2}, y2={payload.y2}"
+        )
+    return (
+        ImagePoint(left, top),
+        ImagePoint(right, top),
+        ImagePoint(right, bottom),
+        ImagePoint(left, bottom),
+    )
 
 
 def validate_payload(
     payload: object,
     *,
     context: CandidateContext,
+    crop_size: CropSize,
+    coordinate_mode: CoordinateMode,
     recorder: RejectionRecorder,
+    stacked_label: bool,
 ) -> ValidationOutcome:
-    """Return a complete candidate or a recorded abstention, never a partial result."""
+    """Return a complete candidate or a recorded abstention, never a partial result.
+
+    `stacked_label` is what the sheet's own geometry said about this crop: that it shows a stacked
+    fraction the bar detector found (`extraction/glyph_bands.py`, #735). **It has no default.** It
+    had one, `False`, and both production callers relied on it — so the guard it gates was tested,
+    worked when called, and never ran (#735). Every caller now states what it knows; a caller with
+    no geometry says `False` in its own code, where a reader can see the gap.
+    """
 
     try:
         _reject_floats(payload)
@@ -243,18 +388,58 @@ def validate_payload(
 
     try:
         unit = Unit(validated.unit_guess) if validated.unit_guess is not None else None
-        polygon = tuple(ImagePoint(_pixel(x), _pixel(y)) for x, y in validated.polygon)
+        polygon = _rectangle_polygon(
+            validated,
+            crop_size=crop_size,
+            coordinate_mode=coordinate_mode,
+        )
     except (TypeError, ValueError) as error:
         return _record_rejection(
             payload=payload,
             context=context,
             recorder=recorder,
-            reason="candidate_conversion_failed",
+            reason=(
+                "coordinate_out_of_bounds"
+                if "outside the" in str(error)
+                else "candidate_conversion_failed"
+            ),
             errors=(str(error),),
+        )
+
+    # **Its own reason, and before the shape check (#730, #733).** `39 1/4"+6"` is two dimensions and an
+    # operator: there is no single value to accept or refuse, and a reviewer's next action — read both
+    # — differs from the one "not a dimension" asks for. Adding them up would put arithmetic we did
+    # into a reading the model did not make.
+    if is_compound(validated.reading):
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason="not_a_single_value",
+            errors=(f"reading {validated.reading!r} is two dimensions and an operator",),
         )
 
     # Before the candidate exists, because a candidate is a reading somebody may act on.
     refusal = _reading_refusal(validated.reading)
+
+    # **On a stacked crop, the layout is the reason** — recorded under its own reason so a reviewer
+    # knows the drawing sent it, not a bad reading (#735). That holds for every dimension-shaped
+    # reading, and for a bare fraction too: `3/4"` is the *right* reading of a stacked `3/4"`, and
+    # the bare-fraction guard would otherwise refuse it as suspect on its face. Only a reading that is
+    # not a dimension at all keeps that reason: it is the truer one, and most of the detector's false
+    # alarms — hatching beside a label — land there.
+    stacked_refusal = _stacked_fraction_refusal(validated.reading, stacked=stacked_label)
+    if stacked_refusal is not None and (
+        refusal is None or _BARE_FRACTION_RE.match(canonical_notation(validated.reading)[0])
+    ):
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason=STACKED_FRACTION_REASON,
+            errors=(stacked_refusal,),
+        )
+
     if refusal is not None:
         return _record_rejection(
             payload=payload,
@@ -279,5 +464,8 @@ def validate_payload(
         # one adapter now and a reading from a local model was being flagged `nova_model_reading`.
         # Nova's own value is unchanged — its context defaults `extractor` to "nova" — so this
         # corrects the misnomer without moving anything that already depended on it.
-        ambiguity_flags=(f"{context.extractor}_model_reading",),
+        ambiguity_flags=(
+            f"{context.extractor}_model_reading",
+            f"{context.extractor}_rectangle_polygon_derived",
+        ),
     )

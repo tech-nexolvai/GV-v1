@@ -126,17 +126,46 @@ def test_the_vendor_back_offset_range_is_offered_as_a_confirmed_project_override
 def test_a_declared_default_is_reported_but_not_treated_as_confirmed() -> None:
     """The rulebook's defaults are a rule author's stand-in, not a client answer.
 
-    `CLIENT_FACTS` Q21 has the filler maximum at 2" in one place and 3-4" in another, so a form that
-    presented the authored 2" as fact would be stating something the client has not agreed.
+    This used to read `filler_max`, whose authored 2" a form would have presented as fact when
+    `CLIENT_FACTS` Q21 has it at 2" in one place and 3-4" in another. **CAB-FILLER-001 v2 removed
+    that default rather than keeping it labelled** (#681), so the property now needs a parameter
+    that still has one. `front_offset_required` does, and the point is unchanged: reported, in the
+    author's own text, and never marked confirmed.
     """
     needs = required_inputs(_rules())
 
-    filler_max = next(p for p in needs.parameters if p.name == "filler_max")
-    assert filler_max.declared_default is not None
-    assert not filler_max.blocked
+    offset = next(p for p in needs.parameters if p.name == "front_offset_required")
+    assert offset.declared_default is not None
+    assert not offset.blocked
     # Reported as authored text rather than converted: converting here would put a second numeric
     # interpretation beside the one `units/` owns.
-    assert isinstance(filler_max.declared_default, str)
+    assert isinstance(offset.declared_default, str)
+
+
+def test_the_distribution_bounds_are_asked_for_with_no_stand_in_at_all() -> None:
+    """CAB-FILLER-001 v2 carries no default for any bound, and the form must show that.
+
+    Version 1 shipped `filler_min: 1"` / `filler_max: 2"`, so a package was checked against numbers
+    nobody confirmed. Q21 has the filler bounds at three different values and the per-type cabinet
+    bounds have never been given at all — so a reviewer has to supply each one, and `declared_default`
+    being None is what makes the form ask instead of pre-filling.
+    """
+    needs = required_inputs(_rules())
+    by_name = {p.name: p for p in needs.parameters}
+
+    for name in (
+        "filler_min",
+        "filler_max",
+        "single_door_cab_width_min",
+        "single_door_cab_width_max",
+        "double_door_cab_width_min",
+        "double_door_cab_width_max",
+        "drawer_cab_width_min",
+        "drawer_cab_width_max",
+    ):
+        assert name in by_name, f"{name} is not being asked for"
+        assert by_name[name].declared_default is None, f"{name} acquired a default"
+        assert "CAB-FILLER-001" in by_name[name].rule_ids
 
 
 def test_a_parameter_two_rules_share_is_listed_once_naming_both() -> None:

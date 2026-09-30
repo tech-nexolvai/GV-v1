@@ -26,6 +26,13 @@
   flex-wrap: wrap;
 }
 
+.review-page__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
 .review-page__header-right {
   display: flex;
   align-items: center;
@@ -100,6 +107,50 @@
   align-items: center;
   gap: var(--space-3);
   flex-wrap: wrap;
+}
+
+.review-page__pkg-summary {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.review-page__record-ids {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.review-page__record-ids summary { cursor: pointer; }
+.review-page__record-ids[open] { display: flex; flex-direction: column; gap: 3px; }
+.review-page__record-ids span { display: flex; align-items: center; gap: var(--space-1); }
+
+/* One quiet affordance rather than two lines of standing text — the sentence itself is in the
+   tooltip. Focusable, so it is reachable without a mouse: an explanation only hover can reach is
+   an explanation some people never get. */
+.review-page__method {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 3px var(--space-2);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-default);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  cursor: help;
+  white-space: nowrap;
+  transition:
+    color var(--duration-base) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out),
+    background-color var(--duration-base) var(--ease-out);
+}
+
+.review-page__method:hover,
+.review-page__method:focus-visible {
+  color: var(--gv-crimson);
+  border-color: var(--gv-crimson-border);
+  background: var(--gv-crimson-dim-2);
+  outline: none;
 }
 
 /* Pkg ID — demoted to mono caption */
@@ -189,9 +240,9 @@
 .review-page__error {
   padding: var(--space-8, 32px);
   max-width: 60ch;
-  color: var(--color-danger, #b42318);
+  color: var(--status-fail, #b42318);
 }
 
 .review-page__error p {
-  color: var(--color-text-muted, #6b7280);
+  color: var(--text-muted, #6b7280);
 }

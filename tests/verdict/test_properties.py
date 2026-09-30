@@ -343,11 +343,11 @@ def test_mixed_authored_units_never_produce_pass(operation: Callable[[], object]
         operation()
 
 
-def test_pairwise_rejects_duplicate_prone_sequence_input() -> None:
-    """Only mappings cross the pairing boundary, so duplicate keys cannot be paired silently."""
+def test_pairwise_rejects_tuple_shaped_pseudo_mapping_input() -> None:
+    """Ordered lists are positional; tuple-shaped key/value rows are not treated as mappings."""
 
     duplicate_prone = [("CAB-1", mm(24)), ("CAB-1", mm(25))]
-    with pytest.raises(RuleAuthoringError, match="mapping keyed by identifier"):
+    with pytest.raises(RuleAuthoringError, match="Measurement"):
         pairwise_within_tolerance(  # type: ignore[arg-type]
             left=duplicate_prone,
             right={"CAB-1": mm(24)},

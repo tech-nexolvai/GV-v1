@@ -38,23 +38,43 @@ Verification: `tests/api/test_measurements.py`
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from fractions import Fraction
 from typing import Annotated, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
-from app.models import Package, PackageRevision
+from app.models import Package, PackageRevision, PackageState
+from app.models.document import (
+    DocumentVersion,
+    PackageRevisionDocument,
+    Page,
+)
+from app.models.evidence import (
+    CanonicalObservation,
+    EvidenceSupportingCandidate,
+    ObservationCandidate,
+)
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import to_rows
 from app.schemas.measurements import (
+    AssignmentEvent,
+    AssignmentStepOut,
     CheckRequest,
+    ConfirmedReadingOut,
     DiscriminatorOut,
+    LayoutProposalOut,
     ParameterOut,
+    ProposedFieldOut,
+    ProposedMeasurementsOut,
+    ProposedReadingOut,
     QuantityOut,
     RequiredInputsOut,
     ReviewerEntry,
@@ -64,12 +84,32 @@ from app.schemas.measurements import (
 )
 from app.verdicts.rulebook import snapshot_store
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
-from rules.required_inputs import required_inputs
-from rules.schema import Quantity
+from rules.required_inputs import allowed_categories_for, required_inputs
+from rules.schema import Quantity, Rule
+from units.imperial import format_inches
 from units.measurement import Measurement
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus
+from workflow.assignment_bedrock import (
+    AssignmentProgress,
+    configured_assignment_model,
+    propose_and_guard,
+)
+from workflow.classifications import record_classifications
+from workflow.layout_proposals import (
+    confirmed_discriminators,
+    record_layout_confirmation,
+    stored_layout_proposals,
+)
 from workflow.measurements import LIST_MARKER
 from workflow.outbox import enqueue
+from workflow.propose import (
+    MAX_ASSIGNMENT_READINGS,
+    assignment_context,
+    assignment_fields,
+    record_proposal,
+    stored_proposal,
+)
 
 router = APIRouter(tags=["measurements"])
 
@@ -79,6 +119,19 @@ NOT_FOUND_DETAIL: Final = "Not found"
 #: The workflow the enqueued row asks for. Named, not free text, so a typo cannot enqueue work that
 #: no consumer recognises and that then sits in the outbox looking accepted.
 RUN_CHECKS_WORKFLOW: Final = "run_checks"
+
+#: States where the Measure page should keep watching because drawing readings or filed proposals may
+#: still appear. Written out rather than derived from "not terminal": review/check states, failures
+#: and human handoffs are not reading states, even though some are non-terminal.
+READING_STATES: Final[frozenset[PackageState]] = frozenset(
+    {
+        PackageState.UPLOADED,
+        PackageState.INGESTING,
+        PackageState.EXTRACTING,
+        PackageState.MATCHING,
+        PackageState.VALIDATING_EVIDENCE,
+    }
+)
 
 
 def _parse(value: str, *, field: str) -> Measurement:
@@ -193,6 +246,103 @@ def _store(
     )
 
 
+def _stored_proposal_out(
+    session: Session, revision: PackageRevision
+) -> tuple[ProposedFieldOut, ...]:
+    """The filed proposal for this revision, rendered for the form.
+
+    **Read, never computed.** The proposal was made when the drawings were read; asking the model
+    again here would put a network call and a cost on a page load, and would let two loads of the
+    same unchanged package disagree with each other.
+
+    The value comes from the candidate's own exact numerator and denominator rather than from
+    anything stored beside the proposal. `measurement_proposals` records which reading fills which
+    slot and nothing else, so there is no second copy of a number here to drift from the first.
+    """
+    rows = stored_proposal(session, revision.id)
+    if not rows:
+        return ()
+
+    candidates = {
+        candidate.id: (candidate, page_index)
+        for candidate, page_index in session.execute(
+            select(ObservationCandidate, Page.index)
+            .join(Page, Page.id == ObservationCandidate.page_id)
+            .where(ObservationCandidate.id.in_([row.candidate_id for row in rows]))
+        ).all()
+    }
+
+    fields, _rules = assignment_fields(session)
+    by_key = {field.key: field for field in fields}
+
+    grouped: dict[str, list[ProposedReadingOut]] = {}
+    verified: dict[str, bool] = {}
+    for row in rows:
+        found = candidates.get(row.candidate_id)
+        if found is None or row.field_key not in by_key:
+            # A proposal naming a reading this revision no longer has, or a field the published
+            # rulebook has stopped asking for. Both mean the rulebook or the read moved on since the
+            # proposal was filed, and a stale row must not put a value in front of a reviewer.
+            continue
+        candidate, page_index = found
+        if candidate.value_numerator is None or candidate.value_denominator is None:
+            continue
+        verified[row.field_key] = row.placement_verified
+        grouped.setdefault(row.field_key, []).append(
+            ProposedReadingOut(
+                candidate_id=candidate.id,
+                value=(
+                    f"{format_inches(Fraction(candidate.value_numerator, candidate.value_denominator))} "
+                    f"{candidate.unit}"
+                ),
+                page_index=page_index,
+            )
+        )
+
+    return tuple(
+        ProposedFieldOut(
+            field_key=key,
+            name=by_key[key].name,
+            source=by_key[key].source,
+            many=by_key[key].many,
+            placement_verified=verified[key],
+            values=tuple(values),
+        )
+        for key, values in sorted(grouped.items())
+    )
+
+
+def _stored_layout_proposal_out(
+    session: Session, revision: PackageRevision
+) -> dict[str, LayoutProposalOut]:
+    """Current layout proposals, keyed by discriminator name for the required-inputs response."""
+    confirmed = confirmed_discriminators(session, revision.id)
+    return {
+        proposal.discriminator_name: LayoutProposalOut(
+            value=proposal.proposed_value,
+            crop_artifact_id=proposal.crop_artifact_id,
+            model_id=proposal.model_id,
+            prompt_id=proposal.prompt_id,
+            confirmed=confirmed.get(proposal.discriminator_name) == proposal.proposed_value,
+        )
+        for proposal in stored_layout_proposals(session, revision.id)
+    }
+
+
+def _published_rules(session: Session) -> list[Rule]:
+    """The rulebook as published, which is what `run_checks` reads.
+
+    Shared by the form and by the submission that answers it, so a category the form offered cannot
+    be one the submission refuses.
+    """
+    store = snapshot_store(session)
+    return [
+        snapshot.rule
+        for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
+        if snapshot is not None
+    ]
+
+
 @router.get(
     "/projects/{project_id}/packages/{package_id}/required-inputs",
     response_model=RequiredInputsOut,
@@ -218,17 +368,68 @@ def read_required_inputs(
     published means an empty form and `rules_published: 0` — a different situation from a rulebook
     that wants nothing, and the caller can tell them apart.
     """
-    _revision(session, project_id, package_id)
+    revision = _revision(session, project_id, package_id)
 
-    store = snapshot_store(session)
-    rules = [
-        snapshot.rule
-        for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
-        if snapshot is not None
-    ]
+    rules = _published_rules(session)
     needs = required_inputs(rules)
+    layout_proposals = _stored_layout_proposal_out(session, revision)
+
+    # The Confirm screen is the human gate.  Once a reviewer has confirmed both what the drawing
+    # says and what it means, asking them to type that exact value again is pure transcription risk.
+    # Scope through the supporting candidate and revision membership: a canonical observation from a
+    # different package (or an older revision containing different documents) must never prefill this
+    # review.  Page/candidate ordering makes a MANY field deterministic without assigning meaning.
+    confirmed_rows = session.execute(
+        select(CanonicalObservation, Page.index, ObservationCandidate.created_at)
+        .join(
+            EvidenceSupportingCandidate,
+            EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
+        )
+        .join(
+            ObservationCandidate,
+            ObservationCandidate.id == EvidenceSupportingCandidate.candidate_id,
+        )
+        .join(Page, Page.id == CanonicalObservation.page_id)
+        .join(DocumentVersion, DocumentVersion.id == CanonicalObservation.document_version_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(
+            PackageRevisionDocument.package_revision_id == revision.id,
+            CanonicalObservation.status.in_([item.value for item in QUALIFIED_STATUSES]),
+        )
+        .order_by(Page.index, ObservationCandidate.created_at, CanonicalObservation.id)
+    ).all()
+
+    seen_observations: set[UUID] = set()
+    confirmed_readings_list: list[ConfirmedReadingOut] = []
+    # One canonical observation can have a primary candidate plus corroborating candidates.  It is
+    # still one qualified reading, especially for a many-valued rule input.
+    for observation, _page_index, _created_at in confirmed_rows:
+        if observation.id in seen_observations:
+            continue
+        seen_observations.add(observation.id)
+        confirmed_readings_list.append(
+            ConfirmedReadingOut(
+                key=f"{observation.document_role}:{observation.semantic_type}",
+                source=observation.document_role,
+                semantic_type=observation.semantic_type,
+                value=(
+                    f"{format_inches(Fraction(observation.value_numerator, observation.value_denominator))} "
+                    f"{observation.unit}"
+                ),
+                qualification=(
+                    "exact_vector_tag"
+                    if observation.status == EvidenceStatus.CORROBORATED.value
+                    else "reviewer_confirmed"
+                ),
+            )
+        )
+    confirmed_readings = tuple(confirmed_readings_list)
 
     return RequiredInputsOut(
+        proposed_readings=_stored_proposal_out(session, revision),
         quantities=tuple(
             QuantityOut(
                 key=quantity.key,
@@ -239,9 +440,11 @@ def read_required_inputs(
                     {"rule_id": consumer.rule_id, "input_name": consumer.input_name}
                     for consumer in quantity.consumers
                 ),
+                categories=quantity.categories,
             )
             for quantity in needs.quantities
         ),
+        confirmed_readings=confirmed_readings,
         parameters=tuple(
             ParameterOut(
                 name=parameter.name,
@@ -257,10 +460,13 @@ def read_required_inputs(
                 name=discriminator.name,
                 rule_ids=discriminator.rule_ids,
                 choices=discriminator.choices,
+                proposal=layout_proposals.get(discriminator.name),
             )
             for discriminator in needs.discriminators
         ),
         rules_published=len(rules),
+        revision_state=revision.state,
+        still_reading=PackageState(revision.state) in READING_STATES,
     )
 
 
@@ -286,7 +492,7 @@ def enter_measurements(
     Nothing is run here. A submission records values; asking for the checks is a separate call, so a
     reviewer can correct a typo without a verdict being computed from the first attempt.
     """
-    _revision(session, project_id, package_id)
+    revision = _revision(session, project_id, package_id)
 
     # **Split by scope, because a layer is a claim about how long a value stays true.** A project
     # setting applies to every review of the job; a run value was true for this one. Filing the sink
@@ -327,6 +533,40 @@ def enter_measurements(
             run_values[key] = _parse(measurement.value, field=label)
             run_typed[key] = measurement.value
             measurement_keys.add(key)
+
+    # **A classification is checked against the rulebook, not against the client's list.** The form
+    # offers the choices a rule's semantic type allows; a submission naming something else is a
+    # client out of step with the rulebook, and accepting it would store a category the operation
+    # will later refuse — turning a correctable 422 into an abstention on a package the reviewer
+    # thought they had finished.
+    published = _published_rules(session) if body.classifications else []
+    for classification in body.classifications:
+        allowed = allowed_categories_for(published, classification.rule_id, classification.name)
+        if allowed is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"{classification.rule_id}.{classification.name} is not an input that takes a "
+                    "category. Send a dimension as a measurement."
+                ),
+            )
+        for position, category in enumerate(classification.categories):
+            if category not in allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"{classification.rule_id}.{classification.name}[{position}]: "
+                        f"{category!r} is not one of {', '.join(sorted(allowed))}."
+                    ),
+                )
+        record_classifications(
+            session,
+            package_revision_id=revision.id,
+            rule_id=classification.rule_id,
+            input_name=classification.name,
+            categories=classification.categories,
+            confirmed_by=principal.id,
+        )
 
     parameter_version, stored_project = _store(
         session,
@@ -432,7 +672,7 @@ def _check_discriminators(session: Session, stated: dict[str, str]) -> None:
     summary="Ask for the checks to be run against this package",
 )
 def request_checks(
-    _access: Annotated[Principal, Depends(require_project_access)],
+    principal: Annotated[Principal, Depends(require_project_access)],
     _action: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
@@ -454,10 +694,20 @@ def request_checks(
     revision = _revision(session, project_id, package_id)
     stated = dict((body.discriminators if body else {}) or {})
     _check_discriminators(session, stated)
+    for name, value in stated.items():
+        record_layout_confirmation(
+            session,
+            package_revision_id=revision.id,
+            discriminator_name=name,
+            value=value,
+            actor=principal.id,
+        )
+    confirmed = confirmed_discriminators(session, revision.id)
+    _check_discriminators(session, confirmed)
     accepted = enqueue(
         session,
         workflow=RUN_CHECKS_WORKFLOW,
-        payload={"package_revision_id": str(revision.id), "discriminators": stated},
+        payload={"package_revision_id": str(revision.id), "discriminators": confirmed},
     )
     try:
         session.commit()
@@ -466,3 +716,212 @@ def request_checks(
         raise
 
     return {"accepted_id": str(accepted), "package_revision_id": str(revision.id)}
+
+
+# ---------------------------------------------------------------------------
+# Proposing which reading fills which field
+# ---------------------------------------------------------------------------
+
+#: The phases of one assignment, in the order they run. Fixed, because the percentage a reviewer
+#: sees is *phases finished* and a denominator that changed under it would make the bar meaningless.
+#: A retry re-sends the phase it went back to rather than adding one, so the bar holds where the
+#: work actually is instead of advancing on an answer that was rejected.
+ASSIGNMENT_PHASES: Final[tuple[tuple[str, str], ...]] = (
+    ("rulebook", "Reading what the rulebook asks for"),
+    ("readings", "Gathering what was read off the drawings"),
+    ("proposing", "Asking which reading fills which field"),
+    ("checking", "Checking that answer against the drawing"),
+    ("filling", "Filling the form"),
+)
+
+
+class EventStreamResponse(StreamingResponse):
+    """A `text/event-stream` body.
+
+    A subclass rather than `media_type=` on the call, because the route's *declared* response class
+    is what FastAPI documents: without it the generated schema lands under `application/json` and
+    the OpenAPI document — which is where `frontend/main/src/api/schema.d.ts` comes from — describes
+    a content type this route never returns.
+    """
+
+    media_type = "text/event-stream"
+
+
+def _phase_event(name: str, detail: str, *, attempt: int = 1) -> AssignmentEvent:
+    """One phase frame, with the percentage of phases *finished* before it began."""
+    index = next(i for i, (phase, _) in enumerate(ASSIGNMENT_PHASES, start=1) if phase == name)
+    label = ASSIGNMENT_PHASES[index - 1][1]
+    return AssignmentEvent(
+        event="step",
+        step=AssignmentStepOut(
+            index=index,
+            total=len(ASSIGNMENT_PHASES),
+            name=name,
+            label=label,
+            detail=detail,
+            percent=round((index - 1) / len(ASSIGNMENT_PHASES) * 100),
+            attempt=attempt,
+            # Once, on the first frame. Repeating it on every frame would send the same five strings
+            # five times to say something that cannot change during a run.
+            sequence=tuple(prose for _, prose in ASSIGNMENT_PHASES) if index == 1 else (),
+        ),
+    )
+
+
+@router.post(
+    "/projects/{project_id}/packages/{package_id}/measurements/propose",
+    summary="Ask a model which reading fills which field, and check every answer",
+    response_class=EventStreamResponse,
+    responses={
+        status.HTTP_200_OK: {
+            "description": (
+                "A stream of `AssignmentEvent` frames: one per phase as it begins, then the "
+                "result. Each frame is one `data:` line."
+            ),
+            # The model is declared so the generated client types are the server's own — the reason
+            # `frontend/main/src/api/client.ts` regenerates from `/openapi.json` rather than hand-
+            # writing an interface. The body is a stream of these, not one of them.
+            "model": AssignmentEvent,
+        }
+    },
+)
+def propose_measurements(
+    request: Request,
+    _access: Annotated[Principal, Depends(require_project_access)],
+    _action: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> EventStreamResponse:
+    """Propose which reading fills which field, and stream the phases while it happens.
+
+    **Nothing is stored and nothing is decided.** The accepted proposal fills a form the reviewer
+    then reads, edits and saves; saving is what records a value and records it as theirs. Every
+    failure — no model configured, a provider that will not answer, a proposal the deterministic
+    guard refuses — ends with the same thing on screen: empty fields and a person filling them,
+    which is what happens today. This step can make that faster; it cannot make it worse.
+
+    **A stream rather than one response**, because the model call is the slow part and a screen that
+    names the phase it is waiting on is telling the truth about what is happening. The percentage is
+    phases finished out of five, which is a number this endpoint knows; how long the model will take
+    and how right its answer is are two it does not, and neither is on the bar.
+
+    The database work is done before the stream opens, so the session is not held across it.
+    """
+    revision = _revision(session, project_id, package_id)
+
+    context, rules_published = assignment_context(session, revision)
+    fields, readings = context.fields, context.readings
+
+    if len(readings) > MAX_ASSIGNMENT_READINGS:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=(
+                f"this package has {len(readings)} unconfirmed readings, more than the "
+                f"{MAX_ASSIGNMENT_READINGS} this step will propose over. Confirm or discard some "
+                "first: a proposal across that many is one the checks are likely to refuse whole."
+            ),
+        )
+
+    model = configured_assignment_model(request.app.state.settings)
+    attached = sum(1 for reading in readings if reading.line_key is not None)
+    by_id = {reading.candidate_id: reading for reading in readings}
+    by_key = {field.key: field for field in fields}
+
+    def frames() -> Iterator[str]:
+        def send(event: AssignmentEvent) -> str:
+            return f"data: {event.model_dump_json()}\n\n"
+
+        yield send(
+            _phase_event(
+                "rulebook",
+                f"{len(fields)} field{'' if len(fields) == 1 else 's'} across "
+                f"{rules_published} published rule{'' if rules_published == 1 else 's'}",
+            )
+        )
+        yield send(
+            _phase_event(
+                "readings",
+                f"{len(readings)} read, {attached} attached to a dimension line",
+            )
+        )
+
+        # The observer turns the phases inside `propose_and_guard` into frames. It is the only way
+        # the retry is visible from out here: the return value of a refused-then-corrected call and
+        # a first-time success are the same tuple.
+        pending: list[AssignmentEvent] = []
+        outcome: dict[str, str] = {}
+
+        def observe(progress: AssignmentProgress) -> None:
+            if progress.phase == "asking":
+                pending.append(_phase_event("proposing", progress.detail, attempt=progress.attempt))
+            elif progress.phase == "checking":
+                pending.append(_phase_event("checking", progress.detail, attempt=progress.attempt))
+            elif progress.phase in {"refused", "unavailable"}:
+                outcome["unfilled_reason"] = progress.detail
+
+        proposed, unverified = propose_and_guard(context, model, observer=observe)
+        for event in pending:
+            yield send(event)
+
+        # **Filed, exactly as the pipeline files its own.** The button used to produce an answer
+        # that lived in one browser tab: reload the page and the form was empty again, and nothing
+        # recorded that a model had ever proposed anything. One writer, one reader, so "what is the
+        # current proposal" has a single answer whichever path produced it.
+        if proposed and model is not None:
+            record_proposal(
+                session,
+                package_revision_id=revision.id,
+                assignments=proposed,
+                model_id=model.config.model_id,
+                unverified_placement=unverified,
+            )
+            session.commit()
+
+        assignments = tuple(
+            ProposedFieldOut(
+                field_key=proposal.field_key,
+                name=by_key[proposal.field_key].name,
+                source=by_key[proposal.field_key].source,
+                many=by_key[proposal.field_key].many,
+                values=tuple(
+                    ProposedReadingOut(
+                        candidate_id=UUID(candidate_id),
+                        value=by_id[candidate_id].value,
+                        page_index=by_id[candidate_id].page - 1,
+                        chain_key=by_id[candidate_id].chain_key,
+                        chain_position=by_id[candidate_id].order,
+                    )
+                    for candidate_id in proposal.candidate_ids
+                ),
+            )
+            for proposal in proposed
+        )
+        yield send(
+            _phase_event(
+                "filling",
+                f"{len(assignments)} of {len(fields)} field"
+                f"{'' if len(fields) == 1 else 's'} filled",
+            )
+        )
+        yield send(
+            AssignmentEvent(
+                event="result",
+                result=ProposedMeasurementsOut(
+                    assignments=assignments,
+                    fields_total=len(fields),
+                    fields_filled=len(assignments),
+                    readings_considered=len(readings),
+                    readings_attached=attached,
+                    model_id=None if model is None else model.config.model_id,
+                    unfilled_reason=outcome.get("unfilled_reason") if not assignments else None,
+                ),
+            )
+        )
+
+    return EventStreamResponse(
+        frames(),
+        # Nothing between here and the browser may hold a frame back: a phase that arrives with the
+        # result it was meant to precede is a progress display that only ever shows 100%.
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )

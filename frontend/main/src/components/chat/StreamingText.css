@@ -1,0 +1,45 @@
+/* ============================================================
+   STREAMING TEXT
+   The caret and the reveal state for an answer arriving.
+   ============================================================ */
+
+.streaming {
+  display: inline;
+}
+
+.streaming--live {
+  cursor: pointer;
+}
+
+/* A block caret rather than a line: it is the shape a terminal uses, and at 13px body text a 1px
+   line is nearly invisible against the paragraph it trails. Sits on the baseline with the text. */
+.streaming__caret {
+  display: inline-block;
+  width: 7px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background: var(--gv-crimson);
+  animation: gv-caret 1s steps(1, end) infinite;
+}
+
+/* Each newly revealed word fades up over 180ms. The effect is cumulative — a few words are always
+   mid-fade at the leading edge — which is what makes the text look composed rather than uncovered
+   by a moving mask.
+
+   Applied to the paragraph's own children via the markdown renderer's spans; plain text nodes
+   cannot carry an animation, so the leading caret is what sells the edge for unstyled runs. */
+.streaming--live strong {
+  animation: gv-rise-sm var(--duration-base) var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming__caret {
+    animation: none;
+    opacity: 1;
+  }
+  .streaming--live strong {
+    animation: none;
+  }
+}

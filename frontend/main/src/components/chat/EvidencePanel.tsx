@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, FileImage, MapPin } from 'lucide-react';
+import { ArrowLeft, X, FileImage, MapPin } from 'lucide-react';
 import type { Finding } from '../../data/types';
 import { downloadEvidenceCrop } from '../../api/client';
 import { OutcomeBadge } from '../ui/Badge';
@@ -15,6 +15,45 @@ interface EvidencePanelProps {
 }
 
 export function EvidencePanel({ finding, projectId, packageId, loading = false, error, onClose }: EvidencePanelProps) {
+  const recordedOperands = finding.recorded_operands ?? [];
+  const hasMappedCrop = Boolean(finding.arch_evidence || finding.shop_evidence);
+  const hasUnmappedStoredCrop = !hasMappedCrop && recordedOperands.some(
+    (operand) => operand.hasEvidence && operand.source !== 'ARCH' && operand.source !== 'SHOP',
+  );
+  const hasDrawingOperandWithoutCrop = recordedOperands.some(
+    (operand) => (operand.source === 'ARCH' || operand.source === 'SHOP') && !operand.hasEvidence,
+  );
+
+  const sourceSummary = recordedOperands.length === 0
+    ? null
+    : recordedOperands
+      .map((operand) =>
+        `${operand.name}: ${operand.value} (${operand.source}) · ${operand.status}${operand.hasEvidence ? ' · has stored crop' : ''}`,
+      )
+      .join('\n');
+
+  const noEvidenceMessage = () => {
+    if (hasUnmappedStoredCrop) {
+      return 'A stored crop is recorded for this finding, but its document role is not recognised by this view. The image is withheld until that evidence link is repaired.';
+    }
+
+    if (recordedOperands.length > 0) {
+      if (hasDrawingOperandWithoutCrop) {
+        return 'This finding uses a drawing-backed reading, but no mechanical crop was stored with it. No substitute image is shown.';
+      }
+      return 'This finding currently relies on non-drawing operands (for example, user input or intermediate values), so no drawing-backed crop is expected here.';
+    }
+
+    if (finding.outcome === 'REVIEW_REQUIRED') {
+      return 'This is a reviewer decision (such as a layout choice), not a located drawing measurement. There is no crop to show for it.';
+    }
+
+    if (finding.outcome === 'NOT_FOUND') {
+      return 'No reading was located for this check in the current run.';
+    }
+
+    return 'No stored operands are available for this finding.';
+  };
   return (
     <div className="evidence-panel animate-slide-in-r" aria-label="Evidence viewer">
       <div
@@ -25,6 +64,14 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
           <span className="evidence-panel__name">{finding.name}</span>
           <OutcomeBadge outcome={finding.outcome} size="sm" />
         </div>
+        <button
+          className="btn btn--ghost btn--sm evidence-panel__back"
+          onClick={onClose}
+          aria-label="Back to findings"
+        >
+          <ArrowLeft size={13} />
+          Findings
+        </button>
         <button
           className="btn btn--subtle btn--icon btn--sm"
           onClick={onClose}
@@ -73,16 +120,40 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
           />
         )}
 
-        {/* No evidence */}
+        {/* No crop is intentionally not rendered as a plausible stand-in. A reviewer must be able to
+            distinguish a rule result from visual drawing evidence. */}
         {!loading && !error && !finding.arch_evidence && !finding.shop_evidence && (
           <div className="evidence-panel__no-evidence">
             <FileImage size={24} className="evidence-panel__no-evidence-icon" />
-            <p>No evidence located for this finding.</p>
+            <p>No drawing crop is available for this check.</p>
             <p className="evidence-panel__no-evidence-sub">
-              {finding.outcome === 'NOT_FOUND'
-                ? 'The system searched all pages and found no matching dimension.'
-                : 'Evidence was not extracted for this check type.'}
+              {noEvidenceMessage()}
             </p>
+            {sourceSummary !== null && (
+              <>
+                <p className="evidence-panel__no-evidence-ops">
+                  Recorded operands:
+                </p>
+                <code className="evidence-panel__no-evidence-code">{sourceSummary}</code>
+              </>
+            )}
+            {hasUnmappedStoredCrop && (
+              <p className="evidence-panel__no-evidence-guidance">
+                The evidence record is retained in the finding chain; this is a linkage issue, not a verdict or value change.
+              </p>
+            )}
+            <ul className="evidence-panel__no-evidence-guide-list">
+              <li>
+                {finding.outcome === 'REVIEW_REQUIRED'
+                  ? 'REVIEW REQUIRED is normal: it is waiting for a reviewer choice, not a missing image.'
+                  : 'A drawing crop appears only when a confirmed drawing reading has a stored location.'}
+              </li>
+              <li>Findings built from input-only values are intentionally shown without crops.</li>
+            </ul>
+            <button className="btn btn--action evidence-panel__empty-back" onClick={onClose}>
+              <ArrowLeft size={13} />
+              Back to findings
+            </button>
           </div>
         )}
       </div>

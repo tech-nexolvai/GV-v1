@@ -68,21 +68,20 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Confirm an upload landed, and start ingestion
-         * @description Check the bytes, then write the version and the ingestion request in one transaction.
+         * Confirm an upload landed
+         * @description Check the bytes, then write the version in one transaction.
          *
          *     In order:
          *
          *     1. The stored object for your declared hash must exist. Nothing there is `409` — there is no upload
          *        to confirm, which is different from a bad request.
          *     2. It is read and hashed. If it does not hash to what you declared, the request is refused with
-         *        `422` and **nothing at all is written** — no artifact row, no version, no outbox row.
-         *     3. The `SourceArtifact`, the `DocumentVersion` and the outbox row are written in one transaction.
-         *        Either all three land or none do.
+         *        `422` and **nothing at all is written** — no artifact row or version.
+         *     3. The `SourceArtifact` and `DocumentVersion` are written in one transaction. Either both land or
+         *        neither does. Extraction is a separate package-level request after both PDFs are confirmed.
          *
          *     Returns `201` when a version was created and `200` when these exact bytes had already been
-         *     confirmed. The repeat is a genuine no-op: the same version comes back and no second outbox row is
-         *     written, so ingestion does not run twice.
+         *     confirmed. The repeat is a genuine no-op: the same version comes back and it does not start work.
          *
          *     Reading the object to hash it is the one piece of real work here, and it is bounded by the size of
          *     one drawing. It is also the only honest way to verify: `AGENTS.md` §2.7 pins a document version to
@@ -118,6 +117,26 @@ export interface paths {
          *     id and the hash you declared.
          */
         post: operations["request_upload_api_v1_projects__project_id__documents__document_id__uploads_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/filler-distribution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Calculate the site-corrected layout for one cabinet run
+         * @description Return the two-step proposal, abstaining when reviewer input is missing.
+         */
+        post: operations["calculate_filler_distribution_api_v1_projects__project_id__filler_distribution_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -237,6 +256,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/crop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the mechanical crop behind an untyped AI reading
+         * @description Return the stored pixels a reviewer must inspect before naming a proposal.
+         *
+         *     This is deliberately candidate-scoped: the reading is still untyped, so it must not be exposed
+         *     as a finding or redline.  The SQL path proves both the candidate and its crop belong to the
+         *     package's current revision, then the stored digest is checked before bytes leave the service.
+         */
+        get: operations["candidate_crop_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__crop_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask about one deterministic review run
+         * @description Narrate the package's current findings without changing, calculating, or extending them.
+         */
+        post: operations["reviewer_chat_api_v1_projects__project_id__packages__package_id__chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The models a reviewer may pick to narrate this run
+         * @description List the allow-listed narration models and the default, for the chat model picker.
+         *
+         *     An empty list means the deployment configured no chat model; the chat then serves its plain
+         *     deterministic findings view and the picker has nothing to offer.
+         */
+        get: operations["reviewer_chat_models_api_v1_projects__project_id__packages__package_id__chat_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/chat/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask about one deterministic review run, streamed
+         * @description The same answer as ``/chat``, sent in the order it becomes known.
+         *
+         *     1. ``facts``: the recorded findings the question selects, at once. No model is involved.
+         *     2. ``stage``: only when a provider is about to be called.
+         *     3. ``narration``: the **complete, guarded** reply, identical to ``/chat``'s response body.
+         *     4. ``done``.
+         *
+         *     **Why the narration is not streamed token by token.** The provider returns every narrative in
+         *     one structured call, and ``compose_findings`` accepts or rejects that batch as a whole. A token
+         *     stream would show a reviewer sentences the guard might then discard. So the provider's words
+         *     are sent once, after the guard has accepted them; what streams is everything that did not
+         *     need a model.
+         *
+         *     Runs in a worker thread (FastAPI iterates a sync generator in its threadpool), and the request's
+         *     session stays open until the stream ends, so the provider call is recorded exactly as ``/chat``
+         *     records it.
+         */
+        post: operations["reviewer_chat_stream_api_v1_projects__project_id__packages__package_id__chat_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/checks": {
         parameters: {
             query?: never;
@@ -319,6 +440,32 @@ export interface paths {
         get: operations["evidence_crop_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__crop_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/extract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start AI reading after the drawing PDFs are confirmed
+         * @description Freeze the confirmed drawing set and enqueue its read-only extraction stages.
+         *
+         *     This is intentionally separate from confirming a document: a worker must never read and freeze a
+         *     package while its drawings are still in flight. It performs no extraction itself; the outbox
+         *     record and state transition commit together, then the worker reads the immutable document
+         *     versions. It also does not run checks -- OCR proposals remain untyped until a reviewer confirms
+         *     them.
+         */
+        post: operations["start_extraction_api_v1_projects__project_id__packages__package_id__extract_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -441,6 +588,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/layout-proposals/{crop_artifact_id}/crop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the crop behind a proposed closed layout answer
+         * @description Return a layout proposal's stored crop through the current package boundary.
+         */
+        get: operations["layout_proposal_crop_api_v1_projects__project_id__packages__package_id__layout_proposals__crop_artifact_id__crop_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/measurements": {
         parameters: {
             query?: never;
@@ -467,6 +634,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/measurements/propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask a model which reading fills which field, and check every answer
+         * @description Propose which reading fills which field, and stream the phases while it happens.
+         *
+         *     **Nothing is stored and nothing is decided.** The accepted proposal fills a form the reviewer
+         *     then reads, edits and saves; saving is what records a value and records it as theirs. Every
+         *     failure — no model configured, a provider that will not answer, a proposal the deterministic
+         *     guard refuses — ends with the same thing on screen: empty fields and a person filling them,
+         *     which is what happens today. This step can make that faster; it cannot make it worse.
+         *
+         *     **A stream rather than one response**, because the model call is the slow part and a screen that
+         *     names the phase it is waiting on is telling the truth about what is happening. The percentage is
+         *     phases finished out of five, which is a number this endpoint knows; how long the model will take
+         *     and how right its answer is are two it does not, and neither is on the bar.
+         *
+         *     The database work is done before the stream opens, so the session is not held across it.
+         */
+        post: operations["propose_measurements_api_v1_projects__project_id__packages__package_id__measurements_propose_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/redline.pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the signed-off evidence-grounded drawing redline
+         * @description The signed-off redline, available only for typed findings with real stored locations.
+         */
+        get: operations["download_redline_api_v1_projects__project_id__packages__package_id__redline_pdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/report": {
         parameters: {
             query?: never;
@@ -476,18 +696,29 @@ export interface paths {
         };
         /**
          * Download the signed-off review as a workbook
-         * @description The findings workbook for this revision, once somebody has signed for it.
-         *
-         *     **Approval is the gate, not the file's existence.** `generate_outputs` writes the workbook as soon
-         *     as the checks have run, which is before anybody has read a finding. Serving it then would let a
-         *     review leave in a state nobody signed for, which is what ADR-0010 forbids — no computed dimension
-         *     reaches a vendor without reviewer sign-off.
-         *
-         *     The bytes are streamed from the artifact store rather than rebuilt. Regenerating on download would
-         *     produce a file that could differ from the one the approval covers, and the approval is the record
-         *     of what was agreed.
+         * @description The signed-off workbook: the tabular audit handoff.
          */
         get: operations["download_report_api_v1_projects__project_id__packages__package_id__report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/report.pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the signed-off review as a PDF
+         * @description The branded signed-off PDF: the readable reviewer handoff.
+         */
+        get: operations["download_pdf_report_api_v1_projects__project_id__packages__package_id__report_pdf_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -545,6 +776,44 @@ export interface paths {
          *     would confirm it exists, and project scope is an isolation boundary rather than a filter.
          */
         post: operations["open_review_session_api_v1_projects__project_id__packages__package_id__review_sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/views": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The drawings found on this package's pages, and what each one is suggested to be */
+        get: operations["list_views_api_v1_projects__project_id__packages__package_id__views_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say which drawing this is: the architect's or the vendor's
+         * @description Record a reviewer's answer and set the drawing's role. Recorded, audited, and correctable by
+         *     confirming again — the latest answer is the one that counts, and every earlier one is kept.
+         */
+        post: operations["confirm_role_api_v1_projects__project_id__packages__package_id__views__view_id__role_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1067,6 +1336,70 @@ export interface components {
             state: string;
         };
         /**
+         * AssemblyInput
+         * @description The ordered cabinet/filler assembly used to derive the design width.
+         */
+        AssemblyInput: {
+            /** Cabinets */
+            cabinets: components["schemas"]["CabinetInput"][];
+            /** Fillers */
+            fillers: components["schemas"]["FillerInput"][];
+        };
+        /**
+         * AssignmentEvent
+         * @description One frame of the assignment stream: a phase beginning, or the finished result.
+         *
+         *     The endpoint returns `text/event-stream` and each frame's `data:` is one of these. A stream
+         *     rather than a single response because the model call is the slow part, and a screen that shows
+         *     a real phase name while it waits is telling the truth about what is happening — where a bar
+         *     moving on a timer would not be.
+         */
+        AssignmentEvent: {
+            /**
+             * Event
+             * @enum {string}
+             */
+            event: "step" | "result";
+            result?: components["schemas"]["ProposedMeasurementsOut"] | null;
+            step?: components["schemas"]["AssignmentStepOut"] | null;
+        };
+        /**
+         * AssignmentStepOut
+         * @description One phase of the assignment, sent as that phase begins.
+         *
+         *     **`percent` is phases finished, and says so.** It is not a guess at how long the model will
+         *     take and not a confidence in the answer — those are two numbers nothing on this side of the
+         *     request knows. A retry re-sends the phase it went back to, so the bar holds rather than
+         *     advancing on work that was rejected.
+         */
+        AssignmentStepOut: {
+            /**
+             * Attempt
+             * @default 1
+             */
+            attempt: number;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Index */
+            index: number;
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+            /** Percent */
+            percent: number;
+            /**
+             * Sequence
+             * @default []
+             */
+            sequence: string[];
+            /** Total */
+            total: number;
+        };
+        /**
          * AwaitingToleranceOut
          * @description One rule that cannot be released, and how much of it is still a guess.
          */
@@ -1079,6 +1412,42 @@ export interface components {
             unconfirmed: number;
             /** Version */
             version: string;
+        };
+        /**
+         * CabinetInput
+         * @description One cabinet in the ordered run the reviewer is checking.
+         */
+        CabinetInput: {
+            /** Id */
+            id: string;
+            /**
+             * Type
+             * @description The reviewer's classification of this cabinet. Slide 11 of the 2026-09-21 deck puts this with the reviewer — they categorise a cabinet and confirm whether its width may change — so it is a required input and the server never infers it.
+             * @enum {string}
+             */
+            type: "single_door" | "double_door" | "drawer" | "equipment";
+            /**
+             * Width
+             * @description Authored dimension with its unit, e.g. 30" or 762 mm.
+             */
+            width: string;
+        };
+        /**
+         * CabinetProposalOut
+         * @description One cabinet before and after the distribution calculation.
+         */
+        CabinetProposalOut: {
+            /** Adjustable */
+            adjustable: boolean;
+            /** Id */
+            id: string;
+            original: components["schemas"]["app__schemas__distribution__QuantityOut"];
+            proposed: components["schemas"]["app__schemas__distribution__QuantityOut"];
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "single_door" | "double_door" | "drawer" | "equipment";
         };
         /**
          * CalculationTraceOut
@@ -1140,6 +1509,11 @@ export interface components {
              * Format: uuid
              */
             candidate_id: string;
+            /**
+             * Confidence
+             * @description The extractor confidence as recorded; it is not a semantic-type confidence.
+             */
+            confidence?: string | null;
             /** Corroboration Lane */
             corroboration_lane?: string | null;
             /** Corroboration Status */
@@ -1153,6 +1527,8 @@ export interface components {
             page_index: number;
             /** Raw Text */
             raw_text: string;
+            /** Source */
+            source?: string | null;
             /**
              * Value
              * @description The reading as exact text, `25 1/2 in`. Null when the token carried no unit and was recorded without a value, which is most text on a drawing.
@@ -1170,6 +1546,26 @@ export interface components {
             total: number;
         };
         /**
+         * ChatModelChoice
+         * @description One selectable model: the exact Bedrock id, and the name a reviewer reads.
+         */
+        ChatModelChoice: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+        };
+        /**
+         * ChatModelsOut
+         * @description The models a reviewer may choose from, and which one answers by default.
+         */
+        ChatModelsOut: {
+            /** Default */
+            default?: string | null;
+            /** Models */
+            models: components["schemas"]["ChatModelChoice"][];
+        };
+        /**
          * CheckRequest
          * @description Asking for the checks, and what the reviewer says about the layout.
          *
@@ -1185,6 +1581,28 @@ export interface components {
             };
         };
         /**
+         * ClassificationEntry
+         * @description What a reviewer says each item in one ordered run is.
+         *
+         *     Separate from `MeasurementEntry` because a category is not a dimension: it has no unit, nothing
+         *     parses it, and `normalise_to_inches` correctly refuses it. Sending one through `values` was how
+         *     #684 was found — a reviewer had no way at all to say which cabinet was the sink cabinet.
+         *
+         *     The choices come from the rulebook, through the required-inputs form, and the server checks the
+         *     submission against them rather than trusting the client's list.
+         */
+        ClassificationEntry: {
+            /**
+             * Categories
+             * @description One category per item, in layout order — left to right along the run. Order is kept because the distribution adjusts positionally: which cabinet is the equipment cabinet is the whole question.
+             */
+            categories: string[];
+            /** Name */
+            name: string;
+            /** Rule Id */
+            rule_id: string;
+        };
+        /**
          * ConfirmIn
          * @description A reviewer naming what a reading is.
          */
@@ -1194,6 +1612,14 @@ export interface components {
              * @description A member of the rulebook's vocabulary, e.g. `CT010`. Free text is refused.
              */
             semantic_type: string;
+        };
+        /** ConfirmRoleIn */
+        ConfirmRoleIn: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "arch" | "shop";
         };
         /**
          * ConfirmedOut
@@ -1209,6 +1635,31 @@ export interface components {
             semantic_type: string;
             /** Status */
             status: string;
+        };
+        /**
+         * ConfirmedReadingOut
+         * @description One qualified drawing reading that can prefill this package's measurement form.
+         *
+         *     This is intentionally an *input suggestion*, not a new verdict operand.  It can be a reviewer
+         *     confirmation, or the deliberately narrower automatic lane: an exact vector vocabulary tag on
+         *     the same associated dimension line.  The latter is named explicitly on the wire so the UI never
+         *     presents a machine qualification as if a person had performed it.  Unqualified candidates never
+         *     appear here.
+         */
+        ConfirmedReadingOut: {
+            /** Key */
+            key: string;
+            /**
+             * Qualification
+             * @enum {string}
+             */
+            qualification: "reviewer_confirmed" | "exact_vector_tag";
+            /** Semantic Type */
+            semantic_type: string;
+            /** Source */
+            source: string;
+            /** Value */
+            value: string;
         };
         /**
          * DecideEvidence
@@ -1274,6 +1725,7 @@ export interface components {
             choices: string[];
             /** Name */
             name: string;
+            proposal?: components["schemas"]["LayoutProposalOut"] | null;
             /** Rule Ids */
             rule_ids: string[];
         };
@@ -1456,6 +1908,112 @@ export interface components {
             /** Abstained */
             abstained: boolean;
             chain: components["schemas"]["FindingChain"];
+        };
+        /**
+         * ExtractionRequestOut
+         * @description The durable request to read a completed two-drawing package.
+         *
+         *     Upload confirmation proves that one file landed. It must not start a package review while its
+         *     counterpart may still be arriving; this handle exists only after the architectural and shop pair
+         *     have both been confirmed.
+         */
+        ExtractionRequestOut: {
+            /**
+             * Accepted Id
+             * Format: uuid
+             */
+            accepted_id: string;
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
+        };
+        /**
+         * FillerDistributionRequest
+         * @description Inputs for the deterministic filler-first distribution proposal.
+         *
+         *     ``field_width`` is nullable on purpose: a missing on-site field dimension is a business
+         *     abstention (NOT_FOUND), not a guessed zero or a selected default.
+         */
+        FillerDistributionRequest: {
+            assembly: components["schemas"]["AssemblyInput"];
+            /** Double Door Cab Width Max */
+            double_door_cab_width_max: string;
+            /** Double Door Cab Width Min */
+            double_door_cab_width_min: string;
+            /** Drawer Cab Width Max */
+            drawer_cab_width_max: string;
+            /** Drawer Cab Width Min */
+            drawer_cab_width_min: string;
+            /**
+             * Field Width
+             * @description Reviewer-entered site dimension with its unit, e.g. 96 1/2".
+             */
+            field_width?: string | null;
+            /** Filler Max */
+            filler_max: string;
+            /** Filler Min */
+            filler_min: string;
+            /** Single Door Cab Width Max */
+            single_door_cab_width_max: string;
+            /** Single Door Cab Width Min */
+            single_door_cab_width_min: string;
+        };
+        /**
+         * FillerDistributionResponse
+         * @description A deterministic proposal, or an honest abstention.
+         */
+        FillerDistributionResponse: {
+            /** Cabinets */
+            cabinets: components["schemas"]["CabinetProposalOut"][];
+            /** Cabinets Retained */
+            cabinets_retained: boolean;
+            /** Calculation */
+            calculation: string;
+            /** Condition */
+            condition: string;
+            design_width: components["schemas"]["app__schemas__distribution__QuantityOut"];
+            field_dimension: components["schemas"]["OperandTraceOut"];
+            /** Fillers */
+            fillers: components["schemas"]["FillerProposalOut"][];
+            /** Message */
+            message: string;
+            /** Operands */
+            operands: components["schemas"]["OperandTraceOut"][];
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "PASS" | "REVIEW_REQUIRED" | "NOT_FOUND";
+            /** Reviewer Action */
+            reviewer_action?: string | null;
+            site_difference: components["schemas"]["app__schemas__distribution__QuantityOut"] | null;
+            /** Summary */
+            summary: string;
+        };
+        /**
+         * FillerInput
+         * @description One filler, ordered left then right in the request.
+         */
+        FillerInput: {
+            /** Id */
+            id: string;
+            /**
+             * Width
+             * @description Authored dimension with its unit, e.g. 2" or 51 mm.
+             */
+            width: string;
+        };
+        /**
+         * FillerProposalOut
+         * @description One filler before and after the distribution calculation.
+         */
+        FillerProposalOut: {
+            /** Id */
+            id: string;
+            original: components["schemas"]["app__schemas__distribution__QuantityOut"];
+            proposed: components["schemas"]["app__schemas__distribution__QuantityOut"];
         };
         /**
          * FindingChain
@@ -1649,6 +2207,28 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * LayoutProposalOut
+         * @description A model-proposed discriminator answer, still waiting for reviewer confirmation.
+         */
+        LayoutProposalOut: {
+            /**
+             * Confirmed
+             * @default false
+             */
+            confirmed: boolean;
+            /**
+             * Crop Artifact Id
+             * Format: uuid
+             */
+            crop_artifact_id: string;
+            /** Model Id */
+            model_id: string;
+            /** Prompt Id */
+            prompt_id: string;
+            /** Value */
+            value: string;
+        };
+        /**
          * MeasurementEntry
          * @description One dimension a reviewer read off a drawing, and which check input it is.
          *
@@ -1705,6 +2285,25 @@ export interface components {
              * Format: uuid
              */
             package_revision_id: string;
+        };
+        /**
+         * OperandTraceOut
+         * @description The source record the response gives for an input value.
+         */
+        OperandTraceOut: {
+            /** Name */
+            name: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "ARCH" | "SHOP" | "USER_INPUT" | "LITERAL";
+            /**
+             * Status
+             * @constant
+             */
+            status: "HUMAN_CONFIRMED";
+            value: components["schemas"]["app__schemas__distribution__QuantityOut"] | null;
         };
         /**
          * OperationOut
@@ -1880,6 +2479,70 @@ export interface components {
             upload_url: string;
         };
         /**
+         * ProposedFieldOut
+         * @description One field and the readings proposed to fill it, in drawing order.
+         */
+        ProposedFieldOut: {
+            /** Field Key */
+            field_key: string;
+            /** Many */
+            many: boolean;
+            /** Name */
+            name: string;
+            /**
+             * Placement Verified
+             * @default true
+             */
+            placement_verified: boolean;
+            /** Source */
+            source: string;
+            /** Values */
+            values: components["schemas"]["ProposedReadingOut"][];
+        };
+        /**
+         * ProposedMeasurementsOut
+         * @description What survived every structural check, and enough counts to say so honestly.
+         *
+         *     **Nothing here is stored.** These fill a form a reviewer then reads, edits and saves; the saving
+         *     is what records a value, and it records it as the reviewer's. A model's proposal never becomes a
+         *     measurement without a person submitting it.
+         */
+        ProposedMeasurementsOut: {
+            /** Assignments */
+            assignments: components["schemas"]["ProposedFieldOut"][];
+            /** Fields Filled */
+            fields_filled: number;
+            /** Fields Total */
+            fields_total: number;
+            /** Model Id */
+            model_id?: string | null;
+            /** Readings Attached */
+            readings_attached: number;
+            /** Readings Considered */
+            readings_considered: number;
+            /** Unfilled Reason */
+            unfilled_reason?: string | null;
+        };
+        /**
+         * ProposedReadingOut
+         * @description One reading a model proposes for a field, named by the candidate it already is.
+         */
+        ProposedReadingOut: {
+            /**
+             * Candidate Id
+             * Format: uuid
+             */
+            candidate_id: string;
+            /** Chain Key */
+            chain_key?: string | null;
+            /** Chain Position */
+            chain_position?: number | null;
+            /** Page Index */
+            page_index: number;
+            /** Value */
+            value: string;
+        };
+        /**
          * PublicationOut
          * @description What was published, by whom, and on what basis.
          *
@@ -1945,24 +2608,6 @@ export interface components {
          */
         PublicationTarget: "development" | "production";
         /**
-         * QuantityOut
-         * @description One physical measurement the reviewer must read off a drawing.
-         */
-        QuantityOut: {
-            /** Consumers */
-            consumers: {
-                [key: string]: string;
-            }[];
-            /** Key */
-            key: string;
-            /** Many */
-            many: boolean;
-            /** Semantic Type */
-            semantic_type: string;
-            /** Source */
-            source: string;
-        };
-        /**
          * RecordAction
          * @description One thing a reviewer did to one finding.
          *
@@ -1988,14 +2633,34 @@ export interface components {
          *     field to be missing: a rule that gains an input gains a field here on the next publish.
          */
         RequiredInputsOut: {
+            /**
+             * Confirmed Readings
+             * @default []
+             */
+            confirmed_readings: components["schemas"]["ConfirmedReadingOut"][];
             /** Discriminators */
             discriminators: components["schemas"]["DiscriminatorOut"][];
             /** Parameters */
             parameters: components["schemas"]["ParameterOut"][];
+            /**
+             * Proposed Readings
+             * @default []
+             */
+            proposed_readings: components["schemas"]["ProposedFieldOut"][];
             /** Quantities */
-            quantities: components["schemas"]["QuantityOut"][];
+            quantities: components["schemas"]["app__schemas__measurements__QuantityOut"][];
+            /**
+             * Revision State
+             * @default
+             */
+            revision_state: string;
             /** Rules Published */
             rules_published: number;
+            /**
+             * Still Reading
+             * @default false
+             */
+            still_reading: boolean;
         };
         /**
          * ReviewActionKind
@@ -2144,13 +2809,64 @@ export interface components {
             note?: string | null;
         };
         /**
+         * ReviewerChatNarrative
+         * @description One answer fragment and the deterministic finding that backs it.
+         */
+        ReviewerChatNarrative: {
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * ReviewerChatOut
+         * @description Bounded chat response; every narrative has a finding id from this exact run.
+         */
+        ReviewerChatOut: {
+            /** Answer */
+            answer: string;
+            /** Fallback Reason */
+            fallback_reason?: string | null;
+            /** Findings */
+            findings: components["schemas"]["ReviewerChatNarrative"][];
+            /** Mode */
+            mode: string;
+            /** Model Id */
+            model_id?: string | null;
+            /** Summary */
+            summary?: string | null;
+        };
+        /**
+         * ReviewerChatRequest
+         * @description A reviewer question; it cannot carry findings, values, rules, or verdicts.
+         *
+         *     ``model_id`` is an optional presentation choice — which allow-listed model narrates. It changes
+         *     no fact: the answer is still composed from stored findings and the narration guard is unchanged.
+         *     An id the deployment did not allow-list is refused (422), so a reviewer cannot select an
+         *     unapproved model. ``None`` uses the deployment default.
+         */
+        ReviewerChatRequest: {
+            /** Model Id */
+            model_id?: string | null;
+            /** Question */
+            question: string;
+        };
+        /**
          * ReviewerEntry
          * @description Everything one reviewer submission carries.
          *
-         *     Both halves are optional so a reviewer can set the project's parameters once and then enter
+         *     Every part is optional so a reviewer can set the project's parameters once and then enter
          *     measurements per package without resending them.
          */
         ReviewerEntry: {
+            /**
+             * Classifications
+             * @default []
+             */
+            classifications: components["schemas"]["ClassificationEntry"][];
             /**
              * Measurements
              * @default []
@@ -2403,6 +3119,76 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * ViewOut
+         * @description One drawing on a page, as a reviewer needs it to say which drawing it is.
+         */
+        ViewOut: {
+            /** Page Index */
+            page_index: number;
+            /** Reason */
+            reason: string | null;
+            /** Role */
+            role: string | null;
+            /** Suggested From */
+            suggested_from: string | null;
+            /** Suggested Role */
+            suggested_role: string | null;
+            /** Tag */
+            tag: string;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
+        };
+        /** ViewsOut */
+        ViewsOut: {
+            /** Views */
+            views: components["schemas"]["ViewOut"][];
+        };
+        /**
+         * QuantityOut
+         * @description One exact dimension, rendered without a JSON float.
+         */
+        app__schemas__distribution__QuantityOut: {
+            /** As Typed */
+            as_typed?: string | null;
+            /** Denominator */
+            denominator: string;
+            /** Display */
+            display: string;
+            /** Numerator */
+            numerator: string;
+            /**
+             * Unit
+             * @enum {string}
+             */
+            unit: "in" | "mm";
+        };
+        /**
+         * QuantityOut
+         * @description One physical measurement the reviewer must read off a drawing.
+         */
+        app__schemas__measurements__QuantityOut: {
+            /**
+             * Categories
+             * @default []
+             */
+            categories: string[];
+            /** Consumers */
+            consumers: {
+                [key: string]: string;
+            }[];
+            /** Key */
+            key: string;
+            /** Many */
+            many: boolean;
+            /** Semantic Type */
+            semantic_type: string;
+            /** Source */
+            source: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -2523,6 +3309,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PresignedUpload"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    calculate_filler_distribution_api_v1_projects__project_id__filler_distribution_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FillerDistributionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FillerDistributionResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2707,6 +3528,143 @@ export interface operations {
             };
         };
     };
+    candidate_crop_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__crop_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The integrity-checked mechanical crop. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reviewer_chat_api_v1_projects__project_id__packages__package_id__chat_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewerChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewerChatOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reviewer_chat_models_api_v1_projects__project_id__packages__package_id__chat_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatModelsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reviewer_chat_stream_api_v1_projects__project_id__packages__package_id__chat_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewerChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     request_checks_api_v1_projects__project_id__packages__package_id__checks_post: {
         parameters: {
             query?: never;
@@ -2801,6 +3759,38 @@ export interface operations {
                 };
                 content: {
                     "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_extraction_api_v1_projects__project_id__packages__package_id__extract_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtractionRequestOut"];
                 };
             };
             /** @description Validation Error */
@@ -2955,6 +3945,40 @@ export interface operations {
             };
         };
     };
+    layout_proposal_crop_api_v1_projects__project_id__packages__package_id__layout_proposals__crop_artifact_id__crop_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                crop_artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The integrity-checked crop behind a proposed layout answer. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "image/png": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     enter_measurements_api_v1_projects__project_id__packages__package_id__measurements_post: {
         parameters: {
             query?: never;
@@ -2991,7 +4015,99 @@ export interface operations {
             };
         };
     };
+    propose_measurements_api_v1_projects__project_id__packages__package_id__measurements_propose_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A stream of `AssignmentEvent` frames: one per phase as it begins, then the result. Each frame is one `data:` line. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["AssignmentEvent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_redline_api_v1_projects__project_id__packages__package_id__redline_pdf_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     download_report_api_v1_projects__project_id__packages__package_id__report_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_pdf_report_api_v1_projects__project_id__packages__package_id__report_pdf_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -3076,6 +4192,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewSessionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_views_api_v1_projects__project_id__packages__package_id__views_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_role_api_v1_projects__project_id__packages__package_id__views__view_id__role_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                view_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmRoleIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewOut"];
                 };
             };
             /** @description Validation Error */
@@ -3433,9 +4618,7 @@ export interface operations {
     };
     list_semantic_types_api_v1_semantic_types_get: {
         parameters: {
-            query: {
-                project_id: string;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -3449,15 +4632,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": string[];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

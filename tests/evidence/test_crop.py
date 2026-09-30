@@ -14,7 +14,14 @@ from uuid import UUID
 import pytest
 
 from evidence.coordinates import StoredPoint
-from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
+from evidence.crop import (
+    CropSpec,
+    CropStatus,
+    RenderedPage,
+    decode_rgb_png,
+    encode_png,
+    generate_crop,
+)
 from evidence.polygon import Polygon
 from storage.local import LocalStore
 from storage.store import StoredArtifact, UploadTicket
@@ -89,6 +96,31 @@ def png_rgb(data: bytes) -> tuple[int, int, bytes]:
     assert all(rows[row * (stride + 1)] == 0 for row in range(height))
     rgb = b"".join(rows[row * (stride + 1) + 1 : (row + 1) * (stride + 1)] for row in range(height))
     return width, height, rgb
+
+
+def test_the_localized_ocr_png_decoder_round_trips_crop_pixels() -> None:
+    """Localized OCR must receive the exact RGB pixels the crop renderer produced."""
+    rgb = bytes((255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255))
+
+    assert decode_rgb_png(encode_png(2, 2, rgb)) == (2, 2, rgb)
+
+
+def test_the_localized_ocr_png_decoder_refuses_an_unknown_filter() -> None:
+    """A decoder that silently misreads a different PNG encoding would invent OCR pixels."""
+    png = bytearray(encode_png(1, 1, bytes((1, 2, 3))))
+    # The compressed filter byte lives inside IDAT, so generate a deliberately valid PNG rather
+    # than mutating bytes behind a CRC. `png_rgb` documents this repository's filter-zero format.
+    altered = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR" + png[16:29]
+    import binascii
+
+    altered += binascii.crc32(altered[12:29]).to_bytes(4, "big")
+    body = zlib.compress(b"\x01\x01\x02\x03")
+    altered += len(body).to_bytes(4, "big") + b"IDAT" + body
+    altered += binascii.crc32(b"IDAT" + body).to_bytes(4, "big")
+    altered += b"\x00\x00\x00\x00IEND\xaeB`\x82"
+
+    with pytest.raises(ValueError, match="unsupported PNG filter"):
+        decode_rgb_png(altered)
 
 
 def test_same_evidence_rerun_has_the_same_content_address(tmp_path: Path) -> None:

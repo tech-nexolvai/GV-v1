@@ -8,9 +8,18 @@
  *
  * So the chips are gone and the list is real. A question needs a package to be about, and the only
  * packages that exist are the ones the API returns.
+ *
+ * **The trailing disclosure was here twice.** This screen printed "GV Review uses deterministic
+ * rules. AI extracts values; Python decides." directly under `ChatInput`, which prints its own
+ * version of the same sentence — two lines of small grey text saying one thing, stacked. The line
+ * belongs to the input, because it is true wherever the input appears; this screen no longer
+ * repeats it.
  */
 
+import { FilePlus2, ArrowUpRight } from 'lucide-react';
 import { ChatInput } from '../components/chat/ChatInput';
+import { GVMark } from '../components/brand/GVMark';
+import { StatusBadge } from '../components/ui/Badge';
 import { listPackages } from '../api/client';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
@@ -42,12 +51,15 @@ export function WelcomePage({ onStartSession, onSend, onNewPackage }: WelcomePag
   }
 
   return (
-    <div className="welcome-page">
-      <div className="welcome-page__inner">
-        <h1 className="welcome-page__greeting">{getGreeting()}.</h1>
-        <p className="welcome-page__subtitle">What would you like to review today?</p>
+    <div className="welcome">
+      <div className="welcome__inner">
+        <header className="welcome__head">
+          <GVMark size={44} className="welcome__mark" />
+          <h1 className="welcome__greeting">{getGreeting()}</h1>
+          <p className="welcome__subtitle">Which document set would you like to review?</p>
+        </header>
 
-        <div className="welcome-page__input-wrap">
+        <div className="welcome__input">
           <ChatInput
             onSend={(text) => {
               // A question has to be about something. Sending it with no package selected used to
@@ -67,37 +79,53 @@ export function WelcomePage({ onStartSession, onSend, onNewPackage }: WelcomePag
           />
         </div>
 
-        {packages.status === 'loading' && <p className="welcome-page__hint">Loading your packages…</p>}
+        {/* Shaped like the list it becomes, so nothing jumps when the packages land. */}
+        {packages.status === 'loading' && (
+          <div className="welcome__recent" aria-label="Loading packages">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="welcome__card welcome__card--skeleton">
+                <span className="skeleton" style={{ width: '46%', height: 13 }} />
+                <span className="skeleton" style={{ width: '28%', height: 11 }} />
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Failure is said out loud. "No packages" on a screen that could not reach the server reads
             as an empty project, and the reviewer goes looking for work that is actually there. */}
         {packages.status === 'error' && (
-          <p className="welcome-page__hint" role="alert">
+          <p className="welcome__error" role="alert">
             Your packages could not be loaded — {packages.error.message}
           </p>
         )}
 
         {packages.status === 'ready' && recent.length === 0 && (
-          <div className="welcome-page__chips">
-            <button className="welcome-page__chip" onClick={onNewPackage}>
-              Submit the first document set
-            </button>
-          </div>
+          <button className="welcome__empty interactive" onClick={onNewPackage}>
+            <FilePlus2 size={16} />
+            Submit the first document set
+          </button>
         )}
 
         {recent.length > 0 && (
-          <div className="welcome-page__chips">
+          <section className="welcome__recent stagger" aria-label="Recent document sets">
             {recent.map((pkg) => (
-              <button key={pkg.id} className="welcome-page__chip" onClick={() => open(pkg.id)}>
-                {pkg.vendor ?? 'Package'} · {pkg.state.toLowerCase()}
+              <button
+                key={pkg.id}
+                className="welcome__card interactive"
+                onClick={() => open(pkg.id)}
+              >
+                <span className="welcome__card-main">
+                  <span className="welcome__card-vendor">{pkg.vendor ?? 'Package'}</span>
+                  <span className="welcome__card-id mono">{pkg.id}</span>
+                </span>
+                <span className="welcome__card-right">
+                  <StatusBadge status={pkg.state} />
+                  <ArrowUpRight size={14} className="welcome__card-arrow" />
+                </span>
               </button>
             ))}
-          </div>
+          </section>
         )}
-
-        <p className="welcome-page__hint">
-          GV Review uses deterministic rules. AI extracts values; Python decides.
-        </p>
       </div>
     </div>
   );

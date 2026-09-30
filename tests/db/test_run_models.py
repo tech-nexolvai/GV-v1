@@ -148,6 +148,7 @@ def test_rejected_model_invocation_retains_complete_cost_and_identity(
         invocation = _invocation(
             extraction.id,
             outcome=ModelInvocationOutcome.REJECTED,
+            rejection_reason="schema_validation_failed",
             input_tokens=321,
             output_tokens=0,
             cost_micros=91,
@@ -158,6 +159,7 @@ def test_rejected_model_invocation_retains_complete_cost_and_identity(
         restored = session.get(ModelInvocation, invocation_id)
         assert restored is not None
         assert restored.outcome == ModelInvocationOutcome.REJECTED
+        assert restored.rejection_reason == "schema_validation_failed"
         assert restored.model_id == "gpt-5-mini-2026-08-01"
         assert restored.prompt_id == "dimension-reader-v3"
         assert restored.template_id == "crop-dimension-v2"

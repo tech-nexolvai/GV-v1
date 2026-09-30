@@ -1,36 +1,60 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Send } from 'lucide-react';
 import './ChatInput.css';
+
+/** One selectable narration model, as the models endpoint returns it. */
+export interface ChatModelOption {
+  id: string;
+  label: string;
+}
 
 interface ChatInputProps {
   onSend: (text: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  /** The allow-listed narration models. Empty (or one) hides the picker — there is nothing to choose. */
+  models?: ChatModelOption[];
+  /** The model id currently selected, or '' for the deployment default. */
+  selectedModel?: string;
+  onSelectModel?: (id: string) => void;
 }
 
 /**
- * The only three things this box can actually do.
- *
- * It used to suggest "Explain CT-1 result" and "Generate vendor report". There is no rule called
- * CT-1, nothing here explains a verdict, and no report is generated anywhere in this app — so two of
- * the four suggestions were instructions to ask for something that does not exist, and the reply
- * would have been the "not wired up" message. A suggestion chip is a promise about what the software
- * does; these are the ones it can keep.
- *
- * "Run full review" is gone for a narrower reason: it filters findings, it does not run anything.
- *
- * Each of these maps onto a branch of `filterFor` in `ReviewPage`. If that gains a filter, this gains
- * a chip — and if it loses one, a chip here starts falling through to "not wired up", which is
- * visible rather than silent.
+ * Grounded prompts for the run-scoped chat. The server supplies only stored deterministic findings
+ * and evidence pages to its language layer; these never ask it to run a check or make a verdict.
  */
 const QUICK_PROMPTS = [
   'Show all findings',
   'Show FAIL findings',
   'Show findings needing review',
+  'Which sheet has the failure?',
+  'Why did this fail?',
 ];
 
-export function ChatInput({ onSend, disabled, placeholder = 'Ask about this package…' }: ChatInputProps) {
+export function ChatInput({
+  onSend,
+  disabled,
+  placeholder = 'Ask about this package…',
+  models = [],
+  selectedModel = '',
+  onSelectModel,
+}: ChatInputProps) {
   const [value, setValue] = useState('');
+  const textarea = useRef<HTMLTextAreaElement>(null);
+
+  /**
+   * Grow the box to fit what has been typed, up to the max height the stylesheet sets.
+   *
+   * Reset to `auto` before reading `scrollHeight`: without that the element never reports a height
+   * smaller than it already has, so the box grows as you type and then refuses to shrink when you
+   * delete. Capped in CSS rather than here, so the limit lives with the rest of the sizing.
+   */
+  useEffect(() => {
+    const element = textarea.current;
+    if (!element) return;
+    element.style.height = 'auto';
+    element.style.height = `${element.scrollHeight}px`;
+  }, [value]);
 
   function handleSend() {
     const trimmed = value.trim();
@@ -76,6 +100,7 @@ export function ChatInput({ onSend, disabled, placeholder = 'Ask about this pack
         <div className="chat-input-area__field">
           <textarea
             className="chat-input-area__textarea"
+            ref={textarea}
             value={value}
             onChange={e => setValue(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -85,6 +110,26 @@ export function ChatInput({ onSend, disabled, placeholder = 'Ask about this pack
             aria-label="Message input"
           />
         </div>
+
+        {/* Model picker — only when the deployment allow-lists more than one narration model, so a
+            single-model deployment shows no needless control. Which model writes the prose changes
+            no verdict; the backend refuses any id not on its allow-list. */}
+        {models.length > 1 && onSelectModel && (
+          <select
+            className="chat-input-area__model"
+            value={selectedModel}
+            onChange={e => onSelectModel(e.target.value)}
+            disabled={disabled}
+            aria-label="Answering model"
+            title="Which model narrates the findings"
+          >
+            {models.map(model => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+        )}
 
         <button
           className={`btn btn--action btn--icon chat-input-area__send ${!value.trim() ? 'chat-input-area__send--disabled' : ''}`}
@@ -96,8 +141,11 @@ export function ChatInput({ onSend, disabled, placeholder = 'Ask about this pack
         </button>
       </div>
 
+      {/* The one disclosure that has to be on screen wherever a question can be asked. Trimmed from
+          two sentences to one clause and one claim: the earlier wording named the two companies
+          before it got to the point, and this screen already carries the brand twice. */}
       <p className="chat-input-area__hint">
-        GV Review uses deterministic rules. AI extracts values; Python decides.
+        Chat explains the recorded findings — <strong>deterministic rules decide every verdict</strong>.
       </p>
     </div>
   );

@@ -1,8 +1,8 @@
 """A reviewer fills in everything the rulebook asks for, and the checks decide.
 
 **The property under test is negative and it is the point:** no check may abstain because of a field
-nothing offered. One abstains because it is waiting on the client rather than on the form — this
-file asserts *which* one and *why*, so that another joining it is a failure rather than a shrug.
+nothing offered. If one abstains, this file asserts *which* one and *why*, so that a new abstention is
+a failure rather than a shrug.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from rules.snapshot import publish
 from tests.app.postgres_fixture import alembic_config
 from units.measurement import Unit
 from units.normalise import normalise_to_inches
+from workflow.classifications import record_classifications
 from workflow.measurements import operands_for, run_parameters_for
 from workflow.stages import DatabaseStages
 
@@ -58,6 +59,11 @@ RULEBOOK = pathlib.Path(__file__).resolve().parents[2] / "rules" / "rulebook"
 CABINETS = ('24"', '30"', '36"')
 FILLERS = ('2"', '2"')
 
+#: The reviewer's classification, one per cabinet, in the same order — the 36" cabinet is the sink
+#: cabinet, which is equipment and must not be resized. Entered by a person, never inferred (deck
+#: slide 11).
+CABINET_TYPES = ("single_door", "double_door", "equipment")
+
 #: Everything a reviewer reads off a drawing, keyed the way the API stores it.
 MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
     "CT-DEPTH-001:countertop_depth": '25 1/2"',
@@ -74,8 +80,13 @@ MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
     "CAB-ARCH-VS-SHOP-001:shop_cabinets": CABINETS,
     "CAB-FILLER-001:field_width": '94"',
     "CAB-FILLER-001:design_width": '94"',
-    "CAB-FILLER-001:design_fillers": FILLERS,
-    "CAB-FILLER-001:proposed_fillers": FILLERS,
+    "CAB-FILLER-001:architectural_fillers": FILLERS,
+    "CAB-FILLER-001:shop_fillers": FILLERS,
+    # v2 compares the cabinet run too, not just the fillers.
+    "CAB-FILLER-001:architectural_cabinets": CABINETS,
+    "CAB-FILLER-001:shop_cabinets": CABINETS,
+    # `cabinet_type` is not here because it is not a measurement: it has no unit, and it is written
+    # to `item_classifications` by the fixture below (#684).
     # The sink cabinet, from the deck's own relation (#537). **It is the 36" cabinet in `CABINETS`,
     # not a fourth cabinet from nowhere.** The first version of this row said 35", which added up
     # inside its own rule and described a run that did not contain the cabinet it had just checked —
@@ -94,6 +105,18 @@ MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
 }
 
 PROJECT_PARAMETERS = {
+    # The distribution bounds. **v2 of CAB-FILLER-001 carries no defaults** — CLIENT_FACTS Q21 has
+    # the filler pair at three different values and the per-type cabinet bounds have never been
+    # given, so every one is a form field. These are this package's numbers, not the rulebook's:
+    # the point of the change is that a package states them and nobody's guess is applied silently.
+    "filler_min": '1"',
+    "filler_max": '2"',
+    "single_door_cab_width_min": '9"',
+    "single_door_cab_width_max": '36"',
+    "double_door_cab_width_min": '24"',
+    "double_door_cab_width_max": '48"',
+    "drawer_cab_width_min": '12"',
+    "drawer_cab_width_max": '36"',
     "cabinet_depth": '24"',
     "countertop_overhang": '1 1/2"',
     "field_cut": '0"',
@@ -110,12 +133,20 @@ RUN_PARAMETERS = {"sink_interior_depth": '16"', "sink_interior_width": '30"'}
 
 DISCRIMINATORS = {"wall_config": "back_only", "filler_symmetry": "equal_unless_noted"}
 
-#: The check that cannot decide, and the reason it is waiting on somebody outside this repo.
+#: Checks that cannot decide, the text their abstention must contain, and who has to act.
 #:
 #: Named individually rather than counted, because an unchanged count could conceal a different rule
 #: abstaining for a reason the form could have fixed.
-CLIENT_BLOCKED = {
-    "CAB-ARCH-VS-SHOP-001": "tolerance",
+#:
+#: **`owed_by` is the part that matters.** A rule waiting on a client value and a rule waiting on
+#: something we have not built are both abstentions, and telling them apart is the difference
+#: between "chase Raj" and "finish the work". Entering `ours` here is an admission with a date on
+#: it, not a way to make a test green.
+UNDECIDED: dict[str, tuple[str, str]] = {}
+
+#: Kept for the tests that read it: the subset genuinely waiting on the client.
+CLIENT_BLOCKED: dict[str, str] = {
+    rule: missing for rule, (missing, owed_by) in UNDECIDED.items() if owed_by == "client"
 }
 
 
@@ -223,13 +254,24 @@ def filled(session: Session) -> PackageRevision:
     _publish_rulebook(session)
     _store(session, revision, ParameterLayer.PROJECT, PROJECT_PARAMETERS)
     _store(session, revision, ParameterLayer.RUN, {**RUN_PARAMETERS, **MEASUREMENTS})
+    # The one reviewer input that is not a dimension (#684). It goes to its own table because a
+    # category has no unit and `parameter_values` is numeric to the column level.
+    record_classifications(
+        session,
+        package_revision_id=revision.id,
+        rule_id="CAB-FILLER-001",
+        input_name="cabinet_type",
+        categories=CABINET_TYPES,
+        confirmed_by="reviewer",
+    )
+    session.flush()
     return revision
 
 
 def test_every_check_that_can_decide_does(session: Session, filled: PackageRevision) -> None:
     """**The acceptance property: nothing abstains for want of a field.**
 
-    Eight of nine reach PASS or FAIL. The other one is waiting on the client, and this asserts the
+    Every rule should reach PASS or FAIL. If a future rule is waiting on the client, this asserts the
     membership of that set rather than its size — another rule joining it would otherwise pass here
     while a reviewer stared at an abstention they could have fixed.
 
@@ -244,9 +286,9 @@ def test_every_check_that_can_decide_does(session: Session, filled: PackageRevis
     outcomes = _outcomes(session, filled)
     undecided = {rule for rule, outcome in outcomes.items() if outcome not in ("PASS", "FAIL")}
 
-    assert undecided == set(CLIENT_BLOCKED), (
-        "the set of checks that cannot decide has changed. Every member must be waiting on a client "
-        f"value, not on a form field: {sorted(undecided)}"
+    assert undecided == set(UNDECIDED), (
+        "the set of checks that cannot decide has changed. Every member must be listed in UNDECIDED "
+        f"with what it waits on and who owes it: {sorted(undecided)}"
     )
     # The same glob `_publish_rulebook` iterates, so the test cannot disagree about how many rules
     # there are.
@@ -257,14 +299,14 @@ def test_every_check_that_can_decide_does(session: Session, filled: PackageRevis
     )
 
 
-def test_the_check_that_cannot_decide_says_why_in_client_terms(
+def test_any_check_that_cannot_decide_says_why_in_client_terms(
     session: Session, filled: PackageRevision
 ) -> None:
     """Each abstention names the missing client value, not a system fault.
 
-    `CT-BACK-OFFSET-MIN-001` uses its V1 default; `CAB-ARCH-VS-SHOP-001` wants a tolerance the client
-    has not set, and *"an unset tolerance is not zero"*. The message tells a reviewer who to ask,
-    which is the difference between a useful abstention and a dead end.
+    `CT-BACK-OFFSET-MIN-001` uses its V1 default; `CAB-ARCH-VS-SHOP-001` now uses Q2's exact-match
+    answer. This test stays as a guard for the next genuinely client-blocked rule: the message must
+    tell a reviewer who to ask, which is the difference between a useful abstention and a dead end.
     """
     operands = operands_for(session, filled.id)
     DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(session, filled.id)
@@ -278,13 +320,12 @@ def test_the_check_that_cannot_decide_says_why_in_client_terms(
 
     for finding, snapshot in rows:
         rule_id = from_row(snapshot).rule.id
-        if rule_id not in CLIENT_BLOCKED:
+        if rule_id not in UNDECIDED:
             continue
+        missing, _owed_by = UNDECIDED[rule_id]
         trace = finding.trace or {}
         said = str(trace.get("reason") or trace.get("comparison") or "")
-        assert (
-            CLIENT_BLOCKED[rule_id] in said
-        ), f"{rule_id} abstained without naming {CLIENT_BLOCKED[rule_id]!r}: {said!r}"
+        assert missing in said, f"{rule_id} abstained without naming {missing!r}: {said!r}"
 
 
 def test_a_many_valued_input_keeps_its_order(session: Session, filled: PackageRevision) -> None:
@@ -320,17 +361,180 @@ def test_a_run_scope_parameter_reaches_the_resolver(
     )
 
 
-def test_without_a_discriminator_the_two_variant_rules_cannot_decide(
+def test_without_a_discriminator_a_variant_rule_cannot_decide(
     session: Session, filled: PackageRevision
 ) -> None:
     """A rule whose variant nobody stated abstains, however complete the measurements are.
 
-    This is what made `wall_config` and `filler_symmetry` fields rather than an oversight: they are
-    judgements a reviewer makes from the drawing, and the resolver refuses to guess one.
+    This is what made `wall_config` a field rather than an oversight: it is a judgement a reviewer
+    makes from the drawing, and the resolver refuses to guess one.
+
+    **CAB-FILLER-001 used to be the second half of this test and is deliberately not any more.**
+    v2 of the rule is global (#681): its `filler_symmetry` discriminator selected an
+    `allow_asymmetric` flag the two-step operation does not have, so the question moved into the
+    arithmetic, which abstains on unequal fillers *that have to move* with the numbers in hand.
+    It decides here, with no discriminator stated, and that is the change working.
     """
     operands = operands_for(session, filled.id)
     DatabaseStages(operands=operands).run_checks(session, filled.id)
 
     outcomes = _outcomes(session, filled)
     assert outcomes["CT-WIDTH-001"] not in ("PASS", "FAIL")
-    assert outcomes["CAB-FILLER-001"] not in ("PASS", "FAIL")
+    assert outcomes["CAB-FILLER-001"] in ("PASS", "FAIL")
+
+
+#: Raj's own worked example, slide 4 — the layout his deck uses to show how they do it.
+#: 3 + 24 + 36 + 24 + 3 = 90 on the architectural drawing; the site measures 82.
+RAJ_CABINETS = ('24"', '36"', '24"')
+RAJ_FILLERS = ('3"', '3"')
+RAJ_TYPES = ("double_door", "equipment", "double_door")
+
+
+def test_rajs_worked_example_produces_his_answer_through_run_checks(session: Session) -> None:
+    """**The whole point of #676, #678, #681 and #684, asserted in one place.**
+
+    Not through the operation, and not through the reviewer's calculator — through the check a
+    package actually runs. Slide 4 says the fillers go to 2" and the two regular cabinets to 21",
+    with the equipment cabinet holding 36". Until the classification could be stored, this run
+    abstained: the arithmetic was right and nobody could tell it which cabinet was the sink cabinet.
+    """
+    revision = _revision(session)
+    _publish_rulebook(session)
+    _store(
+        session,
+        revision,
+        ParameterLayer.PROJECT,
+        # Raj's example moves two double-door cabinets from 24" to 21", so the package has to
+        # allow that. The fixture's own minimum is 24" and correctly refuses it — a reminder that
+        # the answer is only right within the bounds the package states.
+        {
+            **PROJECT_PARAMETERS,
+            "filler_min": '2"',
+            "filler_max": '3"',
+            "double_door_cab_width_min": '18"',
+        },
+    )
+    _store(
+        session,
+        revision,
+        ParameterLayer.RUN,
+        {
+            **RUN_PARAMETERS,
+            "CAB-FILLER-001:field_width": '82"',
+            "CAB-FILLER-001:design_width": '90"',
+            "CAB-FILLER-001:architectural_fillers": RAJ_FILLERS,
+            "CAB-FILLER-001:shop_fillers": RAJ_FILLERS,
+            "CAB-FILLER-001:architectural_cabinets": RAJ_CABINETS,
+            "CAB-FILLER-001:shop_cabinets": RAJ_CABINETS,
+        },
+    )
+    record_classifications(
+        session,
+        package_revision_id=revision.id,
+        rule_id="CAB-FILLER-001",
+        input_name="cabinet_type",
+        categories=RAJ_TYPES,
+        confirmed_by="reviewer",
+    )
+    session.flush()
+
+    operands = operands_for(session, revision.id)
+    DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(
+        session, revision.id
+    )
+
+    finding = next(
+        row
+        for row, snapshot in session.execute(
+            select(Finding, RuleSnapshot)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .where(Finding.package_revision_id == revision.id)
+        ).all()
+        if from_row(snapshot).rule.id == "CAB-FILLER-001"
+    )
+    trace = finding.trace or {}
+    facts = dict(trace.get("intermediates") or [])
+
+    # The shop drawing still shows the architectural widths, so it FAILs — and what it should say
+    # is the answer Raj wrote down.
+    assert finding.outcome == "FAIL"
+    # Rendered the way the trace stores a run: each value with its unit, in order.
+    assert facts["expected_fillers"] == "2 in, 2 in"
+    assert facts["expected_cabinets"] == "21 in, 36 in, 21 in"
+    assert facts["condition"] == "cabinets_absorb_remainder"
+
+    # And the reviewer is told why, in the deck's own terms (#682).
+    said = str(trace.get("explanation") or "")
+    for figure in ('90"', '82"', '8"', '2"', '6"', '36"', '24"', '21"'):
+        assert figure in said, f"{figure} is missing from the explanation: {said}"
+
+
+def test_the_equipment_cabinet_a_reviewer_named_is_the_one_that_holds(
+    session: Session,
+) -> None:
+    """Move the classification and the arithmetic follows it — nothing infers from the width.
+
+    With the *first* cabinet marked as equipment, 24" is what holds and the 36" cabinet moves. The
+    numbers are otherwise identical, so this fails if anything anywhere decided "the widest one is
+    the appliance".
+    """
+    revision = _revision(session)
+    _publish_rulebook(session)
+    _store(
+        session,
+        revision,
+        ParameterLayer.PROJECT,
+        # Raj's example moves two double-door cabinets from 24" to 21", so the package has to
+        # allow that. The fixture's own minimum is 24" and correctly refuses it — a reminder that
+        # the answer is only right within the bounds the package states.
+        {
+            **PROJECT_PARAMETERS,
+            "filler_min": '2"',
+            "filler_max": '3"',
+            "double_door_cab_width_min": '18"',
+        },
+    )
+    _store(
+        session,
+        revision,
+        ParameterLayer.RUN,
+        {
+            **RUN_PARAMETERS,
+            "CAB-FILLER-001:field_width": '82"',
+            "CAB-FILLER-001:design_width": '90"',
+            "CAB-FILLER-001:architectural_fillers": RAJ_FILLERS,
+            "CAB-FILLER-001:shop_fillers": RAJ_FILLERS,
+            "CAB-FILLER-001:architectural_cabinets": RAJ_CABINETS,
+            "CAB-FILLER-001:shop_cabinets": RAJ_CABINETS,
+        },
+    )
+    record_classifications(
+        session,
+        package_revision_id=revision.id,
+        rule_id="CAB-FILLER-001",
+        input_name="cabinet_type",
+        categories=("equipment", "double_door", "double_door"),
+        confirmed_by="reviewer",
+    )
+    session.flush()
+
+    operands = operands_for(session, revision.id)
+    DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(
+        session, revision.id
+    )
+
+    finding = next(
+        row
+        for row, snapshot in session.execute(
+            select(Finding, RuleSnapshot)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .where(Finding.package_revision_id == revision.id)
+        ).all()
+        if from_row(snapshot).rule.id == "CAB-FILLER-001"
+    )
+    facts = dict((finding.trace or {}).get("intermediates") or [])
+
+    # 24" holds; 36" and 24" each give up 3".
+    assert facts["expected_cabinets"] == "24 in, 33 in, 21 in"

@@ -14,7 +14,15 @@ through the same `eval/metrics.py`, so neither has its own idea of what a metric
 
     # A synthetic package, generated here so the tool is runnable today with no client data:
     python scripts/evaluate_goldset.py --make-fixture data/goldset/synthetic-01
-    python scripts/evaluate_goldset.py data/goldset/synthetic-01
+    python scripts/evaluate_goldset.py data/goldset/synthetic-01 \
+      --line-minimum-pt 1 --glyph-maximum-pt 1 --glyph-gap-pt 1 \
+      --proximity-limit 0.1 --ambiguity-margin 0.01
+
+    # A reviewed package whose production/vendor drawing is carried by /Stamp annotations:
+    python scripts/evaluate_goldset.py data/goldset/reviewed-case \
+      --vendor-stamps-only \
+      --line-minimum-pt 12 --glyph-maximum-pt 12 --glyph-gap-pt 2.5 \
+      --proximity-limit 0.01 --ambiguity-margin 0.005
 
 **It is offline and it cannot change a verdict.** It creates a schema of its own, migrates it, runs
 the stages, reads what they wrote, reports, and drops the schema. Nothing it does touches a live
@@ -53,21 +61,33 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
+
+from pydantic import BaseModel, ConfigDict
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+    from app.models.evidence import CanonicalObservation
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eval.gold_set.schema import GoldCase, ManifestLoadError
 from eval.gold_set.store import content_hash
 from eval.scorecard import render, score_package
+from extraction.geometry.containment import DimensionExtent
+from extraction.geometry.text_association import lines_within
+from extraction.glyph_bands import FractionBarGeometry
 from verdict.outcomes import Outcome, Severity
+from workflow.association import AssociationSettings, LocalizedOcrSettings
+from workflow.config import READER_RASTER_DPI
 
 #: Where a project's reviewed packages live. Git-ignored, because they are client material: the
 #: format and the loader are tracked code and the answers never are (`AGENTS.md` §9).
@@ -75,6 +95,42 @@ PROJECT_GOLDSET_DIRECTORY = Path("data/goldset")
 
 #: The file inside a package directory that holds the answer key.
 ANSWER_KEY = "answer_key.json"
+
+
+def _vendor_only_pdf(data: bytes) -> tuple[bytes, int]:
+    """Return PDF bytes with every non-stamp annotation removed, in memory.
+
+    The reviewed sets carry the vendor drawing in ``/Stamp`` annotations and GVI-007's answer
+    layer in ``/FreeText``, ``/Line``, ``/Square`` and related annotations.  A reading-accuracy
+    evaluation must show the reader what an unreviewed production drawing contains: the stamps,
+    never the reviewer overlay.  This is the document-level equivalent of
+    ``extraction.rasterise.drop_reviewer_layers``; doing it before the real stages run also keeps
+    exact annotation strings out of the candidate table instead of merely hiding their pixels.
+
+    PDFs without a non-stamp annotation are returned byte-for-byte.  That preserves the synthetic
+    fixture's provenance and avoids rewriting ordinary unannotated production inputs for no reason.
+    """
+    import pikepdf
+
+    removable = 0
+    output = io.BytesIO()
+    with pikepdf.open(io.BytesIO(data)) as document:
+        for page in document.pages:
+            annotations = page.obj.get("/Annots", ())
+            kept = pikepdf.Array()
+            for annotation in annotations:
+                if annotation.get("/Subtype") == pikepdf.Name("/Stamp"):
+                    kept.append(annotation)
+                else:
+                    removable += 1
+            if kept:
+                page.obj["/Annots"] = kept
+            elif "/Annots" in page.obj:
+                del page.obj["/Annots"]
+        if removable == 0:
+            return data, 0
+        document.save(output)
+    return output.getvalue(), removable
 
 
 def _pdf(text: str, *, box: bytes = b"[0 0 200 100]") -> bytes:
@@ -86,7 +142,23 @@ def _pdf(text: str, *, box: bytes = b"[0 0 200 100]") -> bytes:
     §9 forbids inventing a *drawing* to tune against, and this invents a document to prove plumbing.
     """
     lines = text.split("|")
-    content = b"".join(
+    # Two explicit dimensions make the generated package exercise the same association path as a
+    # real drawing. Their y positions map to the centres of the two answer-key boxes at 150 dpi.
+    # These are fixture geometry, not production thresholds and not client-derived dimensions.
+    #
+    # **Each carries witness lines crossing both of its ends**, because since #179 a bare stroke is
+    # not a dimension: only runs whose ends are crossed by a perpendicular are offered to
+    # `associate`, and an unassociated reading is one this grader will not score — see
+    # `_candidate_at_answer`, which requires `refusal_reason IS NULL`. Without them the fixture
+    # produced two readings, both refused, and the scorecard reported nothing attempted.
+    content = (
+        b"1 w 20 66 m 100 66 l S\n"
+        b"1 w 20 56 m 20 76 l S\n"
+        b"1 w 100 56 m 100 76 l S\n"
+        b"1 w 20 36 m 100 36 l S\n"
+        b"1 w 20 26 m 20 46 l S\n"
+        b"1 w 100 26 m 100 46 l S\n"
+    ) + b"".join(
         f"BT /F1 12 Tf 1 0 0 1 20 {70 - index * 30} Tm ("
         f"{line.replace(chr(92), chr(92) * 2).replace('(', chr(92) + '(').replace(')', chr(92) + ')')}"
         ") Tj ET\n".encode("latin-1")
@@ -235,7 +307,38 @@ def load_package(directory: Path) -> GoldCase:
     return case
 
 
-def _arguments() -> argparse.Namespace:
+class Arguments(BaseModel):
+    """Validated command-line boundary for one offline evaluation run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    package: Path | None
+    make_fixture: Path | None
+    database_url: str | None
+    dpi: int
+    vendor_stamps_only: bool
+    localized_ocr: bool
+    localized_minimum_paths: int | None
+    localized_maximum_span: Decimal | None
+    localized_crop_margin_pt: Decimal | None
+    line_minimum_pt: Decimal | None
+    glyph_maximum_pt: Decimal | None
+    glyph_gap_pt: Decimal | None
+    proximity_limit: Decimal | None
+    ambiguity_margin: Decimal | None
+    witness_tolerance: Decimal | None
+    minimum_span: Decimal | None
+    straightness: Decimal | None
+    crossing_margin: Decimal | None
+    fraction_bar_thickness_max_pt: Decimal | None
+    fraction_bar_length_min_pt: Decimal | None
+    fraction_reach_pt: Decimal | None
+    fraction_glyph_min_pt: Decimal | None
+    fraction_glyph_max_pt: Decimal | None
+    fraction_proportion_max: Decimal | None
+
+
+def _arguments() -> Arguments:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "package",
@@ -264,10 +367,222 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--dpi",
         type=int,
-        default=150,
-        help="the reader's resolution. Stated, because stored coordinates depend on it",
+        default=READER_RASTER_DPI,
+        help=(
+            "the reader's resolution. Defaults to the production reader/rasteriser setting "
+            f"({READER_RASTER_DPI}); stored coordinates depend on it"
+        ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--vendor-stamps-only",
+        action="store_true",
+        help=(
+            "for a reviewed-overlay package whose vendor drawing is in /Stamp annotations: remove "
+            "every non-stamp annotation in memory before extraction"
+        ),
+    )
+    parser.add_argument(
+        "--localized-ocr",
+        action="store_true",
+        help=(
+            "read configured vendor outlined-text regions as 600-DPI vendor-only OCR crops; requires "
+            "the three explicit localized-crop settings below"
+        ),
+    )
+    parser.add_argument(
+        "--localized-minimum-paths",
+        type=int,
+        help="required with --localized-ocr: smallest outlined-path cluster worth a crop",
+    )
+    parser.add_argument(
+        "--localized-maximum-span",
+        type=Decimal,
+        help="required with --localized-ocr: largest normalized candidate-region span",
+    )
+    parser.add_argument(
+        "--localized-crop-margin-pt",
+        type=Decimal,
+        help="required with --localized-ocr: vendor crop context in PDF points",
+    )
+    parser.add_argument(
+        "--line-minimum-pt",
+        type=Decimal,
+        help="required for evaluation: production annotation line-work threshold in PDF points",
+    )
+    parser.add_argument(
+        "--glyph-maximum-pt",
+        type=Decimal,
+        help="required for evaluation: production outlined-glyph size threshold in PDF points",
+    )
+    parser.add_argument(
+        "--glyph-gap-pt",
+        type=Decimal,
+        help="required for evaluation: production outlined-glyph clustering gap in PDF points",
+    )
+    parser.add_argument(
+        "--proximity-limit",
+        type=Decimal,
+        help=(
+            "required for evaluation: production text-to-line and answer-location proximity in "
+            "stored page units"
+        ),
+    )
+    parser.add_argument(
+        "--ambiguity-margin",
+        type=Decimal,
+        help=(
+            "required for evaluation: production text-to-line abstention margin in stored page "
+            "units"
+        ),
+    )
+    # The dimension-line detector's four (#179). Required for the same reason as the five above:
+    # they decide which strokes a reading may attach to at all, and a grader that defaulted one
+    # would be scoring a configuration no deployment runs.
+    parser.add_argument(
+        "--witness-tolerance",
+        type=Decimal,
+        help="required: how near a perpendicular must come to a run's end, in stored page units",
+    )
+    parser.add_argument(
+        "--minimum-span",
+        type=Decimal,
+        help="required: how far a run must reach to be a dimension candidate, in stored page units",
+    )
+    parser.add_argument(
+        "--straightness",
+        type=Decimal,
+        help="required: how far off-axis a stroke may drift, in stored page units",
+    )
+    parser.add_argument(
+        "--crossing-margin",
+        type=Decimal,
+        help=(
+            "required: how far a witness line must extend past the dimension line, in stored page "
+            "units. This is what separates a dimension from the box it measures"
+        ),
+    )
+    parser.add_argument(
+        "--fraction-bar-thickness-max-pt",
+        type=Decimal,
+        help="required: the thickest stroke that can be a fraction bar, across the baseline, in PDF points (the stacked-fraction detector, #735)",
+    )
+    parser.add_argument(
+        "--fraction-bar-length-min-pt",
+        type=Decimal,
+        help="required: the shortest stroke that can be a fraction bar, along the baseline, in PDF points (the stacked-fraction detector, #735)",
+    )
+    parser.add_argument(
+        "--fraction-reach-pt",
+        type=Decimal,
+        help="required: how far above and below a bar its numerator and denominator may begin, in PDF points (the stacked-fraction detector, #735)",
+    )
+    parser.add_argument(
+        "--fraction-glyph-min-pt",
+        type=Decimal,
+        help="required: how tall a numerator and a denominator must each be, in PDF points (the stacked-fraction detector, #735)",
+    )
+    parser.add_argument(
+        "--fraction-glyph-max-pt",
+        type=Decimal,
+        help="required: the largest path that can be part of a stacked fraction, in PDF points (the stacked-fraction detector, #735)",
+    )
+    parser.add_argument(
+        "--fraction-proportion-max",
+        type=Decimal,
+        help="required: how far numerator, denominator and bar may differ in proportion, as a ratio (the stacked-fraction detector, #735)",
+    )
+    return Arguments.model_validate(vars(parser.parse_args()))
+
+
+def _association_settings(arguments: Arguments) -> AssociationSettings:
+    """Build the production settings explicitly supplied for this evaluated run.
+
+    The production association types deliberately have no defaults because these values describe
+    how one deployment's drawings are authored. The grader keeps that contract: a missing value is
+    a refused run, never an inline constant chosen to make a score move.
+    """
+    supplied = {
+        "line-minimum-pt": arguments.line_minimum_pt,
+        "glyph-maximum-pt": arguments.glyph_maximum_pt,
+        "glyph-gap-pt": arguments.glyph_gap_pt,
+        "proximity-limit": arguments.proximity_limit,
+        "ambiguity-margin": arguments.ambiguity_margin,
+        "witness-tolerance": arguments.witness_tolerance,
+        "minimum-span": arguments.minimum_span,
+        "straightness": arguments.straightness,
+        "crossing-margin": arguments.crossing_margin,
+        "fraction-bar-thickness-max-pt": arguments.fraction_bar_thickness_max_pt,
+        "fraction-bar-length-min-pt": arguments.fraction_bar_length_min_pt,
+        "fraction-reach-pt": arguments.fraction_reach_pt,
+        "fraction-glyph-min-pt": arguments.fraction_glyph_min_pt,
+        "fraction-glyph-max-pt": arguments.fraction_glyph_max_pt,
+        "fraction-proportion-max": arguments.fraction_proportion_max,
+    }
+    missing = [name for name, value in supplied.items() if value is None]
+    if missing:
+        flags = ", ".join(f"--{name}" for name in missing)
+        raise ValueError(
+            f"association settings are required to measure the production path; missing {flags}"
+        )
+    assert arguments.line_minimum_pt is not None
+    assert arguments.glyph_maximum_pt is not None
+    assert arguments.glyph_gap_pt is not None
+    assert arguments.proximity_limit is not None
+    assert arguments.ambiguity_margin is not None
+    assert arguments.witness_tolerance is not None
+    assert arguments.minimum_span is not None
+    assert arguments.straightness is not None
+    assert arguments.crossing_margin is not None
+    assert arguments.fraction_bar_thickness_max_pt is not None
+    assert arguments.fraction_bar_length_min_pt is not None
+    assert arguments.fraction_reach_pt is not None
+    assert arguments.fraction_glyph_min_pt is not None
+    assert arguments.fraction_glyph_max_pt is not None
+    assert arguments.fraction_proportion_max is not None
+    return AssociationSettings(
+        line_minimum_pt=arguments.line_minimum_pt,
+        glyph_maximum_pt=arguments.glyph_maximum_pt,
+        glyph_gap_pt=arguments.glyph_gap_pt,
+        proximity_limit=arguments.proximity_limit,
+        ambiguity_margin=arguments.ambiguity_margin,
+        witness_tolerance=arguments.witness_tolerance,
+        minimum_span=arguments.minimum_span,
+        straightness=arguments.straightness,
+        crossing_margin=arguments.crossing_margin,
+        fraction_bar=FractionBarGeometry(
+            bar_thickness_max_pt=arguments.fraction_bar_thickness_max_pt,
+            bar_length_min_pt=arguments.fraction_bar_length_min_pt,
+            reach_pt=arguments.fraction_reach_pt,
+            glyph_min_pt=arguments.fraction_glyph_min_pt,
+            glyph_max_pt=arguments.fraction_glyph_max_pt,
+            proportion_max=arguments.fraction_proportion_max,
+        ),
+    )
+
+
+def _localized_ocr_settings(arguments: Arguments) -> LocalizedOcrSettings | None:
+    """Build crop-selection settings only when the caller explicitly enables that reader route."""
+    if not arguments.localized_ocr:
+        return None
+    supplied = {
+        "localized-minimum-paths": arguments.localized_minimum_paths,
+        "localized-maximum-span": arguments.localized_maximum_span,
+        "localized-crop-margin-pt": arguments.localized_crop_margin_pt,
+    }
+    missing = [name for name, value in supplied.items() if value is None]
+    if missing:
+        raise ValueError(
+            "localized OCR settings are required to measure the production path; missing "
+            + ", ".join(f"--{name}" for name in missing)
+        )
+    assert arguments.localized_minimum_paths is not None
+    assert arguments.localized_maximum_span is not None
+    assert arguments.localized_crop_margin_pt is not None
+    return LocalizedOcrSettings(
+        minimum_paths=arguments.localized_minimum_paths,
+        maximum_span=arguments.localized_maximum_span,
+        crop_margin_pt=arguments.localized_crop_margin_pt,
+    )
 
 
 @contextmanager
@@ -304,7 +619,40 @@ def _private_schema(database_url: str) -> Iterator[str]:
         admin.dispose()
 
 
-def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: int) -> Any:
+@dataclass(frozen=True, slots=True)
+class StoredFinding:
+    """One stored finding reduced to exactly the fields the scorecard reads."""
+
+    rule_id: str
+    outcome: Outcome
+    severity: Severity
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineResult:
+    """Typed outputs from the grader's production-stage run."""
+
+    findings: list[StoredFinding]
+    observations: list[CanonicalObservation]
+    typed: int
+    published: int
+    stripped_annotations: int
+    session: Session
+
+
+def _run_pipeline(
+    case: GoldCase,
+    directory: Path,
+    database_url: str,
+    *,
+    dpi: int,
+    association: AssociationSettings,
+    localized_ocr: LocalizedOcrSettings | None,
+    vendor_stamps_only: bool,
+    seed_project_parameters: Callable[[Session, Any, Any], None] | None = None,
+    project_id: UUID | None = None,
+) -> PipelineResult:
     """Put the package's shop drawing through the real stages and return what they wrote.
 
     Imported inside the function so `--make-fixture` and `--help` work without a database or the
@@ -328,7 +676,7 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
         PackageRevisionDocument,
         SourceArtifact,
     )
-    from app.models.evidence import CanonicalObservation, ObservationCandidate
+    from app.models.evidence import CanonicalObservation
     from app.models.package import Package, PackageRevision, PackageState, Project
     from app.models.rules import RuleDefinition
     from app.models.rules import RuleSnapshot as RuleSnapshotRow
@@ -350,13 +698,21 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
     command.upgrade(config, "head")
 
-    data = (directory / case.shop).read_bytes()
+    source_data = (directory / case.shop).read_bytes()
+    if vendor_stamps_only:
+        data, stripped_annotations = _vendor_only_pdf(source_data)
+    else:
+        data, stripped_annotations = source_data, 0
     digest = hashlib.sha256(data).hexdigest()
     session = session_factory(engine)()
     with tempfile.TemporaryDirectory() as root:
         store = LocalStore(root=Path(root), ticket_secret=b"offline grader")
 
-        project = Project(name=f"goldset {case.id}")
+        project = (
+            Project(id=project_id, name=f"goldset {case.id}")
+            if project_id
+            else Project(name=f"goldset {case.id}")
+        )
         session.add(project)
         session.flush()
         package = Package(project_id=project.id, vendor=None)
@@ -436,7 +792,12 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
             published += 1
         session.commit()
 
-        stages = DatabaseStages(store=store, dpi=dpi)
+        stages = DatabaseStages(
+            store=store,
+            dpi=dpi,
+            association=association,
+            localized_ocr=localized_ocr,
+        )
         stages.extract_pages(session, revision.id)
         session.commit()
 
@@ -452,32 +813,32 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
         # One candidate per answer: a candidate already labelled is not offered again, because a
         # reviewer confirming two different quantities from one reading is not a thing that happens.
         typed = 0
-        candidates = [
-            candidate
-            for candidate in session.execute(
-                select(ObservationCandidate).where(
-                    ObservationCandidate.document_version_id == version.id
-                )
-            ).scalars()
-            # Only readings that carry a value. A bare number was recorded without one deliberately,
-            # and there is nothing for a reviewer to confirm about it.
-            if candidate.value_numerator is not None and candidate.polygon
-        ]
         used: set[UUID] = set()
         for answer in case.ground_truth.observations:
-            nearest = _nearest_candidate(answer, candidates, used)
-            if nearest is None:
+            candidate = _candidate_at_answer(
+                session,
+                answer,
+                document_version_id=version.id,
+                dpi=dpi,
+                proximity_limit=association.proximity_limit,
+                used=used,
+            )
+            if candidate is None:
                 continue
             result = confirm_candidate_type(
                 session,
-                candidate_id=nearest.id,
+                candidate_id=candidate.id,
                 semantic_type=answer.semantic_type.value,
                 confirmed_by="offline-grader",
             )
             if isinstance(result, CanonicalObservation):
-                used.add(nearest.id)
+                used.add(candidate.id)
                 typed += 1
         session.commit()
+
+        if seed_project_parameters is not None:
+            seed_project_parameters(session, project, revision)
+            session.commit()
 
         stages.run_checks(session, revision.id)
         session.commit()
@@ -486,7 +847,7 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
         # `check_run`, which names the published snapshot, which names the rule definition — the same
         # join `app/api/findings.py` makes. Reading a `rule_id` attribute off the row would be
         # inventing a column, and the answer key pairs its expectations on that id.
-        findings = list(
+        finding_rows = list(
             session.execute(
                 select(
                     RuleDefinition.rule_id,
@@ -504,6 +865,7 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
                 .where(FindingRow.package_revision_id == revision.id)
             ).all()
         )
+        findings = _as_domain(finding_rows)
         observations = list(
             session.execute(
                 select(CanonicalObservation).where(
@@ -511,36 +873,147 @@ def _run_pipeline(case: GoldCase, directory: Path, database_url: str, *, dpi: in
                 )
             ).scalars()
         )
-        return findings, observations, typed, published, session
+        return PipelineResult(
+            findings=findings,
+            observations=observations,
+            typed=typed,
+            published=published,
+            stripped_annotations=stripped_annotations,
+            session=session,
+        )
 
 
-def _nearest_candidate(answer: Any, candidates: Any, used: set[UUID]) -> Any:
-    """The unlabelled candidate whose box centre is nearest this answer's, or `None`.
+@dataclass(frozen=True, slots=True)
+class AssociatedCandidate:
+    """One extracted reading and the production-associated line it annotates."""
 
-    Distances are compared **squared**, so no square root and no float decides which reading gets a
-    reviewer's label — the same reason `extraction/geometry/text_association.py` keeps its distances
-    squared. Both boxes are in image pixels: a candidate's `polygon` column is image space by
-    construction, and `GoldObservation.polygon` is how an annotator boxed the region.
+    candidate: Any
+    page_index: int
+    line: DimensionExtent
 
-    No proximity limit. This is a grader with a stated answer per reading, not the association step
-    deciding which line a number belongs to — there is nothing here to abstain in favour of, and an
-    answer left unpaired is reported as a reading the system did not make.
+
+def _candidate_for_answer(
+    answer: Any,
+    answer_region: Any,
+    candidates: list[AssociatedCandidate],
+    *,
+    proximity_limit: Decimal,
+    used: set[UUID],
+) -> Any | None:
+    """Return one unambiguous, production-associated reading at the answer location.
+
+    Page identity is checked before any geometry is compared. The production proximity helper then
+    finds associated lines near the answer region. Zero lines means the reader made no comparable
+    reading; more than one line, or more than one reading attached to the sole line, is ambiguous.
+    Every one of those cases abstains. There is deliberately no nearest-centre fallback.
     """
-    left, top, right, bottom = answer.polygon
-    target = ((left + right) / 2, (top + bottom) / 2)
+    same_page = [
+        entry
+        for entry in candidates
+        if entry.page_index == answer.page - 1 and entry.candidate.id not in used
+    ]
+    if not same_page:
+        return None
 
-    best = None
-    best_distance = None
-    for candidate in candidates:
-        if candidate.id in used:
-            continue
-        xs = [int(point[0]) for point in candidate.polygon]
-        ys = [int(point[1]) for point in candidate.polygon]
-        centre = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
-        distance = (centre[0] - target[0]) ** 2 + (centre[1] - target[1]) ** 2
-        if best_distance is None or distance < best_distance:
-            best, best_distance = candidate, distance
-    return best
+    by_line: dict[DimensionExtent, list[Any]] = {}
+    for entry in same_page:
+        by_line.setdefault(entry.line, []).append(entry.candidate)
+    nearby = lines_within(
+        answer_region,
+        tuple(by_line),
+        proximity_limit=proximity_limit,
+    )
+    if len(nearby) != 1:
+        return None
+    readings = by_line[nearby[0]]
+    return readings[0] if len(readings) == 1 else None
+
+
+def _candidate_at_answer(
+    session: Any,
+    answer: Any,
+    *,
+    document_version_id: UUID,
+    dpi: int,
+    proximity_limit: Decimal,
+    used: set[UUID],
+) -> Any | None:
+    """Load page-scoped production associations and locate one reading, or abstain."""
+    from sqlalchemy import select
+
+    from app.models.document import Page
+    from app.models.evidence import ObservationAssociation, ObservationCandidate
+    from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
+    from evidence.polygon import Polygon
+
+    page = session.execute(
+        select(Page).where(
+            Page.document_version_id == document_version_id,
+            Page.index == answer.page - 1,
+        )
+    ).scalar_one_or_none()
+    if page is None or page.media_box is None or page.crop_box is None:
+        return None
+    media = [Decimal(value) for value in page.media_box]
+    crop = [Decimal(value) for value in page.crop_box]
+    if len(media) != 4 or len(crop) != 4:
+        return None
+    transform = PageTransform(
+        dpi=dpi,
+        rotation=page.rotation,
+        media_box=(media[0], media[1], media[2], media[3]),
+        crop_box=(crop[0], crop[1], crop[2], crop[3]),
+    )
+    left, top, right, bottom = answer.polygon
+    answer_region = Polygon(
+        points=tuple(
+            transform.to_stored(point)
+            for point in (
+                ImagePoint(left, top),
+                ImagePoint(right, top),
+                ImagePoint(right, bottom),
+                ImagePoint(left, bottom),
+            )
+        ),
+        space="stored",
+        document_version_id=document_version_id,
+        page=page.index,
+    )
+
+    rows = session.execute(
+        select(ObservationCandidate, ObservationAssociation)
+        .join(
+            ObservationAssociation,
+            ObservationAssociation.candidate_id == ObservationCandidate.id,
+        )
+        .where(
+            ObservationCandidate.document_version_id == document_version_id,
+            ObservationCandidate.page_id == page.id,
+            ObservationCandidate.value_numerator.isnot(None),
+            ObservationAssociation.refusal_reason.is_(None),
+        )
+    ).all()
+    associated = [
+        AssociatedCandidate(
+            candidate=candidate,
+            page_index=page.index,
+            line=DimensionExtent(
+                start=StoredPoint(Decimal(row.start_x), Decimal(row.start_y)),
+                end=StoredPoint(Decimal(row.end_x), Decimal(row.end_y)),
+                document_version_id=document_version_id,
+                page=page.index,
+            ),
+        )
+        for candidate, row in rows
+        if None not in (row.start_x, row.start_y, row.end_x, row.end_y)
+    ]
+    return _candidate_for_answer(
+        answer,
+        answer_region,
+        associated,
+        proximity_limit=proximity_limit,
+        used=used,
+    )
 
 
 def main() -> int:
@@ -550,7 +1023,11 @@ def main() -> int:
         written = make_fixture(arguments.make_fixture)
         print(f"wrote a synthetic package to {written}")
         print(f"  {written / ANSWER_KEY} — the answer key, in the documented format")
-        print("  run it:  python scripts/evaluate_goldset.py " + str(written))
+        print(
+            "  run it:  python scripts/evaluate_goldset.py "
+            f"{written} --line-minimum-pt 1 --glyph-maximum-pt 1 --glyph-gap-pt 1 "
+            "--proximity-limit 0.1 --ambiguity-margin 0.01"
+        )
         return 0
 
     if arguments.candidate_scaffold_dir is not None:
@@ -587,44 +1064,58 @@ def main() -> int:
         print(f"the package was refused: {refused}", file=sys.stderr)
         return 2
 
+    try:
+        association = _association_settings(arguments)
+        localized_ocr = _localized_ocr_settings(arguments)
+    except ValueError as refused:
+        print(f"the package was refused: {refused}", file=sys.stderr)
+        return 2
+
     # Scoring happens inside the `with`: `_as_gold` reads the page transform back out of the rows
     # the run wrote, so the schema has to outlive the pipeline call itself.
     with _private_schema(database_url) as scoped_url:
-        findings, observations, typed, published, session = _run_pipeline(
-            case, arguments.package, scoped_url, dpi=arguments.dpi
+        result = _run_pipeline(
+            case,
+            arguments.package,
+            scoped_url,
+            dpi=arguments.dpi,
+            association=association,
+            localized_ocr=localized_ocr,
+            vendor_stamps_only=arguments.vendor_stamps_only,
         )
         print(
-            f"ran the pipeline: {published} rule(s) published, {typed} answer-key label(s) "
-            f"applied, {len(observations)} confirmed observation(s), {len(findings)} finding(s)\n"
+            f"ran the pipeline: {result.published} rule(s) published, "
+            f"{result.typed} answer-key label(s) applied, "
+            f"{len(result.observations)} confirmed observation(s), "
+            f"{len(result.findings)} finding(s)\n"
         )
-        scorecard = score_package(
-            case, _as_domain(findings), observations=_as_gold(session, observations, case)
-        )
-        session.close()
+        if arguments.vendor_stamps_only:
+            print(
+                "reader input: vendor stamp annotations only; "
+                f"{result.stripped_annotations} non-stamp annotation(s) removed in memory\n"
+            )
+        else:
+            print("reader input: source drawing unchanged; 0 annotations removed\n")
+        try:
+            scorecard = score_package(
+                case,
+                result.findings,
+                observations=_as_gold(result.session, result.observations, case),
+            )
+        finally:
+            # A batch score reads many candidates after extraction. End its implicit read
+            # transaction even when score rendering fails, before `_private_schema` drops the
+            # isolated schema; otherwise PostgreSQL can retain a relation lock and hide the real
+            # scoring exception behind a hanging cleanup.
+            result.session.rollback()
+            result.session.close()
     print(render(scorecard))
     # Exit 1 on a critical false PASS — the one result that must stop something. Every other number
     # is information; this one is the ship gate.
     return 1 if scorecard.critical_false_passes else 0
 
 
-@dataclass(frozen=True, slots=True)
-class StoredFinding:
-    """One finding as the database holds it, carrying exactly what scoring reads.
-
-    Not a `verdict.finding.Finding`: that type refuses to exist without a `CalculationTrace` for any
-    non-abstention, and the stored trace is JSON with no inverse. Building one would mean inventing
-    operands and a comparison this code never performed — fabricating a calculation to satisfy a
-    type whose whole purpose is to prevent fabricated calculations. `eval.scorecard.ScoredFinding`
-    states the three fields the metrics read, and this satisfies it honestly.
-    """
-
-    rule_id: str
-    outcome: Outcome
-    severity: Severity
-    reason: str
-
-
-def _as_domain(rows: Any) -> Any:
+def _as_domain(rows: list[Any]) -> list[StoredFinding]:
     """Stored finding rows in the shape the scorer reads.
 
     The rule id, version and engine version came off the joined query rather than off the finding

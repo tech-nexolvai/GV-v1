@@ -27,6 +27,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from openpyxl import load_workbook
+from pypdf import PdfReader
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
@@ -41,6 +42,7 @@ from app.models import (
     DocumentVersion,
     ObservationCandidate,
     OutputArtifact,
+    OutputArtifactKind,
     Package,
     PackageRevision,
     PackageRevisionDocument,
@@ -68,6 +70,7 @@ PROJECT = UUID("22222222-2222-2222-2222-222222222222")
 #: is drawn from the actual behaviour rather than imagined.
 DRAWING = _pdf(
     b"BT /F1 10 Tf 1 0 0 1 20 70 Tm (648 [25 1/2]) Tj ET\n"
+    b"BT /F1 10 Tf 1 0 0 1 20 55 Tm (100 [4]) Tj ET\n"
     b'BT /F1 10 Tf 1 0 0 1 20 40 Tm (SINK 25 1/2") Tj ET\n'
 )
 
@@ -79,6 +82,9 @@ def _settings() -> Settings:
     return Settings(
         database_url="postgresql+psycopg://unused/unused",
         hatchet_token="test-token",
+        # This e2e test proves the unavailable-provider fallback; it must not attempt an external
+        # Bedrock call while exercising the locally deterministic reviewer loop.
+        bedrock_chat_enabled=False,
     )
 
 
@@ -218,6 +224,7 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
 
     depth = next(row for row in readings if row["raw_text"] == "648 [25 1/2]")
     assert depth["value"] == "25 1/2 in", depth
+    assert depth["source"] == "SHOP"
 
     # 3. The reviewer says what one of them is. The value is not re-entered.
     confirmed = client.post(
@@ -228,12 +235,44 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     assert confirmed.status_code == 201, confirmed.text
     assert confirmed.json()["status"] == "HUMAN_CONFIRMED"
 
+    # The Measure form is server-backed: returning to it later (or from a different browser) carries
+    # the exact reading the reviewer confirmed on the crop.  This is not a semantic guess — the
+    # confirmation above is the only thing that put it in this response.
+    required = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/required-inputs")
+    assert required.status_code == 200, required.text
+    confirmed_readings = required.json()["confirmed_readings"]
+    assert len(confirmed_readings) == 1
+    assert confirmed_readings[0]["key"] == f"SHOP:{DEPTH_TYPE}"
+    assert confirmed_readings[0]["value"] == "25 1/2 in"
+    assert confirmed_readings[0]["qualification"] == "reviewer_confirmed"
+
+    # The request commits its canonical observation.  Reloading the proposal queue must not offer
+    # the same raw candidate for a second type — that would be an apparent successful confirmation
+    # followed by a duplicate/conflicting reviewer action on the next page load.
+    reloaded = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates")
+    assert reloaded.status_code == 200, reloaded.text
+    assert depth["candidate_id"] not in {
+        item["candidate_id"] for item in reloaded.json()["candidates"]
+    }
+    assert len(reloaded.json()["candidates"]) == len(readings) - 1
+
+    # A second genuine typed reading is deliberately not an operand for any published check. It
+    # must not appear on CT-DEPTH-001's redline merely because it lives on the same sheet.
+    unrelated = next(row for row in readings if row["raw_text"] == "100 [4]")
+    unrelated_confirmed = client.post(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}"
+        f"/candidates/{unrelated['candidate_id']}/confirm",
+        json={"semantic_type": "filler_width"},
+    )
+    assert unrelated_confirmed.status_code == 201, unrelated_confirmed.text
+
     # 4. The checks run again now that the reading has a meaning, and the report is rebuilt.
     #    Re-running is what a reviewer does after confirming: the first pass had no evidence to
     #    decide from, and `run_checks` supersedes its own previous run rather than adding to it.
     stages = DatabaseStages(store)
     stages.run_checks(session, revision.id)
-    stages.generate_outputs(session, revision.id)
+    output_result = stages.generate_outputs(session, revision.id)
+    assert output_result["redline"] == {"generated": True, "reason": None}, output_result
     session.commit()
 
     findings = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/findings")
@@ -246,6 +285,23 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     depth_finding = next(
         item for item in findings.json()["items"] if item["rule_id"] == "CT-DEPTH-001"
     )
+
+    # The reviewer chat is a presentation layer over this *same* live run. With its optional
+    # provider disabled in this test, it must still return the plain structured finding rather than
+    # fail the review or claim a new outcome.
+    chat = client.post(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}/chat",
+        json={"question": "Which sheet passed, and why?"},
+    )
+    assert chat.status_code == 200, chat.text
+    answer = chat.json()
+    assert answer["mode"] == "structured_fallback"
+    assert len(answer["findings"]) == 1
+    assert answer["findings"][0]["finding_id"] == depth_finding["id"]
+    assert answer["findings"][0]["text"].startswith(
+        "Countertop depth verification — Looks right (CT-DEPTH-001)."
+    )
+
     chain = client.get(
         f"/api/v1/projects/{PROJECT}/packages/{package_id}/findings/{depth_finding['id']}/chain"
     )
@@ -266,6 +322,10 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     early = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report")
     assert early.status_code == 409, early.text
     assert "not been signed off" in early.text
+    early_pdf = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report.pdf")
+    assert early_pdf.status_code == 409, early_pdf.text
+    early_redline = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/redline.pdf")
+    assert early_redline.status_code == 409, early_redline.text
 
     # 6. The reviewer addresses every abstention and signs off.
     _address_every_abstention(client, session, package_id, revision)
@@ -279,18 +339,60 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     assert summary["B11"].value == "AWAITING REVIEWER SIGN-OFF — download remains blocked"
     assert summary["B12"].value == "not yet recorded"
 
+    pdf = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report.pdf")
+    assert pdf.status_code == 200, pdf.text
+    assert pdf.headers["content-type"] == "application/pdf"
+    assert pdf.content.startswith(b"%PDF-"), "the branded handoff is not a PDF"
+    assert "attachment" in pdf.headers["content-disposition"]
+
+    redline = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/redline.pdf")
+    assert redline.status_code == 200, redline.text
+    assert redline.headers["content-type"] == "application/pdf"
+    assert redline.content.startswith(b"%PDF-"), "the evidence-grounded redline is not a PDF"
+    # This drawing-page label reaches the overlay only through the sealed VerdictInput and its
+    # typed canonical reading's stored page region — it proves the result is not a copied source.
+    drawing_page_text = PdfReader(io.BytesIO(redline.content)).pages[0].extract_text() or ""
+    assert drawing_page_text.count("CT-DEPTH-001") == 1, drawing_page_text
+
     # The newest, which is what the endpoint serves. Two reports exist here and both are real: the
     # pipeline wrote one before the reading had a meaning, and the reviewer's confirmation made the
     # checks decidable, so re-running produced a second. `output_artifacts` is append-only, so the
     # first is not overwritten — it is simply no longer the current one.
     stored = (
-        session.execute(select(OutputArtifact).order_by(OutputArtifact.created_at.desc()).limit(1))
+        session.execute(
+            select(OutputArtifact)
+            .where(OutputArtifact.kind == OutputArtifactKind.FINDINGS_WORKBOOK.value)
+            .order_by(OutputArtifact.created_at.desc())
+            .limit(1)
+        )
         .scalars()
         .one()
     )
     assert (
         hashlib.sha256(report.content).hexdigest() == stored.sha256
     ), "the bytes served are not the ones the approval covers"
+    stored_pdf = (
+        session.execute(
+            select(OutputArtifact)
+            .where(OutputArtifact.kind == OutputArtifactKind.FINDINGS_PDF.value)
+            .order_by(OutputArtifact.created_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .one()
+    )
+    assert hashlib.sha256(pdf.content).hexdigest() == stored_pdf.sha256
+    stored_redline = (
+        session.execute(
+            select(OutputArtifact)
+            .where(OutputArtifact.kind == OutputArtifactKind.REDLINE.value)
+            .order_by(OutputArtifact.created_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .one()
+    )
+    assert hashlib.sha256(redline.content).hexdigest() == stored_redline.sha256
 
 
 def _address_every_abstention(

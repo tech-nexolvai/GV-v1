@@ -1,10 +1,10 @@
 # DESIGN — the AI subsystem (Track E)
 
-Companion to `DESIGN.md`. Owns **E1** (the bounded LangGraph extraction agent) and **E2** (the Nova 2
-Lite adapter and model-invocation records).
+Companion to `DESIGN.md`. Owns **E1** (the bounded LangGraph extraction agent), **E2** (the Nova 2
+Lite adapter and model-invocation records), and the post-verdict findings narration seam.
 
-This is the only part of the system that calls a model. Everything here is built so that a fully
-compromised model response still cannot change a verdict.
+Everything here is built so that a fully compromised model response still cannot change a verdict.
+The findings narrator is presentation after deterministic checking, never another decision path.
 
 ---
 
@@ -13,6 +13,7 @@ compromised model response still cannot change a verdict.
 ```
 extraction/agent/   trigger.py graph.py tools.py outcomes.py checkpoints.py
 extraction/models/  nova.py validation.py invocations.py context.py sanitisation.py
+workflow/            findings_composer.py findings_bedrock.py
 eval/experiments/   agent_vs_fixed.py
 ```
 
@@ -22,6 +23,7 @@ eval/experiments/   agent_vs_fixed.py
 |---|---|---|
 | `extraction/agent/` | `extraction/`, `evidence/` | `rules/`, `verdict/`, `retrieval/approval` |
 | `extraction/models/` | `evidence/`, `storage/` | `rules/`, `verdict/` |
+| `workflow/findings_*` | stored finding facts, configured model transport | any call into `verdict/` or any arithmetic |
 
 The prohibited capabilities are **absent from the agent's reachable surface**, not refused at call time.
 "The agent is not allowed to do X" is only true if X is unreachable; a refusal implemented as a check
@@ -145,3 +147,24 @@ Per `DESIGN.md` §4, plus:
 - **Adversarial prompt suite** (F1.5): a corpus of hostile drawing notes, asserting none changes behaviour.
 - **Bound tests**: every guardrail in §3.2 tested at its limit and one past it.
 - **Interrupt tests**: kill mid-graph, assert identical result and no repeated paid call.
+
+---
+
+## 6. Post-verdict findings narration
+
+`run_checks` completes and persists the deterministic outcome before the narration seam is reachable.
+During `generate_outputs`, each stored finding is reduced to reviewer-facing facts: check identity and
+name, outcome, severity, exact operands and their sources, comparison, difference, tolerance, reason,
+notes and evidence pages. The configured Bedrock model may add connective language through one forced
+tool call; it never receives an operation or a way to call the verdict engine.
+
+The reply is publishable only when local guards prove all of these:
+
+- its finding keys are an exact 1:1 set with the deterministic input;
+- every row begins with the exact check id and deterministic outcome;
+- every deterministic fact fragment remains present; and
+- every numeric token is preserved exactly, with no new digit or spelled-out number.
+
+One violation rejects the whole batch. An unavailable provider, transport error, invalid tool payload or
+guard rejection writes complete deterministic summaries instead. The original reason and structured
+columns always remain beside the optional `reviewer_summary`, so narration cannot conceal its source.

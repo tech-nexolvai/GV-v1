@@ -5,10 +5,14 @@ Verification for: `DatabaseStages._associate_page` in `workflow/stages.py`, `wor
 
 **The geometry here is arithmetic, not a guess.** The PDFs are hand-built, and the appearance stream's
 own coordinate system maps into page space by a stated `/BBox`, `/Matrix` and `/Rect` — for these
-files, `page = (appearance_x - 50, appearance_y - 450)`. So a line drawn at appearance `y = 500` sits
-at page `y = 50`, which on a 300-point page is stored `y = 0.8333`, and a note whose box spans page
-`y = 40..60` has its centre exactly there. Every distance in these tests can be checked by hand,
-which is the only way a test about proximity means anything.
+files, `page = (appearance_x - 50, appearance_y - 450)`. So a dimension drawn at appearance
+`y = 550` sits at page `y = 100`, which on a 300-point page is stored `y = 0.6667`, and a note whose
+box spans page `y = 90..110` has its centre exactly there. Every distance in these tests can be
+checked by hand, which is the only way a test about proximity means anything.
+
+The geometry moved off the BBox edge when #179 landed: a dimension is now a run whose ends are
+*crossed* by witness lines, and a run drawn on the edge has the half of its witnesses that would
+overshoot clipped away.
 
 The two tests to read first are `test_a_reading_between_two_equally_close_lines_is_refused`, because
 refusing is the deliverable rather than the fallback, and
@@ -22,12 +26,14 @@ import hashlib
 import io
 import tempfile
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import Engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from alembic import command
@@ -46,11 +52,19 @@ from app.models import (
     SourceArtifact,
 )
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+from evidence.candidate import ObservationCandidate as DomainCandidate
+from evidence.coordinates import ImagePoint
+from extraction.models.context import AssembledContext
+from extraction.models.nova import NovaConfig, NovaInvocation, NovaInvocationOutcome, NovaRequest
+from extraction.ocr import OcrItem
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
+from tests.extraction.test_annotations import BOTH_LAYERS, _appearance, _free_text, _pdf, _stamp
+from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
+from tests.extraction.test_reader import _pdf as _content_pdf
 from tests.workflow.test_markup_route import _SilentOcr
-from workflow.association import AssociationSettings, dimension_texts
+from units.measurement import Unit
+from workflow.association import AssociationSettings, LocalizedOcrSettings, dimension_texts
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION, PageResult
 from workflow.stages import ASSOCIATION_EXTRACTOR, DatabaseStages
@@ -75,12 +89,79 @@ SETTINGS = AssociationSettings(
     glyph_gap_pt=Decimal(4),
     proximity_limit=Decimal("0.05"),
     ambiguity_margin=Decimal("0.005"),
+    # The dimension-line detector's four (#179). Only strokes it classifies reach `associate`, so
+    # a fixture whose lines are not dimension-shaped now associates nothing — which is why the
+    # geometry in these tests carries witness lines crossing both ends.
+    witness_tolerance=Decimal("0.01"),
+    minimum_span=Decimal("0.02"),
+    straightness=Decimal("0.0005"),
+    crossing_margin=Decimal("0.001"),
+    fraction_bar=FRACTION_BAR,
 )
 
-#: One horizontal line at page y=50, running page x=50..150. The note below sits on it.
+LOCALIZED = LocalizedOcrSettings(
+    minimum_paths=1,
+    maximum_span=Decimal("0.5"),
+    crop_margin_pt=Decimal(2),
+)
+
+# Appearance space is the stamp's `/BBox` — `[100 500 400 700]` — mapped onto its `/Rect`,
+# `[50 50 350 250]`, so appearance `(x, y)` is page `(x - 50, y - 450)`. Each fixture is written in
+# appearance coordinates and described in page ones.
+#
+# **Each now draws a dimension rather than a bare stroke, which is the point of #179.** A line alone
+# is not a dimension: `associate` is only offered runs whose ends are *crossed* by a perpendicular,
+# because otherwise a reading attaches as readily to the edge of a cabinet as to the dimension that
+# measures it. These fixtures drew one stroke and called it a dimension line — exactly the
+# assumption the detector exists to refuse — so they draw their witness lines too.
+#
+# Two constraints the geometry has to respect, both found by watching a fixture fail silently:
+#
+# * **Inside the BBox.** The reader clips to it, so a witness needs room to overshoot on both sides.
+#   Drawn on the bottom edge, the half below is clipped away and the junction is an L again.
+# * **At least `line_minimum_pt` long**, which is 50 here. A shorter run is not line-work at all —
+#   `read_annotation_layers` drops it as a possible glyph before `detect` ever sees it. At 40 points
+#   each of these looked like a dimension and arrived as one unclassifiable line.
+
+#: One horizontal dimension at page y=100 running page x=100..200, its ends crossed by 60-point
+#: witness lines. The note sits on it.
 ONE_LINE = _pdf(
-    annotations=[_free_text('185 1/4"', rect=b"[40 40 120 60]"), _stamp(appearance_object=7)],
-    extra_objects=[_appearance(b"1 w 100 500 m 200 500 l S\n")],
+    annotations=[_free_text('185 1/4"', rect=b"[110 90 190 110]"), _stamp(appearance_object=7)],
+    extra_objects=[
+        _appearance(
+            b"1 w 150 550 m 250 550 l S\n1 w 150 520 m 150 580 l S\n1 w 250 520 m 250 580 l S\n"
+        )
+    ],
+)
+
+#: Two dimensions drawn end to end along one axis — a chain — with a note on each.
+#:
+#: This is what a cabinet run looks like on a sheet, and it is the only geometry that makes an
+#: ordered run checkable: `workflow/assignment.py` refuses a many-valued field whose readings come
+#: from two different chains, because `CT-WIDTH-001` compares two runs position by position.
+#:
+#: Three witness lines, not four. The middle one crosses the end of the first dimension and the
+#: start of the second, which is exactly how a drawing dimensions adjoining parts.
+CHAINED = _pdf(
+    annotations=[
+        _free_text('15"', rect=b"[110 90 190 110]"),
+        _free_text('36"', rect=b"[210 90 290 110]"),
+        # Object 8: three annotations occupy 5, 6 and 7, so the appearance follows them. A stamp
+        # pointing at itself parses and draws nothing, and every reading then arrives unassociated
+        # with no error anywhere — which is how this fixture failed the first time it was written.
+        _stamp(appearance_object=8),
+    ],
+    extra_objects=[
+        # Page y=100, running page x=100..200 and x=200..300: collinear and touching, which is what
+        # `_chains` groups on. Witnesses at each junction, 60 points long and crossing.
+        _appearance(
+            b"1 w 150 550 m 250 550 l S\n"
+            b"1 w 250 550 m 350 550 l S\n"
+            b"1 w 150 520 m 150 580 l S\n"
+            b"1 w 250 520 m 250 580 l S\n"
+            b"1 w 350 520 m 350 580 l S\n"
+        )
+    ],
 )
 
 #: Two horizontal lines at page y=75 and y=85, with a note centred at page y=80 — exactly
@@ -91,8 +172,17 @@ ONE_LINE = _pdf(
 #: past its box and the box is what a viewer clips it to, so a line outside it is not on the sheet
 #: anybody saw. The remaining line then attached and the test's premise had quietly disappeared.
 TWO_LINES = _pdf(
-    annotations=[_free_text('185 1/4"', rect=b"[40 70 120 90]"), _stamp(appearance_object=7)],
-    extra_objects=[_appearance(b"1 w 100 525 m 200 525 l S\n1 w 100 535 m 200 535 l S\n")],
+    annotations=[_free_text('185 1/4"', rect=b"[110 95 190 115]"), _stamp(appearance_object=7)],
+    extra_objects=[
+        # Two dimensions at page y=95 and y=115, ten points either side of a note centred at 105.
+        # One pair of witness lines crosses both, which is how a drawing stacks dimension rows.
+        _appearance(
+            b"1 w 150 545 m 250 545 l S\n"
+            b"1 w 150 565 m 250 565 l S\n"
+            b"1 w 150 520 m 150 590 l S\n"
+            b"1 w 250 520 m 250 590 l S\n"
+        )
+    ],
 )
 
 #: A vertical line at page x=100 and a horizontal one at page y=150, each the same distance from a
@@ -102,14 +192,93 @@ CROSSED = _pdf(
         _free_text('102"', rect=b"[90 140 110 160]", rotation=b" /Rotation 270"),
         _stamp(appearance_object=7),
     ],
-    extra_objects=[_appearance(b"1 w 150 550 m 150 650 l S\n1 w 100 600 m 200 600 l S\n")],
+    extra_objects=[
+        # A vertical dimension at page x=100 and a horizontal one at page y=150, each with its own
+        # crossing witnesses, and each the same distance from the note at page (100, 150).
+        _appearance(
+            b"1 w 150 550 m 150 650 l S\n"
+            b"1 w 110 550 m 190 550 l S\n"
+            b"1 w 110 650 m 190 650 l S\n"
+            b"1 w 130 600 m 230 600 l S\n"
+            b"1 w 130 560 m 130 640 l S\n"
+            b"1 w 230 560 m 230 640 l S\n"
+        )
+    ],
 )
 
 #: A note twenty-five points from the only line on the page: outside a 0.05 stored limit.
 FAR_FROM_THE_LINE = _pdf(
-    annotations=[_free_text('185 1/4"', rect=b"[40 90 120 110]"), _stamp(appearance_object=7)],
-    extra_objects=[_appearance(b"1 w 100 500 m 200 500 l S\n")],
+    annotations=[_free_text('185 1/4"', rect=b"[110 160 190 180]"), _stamp(appearance_object=7)],
+    extra_objects=[
+        # The same dimension as ONE_LINE, at page y=100, with the note moved up to page y=170.
+        _appearance(
+            b"1 w 150 550 m 250 550 l S\n1 w 150 520 m 150 580 l S\n1 w 250 520 m 250 580 l S\n"
+        )
+    ],
 )
+
+#: A content-stream page, not an annotation, with two source text regions for the vision route. The
+#: model row created from the first source must attach; the one created from the second must not.
+VISION_SOURCE_REGIONS = _content_pdf(
+    b"1 w 100 200 m 200 200 l S\n"
+    b"1 w 100 170 m 100 230 l S\n"
+    b"1 w 200 170 m 200 230 l S\n"
+    b"BT /F1 10 Tf 1 0 0 1 120 195 Tm (near) Tj ET\n"
+    b"BT /F1 10 Tf 1 0 0 1 120 40 Tm (far) Tj ET\n",
+    box=b"[0 0 300 300]",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _AssociationVisionReader:
+    """A vision reader double that returns the same parsed dimension for each crop."""
+
+    config: NovaConfig
+
+    def extract(self, request: NovaRequest, recorder: object) -> DomainCandidate:
+        recorder.record(  # type: ignore[attr-defined]
+            NovaInvocation(
+                model_id=self.config.model_id,
+                prompt_id=self.config.prompt_id,
+                template_id=self.config.template_id,
+                attempt=1,
+                latency_ms=1,
+                input_tokens=10,
+                output_tokens=2,
+                outcome=NovaInvocationOutcome.OK,
+                request_id=f"request-{request.candidate_id}",
+                context=AssembledContext(nearby_text=(), nearby_geometry=()),
+                bound_pt=Decimal(9),
+                injection_attempts=(),
+            )
+        )
+        return DomainCandidate(
+            candidate_id=request.candidate_id,
+            extractor=self.config.extractor,
+            extractor_version=self.config.model_id,
+            raw_text='24"',
+            parsed_value=None,
+            unit_guess=Unit.INCH,
+            semantic_guess=None,
+            page=request.page,
+            polygon=(ImagePoint(0, 0), ImagePoint(1, 0), ImagePoint(1, 1), ImagePoint(0, 1)),
+            confidence=Decimal("0.92"),
+            ambiguity_flags=(),
+        )
+
+
+def _association_vision_reader() -> _AssociationVisionReader:
+    return _AssociationVisionReader(
+        NovaConfig(
+            model_id="association-vision-test/v1",
+            prompt_id="dimension-reader-v1",
+            template_id="bounded-crop-v1",
+            connect_timeout_seconds=1,
+            read_timeout_seconds=1,
+            max_attempts=1,
+            extractor="association-vision-test",
+        )
+    )
 
 
 def _upgrade(engine: Engine) -> None:
@@ -188,12 +357,19 @@ def _revision(session: Session, store: LocalStore, *, data: bytes) -> PackageRev
     return revision
 
 
-def _stages(store: LocalStore, *, association: AssociationSettings | None = SETTINGS):
+def _stages(
+    store: LocalStore,
+    *,
+    association: AssociationSettings | None = SETTINGS,
+    ocr_engine: object | None = None,
+    localized_ocr: LocalizedOcrSettings | None = None,
+):
     return DatabaseStages(
         store=store,
         dpi=150,
-        ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
+        ocr_engine=ocr_engine or _SilentOcr(),  # type: ignore[arg-type]
         association=association,
+        localized_ocr=localized_ocr,
     )
 
 
@@ -240,11 +416,249 @@ def test_a_reading_on_a_line_is_attached_to_it(session: Session, store: LocalSto
 
     assert len(attached) == 1
     assert _text_of(session, attached[0]) == '185 1/4"'
-    # Page y=50 on a 300-point page: stored 0.8333, and the line runs page x=50..150.
+    # Page y=100 on a 300-point page: stored 0.6667, and the dimension runs page x=100..200.
     assert attached[0].start_y == attached[0].end_y
     assert Decimal(attached[0].start_y or "0") == pytest.approx(
-        Decimal("0.8333"), abs=Decimal("0.002")
+        Decimal("0.6667"), abs=Decimal("0.002")
     )
+
+
+def test_an_unambiguous_split_ocr_reading_uses_the_same_production_association(
+    session: Session, store: LocalStore
+) -> None:
+    """OCR normalization must not leave the product and gold-set association paths different."""
+
+    class _SplitDualOcr:
+        name = "split-dual-ocr"
+        version = "test/1"
+
+        def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+            del rgb, width, height
+            return (
+                # Image pixels, at the fixture's 150 dpi on a 400x300-point page. The dimension in
+                # `ONE_LINE` is at page (100..200, y=100), which is image x 208..417, y ≈ 417 —
+                # measured from the top, where page y is measured from the bottom. These boxes sat
+                # over the old line at page y=50 and had to move with it.
+                OcrItem(
+                    text="76",
+                    confidence=Decimal("0.81"),
+                    image_extent=(
+                        ImagePoint(292, 406),
+                        ImagePoint(332, 406),
+                        ImagePoint(332, 428),
+                        ImagePoint(292, 428),
+                    ),
+                ),
+                OcrItem(
+                    text="[3]",
+                    confidence=Decimal("0.77"),
+                    image_extent=(
+                        ImagePoint(290, 424),
+                        ImagePoint(334, 424),
+                        ImagePoint(334, 448),
+                        ImagePoint(290, 448),
+                    ),
+                ),
+            )
+
+    revision = _revision(session, store, data=ONE_LINE)
+    session.commit()
+    _stages(store, ocr_engine=_SplitDualOcr()).extract_pages(session, revision.id)
+    session.commit()
+
+    candidates = list(session.execute(select(ObservationCandidate)).scalars())
+    ocr = next(candidate for candidate in candidates if candidate.raw_text == "76 [3]")
+    assert (ocr.value_numerator, ocr.value_denominator, ocr.unit) == (3, 1, "in")
+    assert ocr.semantic_guess is None
+    association = next(row for row in _associations(session) if row.candidate_id == ocr.id)
+    assert association.refusal_reason is None
+    assert len([row for row in _associations(session) if row.candidate_id == ocr.id]) == 1
+
+
+def test_vision_readings_are_associated_through_their_source_region(
+    session: Session, store: LocalStore
+) -> None:
+    """A model-read value can attach only through fixed-reader geometry.
+
+    This is the #698 failure in miniature. A full `demo_pair` run had model-read numbers and
+    detected line-work, but `vision_rows` were never included in the association inputs, so the
+    association table stayed empty. The model still does not supply geometry here: both rows reuse
+    the source text region that caused their crop, which leaves the near reading attached and the
+    far reading refused.
+    """
+    revision = _revision(session, store, data=VISION_SOURCE_REGIONS)
+    session.commit()
+    DatabaseStages(
+        store,
+        dpi=150,
+        association=SETTINGS,
+        ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
+        vision_readers=(_association_vision_reader(),),
+    ).extract_pages(session, revision.id)
+    session.commit()
+
+    vision_run_ids = {
+        run.id
+        for run in session.execute(select(ExtractionRun)).scalars()
+        if run.extractor == "association-vision-test"
+    }
+    vision_candidate_ids = {
+        candidate.id
+        for candidate in session.execute(select(ObservationCandidate)).scalars()
+        if candidate.extraction_run_id in vision_run_ids
+    }
+    vision_rows = [
+        row for row in _associations(session) if row.candidate_id in vision_candidate_ids
+    ]
+
+    assert len(vision_rows) == 2
+    assert {row.refusal_reason is None for row in vision_rows} == {True, False}
+    attached = next(row for row in vision_rows if row.refusal_reason is None)
+    refused = next(row for row in vision_rows if row.refusal_reason is not None)
+    assert _text_of(session, attached) == '24"'
+    assert attached.signals
+    assert refused.start_x is None
+
+
+def test_a_stamp_only_vendor_region_uses_localized_ocr_and_the_same_association(
+    session: Session, store: LocalStore
+) -> None:
+    """A crop-local dual reading stays untyped and is associated only by the production path."""
+
+    class _SplitDualOcr:
+        name = "localized-split-dual-ocr"
+        version = "test/1"
+
+        def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+            # The fixture has reviewer markup, but the crop handed to OCR is vendor-only. Its real
+            # pixels must exist and be non-empty; this stub deliberately never receives note text.
+            assert rgb and width > 0 and height > 0
+            return (
+                OcrItem(
+                    text="76",
+                    confidence=Decimal("0.81"),
+                    image_extent=(
+                        ImagePoint(10, 10),
+                        ImagePoint(50, 10),
+                        ImagePoint(50, 30),
+                        ImagePoint(10, 30),
+                    ),
+                ),
+                OcrItem(
+                    text="[3]",
+                    confidence=Decimal("0.77"),
+                    image_extent=(
+                        ImagePoint(8, 28),
+                        ImagePoint(52, 28),
+                        ImagePoint(52, 52),
+                        ImagePoint(8, 52),
+                    ),
+                ),
+            )
+
+    revision = _revision(session, store, data=BOTH_LAYERS)
+    session.commit()
+    stages = _stages(
+        store,
+        association=replace(SETTINGS, proximity_limit=Decimal("0.9")),
+        ocr_engine=_SplitDualOcr(),
+        localized_ocr=LOCALIZED,
+    )
+    results = stages.extract_pages(session, revision.id)
+    session.commit()
+
+    assert [result.payload["route"] for result in results] == ["localized_ocr"]
+    ocr = next(
+        candidate
+        for candidate in session.execute(select(ObservationCandidate)).scalars()
+        if candidate.raw_text == "76 [3]"
+    )
+    assert (ocr.value_numerator, ocr.value_denominator, ocr.unit) == (3, 1, "in")
+    assert ocr.semantic_guess is None
+    assert any(row.candidate_id == ocr.id for row in _associations(session))
+
+
+def test_an_ambiguous_localized_crop_is_recorded_but_cannot_be_associated(
+    session: Session, store: LocalStore
+) -> None:
+    """Two recognised dimensions in one crop are not silently ranked into a reading."""
+
+    class _TwoDualsOcr:
+        name = "localized-two-duals-ocr"
+        version = "test/1"
+
+        def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+            del rgb, width, height
+
+            def box(left: int, top: int) -> tuple[ImagePoint, ...]:
+                return (
+                    ImagePoint(left, top),
+                    ImagePoint(left + 40, top),
+                    ImagePoint(left + 40, top + 16),
+                    ImagePoint(left, top + 16),
+                )
+
+            return (
+                OcrItem("76", Decimal("0.9"), box(10, 10)),
+                OcrItem("[3]", Decimal("0.9"), box(10, 28)),
+                OcrItem("102", Decimal("0.9"), box(70, 10)),
+                OcrItem("[4]", Decimal("0.9"), box(70, 28)),
+            )
+
+    revision = _revision(session, store, data=BOTH_LAYERS)
+    session.commit()
+    _stages(
+        store,
+        association=replace(SETTINGS, proximity_limit=Decimal("0.9")),
+        ocr_engine=_TwoDualsOcr(),
+        localized_ocr=LOCALIZED,
+    ).extract_pages(session, revision.id)
+    session.commit()
+
+    ambiguous = [
+        candidate
+        for candidate in session.execute(select(ObservationCandidate)).scalars()
+        if candidate.raw_text in {"76 [3]", "102 [4]"}
+    ]
+    assert len(ambiguous) == 2
+    associated_ids = {row.candidate_id for row in _associations(session)}
+    assert all(candidate.id not in associated_ids for candidate in ambiguous)
+    assert all(candidate.semantic_guess is None for candidate in ambiguous)
+
+
+def test_an_unoriented_ocr_reading_is_recorded_and_left_unassociated(
+    session: Session, store: LocalStore
+) -> None:
+    class _PlainOcr:
+        name = "plain-ocr"
+        version = "test/1"
+
+        def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+            del rgb, width, height
+            return (
+                OcrItem(
+                    text="984 mm",
+                    confidence=Decimal("0.87"),
+                    image_extent=(
+                        ImagePoint(170, 500),
+                        ImagePoint(210, 500),
+                        ImagePoint(210, 522),
+                        ImagePoint(170, 522),
+                    ),
+                ),
+            )
+
+    revision = _revision(session, store, data=ONE_LINE)
+    session.commit()
+    _stages(store, ocr_engine=_PlainOcr()).extract_pages(session, revision.id)
+    session.commit()
+
+    ocr = next(
+        candidate
+        for candidate in session.execute(select(ObservationCandidate)).scalars()
+        if candidate.raw_text == "984 mm"
+    )
+    assert [row for row in _associations(session) if row.candidate_id == ocr.id] == []
 
 
 def test_an_attachment_records_why_it_was_made(session: Session, store: LocalStore) -> None:
@@ -474,6 +888,10 @@ def test_running_the_stage_twice_records_one_decision_per_reading(
         "glyph_gap_pt",
         "proximity_limit",
         "ambiguity_margin",
+        "witness_tolerance",
+        "minimum_span",
+        "straightness",
+        "crossing_margin",
     ],
 )
 def test_a_float_length_is_refused(name: str) -> None:
@@ -488,6 +906,11 @@ def test_a_float_length_is_refused(name: str) -> None:
         "glyph_gap_pt": Decimal(4),
         "proximity_limit": Decimal("0.05"),
         "ambiguity_margin": Decimal("0.005"),
+        "witness_tolerance": Decimal("0.01"),
+        "minimum_span": Decimal("0.02"),
+        "straightness": Decimal("0.0005"),
+        "crossing_margin": Decimal("0.001"),
+        "fraction_bar": FRACTION_BAR,
     }
     values[name] = 0.05  # type: ignore[assignment]
 
@@ -505,6 +928,11 @@ def test_a_length_that_admits_nothing_is_refused(value: Decimal) -> None:
             glyph_gap_pt=Decimal(4),
             proximity_limit=Decimal("0.05"),
             ambiguity_margin=Decimal("0.005"),
+            witness_tolerance=Decimal("0.01"),
+            minimum_span=Decimal("0.02"),
+            straightness=Decimal("0.0005"),
+            crossing_margin=Decimal("0.001"),
+            fraction_bar=FRACTION_BAR,
         )
 
 
@@ -573,3 +1001,70 @@ def test_every_page_gets_its_own_decisions(session: Session, store: LocalStore) 
     assert len(rows) == len(candidates) == 2
     assert {row.refusal_reason is None for row in rows} == {True, False}
     assert len({row.candidate_id for row in rows}) == 2
+
+
+# ---------------------------------------------------------------------------
+# The chain the drawing draws
+# ---------------------------------------------------------------------------
+
+
+def test_readings_on_one_chain_record_the_chain_and_their_place_in_it(
+    session: Session, store: LocalStore
+) -> None:
+    """**Input: two dimensions drawn end to end, a note on each. Outcome: one chain, positions 0 and 1.**
+
+    The fact this whole path exists for. `dimension_lines` has grouped chains since #588 and the
+    association stage threw the grouping away on the next line, so `guard_assignment`'s refusal of a
+    run gathered from two places could not fire on a real drawing. Asserted on the stored rows,
+    because that is where the gap was: the detector was already right.
+    """
+    _extract(session, store, data=CHAINED)
+
+    rows = _associations(session)
+    attached = [row for row in rows if row.refusal_reason is None]
+    assert len(attached) == 2, [row.refusal_reason for row in rows]
+
+    keys = {row.chain_key for row in attached}
+    assert len(keys) == 1 and None not in keys, "the two dimensions were not seen as one run"
+    by_text = {_text_of(session, row): row for row in attached}
+    assert by_text['15"'].chain_position == 0
+    assert by_text['36"'].chain_position == 1
+
+
+def test_a_line_standing_alone_records_no_chain(session: Session, store: LocalStore) -> None:
+    """Outcome: `chain_key` and `chain_position` are both null.
+
+    A single dimension is not a run, and recording it as one would make every dimension on the sheet
+    look like a closure waiting to be validated. Null is the answer, not a gap.
+    """
+    _extract(session, store, data=ONE_LINE)
+
+    attached = [row for row in _associations(session) if row.refusal_reason is None]
+    assert attached, "nothing attached, so this asserts nothing"
+    assert all(row.chain_key is None and row.chain_position is None for row in attached)
+
+
+def test_a_refused_reading_can_carry_no_chain(session: Session, store: LocalStore) -> None:
+    """Outcome: the database refuses a chain on a row that says no line was decided.
+
+    Half an answer is not a weaker one here, it is an unusable one: a chain on a refused row would
+    claim the line it belongs to while the same row says none was chosen. A check constraint rather
+    than a convention, for the reason `attached_or_refused` is one.
+    """
+    revision, _ = _extract(session, store, data=ONE_LINE)
+    existing = _associations(session)[0]
+
+    session.add(
+        ObservationAssociation(
+            candidate_id=existing.candidate_id,
+            extraction_run_id=existing.extraction_run_id,
+            signals=[],
+            refusal_reason="two lines were equally close",
+            chain_key="invented",
+            chain_position=0,
+        )
+    )
+    with pytest.raises(IntegrityError, match="chain_paired"):
+        session.flush()
+    session.rollback()
+    assert revision is not None

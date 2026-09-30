@@ -53,6 +53,9 @@ class AuditCategory(StrEnum):
     REVIEW_ACTION = "REVIEW_ACTION"
     """A reviewer confirmed, corrected, approved or requested changes."""
 
+    EVIDENCE_QUALIFICATION = "EVIDENCE_QUALIFICATION"
+    """A deterministic evidence gate qualified a reading without a human review action."""
+
     EXCEPTION = "EXCEPTION"
     """A documented exception was granted against a rule."""
 

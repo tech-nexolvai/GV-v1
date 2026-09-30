@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, FileSearch, ExternalLink, CheckCircle, XCircle, AlertTriangle, MinusCircle, TriangleAlert } from 'lucide-react';
+import { ChevronRight, FileSearch, ExternalLink, CheckCircle, XCircle, AlertTriangle, MinusCircle, TriangleAlert } from 'lucide-react';
 import type { Finding } from '../../data/types';
 import { OutcomeBadge, SeverityDot } from '../ui/Badge';
 import './FindingCard.css';
@@ -12,6 +12,21 @@ const OUTCOME_ICON = {
   NOT_FOUND:          MinusCircle,
   NO_APPLICABLE_RULE: MinusCircle,
 };
+
+function readableLabel(value: string): string {
+  return value.replaceAll('_', ' ');
+}
+
+function readableSource(value: string): string {
+  if (value === 'ARCH') return 'Approved / architectural source';
+  if (value === 'SHOP') return 'Vendor / shop source';
+  if (value === 'USER_INPUT') return 'Reviewer-entered source';
+  return value;
+}
+
+function readableStatus(value: string): string {
+  return value.replaceAll('_', ' ').toLowerCase();
+}
 
 interface FindingCardProps {
   finding: Finding;
@@ -29,7 +44,6 @@ interface FindingCardProps {
   /** Grant an exception, with the reason and the date it runs out. Both required — a permanent
    *  silent exception is how a check gets switched off and nobody remembers. */
   onExcept: (findingId: string, reason: string, expiresAt: string) => void;
-  animationDelay?: number;
 }
 
 export function FindingCard({
@@ -39,7 +53,6 @@ export function FindingCard({
   onAction,
   onCorrect,
   onExcept,
-  animationDelay = 0,
 }: FindingCardProps) {
   const [expanded, setExpanded] = useState(finding.outcome === 'FAIL');
   const [showTrace, setShowTrace] = useState(false);
@@ -55,8 +68,7 @@ export function FindingCard({
 
   return (
     <div
-      className={`finding-card finding-card--${finding.outcome.toLowerCase().replace('_', '-')} ${isSelected ? 'finding-card--selected' : ''} ${hasAction ? 'finding-card--actioned' : ''} animate-slide-up`}
-      style={{ animationDelay: `${animationDelay}ms` }}
+      className={`finding-card finding-card--${finding.outcome.toLowerCase().replace('_', '-')} ${isSelected ? 'finding-card--selected' : ''} ${hasAction ? 'finding-card--actioned' : ''}`}
       aria-label={`${finding.check_id}: ${finding.name} — ${finding.outcome}`}
     >
       {/* ── Header row ──────────────────────────────────── */}
@@ -81,12 +93,22 @@ export function FindingCard({
             </span>
           )}
           <OutcomeBadge outcome={finding.outcome} size="sm" />
-          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          {/* One chevron that turns, rather than two that swap. A swap is a cut; the rotation is
+              what ties the control to the panel it opens. */}
+          <ChevronRight size={13} className="collapsible-chevron" data-open={expanded} />
         </div>
       </button>
 
-      {/* ── Expanded body ────────────────────────────────── */}
-      {expanded && (
+      {/* ── Expanded body ──────────────────────────────────
+           Kept mounted and collapsed with `grid-template-rows`, so it animates to its natural
+           height. Unmounting on close made every open a hard cut and threw away any half-typed
+           correction in the form below. */}
+      {/* `inert`, not `aria-hidden`. The collapsed body holds eight buttons and three inputs, and
+          `aria-hidden` on a subtree containing focusable controls is a WCAG failure: the tab order
+          still stops on them while the accessibility tree says they are not there, so a keyboard
+          user lands on a confirm button inside a panel their screen reader never announced.
+          `inert` removes both at once. */}
+      <div className="collapsible" data-open={expanded} inert={!expanded}>
         <div className="finding-card__body">
 
           {/* Key numbers — only for PASS/FAIL */}
@@ -131,6 +153,30 @@ export function FindingCard({
             <p className="finding-card__reason">{finding.reason}</p>
           )}
 
+          {/* A concise, always-visible rendering of the immutable engine trace. This gives the
+              reviewer the actual recorded input and comparison before the optional audit detail. */}
+          {finding.trace && finding.trace.operands.length > 0 && (
+            <section className="finding-card__facts" aria-label="Recorded check facts">
+              <p className="finding-card__facts-title">Recorded check facts</p>
+              <div className="finding-card__facts-list">
+                {finding.trace.operands.map((op, index) => (
+                  <div key={`${op.name}-${index}`} className="finding-card__fact">
+                    <span className="finding-card__fact-name">{readableLabel(op.name)}</span>
+                    <code className="finding-card__fact-value">{op.value}</code>
+                    <span className="finding-card__fact-meta">
+                      {readableSource(op.source)} · {readableStatus(op.status)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {finding.trace.comparison && (
+                <p className="finding-card__facts-comparison">
+                  Recorded comparison: <code>{finding.trace.comparison}</code>
+                </p>
+              )}
+            </section>
+          )}
+
           {/* Calculation trace */}
           {finding.trace && (
             <div className="finding-card__trace-section">
@@ -139,9 +185,9 @@ export function FindingCard({
                 onClick={() => setShowTrace(t => !t)}
               >
                 <span>Calculation trace</span>
-                {showTrace ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                <ChevronRight size={11} className="collapsible-chevron" data-open={showTrace} />
               </button>
-              {showTrace && (
+              <div className="collapsible" data-open={showTrace} inert={!showTrace}>
                 <div className="finding-card__trace">
                   <div className="finding-card__trace-op">
                     <span className="finding-card__trace-key">operation</span>
@@ -158,7 +204,7 @@ export function FindingCard({
                     {finding.trace.comparison}
                   </div>
                 </div>
-              )}
+              </div>
             </div>
           )}
 
@@ -181,10 +227,10 @@ export function FindingCard({
               <button
                 className="btn btn--ghost btn--sm finding-card__evidence-btn"
                 onClick={() => void onViewEvidence(finding)}
-                aria-label="View recorded evidence crop"
+                aria-label="View recorded evidence and check facts"
               >
                 <FileSearch size={12} />
-                View Evidence
+                Evidence &amp; facts
                 <ExternalLink size={10} />
               </button>
 
@@ -300,7 +346,7 @@ export function FindingCard({
             </div>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

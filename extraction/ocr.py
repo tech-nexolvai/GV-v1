@@ -19,7 +19,9 @@ which is the failure this module exists to fix.
 
 **Every reading is a candidate.** OCR output is never a fact, never authoritative, and never a verdict
 operand. It is `ObservationCandidate` rows like any other reading, distinguished only by the extractor
-that produced them, so a reviewer can tell a scanned reading from a vector one.
+that produced them, so a reviewer can tell a scanned reading from a vector one. Text with no numeral
+in it is not a reading (`could_be_a_reading`, #703): its box is kept for the vision readers and its
+count is reported, but no row is written for it.
 
 **One thing the vector route does worse.** `pdfplumber.extract_words` splits `984 mm` into `984` and
 `mm`, which is how a millimetre dimension came to be recorded as 984 inches (#483). The OCR engine
@@ -33,13 +35,16 @@ Source: `docs/DESIGN.md` §B2.4, `docs/DESIGN_AI.md` §3.2 (OCR retries) · Veri
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+import unicodedata
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Final, Protocol
 from uuid import UUID
 
-from evidence.coordinates import ImagePoint
+from evidence.coordinates import ImagePoint, StoredPoint
 from evidence.crop import RenderedPage
+from evidence.polygon import Polygon
 
 __all__ = [
     "OcrEngine",
@@ -47,8 +52,20 @@ __all__ = [
     "OcrPage",
     "OcrUnavailable",
     "RapidOcrEngine",
+    "combine_dual_notation",
+    "could_be_a_reading",
+    "join_split_bracketed_inches",
     "read_page",
 ]
+
+
+_MILLIMETRE_TOKEN: Final = re.compile(r"\d+")
+_BRACKETED_INCH_TOKEN: Final = re.compile(r"\[\s*[^\[\]]+\s*\]")
+#: A fragment that opens a bracket and never closes it, and one that closes without
+#: opening. Two halves of a token one OCR detection should have returned whole.
+_OPENS_BRACKET: Final = re.compile(r"\[[^\[\]]*$")
+_CLOSES_BRACKET: Final = re.compile(r"^[^\[\]]*\]$")
+_AXIS_ALIGNMENT_TOLERANCE_PX: Final = 3
 
 
 class OcrUnavailable(RuntimeError):
@@ -72,6 +89,16 @@ class OcrItem:
     #: Integer pixels from the top-left, in the rendered image's own space — the space
     #: `observation_candidates.polygon` is constrained to.
     image_extent: tuple[ImagePoint, ...]
+    #: Present only when the OCR output itself establishes how the text reads. A dual-unit pair
+    #: stacked as millimetres over bracketed inches establishes a horizontal reading; arbitrary OCR
+    #: quadrilaterals do not, and are deliberately left `None` rather than snapped to an axis.
+    rotation_degrees: int | None = None
+    #: The same extent in stored page space. `read_page` fills this for layout-established readings;
+    #: callers constructing raw engine results and unoriented readings leave it `None`.
+    extent: Polygon | None = None
+    #: A crop-local de-rotation applied before this reader saw the image. Diagnostic only: it lets a
+    #: reviewer reconstruct why the candidate's rectangle needed an inverse map back to the page.
+    crop_rotation_degrees: int = 0
 
     def __post_init__(self) -> None:
         if not self.text.strip():
@@ -83,6 +110,21 @@ class OcrItem:
             )
         if len(self.image_extent) != 4:
             raise ValueError("an OCR item's extent must be the engine's four corner points")
+        if isinstance(self.rotation_degrees, bool) or self.rotation_degrees not in (
+            None,
+            0,
+            90,
+            180,
+            270,
+        ):
+            raise ValueError("rotation_degrees must be None or one of 0, 90, 180 or 270")
+        if isinstance(self.crop_rotation_degrees, bool) or self.crop_rotation_degrees not in (
+            0,
+            90,
+            180,
+            270,
+        ):
+            raise ValueError("crop_rotation_degrees must be one of 0, 90, 180 or 270")
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +158,34 @@ class OcrEngine(Protocol):
         """Read one RGB image. Returns nothing for a page with no legible text — never raises for it."""
 
 
+def _is_numeral(character: str) -> bool:
+    """A digit in any script `unicodedata` gives one for, or a vulgar fraction such as `½`.
+
+    **Not `str.isnumeric`**, which is true of `一` — the CJK character for *one*, and exactly what
+    RapidOCR returns for a horizontal stroke. `unicodedata.digit` has no value for it.
+    """
+    return unicodedata.digit(character, None) is not None or unicodedata.name(
+        character, ""
+    ).startswith("VULGAR FRACTION")
+
+
+def could_be_a_reading(text: str) -> bool:
+    """Whether OCR text could be a dimension, or part of one: it contains at least one numeral.
+
+    **A reading with no numeral in it can never become a value** — every notation this client uses,
+    `3/4"`, `1'-2"`, `102 [4]`, carries a digit — so recording one as a candidate only adds a row
+    that every later step has to carry. Measured on `demo_pair` (#703): 39 OCR rows, of which `L`,
+    `一`, `口`, `/`, `√`, `I` and `m` are line-work read as glyphs, and one real number.
+
+    **The box is not discarded, only the text.** `workflow/stages.py` still sends the region to the
+    vision readers, which on the client's drawing read their values from crops around exactly these
+    boxes, and counts what it did not record. A partial read that does hold a digit — `1`, `[4]`,
+    `[1` — is kept: it may be half of a real label, and the rule for what a partial read means
+    belongs to the parser, not to this.
+    """
+    return any(_is_numeral(character) for character in text)
+
+
 def read_page(rendered: RenderedPage, *, engine: OcrEngine) -> OcrPage:
     """Run one OCR pass over one rendered page.
 
@@ -123,7 +193,11 @@ def read_page(rendered: RenderedPage, *, engine: OcrEngine) -> OcrPage:
     error: a blank sheet and an illegible one are different, and telling them apart is a job for a
     second route or a person, not for a threshold here.
     """
-    items = engine.read(rendered.rgb_bytes, width=rendered.width_px, height=rendered.height_px)
+    raw = engine.read(rendered.rgb_bytes, width=rendered.width_px, height=rendered.height_px)
+    items = tuple(
+        _located(item, rendered) if item.rotation_degrees is not None else item
+        for item in combine_dual_notation(raw)
+    )
     return OcrPage(
         document_version_id=rendered.document_version_id,
         page_index=rendered.page_index,
@@ -133,12 +207,273 @@ def read_page(rendered: RenderedPage, *, engine: OcrEngine) -> OcrPage:
     )
 
 
+def join_split_bracketed_inches(items: tuple[OcrItem, ...]) -> tuple[OcrItem, ...]:
+    """Join two boxes on one text row whose concatenation is a bracketed inch token.
+
+    **The fault this fixes, measured on a real uploaded sheet.** RapidOCR read the dimension
+    `724 [28 1/2]` as three boxes — `724`, `[28`, `1/2]` — because it broke the bracketed half across
+    two detections. `combine_dual_notation` looks for a *whole* bracketed token to pair the
+    millimetres with, found none, and every fragment fell out unparsed: `724` as a number with no
+    unit, `[28` and `1/2]` as nothing at all. Of twenty-five readings on that page, two survived.
+
+    So this runs first and puts the bracketed halves back together, and the existing stacked-pair
+    recogniser then does what it always did.
+
+    **A layout recogniser, not fuzzy text assembly**, held to the same conditions as its neighbour:
+    both boxes axis-aligned; overlapping vertically by most of the shorter one, which is what "the
+    same text row" means; the right box starting after the left one ends, by no more than the row is
+    tall, which is what a space is; the concatenation matching a bracketed inch token when neither
+    half does; and the pairing one-to-one in both directions. Anything ambiguous leaves every
+    original token untouched, so an unreadable crop still abstains rather than being assembled into
+    a number nobody wrote.
+    """
+    from units.imperial import ImperialParseError, parse_imperial
+
+    left_parts = [
+        index
+        for index, item in enumerate(items)
+        if _OPENS_BRACKET.match(item.text.strip())
+        and not _BRACKETED_INCH_TOKEN.fullmatch(item.text.strip())
+    ]
+    right_parts = [
+        index
+        for index, item in enumerate(items)
+        if _CLOSES_BRACKET.search(item.text.strip())
+        and not _BRACKETED_INCH_TOKEN.fullmatch(item.text.strip())
+    ]
+
+    compatible: dict[int, list[int]] = {index: [] for index in left_parts}
+    reverse: dict[int, list[int]] = {index: [] for index in right_parts}
+    for left_index in left_parts:
+        for right_index in right_parts:
+            if left_index == right_index:
+                continue
+            left, right = items[left_index], items[right_index]
+            if not _is_same_row_pair(left, right):
+                continue
+            joined = f"{left.text.strip()} {right.text.strip()}"
+            if not _BRACKETED_INCH_TOKEN.fullmatch(joined):
+                continue
+            # The join has to produce a *measurement*, not merely a bracket-shaped string. A pair
+            # whose inside will not parse is two fragments that happen to sit beside each other.
+            try:
+                parse_imperial(joined.strip("[]").strip())
+            except ImperialParseError:
+                continue
+            compatible[left_index].append(right_index)
+            reverse[right_index].append(left_index)
+
+    pairs = {
+        left_index: matches[0]
+        for left_index, matches in compatible.items()
+        if len(matches) == 1 and len(reverse[matches[0]]) == 1
+    }
+    consumed = set(pairs.values())
+    joined_items: list[OcrItem] = []
+    for index, item in enumerate(items):
+        if index in consumed:
+            continue
+        partner = pairs.get(index)
+        if partner is None:
+            joined_items.append(item)
+            continue
+        right = items[partner]
+        joined_items.append(
+            OcrItem(
+                text=f"{item.text.strip()} {right.text.strip()}",
+                confidence=min(item.confidence, right.confidence),
+                image_extent=_union_extent(item.image_extent, right.image_extent),
+                # Deliberately not oriented here. This says two boxes are one token; whether that
+                # token reads along an axis is the stacked-pair recogniser's finding, and claiming
+                # it early would let a single joined fragment reach association on its own.
+                rotation_degrees=item.rotation_degrees,
+            )
+        )
+    return tuple(joined_items)
+
+
+def _is_same_row_pair(left: OcrItem, right: OcrItem) -> bool:
+    """Whether `right` is the next box along one line of text from `left`."""
+    if not _is_axis_aligned(left.image_extent) or not _is_axis_aligned(right.image_extent):
+        return False
+    _, left_y0, left_x1, left_y1 = _bounds(left.image_extent)
+    right_x0, right_y0, _, right_y1 = _bounds(right.image_extent)
+    left_height = left_y1 - left_y0
+    right_height = right_y1 - right_y0
+    if left_height <= 0 or right_height <= 0:
+        return False
+    shorter = min(left_height, right_height)
+    vertical_overlap = min(left_y1, right_y1) - max(left_y0, right_y0)
+    horizontal_gap = right_x0 - left_x1
+    return (
+        vertical_overlap * 2 > shorter and horizontal_gap >= -shorter and horizontal_gap <= shorter
+    )
+
+
+def combine_dual_notation(items: tuple[OcrItem, ...]) -> tuple[OcrItem, ...]:
+    """Join an unambiguous stacked ``millimetres`` + ``[inches]`` OCR pair.
+
+    Vendor drawings state one dimension twice, with the unitless millimetre token immediately above
+    its bracketed imperial alternate. RapidOCR can detect both lines while returning them as two
+    boxes. Neither fragment has a safe value on its own, while their exact pair is already supported
+    by `units.dual.parse_dual`.
+
+    This is deliberately a layout recogniser, not fuzzy text assembly. A pair must overlap
+    horizontally, each rounded quadrilateral must be axis-aligned within three pixels, the bracketed
+    token's centre must sit below the millimetre token's centre, and any whitespace between rows must
+    be no taller than the shorter row. The relationship must also be one-to-one in both directions.
+    Any ambiguity leaves every original token untouched, preserving the existing abstention.
+    """
+    from units.dual import DualDimensionParseError, parse_dual
+
+    # A bracketed half split across two boxes is put back together before anything looks for a
+    # whole one to pair with. See `join_split_bracketed_inches` for the reading this was measured on.
+    items = join_split_bracketed_inches(items)
+
+    millimetres = [
+        index for index, item in enumerate(items) if _MILLIMETRE_TOKEN.fullmatch(item.text.strip())
+    ]
+    alternates = [
+        index
+        for index, item in enumerate(items)
+        if _BRACKETED_INCH_TOKEN.fullmatch(item.text.strip())
+    ]
+
+    compatible: dict[int, list[int]] = {index: [] for index in millimetres}
+    reverse: dict[int, list[int]] = {index: [] for index in alternates}
+    for primary_index in millimetres:
+        for alternate_index in alternates:
+            primary = items[primary_index]
+            alternate = items[alternate_index]
+            if not _is_stacked_pair(primary, alternate):
+                continue
+            try:
+                parsed = parse_dual(f"{primary.text.strip()} {alternate.text.strip()}")
+            except DualDimensionParseError:
+                continue
+            if parsed.alternate is None:
+                continue
+            compatible[primary_index].append(alternate_index)
+            reverse[alternate_index].append(primary_index)
+
+    pairs = {
+        primary_index: matches[0]
+        for primary_index, matches in compatible.items()
+        if len(matches) == 1 and len(reverse[matches[0]]) == 1
+    }
+    consumed = set(pairs.values())
+    combined: list[OcrItem] = []
+    for index, item in enumerate(items):
+        if index in consumed:
+            continue
+        paired_alternate_index = pairs.get(index)
+        if paired_alternate_index is None:
+            combined.append(item)
+            continue
+        alternate = items[paired_alternate_index]
+        combined.append(
+            OcrItem(
+                text=f"{item.text.strip()} {alternate.text.strip()}",
+                confidence=min(item.confidence, alternate.confidence),
+                image_extent=_union_extent(item.image_extent, alternate.image_extent),
+                # The recognised layout is two horizontal text rows stacked vertically. Rotated or
+                # diagonal arrangements do not satisfy `_is_stacked_pair` and remain uncombined.
+                rotation_degrees=0,
+                crop_rotation_degrees=item.crop_rotation_degrees,
+            )
+        )
+    return tuple(combined)
+
+
+def _bounds(points: tuple[ImagePoint, ...]) -> tuple[int, int, int, int]:
+    xs = [point.x for point in points]
+    ys = [point.y for point in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _is_stacked_pair(primary: OcrItem, alternate: OcrItem) -> bool:
+    if not _is_axis_aligned(primary.image_extent) or not _is_axis_aligned(alternate.image_extent):
+        return False
+    primary_left, primary_top, primary_right, primary_bottom = _bounds(primary.image_extent)
+    alternate_left, alternate_top, alternate_right, alternate_bottom = _bounds(
+        alternate.image_extent
+    )
+    primary_height = primary_bottom - primary_top
+    alternate_height = alternate_bottom - alternate_top
+    if primary_height <= 0 or alternate_height <= 0:
+        return False
+    horizontal_overlap = min(primary_right, alternate_right) - max(primary_left, alternate_left)
+    primary_middle = primary_top + primary_bottom
+    alternate_middle = alternate_top + alternate_bottom
+    vertical_gap = max(0, alternate_top - primary_bottom)
+    return (
+        horizontal_overlap > 0
+        and alternate_middle > primary_middle
+        and vertical_gap <= min(primary_height, alternate_height)
+    )
+
+
+def _is_axis_aligned(points: tuple[ImagePoint, ...]) -> bool:
+    first, second, third, fourth = points
+    tolerance = _AXIS_ALIGNMENT_TOLERANCE_PX
+    return (
+        abs(first.y - second.y) <= tolerance
+        and abs(second.x - third.x) <= tolerance
+        and abs(third.y - fourth.y) <= tolerance
+        and abs(fourth.x - first.x) <= tolerance
+    )
+
+
+def _union_extent(
+    first: tuple[ImagePoint, ...], second: tuple[ImagePoint, ...]
+) -> tuple[ImagePoint, ...]:
+    left, top, right, bottom = _bounds(first + second)
+    return (
+        ImagePoint(left, top),
+        ImagePoint(right, top),
+        ImagePoint(right, bottom),
+        ImagePoint(left, bottom),
+    )
+
+
+def _in_stored_space(item: OcrItem, rendered: RenderedPage) -> OcrItem:
+    """Attach the page-normalised extent that production association consumes."""
+    extent = Polygon(
+        points=tuple(
+            StoredPoint(
+                Decimal(point.x) / Decimal(rendered.width_px),
+                Decimal(point.y) / Decimal(rendered.height_px),
+            )
+            for point in item.image_extent
+        ),
+        space="stored",
+        document_version_id=rendered.document_version_id,
+        page=rendered.page_index,
+    )
+    return OcrItem(
+        text=item.text,
+        confidence=item.confidence,
+        image_extent=item.image_extent,
+        rotation_degrees=item.rotation_degrees,
+        extent=extent,
+        crop_rotation_degrees=item.crop_rotation_degrees,
+    )
+
+
+def _located(item: OcrItem, rendered: RenderedPage) -> OcrItem:
+    """Locate valid geometry; preserve an invalid reading but abstain from associating it."""
+    try:
+        return _in_stored_space(item, rendered)
+    except (ArithmeticError, TypeError, ValueError):
+        return replace(item, extent=None, rotation_degrees=None)
+
+
 #: The version recorded against candidates this adapter produces.
 #:
 #: Ours, not the library's: it names the contract between the engine and the rows, so a change to how
 #: this adapter reads a result — the confidence conversion, the corner rounding — is a new version
 #: even when the library is unchanged.
-RAPIDOCR_ADAPTER_VERSION: Final = "extraction.ocr.rapidocr/1"
+RAPIDOCR_ADAPTER_VERSION: Final = "extraction.ocr.rapidocr/2"
 
 
 class RapidOcrEngine:

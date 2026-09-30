@@ -32,16 +32,20 @@ with for a crop's coordinates to land where the reviewer is looking.
 
 from __future__ import annotations
 
-from typing import Final
+import io
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Final
 from uuid import UUID
 
+import pdfplumber
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
+import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
 from evidence.coordinates import SUPPORTED_ROTATIONS
 from evidence.crop import RenderedPage
-from extraction.reader import UnreadablePdf
+from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
-__all__ = ["VISION_CROP_DPI", "PageTooLarge", "render_page"]
+__all__ = ["VISION_CROP_DPI", "PageTooLarge", "drop_reviewer_layers", "render_page"]
 
 #: PDF user space is 72 units to the inch. Not a tunable.
 _POINTS_PER_INCH: Final = 72
@@ -72,6 +76,39 @@ class PageTooLarge(ValueError):
     """
 
 
+def drop_reviewer_layers(page: Any) -> int:
+    """Remove every annotation that is not the vendor's drawing, and say how many.
+
+    **Because rendering flattens the layers even when the reader has kept them apart.** The vendor's
+    drawing on these sheets *is* an annotation, so a renderer cannot simply be told to leave
+    annotations out — it would produce a blank page. What it can do is remove the other ones first.
+
+    Measured on the first real sheet: a crop of the vendor's own `28 3/4"` label came out with a
+    corner of the reviewer's yellow `102"` overlay in frame, and the crop containing the drawing's
+    overall width and the markup's correction of it produced `1811 1"(4"QEQQ)` — a garbled blend of
+    two labels a model was asked to read as one. Removing the markup first is the difference between
+    asking about the vendor's number and asking about a picture of two numbers.
+
+    In memory only: the caller's bytes are untouched, and the document this mutates is one the caller
+    opened and closes.
+
+    **Here, beside the page renderer, so both renderers strip the same layers (#742).** It began in
+    `extraction/vector_first.py`, and only the region cropper called it — so every crop cut from a
+    full-page render, which is what the vision route sends a model, still had the reviewer's notes
+    painted in: 186 of 3,613 planned vision crops on the 17-page client set.
+    """
+    removed = 0
+    for index in range(pdfium_raw.FPDFPage_GetAnnotCount(page) - 1, -1, -1):
+        annotation = pdfium_raw.FPDFPage_GetAnnot(page, index)
+        if not annotation:
+            continue
+        subtype = pdfium_raw.FPDFAnnot_GetSubtype(annotation)
+        pdfium_raw.FPDFPage_CloseAnnot(annotation)
+        if subtype != pdfium_raw.FPDF_ANNOT_STAMP and pdfium_raw.FPDFPage_RemoveAnnot(page, index):
+            removed += 1
+    return removed
+
+
 def render_page(
     data: bytes,
     page_index: int,
@@ -80,8 +117,16 @@ def render_page(
     page_content_hash: str,
     dpi: int,
     maximum_pixels: int,
+    vendor_only: bool,
 ) -> RenderedPage:
     """One page as rotation-applied RGB pixels.
+
+    **`vendor_only` has no default, because the answer depends on who will look.** A model or an OCR
+    engine is shown the vendor's drawing and nothing else (`True`): the reviewer's markup is already
+    exact text, read by its own lane, and painted into a crop it becomes a number a reader can return
+    as the vendor's — which two readers agreeing would seal as a vendor reading (#742). A reviewer
+    looking at evidence may be shown both (`False`). Defaulted either way, the wrong one would be
+    silent.
 
     `dpi` and `maximum_pixels` are both required. The first decides the coordinate frame every crop
     from this page will be expressed in; the second is what stops an E-size sheet at 300 dpi
@@ -104,6 +149,8 @@ def render_page(
         raise ValueError("dpi must be a positive integer")
     if isinstance(maximum_pixels, bool) or not isinstance(maximum_pixels, int):
         raise TypeError("maximum_pixels must be an integer")
+    if not isinstance(vendor_only, bool):
+        raise TypeError("vendor_only must be a bool: say whether a model or a person will look")
     if not _is_digest(page_content_hash):
         raise ValueError(
             "page_content_hash must be the lowercase SHA-256 the manifest recorded for this page"
@@ -143,10 +190,18 @@ def render_page(
                 "would put every crop's coordinates out of step with the transform beside them."
             )
 
+        if vendor_only:
+            drop_reviewer_layers(page)
+
         # `rev_byteorder=True` is what makes this RGB. The default is BGR, and a reviewer shown a
         # channel-swapped crop would see a colour bug rather than a byte-order one.
         bitmap = page.render(scale=dpi / _POINTS_PER_INCH, rev_byteorder=True)
-        rgb = _packed_rgb(bitmap)
+        rgb = _reframe_visible_page(
+            bitmap,
+            page,
+            declared_crop_box=_declared_crop_box(data, page_index),
+            dpi=dpi,
+        )
     except (UnreadablePdf, PageTooLarge):
         raise
     except Exception as error:
@@ -166,6 +221,73 @@ def render_page(
         dpi=dpi,
         rgb_bytes=rgb,
     )
+
+
+def _declared_crop_box(data: bytes, page_index: int) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """Read the page's declared PDF-space CropBox before PDFium translates it.
+
+    ``PageTransform`` and localized OCR use the PDF-declared visible frame.  PDFium can expose the
+    same visible page through a translated rendering-space box, especially when a PDF has been
+    tightly cropped without translating its annotations.  Treating those origins as interchangeable
+    stores a real crop of the wrong drawing region.
+    """
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as document:
+            # Not `.cropbox`, which is pdfplumber's inverted box rather than the PDF-declared
+            # one this docstring promises. `reader.page_boxes_in_pdf_space` has the measurement.
+            values = page_boxes_in_pdf_space(document.pages[page_index])[1]
+    except (IndexError, TypeError, ValueError) as error:
+        raise UnreadablePdf(
+            f"page {page_index} has no readable declared crop box: {error}"
+        ) from error
+    if len(values) != 4 or values[2] <= values[0] or values[3] <= values[1]:
+        raise UnreadablePdf("page crop box has no area for rendering")
+    return values
+
+
+def _reframe_visible_page(
+    bitmap: Any,
+    page: Any,
+    *,
+    declared_crop_box: tuple[Decimal, Decimal, Decimal, Decimal],
+    dpi: int,
+) -> bytes:
+    """Return PDFium pixels in the declared visible-page frame used by stored polygons.
+
+    This normally returns the packed bitmap unchanged.  For a non-zero CropBox, PDFium's full-page
+    bitmap can be shifted relative to the declared origin.  Reframe the existing bounded bitmap,
+    never rerender or infer a location, so a candidate polygon continues to identify the exact
+    pixels OCR saw.  Missing edge pixels are white page background; no drawing pixels are invented.
+    """
+    raw = _packed_rgb(bitmap)
+    crop_left, crop_bottom, _, crop_top = declared_crop_box
+    if crop_left == 0 and crop_bottom == 0:
+        return raw
+
+    bbox_left, _, _, bbox_top = (Decimal(str(value)) for value in page.get_bbox())
+    scale = Decimal(dpi) / _POINTS_PER_INCH
+    x_offset = int(((crop_left - bbox_left) * scale).to_integral_value(ROUND_HALF_UP))
+    y_offset = int(((bbox_top - crop_top) * scale).to_integral_value(ROUND_HALF_UP))
+    if x_offset == 0 and y_offset == 0:
+        return raw
+
+    width = int(bitmap.width)
+    height = int(bitmap.height)
+    destination_left = max(0, -x_offset)
+    destination_right = min(width, width - x_offset)
+    destination_top = max(0, -y_offset)
+    destination_bottom = min(height, height - y_offset)
+    reframed = bytearray(b"\xff" * (width * height * 3))
+    if destination_right <= destination_left or destination_bottom <= destination_top:
+        return bytes(reframed)
+
+    row_bytes = (destination_right - destination_left) * 3
+    for destination_y in range(destination_top, destination_bottom):
+        source_y = destination_y + y_offset
+        source = (source_y * width + destination_left + x_offset) * 3
+        destination = (destination_y * width + destination_left) * 3
+        reframed[destination : destination + row_bytes] = raw[source : source + row_bytes]
+    return bytes(reframed)
 
 
 def _is_digest(value: object) -> bool:

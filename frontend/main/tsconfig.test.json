@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": [
+      "node"
+    ],
+    "skipLibCheck": true,
+    "strict": true,
+    "outDir": "./node_modules/.tmp/chat-render-test",
+    "rootDir": "."
+  },
+  "include": [
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    "src/components/chat/ChatMarkdown.tsx",
+    "src/components/chat/findingsTable.ts",
+    "src/components/measure/FillerDistributionPanel.tsx",
+    "src/components/measure/fillerDistribution.ts",
+    "src/pages/layoutChoices.ts",
+    "src/api/schema.d.ts",
+    "src/data/types.ts",
+    "src/components/output/elevation.ts",
+    "src/components/output/ElevationDiagram.tsx",
+    "src/components/output/FindingsTable.tsx",
+    "src/components/output/findingsOrder.ts",
+    "src/api/sse.ts",
+    "src/api/chatStreamTypes.ts",
+    "src/components/chat/chatReply.ts"
+  ]
+}

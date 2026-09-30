@@ -12,11 +12,18 @@ import pytest
 
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
+from evidence.crop import encode_png
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.nova import (
+    CLAUDE_HAIKU_4_5_EXTRACTOR,
+    CLAUDE_HAIKU_4_5_MODEL_ID,
     DEFAULT_MODEL_ID,
     DEFAULT_REGION,
+    MINISTRAL_3_3B_MODEL_ID,
+    NOVA_2_LITE_MODEL_ID,
+    NOVA_PRO_MODEL_ID,
     TOOL_NAME,
+    VISION_READERS,
     BedrockRuntimeClient,
     NovaAdapter,
     NovaAdapterError,
@@ -29,8 +36,9 @@ from extraction.models.nova import (
     NovaServiceError,
     NovaTimeoutError,
     config_from_environment,
+    vision_configs_from_environment,
 )
-from extraction.models.validation import ValidationRejection
+from extraction.models.validation import CoordinateMode, ValidationRejection
 from units.measurement import Unit
 
 
@@ -64,28 +72,56 @@ class FakeBedrock:
 
 
 def _config(*, max_attempts: int = 2) -> NovaConfig:
+    """A reader that answers on the 0-1000 grid, said so rather than inferred from its name.
+
+    The model id changed with #668. It was `amazon.nova-2-lite-v1:0`, whose payloads here are
+    grid-scale — but a measured run has Nova 2 Lite answering in *pixels*, so the fixture was
+    describing a model that does not behave the way its own data assumed. Nova Pro is the reader
+    these coordinates actually belong to.
+    """
     return NovaConfig(
-        model_id="amazon.nova-2-lite-v1:0",
+        model_id="amazon.nova-pro-v1:0",
         prompt_id="dimension-reader-v1",
         template_id="bounded-crop-v1",
         connect_timeout_seconds=2,
         read_timeout_seconds=8,
         max_attempts=max_attempts,
+        coordinate_mode=CoordinateMode.NOVA_GRID,
     )
 
 
-def _request() -> NovaRequest:
+def _request(*, stacked_label: bool = False) -> NovaRequest:
     return NovaRequest(
         candidate_id="candidate-249",
         page=3,
-        crop=b"png bytes",
+        crop=_crop(),
         image_format="png",
         context=AssembledContext(
             nearby_text=(NearbyText("984", Decimal(4)),),
             nearby_geometry=(),
         ),
         bound_pt=Decimal(12),
+        stacked_label=stacked_label,
     )
+
+
+def _crop(width: int = 100, height: int = 80) -> bytes:
+    return encode_png(width, height, bytes([255, 255, 255]) * width * height)
+
+
+def _valid_payload(
+    *,
+    reading: str = "984",
+    unit_guess: str | None = "mm",
+) -> dict[str, object]:
+    return {
+        "reading": reading,
+        "unit_guess": unit_guess,
+        "x1": 100,
+        "y1": 250,
+        "x2": 300,
+        "y2": 500,
+    }
 
 
 def _tool_response(payload: object) -> dict[str, Any]:
@@ -111,15 +147,7 @@ def _adapter(client: BedrockRuntimeClient) -> tuple[NovaAdapter, RecordingSink]:
 def test_valid_tool_call_produces_only_an_observation_candidate() -> None:
     """Input: valid tool payload. Outcome: raw candidate. Why: Nova never creates evidence."""
 
-    client = FakeBedrock(
-        _tool_response(
-            {
-                "reading": "984",
-                "unit_guess": "mm",
-                "polygon": [[10, 20], [30, 20], [30, 40]],
-            }
-        )
-    )
+    client = FakeBedrock(_tool_response(_valid_payload()))
     adapter, sink = _adapter(client)
 
     candidate = adapter.extract(_request())
@@ -127,9 +155,15 @@ def test_valid_tool_call_produces_only_an_observation_candidate() -> None:
     assert candidate.raw_text == "984"
     assert candidate.unit_guess is Unit.MM
     assert candidate.parsed_value is None
-    assert candidate.polygon == (ImagePoint(10, 20), ImagePoint(30, 20), ImagePoint(30, 40))
+    assert candidate.polygon == (
+        ImagePoint(10, 20),
+        ImagePoint(30, 20),
+        ImagePoint(30, 40),
+        ImagePoint(10, 40),
+    )
+    assert "nova_rectangle_polygon_derived" in candidate.ambiguity_flags
     assert sink.items[0].outcome is NovaInvocationOutcome.OK
-    assert sink.items[0].model_id == "amazon.nova-2-lite-v1:0"
+    assert sink.items[0].model_id == "amazon.nova-pro-v1:0"
     assert sink.items[0].prompt_id == "dimension-reader-v1"
     assert sink.items[0].template_id == "bounded-crop-v1"
 
@@ -137,6 +171,52 @@ def test_valid_tool_call_produces_only_an_observation_candidate() -> None:
     tool_config = submitted["toolConfig"]
     assert isinstance(tool_config, dict)
     assert tool_config["toolChoice"] == {"tool": {"name": TOOL_NAME}}
+    assert submitted["inferenceConfig"] == {"temperature": 0, "maxTokens": 1024}
+    assert submitted["additionalModelRequestFields"] == {"inferenceConfig": {"topK": 1}}
+    assert "0-1000 crop grid" in repr(submitted["messages"])
+    tools = tool_config["tools"]
+    assert isinstance(tools, list)
+    schema = tools[0]["toolSpec"]["inputSchema"]["json"]
+    assert {"title", "description", "additionalProperties"}.isdisjoint(schema)
+    assert schema["required"] == ["reading", "unit_guess", "x1", "y1", "x2", "y2"]
+
+
+def test_claude_reader_uses_absolute_pixel_coordinates() -> None:
+    """Input: Claude config and pixel payload. Outcome: coordinates are not Nova-remapped."""
+
+    config = NovaConfig(
+        model_id=CLAUDE_HAIKU_4_5_MODEL_ID,
+        prompt_id="dimension-reader-v1",
+        template_id="bounded-crop-v1",
+        connect_timeout_seconds=2,
+        read_timeout_seconds=8,
+        max_attempts=1,
+        extractor=CLAUDE_HAIKU_4_5_EXTRACTOR,
+    )
+    client = FakeBedrock(
+        _tool_response(
+            {
+                "reading": "984",
+                "unit_guess": "mm",
+                "x1": 10,
+                "y1": 20,
+                "x2": 30,
+                "y2": 40,
+            }
+        )
+    )
+    sink = RecordingSink()
+
+    candidate = NovaAdapter(config, client, sink).extract(_request())
+
+    assert candidate.polygon == (
+        ImagePoint(10, 20),
+        ImagePoint(30, 20),
+        ImagePoint(30, 40),
+        ImagePoint(10, 40),
+    )
+    assert "whole pixel counts" in repr(client.requests[0]["messages"])
+    assert "0-1000 crop grid" not in repr(client.requests[0]["messages"])
 
 
 def test_drawing_text_is_sent_as_data_and_never_changes_instructions() -> None:
@@ -146,23 +226,16 @@ def test_drawing_text_is_sent_as_data_and_never_changes_instructions() -> None:
     request = NovaRequest(
         candidate_id="candidate-hostile",
         page=3,
-        crop=b"png bytes",
+        crop=_crop(),
         image_format="png",
         context=AssembledContext(
             nearby_text=(NearbyText(hostile, Decimal(2)),),
             nearby_geometry=(),
         ),
         bound_pt=Decimal(8),
+        stacked_label=False,
     )
-    client = FakeBedrock(
-        _tool_response(
-            {
-                "reading": "984",
-                "unit_guess": "mm",
-                "polygon": [[10, 20], [30, 20], [30, 40]],
-            }
-        )
-    )
+    client = FakeBedrock(_tool_response(_valid_payload()))
     adapter, sink = _adapter(client)
 
     adapter.extract(request)
@@ -187,6 +260,7 @@ def test_request_refuses_an_inexact_or_unsafe_context_bound(bound: object) -> No
             image_format="png",
             context=AssembledContext(nearby_text=(), nearby_geometry=()),
             bound_pt=bound,  # type: ignore[arg-type]
+            stacked_label=False,
         )
 
 
@@ -206,6 +280,9 @@ def test_plain_model_text_is_never_parsed_as_structured_output() -> None:
 
     assert len(client.requests) == 1
     assert sink.items[0].outcome is NovaInvocationOutcome.REJECTED
+    assert sink.items[0].rejection_reason == (
+        "protocol_error: Bedrock must return exactly one tool call and no model text"
+    )
 
 
 @pytest.mark.parametrize(
@@ -214,12 +291,16 @@ def test_plain_model_text_is_never_parsed_as_structured_output() -> None:
         {
             "reading": "984",
             "unit_guess": "mm",
-            "polygon": [[10, 20], [30, 20], [30, 40]],
+            "x1": 100,
+            "y1": 250,
+            "x2": 300,
+            "y2": 500,
             "verdict": "PASS",
         },
-        {"unit_guess": "mm", "polygon": [[10, 20], [30, 20], [30, 40]]},
-        {"reading": "984", "unit_guess": "cm", "polygon": [[10, 20], [30, 20], [30, 40]]},
-        {"reading": "984", "unit_guess": "mm", "polygon": [[10.5, 20], [30, 20], [30, 40]]},
+        {"unit_guess": "mm", "x1": 100, "y1": 250, "x2": 300, "y2": 500},
+        {"reading": "984", "unit_guess": "cm", "x1": 100, "y1": 250, "x2": 300, "y2": 500},
+        {"reading": "984", "unit_guess": "mm", "x1": 10.5, "y1": 250, "x2": 300, "y2": 500},
+        {"reading": "984", "unit_guess": "mm", "x1": 100, "y1": 250, "x2": 1001, "y2": 500},
     ],
 )
 def test_invalid_tool_payload_fails_closed_without_retry(payload: object) -> None:
@@ -233,6 +314,47 @@ def test_invalid_tool_payload_fails_closed_without_retry(payload: object) -> Non
 
     assert len(client.requests) == 1
     assert sink.items[0].outcome is NovaInvocationOutcome.REJECTED
+    assert sink.items[0].rejection_reason in {
+        "schema_validation_failed",
+        "float_not_allowed",
+        "coordinate_out_of_bounds",
+        "candidate_conversion_failed",
+    }
+
+
+def test_a_stacked_crop_is_refused_by_the_adapter_and_recorded_why() -> None:
+    """**The link #735 found broken.** The adapter must hand the request's flag to the validator. It
+    did not, the flag defaulted to `False`, and #541's guard never ran in production. A reading that
+    would otherwise be accepted — `28 3/4"` — is refused here, once, and the reason is kept."""
+    client = FakeBedrock(_tool_response(_valid_payload(reading='28 3/4"', unit_guess="in")))
+    adapter, sink = _adapter(client)
+
+    with pytest.raises(NovaPayloadRejectedError):
+        adapter.extract(_request(stacked_label=True))
+
+    assert len(client.requests) == 1, "a deterministic refusal must not be retried at a cost"
+    assert sink.items[0].outcome is NovaInvocationOutcome.REJECTED
+    assert sink.items[0].rejection_reason == "stacked_fraction_requires_review"
+
+
+def test_the_same_reading_of_an_unstacked_crop_is_accepted() -> None:
+    client = FakeBedrock(_tool_response(_valid_payload(reading='28 3/4"', unit_guess="in")))
+    adapter, _sink = _adapter(client)
+
+    assert adapter.extract(_request(stacked_label=False)).raw_text == '28 3/4"'
+
+
+def test_request_refuses_a_stacked_label_that_is_not_a_bool() -> None:
+    with pytest.raises(TypeError, match="stacked_label"):
+        NovaRequest(
+            candidate_id="candidate-stacked",
+            page=3,
+            crop=b"png bytes",
+            image_format="png",
+            context=AssembledContext(nearby_text=(), nearby_geometry=()),
+            bound_pt=Decimal(8),
+            stacked_label=None,  # type: ignore[arg-type]
+        )
 
 
 def test_timeout_retries_within_bound_and_records_every_attempt() -> None:
@@ -240,13 +362,7 @@ def test_timeout_retries_within_bound_and_records_every_attempt() -> None:
 
     client = FakeBedrock(
         TimeoutError("temporary timeout"),
-        _tool_response(
-            {
-                "reading": "38 3/4",
-                "unit_guess": "in",
-                "polygon": [[1, 2], [3, 2], [3, 4]],
-            }
-        ),
+        _tool_response(_valid_payload(reading="38 3/4", unit_guess="in")),
     )
     adapter, sink = _adapter(client)
 
@@ -347,7 +463,10 @@ def test_bedrock_sdk_is_reachable_only_through_the_nova_adapter() -> None:
 _VALID_PAYLOAD = {
     "reading": '24 1/2"',
     "unit_guess": "in",
-    "polygon": [[10, 20], [30, 20], [30, 40]],
+    "x1": 100,
+    "y1": 250,
+    "x2": 300,
+    "y2": 500,
 }
 
 
@@ -422,14 +541,14 @@ def test_a_model_that_needs_its_inference_profile_is_retried_once(code: str, mes
 
     assert isinstance(candidate, ObservationCandidate)
     assert [request["modelId"] for request in client.requests] == [
-        "amazon.nova-2-lite-v1:0",
-        "us.amazon.nova-2-lite-v1:0",
+        "amazon.nova-pro-v1:0",
+        "us.amazon.nova-pro-v1:0",
     ]
     # The refused attempt is still recorded: it happened, it cost time, and a record showing only
     # the id that worked would hide from the next operator that the configured id needs changing.
     assert [record.model_id for record in sink.items] == [
-        "amazon.nova-2-lite-v1:0",
-        "us.amazon.nova-2-lite-v1:0",
+        "amazon.nova-pro-v1:0",
+        "us.amazon.nova-pro-v1:0",
     ]
     assert sink.items[0].outcome is NovaInvocationOutcome.ERROR
     assert sink.items[1].outcome is NovaInvocationOutcome.OK
@@ -476,4 +595,310 @@ def test_an_unrelated_failure_is_not_retried_against_another_model() -> None:
     # Two calls, because a throttle *is* retryable and `max_attempts` is two — but both against the
     # configured id. What must not happen is a second *model*: that would make a transient error
     # look like a configuration one.
-    assert {request["modelId"] for request in client.requests} == {"amazon.nova-2-lite-v1:0"}
+    assert {request["modelId"] for request in client.requests} == {"amazon.nova-pro-v1:0"}
+
+
+# ---------------------------------------------------------------------------
+# #668 — the readers are chosen, and their coordinate space is stated
+# ---------------------------------------------------------------------------
+
+
+def test_a_pixel_model_named_nova_is_not_remapped() -> None:
+    """**The defect this issue exists to remove.**
+
+    Coordinate space used to be inferred from whether `"nova"` appeared in the model id. Nova 2 Lite
+    carries the word and answers in pixels, so it was remapped as a 0-1000 grid: divided by a
+    thousand, landing near the origin, and *passing* the bounds check, because a small number is in
+    range. A reading pointing at the wrong part of the drawing, with nothing downstream able to
+    question it.
+    """
+    reader = next(r for r in VISION_READERS if r.model_id == NOVA_2_LITE_MODEL_ID)
+
+    assert reader.coordinate_mode is CoordinateMode.PIXELS
+
+
+def test_nova_pro_is_off_for_accuracy_and_keeps_its_measured_space() -> None:
+    """#751: switched off because the human-read key found it the least accurate and the most
+    expensive — not because its coordinates are unknown. #699's measurement stays on it, so a
+    deployment or the bake-off can still use it in the right space."""
+    reader = next(r for r in VISION_READERS if r.model_id == NOVA_PRO_MODEL_ID)
+
+    assert reader.enabled is False
+    assert reader.disabled_reason is not None and "#751" in reader.disabled_reason
+    assert reader.coordinate_measured is True
+    assert reader.coordinate_mode is CoordinateMode.NOVA_GRID
+    assert "#699" in reader.coordinate_measurement
+    assert '24 1/2"' in reader.coordinate_measurement
+
+
+def test_an_enabled_reader_must_have_a_measured_space() -> None:
+    """A guessed space reads a rectangle in the wrong units and can still pass the bounds check."""
+    from extraction.models.nova import _ReaderDefinition
+
+    with pytest.raises(ValueError, match="measured coordinate space"):
+        _ReaderDefinition(
+            key="guessed",
+            model_id="vendor.model",
+            extractor="bedrock-guessed",
+            coordinate_mode=CoordinateMode.PIXELS,
+            coordinate_measurement="documented, never measured",
+            enabled=True,
+            coordinate_measured=False,
+        )
+
+
+def test_claude_s_space_is_not_measured() -> None:
+    claude = next(r for r in VISION_READERS if r.model_id == CLAUDE_HAIKU_4_5_MODEL_ID)
+
+    assert claude.coordinate_measured is False
+
+
+def test_an_unstated_coordinate_mode_fails_loudly_rather_than_silently() -> None:
+    """The default is the mistake that gets caught, because the two are not symmetric.
+
+    Grid values read as pixels exceed the crop and the bounds check refuses them. Pixel values read
+    as a grid shrink toward the origin and pass. One costs a rejected reading; the other costs a
+    wrong location nobody notices.
+    """
+    config = NovaConfig(
+        model_id="some.new-model-v1:0",
+        prompt_id="dimension-reader-v1",
+        template_id="bounded-crop-v1",
+        connect_timeout_seconds=2,
+        read_timeout_seconds=8,
+        max_attempts=1,
+    )
+
+    assert config.coordinate_mode is CoordinateMode.PIXELS
+
+
+def test_every_configured_reader_has_a_distinct_extractor_name() -> None:
+    """`evidence/corroborate.py` counts independence by extractor, not by model.
+
+    Two readers sharing a name would agree with themselves, and the SECOND_READER lane would record
+    a corroboration that never happened — the one thing the agreement gate exists to prevent.
+    """
+    names = [reader.extractor for reader in VISION_READERS]
+
+    assert len(names) == len(set(names))
+
+
+def test_every_enabled_reader_has_a_recorded_coordinate_measurement() -> None:
+    """Coordinate space is a measurement, not an inference from provider or model name."""
+    missing = [
+        reader.key
+        for reader in VISION_READERS
+        if reader.enabled and "#" not in reader.coordinate_measurement
+    ]
+
+    assert missing == []
+
+
+def test_claude_is_configured_and_switched_off_until_its_account_form_lands() -> None:
+    """#665 is an AWS account action, so it must not require a code change to undo.
+
+    Left enabled it produced 46 zero-token failures per extraction run while the agreement lane
+    stayed empty, because one working reader is not two.
+    """
+    claude = next(r for r in VISION_READERS if r.model_id == CLAUDE_HAIKU_4_5_MODEL_ID)
+
+    assert claude.enabled is False
+    assert claude.disabled_reason is not None
+    assert "#665" in claude.disabled_reason
+    assert claude.key in {r.key for r in VISION_READERS}
+
+
+def test_the_default_readers_are_the_ones_this_account_can_invoke(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The recommended pair (#641, #751): one reader from each vendor that answers at all."""
+    monkeypatch.delenv("GV_BEDROCK_VISION_READERS", raising=False)
+
+    configs = vision_configs_from_environment()
+
+    assert [config.model_id for config in configs] == [
+        MINISTRAL_3_3B_MODEL_ID,
+        NOVA_2_LITE_MODEL_ID,
+    ]
+    assert NOVA_PRO_MODEL_ID not in {config.model_id for config in configs}
+    assert CLAUDE_HAIKU_4_5_MODEL_ID not in {config.model_id for config in configs}
+
+
+def test_a_deployment_selects_its_readers_by_key(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Resolving #665 is then a change to configuration, not to this module."""
+    monkeypatch.setenv("GV_BEDROCK_VISION_READERS", "nova-pro,claude-haiku-4-5")
+
+    configs = vision_configs_from_environment()
+
+    assert [config.model_id for config in configs] == [
+        NOVA_PRO_MODEL_ID,
+        CLAUDE_HAIKU_4_5_MODEL_ID,
+    ]
+
+
+def test_an_unknown_reader_key_is_refused_by_name(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A typo that silently selected nothing would leave the lane empty and look configured."""
+    monkeypatch.setenv("GV_BEDROCK_VISION_READERS", "nova-pro,haiku")
+
+    with pytest.raises(ValueError, match="unknown vision reader key"):
+        vision_configs_from_environment()
+
+
+def test_each_reader_carries_its_own_model_override(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Derived from the key, so a rename cannot leave an override quietly not applying."""
+    monkeypatch.delenv("GV_BEDROCK_VISION_READERS", raising=False)
+    monkeypatch.setenv("GV_BEDROCK_MINISTRAL_3_3B_MODEL", "mistral.something-else")
+
+    configs = vision_configs_from_environment()
+
+    assert "mistral.something-else" in {config.model_id for config in configs}
+
+
+# ---------------------------------------------------------------------------
+# The inference profile is learned once, not paid for on every call (#702)
+# ---------------------------------------------------------------------------
+
+
+def _config_for(model_id: str, region: str | None = "us-east-1") -> NovaConfig:
+    return NovaConfig(
+        model_id=model_id,
+        prompt_id="dimension-reader-v1",
+        template_id="bounded-crop-v1",
+        connect_timeout_seconds=2,
+        read_timeout_seconds=8,
+        max_attempts=1,
+        region_name=region,
+        coordinate_mode=CoordinateMode.NOVA_GRID,
+    )
+
+
+def _refused_then_answers() -> FakeBedrock:
+    return FakeBedrock(
+        _client_error("AccessDeniedException", "Your account is currently being verified."),
+        _tool_response(_VALID_PAYLOAD),
+        _tool_response(_VALID_PAYLOAD),
+    )
+
+
+def test_a_second_call_goes_straight_to_the_profile() -> None:
+    """**Acceptance 1.** Measured: every Nova 2 Lite call was two round trips — 39 refused on the
+    plain id, 39 answered on the profile. The first call discovers it; the next does not repeat it.
+
+    A fresh adapter for the second call, because that is what production does per crop."""
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    client = _refused_then_answers()
+    config = _config_for("amazon.nova-pro-v1:0")
+
+    NovaAdapter(config, client, RecordingSink(), routes).extract(_request())
+    NovaAdapter(config, client, RecordingSink(), routes).extract(_request())
+
+    assert [request["modelId"] for request in client.requests] == [
+        "amazon.nova-pro-v1:0",
+        "us.amazon.nova-pro-v1:0",
+        "us.amazon.nova-pro-v1:0",
+    ]
+
+
+def test_a_model_never_tried_still_starts_from_its_plain_id() -> None:
+    """**Acceptance 2.** Learning one model says nothing about another; the fallback stays."""
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    routes.learn("us-east-1", "amazon.nova-pro-v1:0")
+    client = _refused_then_answers()
+
+    NovaAdapter(_config_for("amazon.nova-lite-v1:0"), client, RecordingSink(), routes).extract(
+        _request()
+    )
+
+    assert [request["modelId"] for request in client.requests] == [
+        "amazon.nova-lite-v1:0",
+        "us.amazon.nova-lite-v1:0",
+    ]
+
+
+def test_what_is_learned_in_one_region_is_not_assumed_in_another() -> None:
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    routes.learn("us-east-1", "amazon.nova-pro-v1:0")
+    client = FakeBedrock(_tool_response(_VALID_PAYLOAD))
+
+    NovaAdapter(
+        _config_for("amazon.nova-pro-v1:0", "eu-west-1"), client, RecordingSink(), routes
+    ).extract(_request())
+
+    assert [request["modelId"] for request in client.requests] == ["amazon.nova-pro-v1:0"]
+
+
+def test_nothing_is_learned_when_the_profile_fails_too() -> None:
+    """Only an answer from the profile proves the route. If it fails as well, the next call starts
+    from the plain id again rather than trusting a route that has never worked."""
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    client = FakeBedrock(
+        _client_error("AccessDeniedException", "no."),
+        _client_error("AccessDeniedException", "no."),
+    )
+
+    with pytest.raises(NovaServiceError):
+        NovaAdapter(_config_for("amazon.nova-pro-v1:0"), client, RecordingSink(), routes).extract(
+            _request()
+        )
+
+    assert routes.knows("us-east-1", "amazon.nova-pro-v1:0") is False
+
+
+def test_a_refused_payload_from_the_profile_still_proves_the_route() -> None:
+    """The profile answered; the local validator refused what it said. That is about the reading,
+    not the route, so the route is kept."""
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    client = FakeBedrock(
+        _client_error("AccessDeniedException", "no."),
+        _tool_response({"reading": "984"}),  # missing required fields: rejected locally
+    )
+
+    with pytest.raises(NovaPayloadRejectedError):
+        NovaAdapter(_config_for("amazon.nova-pro-v1:0"), client, RecordingSink(), routes).extract(
+            _request()
+        )
+
+    assert routes.knows("us-east-1", "amazon.nova-pro-v1:0") is True
+
+
+def test_the_learned_route_is_logged_once(caplog: pytest.LogCaptureFixture) -> None:
+    """**Acceptance 4.** Recorded where an operator on another account will see it: the first
+    refused attempt stays in `model_invocations`, and the discovery is logged — once."""
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    client = _refused_then_answers()
+    config = _config_for("amazon.nova-pro-v1:0")
+
+    with caplog.at_level("INFO", logger="extraction.models.nova"):
+        NovaAdapter(config, client, RecordingSink(), routes).extract(_request())
+        NovaAdapter(config, client, RecordingSink(), routes).extract(_request())
+
+    assert [r.message for r in caplog.records].count(
+        "Bedrock model answers only through its inference profile on this account; later calls "
+        "in this process go there first (#702)"
+    ) == 1
+
+
+def test_no_model_id_constant_hard_codes_the_profile_prefix() -> None:
+    """**Acceptance 3.** The prefix is learned per account, never written into a model id — an
+    account where the plain id works must keep using it."""
+    from extraction.models import nova
+
+    constants = {
+        name: value
+        for name, value in vars(nova).items()
+        if name.endswith("_MODEL_ID") and isinstance(value, str)
+    }
+    ids = set(constants.values()) | {reader.model_id for reader in VISION_READERS}
+
+    assert constants, "no *_MODEL_ID constants found, so this test checks nothing"
+    assert not [model_id for model_id in ids if model_id.startswith(nova.INFERENCE_PROFILE_PREFIX)]

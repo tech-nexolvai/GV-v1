@@ -8,7 +8,6 @@
  */
 
 import { getFindingChain, listFindings } from './client';
-import { formatExact } from './fractions';
 import type { Evidence, Finding, Outcome, ReviewerAction, Severity, Trace } from '../data/types';
 
 type Listed = Awaited<ReturnType<typeof listFindings>>['items'][number];
@@ -41,9 +40,27 @@ export function toFinding(listed: Listed): Finding {
 /** The arithmetic behind one verdict, folded into the card the reviewer already has open. */
 export function withChain(finding: Finding, chain: Chain): Finding {
   const operands = chain.operands ?? [];
+  const tracedSources = new Map(
+    chain.trace.kind === 'calculation'
+      ? chain.trace.operands.map((operand) => [operand.name, operand.source])
+      : [],
+  );
   const evidence = operands
     .map((operand) => operand.evidence)
     .filter((item): item is NonNullable<typeof item> => item !== null);
+  const recordedOperands = operands.map((operand) => ({
+    name: operand.name,
+    // These are the immutable exact fields from the finding chain.  Do not turn them into a
+    // JavaScript number: the evidence view is explanatory and must not silently round a value.
+    value: operand.denominator === '1'
+      ? `${operand.numerator} ${operand.unit}`
+      : `${operand.numerator}/${operand.denominator} ${operand.unit}`,
+    source: tracedSources.get(operand.name) ?? operand.evidence?.document_role ?? 'RECORDED',
+    status: operand.evidence_status,
+    hasEvidence: operand.evidence !== null,
+    documentRole: operand.evidence?.document_role,
+    canonicalObservationId: operand.evidence?.canonical_observation_id,
+  }));
 
   // `trace` is a discriminated union now, so this narrows instead of guessing. It used to be a
   // free-form dict and this function read fields out of it with a string guard — the one place the
@@ -57,16 +74,14 @@ export function withChain(finding: Finding, chain: Chain): Finding {
     source.kind === 'calculation'
       ? {
           operation: source.operation,
-          // Values are exact rationals and arrive as text. `formatExact` keeps them that way, using
-          // BigInt — under exact match a value shifted by binary rounding is a different verdict.
-          operands: operands.map((operand) => ({
+          // These strings come from the persisted deterministic calculation trace.  They are
+          // displayed verbatim: the UI never reconstructs an exact value from a display value or
+          // from floating point.  The chain operands contribute only review/evidence status.
+          operands: source.operands.map((operand) => ({
             name: operand.name,
-            value: formatExact({
-              numerator: operand.numerator,
-              denominator: operand.denominator,
-            }),
-            status: operand.evidence_status,
-            source: operand.unit,
+            value: operand.value,
+            status: operands.find((item) => item.name === operand.name)?.evidence_status ?? 'RECORDED',
+            source: operand.source,
           })),
           comparison: source.comparison ?? '',
         }
@@ -81,6 +96,7 @@ export function withChain(finding: Finding, chain: Chain): Finding {
 
   return {
     ...finding,
+    recorded_operands: recordedOperands,
     trace,
     arch_evidence: _evidenceFor(evidence, 'ARCH'),
     shop_evidence: _evidenceFor(evidence, 'SHOP'),
@@ -92,7 +108,8 @@ function _evidenceFor(
   evidence: readonly NonNullable<Chain['operands'][number]['evidence']>[],
   role: 'ARCH' | 'SHOP',
 ): Evidence | null {
-  const located = evidence.find((item) => item.document_role === role);
+  const located = evidence.find((item) => item.document_role === role)
+    ?? evidence.find((item) => item.document_role.toUpperCase() === role);
   if (!located) return null;
 
   const polygon = located.polygon.map(([x, y]) => [Number(x), Number(y)] as [number, number]);
@@ -110,5 +127,35 @@ function _evidenceFor(
 /** Every finding for a package, in the order the API ranks them. */
 export async function loadFindings(projectId: string, packageId: string): Promise<Finding[]> {
   const page = await listFindings(projectId, packageId);
-  return page.items.map(toFinding);
+  const base = page.items.map(toFinding);
+
+  // **Every finding arrives with its evidence, rather than one at a time on request.**
+  //
+  // The list endpoint carries a finding's identity and outcome and nothing about where its numbers
+  // came from — that lives on the chain. So until somebody clicked "Evidence & facts" on a
+  // particular card, every card on the page showed no sheet, no page and no operand: a review
+  // screen that could not answer "where did this number come from?" without being asked nine
+  // separate times. A reviewer's first question about a failure is exactly that question.
+  //
+  // One request per finding, in parallel. These are small reads of already-computed rows, and a
+  // review has single figures of findings — the cost is a fraction of a second against a page that
+  // otherwise cannot show its own evidence.
+  //
+  // **A chain that will not load costs its own card's detail and nothing else.** The finding is
+  // still shown, with its outcome and rule, because an evidence lookup failing is not a reason to
+  // hide a recorded failure from the person reviewing it.
+  const chains = await Promise.all(
+    base.map(async (finding) => {
+      try {
+        return await getFindingChain(projectId, packageId, finding.id);
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return base.map((finding, index) => {
+    const chain = chains[index];
+    return chain === null ? finding : withChain(finding, chain);
+  });
 }

@@ -40,6 +40,12 @@ class CorroborationLane(StrEnum):
     SECOND_READER = "SECOND_READER"
     DUAL_UNIT = "DUAL_UNIT"
     HUMAN = "HUMAN"
+    MECHANICAL_TAG = "MECHANICAL_TAG"
+    """An exact vector tag and a numeric reading share one resolved dimension line.
+
+    This corroborates the *meaning* of a reading, not its numeric value.  It is emitted only by the
+    fail-closed semantic-typing gate; an OCR tag or geometric proximity alone never qualifies it.
+    """
 
 
 def _validate_candidate_ids(candidate_ids: tuple[str, ...], *, field: str) -> None:

@@ -19,17 +19,18 @@ are not built twice. Only the *rules* are per-type.
 | **Orchestration** (workflow spine) | ✅ Done | 6/6 durable stages, idempotency, corroboration | — | — |
 | **Ingestion** (PDF → pages) | ✅ Done | reads any PDF → pages, manifest | page classification (title-block locator) | #274 (drawing-specific) |
 | **Extraction — mechanical** (text / geometry / OCR) | ✅ Done | vector text + geometry + OCR wired → untyped candidates + crops | — | — |
-| **Extraction — semantic** (value → *meaning*) | ❌ Not built | `normalize()` accepts a type; human-confirm path works | the **auto** value→meaning association | #274 + Q20 |
+| **Extraction — semantic** (value → *meaning*) | ⚠️ Gated | reviewer confirmation; exact vector tag + same dimension-line qualification | broader layout vocabulary and ambiguity review; no heuristic verdict operands | Q20/layout config |
 | **Retrieval** (arch↔shop match) | ⚠️ Wired but inert | matcher (id→alias→geometry), 85 tests, stage REAL | item/view detection so it returns real matches | #274 + Q20 (semantic) |
 | **Agentic AI** (agent + vision/OCR model) | ❌ Not wired | LangGraph agent built; Bedrock/Nova adapter built | wire agent+model into pipeline; creds; agentic-OCR | Abhishek's model decision **+** semantic trigger (#274+Q20) |
 | **Rules — cabinet** | ✅ Done | `cab_filler`, `cab_arch_vs_shop` (2), tested | (arch-vs-shop tolerance) | Q2 |
 | **Rules — countertop** | ✅ Done | depth, width, sink-cutout ×4 (6), tested | back-offset value; more from the countertop deck | vendor value; Raj's deck |
 | **Reviewer UI + human-confirm bridge** | ✅ Done | upload → confirm/type → run → review → sign-off → download | — | — |
-| **Output — workbook** | ✅ Done | findings workbook, downloadable | redline (annotated drawing) | semantic typing |
+| **Output — reviewer artifacts** | ✅ Done | findings workbook, branded PDF, evidence-grounded redline, downloadable after sign-off | broader redline coverage follows qualified typed locations | semantic coverage |
 
-**Hard evidence for the ❌ rows:** `model_invocations = 0` and `canonical_observations = 0` — the agent
-has never been invoked and no value has ever been given a meaning. The agent and the model adapter are
-finished code wired to nothing; OCR runs, but as a mechanical route, not the agentic reader.
+**Hard evidence for the still-unwired agent row:** the drawing-agnostic default keeps
+`model_invocations = 0` and creates no automatic canonical observations. The exact-tag lane requires
+explicit per-layout configuration; agent/LLM suggestions remain reviewer work and cannot become verdict
+operands.
 
 ## Summary
 
@@ -49,18 +50,18 @@ The order the automated half comes online, with what each step depends on:
    interface). Proves the model returns structured readings. No pipeline wiring yet.
 1. **Page classification** *(needs #274)*: build the title-block locator against real sheets so each
    page is classified (which sheet / view). Feeds the "which sheet to read" routing.
-2. **Semantic typing — value → meaning** *(needs #274 + Q20 + the model)*: the linchpin. Assign a
-   semantic type to each candidate — mechanically from the drawing's printed tags (Q20 vocabulary)
-   where present, agentically (the bounded agent + vision model) where ambiguous, and **abstain** to
-   the reviewer where unsure. Sets `candidate.semantic_guess` → `normalize` → canonical observation →
-   `gate:seal` → verdict operand. The downstream already exists (the human-confirm bridge). *See the
-   end-to-end prompt for this step.*
+2. **Semantic typing — value → meaning** *(needs #274 + Q20 + the model)*: the linchpin. The safe
+   exact-tag lane is now present: an explicit Q20-valid vector tag and numeric reading must share one
+   resolved dimension line before a corroborated canonical observation can reach the evidence gate.
+   Ambiguous agent/vision suggestions **abstain** to the reviewer; they never write
+   `candidate.semantic_guess` or become an operand.
 3. **Retrieval item detection** *(needs step 2)*: with items typed/detected, the matcher produces real
    `match_candidates` (arch↔shop) instead of zero.
 4. **Agentic-AI trigger** *(part of step 2)*: the agent runs only where fixed typing left ambiguity
    (DESIGN_AI §3.1) — it never runs on a value fixed extraction already settled.
-5. **Redline output** *(needs step 2)*: findings now tie to drawing regions (via typed candidates) →
-   annotated/redline drawings.
+5. **Redline output** *(partly complete)*: typed, sealed operands with a recorded page region now
+   produce annotated drawings; untyped or unlocated findings are listed without a mark. Coverage grows
+   only as qualified typing grows.
 6. **Gold-set validation → release gate** *(needs #274's reviewed set + step 2)*: run the full auto
    pipeline on the reviewed packages; assert auto verdicts match the human answers; measure the
    **critical false-PASS rate** — the ship gate.
