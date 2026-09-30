@@ -65,6 +65,14 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
   every label on `AI_Set 1`, and 1,050 text objects on `AI_Set 2`, including stacked fractions on
   pages 15 and 17 that it misses. Neither the reader nor the detector sees those, so the rule above is
   not yet enforced for them (#738, open, with an interim-policy question for the admin).
+- **Two AI readers from different vendors agreeing still confirms a reading on its own (admin,
+  2026-09-30), knowing the measured risk.** On the 51-crop human-read key (#666, scorecard on
+  #641), readers from both vendors agreed on the *same wrong* value on 9 crops. #740 (stacked
+  fractions) stops 5 of those, and #746 (whole-label crops) targets 3 more. About 3 in 51 still get
+  through: a clean `12"` read as `2"` by both vendors, and two page-15 crops where readers returned
+  the reviewer's numbers baked into the vendor Snapshot stamp (#742). The alternative, a person
+  confirming every AI-read number, was offered and declined. Revisit after the post-quota re-run
+  (#716).
 
 ## OPEN — must-fix / to resolve
 - **Rule engine can't yet express the real first rules.** Typed op set lacks aggregate/variable-input
