@@ -150,6 +150,23 @@ API_PID=$!
 # It is a paid call per candidate region, so the cost is real and belongs next to the switch rather
 # than in a runbook. `scripts/reading_funnel.py` reports `model_invocations` alongside the reading
 # counts for exactly that reason — the benefit and the bill are read off the same table.
+#
+# **The reading agent (#757), on in the demo only** — the admin's decision of 2026-10-01, taken once
+# the 51-crop human key showed it confirms no wrong value (#775 made agreement count only across
+# vendors). Where a label is hard to read it widens the crop to the whole label, turns it upright or
+# looks sharper, asks Nova 2 Lite, then mistral-large-3 (D-A2). What it reads is a candidate like any
+# other: a person confirms it, and a disagreement goes to a reviewer. On that key it also proposed
+# two wrong values for a person to catch, and read nothing the pair had missed — so it is on here to
+# be tried on real drawings, and nowhere else. About 40% more model cost per crop. Every setting is
+# required; `workflow/reading_agent.py` says what each one is.
+GV_READING_AGENT=1 \
+GV_AGENT_MAX_STEPS=6 \
+GV_AGENT_MAX_ESCALATIONS=1 \
+GV_AGENT_SHARPER_DPI=450 \
+GV_AGENT_PRIMARY_READER=bedrock-nova-2-lite \
+GV_AGENT_ESCALATION_READER=bedrock-mistral-large-3 \
+GV_AGENT_LABEL_GAP_PT=4 \
+GV_AGENT_MAX_LABEL_PT=40 \
 GV_DATABASE_URL="$BARE_URL" \
 GV_DEV_STORAGE=".dev-storage" \
 GV_MODEL_RATES_FILE="deploy/model_rates.us-east-1.json" \

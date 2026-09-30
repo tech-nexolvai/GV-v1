@@ -223,3 +223,107 @@ def test_dual_dimension_must_be_attributed_to_exactly_one_matching_candidate() -
     mismatched = _candidate("vector-2", "pdfplumber", exact=Fraction(985), raw_text="985")
     with pytest.raises(ValueError, match="primary must match"):
         corroborate((mismatched,), dual_dimension=parse_dual("984 [38 3/4]"))
+
+
+# ---------------------------------------------------------------------------
+# Agreement needs readers from different vendors (#775)
+# ---------------------------------------------------------------------------
+
+NOVA_2_LITE = ("bedrock-nova-2-lite", "amazon.nova-2-lite-v1:0")
+MINISTRAL_3B = ("bedrock-ministral-3-3b", "mistral.ministral-3-3b-instruct")
+MISTRAL_LARGE_3 = ("bedrock-mistral-large-3", "mistral.mistral-large-3-675b-instruct")
+
+
+def _model(candidate_id: str, reader: tuple[str, str], **changes: object) -> ObservationCandidate:
+    extractor, model_id = reader
+    return _candidate(candidate_id, extractor, extractor_version=model_id, **changes)  # type: ignore[arg-type]
+
+
+def test_two_models_of_one_vendor_agreeing_confirm_nothing() -> None:
+    """**The #757 scorecard's confirmed wrong value (#775).** Input: Ministral 3B and mistral-large-3
+    agree. Outcome: RAW with no lane. Why: both are Mistral models, and readers trained alike misread
+    alike — #641 measured same-vendor pairs agreeing wrong most."""
+    result = corroborate((_model("a", MINISTRAL_3B), _model("b", MISTRAL_LARGE_3)))
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None)
+
+
+def test_two_models_of_different_vendors_agreeing_still_confirm() -> None:
+    """Input: Nova 2 Lite and Ministral 3B agree — today's pair. Outcome: CORROBORATED, as before."""
+    result = corroborate((_model("a", NOVA_2_LITE), _model("b", MINISTRAL_3B)))
+
+    assert result.status is EvidenceStatus.CORROBORATED
+    assert result.lane is CorroborationLane.SECOND_READER
+
+
+def test_a_disagreement_is_a_conflict_whatever_vendor_the_readers_are() -> None:
+    """**The vendor rule makes agreement harder, and nothing else.** Input: two Mistral models
+    disagree. Outcome: CONFLICTING. Why: a disagreement is a reviewer's to decide, however alike
+    the readers are."""
+    result = corroborate(
+        (_model("a", MINISTRAL_3B), _model("b", MISTRAL_LARGE_3, exact=Fraction(985)))
+    )
+
+    assert result.status is EvidenceStatus.CONFLICTING
+
+
+def test_a_third_vendor_makes_a_one_vendor_pair_independent() -> None:
+    """Input: two Mistral models and Nova 2 Lite agree. Outcome: CORROBORATED — two vendors agree."""
+    result = corroborate(
+        (_model("a", MINISTRAL_3B), _model("b", MISTRAL_LARGE_3), _model("c", NOVA_2_LITE))
+    )
+
+    assert result.status is EvidenceStatus.CORROBORATED
+
+
+def test_a_model_and_the_files_own_text_are_independent() -> None:
+    """Input: the vector text and a model agree. Outcome: CORROBORATED, as before."""
+    result = corroborate((_candidate("v", "pdfplumber"), _model("m", MINISTRAL_3B)))
+
+    assert result.status is EvidenceStatus.CORROBORATED
+
+
+@pytest.mark.parametrize(
+    ("extractor", "version", "key"),
+    [
+        ("bedrock-nova-2-lite", "amazon.nova-2-lite-v1:0", "vendor:amazon"),
+        ("bedrock-nova-2-lite", "us.amazon.nova-2-lite-v1:0", "vendor:amazon"),
+        ("bedrock-nova-pro", "global.amazon.nova-pro-v1:0", "vendor:amazon"),
+        ("bedrock-ministral-3-3b", "mistral.ministral-3-3b-instruct", "vendor:mistral"),
+        ("bedrock-claude-haiku-4-5", "anthropic.claude-haiku-4-5", "vendor:anthropic"),
+        ("nova", "amazon.nova-lite-v1:0", "vendor:amazon"),
+        ("bedrock-new-reader", "someone.model-1", "vendor:unknown"),
+        ("openmodel", "openbmb/MiniCPM-V-4", "vendor:unknown"),
+        ("pdfplumber", "0.11.4", "route:pdfplumber"),
+        ("extraction.annotations", "1", "route:extraction.annotations"),
+    ],
+)
+def test_the_independence_key(extractor: str, version: str, key: str) -> None:
+    from evidence.corroborate import independence_key
+
+    assert independence_key(extractor, version) == key
+
+
+def test_two_models_whose_vendor_is_unknown_are_never_independent() -> None:
+    """Input: two model readers nobody has named a vendor for. Outcome: RAW. Why: not knowing is
+    not independence."""
+    first = _model("a", ("bedrock-new-reader", "someone.model-1"))
+    second = _model("b", ("openmodel", "openbmb/MiniCPM-V-4"))
+
+    assert corroborate((first, second)).lane is None
+
+
+def test_every_defined_vision_reader_has_a_known_vendor() -> None:
+    """**The drift guard.** A reader added to `VISION_READERS` with a vendor this table does not
+    know would count as an unknown model and never corroborate — found here, not in a run."""
+    from evidence.corroborate import independence_key
+    from extraction.models.nova import VISION_READERS
+
+    keys = {
+        reader.extractor: independence_key(reader.extractor, reader.model_id)
+        for reader in VISION_READERS
+    }
+
+    assert "vendor:unknown" not in keys.values(), keys
+    assert keys["bedrock-nova-2-lite"] != keys["bedrock-ministral-3-3b"]
+    assert keys["bedrock-ministral-3-3b"] == keys["bedrock-mistral-large-3"]

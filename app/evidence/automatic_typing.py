@@ -31,6 +31,7 @@ from app.models.runs import ExtractionRun
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import Authority, CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint
+from evidence.corroborate import independence_key
 from evidence.normalize import NormalizationRefusal, normalize
 from evidence.semantic_typing import (
     SemanticTypingDecision,
@@ -175,8 +176,11 @@ def _second_reader_candidate_ids(
         and candidate.corroboration_status in agreement_statuses
     )
     candidate_ids = tuple(candidate.id for candidate, _run in matching)
-    extractors = {run.extractor for _candidate, run in matching}
-    if reading.id not in candidate_ids or len(candidate_ids) < 2 or len(extractors) < 2:
+    # Independent by the rule `corroborate` agrees by (#775): model readers by vendor.
+    independent = {
+        independence_key(run.extractor, run.extractor_version) for _candidate, run in matching
+    }
+    if reading.id not in candidate_ids or len(candidate_ids) < 2 or len(independent) < 2:
         return ()
     return candidate_ids
 

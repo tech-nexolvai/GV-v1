@@ -615,3 +615,37 @@ def test_a_reading_from_a_page_with_no_recorded_transform_is_refused(
 
     assert isinstance(refused, ConfirmationRefused)
     assert refused.reason is RefusalReason.NO_TRANSFORM
+
+
+def test_automatic_typing_counts_two_readers_of_one_vendor_as_one(
+    session: Session, store: LocalStore
+) -> None:
+    """**#775 in the automatic lane.** Input: a reading and a second reader that agree, marked as two
+    readers agreeing. Outcome: the pair is found while its readers are independent, and not once
+    both are recorded as Mistral models — the lane counts vendors as `corroborate` does."""
+    from app.evidence.automatic_typing import _second_reader_candidate_ids
+
+    _revision_row, candidate_id = _extract(
+        session, store, token=EXACT_DEPTH_SINGLE_UNIT, second_reader=True
+    )
+    reading = session.get(ObservationCandidate, candidate_id)
+    assert reading is not None
+    assert len(_second_reader_candidate_ids(session, reading)) == 2
+
+    agreeing = session.execute(
+        select(ObservationCandidate).where(
+            ObservationCandidate.document_version_id == reading.document_version_id,
+            ObservationCandidate.corroboration_lane == "SECOND_READER",
+        )
+    ).scalars()
+    for model, row in zip(
+        ("mistral.ministral-3-3b-instruct", "mistral.mistral-large-3-675b-instruct"),
+        agreeing,
+        strict=True,
+    ):
+        run = session.get(ExtractionRun, row.extraction_run_id)
+        assert run is not None
+        run.extractor, run.extractor_version = f"bedrock-{model}", model
+    session.flush()
+
+    assert _second_reader_candidate_ids(session, reading) == ()
