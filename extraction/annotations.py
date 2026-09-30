@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import ctypes
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from itertools import pairwise
@@ -74,7 +74,10 @@ __all__ = [
     "MarkupNote",
     "OutlinedTextRegion",
     "PageLayers",
+    "PathSegment",
+    "SegmentKind",
     "StackedFraction",
+    "VectorPath",
     "VendorStamp",
     "read_annotation_layers",
     "read_markup_layer",
@@ -103,6 +106,88 @@ class DrawingLayer(StrEnum):
 
     OTHER = "other"
     """Everything else: `/Line`, `/Square`, `/Ink`. Reported, never merged into the two above."""
+
+
+class SegmentKind(StrEnum):
+    """What one step of a vector path does, as the file states it (#756)."""
+
+    MOVE = "move"
+    """Lift the pen and start a new sub-path here. The two ticks of an inch mark are two of these."""
+
+    LINE = "line"
+    """A straight line from the previous point to this one."""
+
+    BEZIER = "bezier"
+    """One of the three points of a cubic Bézier: two control points, then the end point, in order.
+    pdfium reports each as its own segment. A control point is not on the curve, so drawing
+    through it would put a corner where the file has a curve."""
+
+    UNKNOWN = "unknown"
+    """A step pdfium could not name. Kept rather than dropped, so a shape with one is known to be
+    incomplete and can be refused rather than drawn wrongly."""
+
+
+@dataclass(frozen=True, slots=True)
+class PathSegment:
+    """One step of a path: what it does, where it ends, and whether it closes its sub-path."""
+
+    kind: SegmentKind
+    point: tuple[Decimal, Decimal]
+    closes: bool
+
+
+@dataclass(frozen=True, slots=True)
+class VectorPath:
+    """One path object from the vendor's drawing, with what it takes to draw it again (#756).
+
+    **Why points alone were not enough.** A path used to be kept as its points, in order. That joins
+    an inch mark's two ticks into one stroke, draws a Bézier through its control points, and cannot
+    tell a filled outline from a stroked line — and on the client's drawing each character is one
+    path object, so the path *is* the character's shape. A shape reader needs the shape.
+
+    `points` is exactly the sequence the path used to be kept as, so everything that ran on points
+    runs on the same numbers.
+    """
+
+    segments: tuple[PathSegment, ...]
+    stroked: bool | None
+    """Whether the path is drawn as a line. `None` where pdfium could not say, which a shape reader
+    must treat as unknown rather than as either answer."""
+    filled: bool | None
+    """Whether the path is filled in. `None` as for `stroked`."""
+
+    @property
+    def points(self) -> tuple[tuple[Decimal, Decimal], ...]:
+        return tuple(segment.point for segment in self.segments)
+
+    def placed(
+        self, placement: tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal]
+    ) -> VectorPath:
+        """The same path in page space, through the stamp's placement affine."""
+        a, b, c, d, e, f = placement
+        return VectorPath(
+            segments=tuple(
+                PathSegment(
+                    kind=segment.kind,
+                    point=(
+                        a * segment.point[0] + c * segment.point[1] + e,
+                        b * segment.point[0] + d * segment.point[1] + f,
+                    ),
+                    closes=segment.closes,
+                )
+                for segment in self.segments
+            ),
+            stroked=self.stroked,
+            filled=self.filled,
+        )
+
+
+#: pdfium's segment types, by the raw constant.
+_SEGMENT_KINDS: Final = {
+    pdfium_raw.FPDF_SEGMENT_MOVETO: SegmentKind.MOVE,
+    pdfium_raw.FPDF_SEGMENT_LINETO: SegmentKind.LINE,
+    pdfium_raw.FPDF_SEGMENT_BEZIERTO: SegmentKind.BEZIER,
+}
 
 
 #: The annotation subtypes each layer is made of. A subtype absent here is `OTHER`, which is a
@@ -182,6 +267,14 @@ class OutlinedTextRegion:
     This is read from the stamp's placement matrix, not from the crop pixels. ``region_crop`` uses
     it to turn vertical labels upright before a reader sees them, and to invert reader rectangles
     back to the unrotated page.
+    """
+
+    glyph_paths: tuple[VectorPath, ...] = field(default=(), compare=False)
+    """The paths this region was formed from, in page space (PDF points), in drawing order (#756).
+
+    On the client's drawing one path object is one character, so these are the label's characters
+    as the file draws them — what a shape reader reads, where a model reads the pixels. Not part of
+    the region's equality: a region is the same region whatever its paths are compared by.
     """
 
 
@@ -497,10 +590,12 @@ def _visible_annotation_rect(
     return visible
 
 
-def _stamp_paths(
-    opened_pdf: Any, page_index: int, annotation_index: int
-) -> tuple[tuple[tuple[Decimal, Decimal], ...], ...]:
-    """Every path in one annotation's appearance, as tuples of points in appearance space.
+def _stamp_paths(opened_pdf: Any, page_index: int, annotation_index: int) -> tuple[VectorPath, ...]:
+    """Every path in one annotation's appearance, in appearance space, as the file draws it.
+
+    Each keeps its segment kinds, close flags and draw mode (#756). A segment whose point pdfium
+    cannot read is skipped, exactly as before, so `VectorPath.points` is the sequence this used to
+    return.
 
     pypdfium2's raw bindings rather than its Python wrapper, because the wrapper has no annotation
     object accessor. The handle is closed in a `finally` so a raised refusal does not leak it.
@@ -514,7 +609,7 @@ def _stamp_paths(
     if not annotation:
         raise UnreadablePdf(f"annotation {annotation_index} could not be opened for its geometry")
     try:
-        paths: list[tuple[tuple[Decimal, Decimal], ...]] = []
+        paths: list[VectorPath] = []
         for index in range(pdfium_raw.FPDFAnnot_GetObjectCount(annotation)):
             page_object = pdfium_raw.FPDFAnnot_GetObject(annotation, index)
             if pdfium_raw.FPDFPageObj_GetType(page_object) != pdfium_raw.FPDF_PAGEOBJ_PATH:
@@ -543,7 +638,7 @@ def _stamp_paths(
                     Decimal(0),
                     Decimal(0),
                 )
-            points: list[tuple[Decimal, Decimal]] = []
+            segments: list[PathSegment] = []
             for position in range(pdfium_raw.FPDFPath_CountSegments(page_object)):
                 segment = pdfium_raw.FPDFPath_GetPathSegment(page_object, position)
                 x, y = ctypes.c_float(), ctypes.c_float()
@@ -552,9 +647,34 @@ def _stamp_paths(
                 ):
                     continue
                 point_x, point_y = _decimal(x.value), _decimal(y.value)
-                points.append((a * point_x + c * point_y + e, b * point_x + d * point_y + f))
-            if points:
-                paths.append(tuple(points))
+                segments.append(
+                    PathSegment(
+                        kind=_SEGMENT_KINDS.get(
+                            pdfium_raw.FPDFPathSegment_GetType(segment), SegmentKind.UNKNOWN
+                        ),
+                        point=(a * point_x + c * point_y + e, b * point_x + d * point_y + f),
+                        closes=bool(pdfium_raw.FPDFPathSegment_GetClose(segment)),
+                    )
+                )
+            if segments:
+                # **Stroked or filled, from the file.** 97.8% of the client's glyph-sized paths are
+                # stroked; the rest are outlines filled in. The two draw the same character
+                # differently, so a shape reader has to know which it is looking at.
+                fill_mode, stroke = ctypes.c_int(), ctypes.c_int()
+                known = bool(
+                    pdfium_raw.FPDFPath_GetDrawMode(
+                        page_object, ctypes.byref(fill_mode), ctypes.byref(stroke)
+                    )
+                )
+                paths.append(
+                    VectorPath(
+                        segments=tuple(segments),
+                        stroked=bool(stroke.value) if known else None,
+                        filled=(
+                            (fill_mode.value != pdfium_raw.FPDF_FILLMODE_NONE) if known else None
+                        ),
+                    )
+                )
         return tuple(paths)
     finally:
         pdfium_raw.FPDFPage_CloseAnnot(annotation)
@@ -575,15 +695,6 @@ def _pdfium_rect(
         return _rect([rect.left, rect.bottom, rect.right, rect.top])
     finally:
         pdfium_raw.FPDFPage_CloseAnnot(annotation)
-
-
-def _placed(
-    points: tuple[tuple[Decimal, Decimal], ...],
-    placement: tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal],
-) -> tuple[tuple[Decimal, Decimal], ...]:
-    """Appearance-space points in page space, through one affine."""
-    a, b, c, d, e, f = placement
-    return tuple((a * x + c * y + e, b * x + d * y + f) for x, y in points)
 
 
 def _long_segments(
@@ -893,7 +1004,7 @@ def _read_layers(
                         placement = _appearance_transform(annotation, rect)
                         baseline_rotation_degrees = _baseline_rotation_degrees(placement)
                         paths = tuple(
-                            _placed(path, placement)
+                            path.placed(placement)
                             for path in _stamp_paths(pdfium_document, page_index, index)
                         )
                     except (UnreadablePdf, TypeError, ValueError) as error:
@@ -912,7 +1023,7 @@ def _read_layers(
                         if all(
                             visible_rect[0] <= x <= visible_rect[2]
                             and visible_rect[1] <= y <= visible_rect[3]
-                            for x, y in path
+                            for x, y in path.points
                         )
                     )
                     if len(inside) != len(paths):
@@ -1002,7 +1113,7 @@ def _read_layers(
 
 
 def _drawing_geometry(
-    paths: tuple[tuple[tuple[Decimal, Decimal], ...], ...],
+    vector_paths: tuple[VectorPath, ...],
     *,
     transform: PageTransform,
     document_version_id: UUID,
@@ -1022,7 +1133,12 @@ def _drawing_geometry(
     int,
 ]:
     """One stamp's paths split into line-work, candidate text regions and stacked fractions, plus
-    what was left over."""
+    what was left over.
+
+    Everything is decided on each path's points, as it always was. The full paths ride along only
+    so a region can carry its members (#756).
+    """
+    paths = tuple(path.points for path in vector_paths)
     segments: list[DimensionExtent] = []
     ignored_segments = 0
     for start, end in _long_segments(paths, line_minimum_pt):
@@ -1049,12 +1165,14 @@ def _drawing_geometry(
 
     small: list[tuple[Decimal, Decimal, Decimal, Decimal]] = []
     small_paths: list[tuple[tuple[Decimal, Decimal], ...]] = []
+    small_vector_paths: list[VectorPath] = []
     ignored = ignored_segments
-    for path in paths:
+    for path, vector_path in zip(paths, vector_paths, strict=True):
         left, bottom, right, top = _bounds(path)
         if right - left < glyph_maximum_pt and top - bottom < glyph_maximum_pt:
             small.append((left, bottom, right, top))
             small_paths.append(path)
+            small_vector_paths.append(vector_path)
         elif not _long_segments((path,), line_minimum_pt):
             ignored += 1
 
@@ -1104,6 +1222,7 @@ def _drawing_geometry(
                 point_count=sum(len(small_paths[index]) for index in cluster),
                 stacked_glyphs=any(_touches(rect, box) for box in fraction_boxes),
                 baseline_rotation_degrees=baseline_rotation_degrees,
+                glyph_paths=tuple(small_vector_paths[index] for index in cluster),
             )
         )
 
