@@ -307,7 +307,9 @@ def test_match_finds_nothing_and_says_why_rather_than_reporting_success(
 
     assert result["items"] == 0
     assert result["candidates"] == 0
-    assert "#274" in str(result["reason"]) and "Q20" in str(result["reason"])
+    # It names what is actually missing (#748) and no longer blames "the real drawings (#274)",
+    # which arrived long ago (#710).
+    assert "#748" in str(result["reason"]) and "#274" not in str(result["reason"])
 
 
 # ---------------------------------------------------------------------------

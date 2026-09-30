@@ -1,0 +1,170 @@
+"""Which drawing on a sheet is the architect's and which the vendor's: suggested, then confirmed (#710).
+
+A package is compared as one architectural drawing against one shop drawing. With two files, the
+upload says which is which (`Document.kind`). With one combined sheet, each drawing on it becomes a
+`DrawingView`, the sheet's own labels give a *suggestion* (`ViewRoleProposal`), and only a person's
+confirmation (`ViewRoleConfirmation`) sets `DrawingView.role`. Nothing here reads a role from where a
+drawing sits, from the document kind, or from page order.
+
+**No extraction imports, on purpose.** The confirmation is made through the API, and
+`tests/api/test_no_heavy_work.py` keeps `app/api/` away from anything that renders or reads a PDF.
+The stage that reads the sheet passes plain values in.
+
+Source: issue #710. Verification: tests/workflow/test_view_roles.py.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from decimal import Decimal
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.audit.events import AuditCategory, emit
+from app.models import (
+    DrawingView,
+    PackageRevisionDocument,
+    Page,
+    ViewRole,
+    ViewRoleConfirmation,
+    ViewRoleProposal,
+)
+
+__all__ = [
+    "PANEL_SOURCE",
+    "RevisionView",
+    "confirm_view_role",
+    "panel_tag",
+    "record_panel_view",
+    "revision_views",
+]
+
+#: What made a suggestion. Versioned so a later, different reader writes different rows.
+PANEL_SOURCE = "panel-heading-label/v1"
+
+
+def panel_tag(annotation_index: int) -> str:
+    """The name a drawing view gets before its printed tag has been read.
+
+    `DrawingView.tag` is meant to be what the sheet prints (`A`, `8`). On the client's sheets that tag
+    is drawn as outlines no reader sees yet, so a view is named after the stamp it came from — stable
+    across re-reads, unique on the page — until the printed tag can replace it.
+    """
+    return f"panel-{annotation_index}"
+
+
+def record_panel_view(
+    session: Session,
+    *,
+    page_id: UUID,
+    annotation_index: int,
+    stored_points: Sequence[tuple[Decimal, Decimal]],
+    proposed_role: str | None,
+    heading: str | None,
+    reason: str,
+) -> DrawingView:
+    """Find or create the view for one drawing, and file what its label suggests.
+
+    **Never sets the role.** A view created here has `role = NULL`, and a view that already has a
+    confirmed role keeps it. A re-read that suggests the same thing again adds nothing.
+    """
+    if proposed_role is not None and proposed_role not in {role.value for role in ViewRole}:
+        raise ValueError(f"proposed_role must be one of {[r.value for r in ViewRole]} or None")
+    tag = panel_tag(annotation_index)
+    view = session.execute(
+        select(DrawingView).where(DrawingView.page_id == page_id, DrawingView.tag == tag)
+    ).scalar_one_or_none()
+    if view is None:
+        view = DrawingView(
+            page_id=page_id,
+            tag=tag,
+            region={"space": "stored", "points": [[str(x), str(y)] for x, y in stored_points]},
+        )
+        session.add(view)
+        session.flush()
+
+    latest = session.execute(
+        select(ViewRoleProposal)
+        .where(ViewRoleProposal.drawing_view_id == view.id, ViewRoleProposal.source == PANEL_SOURCE)
+        .order_by(ViewRoleProposal.created_at.desc(), ViewRoleProposal.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if latest is None or (latest.proposed_role, latest.heading) != (proposed_role, heading):
+        session.add(
+            ViewRoleProposal(
+                drawing_view_id=view.id,
+                proposed_role=proposed_role,
+                heading=heading,
+                reason=reason,
+                source=PANEL_SOURCE,
+            )
+        )
+        session.flush()
+    return view
+
+
+def confirm_view_role(
+    session: Session, *, view: DrawingView, role: ViewRole, actor: str
+) -> ViewRoleConfirmation:
+    """A person saying which drawing this is. **The only code that sets `DrawingView.role`.**
+
+    The confirmation is recorded first and the view carries the latest one, so a correction is a new
+    row and the history of who said what stays.
+    """
+    if not isinstance(role, ViewRole):
+        raise TypeError("role must be a ViewRole")
+    if not isinstance(actor, str) or not actor.strip():
+        raise ValueError("a confirmation needs the person who made it")
+    confirmation = ViewRoleConfirmation(
+        drawing_view_id=view.id, role=role.value, confirmed_by=actor
+    )
+    session.add(confirmation)
+    view.role = role.value
+    session.flush()
+    # Audited in the same transaction, like every reviewer action: the role decides which side of
+    # every comparison this drawing's items land on.
+    emit(
+        session,
+        category=AuditCategory.REVIEW_ACTION,
+        actor=actor,
+        target_id=confirmation.id,
+        target_type="view_role_confirmation",
+    )
+    session.flush()
+    return confirmation
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionView:
+    """One drawing view of a revision, with its page, confirmed role and latest suggestion."""
+
+    view: DrawingView
+    page_index: int
+    proposal: ViewRoleProposal | None
+
+
+def revision_views(session: Session, package_revision_id: UUID) -> tuple[RevisionView, ...]:
+    """Every drawing view on the revision's pages, in page order, each with its latest suggestion."""
+    rows = session.execute(
+        select(DrawingView, Page.index)
+        .join(Page, Page.id == DrawingView.page_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == Page.document_version_id,
+        )
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .order_by(Page.index, DrawingView.tag)
+    ).all()
+    result: list[RevisionView] = []
+    for view, page_index in rows:
+        proposal = session.execute(
+            select(ViewRoleProposal)
+            .where(ViewRoleProposal.drawing_view_id == view.id)
+            .order_by(ViewRoleProposal.created_at.desc(), ViewRoleProposal.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        result.append(RevisionView(view=view, page_index=page_index, proposal=proposal))
+    return tuple(result)

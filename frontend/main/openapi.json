@@ -748,6 +748,23 @@
         "title": "ConfirmIn",
         "type": "object"
       },
+      "ConfirmRoleIn": {
+        "properties": {
+          "role": {
+            "enum": [
+              "arch",
+              "shop"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "ConfirmRoleIn",
+        "type": "object"
+      },
       "ConfirmedOut": {
         "description": "The evidence a confirmation produced.",
         "properties": {
@@ -3459,6 +3476,95 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "ViewOut": {
+        "description": "One drawing on a page, as a reviewer needs it to say which drawing it is.",
+        "properties": {
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "suggested_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested From"
+          },
+          "suggested_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Role"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "view_id": {
+            "format": "uuid",
+            "title": "View Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view_id",
+          "page_index",
+          "tag",
+          "role",
+          "suggested_role",
+          "suggested_from",
+          "reason"
+        ],
+        "title": "ViewOut",
+        "type": "object"
+      },
+      "ViewsOut": {
+        "properties": {
+          "views": {
+            "items": {
+              "$ref": "#/components/schemas/ViewOut"
+            },
+            "title": "Views",
+            "type": "array"
+          }
+        },
+        "required": [
+          "views"
+        ],
+        "title": "ViewsOut",
+        "type": "object"
+      },
       "app__schemas__distribution__QuantityOut": {
         "description": "One exact dimension, rendered without a JSON float.",
         "properties": {
@@ -5428,6 +5534,133 @@
         "summary": "Open a review session over one package revision",
         "tags": [
           "review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/views": {
+      "get": {
+        "operationId": "list_views_api_v1_projects__project_id__packages__package_id__views_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The drawings found on this package's pages, and what each one is suggested to be",
+        "tags": [
+          "drawing views"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/role": {
+      "post": {
+        "description": "Record a reviewer's answer and set the drawing's role. Recorded, audited, and correctable by\nconfirming again \u2014 the latest answer is the one that counts, and every earlier one is kept.",
+        "operationId": "confirm_role_api_v1_projects__project_id__packages__package_id__views__view_id__role_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "view_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "View Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmRoleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Say which drawing this is: the architect's or the vendor's",
+        "tags": [
+          "drawing views"
         ]
       }
     },
