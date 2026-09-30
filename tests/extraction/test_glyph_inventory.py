@@ -481,3 +481,290 @@ def test_characters_inside_an_answer_keys_crops_never_become_shapes_to_label(
     assert meta["glyphs"] == len(glyphs) - len(first_label)
     assert meta["skipped"]["inside an excluded answer-key crop"] == len(first_label)
     assert meta["excluded_crops"] == "crops.csv"
+
+
+# ---------------------------------------------------------------------------
+# split
+# ---------------------------------------------------------------------------
+
+#: A box and a box with a bar across its middle, twice each, and an inch mark twice. The two boxes
+#: share 84% of their ink, so the inventory's 0.5 puts all four in one group — the fault split
+#: exists for, measured on `AI_Set_2` as a `3` grouped with a `5` and a `0` with a `D`.
+MIXED_APPEARANCE = b"0.2 w 100 500 m 300 500 l S\n" + b"".join(
+    f"{110 + dx} 503 m {113.6 + dx} 503 l {113.6 + dx} 508.5 l {110 + dx} 508.5 l h S\n".encode()
+    + (
+        f"{115 + dx} 503 m {118.6 + dx} 503 l {118.6 + dx} 508.5 l {115 + dx} 508.5 l h "
+        f"{115 + dx} 505.75 m {118.6 + dx} 505.75 l S\n"
+    ).encode()
+    + f"{120.0 + dx} 506.9 m {120.5 + dx} 508.5 l {121.6 + dx} 506.9 m {122.1 + dx} 508.5 l S\n".encode()
+    for dx in (0, 60)
+)
+
+
+@pytest.fixture(scope="module")
+def _mixed_once(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """An inventory holding one mixed group, written by the real command, once for the module."""
+    tmp_path = tmp_path_factory.mktemp("mixed")
+    drawing = tmp_path / "shop.pdf"
+    drawing.write_bytes(
+        _pdf(
+            annotations=[_stamp(appearance_object=6)],
+            extra_objects=[_appearance(MIXED_APPEARANCE)],
+        )
+    )
+    settings = tmp_path / "demo.sh"
+    settings.write_text(READER, encoding="utf-8")
+    out = tmp_path / "inventory"
+    assert (
+        main(
+            [
+                "inventory",
+                str(drawing),
+                "--pages",
+                "1",
+                "--out",
+                str(out),
+                "--reader-settings",
+                str(settings),
+                *SHAPE_ARGUMENTS,
+            ]
+        )
+        == 0
+    )
+    return out
+
+
+@pytest.fixture()
+def mixed(_mixed_once: Path, tmp_path: Path) -> Path:
+    """A private copy per test, because split rewrites the inventory in place."""
+    import shutil
+
+    copy = tmp_path / "inventory"
+    shutil.copytree(_mixed_once, copy)
+    shutil.copy(_mixed_once.parent / "shop.pdf", tmp_path / "shop.pdf")
+    return copy
+
+
+def _split(out: Path, *extra: str) -> int:
+    return main(["split", str(out), "--pdf", str(out.parent / "shop.pdf"), *extra])
+
+
+def _group_of_four(out: Path) -> str:
+    (four,) = [row["cluster_id"] for row in _clusters(out) if row["count"] == "4"]
+    return four
+
+
+def _write_labels(path: Path, rows: dict[str, tuple[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["cluster_id", "label", "mixed", "note"])
+        for cluster, (label, note) in rows.items():
+            writer.writerow([cluster, label, "", note])
+
+
+def test_the_fixture_really_puts_two_characters_in_one_group(mixed: Path) -> None:
+    """Precondition: at the inventory's 0.5 the box and the barred box are one group of four."""
+    assert sorted(int(row["count"]) for row in _clusters(mixed)) == [2, 4]
+
+
+def test_a_mixed_group_comes_apart_at_a_stricter_overlap(mixed: Path) -> None:
+    """Outcome: the group of four becomes two groups of two, named after it and shown first."""
+    four = _group_of_four(mixed)
+
+    assert _split(mixed, "--clusters", four, "--minimum-overlap", "0.9") == 0
+
+    rows = {row["cluster_id"]: row for row in _clusters(mixed)}
+    assert four not in rows
+    assert rows[f"{four}.1"]["count"] == "2" and rows[f"{four}.2"]["count"] == "2"
+    assert rows[f"{four}.1"]["suggested"] == "", "a group that held two characters suggests nothing"
+    glyphs = json.loads((mixed / "glyphs.json").read_text(encoding="utf-8"))
+    assert four not in {glyph["cluster"] for glyph in glyphs}
+    meta = json.loads((mixed / "inventory.json").read_text(encoding="utf-8"))
+    assert meta["splits"] == [
+        {
+            "cluster": four,
+            "minimum_overlap": "0.9",
+            "into": [f"{four}.1", f"{four}.2"],
+            "sizes": [2, 2],
+        }
+    ]
+    page = (mixed / "label.html").read_text(encoding="utf-8")
+    order = [cluster for cluster in page.split('<tr data-id="')[1:]]
+    assert order[0].startswith(f'{four}.1"') and order[1].startswith(
+        f'{four}.2"'
+    ), "new groups first"
+
+
+def test_each_new_group_holds_one_shape(mixed: Path) -> None:
+    """Outcome: every member of a new group is the same drawing — the box, or the barred box."""
+    four = _group_of_four(mixed)
+    _split(mixed, "--clusters", four, "--minimum-overlap", "0.9")
+    glyphs = json.loads((mixed / "glyphs.json").read_text(encoding="utf-8"))
+    rasters = np.load(mixed / "rasters.npy")
+
+    for new in (f"{four}.1", f"{four}.2"):
+        members = [index for index, glyph in enumerate(glyphs) if glyph["cluster"] == new]
+        assert len(members) == 2
+        assert np.array_equal(rasters[members[0]], rasters[members[1]])
+
+
+def test_a_split_must_be_stricter_than_the_overlap_that_formed_the_group(
+    mixed: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Failure mode: the inventory's own overlap would only rebuild the same group."""
+    before = (mixed / "clusters.csv").read_text(encoding="utf-8")
+
+    assert _split(mixed, "--clusters", _group_of_four(mixed), "--minimum-overlap", "0.5") == 2
+    assert "must be stricter" in capsys.readouterr().err
+    assert (mixed / "clusters.csv").read_text(encoding="utf-8") == before
+
+
+def test_a_split_group_cannot_be_split_again_at_its_own_overlap(
+    mixed: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Failure mode: a new group was formed at the split's overlap, so that is its floor too."""
+    four = _group_of_four(mixed)
+    _split(mixed, "--clusters", four, "--minimum-overlap", "0.9")
+
+    assert _split(mixed, "--clusters", f"{four}.1", "--minimum-overlap", "0.9") == 2
+    assert "grouped at an overlap of 0.9" in capsys.readouterr().err
+
+
+def test_a_split_needs_the_drawing_the_inventory_was_made_from(
+    mixed: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Failure mode: another drawing's regions would put the wrong context beside every group."""
+    other = tmp_path / "other.pdf"
+    other.write_bytes(
+        _pdf(
+            annotations=[_stamp(appearance_object=6)],
+            extra_objects=[_appearance(LABELS_APPEARANCE)],
+        )
+    )
+
+    code = main(
+        [
+            "split",
+            str(mixed),
+            "--pdf",
+            str(other),
+            "--clusters",
+            _group_of_four(mixed),
+            "--minimum-overlap",
+            "0.9",
+        ]
+    )
+
+    assert code == 2
+    assert "not the drawing this inventory was made from" in capsys.readouterr().err
+
+
+def test_an_unknown_group_is_refused(mixed: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert _split(mixed, "--clusters", "c9999", "--minimum-overlap", "0.9") == 2
+    assert "no group named" in capsys.readouterr().err
+
+
+def test_a_group_that_does_not_come_apart_is_left_exactly_as_it_was(
+    made: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Outcome: identical copies stay together at any overlap, and nothing is rewritten."""
+    before = {
+        name: (made / name).read_bytes()
+        for name in ("clusters.csv", "glyphs.json", "inventory.json")
+    }
+    drawing = tmp_path / "shop.pdf"
+    drawing.write_bytes(
+        _pdf(
+            annotations=[_stamp(appearance_object=6)],
+            extra_objects=[_appearance(LABELS_APPEARANCE)],
+        )
+    )
+    first = _clusters(made)[0]["cluster_id"]
+
+    code = main(
+        [
+            "split",
+            str(made),
+            "--pdf",
+            str(drawing),
+            "--clusters",
+            first,
+            "--minimum-overlap",
+            "0.99",
+        ]
+    )
+
+    assert code == 0
+    assert "did not come apart" in capsys.readouterr().out
+    assert {name: (made / name).read_bytes() for name in before} == before
+
+
+def test_a_split_keeps_every_other_label_and_drops_the_mixed_one(
+    mixed: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Outcome: the page fills back in what the person saved, except a label given to the mixture."""
+    four = _group_of_four(mixed)
+    (ticks,) = [row["cluster_id"] for row in _clusters(mixed) if row["cluster_id"] != four]
+    saved = tmp_path / "saved.csv"
+    _write_labels(
+        saved, {four: ("0", "a guess at a mixture"), ticks: ("'", "checked by a reviewer")}
+    )
+
+    assert (
+        _split(mixed, "--clusters", four, "--minimum-overlap", "0.9", "--labels", str(saved)) == 0
+    )
+
+    page = (mixed / "label.html").read_text(encoding="utf-8")
+    ticks_row = page.split(f'<tr data-id="{ticks}"')[1].split("</tr>")[0]
+    assert 'value="&#x27;"' in ticks_row and 'value="checked by a reviewer"' in ticks_row
+    for new in (f"{four}.1", f"{four}.2"):
+        new_row = page.split(f'<tr data-id="{new}"')[1].split("</tr>")[0]
+        assert (
+            'class="label" size="14" placeholder="type it">' in new_row
+        ), "a new group starts empty"
+    assert "not carried" in capsys.readouterr().out
+
+
+def test_labels_for_groups_the_inventory_lacks_are_refused(
+    mixed: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    saved = tmp_path / "saved.csv"
+    _write_labels(saved, {"c9999": ("1", "")})
+
+    assert (
+        _split(
+            mixed,
+            "--clusters",
+            _group_of_four(mixed),
+            "--minimum-overlap",
+            "0.9",
+            "--labels",
+            str(saved),
+        )
+        == 2
+    )
+    assert "does not have" in capsys.readouterr().err
+
+
+def test_split_groups_build_and_the_set_records_the_split(mixed: Path, tmp_path: Path) -> None:
+    """Outcome: once the new groups are labelled the set builds, and says which split made them."""
+    four = _group_of_four(mixed)
+    _split(mixed, "--clusters", four, "--minimum-overlap", "0.9")
+    _save_labels(mixed, {f"{four}.1": "0", f"{four}.2": "8"})
+
+    assert _build(mixed, tmp_path / "templates") == 0
+
+    (target,) = (tmp_path / "templates").iterdir()
+    manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["splits"][0]["cluster"] == four
+    assert {entry["cluster"] for entry in manifest["labels"]} == {f"{four}.1", f"{four}.2"}
+    assert manifest["templates"] == 4
+
+
+def test_a_set_from_an_unsplit_inventory_records_no_split(made: Path, tmp_path: Path) -> None:
+    """Outcome: sets built before splitting existed hash the same way: there is no `splits` entry."""
+    _save_labels(made, _all_labelled(made))
+    _build(made, tmp_path / "templates")
+
+    (target,) = (tmp_path / "templates").iterdir()
+    assert "splits" not in json.loads((target / "manifest.json").read_text(encoding="utf-8"))
