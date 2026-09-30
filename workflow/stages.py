@@ -121,6 +121,7 @@ from extraction.annotations import (
     OutlinedTextRegion,
     PageLayers,
     StackedFraction,
+    page_box_polygon,
     read_annotation_layers,
     read_markup_layer,
 )
@@ -190,6 +191,7 @@ from workflow.findings_composer import (
     compose_findings,
     reviewer_reason,
 )
+from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
@@ -694,6 +696,7 @@ class DatabaseStages:
         layout_prompt_id: str = LAYOUT_PROMPT_ID,
         bounded_agent: BoundedAgentGraph | None = None,
         bounded_agent_actions: _AgentActionFactory | None = None,
+        glyph_route: GlyphRoute | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -736,6 +739,9 @@ class DatabaseStages:
         if bounded_agent is None and bounded_agent_actions is not None:
             raise ValueError("bounded_agent_actions cannot be supplied without a bounded_agent")
         self._bounded_agent = bounded_agent
+        # **The shape reader (#756), off unless a deployment points it at a template set.** Its
+        # readings are recorded for a reviewer to confirm and never sealed; see `workflow/glyph_route`.
+        self._glyph_route = glyph_route
         self._bounded_agent_actions = (
             _default_bounded_agent_actions
             if bounded_agent is not None and bounded_agent_actions is None
@@ -977,6 +983,12 @@ class DatabaseStages:
             ocr_items: tuple[OcrItem, ...] = ()
             ocr_rows: list[ObservationCandidate] = []
             ocr_fragments: tuple[OcrItem, ...] = ()
+            glyph_rows: list[ObservationCandidate] = []
+            glyph_association: tuple[tuple[_LocatedOcrReading, ...], list[ObservationCandidate]] = (
+                (),
+                [],
+            )
+            glyph_abstentions: Counter[str] | None = None
             vision_rows: list[ObservationCandidate] = []
             vision_invocations = 0
             vision_refusals: list[str] = []
@@ -1070,6 +1082,17 @@ class DatabaseStages:
                             layers=layers,
                             regions=tuple(entry.region for entry in plan.to_read),
                         )
+                        if self._glyph_route is not None:
+                            glyph_rows, glyph_association, glyph_abstentions = (
+                                self._read_page_by_glyphs(
+                                    session,
+                                    version_id=version_id,
+                                    page=page,
+                                    task_run_id=run.task_run_id,
+                                    layers=layers,
+                                    regions=tuple(entry.region for entry in plan.to_read),
+                                )
+                            )
                     else:
                         # No line-selected region is an explicit localized abstention. Falling
                         # back to full-page OCR would reintroduce the tiny-text failure and could
@@ -1181,6 +1204,9 @@ class DatabaseStages:
                         association_sources,
                     ),
                     ((layers.markup if layers is not None else ()), markup_rows),
+                    # Glyph readings attach to the line they label like any reading — the reader
+                    # established which way each label runs, which is what `associate` needs.
+                    glyph_association,
                 ),
                 lines=(
                     (read.segments if read is not None else ())
@@ -1191,13 +1217,32 @@ class DatabaseStages:
                 PageResult(
                     index=page.index,
                     payload={
-                        "candidates": written + len(vision_rows) + len(agent_rows),
+                        "candidates": written
+                        + len(vision_rows)
+                        + len(agent_rows)
+                        + len(glyph_rows),
                         "markup_candidates": len(markup_rows),
                         "vision_candidates": len(vision_rows),
                         # OCR text that could not be a reading (#703): counted here because it is
                         # not a candidate, so without this the page would simply look smaller.
                         # Each box was still offered to the vision readers.
                         "ocr_fragments": len(ocr_fragments),
+                        # The shape reader (#756): `None` when it did not run on this page, which
+                        # is not the same fact as its having read nothing.
+                        "glyph_readings": None if glyph_abstentions is None else len(glyph_rows),
+                        "glyph_abstentions": (
+                            None if glyph_abstentions is None else sum(glyph_abstentions.values())
+                        ),
+                        "glyph_abstention_reasons": (
+                            None
+                            if glyph_abstentions is None
+                            else [
+                                f"{count} × {reason}"
+                                for reason, count in glyph_abstentions.most_common(
+                                    REPORTED_REFUSALS
+                                )
+                            ]
+                        ),
                         "ocr_fragment_texts": _fragment_texts(ocr_fragments),
                         "agent_candidates": len(agent_rows),
                         "agent_abstentions": agent_abstentions,
@@ -1932,6 +1977,96 @@ class DatabaseStages:
                 flush=False,
             )
             return readings, self._ordered_ocr_rows(readings, rows), fragments
+
+    def _read_page_by_glyphs(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        page: Page,
+        task_run_id: UUID,
+        layers: PageLayers,
+        regions: Sequence[OutlinedTextRegion],
+    ) -> tuple[
+        list[ObservationCandidate],
+        tuple[tuple[_LocatedOcrReading, ...], list[ObservationCandidate]],
+        Counter[str],
+    ]:
+        """Read the planned regions' labels from their shapes; record each reading; count the rest.
+
+        **Recorded, never sealed.** `corroboration_status` stays unset and the rows are not passed
+        to cross-route corroboration or the bounded agent: until the admin decides what a glyph
+        reading may seal (#756 D2), it is a value a reviewer confirms, pre-filled.
+
+        **Its own extraction run**, keyed on the template set's hash, so a reading made with one set
+        is never mistaken for a reading made with another. A re-run finds its rows and reads nothing.
+
+        Returns the rows, the pair `associate` takes (empty on a re-run, whose rows were associated
+        when they were written), and why each label that abstained did.
+        """
+        route = self._glyph_route
+        assert route is not None
+        run = open_extraction_run(
+            session,
+            task_run_id=task_run_id,
+            extractor=GLYPH_EXTRACTOR,
+            extractor_version=route.templates.set_hash[:12],
+            config_hash=f"dpi={self._dpi};{route.config_hash}",
+            dpi=self._dpi,
+        )
+        with session.no_autoflush:
+            existing = list(
+                session.execute(
+                    select(ObservationCandidate).where(
+                        ObservationCandidate.extraction_run_id == run.id,
+                        ObservationCandidate.page_id == page.id,
+                    )
+                ).scalars()
+            )
+        if existing:
+            return existing, ((), []), Counter()
+        if page.media_box is None or page.crop_box is None:
+            return (
+                [],
+                ((), []),
+                Counter({"the page has no recorded transform, so no reading could be placed": 1}),
+            )
+        media = tuple(Decimal(value) for value in page.media_box)
+        crop = tuple(Decimal(value) for value in page.crop_box)
+        transform = PageTransform(
+            dpi=self._dpi,
+            rotation=page.rotation,
+            media_box=(media[0], media[1], media[2], media[3]),
+            crop_box=(crop[0], crop[1], crop[2], crop[3]),
+        )
+        readings, abstentions = read_page_labels(regions, layers.glyph_paths, route)
+        rows: list[ObservationCandidate] = []
+        items: list[_LocatedOcrReading] = []
+        for reading in readings:
+            try:
+                extent, corners = page_box_polygon(reading.box, transform, version_id, page.index)
+            except (TypeError, ValueError):
+                abstentions["the label lies outside the visible page"] += 1
+                continue
+            row = ObservationCandidate(
+                document_version_id=version_id,
+                page_id=page.id,
+                extraction_run_id=run.id,
+                raw_text=reading.text,
+                value_numerator=reading.value.exact.numerator,
+                value_denominator=reading.value.exact.denominator,
+                unit=reading.value.unit.value,
+                unit_guess=reading.value.unit.value,
+                semantic_guess=None,
+                polygon=[[corner.x, corner.y] for corner in corners],
+                coordinate_space="image",
+                confidence=None,
+                ambiguity_flags=[],
+            )
+            session.add(row)
+            rows.append(row)
+            items.append(_LocatedOcrReading(extent, reading.rotation_degrees))
+        return rows, (tuple(items), rows), abstentions
 
     def _read_page_by_vision(
         self,

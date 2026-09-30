@@ -81,6 +81,7 @@ __all__ = [
     "VectorPath",
     "VendorStamp",
     "glyph_runs",
+    "page_box_polygon",
     "read_annotation_layers",
     "read_markup_layer",
 ]
@@ -834,6 +835,20 @@ def _glyph_runs(
 
     runs.sort(key=lambda run: min(run))
     return runs, orphaned
+
+
+def page_box_polygon(
+    rect: tuple[Decimal, Decimal, Decimal, Decimal],
+    transform: PageTransform,
+    document_version_id: UUID,
+    page_index: int,
+) -> tuple[Polygon, tuple[ImagePoint, ...]]:
+    """A PDF-point box as the stored polygon and image corners every candidate row is placed by.
+
+    The same computation regions and markup are placed with, for a reader outside this module that
+    places a label it read from these paths (#756 phase E).
+    """
+    return _polygon(rect, transform, document_version_id, page_index)
 
 
 def glyph_runs(
