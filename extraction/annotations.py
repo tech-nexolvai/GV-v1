@@ -17,9 +17,10 @@ file as strings.
    paths with real coordinates. `extraction/geometry/text_association.py` was written to attach a
    reading to the line it annotates and has never been given vector line-work on a sheet like this.
 
-3. **Only the vendor's numbers need a model.** Its text is converted to outlines — glyph shapes drawn
-   as paths — so no dictionary holds it and no OCR-free route exists. Those regions, and only those,
-   are what the vision seam is for.
+3. **Only the vendor's numbers need reading from shapes.** Its text is converted to outlines — glyph
+   shapes drawn as paths — so no dictionary holds it. Those regions, and only those, are what the
+   vision seam is for, and since #756 what `extraction/glyph_reader.py` reads from the paths
+   themselves once a person has labelled each character's shape.
 
 **And the layers contradict each other, which is the point.** On page 3 the vendor drawing says
 `191"` where the markup says `185 1/4"`; elsewhere the drawing says `3"+2"Filler` and the markup
@@ -79,6 +80,7 @@ __all__ = [
     "StackedFraction",
     "VectorPath",
     "VendorStamp",
+    "glyph_runs",
     "read_annotation_layers",
     "read_markup_layer",
 ]
@@ -352,6 +354,15 @@ class PageLayers:
     fractions_read: bool = False
     """Whether the bar detector ran. `False` makes an empty `stacked_fractions` mean *nobody looked*,
     the same distinction `geometry_read` draws for line-work."""
+
+    glyph_paths: tuple[VectorPath, ...] = field(default=(), compare=False)
+    """Every glyph-sized path on the vendor's layer, in page space, whether or not a region holds it
+    (#756 phase C).
+
+    A region holds only the paths `_glyph_runs` grouped, and that grouping advances along the
+    stamp's baseline: a sideways label's characters and a stacked fraction's bar and denominator
+    are left out of every region. A shape reader forms its own labels from all of them.
+    """
 
     @property
     def readable(self) -> bool:
@@ -825,6 +836,20 @@ def _glyph_runs(
     return runs, orphaned
 
 
+def glyph_runs(
+    boxes: list[tuple[Decimal, Decimal, Decimal, Decimal]],
+    gap_pt: Decimal,
+    baseline_rotation_degrees: int,
+) -> tuple[list[list[int]], int]:
+    """The run grouping regions are formed by, for a reader that must size characters the same way.
+
+    `scripts/glyph_inventory.py` sizes every character against the region it came from, and
+    `extraction/glyph_reader.py` has to size a character it reads by the same rule or a shape a
+    person labelled would not match itself (#756 phase C). One grouping, not two copies of it.
+    """
+    return _glyph_runs(boxes, gap_pt, baseline_rotation_degrees)
+
+
 def read_markup_layer(
     data: bytes,
     page_index: int,
@@ -940,6 +965,7 @@ def _read_layers(
     regions: list[OutlinedTextRegion] = []
     fractions: list[StackedFraction] = []
     stamps: list[VendorStamp] = []
+    glyph_paths: list[VectorPath] = []
     refusals: list[LayerRefusal] = []
 
     try:
@@ -1050,6 +1076,7 @@ def _read_layers(
                     segments.extend(found[0])
                     regions.extend(found[1])
                     fractions.extend(found[2])
+                    glyph_paths.extend(found[3])
                     if ignored:
                         refusals.append(
                             LayerRefusal(
@@ -1109,6 +1136,7 @@ def _read_layers(
         stacked_fractions=tuple(fractions),
         fractions_read=geometry is not None and geometry[3] is not None,
         vendor_stamps=tuple(stamps),
+        glyph_paths=tuple(glyph_paths),
     )
 
 
@@ -1128,6 +1156,7 @@ def _drawing_geometry(
         tuple[DimensionExtent, ...],
         tuple[OutlinedTextRegion, ...],
         tuple[StackedFraction, ...],
+        tuple[VectorPath, ...],
     ],
     int,
     int,
@@ -1226,7 +1255,11 @@ def _drawing_geometry(
             )
         )
 
-    return (tuple(segments), tuple(regions), tuple(fractions)), ignored, orphaned_glyphs
+    return (
+        (tuple(segments), tuple(regions), tuple(fractions), tuple(small_vector_paths)),
+        ignored,
+        orphaned_glyphs,
+    )
 
 
 def _touches(first: GlyphBox, second: GlyphBox) -> bool:
