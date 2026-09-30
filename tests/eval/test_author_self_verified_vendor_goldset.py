@@ -178,6 +178,31 @@ def test_authored_cases_are_reading_only_and_mark_the_type_unconfirmed(tmp_path:
     assert metadata["expected_finding"] == "ABSENT - reading accuracy only"
 
 
+def test_self_verified_authoring_refuses_review_claims_in_paths(tmp_path: Path) -> None:
+    """The generator cannot recreate the misleading reviewed filename or directory."""
+    source = tmp_path / "AI_Set_2_reviewed.pdf"
+    source.write_bytes(b"synthetic PDF bytes, not a drawing")
+    proposal = _proposal("p02-d001", "762 [30]")
+
+    with pytest.raises(ValueError, match="not human-reviewed"):
+        author_cases(
+            self_verified([proposal]),
+            source_pdf=source,
+            output_root=tmp_path / "cases",
+            annotated_on=date(2026, 9, 10),
+        )
+
+    plain_source = tmp_path / "AI_Set_2.pdf"
+    plain_source.write_bytes(b"synthetic PDF bytes, not a drawing")
+    with pytest.raises(ValueError, match="not human-reviewed"):
+        author_cases(
+            self_verified([proposal]),
+            source_pdf=plain_source,
+            output_root=tmp_path / "reviewed-cases",
+            annotated_on=date(2026, 9, 10),
+        )
+
+
 def test_payload_rechecks_dual_corroboration_at_write_boundary() -> None:
     """Direct callers cannot bypass eligibility checks and author inconsistent dual notation."""
     proposal = _proposal("p02-d001", "100 [100]")

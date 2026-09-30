@@ -48,6 +48,7 @@ DEFAULT_SOURCE = Path("data/drawings/aiset2/AI_Set_2.pdf")
 DEFAULT_CASE_ROOT = Path("data/goldset/aiset2-self-verified-vendor-readings")
 DEFAULT_PENDING_REPORT = DEFAULT_PROPOSAL_ROOT / "PENDING_FOR_TRUE_REPRESENTATIVE_NUMBER.md"
 _CASE_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_REVIEW_CLAIM_RE = re.compile(r"(?i)(?:^|[_\-.])reviewed(?:$|[_\-.])")
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +217,16 @@ def _case_id(proposal: Proposal) -> str:
     return case_id
 
 
+def _refuse_review_claim(path: Path, *, field: str) -> None:
+    """Self-verified output must not put an unevidenced review claim into data paths."""
+    claiming_parts = [part for part in path.parts if _REVIEW_CLAIM_RE.search(part)]
+    if claiming_parts:
+        raise ValueError(
+            f"{field} path {path} contains review-claim component(s) {claiming_parts}; "
+            "self-verified vendor-reading cases are explicitly not human-reviewed"
+        )
+
+
 def case_payload(
     proposal: Proposal,
     *,
@@ -318,6 +329,9 @@ def author_cases(
     annotated_on: date,
 ) -> list[Path]:
     """Write one independently loadable, reading-only package per eligible proposal."""
+    _refuse_review_claim(source_pdf, field="source")
+    _refuse_review_claim(output_root, field="output")
+
     case_ids = [_case_id(proposal) for proposal in proposals]
     if len(case_ids) != len(set(case_ids)):
         duplicate = next(case_id for case_id in case_ids if case_ids.count(case_id) > 1)

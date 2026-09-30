@@ -69,6 +69,10 @@ class UnverifiableDocument(Exception):
     """A case records a hash for a source this loader cannot resolve to a file."""
 
 
+class UnprovenReviewClaim(Exception):
+    """A path claims a reviewed drawing while the bytes match the unreviewed drawing."""
+
+
 def content_hash(path: Path) -> str:
     """The `sha256:<hex>` of a file, streamed.
 
@@ -94,6 +98,21 @@ def _resolve(case: GoldCase, source: OperandSource, root: Path) -> Path:
     # Relative paths resolve against the cases root, which lives outside the repository: client
     # drawings are proprietary and `tests/test_repo_hygiene.py` fails the build if they appear in it.
     return declared if declared.is_absolute() else (root / declared)
+
+
+def _unreviewed_counterpart(path: Path, *, root: Path) -> Path | None:
+    """Return the conventional unreviewed path for a ``*_reviewed`` drawing, if there is one."""
+    try:
+        subject = path.relative_to(root)
+        base: Path | None = root
+    except ValueError:
+        subject = path
+        base = None
+    parts = subject.parts
+    if not any("_reviewed" in part for part in parts):
+        return None
+    counterpart = Path(*[part.replace("_reviewed", "") for part in parts])
+    return counterpart if base is None else base / counterpart
 
 
 def verify(case: GoldCase, *, root: Path = Path(DEFAULT_CASES_DIRECTORY)) -> None:
@@ -122,6 +141,16 @@ def verify(case: GoldCase, *, root: Path = Path(DEFAULT_CASES_DIRECTORY)) -> Non
                 "polygon in it may now point somewhere else. Re-review the package or restore the "
                 "drawing — scoring against this would produce a metric that is confidently wrong."
             )
+        unreviewed = _unreviewed_counterpart(path, root=root)
+        if unreviewed is not None and unreviewed.is_file():
+            unreviewed_hash = content_hash(unreviewed)
+            if unreviewed_hash == actual:
+                raise UnprovenReviewClaim(
+                    f"case {case.id!r}: the {document.source.value} drawing at {path} claims a "
+                    f"reviewed file name, but it is byte-identical to the unreviewed drawing at "
+                    f"{unreviewed}. A reviewed path is provenance; if the bytes are the same, this "
+                    "case cannot evidence that a human-reviewed drawing exists."
+                )
 
 
 def load_cases(
@@ -161,6 +190,11 @@ def stale(cases: Iterable[GoldCase], *, root: Path = Path(DEFAULT_CASES_DIRECTOR
     for case in cases:
         try:
             verify(case, root=root)
-        except (StaleAnnotation, MissingDrawing, UnverifiableDocument) as error:
+        except (
+            StaleAnnotation,
+            MissingDrawing,
+            UnverifiableDocument,
+            UnprovenReviewClaim,
+        ) as error:
             broken.append(f"{case.id}: {type(error).__name__}")
     return broken
