@@ -149,7 +149,7 @@ from extraction.models.nova import (
     NovaRequest,
     vision_configs_from_environment,
 )
-from extraction.models.validation import ValidationRejection
+from extraction.models.validation import STACKED_FRACTION_REASON, ValidationRejection
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_reading, read_page
 from extraction.panels import propose_panel_roles
 from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
@@ -2029,6 +2029,13 @@ class DatabaseStages:
                     )
                     continue
                 crop, crop_box = cropped
+                pre_call_refusal = _vision_pre_call_refusal(crop_box, stacked_fractions)
+                if pre_call_refusal is not None:
+                    refusals.append(
+                        f"page {page.index}: {reader.config.extractor}: "
+                        f"{pre_call_refusal}: crop skipped before model call"
+                    )
+                    continue
                 request_candidate_id = uuid4()
                 recorder = _BufferedVisionRecorder(
                     session=session,
@@ -2042,7 +2049,7 @@ class DatabaseStages:
                     image_format="png",
                     context=AssembledContext(nearby_text=(), nearby_geometry=()),
                     bound_pt=VISION_CONTEXT_BOUND_PT,
-                    stacked_label=_crop_shows_a_stacked_fraction(crop_box, stacked_fractions),
+                    stacked_label=False,
                 )
                 try:
                     candidate = reader.extract(request, recorder)
@@ -3104,6 +3111,16 @@ def _crop_shows_a_stacked_fraction(
         if min(xs) <= right and left <= max(xs) and min(ys) <= bottom and top <= max(ys):
             return True
     return False
+
+
+def _vision_pre_call_refusal(
+    crop_box: tuple[int, int, int, int], fractions: Sequence[StackedFraction]
+) -> str | None:
+    """Why a crop should not be sent to a vision reader, before spending a model call."""
+
+    if _crop_shows_a_stacked_fraction(crop_box, fractions):
+        return STACKED_FRACTION_REASON
+    return None
 
 
 def _stored_polygon(
