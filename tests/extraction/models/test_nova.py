@@ -617,14 +617,40 @@ def test_a_pixel_model_named_nova_is_not_remapped() -> None:
     assert reader.coordinate_mode is CoordinateMode.PIXELS
 
 
-def test_nova_pro_stays_enabled_after_the_known_crop_measurement() -> None:
-    """#699 measured the failing reader again before deciding whether to switch it off."""
+def test_nova_pro_is_off_for_accuracy_and_keeps_its_measured_space() -> None:
+    """#751: switched off because the human-read key found it the least accurate and the most
+    expensive — not because its coordinates are unknown. #699's measurement stays on it, so a
+    deployment or the bake-off can still use it in the right space."""
     reader = next(r for r in VISION_READERS if r.model_id == NOVA_PRO_MODEL_ID)
 
-    assert reader.enabled is True
+    assert reader.enabled is False
+    assert reader.disabled_reason is not None and "#751" in reader.disabled_reason
+    assert reader.coordinate_measured is True
     assert reader.coordinate_mode is CoordinateMode.NOVA_GRID
     assert "#699" in reader.coordinate_measurement
     assert '24 1/2"' in reader.coordinate_measurement
+
+
+def test_an_enabled_reader_must_have_a_measured_space() -> None:
+    """A guessed space reads a rectangle in the wrong units and can still pass the bounds check."""
+    from extraction.models.nova import _ReaderDefinition
+
+    with pytest.raises(ValueError, match="measured coordinate space"):
+        _ReaderDefinition(
+            key="guessed",
+            model_id="vendor.model",
+            extractor="bedrock-guessed",
+            coordinate_mode=CoordinateMode.PIXELS,
+            coordinate_measurement="documented, never measured",
+            enabled=True,
+            coordinate_measured=False,
+        )
+
+
+def test_claude_s_space_is_not_measured() -> None:
+    claude = next(r for r in VISION_READERS if r.model_id == CLAUDE_HAIKU_4_5_MODEL_ID)
+
+    assert claude.coordinate_measured is False
 
 
 def test_an_unstated_coordinate_mode_fails_loudly_rather_than_silently() -> None:
@@ -683,16 +709,16 @@ def test_claude_is_configured_and_switched_off_until_its_account_form_lands() ->
 
 
 def test_the_default_readers_are_the_ones_this_account_can_invoke(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """Three readers, two vendors — the widest independence available without #665."""
+    """The recommended pair (#641, #751): one reader from each vendor that answers at all."""
     monkeypatch.delenv("GV_BEDROCK_VISION_READERS", raising=False)
 
     configs = vision_configs_from_environment()
 
     assert [config.model_id for config in configs] == [
-        NOVA_PRO_MODEL_ID,
         MINISTRAL_3_3B_MODEL_ID,
         NOVA_2_LITE_MODEL_ID,
     ]
+    assert NOVA_PRO_MODEL_ID not in {config.model_id for config in configs}
     assert CLAUDE_HAIKU_4_5_MODEL_ID not in {config.model_id for config in configs}
 
 

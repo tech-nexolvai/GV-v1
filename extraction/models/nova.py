@@ -180,6 +180,12 @@ class _ReaderDefinition:
     coordinate_measurement: str
     enabled: bool
     disabled_reason: str | None = None
+    coordinate_measured: bool = True
+    """Whether the coordinate space was measured on this account, as opposed to documented.
+
+    Separate from `enabled` because the two answer different questions: Nova Pro is switched off for
+    accuracy (#751) but its space was measured, so the bake-off can still test it; Claude Haiku's has
+    never been measured (#665), so nothing may read its coordinates as though it had."""
 
     def __post_init__(self) -> None:
         for name in ("key", "model_id", "extractor", "coordinate_measurement"):
@@ -196,6 +202,13 @@ class _ReaderDefinition:
             raise ValueError("disabled_reason must be a non-empty string or None")
         if not self.enabled and self.disabled_reason is None:
             raise ValueError("disabled readers must say why they are disabled")
+        if not isinstance(self.coordinate_measured, bool):
+            raise TypeError("coordinate_measured must be True or False")
+        if self.enabled and not self.coordinate_measured:
+            raise ValueError(
+                "an enabled reader must have a measured coordinate space: a guessed one reads a "
+                "rectangle in the wrong units and can still pass the bounds check (#664)"
+            )
 
     @property
     def model_env(self) -> str:
@@ -228,7 +241,15 @@ VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
             "#668 recorded Nova Pro as 0-1000 grid; #699 rechecked a generated crop reading "
             '24 1/2" on 2026-09-29 and the raw tool response returned that value.'
         ),
-        enabled=True,
+        # **Off for accuracy, not for want of a measurement (#751).** On the 51-crop human-read key
+        # (#641) it read 8 of 35 right, the fewest, and accepted 12 wrong readings, at $1.43 per 1,000
+        # crops against Ministral 3B's $0.08. The pair left running, Nova 2 Lite + Ministral 3B,
+        # agreed on no wrong value there. `GV_BEDROCK_VISION_READERS` can still switch it back on.
+        enabled=False,
+        disabled_reason=(
+            "#751: least accurate reader on the human-read key (8/35 right, 12 accepted wrong) and "
+            "the most expensive; the recommended pair is Nova 2 Lite + Ministral 3B (#641)."
+        ),
     ),
     # A different vendor, which is the strongest independence on offer here. Also the cheapest and
     # fastest of the seven that conform — 1,430 tokens and 3.0s against Nova Pro's 5,374 and 4.7s.
@@ -263,6 +284,7 @@ VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
         ),
         enabled=False,
         disabled_reason="#665: Anthropic first-time-use form has not been submitted for this account.",
+        coordinate_measured=False,
     ),
 )
 

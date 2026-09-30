@@ -640,15 +640,17 @@ class BedrockBakeoffAdapter:
 
 
 def _measured_coordinate_mode(nova: Any, model_id: str) -> CoordinateMode | None:
-    """The coordinate space production recorded for this model, if it runs it as an enabled reader.
+    """The coordinate space production measured for this model, if it measured one.
 
-    Only **enabled** readers count: a disabled one's space may never have been measured — Claude Haiku's
-    has not, because it has never returned a reading on this account (#665). The inference-profile
-    prefix is ignored, since `us.amazon.nova-2-lite-v1:0` is the same model reached another way.
+    **Measured, not enabled.** A reader switched off for accuracy still has a known space — Nova Pro
+    (#751) — and the bake-off is exactly where it should keep being tested. A reader whose space was
+    never measured has none — Claude Haiku's, because it has never returned a reading on this
+    account (#665). The inference-profile prefix is ignored, since `us.amazon.nova-2-lite-v1:0` is
+    the same model reached another way.
     """
     bare = model_id.removeprefix(nova.INFERENCE_PROFILE_PREFIX)
     for reader in nova.VISION_READERS:
-        if reader.enabled and reader.model_id == bare:
+        if reader.coordinate_measured and reader.model_id == bare:
             mode: CoordinateMode = reader.coordinate_mode
             return mode
     return None

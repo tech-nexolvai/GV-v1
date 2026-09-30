@@ -436,6 +436,9 @@ def test_a_compound_reading_is_refused_as_not_one_value() -> None:
 def test_each_production_reader_runs_in_the_space_production_measured() -> None:
     """Nova Pro answers on the 0-1000 grid (#668, #699); the bake-off must not call it in pixels.
 
+    It is switched off in production (#751) and still resolves here: it was turned off for accuracy,
+    not because its space is unknown, and the bake-off is where it keeps being measured.
+
     Called in the default space, a grid answer on a small crop is out of bounds, the call is rejected,
     and a correct reading is scored as a miss — a configuration production never runs.
     """
