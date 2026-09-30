@@ -171,3 +171,26 @@ def test_leaving_out_characters_too_far_to_join_changes_no_result() -> None:
 
         assert geometry.label_box == _box(list(members))
         assert geometry.closed is (unclosed is None)
+
+
+def test_a_character_past_the_labels_end_is_seen_when_the_run_gap_is_the_wider_one() -> None:
+    """**The shortcut keeps up with `gather_label` (#756, #773).** A label nearly as long as a label
+    may be, and one more character on its line 3.6 pt past its end — inside the 4 pt run gap,
+    outside the 2 pt label gap. Outcome: the end is not settled, as `gather_label` over the whole
+    sheet says. Before the window grew by the wider gap, the shortcut left that character out and
+    called the label settled, so the agent would have widened to a label that may go on."""
+    from extraction.glyph_reader import gather_label
+
+    label, _ = _row("8888", 4, 0)
+    tail, _ = _row("8", 33.1, 0)
+    sheet = label + tail
+    reach = LabelReach(
+        label_gap_pt=Decimal(2), maximum_label_pt=Decimal(26), glyph_gap_pt=Decimal(4)
+    )
+    region: Box = (Decimal(0), Decimal(0), Decimal(5), Decimal(10))
+    _, unclosed = gather_label([label[0]], sheet, settings=reach)
+
+    geometry = label_geometry(region, _grown(region, 9), sheet, reach)
+
+    assert unclosed is not None
+    assert not geometry.closed
