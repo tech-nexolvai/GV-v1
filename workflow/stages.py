@@ -1321,12 +1321,12 @@ class DatabaseStages:
             )
             agent_rows = agent.rows
             if agent_rows:
+                page_rows = tuple(vector_rows + ocr_rows + markup_rows + vision_rows + agent_rows)
                 self._apply_cross_route_corroboration(
-                    session,
-                    page_index=page.index,
-                    candidates=tuple(
-                        vector_rows + ocr_rows + markup_rows + vision_rows + agent_rows
-                    ),
+                    session, page_index=page.index, candidates=page_rows
+                )
+                self._mark_regions_the_agent_contradicted(
+                    session, page_index=page.index, candidates=page_rows, agent_rows=agent_rows
                 )
             layout_written, layout_refusals = self._classify_page_layouts(
                 session,
@@ -1642,6 +1642,65 @@ class DatabaseStages:
                 if row.id in pending_ids:
                     row.corroboration_status = result.status.value
                     row.corroboration_lane = result.lane.value
+
+    @staticmethod
+    def _mark_regions_the_agent_contradicted(
+        session: Session,
+        *,
+        page_index: int,
+        candidates: Sequence[ObservationCandidate],
+        agent_rows: Sequence[ObservationCandidate],
+    ) -> None:
+        """Mark a whole region conflicting where the agent's new readings disagree with its old ones.
+
+        **The second pass cannot see this on its own.** `_apply_cross_route_corroboration` groups
+        only rows with no lane yet, so an agent reading lands in a group of its own when the
+        region's first readers had already agreed. In the #641 case — both readers shown a crop
+        that cut `10192"` agree on `92"`, and the agent, shown the whole label, reads `10192"` twice
+        — the region would end holding two different values, each marked as two readers agreeing,
+        and automatic typing (`app/evidence/automatic_typing.py`) could seal either.
+
+        **Only ever towards a reviewer.** Every row of the region with a value is judged together,
+        by `evidence/corroborate.py`, whatever lane it already has; where that judgement is
+        `CONFLICTING`, every row of the region is marked so. Any other judgement changes nothing,
+        so this can take an agreement away and can never make one.
+
+        Only regions holding an agent row written by this delivery are judged. A redelivered stage
+        reuses its agent rows rather than writing them, and leaves what the first delivery decided.
+        """
+        new_agent_regions = {
+            (row.page_id, tuple((int(x), int(y)) for x, y in row.polygon))
+            for row in agent_rows
+            if inspect(row).pending
+        }
+        by_region: dict[tuple[UUID, tuple[tuple[int, int], ...]], list[ObservationCandidate]] = {}
+        for row in candidates:
+            key = (row.page_id, tuple((int(x), int(y)) for x, y in row.polygon))
+            if key in new_agent_regions:
+                by_region.setdefault(key, []).append(row)
+        run_ids = {row.extraction_run_id for rows in by_region.values() for row in rows}
+        with session.no_autoflush:
+            runs = {
+                run.id: run
+                for run in session.execute(
+                    select(ExtractionRun).where(ExtractionRun.id.in_(run_ids))
+                ).scalars()
+            }
+        for rows in by_region.values():
+            valued = [row for row in rows if row.value_numerator is not None]
+            if len(valued) < 2:
+                continue
+            result = corroborate(
+                tuple(
+                    _domain_candidate_from_row(row, runs[row.extraction_run_id], page_index)
+                    for row in valued
+                )
+            )
+            if result.status is not EvidenceStatus.CONFLICTING or result.lane is None:
+                continue
+            for row in rows:
+                row.corroboration_status = result.status.value
+                row.corroboration_lane = result.lane.value
 
     def _run_bounded_agent_for_ambiguous_regions(
         self,
