@@ -23,6 +23,7 @@ from workflow.assignment import (
     Field,
     ProposedAssignment,
     Reading,
+    can_fill_a_field,
     guard_assignment,
 )
 
@@ -401,3 +402,26 @@ def test_only_the_fields_that_could_not_be_checked_are_marked() -> None:
 
     assert isinstance(result, AcceptedAssignment)
     assert result.unverified_placement == ("ARCH:CT001",)
+
+
+@pytest.mark.parametrize(
+    ("line_key", "geometry_available"),
+    [("line-1", True), ("line-1", False), (None, True), (None, False)],
+)
+def test_what_is_offered_and_what_the_guard_refuses_are_one_rule(
+    line_key: str | None, geometry_available: bool
+) -> None:
+    """**Outcome: `can_fill_a_field` is `False` exactly where the guard refuses the reading.**
+
+    `assignment_bedrock` leaves out of the question every reading this says cannot fill a field
+    (#712). If the two ever disagreed, a reading the guard would accept could silently stop being
+    offered — or a reading it refuses could go back into the question and sink the batch again.
+    """
+    reading = _reading("c1", "36 in", line_key=line_key, geometry_available=geometry_available)
+
+    result = _guard(
+        _context(reading, fields=(DEPTH,)),
+        ProposedAssignment(field_key="SHOP:CT010", candidate_ids=("c1",)),
+    )
+
+    assert isinstance(result, AcceptedAssignment) is can_fill_a_field(reading)

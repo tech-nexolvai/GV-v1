@@ -6,7 +6,7 @@ asking half, and it is deliberately the smaller of the two.
 **It is a multiple-choice question, not a generation task.** The model is not asked to produce a
 field name or a reading; both already exist, and both are put into the tool schema as `enum`s. So
 constrained decoding — the grammar the schema compiles to — makes an invented field key or a
-hallucinated candidate id *structurally impossible to emit*, rather than something caught afterwards.
+reading that does not exist *structurally impossible to emit*, rather than something caught afterwards.
 Two of `guard_assignment`'s seven refusals can therefore never fire from this adapter. They stay in
 the guard anyway: the guard is what the contract is, and a second adapter written later must meet it
 without relying on this one's schema.
@@ -35,23 +35,29 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from pydantic import Field as PydanticField
 
 from app.config import Settings
-from workflow.assignment import AssignmentContext, ProposedAssignment
+from workflow.assignment import AssignmentContext, ProposedAssignment, can_fill_a_field
 
 __all__ = [
     "PROMPT_ID",
     "AssignmentProgress",
     "BedrockAssignmentModel",
+    "FailureKind",
+    "UnusableAnswer",
     "assignment_tool_schema",
     "configured_assignment_model",
+    "describe_failure",
     "propose_and_guard",
+    "reading_handles",
 ]
 
 TOOL_NAME: Final = "assign_readings_to_rule_fields"
-PROMPT_ID: Final = "reading-assignment-v1"
+#: v2 (#712): readings are named by short handles, and only readings that could fill a field are
+#: offered. What the model is shown changed, so a proposal filed under it says so.
+PROMPT_ID: Final = "reading-assignment-v2"
 
 SYSTEM_INSTRUCTION: Final = (
     "You assign measurements that have already been read off a construction drawing to the fields a "
@@ -74,6 +80,22 @@ USER_TASK: Final = (
 )
 
 
+#: Why a proposal filled nothing. Closed, so a caller can act on it without parsing a sentence.
+FailureKind = Literal[
+    "not-configured",
+    "nothing-to-ask",
+    "throttled",
+    "unreachable",
+    "call-refused",
+    "answer-invalid",
+    "answer-cut-off",
+    "answer-malformed",
+    "call-failed",
+    "nothing-proposed",
+    "guard-refused",
+]
+
+
 @dataclass(frozen=True, slots=True)
 class AssignmentProgress:
     """What this step is doing, reported as it does it. Reporting only — it decides nothing.
@@ -88,6 +110,33 @@ class AssignmentProgress:
     phase: Literal["asking", "checking", "refused", "accepted", "unavailable"]
     attempt: int
     detail: str = ""
+
+    failure: FailureKind | None = None
+    """Why nothing was filled, as one of a closed set, on a `refused` or `unavailable` phase.
+
+    **"The model could not be reached" used to stand for every failure** (#712). On the client's own
+    drawing it hid a model that *was* reached and answered with a broken tool call; the fix for that
+    and the fix for a throttled account are different, and a sentence that cannot tell them apart
+    sends the diagnosis the wrong way."""
+
+    error: str | None = None
+    """The provider's own words, for the worker's log: exception type, AWS error code and message.
+
+    Kept apart from `detail` because `detail` is shown to a reviewer, and an AWS error message can
+    carry an account's resource names. The log is where somebody diagnosing it will look."""
+
+
+class UnusableAnswer(RuntimeError):
+    """The provider answered, and the answer is not a tool call this step can use.
+
+    A `RuntimeError`, as the free-text refusal already was, carrying which of the two ways it
+    failed: stopped at its token limit, or complete and the wrong shape. The first is fixed by giving the answer more room; the
+    second is not.
+    """
+
+    def __init__(self, kind: Literal["answer-cut-off", "answer-malformed"], message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class _Config(BaseModel):
@@ -114,8 +163,23 @@ class _Batch(BaseModel):
     assignments: list[_ProposedRow]
 
 
+def reading_handles(context: AssignmentContext) -> dict[str, str]:
+    """Each reading's short handle — `r1`, `r2`, … in context order — mapped to its candidate id.
+
+    **Why the model does not see the candidate id** (#712). An id is a 36-character UUID, and naming
+    one in an answer costs about thirty tokens. Measured on `amazon.nova-lite-v1:0` with a request
+    the size of the client drawing's (fifteen fields; authored readings, not the drawing's values):
+    20 readings took 910 of the answer's 960 tokens, and at 40 the answer ran out of room mid-call
+    and Bedrock refused the whole of it as an invalid tool sequence. With handles, the same model
+    answered fifteen fields over 123 readings in 570 tokens. The constraint is unchanged — the schema's `enum` lists exactly these handles, so an
+    invented one is still impossible to emit — and the guard still checks the real ids, because
+    `propose` maps every handle back before anything is checked.
+    """
+    return {f"r{index}": reading.candidate_id for index, reading in enumerate(context.readings, 1)}
+
+
 def assignment_tool_schema(context: AssignmentContext) -> dict[str, object]:
-    """The tool schema for this run, with the real identifiers baked in as `enum`s.
+    """The tool schema for this run, with its field keys and reading handles baked in as `enum`s.
 
     **Built per request rather than fixed.** A static schema would accept any string and leave
     "is that a field we asked for?" to be checked after the fact. Listing the actual keys makes the
@@ -142,7 +206,7 @@ def assignment_tool_schema(context: AssignmentContext) -> dict[str, object]:
                             "type": "array",
                             "items": {
                                 "type": "string",
-                                "enum": [reading.candidate_id for reading in context.readings],
+                                "enum": list(reading_handles(context)),
                             },
                         },
                     },
@@ -176,13 +240,15 @@ def _fields_payload(context: AssignmentContext) -> list[dict[str, object]]:
 def _readings_payload(context: AssignmentContext) -> list[dict[str, object]]:
     """The readings as the model sees them.
 
-    `attached_to_dimension_line` is included even though an unattached reading is refused by the
-    guard: telling the model which readings are unusable is cheaper than letting it propose one and
-    discarding the whole batch, and the guard remains the thing that enforces it.
+    `attached_to_dimension_line` is `False` only for a reading on a page with no line-work, which the
+    guard accepts with its placement marked unverified. A reading the guard would refuse outright is
+    not here at all: `propose_and_guard` leaves it out of the question (#712), and telling a model a
+    reading is unusable did not stop it using one.
     """
+    handles = {candidate_id: handle for handle, candidate_id in reading_handles(context).items()}
     return [
         {
-            "candidate_id": reading.candidate_id,
+            "candidate_id": handles[reading.candidate_id],
             "value": reading.value,
             "read_from_sheet": reading.source,
             "page": reading.page,
@@ -231,8 +297,15 @@ class BedrockAssignmentModel:
             # a cost with no possible answer.
             return ()
         response = self._client_for_request().converse(**self._request(context, refused))
+        # **Back to the real ids before anything checks them.** A handle the schema did not list
+        # cannot be emitted under it; one that arrives anyway is passed through unchanged, so the
+        # guard refuses it by name as a reading this run did not produce.
+        handles = reading_handles(context)
         return tuple(
-            ProposedAssignment(field_key=row.field_key, candidate_ids=tuple(row.candidate_ids))
+            ProposedAssignment(
+                field_key=row.field_key,
+                candidate_ids=tuple(handles.get(handle, handle) for handle in row.candidate_ids),
+            )
             for row in self._batch(response).assignments
         )
 
@@ -289,32 +362,130 @@ class BedrockAssignmentModel:
 
     @staticmethod
     def _batch(response: Mapping[str, Any]) -> _Batch:
+        if response.get("stopReason") == "max_tokens":
+            raise UnusableAnswer(
+                "answer-cut-off", "the answer reached its token limit before it was complete"
+            )
         output = response.get("output")
         message = output.get("message") if isinstance(output, Mapping) else None
         content = message.get("content") if isinstance(message, Mapping) else None
         if not isinstance(content, list):
-            raise TypeError("the assignment call returned no tool content")
+            raise UnusableAnswer("answer-malformed", "the assignment call returned no tool content")
         tools = [
             block.get("toolUse")
             for block in content
             if isinstance(block, Mapping) and isinstance(block.get("toolUse"), Mapping)
         ]
         if len(tools) != 1 or len(content) != 1:
-            raise RuntimeError("the assignment call must return one tool call and no free text")
+            raise UnusableAnswer(
+                "answer-malformed", "the assignment call must return one tool call and no free text"
+            )
         tool = cast(Mapping[str, Any], tools[0])
         if tool.get("name") != TOOL_NAME:
-            raise RuntimeError("the assignment call used an unexpected tool")
-        return _Batch.model_validate(tool.get("input"), strict=True)
+            raise UnusableAnswer("answer-malformed", "the assignment call used an unexpected tool")
+        try:
+            return _Batch.model_validate(tool.get("input"), strict=True)
+        except ValidationError as error:
+            raise UnusableAnswer(
+                "answer-malformed",
+                f"the tool call's input did not match its schema ({error.error_count()} problems)",
+            ) from error
+
+
+#: Answer room per field and per reading, in output tokens. Generous on purpose: measured on
+#: `amazon.nova-lite-v1:0` with handles (#712), fifteen fields over 123 readings answered in at most
+#: 570 tokens, and these give that request 2,928 — about five times the room. A model that names a
+#: reading twice is refused by the guard, and it can only be refused *with a reason the retry can
+#: use* if its answer had room to be complete.
+TOKENS_PER_FIELD: Final = 64
+TOKENS_PER_READING: Final = 16
+TOKEN_FLOOR: Final = 512
+TOKEN_CEILING: Final = 4096
 
 
 def _token_limit(context: AssignmentContext) -> int:
-    """Enough room for one entry per field, with a hard ceiling.
+    """Room for every field and every reading once, with a floor and a hard ceiling.
 
-    An assignment is a list of identifiers, so its size is known from the inputs rather than from
-    how much the model has to say. The floor keeps a one-field page from being cut off mid-identifier;
-    the ceiling is the spend bound.
+    An assignment is a list of identifiers, so its size is bounded by the inputs rather than by how
+    much the model has to say. **It used to be sized by the fields alone** — `64 × fields`, 960 for
+    the rulebook's fifteen — and on the client's drawing the readings outgrew it: Nova does not stop
+    a tool call at the limit, it abandons it, and Bedrock reports an invalid sequence (#712). The
+    floor keeps a one-field page from being cut off mid-handle; the ceiling is the spend bound.
     """
-    return min(4096, max(512, 64 * len(context.fields)))
+    wanted = TOKENS_PER_FIELD * len(context.fields) + TOKENS_PER_READING * len(context.readings)
+    return min(TOKEN_CEILING, max(TOKEN_FLOOR, wanted))
+
+
+#: Bedrock's own words for "the account's quota said no". A retry later succeeds; nothing about the
+#: request needs to change.
+_THROTTLED: Final = frozenset(
+    {"ThrottlingException", "TooManyRequestsException", "ServiceQuotaExceededException"}
+)
+#: The service or the model was not there to answer. Also transient.
+_UNREACHABLE: Final = frozenset(
+    {
+        "ServiceUnavailableException",
+        "InternalServerException",
+        "ModelNotReadyException",
+        "ModelTimeoutException",
+    }
+)
+_ERROR_LIMIT: Final = 500
+
+
+def describe_failure(error: BaseException) -> tuple[FailureKind, str, str]:
+    """Name why a proposal call failed: its kind, a sentence for the screen, and the exact error.
+
+    **The distinctions do not change what happens** — every one of them leaves the fields for the
+    reviewer, as `propose_and_guard` says. They change what somebody does about it: a throttled
+    account needs a quota, an answer that ran out of room needs a larger limit, an access error
+    needs a permission, and "the model could not be reached" named none of them (#712).
+
+    The sentence is for a reviewer and names no AWS resource. The exact error is for the log.
+    """
+    exact = f"{type(error).__name__}: {error}"[:_ERROR_LIMIT]
+    if isinstance(error, UnusableAnswer):
+        if error.kind == "answer-cut-off":
+            return error.kind, "the model's answer ran out of room before it was complete", exact
+        return error.kind, "the model answered, but not with a tool call this step can use", exact
+
+    response = getattr(error, "response", None)
+    code = response.get("Error", {}).get("Code") if isinstance(response, Mapping) else None
+    if isinstance(code, str) and code:
+        if code in _THROTTLED:
+            return (
+                "throttled",
+                "Bedrock throttled the call: the account's request quota for this model was used up",
+                exact,
+            )
+        if code in _UNREACHABLE:
+            return "unreachable", f"the model was not available to answer ({code})", exact
+        if code == "ModelErrorException":
+            # Nova's answer to a tool call that could not be completed. Measured on this step: an
+            # answer larger than its token limit is abandoned rather than cut off, and arrives as
+            # this. Said as "usually" because Bedrock does not say which.
+            return (
+                "answer-invalid",
+                (
+                    "the model's answer was not a valid tool call — usually an answer that needed "
+                    "more room than it was given"
+                ),
+                exact,
+            )
+        return "call-refused", f"Bedrock refused the call ({code})", exact
+
+    from botocore.exceptions import (  # type: ignore[import-untyped]
+        ConnectionError as BotocoreConnectionError,
+    )
+    from botocore.exceptions import HTTPClientError, NoCredentialsError, NoRegionError
+
+    if isinstance(error, (NoCredentialsError, NoRegionError)):
+        return "call-refused", "no AWS credentials or region were found for the model call", exact
+    # `HTTPClientError` is botocore's base for a read timeout and a dropped connection; its
+    # `ConnectionError` covers a refused connect and a connect timeout. Neither is the other's kind.
+    if isinstance(error, (BotocoreConnectionError, HTTPClientError, TimeoutError, ConnectionError)):
+        return "unreachable", "the model could not be reached", exact
+    return "call-failed", "the model call failed", exact
 
 
 def configured_assignment_model(settings: Settings) -> BedrockAssignmentModel | None:
@@ -349,9 +520,11 @@ def propose_and_guard(
 
     **Every failure has the same outcome: the fields stay empty and a reviewer fills them.** A
     provider that is unreachable, a payload that will not parse, a proposal the guard refuses —
-    none of them is distinguished here, because none of them changes what the reviewer does next.
-    The distinctions matter for diagnosis and are the caller's to log; they do not matter for
-    behaviour, and collapsing them here is what keeps this step incapable of making things worse.
+    none of them changes what the reviewer does next, so none of them changes what is returned.
+    They are *named* to the observer (`AssignmentProgress.failure` and `.error`), because the fixes
+    differ and a single sentence for all of them hid the real one on the client's drawing (#712).
+    Naming is reporting only: the return value is the same `((), ())` whichever it was, which is
+    what keeps this step incapable of making things worse.
 
     **`observer` is told what is happening and is never asked anything.** It exists so a screen
     waiting on the model can name the phase it is waiting on, including the retry — the one phase a
@@ -360,12 +533,31 @@ def propose_and_guard(
     """
     from workflow.assignment import AcceptedAssignment, guard_assignment
 
-    def report(phase: str, attempt: int, detail: str = "") -> None:
+    def report(
+        phase: str,
+        attempt: int,
+        detail: str = "",
+        failure: FailureKind | None = None,
+        error: str | None = None,
+    ) -> None:
         if observer is not None:
-            observer(AssignmentProgress(phase=cast(Any, phase), attempt=attempt, detail=detail))
+            observer(
+                AssignmentProgress(
+                    phase=cast(Any, phase),
+                    attempt=attempt,
+                    detail=detail,
+                    failure=failure,
+                    error=error,
+                )
+            )
 
     if model is None:
-        report("unavailable", 1, "no model is configured, so the fields stay for the reviewer")
+        report(
+            "unavailable",
+            1,
+            "no model is configured, so the fields stay for the reviewer",
+            "not-configured",
+        )
         return (), ()
 
     # **Said here as well as in the adapter, because the two answer different questions.** The
@@ -373,7 +565,31 @@ def propose_and_guard(
     # "the model proposed nothing" would be false about a model that was never asked — a page with
     # every reading already confirmed is the ordinary case that produces it.
     if not context.readings or not context.fields:
-        report("unavailable", 1, "there was nothing to choose between, so nothing was asked")
+        report(
+            "unavailable",
+            1,
+            "there was nothing to choose between, so nothing was asked",
+            "nothing-to-ask",
+        )
+        return (), ()
+
+    # **Only readings that could fill a field are offered** (#712). One the guard refuses whatever
+    # field it lands in — unattached, on a page with line-work to attach it to — can only ever sink
+    # the batch it appears in. Telling the model so was the old design; measured, the model used
+    # such readings anyway, and on the client's drawing 115 of 123 readings were unattached. The
+    # guard below still checks the full context, so leaving them out relaxes nothing.
+    offered = AssignmentContext(
+        fields=context.fields,
+        readings=tuple(reading for reading in context.readings if can_fill_a_field(reading)),
+    )
+    if not offered.readings:
+        report(
+            "unavailable",
+            1,
+            f"none of the {len(context.readings)} readings is attached to a dimension line, so "
+            "none of them can fill a field",
+            "nothing-to-ask",
+        )
         return (), ()
 
     # **One retry, with the guard's own sentence fed back.** Measured against the real provider on
@@ -391,18 +607,19 @@ def propose_and_guard(
             "asking",
             attempt,
             (
-                f"{len(context.readings)} readings, {len(context.fields)} fields"
+                f"{len(offered.readings)} readings, {len(offered.fields)} fields"
                 if refused is None
                 else "asking again, with the reason the check gave"
             ),
         )
         try:
-            proposed = model.propose(context, refused=refused)
-        except Exception:  # noqa: BLE001 - fail closed across the provider boundary
-            report("unavailable", attempt, "the model could not be reached")
+            proposed = model.propose(offered, refused=refused)
+        except Exception as error:  # noqa: BLE001 - fail closed across the provider boundary
+            failure, detail, exact = describe_failure(error)
+            report("unavailable", attempt, detail, failure, exact)
             return (), ()
         if not proposed:
-            report("unavailable", attempt, "the model proposed nothing")
+            report("unavailable", attempt, "the model proposed nothing", "nothing-proposed")
             return (), ()
         report("checking", attempt, f"{len(proposed)} proposed, seven structural checks")
         checked = guard_assignment(context, proposed)
@@ -410,5 +627,5 @@ def propose_and_guard(
             report("accepted", attempt, f"{len(checked.assignments)} fields")
             return checked.assignments, checked.unverified_placement
         refused = checked.reason
-        report("refused", attempt, checked.reason)
+        report("refused", attempt, checked.reason, "guard-refused")
     return (), ()

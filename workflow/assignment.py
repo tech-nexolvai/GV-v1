@@ -49,6 +49,7 @@ __all__ = [
     "Field",
     "ProposedAssignment",
     "Reading",
+    "can_fill_a_field",
     "guard_assignment",
 ]
 
@@ -162,6 +163,20 @@ class AssignmentModel(Protocol):
         """Map readings onto fields. Never called with the rule arithmetic — see the docstring."""
 
 
+def can_fill_a_field(reading: Reading) -> bool:
+    """Whether any field could take this reading. `False` exactly where the guard refuses it outright.
+
+    **One definition, used by both sides.** `guard_assignment` refuses a reading that is unattached
+    on a page with line-work whatever field it is proposed for, and `assignment_bedrock` leaves such
+    a reading out of the question rather than offer the model a choice that sinks the whole batch.
+    Two copies of this condition would agree until the day one of them changed.
+
+    A reading unattached on a page with *no* line-work can still fill a field: the attachment check
+    abstains there rather than refusing (see `Reading.geometry_available`).
+    """
+    return reading.line_key is not None or not reading.geometry_available
+
+
 def guard_assignment(
     context: AssignmentContext, proposals: Sequence[ProposedAssignment]
 ) -> AcceptedAssignment | AssignmentRefused:
@@ -226,12 +241,12 @@ def guard_assignment(
             # not run, and refusing on its silence would be reporting an examination that never
             # happened. It abstains instead, and the field is marked so the screen can say which of
             # the two grounds the value is there on. See `Reading.geometry_available`.
+            if not can_fill_a_field(reading):
+                return AssignmentRefused(
+                    f"{reading.value} is not attached to any dimension line, so there is "
+                    f"nothing to say it measures {field.name}"
+                )
             if reading.line_key is None:
-                if reading.geometry_available:
-                    return AssignmentRefused(
-                        f"{reading.value} is not attached to any dimension line, so there is "
-                        f"nothing to say it measures {field.name}"
-                    )
                 unverified.add(field.key)
 
             if candidate_id in claimed:

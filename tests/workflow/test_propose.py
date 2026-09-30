@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+
 from workflow.assignment import ProposedAssignment
 
 
@@ -148,3 +150,71 @@ def test_the_step_never_raises_at_a_caller_that_read_a_drawing() -> None:
 
     assert result["ran"] is False
     assert "reason" in result
+
+
+def test_no_model_configured_is_named_in_the_summary() -> None:
+    """**Outcome: `failure: not-configured`**, distinct from a call that failed (#712)."""
+    from workflow.propose import propose_for_revision
+
+    class _Session:
+        def get(self, *_args: object, **_kwargs: object) -> object:
+            return object()
+
+    result = propose_for_revision(_Session(), uuid4(), None)  # type: ignore[arg-type]
+
+    assert result == {"ran": False, "reason": "no model is configured", "failure": "not-configured"}
+
+
+def test_a_failed_call_is_named_and_its_exact_error_kept_for_the_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**The acceptance criterion from the client's drawing** (#712).
+
+    The summary used to say only "the model could not be reached". It now says what kind of
+    failure it was, and keeps the provider's own words for whoever reads the worker's log.
+    """
+    from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+
+    from workflow import propose
+    from workflow.assignment import AssignmentContext, Field, Reading
+    from workflow.assignment_bedrock import BedrockAssignmentModel, _Config
+
+    context = AssignmentContext(
+        fields=(Field(key="SHOP:CT010", name="countertop_depth", source="SHOP", many=False),),
+        readings=(
+            Reading(
+                candidate_id=str(uuid4()), value="25 1/2 in", source="SHOP", page=1, line_key="l"
+            ),
+        ),
+    )
+    monkeypatch.setattr(propose, "assignment_context", lambda _session, _revision: (context, 1))
+
+    class _Broken:
+        def converse(self, **_: object) -> dict[str, object]:
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "ModelErrorException",
+                        "Message": "Model produced invalid sequence as part of ToolUse.",
+                    }
+                },
+                "Converse",
+            )
+
+    class _Session:
+        def get(self, *_args: object, **_kwargs: object) -> object:
+            return object()
+
+    model = BedrockAssignmentModel(
+        config=_Config(
+            model_id="m", region_name="us-east-1", connect_timeout_seconds=1, read_timeout_seconds=2
+        ),
+        client=_Broken(),
+    )
+
+    result = propose.propose_for_revision(_Session(), uuid4(), model)  # type: ignore[arg-type]
+
+    assert result["filled"] == 0
+    assert result["failure"] == "answer-invalid"
+    assert "could not be reached" not in str(result["reason"])
+    assert "invalid sequence" in str(result["error"])
