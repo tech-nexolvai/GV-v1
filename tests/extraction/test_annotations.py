@@ -765,3 +765,71 @@ def test_a_read_without_the_detector_says_it_never_looked() -> None:
     assert layers.stacked_fractions == ()
     assert layers.fractions_read is False
     assert not any(region.stacked_glyphs for region in layers.outlined_regions)
+
+
+# ---------------------------------------------------------------------------
+# The demo's glyph limit must admit the client's digits (#715)
+# ---------------------------------------------------------------------------
+
+#: `28"` as the client's plotter draws it: two digits 3.6 pt wide and 5.5 pt tall, then the inch mark.
+#: Page space is appearance space minus (50, 450), as for every stamp in this file.
+WHOLE_LABEL_APPEARANCE = (
+    b"0.2 w 110 520 m 113.6 525.5 l 110 525.5 l S\n"  # 2
+    b"114.5 520 m 118.1 525.5 l 114.5 525.5 l S\n"  # 8
+    b"119.0 523.9 m 119.5 525.5 l S\n"  # inch mark
+    b"120.6 523.9 m 121.1 525.5 l S\n"
+)
+
+
+def _demo_setting(name: str) -> Decimal:
+    import re
+    from pathlib import Path
+
+    demo = (Path(__file__).resolve().parents[2] / "scripts" / "demo.sh").read_text(encoding="utf-8")
+    found = re.search(rf"^{name}=(\S+) \\$", demo, flags=re.MULTILINE)
+    assert found, f"{name} is not set in scripts/demo.sh"
+    return Decimal(found.group(1))
+
+
+def test_the_demo_glyph_limit_keeps_a_label_whole() -> None:
+    """**#715.** At `GLYPH_MAXIMUM_PT=5` a 5.5 pt digit is not a glyph, so the only region formed at a
+    label was its inch mark, and the vision crop cut round it showed part of the number — `91"` of
+    `191"`. Readers then read that crop correctly and returned a wrong dimension that parses.
+
+    Read from `scripts/demo.sh` itself, so lowering the shipped value fails here rather than on a
+    client's drawing."""
+    layers = read_annotation_layers(
+        _pdf(
+            annotations=[_stamp(appearance_object=6)],
+            extra_objects=[_appearance(WHOLE_LABEL_APPEARANCE)],
+        ),
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+        line_minimum_pt=_demo_setting("GV_READER_LINE_MINIMUM_PT"),
+        glyph_maximum_pt=_demo_setting("GV_READER_GLYPH_MAXIMUM_PT"),
+        glyph_gap_pt=_demo_setting("GV_READER_GLYPH_GAP_PT"),
+    )
+
+    assert [region.path_count for region in layers.outlined_regions] == [4], (
+        "the two digits and the inch mark must be one region, or a crop cut round it shows part of"
+        " the number"
+    )
+
+
+def test_at_the_old_limit_the_digits_were_not_glyphs() -> None:
+    """The control: at 5 pt the same label leaves only the inch mark, which is the #715 failure."""
+    layers = read_annotation_layers(
+        _pdf(
+            annotations=[_stamp(appearance_object=6)],
+            extra_objects=[_appearance(WHOLE_LABEL_APPEARANCE)],
+        ),
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+        line_minimum_pt=Decimal(6),
+        glyph_maximum_pt=Decimal(5),
+        glyph_gap_pt=Decimal(4),
+    )
+
+    assert [region.path_count for region in layers.outlined_regions] == [2]
