@@ -55,12 +55,20 @@ def _inches(value: int | Fraction) -> Measurement:
     return Measurement(Fraction(value), Unit.INCH, f'{value}"')
 
 
+#: The readers' real model ids: agreement is judged by vendor, read from the id (#775).
+MODEL_IDS = {
+    "bedrock-nova-2-lite": "amazon.nova-2-lite-v1:0",
+    "bedrock-ministral-3-3b": "mistral.ministral-3-3b-instruct",
+    "bedrock-mistral-large-3": "mistral.mistral-large-3-675b-instruct",
+}
+
+
 def _read(extractor: str, text: str | None, value: int | None = None) -> Reading:
     vendor = "Amazon" if "nova" in extractor else "Mistral"
     return Reading(
         extractor=extractor,
         vendor=vendor,
-        model_id=f"{extractor}/1",
+        model_id=MODEL_IDS[extractor],
         raw_text=text,
         value=None if value is None else _inches(value),
         refusal=None if text is not None else "refused",
@@ -129,14 +137,14 @@ def test_a_pair_reading_the_parser_refused_blocks_an_agreement_but_not_a_proposa
     assert judgement.outcome is Outcome.PROPOSED and judgement.value == _inches(12)
 
 
-def test_two_readers_of_one_vendor_agreeing_is_recorded_as_such() -> None:
-    """Outcome: confirmed — `corroborate` counts independence by extractor — and the vendors say
-    it was one vendor, which the scorecard counts separately (#641: same-vendor pairs agree wrong
-    most)."""
-    judgement = judge((_read(MINI, '12"', 12),), looks=(_read(LARGE, '12"', 12),))
+def test_two_readers_of_one_vendor_agreeing_confirm_nothing() -> None:
+    """**The #757 scorecard's one confirmed wrong value, fixed (#775).** Ministral 3B and
+    mistral-large-3 both read `2'` for a `2"` label. Outcome: two Mistral models agreeing is one
+    vendor's reading — proposed for a person to confirm, never confirmed on its own."""
+    judgement = judge((_read(MINI, "2'", 24),), looks=(_read(LARGE, "2'", 24),))
 
-    assert judgement.outcome is Outcome.CONFIRMED
-    assert judgement.vendors == frozenset({"Mistral"})
+    assert judgement.outcome is Outcome.PROPOSED
+    assert judgement.value == _inches(24)
 
 
 def test_nothing_read_is_handed_over_empty() -> None:
@@ -340,7 +348,7 @@ class _Reader:
         return Reading(
             extractor=self.extractor,
             vendor=self.vendor,
-            model_id=f"{self.extractor}/1",
+            model_id=MODEL_IDS[self.extractor],
             raw_text='10192"' if whole else None,
             value=Measurement(Fraction(10192), Unit.INCH, '10192"') if whole else None,
             refusal=None if whole else "the crop does not show a whole dimension",
