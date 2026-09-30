@@ -663,3 +663,21 @@ def test_an_agent_reading_that_agrees_leaves_the_agreement_standing(
     statuses = _region_statuses(session)
     assert {text for text, *_ in statuses} == {'10192"'}
     assert all(status != "CONFLICTING" for *_, status, _lane in statuses)
+
+
+def test_the_escalation_reader_can_be_a_defined_one_the_vision_route_does_not_run(
+    store: LocalStore,
+) -> None:
+    """**#757 D-A2.** Outcome: the agent's escalation is mistral-large-3, found among the defined
+    readers, while the vision route reads with only the configured pair."""
+    from extraction.agent.tools import VlmRole
+    from extraction.models.nova import MISTRAL_LARGE_3_EXTRACTOR
+
+    stages = _stages(
+        store,
+        (_WholeLabelReader(_config("reader-a")),),
+        _settings(escalation_reader=MISTRAL_LARGE_3_EXTRACTOR),
+    )
+
+    assert stages._agent_readers[VlmRole.ESCALATION].config.extractor == MISTRAL_LARGE_3_EXTRACTOR
+    assert [reader.config.extractor for reader in stages._vision_readers] == ["reader-a"]

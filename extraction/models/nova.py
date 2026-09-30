@@ -57,10 +57,12 @@ DEFAULT_MODEL_ID = "amazon.nova-lite-v1:0"
 NOVA_PRO_MODEL_ID = "amazon.nova-pro-v1:0"
 NOVA_2_LITE_MODEL_ID = "amazon.nova-2-lite-v1:0"
 MINISTRAL_3_3B_MODEL_ID = "mistral.ministral-3-3b-instruct"
+MISTRAL_LARGE_3_MODEL_ID = "mistral.mistral-large-3-675b-instruct"
 CLAUDE_HAIKU_4_5_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"
 NOVA_PRO_EXTRACTOR = "bedrock-nova-pro"
 NOVA_2_LITE_EXTRACTOR = "bedrock-nova-2-lite"
 MINISTRAL_3_3B_EXTRACTOR = "bedrock-ministral-3-3b"
+MISTRAL_LARGE_3_EXTRACTOR = "bedrock-mistral-large-3"
 CLAUDE_HAIKU_4_5_EXTRACTOR = "bedrock-claude-haiku-4-5"
 
 #: What turns a foundation-model id into a cross-region inference profile id.
@@ -273,6 +275,23 @@ VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
         coordinate_measurement="#668 recorded Nova 2 Lite as pixel coordinates.",
         enabled=True,
     ),
+    # **The reading agent's escalation reader (#757 D-A2, the admin's decision of 2026-10-01)**, the
+    # best single reader on the human-read key (#641: 16 of 35). Off for the vision route, which reads
+    # every region with every enabled reader: it is the same vendor as Ministral 3B, and #641 found
+    # same-vendor pairs agree on wrong values most. The agent asks it by name, only after the
+    # primary (`workflow/reading_agent.py`).
+    _ReaderDefinition(
+        key="mistral-large-3",
+        model_id=MISTRAL_LARGE_3_MODEL_ID,
+        extractor=MISTRAL_LARGE_3_EXTRACTOR,
+        coordinate_mode=CoordinateMode.PIXELS,
+        coordinate_measurement="#641 measured Mistral Large 3 as pixel coordinates (2026-09-29).",
+        enabled=False,
+        disabled_reason=(
+            "#757 D-A2: the reading agent's escalation reader, asked by name after the primary; not "
+            "a vision-route reader, because it shares a vendor with Ministral 3B."
+        ),
+    ),
     # Off until #665. Its space is unmeasured because it has never returned a reading on this
     # account; Anthropic documents absolute pixels, and that stays a claim until a run confirms it.
     _ReaderDefinition(
@@ -326,19 +345,67 @@ def vision_configs_from_environment(
         chosen = tuple(reader for reader in VISION_READERS if reader.enabled)
 
     return tuple(
-        NovaConfig(
-            model_id=os.environ.get(reader.model_env, reader.model_id),
+        _config_for(
+            reader,
             prompt_id=prompt_id,
             template_id=template_id,
             connect_timeout_seconds=connect_timeout_seconds,
             read_timeout_seconds=read_timeout_seconds,
-            max_attempts=1,
             region_name=region_name,
-            extractor=reader.extractor,
-            coordinate_mode=reader.coordinate_mode,
         )
         for reader in chosen
     )
+
+
+def _config_for(
+    reader: _ReaderDefinition,
+    *,
+    prompt_id: str,
+    template_id: str,
+    connect_timeout_seconds: int,
+    read_timeout_seconds: int,
+    region_name: str,
+) -> NovaConfig:
+    import os
+
+    return NovaConfig(
+        model_id=os.environ.get(reader.model_env, reader.model_id),
+        prompt_id=prompt_id,
+        template_id=template_id,
+        connect_timeout_seconds=connect_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds,
+        max_attempts=1,
+        region_name=region_name,
+        extractor=reader.extractor,
+        coordinate_mode=reader.coordinate_mode,
+    )
+
+
+def vision_config_for_extractor(
+    extractor: str,
+    *,
+    prompt_id: str = "dimension-reader-v1",
+    template_id: str = "bounded-crop-v1",
+) -> NovaConfig | None:
+    """The configuration of the defined reader named `extractor`, enabled or not; `None` if none is.
+
+    For a reader asked **by name** rather than run on every region — the reading agent's escalation
+    reader (#757 D-A2). Only a reader with a measured coordinate space is returned: one without
+    would read a rectangle in units nobody has confirmed (#664).
+    """
+    import os
+
+    for reader in VISION_READERS:
+        if reader.extractor == extractor and reader.coordinate_measured:
+            return _config_for(
+                reader,
+                prompt_id=prompt_id,
+                template_id=template_id,
+                connect_timeout_seconds=int(os.environ.get("GV_BEDROCK_CONNECT_TIMEOUT", "10")),
+                read_timeout_seconds=int(os.environ.get("GV_BEDROCK_READ_TIMEOUT", "120")),
+                region_name=os.environ.get("GV_BEDROCK_REGION", DEFAULT_REGION),
+            )
+    return None
 
 
 class InferenceProfileRoutes:

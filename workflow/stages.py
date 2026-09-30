@@ -157,6 +157,7 @@ from extraction.models.nova import (
     NovaInvocation,
     NovaInvocationOutcome,
     NovaRequest,
+    vision_config_for_extractor,
     vision_configs_from_environment,
 )
 from extraction.models.validation import ValidationRejection
@@ -558,7 +559,13 @@ VIEW_MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
     ViewRole.SHOP.value: MatchDocumentRole.SHOP,
 }
 
-__all__ = ["DatabaseStages"]
+__all__ = [
+    "DatabaseStages",
+    "crop_shows_a_stacked_fraction",
+    "page_transform",
+    "region_facts",
+    "stored_polygon",
+]
 
 type _AgentPlannerFactory = Callable[[BoundedRegionContext, RegionFacts, GraphLimits], Planner]
 
@@ -580,6 +587,10 @@ def _agent_readers(
 ) -> dict[VlmRole, _VisionReader]:
     """The reading agent's primary and escalation readers, found by the extractor each is named by.
 
+    A configured vision reader first; otherwise a defined one (`VISION_READERS`), enabled or not.
+    **The escalation reader need not read every region**: mistral-large-3 (#757 D-A2) is defined but
+    off for the vision route, and the agent asks it by name only after the primary.
+
     **Refused, not guessed, when a name matches nothing** — a worker that started with the agent on
     and quietly asked no reader, or the wrong one, would report readings its settings never chose.
     """
@@ -591,12 +602,17 @@ def _agent_readers(
     ):
         if name is None:
             continue
-        if name not in by_name:
+        if name in by_name:
+            chosen[role] = by_name[name]
+            continue
+        config = vision_config_for_extractor(name)
+        if config is None:
             raise ValueError(
-                f"the reading agent's {role.value} reader is {name!r}, which is not a configured "
-                f"vision reader (configured: {sorted(by_name) or 'none'})"
+                f"the reading agent's {role.value} reader is {name!r}, which is neither a "
+                f"configured vision reader (configured: {sorted(by_name) or 'none'}) nor a defined "
+                "one with a measured coordinate space"
             )
-        chosen[role] = by_name[name]
+        chosen[role] = BedrockVisionReader(config)
     if settings.sharper_dpi <= dpi:
         raise ValueError(
             f"a sharper look must render above the stage's {dpi} dpi; {settings.sharper_dpi} is not"
@@ -604,7 +620,7 @@ def _agent_readers(
     return chosen
 
 
-def _page_transform(page: Page, dpi: int) -> PageTransform | None:
+def page_transform(page: Page, dpi: int) -> PageTransform | None:
     """The page's recorded transform at `dpi`, or `None` where the manifest recorded none."""
     if page.media_box is None or page.crop_box is None:
         return None
@@ -1761,7 +1777,7 @@ class DatabaseStages:
             return outcome
 
         settings = self._reading_agent
-        transform = _page_transform(page, self._dpi)
+        transform = page_transform(page, self._dpi)
         reach = (
             settings.reach(self._association.glyph_gap_pt)
             if settings is not None and self._association is not None
@@ -1771,7 +1787,7 @@ class DatabaseStages:
         page_glyphs = () if layers is None else layers.glyph_paths
 
         def stacked(polygon: Polygon) -> bool:
-            return _crop_shows_a_stacked_fraction(
+            return crop_shows_a_stacked_fraction(
                 crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT), fractions
             )
 
@@ -1783,8 +1799,8 @@ class DatabaseStages:
             status = _candidate_evidence_status(candidate)
             if status is not EvidenceStatus.RAW_CANDIDATE:
                 continue
-            polygon = _stored_polygon(candidate, rendered)
-            facts, whole_run = self._region_facts(
+            polygon = stored_polygon(candidate, rendered)
+            facts, whole_run = region_facts(
                 candidate,
                 candidates,
                 version_id=version_id,
@@ -1923,69 +1939,6 @@ class DatabaseStages:
                     candidate_id=None if row is None else row.id, flush=False
                 )
         return outcome
-
-    def _region_facts(
-        self,
-        candidate: ObservationCandidate,
-        candidates: Sequence[ObservationCandidate],
-        *,
-        version_id: UUID,
-        page: Page,
-        rendered: RenderedPage,
-        polygon: Polygon | None,
-        transform: PageTransform | None,
-        reach: LabelReach | None,
-        page_glyphs: Sequence[VectorPath],
-        stacked: Callable[[Polygon], bool],
-    ) -> tuple[RegionFacts, Polygon | None]:
-        """What the file established about one region, and the region widened to its whole label.
-
-        **Geometry only.** The cut and the direction come from the vendor's paths
-        (`extraction/agent/geometry.py`), the stacked fraction from the bar detector, the witnesses
-        from other routes' recorded values. Where the paths were not read — no reading agent, no
-        association settings, no recorded page transform — the geometry says nothing, and the
-        region is read as it stands, as before #757.
-        """
-        # **What the region's other readers read**, as independent witnesses. Same region means the
-        # same recorded polygon, the rule cross-route corroboration groups by.
-        witnesses = tuple(
-            value
-            for other in candidates
-            if other is not candidate
-            and other.polygon == candidate.polygon
-            and (value := _stored_measurement(other)) is not None
-        )
-        cut_at_edge = False
-        rotation_degrees = 0
-        whole_run: Polygon | None = None
-        if reach is not None and transform is not None and polygon is not None:
-            region_box = _pdf_box(transform, [(point[0], point[1]) for point in candidate.polygon])
-            left, top, right, bottom = crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT)
-            crop_box = _pdf_box(transform, [(left, top), (right, bottom)])
-            geometry = label_geometry(region_box, crop_box, page_glyphs, reach)
-            cut_at_edge = geometry.cut_at_edge
-            rotation_degrees = geometry.rotation_degrees
-            if geometry.label_box is not None and geometry.closed:
-                label = geometry.label_box
-                widened: Box = (
-                    min(label[0], region_box[0]),
-                    min(label[1], region_box[1]),
-                    max(label[2], region_box[2]),
-                    max(label[3], region_box[3]),
-                )
-                try:
-                    whole_run = page_box_polygon(widened, transform, version_id, page.index)[0]
-                except (TypeError, ValueError):
-                    whole_run = None
-        facts = RegionFacts(
-            cut_at_edge=cut_at_edge,
-            rotation_degrees=rotation_degrees,
-            stacked_fraction=polygon is not None and stacked(polygon),
-            # Not handed over until the admin decides #756 D2; see the caller's docstring.
-            shape_reading=None,
-            other_route_values=witnesses,
-        )
-        return facts, whole_run
 
     def _agent_config_hash(self, source_candidate_id: UUID) -> str:
         """An agent run's identity: the region it read, and every setting it was read under."""
@@ -2629,7 +2582,7 @@ class DatabaseStages:
                     image_format="png",
                     context=AssembledContext(nearby_text=(), nearby_geometry=()),
                     bound_pt=VISION_CONTEXT_BOUND_PT,
-                    stacked_label=_crop_shows_a_stacked_fraction(crop_box, stacked_fractions),
+                    stacked_label=crop_shows_a_stacked_fraction(crop_box, stacked_fractions),
                 )
                 try:
                     candidate = reader.extract(request, recorder)
@@ -2664,7 +2617,7 @@ class DatabaseStages:
         """
         if self._store is None:
             return None
-        polygon = _stored_polygon(candidate, rendered)
+        polygon = stored_polygon(candidate, rendered)
         if polygon is None:
             return None
         spec = CropSpec(
@@ -2871,7 +2824,7 @@ class DatabaseStages:
         dimensions is the exact inverse of the multiplication `crop_pixel_box` performs, so the pixels
         that come back are the pixels the reader was looking at — provided the render matches the
         read. Rendering at `self._dpi`, the dpi the candidates were read at, is what makes that true,
-        and `_stored_polygon` refuses rather than guesses when a point falls outside the page.
+        and `stored_polygon` refuses rather than guesses when a point falls outside the page.
         """
         if self._store is None:
             return {
@@ -2959,7 +2912,7 @@ class DatabaseStages:
                 if candidate.id in already:
                     skipped += 1
                     continue
-                polygon = _stored_polygon(candidate, rendered)
+                polygon = stored_polygon(candidate, rendered)
                 if polygon is None:
                     abstained.append(
                         f"page {page.index}: a candidate's polygon does not describe a region of "
@@ -3675,7 +3628,73 @@ def _record_panel_views(session: Session, page: Page, layers: PageLayers) -> dic
     return counts
 
 
-def _crop_shows_a_stacked_fraction(
+def region_facts(
+    candidate: ObservationCandidate,
+    candidates: Sequence[ObservationCandidate],
+    *,
+    version_id: UUID,
+    page: Page,
+    rendered: RenderedPage,
+    polygon: Polygon | None,
+    transform: PageTransform | None,
+    reach: LabelReach | None,
+    page_glyphs: Sequence[VectorPath],
+    stacked: Callable[[Polygon], bool],
+) -> tuple[RegionFacts, Polygon | None]:
+    """What the file established about one region, and the region widened to its whole label.
+
+    Public so the agent's scorecard (`eval/experiments/agent_scorecard.py`) judges a crop by this
+    code, not a copy of it: a second computation of what the geometry says is a second answer.
+
+    **Geometry only.** The cut and the direction come from the vendor's paths
+    (`extraction/agent/geometry.py`), the stacked fraction from the bar detector, the witnesses
+    from other routes' recorded values. Where the paths were not read — no reading agent, no
+    association settings, no recorded page transform — the geometry says nothing, and the
+    region is read as it stands, as before #757.
+    """
+    # **What the region's other readers read**, as independent witnesses. Same region means the
+    # same recorded polygon, the rule cross-route corroboration groups by.
+    witnesses = tuple(
+        value
+        for other in candidates
+        if other is not candidate
+        and other.polygon == candidate.polygon
+        and (value := _stored_measurement(other)) is not None
+    )
+    cut_at_edge = False
+    rotation_degrees = 0
+    whole_run: Polygon | None = None
+    if reach is not None and transform is not None and polygon is not None:
+        region_box = _pdf_box(transform, [(point[0], point[1]) for point in candidate.polygon])
+        left, top, right, bottom = crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT)
+        crop_box = _pdf_box(transform, [(left, top), (right, bottom)])
+        geometry = label_geometry(region_box, crop_box, page_glyphs, reach)
+        cut_at_edge = geometry.cut_at_edge
+        rotation_degrees = geometry.rotation_degrees
+        if geometry.label_box is not None and geometry.closed:
+            label = geometry.label_box
+            widened: Box = (
+                min(label[0], region_box[0]),
+                min(label[1], region_box[1]),
+                max(label[2], region_box[2]),
+                max(label[3], region_box[3]),
+            )
+            try:
+                whole_run = page_box_polygon(widened, transform, version_id, page.index)[0]
+            except (TypeError, ValueError):
+                whole_run = None
+    facts = RegionFacts(
+        cut_at_edge=cut_at_edge,
+        rotation_degrees=rotation_degrees,
+        stacked_fraction=polygon is not None and stacked(polygon),
+        # Not handed over until the admin decides #756 D2; see the caller's docstring.
+        shape_reading=None,
+        other_route_values=witnesses,
+    )
+    return facts, whole_run
+
+
+def crop_shows_a_stacked_fraction(
     crop_box: tuple[int, int, int, int], fractions: Sequence[StackedFraction]
 ) -> bool:
     """Whether any part of a detected stacked fraction falls inside a crop's page pixels (#735).
@@ -3693,7 +3712,7 @@ def _crop_shows_a_stacked_fraction(
     return False
 
 
-def _stored_polygon(
+def stored_polygon(
     candidate: ObservationCandidate | _VisionRegion, rendered: RenderedPage
 ) -> Polygon | None:
     """A candidate's image-pixel polygon as the normalised one a `CropSpec` takes.
