@@ -228,11 +228,11 @@ def _near(box: Box, around: Box, gap: Decimal) -> bool:
 
 
 class LabelReach(Protocol):
-    """The two lengths a label is gathered by — all `gather_label` reads from its settings.
+    """The three lengths a label is gathered by — all `gather_label` reads from its settings.
 
-    `ReaderSettings` has both. So does the reading agent's own geometry (`extraction/agent/geometry`),
-    which finds a label's whole run to tell whether a crop cut it off (#757) and must gather it by
-    this rule, not a second copy of it.
+    `ReaderSettings` has all three. So does the reading agent's own geometry
+    (`extraction/agent/geometry`), which finds a label's whole run to tell whether a crop cut it off
+    (#757) and must gather it by this rule, not a second copy of it.
     """
 
     @property
@@ -243,6 +243,11 @@ class LabelReach(Protocol):
     def maximum_label_pt(self) -> Decimal:
         """How far, in PDF points, one label may extend before its end counts as unsettled."""
 
+    @property
+    def glyph_gap_pt(self) -> Decimal:
+        """The gap along a baseline that joins two characters into one run: past a label's end,
+        a character this close on its line means the label may not have ended there."""
+
 
 def gather_label(
     seeds: Sequence[VectorPath], page_glyphs: Sequence[VectorPath], *, settings: LabelReach
@@ -252,6 +257,16 @@ def gather_label(
     A label is grown from the page rather than cut to a box, because a crop that cut a label is
     exactly the failure #641 recorded — two readers agreed on the last two digits of a three-digit
     label. Returns the paths and `None`, or the paths so far and why the label could not be closed.
+
+    **A label whose end is not clear is not closed.** `label_gap_pt` is a single length, and the
+    client's lettering is proportional: a narrow `1` stands in a wide cell, so the space beside it can
+    exceed the gap every other pair of characters keeps. Measured on the #666 key (phase D, 2026-10-01):
+    in `10"` the `1` sits 3.12 pt from the `0` against a 3.0 pt label gap, the label closed as `0"`,
+    and the reader returned `0"` for a `10"` — part of a label, read as a whole one. So once nothing
+    more joins, the label is checked against the run rule the templates were grouped by
+    (`glyph_gap_pt`, via `glyph_runs`): if a character left outside it shares a run with one inside —
+    same line, within the run gap — the label may continue, and it is refused. A label that stops
+    for a reason the drawing gives, space wider than a run holds, closes as before.
     """
     if not seeds:
         return (), "there are no characters here to read"
@@ -270,10 +285,54 @@ def gather_label(
             )
         joining = [path for path in others if _near(_box(path), around, settings.label_gap_pt)]
         if not joining:
+            if _continues_past(members, others, around, settings.glyph_gap_pt):
+                return tuple(members), (
+                    "a character sits just past where this label seems to end, on the same line, "
+                    "so where it ends is not settled"
+                )
             return tuple(members), None
         members.extend(joining)
         joined = {id(path) for path in joining}
         others = [path for path in others if id(path) not in joined]
+
+
+def _continues_past(
+    members: Sequence[VectorPath], others: Sequence[VectorPath], around: Box, glyph_gap_pt: Decimal
+) -> bool:
+    """Whether a character outside the label shares a run with one inside it, along the label's line.
+
+    A run is the grouping regions were formed by (`glyph_runs`): overlapping baselines, advancing
+    with no gap wider than `glyph_gap_pt`. Only characters within `glyph_gap_pt` of the label can be
+    in such a run, so only those are grouped.
+
+    **Along the label's own line, not across it.** A label reads across the page or up it; the way
+    its own characters run says which. A character stacked above an upright label is not the label
+    continuing — measured with the first version of this rule, which grouped both ways and refused a
+    clean `20"` for a `7` on the line above. Where the label's characters do not say (one character,
+    or as long a run each way), both ways are tried, which can only refuse more.
+    """
+    near = [path for path in others if _near(_box(path), around, glyph_gap_pt)]
+    if not near:
+        return False
+    own = [_box(path) for path in members]
+    longest = {
+        rotation: max((len(run) for run in glyph_runs(own, glyph_gap_pt, rotation)[0]), default=1)
+        for rotation in (0, 90)
+    }
+    if longest[0] > longest[90]:
+        directions: tuple[int, ...] = (0,)
+    elif longest[90] > longest[0]:
+        directions = (90,)
+    else:
+        directions = (0, 90)
+    boxes = own + [_box(path) for path in near]
+    inside = len(members)
+    for rotation in directions:
+        runs, _ = glyph_runs(boxes, glyph_gap_pt, rotation)
+        for run in runs:
+            if any(index < inside for index in run) and any(index >= inside for index in run):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------

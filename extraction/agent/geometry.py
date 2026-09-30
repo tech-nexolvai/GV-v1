@@ -88,8 +88,9 @@ class LabelGeometry:
     font text rather than paths (#738), which this cannot see and says nothing about."""
 
     closed: bool
-    """Whether the label ended within `maximum_label_pt`. An unclosed label runs into more text
-    than one label holds: where it ends is not settled, so it cannot be widened to."""
+    """Whether the label's end is settled. An unclosed label runs into more text than one label
+    holds, or has a character on its own line just past its end, within the run gap
+    (`gather_label`): either way where it ends is not settled, so it cannot be widened to."""
 
     cut_at_edge: bool
     rotation_degrees: int
