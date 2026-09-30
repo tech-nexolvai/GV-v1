@@ -16,10 +16,12 @@ from extraction.agent.tools import (
     AgentToolbox,
     OcrVerificationArguments,
     RefineCropArguments,
+    Refinement,
     ToolCall,
     ToolCallRecord,
     ToolName,
     VlmReadingArguments,
+    VlmRole,
 )
 
 
@@ -62,13 +64,21 @@ def _toolbox() -> tuple[AgentToolbox, RecordingCalls, dict[ToolName, Handler]]:
 @pytest.mark.parametrize(
     ("arguments", "name", "result"),
     [
-        (RefineCropArguments("region", "crop-1"), ToolName.REFINE_CROP, "refined"),
+        (
+            RefineCropArguments("region", "crop-1", Refinement.WHOLE_RUN),
+            ToolName.REFINE_CROP,
+            "refined",
+        ),
         (
             OcrVerificationArguments("region", "crop-1"),
             ToolName.REQUEST_OCR_VERIFICATION,
             "ocr",
         ),
-        (VlmReadingArguments("region", "crop-1"), ToolName.REQUEST_VLM_READING, "vlm"),
+        (
+            VlmReadingArguments("region", "crop-1", VlmRole.PRIMARY),
+            ToolName.REQUEST_VLM_READING,
+            "vlm",
+        ),
         (AbstainArguments("region", "no reliable reading"), ToolName.ABSTAIN, "abstained"),
     ],
 )
@@ -104,7 +114,7 @@ def test_call_is_recorded_before_a_handler_failure() -> None:
         abstain=Handler("abstained"),
         recorder=recorder,
     )
-    arguments = RefineCropArguments("region", "crop-1")
+    arguments = RefineCropArguments("region", "crop-1", Refinement.WHOLE_RUN)
 
     with pytest.raises(RuntimeError, match="crop service failed"):
         toolbox.invoke(ToolCall("failed-call", arguments))
@@ -147,11 +157,11 @@ def test_handlers_cannot_be_replaced_or_added_after_construction() -> None:
 def test_typed_arguments_are_immutable_and_reject_missing_identity() -> None:
     """Input: mutation/empty reference. Outcome: rejection. Why: replay arguments stay exact."""
 
-    arguments = RefineCropArguments("region", "crop-1")
+    arguments = RefineCropArguments("region", "crop-1", Refinement.WHOLE_RUN)
     with pytest.raises(FrozenInstanceError):
         arguments.region_id = "other"  # type: ignore[misc]
     with pytest.raises(ValueError, match="crop_artifact_id"):
-        RefineCropArguments("region", "")
+        RefineCropArguments("region", "", Refinement.WHOLE_RUN)
 
 
 def test_untyped_call_cannot_enter_the_dispatcher() -> None:

@@ -39,6 +39,7 @@ from extraction.agent.graph import (
     BoundedRegionContext,
     GraphLimits,
     RetryableToolFailure,
+    scripted,
 )
 from extraction.agent.outcomes import abstain
 from extraction.agent.tools import (
@@ -216,13 +217,17 @@ def _agent_candidate() -> DomainCandidate:
     )
 
 
-def _graph(recorder: _Recorder, *, ocr_result: object) -> BoundedAgentGraph:
+def _graph(
+    recorder: _Recorder, *, ocr_result: object, vlm_result: object | None = None
+) -> BoundedAgentGraph:
     return BoundedAgentGraph(
         limits=_limits(),
         toolbox=AgentToolbox(
             refine_crop=lambda _arguments: RetryableToolFailure("unused"),
             request_ocr_verification=lambda _arguments: ocr_result,
-            request_vlm_reading=lambda _arguments: RetryableToolFailure("unused"),
+            request_vlm_reading=lambda _arguments: (
+                RetryableToolFailure("unused") if vlm_result is None else vlm_result
+            ),
             abstain=abstain,
             recorder=recorder,
         ),
@@ -250,12 +255,16 @@ def test_trigger_permitted_raw_region_runs_agent_and_records_only_a_candidate(
 
     results = DatabaseStages(
         store,
-        bounded_agent=_graph(recorder, ocr_result=_agent_candidate()),
+        bounded_agent=_graph(
+            recorder, ocr_result=RetryableToolFailure("unused"), vlm_result=_agent_candidate()
+        ),
     ).extract_pages(session, revision.id)
 
     runs = _candidate_runs(session)
     agent_rows = [row for row, run in runs if run.extractor == "bounded-agent"]
-    assert [call.call_id.rsplit(":", 1)[-1] for call in recorder.calls] == ["ocr-1"]
+    # **The decision table's first move** (#757): no reading yet, so the primary vision reader —
+    # not the fixed script's OCR, OCR, VLM regardless of what each returned.
+    assert [call.call_id.rsplit(":", 1)[-1] for call in recorder.calls] == ["vlm-primary"]
     assert len(agent_rows) == 1
     assert agent_rows[0].raw_text == '984"'
     assert agent_rows[0].semantic_guess is None
@@ -310,19 +319,21 @@ def test_graph_bounds_are_enforced_when_workflow_supplies_too_many_actions(
     )
     recorder = _Recorder()
 
-    def too_many_ocr(context: BoundedRegionContext) -> tuple[ToolCall, ...]:
-        return tuple(
-            ToolCall(
-                f"ocr-{number}",
-                OcrVerificationArguments(context.region_id, context.crop_artifact_id),
+    def too_many_ocr(context: BoundedRegionContext, _facts: object, _limits: object) -> object:
+        return scripted(
+            tuple(
+                ToolCall(
+                    f"ocr-{number}",
+                    OcrVerificationArguments(context.region_id, context.crop_artifact_id),
+                )
+                for number in range(3)
             )
-            for number in range(3)
         )
 
     results = DatabaseStages(
         store,
         bounded_agent=_graph(recorder, ocr_result=RetryableToolFailure("still unreadable")),
-        bounded_agent_actions=too_many_ocr,
+        bounded_agent_planner=too_many_ocr,  # type: ignore[arg-type]
     ).extract_pages(session, revision.id)
 
     assert [call.call_id for call in recorder.calls] == ["ocr-0", "ocr-1"]

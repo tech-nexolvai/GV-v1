@@ -23,6 +23,7 @@ from extraction.agent.graph import (
     GraphTerminal,
     RefinedCrop,
     RetryableToolFailure,
+    scripted,
 )
 from extraction.agent.outcomes import abstain
 from extraction.agent.tools import (
@@ -30,9 +31,11 @@ from extraction.agent.tools import (
     AgentToolbox,
     OcrVerificationArguments,
     RefineCropArguments,
+    Refinement,
     ToolCall,
     ToolCallRecord,
     VlmReadingArguments,
+    VlmRole,
 )
 
 
@@ -106,8 +109,8 @@ def _ocr(call_id: str = "ocr-1") -> ToolCall:
     return ToolCall(call_id, OcrVerificationArguments("region-1", "crop-0"))
 
 
-def _vlm(call_id: str) -> ToolCall:
-    return ToolCall(call_id, VlmReadingArguments("region-1", "crop-0"))
+def _vlm(call_id: str, role: VlmRole = VlmRole.PRIMARY) -> ToolCall:
+    return ToolCall(call_id, VlmReadingArguments("region-1", "crop-0", role))
 
 
 def test_candidate_is_one_of_exactly_two_terminal_states() -> None:
@@ -116,7 +119,7 @@ def test_candidate_is_one_of_exactly_two_terminal_states() -> None:
     recorder = Recorder()
     graph = BoundedAgentGraph(limits=_limits(), toolbox=_toolbox(recorder, ocr=_candidate()))
 
-    result = graph.run(_context(), (_ocr(),))
+    result = graph.run(_context(), scripted((_ocr(),)))
 
     assert isinstance(result, CandidateTerminal)
     assert result.candidate == _candidate()
@@ -134,7 +137,7 @@ def test_explicit_abstain_is_the_only_unsuccessful_terminal() -> None:
     graph = BoundedAgentGraph(limits=_limits(), toolbox=_toolbox(recorder))
     action = ToolCall("stop-1", AbstainArguments("region-1", "readings remain ambiguous"))
 
-    result = graph.run(_context(), (action,))
+    result = graph.run(_context(), scripted((action,)))
 
     assert isinstance(result, AbstentionTerminal)
     assert result.abstention.reason == "readings remain ambiguous"
@@ -145,7 +148,9 @@ def test_empty_action_sequence_abstains_instead_of_returning_partial_data() -> N
     """Input: no available action. Output: abstention because no candidate was produced."""
 
     recorder = Recorder()
-    result = BoundedAgentGraph(limits=_limits(), toolbox=_toolbox(recorder)).run(_context(), ())
+    result = BoundedAgentGraph(limits=_limits(), toolbox=_toolbox(recorder)).run(
+        _context(), scripted(())
+    )
 
     assert isinstance(result, AbstentionTerminal)
     assert "ended without a candidate" in result.abstention.reason
@@ -158,7 +163,7 @@ def test_ocr_bound_blocks_third_retry_before_tool_invocation() -> None:
     recorder = Recorder()
     graph = BoundedAgentGraph(limits=_limits(), toolbox=_toolbox(recorder))
 
-    result = graph.run(_context(), (_ocr("ocr-1"), _ocr("ocr-2"), _ocr("ocr-3")))
+    result = graph.run(_context(), scripted((_ocr("ocr-1"), _ocr("ocr-2"), _ocr("ocr-3"))))
 
     assert isinstance(result, AbstentionTerminal)
     assert result.abstention.reason == "maximum OCR verification attempts reached"
@@ -171,7 +176,16 @@ def test_vlm_bound_allows_primary_and_one_escalation_only() -> None:
     recorder = Recorder()
     graph = BoundedAgentGraph(limits=_limits(), toolbox=_toolbox(recorder))
 
-    result = graph.run(_context(), (_vlm("vlm-1"), _vlm("vlm-2"), _vlm("vlm-3")))
+    result = graph.run(
+        _context(),
+        scripted(
+            (
+                _vlm("vlm-1"),
+                _vlm("vlm-2", VlmRole.ESCALATION),
+                _vlm("vlm-3", VlmRole.ESCALATION),
+            )
+        ),
+    )
 
     assert isinstance(result, AbstentionTerminal)
     assert result.abstention.reason == "maximum VLM calls reached"
@@ -195,11 +209,14 @@ def test_step_bound_stops_before_a_seventh_tool_call() -> None:
         recorder=recorder,
     )
     actions = tuple(
-        ToolCall(f"refine-{number}", RefineCropArguments("region-1", f"crop-{number}"))
+        ToolCall(
+            f"refine-{number}",
+            RefineCropArguments("region-1", f"crop-{number}", Refinement.SHARPER),
+        )
         for number in range(7)
     )
 
-    result = BoundedAgentGraph(limits=_limits(), toolbox=toolbox).run(_context(), actions)
+    result = BoundedAgentGraph(limits=_limits(), toolbox=toolbox).run(_context(), scripted(actions))
 
     assert isinstance(result, AbstentionTerminal)
     assert result.abstention.reason == "maximum graph steps reached"
@@ -223,7 +240,7 @@ def test_oversized_context_abstains_before_any_tool(
 
     recorder = Recorder()
     result = BoundedAgentGraph(limits=_limits(), toolbox=_toolbox(recorder, ocr=_candidate())).run(
-        context, (_ocr(),)
+        context, scripted((_ocr(),))
     )
 
     assert isinstance(result, AbstentionTerminal)
@@ -259,3 +276,92 @@ def test_unsafe_limits_are_rejected_at_construction(changes: dict[str, int], mes
 
     with pytest.raises(ValueError, match=message):
         _limits(**changes)
+
+
+# ---------------------------------------------------------------------------
+# #757 — the graph asks a planner, and trusts nothing it is told
+# ---------------------------------------------------------------------------
+
+
+def test_a_planner_cannot_propose_a_reading_no_tool_returned() -> None:
+    """**Outcome: abstention.** A proposal must be one of this run's readings, by identity — a
+    planner cannot put a value in front of a reviewer that nothing read."""
+    from extraction.agent.graph import Propose
+
+    recorder = Recorder()
+    fabricated = _candidate()
+
+    result = BoundedAgentGraph(limits=_limits(), toolbox=_toolbox(recorder)).run(
+        _context(), lambda _progress: Propose(fabricated)
+    )
+
+    assert isinstance(result, AbstentionTerminal)
+    assert "no tool returned" in result.abstention.reason
+
+
+def test_a_planner_that_fails_closes_toward_abstention() -> None:
+    recorder = Recorder()
+
+    def broken(_progress: object) -> ToolCall:
+        raise RuntimeError("planner bug")
+
+    result = BoundedAgentGraph(limits=_limits(), toolbox=_toolbox(recorder)).run(_context(), broken)
+
+    assert isinstance(result, AbstentionTerminal)
+    assert "planner failed" in result.abstention.reason
+    assert recorder.calls == []
+
+
+def test_an_escalation_before_the_primary_reading_is_refused_before_it_runs() -> None:
+    """Outcome: the roles are enforced — one primary, then at most one escalation (DESIGN_AI §3.2)."""
+    recorder = Recorder()
+    graph = BoundedAgentGraph(limits=_limits(), toolbox=_toolbox(recorder, vlm=_candidate()))
+
+    result = graph.run(_context(), scripted((_vlm("vlm-1", VlmRole.ESCALATION),)))
+
+    assert isinstance(result, AbstentionTerminal)
+    assert recorder.calls == []
+
+
+def test_a_second_primary_reading_is_refused_before_it_runs() -> None:
+    recorder = Recorder()
+    graph = BoundedAgentGraph(
+        limits=_limits(), toolbox=_toolbox(recorder, vlm=RetryableToolFailure("no answer"))
+    )
+
+    result = graph.run(_context(), scripted((_vlm("vlm-1"), _vlm("vlm-2"))))
+
+    assert isinstance(result, AbstentionTerminal)
+    assert [call.call_id for call in recorder.calls] == ["vlm-1"]
+
+
+def test_the_planner_sees_every_reading_refinement_and_failure_so_far() -> None:
+    """Outcome: after a refinement and a failed read, the progress the planner is handed holds both."""
+    from extraction.agent.graph import AgentProgress, Halt
+
+    recorder = Recorder()
+    seen: list[AgentProgress] = []
+    graph = BoundedAgentGraph(
+        limits=_limits(),
+        toolbox=_toolbox(
+            recorder, refine=RefinedCrop("crop-1"), vlm=RetryableToolFailure("no answer")
+        ),
+    )
+    calls = iter(
+        (
+            ToolCall("refine", RefineCropArguments("region-1", "crop-0", Refinement.UPRIGHT)),
+            ToolCall("vlm", VlmReadingArguments("region-1", "crop-1", VlmRole.PRIMARY)),
+        )
+    )
+
+    def watch(progress: AgentProgress) -> ToolCall | Halt:
+        seen.append(progress)
+        return next(calls, None) or Halt("done")
+
+    graph.run(_context(), watch)
+
+    final = seen[-1]
+    assert final.refinements == ("upright",)
+    assert final.failures == ("no answer",)
+    assert final.attempted == ("refine_crop:upright", "request_vlm_reading:primary")
+    assert final.current_crop_artifact_id == "crop-1"

@@ -109,13 +109,11 @@ from extraction.agent.graph import (
     BoundedAgentGraph,
     BoundedRegionContext,
     CandidateTerminal,
+    GraphLimits,
+    Planner,
 )
-from extraction.agent.tools import (
-    AbstainArguments,
-    OcrVerificationArguments,
-    ToolCall,
-    VlmReadingArguments,
-)
+from extraction.agent.observations import RegionFacts
+from extraction.agent.policy import policy_planner
 from extraction.agent.trigger import AmbiguityReason, RegionContext, evaluate_trigger
 from extraction.annotations import (
     OutlinedTextRegion,
@@ -550,33 +548,19 @@ VIEW_MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
 
 __all__ = ["DatabaseStages"]
 
-type _AgentActionFactory = Callable[[BoundedRegionContext], tuple[ToolCall, ...]]
+type _AgentPlannerFactory = Callable[[BoundedRegionContext, RegionFacts, GraphLimits], Planner]
 
 
-def _default_bounded_agent_actions(context: BoundedRegionContext) -> tuple[ToolCall, ...]:
-    """Retry a bounded region through allowed extraction tools, then abstain plainly."""
+def _default_bounded_agent_planner(
+    context: BoundedRegionContext, facts: RegionFacts, limits: GraphLimits
+) -> Planner:
+    """The decision table (#757): each next step chosen from what the checks found, not a script.
 
-    return (
-        ToolCall(
-            f"{context.region_id}:ocr-1",
-            OcrVerificationArguments(context.region_id, context.crop_artifact_id),
-        ),
-        ToolCall(
-            f"{context.region_id}:ocr-2",
-            OcrVerificationArguments(context.region_id, context.crop_artifact_id),
-        ),
-        ToolCall(
-            f"{context.region_id}:vlm-1",
-            VlmReadingArguments(context.region_id, context.crop_artifact_id),
-        ),
-        ToolCall(
-            f"{context.region_id}:abstain",
-            AbstainArguments(
-                context.region_id,
-                "the bounded agent did not produce a reliable reading",
-            ),
-        ),
-    )
+    Before #757 this returned a fixed sequence — OCR, OCR, VLM, abstain — played whatever each step
+    returned, so the agent never looked at a result. `extraction/agent/policy.py` looks at every one.
+    """
+    del context
+    return policy_planner(facts, limits)
 
 
 @dataclass(frozen=True, slots=True)
@@ -695,7 +679,7 @@ class DatabaseStages:
         layout_model_id: str = "injected-layout-reader",
         layout_prompt_id: str = LAYOUT_PROMPT_ID,
         bounded_agent: BoundedAgentGraph | None = None,
-        bounded_agent_actions: _AgentActionFactory | None = None,
+        bounded_agent_planner: _AgentPlannerFactory | None = None,
         glyph_route: GlyphRoute | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
@@ -736,16 +720,16 @@ class DatabaseStages:
                 for reader in layout_readers
             )
         )
-        if bounded_agent is None and bounded_agent_actions is not None:
-            raise ValueError("bounded_agent_actions cannot be supplied without a bounded_agent")
+        if bounded_agent is None and bounded_agent_planner is not None:
+            raise ValueError("bounded_agent_planner cannot be supplied without a bounded_agent")
         self._bounded_agent = bounded_agent
         # **The shape reader (#756), off unless a deployment points it at a template set.** Its
         # readings are recorded for a reviewer to confirm and never sealed; see `workflow/glyph_route`.
         self._glyph_route = glyph_route
-        self._bounded_agent_actions = (
-            _default_bounded_agent_actions
-            if bounded_agent is not None and bounded_agent_actions is None
-            else bounded_agent_actions
+        self._bounded_agent_planner = (
+            _default_bounded_agent_planner
+            if bounded_agent is not None and bounded_agent_planner is None
+            else bounded_agent_planner
         )
         # Injected so a test can pass a stub: building the real one loads ONNX models, and a suite
         # that loaded them to test row-writing would be paying for a model it is not testing.
@@ -1496,7 +1480,7 @@ class DatabaseStages:
 
         if (
             self._bounded_agent is None
-            or self._bounded_agent_actions is None
+            or self._bounded_agent_planner is None
             or self._store is None
             or not candidates
         ):
@@ -1543,9 +1527,27 @@ class DatabaseStages:
                 nearby_text=(),
                 nearby_geometry_refs=(),
             )
+            # **What the region's other readers read**, as independent witnesses the decision table
+            # compares each new reading against. Same region means the same recorded polygon, the
+            # rule cross-route corroboration groups by. The geometry facts — cut off, sideways,
+            # stacked — come from the file's paths, and arrive with the refinement tools (#757).
+            witnesses = tuple(
+                _stored_measurement(other)
+                for other in candidates
+                if other is not candidate
+                and other.polygon == candidate.polygon
+                and _stored_measurement(other) is not None
+            )
+            facts = RegionFacts(
+                cut_at_edge=False,
+                rotation_degrees=0,
+                stacked_fraction=False,
+                shape_reading=None,
+                other_route_values=tuple(value for value in witnesses if value is not None),
+            )
             terminal = self._bounded_agent.run(
                 graph_context,
-                self._bounded_agent_actions(graph_context),
+                self._bounded_agent_planner(graph_context, facts, self._bounded_agent.limits),
             )
             if isinstance(terminal, CandidateTerminal):
                 rows.append(

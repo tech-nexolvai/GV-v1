@@ -33,16 +33,39 @@ def _require_text(value: object, *, field: str) -> None:
         raise ValueError(f"{field} must be a non-empty string")
 
 
+class Refinement(StrEnum):
+    """The three crop refinements, each system-owned (#757). A planner names one; code does it."""
+
+    WHOLE_RUN = "whole_run"
+    """Widen to the label's whole glyph run, from the file's own geometry — once."""
+
+    UPRIGHT = "upright"
+    """Turn by the label's own orientation, so a sideways label is read the right way up."""
+
+    SHARPER = "sharper"
+    """Render again at the deployment's stated higher DPI."""
+
+
+class VlmRole(StrEnum):
+    """Which vision reader a request is for: the primary, or the one escalation (DESIGN_AI §3.2)."""
+
+    PRIMARY = "primary"
+    ESCALATION = "escalation"
+
+
 @dataclass(frozen=True, slots=True)
 class RefineCropArguments:
-    """References for applying the system-owned bounded crop refinement policy."""
+    """References for applying one named, system-owned crop refinement."""
 
     region_id: str
     crop_artifact_id: str
+    refinement: Refinement
 
     def __post_init__(self) -> None:
         _require_text(self.region_id, field="region_id")
         _require_text(self.crop_artifact_id, field="crop_artifact_id")
+        if not isinstance(self.refinement, Refinement):
+            raise TypeError("refinement must be a Refinement")
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,14 +82,17 @@ class OcrVerificationArguments:
 
 @dataclass(frozen=True, slots=True)
 class VlmReadingArguments:
-    """References for requesting one model reading of the bounded crop."""
+    """References for requesting one model reading of the bounded crop, from the named reader."""
 
     region_id: str
     crop_artifact_id: str
+    role: VlmRole
 
     def __post_init__(self) -> None:
         _require_text(self.region_id, field="region_id")
         _require_text(self.crop_artifact_id, field="crop_artifact_id")
+        if not isinstance(self.role, VlmRole):
+            raise TypeError("role must be a VlmRole")
 
 
 @dataclass(frozen=True, slots=True)
