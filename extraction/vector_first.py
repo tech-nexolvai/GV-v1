@@ -56,6 +56,7 @@ __all__ = [
     "crop_box_pt",
     "plan_reads",
     "region_crop",
+    "upright_png",
 ]
 
 #: PDF user space is 72 units to the inch. The same definition `extraction/rasterise.py` states.
@@ -491,6 +492,24 @@ def _rotate_rgb_ccw(rgb: bytes, *, width: int, height: int, degrees: int) -> tup
         ]
         return height, width, b"".join(rotated)
     raise ValueError("degrees must be one of 0, 90, 180 or 270")
+
+
+def upright_png(png: bytes, *, label_rotation_degrees: int) -> bytes:
+    """A crop turned so a label that runs up (90) or down (270) the page reads the right way up.
+
+    For the reading agent's *upright* refinement (#757). The degrees are how the **label** is turned
+    on the page — the convention `extraction/glyph_reader.GlyphReading.rotation_degrees` states —
+    so undoing it is the opposite quarter turn: a label reading up the page is turned clockwise.
+    Exact pixel moves, no resampling, so the turned crop holds the same pixels as the one it came
+    from.
+    """
+    if label_rotation_degrees not in (90, 270):
+        raise ValueError("label_rotation_degrees must be 90 or 270")
+    width, height, rgb = decode_rgb_png(png)
+    turned_width, turned_height, turned = _rotate_rgb_ccw(
+        rgb, width=width, height=height, degrees=360 - label_rotation_degrees
+    )
+    return encode_png(turned_width, turned_height, turned)
 
 
 def _rotated_crop(unrotated: _UnrotatedCrop, *, degrees: int, dpi: int) -> RegionCrop:

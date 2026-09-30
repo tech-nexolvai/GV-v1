@@ -26,13 +26,22 @@ from enum import StrEnum
 from evidence.candidate import ObservationCandidate
 from extraction.agent.graph import AgentProgress, Look
 from extraction.agent.tools import Refinement
+from extraction.agent.trigger import AmbiguityReason
 from units.dual import DualDimensionParseError, parse_dual
 from units.measurement import Measurement
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation, is_compound
 from units.policy import Consistency, check_dual
 
-__all__ = ["Fact", "RegionFacts", "describe", "observe", "valid_looks", "value_of"]
+__all__ = [
+    "Fact",
+    "RegionFacts",
+    "describe",
+    "observe",
+    "trigger_reasons",
+    "valid_looks",
+    "value_of",
+]
 
 
 class Fact(StrEnum):
@@ -85,6 +94,23 @@ class RegionFacts:
     def __post_init__(self) -> None:
         if self.rotation_degrees not in (0, 90, 270):
             raise ValueError("rotation_degrees must be 0, 90 or 270")
+
+
+def trigger_reasons(facts: RegionFacts) -> frozenset[AmbiguityReason]:
+    """The trigger reasons the region's geometry gives it (`extraction/agent/trigger.py`).
+
+    Takes the facts and nothing else: no reading is an argument, so no reading's text can add one.
+    """
+    if not isinstance(facts, RegionFacts):
+        raise TypeError("facts must be RegionFacts")
+    reasons: set[AmbiguityReason] = set()
+    if facts.cut_at_edge:
+        reasons.add(AmbiguityReason.LABEL_CUT_AT_EDGE)
+    if facts.rotation_degrees != 0:
+        reasons.add(AmbiguityReason.SIDEWAYS_LABEL)
+    if facts.stacked_fraction:
+        reasons.add(AmbiguityReason.STACKED_FRACTION)
+    return frozenset(reasons)
 
 
 def _dual_disagrees(candidate: ObservationCandidate) -> bool:

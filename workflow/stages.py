@@ -104,6 +104,7 @@ from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
 from evidence.corroborate import corroborate
 from evidence.crop import CropSpec, CropStatus, RenderedPage, crop_pixel_box, generate_crop
 from evidence.polygon import Polygon
+from extraction.agent.geometry import Box, LabelReach, label_geometry
 from extraction.agent.graph import (
     AbstentionTerminal,
     BoundedAgentGraph,
@@ -111,14 +112,24 @@ from extraction.agent.graph import (
     CandidateTerminal,
     GraphLimits,
     Planner,
+    RetryableToolFailure,
 )
-from extraction.agent.observations import RegionFacts
+from extraction.agent.observations import RegionFacts, trigger_reasons
+from extraction.agent.outcomes import abstain as agent_abstain
 from extraction.agent.policy import policy_planner
+from extraction.agent.tools import (
+    AgentToolbox,
+    OcrVerificationArguments,
+    ToolCallRecord,
+    VlmReadingArguments,
+    VlmRole,
+)
 from extraction.agent.trigger import AmbiguityReason, RegionContext, evaluate_trigger
 from extraction.annotations import (
     OutlinedTextRegion,
     PageLayers,
     StackedFraction,
+    VectorPath,
     page_box_polygon,
     read_annotation_layers,
     read_markup_layer,
@@ -193,6 +204,7 @@ from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
+from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
 from workflow.view_roles import record_panel_view, revision_views
@@ -563,6 +575,139 @@ def _default_bounded_agent_planner(
     return policy_planner(facts, limits)
 
 
+def _agent_readers(
+    settings: ReadingAgentSettings, readers: Sequence[_VisionReader], dpi: int
+) -> dict[VlmRole, _VisionReader]:
+    """The reading agent's primary and escalation readers, found by the extractor each is named by.
+
+    **Refused, not guessed, when a name matches nothing** — a worker that started with the agent on
+    and quietly asked no reader, or the wrong one, would report readings its settings never chose.
+    """
+    by_name = {reader.config.extractor: reader for reader in readers}
+    chosen: dict[VlmRole, _VisionReader] = {}
+    for role, name in (
+        (VlmRole.PRIMARY, settings.primary_reader),
+        (VlmRole.ESCALATION, settings.escalation_reader),
+    ):
+        if name is None:
+            continue
+        if name not in by_name:
+            raise ValueError(
+                f"the reading agent's {role.value} reader is {name!r}, which is not a configured "
+                f"vision reader (configured: {sorted(by_name) or 'none'})"
+            )
+        chosen[role] = by_name[name]
+    if settings.sharper_dpi <= dpi:
+        raise ValueError(
+            f"a sharper look must render above the stage's {dpi} dpi; {settings.sharper_dpi} is not"
+        )
+    return chosen
+
+
+def _page_transform(page: Page, dpi: int) -> PageTransform | None:
+    """The page's recorded transform at `dpi`, or `None` where the manifest recorded none."""
+    if page.media_box is None or page.crop_box is None:
+        return None
+    media = tuple(Decimal(value) for value in page.media_box)
+    crop = tuple(Decimal(value) for value in page.crop_box)
+    return PageTransform(
+        dpi=dpi,
+        rotation=page.rotation,
+        media_box=(media[0], media[1], media[2], media[3]),
+        crop_box=(crop[0], crop[1], crop[2], crop[3]),
+    )
+
+
+def _pdf_box(transform: PageTransform, corners: Sequence[tuple[int, int]]) -> Box:
+    """Image-pixel corners as the PDF-point box the vendor's paths are in."""
+    points = [transform.to_pdf(ImagePoint(x=int(x), y=int(y))) for x, y in corners]
+    return (
+        min(point.x for point in points),
+        min(point.y for point in points),
+        max(point.x for point in points),
+        max(point.y for point in points),
+    )
+
+
+@dataclass(slots=True)
+class _AgentPageOutcome:
+    """What the agent did on one page, for the page's payload."""
+
+    rows: list[ObservationCandidate] = field(default_factory=list)
+    abstentions: int = 0
+    regions: int = 0
+    """Regions the trigger let in — each run once, however many readers' rows it holds."""
+
+    invocations: int = 0
+    """Model calls the agent made and recorded, retries included."""
+
+
+@dataclass(slots=True)
+class _AgentCallLog:
+    """Every tool call a region's run attempted, in order (`AgentToolbox` records before it runs).
+
+    Held for the run only. Storing it — so the confirm screen can say what the reader tried — needs
+    a table for it, which is its own change (#757).
+    """
+
+    calls: list[ToolCallRecord] = field(default_factory=list)
+
+    def record(self, call: ToolCallRecord) -> None:
+        self.calls.append(call)
+
+
+def _no_ocr_verification(arguments: OcrVerificationArguments) -> RetryableToolFailure:
+    """No OCR verification route is wired for the reading agent, and its limits permit none."""
+    del arguments
+    return RetryableToolFailure("no OCR verification route is wired for the reading agent")
+
+
+@dataclass(slots=True)
+class _AgentReads:
+    """The reading agent's readers on one region. Every call is recorded under the run it belongs to.
+
+    A reader is asked about the crop the run is now on — the graph refuses a call that names any
+    other — and the request says whether that crop shows a stacked fraction, so the validator
+    refuses a reading of one here exactly as it does on the vision route (#735).
+    """
+
+    session: Session
+    page_index: int
+    crops: RegionCrops
+    readers: Mapping[VlmRole, _VisionReader]
+    open_run: Callable[[_VisionReader], UUID]
+    recorders: list[tuple[_BufferedVisionRecorder, list[str]]] = field(default_factory=list)
+    """Each call's recorder, and the id of the candidate it returned (empty where it returned none)."""
+
+    def read(self, arguments: VlmReadingArguments) -> DomainCandidate | RetryableToolFailure:
+        reader = self.readers.get(arguments.role)
+        if reader is None:
+            return RetryableToolFailure(f"no {arguments.role.value} reader is configured")
+        request_candidate_id = uuid4()
+        recorder = _BufferedVisionRecorder(
+            session=self.session,
+            extraction_run_id=self.open_run(reader),
+            request_candidate_id=request_candidate_id,
+        )
+        produced: list[str] = []
+        self.recorders.append((recorder, produced))
+        request = NovaRequest(
+            candidate_id=str(request_candidate_id),
+            page=self.page_index,
+            crop=self.crops.png(arguments.crop_artifact_id),
+            image_format="png",
+            context=AssembledContext(nearby_text=(), nearby_geometry=()),
+            bound_pt=VISION_CONTEXT_BOUND_PT,
+            stacked_label=self.crops.shows_stacked_fraction,
+        )
+        try:
+            candidate = reader.extract(request, recorder)
+        except NovaAdapterError as error:
+            return RetryableToolFailure(f"{reader.config.extractor} gave no reading: {error}")
+        produced.append(candidate.candidate_id)
+        return candidate
+
+
 @dataclass(frozen=True, slots=True)
 class _LocatedOcrReading:
     """OCR geometry whose orientation was established by its token layout."""
@@ -681,6 +826,7 @@ class DatabaseStages:
         bounded_agent: BoundedAgentGraph | None = None,
         bounded_agent_planner: _AgentPlannerFactory | None = None,
         glyph_route: GlyphRoute | None = None,
+        reading_agent: ReadingAgentSettings | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -720,15 +866,27 @@ class DatabaseStages:
                 for reader in layout_readers
             )
         )
-        if bounded_agent is None and bounded_agent_planner is not None:
+        if bounded_agent is None and reading_agent is None and bounded_agent_planner is not None:
             raise ValueError("bounded_agent_planner cannot be supplied without a bounded_agent")
+        if bounded_agent is not None and reading_agent is not None:
+            raise ValueError(
+                "a bounded_agent brings its own tools; the reading agent builds real ones per "
+                "region — supply one or the other"
+            )
         self._bounded_agent = bounded_agent
+        # **The reading agent (#757), off unless a deployment turns it on.** Its readers are named,
+        # never picked: both must be among the configured vision readers.
+        self._reading_agent = reading_agent
+        self._agent_readers: dict[VlmRole, _VisionReader] = {}
+        if reading_agent is not None:
+            self._agent_readers = _agent_readers(reading_agent, self._vision_readers, dpi)
         # **The shape reader (#756), off unless a deployment points it at a template set.** Its
         # readings are recorded for a reviewer to confirm and never sealed; see `workflow/glyph_route`.
         self._glyph_route = glyph_route
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
-            if bounded_agent is not None and bounded_agent_planner is None
+            if (bounded_agent is not None or reading_agent is not None)
+            and bounded_agent_planner is None
             else bounded_agent_planner
         )
         # Injected so a test can pass a stub: building the real one loads ONNX models, and a suite
@@ -1144,14 +1302,16 @@ class DatabaseStages:
                 page_index=page.index,
                 candidates=tuple(vector_rows + ocr_rows + markup_rows + vision_rows),
             )
-            agent_rows, agent_abstentions = self._run_bounded_agent_for_ambiguous_regions(
+            agent = self._run_bounded_agent_for_ambiguous_regions(
                 session,
                 version_id=version_id,
                 data=data,
                 page=page,
                 task_run_id=run.task_run_id,
                 candidates=tuple(vector_rows + ocr_rows + markup_rows + vision_rows),
+                layers=layers,
             )
+            agent_rows = agent.rows
             if agent_rows:
                 self._apply_cross_route_corroboration(
                     session,
@@ -1229,7 +1389,14 @@ class DatabaseStages:
                         ),
                         "ocr_fragment_texts": _fragment_texts(ocr_fragments),
                         "agent_candidates": len(agent_rows),
-                        "agent_abstentions": agent_abstentions,
+                        "agent_abstentions": agent.abstentions,
+                        # `None` where no agent is configured: not run, which is not zero regions.
+                        "agent_regions": (
+                            None
+                            if self._bounded_agent is None and self._reading_agent is None
+                            else agent.regions
+                        ),
+                        "agent_invocations": agent.invocations,
                         "layout_proposals": layout_written,
                         # `None` when the page's annotations could not be read at all.
                         "panels": panels,
@@ -1475,40 +1642,111 @@ class DatabaseStages:
         page: Page,
         task_run_id: UUID,
         candidates: Sequence[ObservationCandidate],
-    ) -> tuple[list[ObservationCandidate], int]:
-        """Run the bounded agent only for rows that the deterministic trigger permits."""
+        layers: PageLayers | None = None,
+    ) -> _AgentPageOutcome:
+        """Run the bounded agent only for regions the deterministic trigger permits, once each.
 
+        **One run per region, not per row** (#757). A region read by three routes holds three rows
+        at one polygon — the rule cross-route corroboration groups by — and the geometry that can
+        trigger the agent is the region's, so without this one label would be read three times.
+
+        **The trigger's reasons now include the file's geometry** — cut off at the crop's edge,
+        sideways, a stacked fraction — each from `RegionFacts`, which holds no reading's text.
+
+        **The shape reader's readings are not handed over** (#756 phase E: they reach neither
+        corroboration nor the agent until the admin decides D2). The decision table can take one as
+        a witness — `RegionFacts.shape_reading`, which can turn a proposal into an abstention and
+        never the reverse — and it stays `None` here until that decision.
+        """
+        outcome = _AgentPageOutcome()
         if (
-            self._bounded_agent is None
+            (self._bounded_agent is None and self._reading_agent is None)
             or self._bounded_agent_planner is None
             or self._store is None
             or not candidates
         ):
-            return [], 0
+            return outcome
 
-        try:
-            rendered = render_page(
-                data,
-                page.index,
-                document_version_id=version_id,
-                page_content_hash=page.content_hash,
-                dpi=self._dpi,
-                maximum_pixels=MAXIMUM_RENDER_PIXELS,
-                # The bounded agent asks a model about these crops: vendor's drawing only (#742).
-                vendor_only=True,
+        renders: dict[int, RenderedPage | str] = {}
+
+        def render(dpi: int) -> RenderedPage | str:
+            if dpi not in renders:
+                try:
+                    renders[dpi] = render_page(
+                        data,
+                        page.index,
+                        document_version_id=version_id,
+                        page_content_hash=page.content_hash,
+                        dpi=dpi,
+                        maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                        # The bounded agent asks a model about these crops: vendor's drawing only
+                        # (#742).
+                        vendor_only=True,
+                    )
+                except (PageTooLarge, UnreadablePdf, ValueError) as error:
+                    renders[dpi] = str(error) or type(error).__name__
+            return renders[dpi]
+
+        rendered = render(self._dpi)
+        if isinstance(rendered, str):
+            return outcome
+
+        settings = self._reading_agent
+        transform = _page_transform(page, self._dpi)
+        reach = (
+            settings.reach(self._association.glyph_gap_pt)
+            if settings is not None and self._association is not None
+            else None
+        )
+        fractions = () if layers is None else layers.stacked_fractions
+        page_glyphs = () if layers is None else layers.glyph_paths
+
+        def stacked(polygon: Polygon) -> bool:
+            return _crop_shows_a_stacked_fraction(
+                crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT), fractions
             )
-        except (PageTooLarge, UnreadablePdf, ValueError):
-            return [], 0
 
-        rows: list[ObservationCandidate] = []
-        abstentions = 0
+        handled: set[tuple[tuple[int, ...], ...]] = set()
         for candidate in candidates:
+            region = tuple(tuple(int(value) for value in point) for point in candidate.polygon)
+            if region in handled:
+                continue
             status = _candidate_evidence_status(candidate)
-            reasons = _ambiguity_reasons(candidate)
-            if status is not EvidenceStatus.RAW_CANDIDATE or not reasons:
+            if status is not EvidenceStatus.RAW_CANDIDATE:
+                continue
+            polygon = _stored_polygon(candidate, rendered)
+            facts, whole_run = self._region_facts(
+                candidate,
+                candidates,
+                version_id=version_id,
+                page=page,
+                rendered=rendered,
+                polygon=polygon,
+                transform=transform,
+                reach=reach,
+                page_glyphs=page_glyphs,
+                stacked=stacked,
+            )
+            reasons = _ambiguity_reasons(candidate) | trigger_reasons(facts)
+            if not reasons:
                 continue
 
-            crop_artifact_id = self._agent_crop_artifact_id(rendered, candidate)
+            crops = (
+                None
+                if polygon is None
+                else RegionCrops(
+                    store=self._store,
+                    render=render,
+                    base=rendered,
+                    polygon=polygon,
+                    margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
+                    sharper_dpi=(settings.sharper_dpi if settings is not None else self._dpi),
+                    whole_run=whole_run,
+                    rotation_degrees=facts.rotation_degrees,
+                    stacked=stacked,
+                )
+            )
+            crop_artifact_id = None if crops is None else crops.first()
             trigger_context = RegionContext(
                 region_id=str(candidate.id),
                 fixed_extraction_complete=True,
@@ -1518,8 +1756,10 @@ class DatabaseStages:
             decision = evaluate_trigger(status, trigger_context)
             if not decision.triggered:
                 continue
-            if crop_artifact_id is None:
+            if crop_artifact_id is None or crops is None:
                 raise AssertionError("triggered agent region without a crop artifact")
+            handled.add(region)
+            outcome.regions += 1
 
             graph_context = BoundedRegionContext(
                 region_id=decision.region_id,
@@ -1527,66 +1767,196 @@ class DatabaseStages:
                 nearby_text=(),
                 nearby_geometry_refs=(),
             )
-            # **What the region's other readers read**, as independent witnesses the decision table
-            # compares each new reading against. Same region means the same recorded polygon, the
-            # rule cross-route corroboration groups by. The geometry facts — cut off, sideways,
-            # stacked — come from the file's paths, and arrive with the refinement tools (#757).
-            witnesses = tuple(
-                _stored_measurement(other)
-                for other in candidates
-                if other is not candidate
-                and other.polygon == candidate.polygon
-                and _stored_measurement(other) is not None
-            )
-            facts = RegionFacts(
-                cut_at_edge=False,
-                rotation_degrees=0,
-                stacked_fraction=False,
-                shape_reading=None,
-                other_route_values=tuple(value for value in witnesses if value is not None),
-            )
-            terminal = self._bounded_agent.run(
-                graph_context,
-                self._bounded_agent_planner(graph_context, facts, self._bounded_agent.limits),
-            )
-            if isinstance(terminal, CandidateTerminal):
-                rows.append(
-                    self._record_agent_candidate(
+            reads: _AgentReads | None = None
+            if settings is None:
+                assert self._bounded_agent is not None
+                graph = self._bounded_agent
+            else:
+                # **A region already run in this task run is not paid for again.** A redelivered stage
+                # finds the run it opened and the rows it recorded; one with no row abstained.
+                recorded = self._recorded_agent_rows(session, task_run_id, candidate.id)
+                if recorded is not None:
+                    outcome.rows.extend(recorded)
+                    outcome.abstentions += 0 if recorded else 1
+                    continue
+                source_candidate_id = candidate.id
+
+                def open_run(reader: _VisionReader, source: UUID = source_candidate_id) -> UUID:
+                    return self._agent_run(
                         session,
-                        terminal.candidate,
-                        document_version_id=version_id,
-                        page_id=page.id,
                         task_run_id=task_run_id,
-                        source_candidate=candidate,
-                        flush=False,
-                    )
+                        extractor=reader.config.extractor,
+                        extractor_version=reader.config.model_id,
+                        source_candidate_id=source,
+                    ).id
+
+                reads = _AgentReads(
+                    session=session,
+                    page_index=page.index,
+                    crops=crops,
+                    readers=self._agent_readers,
+                    open_run=open_run,
                 )
+                graph = BoundedAgentGraph(
+                    limits=settings.limits,
+                    toolbox=AgentToolbox(
+                        refine_crop=crops.refine,
+                        request_ocr_verification=_no_ocr_verification,
+                        request_vlm_reading=reads.read,
+                        abstain=agent_abstain,
+                        recorder=_AgentCallLog(),
+                    ),
+                )
+            terminal = graph.run(
+                graph_context,
+                self._bounded_agent_planner(graph_context, facts, graph.limits),
+            )
+            proposed: ObservationCandidate | None = None
+            if isinstance(terminal, CandidateTerminal):
+                proposed = self._record_agent_candidate(
+                    session,
+                    terminal.candidate,
+                    document_version_id=version_id,
+                    page_id=page.id,
+                    task_run_id=task_run_id,
+                    source_candidate=candidate,
+                    flush=False,
+                )
+                outcome.rows.append(proposed)
             elif isinstance(terminal, AbstentionTerminal):
-                abstentions += 1
+                outcome.abstentions += 1
             else:
                 raise TypeError("bounded agent returned an unknown terminal")
-        return rows, abstentions
+            # **Every paid call is recorded**, the proposed reading's linked to its row.
+            for recorder, produced in () if reads is None else reads.recorders:
+                linked = (
+                    proposed is not None
+                    and isinstance(terminal, CandidateTerminal)
+                    and produced == [terminal.candidate.candidate_id]
+                )
+                outcome.invocations += recorder.persist(
+                    candidate_id=proposed.id if linked and proposed is not None else None,
+                    flush=False,
+                )
+        return outcome
 
-    def _agent_crop_artifact_id(
-        self, rendered: RenderedPage, candidate: ObservationCandidate
-    ) -> str | None:
-        if self._store is None:
-            return None
-        polygon = _stored_polygon(candidate, rendered)
-        if polygon is None:
-            return None
-        result = generate_crop(
-            rendered,
-            CropSpec(
-                polygon=polygon,
-                context_margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
-                dpi=self._dpi,
-            ),
-            self._store,
+    def _region_facts(
+        self,
+        candidate: ObservationCandidate,
+        candidates: Sequence[ObservationCandidate],
+        *,
+        version_id: UUID,
+        page: Page,
+        rendered: RenderedPage,
+        polygon: Polygon | None,
+        transform: PageTransform | None,
+        reach: LabelReach | None,
+        page_glyphs: Sequence[VectorPath],
+        stacked: Callable[[Polygon], bool],
+    ) -> tuple[RegionFacts, Polygon | None]:
+        """What the file established about one region, and the region widened to its whole label.
+
+        **Geometry only.** The cut and the direction come from the vendor's paths
+        (`extraction/agent/geometry.py`), the stacked fraction from the bar detector, the witnesses
+        from other routes' recorded values. Where the paths were not read — no reading agent, no
+        association settings, no recorded page transform — the geometry says nothing, and the
+        region is read as it stands, as before #757.
+        """
+        # **What the region's other readers read**, as independent witnesses. Same region means the
+        # same recorded polygon, the rule cross-route corroboration groups by.
+        witnesses = tuple(
+            value
+            for other in candidates
+            if other is not candidate
+            and other.polygon == candidate.polygon
+            and (value := _stored_measurement(other)) is not None
         )
-        if result.status is not CropStatus.AVAILABLE or result.artifact is None:
-            return None
-        return result.artifact.key
+        cut_at_edge = False
+        rotation_degrees = 0
+        whole_run: Polygon | None = None
+        if reach is not None and transform is not None and polygon is not None:
+            region_box = _pdf_box(transform, [(point[0], point[1]) for point in candidate.polygon])
+            left, top, right, bottom = crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT)
+            crop_box = _pdf_box(transform, [(left, top), (right, bottom)])
+            geometry = label_geometry(region_box, crop_box, page_glyphs, reach)
+            cut_at_edge = geometry.cut_at_edge
+            rotation_degrees = geometry.rotation_degrees
+            if geometry.label_box is not None and geometry.closed:
+                label = geometry.label_box
+                widened: Box = (
+                    min(label[0], region_box[0]),
+                    min(label[1], region_box[1]),
+                    max(label[2], region_box[2]),
+                    max(label[3], region_box[3]),
+                )
+                try:
+                    whole_run = page_box_polygon(widened, transform, version_id, page.index)[0]
+                except (TypeError, ValueError):
+                    whole_run = None
+        facts = RegionFacts(
+            cut_at_edge=cut_at_edge,
+            rotation_degrees=rotation_degrees,
+            stacked_fraction=polygon is not None and stacked(polygon),
+            # Not handed over until the admin decides #756 D2; see the caller's docstring.
+            shape_reading=None,
+            other_route_values=witnesses,
+        )
+        return facts, whole_run
+
+    def _agent_config_hash(self, source_candidate_id: UUID) -> str:
+        """An agent run's identity: the region it read, and every setting it was read under."""
+        return (
+            f"dpi={self._dpi};route=bounded_agent;layers=vendor;"
+            f"source_candidate_id={source_candidate_id}"
+            + ("" if self._reading_agent is None else f";{self._reading_agent.config_hash}")
+        )
+
+    def _agent_run(
+        self,
+        session: Session,
+        *,
+        task_run_id: UUID,
+        extractor: str,
+        extractor_version: str,
+        source_candidate_id: UUID,
+    ) -> ExtractionRun:
+        """The run one reader's agent readings of one region are recorded under.
+
+        **Under the reader's own extractor**, never an agent-wide one: `evidence/corroborate.py`
+        counts independence by extractor, and the same model reading the same label a second time
+        is not a second witness.
+        """
+        return open_extraction_run(
+            session,
+            task_run_id=task_run_id,
+            extractor=extractor,
+            extractor_version=extractor_version,
+            config_hash=self._agent_config_hash(source_candidate_id),
+            dpi=self._dpi,
+        )
+
+    def _recorded_agent_rows(
+        self, session: Session, task_run_id: UUID, source_candidate_id: UUID
+    ) -> list[ObservationCandidate] | None:
+        """The rows an earlier delivery of this stage recorded for this region, or `None` if none ran."""
+        with session.no_autoflush:
+            runs = list(
+                session.execute(
+                    select(ExtractionRun.id).where(
+                        ExtractionRun.task_run_id == task_run_id,
+                        ExtractionRun.config_hash == self._agent_config_hash(source_candidate_id),
+                    )
+                ).scalars()
+            )
+            if not runs:
+                return None
+            return list(
+                session.execute(
+                    select(ObservationCandidate).where(
+                        ObservationCandidate.extraction_run_id.in_(runs)
+                    )
+                ).scalars()
+            )
 
     def _record_agent_candidate(
         self,
@@ -1599,16 +1969,12 @@ class DatabaseStages:
         source_candidate: ObservationCandidate,
         flush: bool = True,
     ) -> ObservationCandidate:
-        run = open_extraction_run(
+        run = self._agent_run(
             session,
             task_run_id=task_run_id,
             extractor=candidate.extractor,
             extractor_version=candidate.extractor_version,
-            config_hash=(
-                f"dpi={self._dpi};route=bounded_agent;layers=vendor;"
-                f"source_candidate_id={source_candidate.id}"
-            ),
-            dpi=self._dpi,
+            source_candidate_id=source_candidate.id,
         )
         return self._record_vision_candidate(
             session,
