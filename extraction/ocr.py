@@ -19,7 +19,9 @@ which is the failure this module exists to fix.
 
 **Every reading is a candidate.** OCR output is never a fact, never authoritative, and never a verdict
 operand. It is `ObservationCandidate` rows like any other reading, distinguished only by the extractor
-that produced them, so a reviewer can tell a scanned reading from a vector one.
+that produced them, so a reviewer can tell a scanned reading from a vector one. Text with no numeral
+in it is not a reading (`could_be_a_reading`, #703): its box is kept for the vision readers and its
+count is reported, but no row is written for it.
 
 **One thing the vector route does worse.** `pdfplumber.extract_words` splits `984 mm` into `984` and
 `mm`, which is how a millimetre dimension came to be recorded as 984 inches (#483). The OCR engine
@@ -34,6 +36,7 @@ Source: `docs/DESIGN.md` §B2.4, `docs/DESIGN_AI.md` §3.2 (OCR retries) · Veri
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Final, Protocol
@@ -50,6 +53,7 @@ __all__ = [
     "OcrUnavailable",
     "RapidOcrEngine",
     "combine_dual_notation",
+    "could_be_a_reading",
     "join_split_bracketed_inches",
     "read_page",
 ]
@@ -152,6 +156,34 @@ class OcrEngine(Protocol):
 
     def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
         """Read one RGB image. Returns nothing for a page with no legible text — never raises for it."""
+
+
+def _is_numeral(character: str) -> bool:
+    """A digit in any script `unicodedata` gives one for, or a vulgar fraction such as `½`.
+
+    **Not `str.isnumeric`**, which is true of `一` — the CJK character for *one*, and exactly what
+    RapidOCR returns for a horizontal stroke. `unicodedata.digit` has no value for it.
+    """
+    return unicodedata.digit(character, None) is not None or unicodedata.name(
+        character, ""
+    ).startswith("VULGAR FRACTION")
+
+
+def could_be_a_reading(text: str) -> bool:
+    """Whether OCR text could be a dimension, or part of one: it contains at least one numeral.
+
+    **A reading with no numeral in it can never become a value** — every notation this client uses,
+    `3/4"`, `1'-2"`, `102 [4]`, carries a digit — so recording one as a candidate only adds a row
+    that every later step has to carry. Measured on `demo_pair` (#703): 39 OCR rows, of which `L`,
+    `一`, `口`, `/`, `√`, `I` and `m` are line-work read as glyphs, and one real number.
+
+    **The box is not discarded, only the text.** `workflow/stages.py` still sends the region to the
+    vision readers, which on the client's drawing read their values from crops around exactly these
+    boxes, and counts what it did not record. A partial read that does hold a digit — `1`, `[4]`,
+    `[1` — is kept: it may be half of a real label, and the rule for what a partial read means
+    belongs to the parser, not to this.
+    """
+    return any(_is_numeral(character) for character in text)
 
 
 def read_page(rendered: RenderedPage, *, engine: OcrEngine) -> OcrPage:

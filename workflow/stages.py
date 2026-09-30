@@ -36,12 +36,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 from io import BytesIO
-from typing import Protocol, cast
+from typing import Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from opentelemetry.trace import Status, StatusCode
@@ -149,7 +150,7 @@ from extraction.models.nova import (
     vision_configs_from_environment,
 )
 from extraction.models.validation import ValidationRejection
-from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, read_page
+from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_reading, read_page
 from extraction.panels import propose_panel_roles
 from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
 from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
@@ -485,6 +486,37 @@ UNCONFIGURED_LAYOUT_MODEL_ID = "layout-reader-unconfigured"
 #: or none at all. The exact number is always reported alongside.
 REPORTED_REFUSALS = 20
 
+#: Part of an OCR run's identity since #703: text that could not be a reading is no longer recorded,
+#: so a run from before holds rows a run from after does not, and the two must not be one run.
+OCR_FRAGMENTS_CONFIG = "fragments=unrecorded"
+
+
+def _split_ocr_readings(
+    items: Sequence[OcrItem],
+) -> tuple[tuple[OcrItem, ...], tuple[OcrItem, ...]]:
+    """OCR items whose text could be a reading, and the ones whose text could not (#703).
+
+    Order is kept within each, because `_ordered_ocr_rows` and `dimension_texts` pair rows with
+    items by position. The rule is `could_be_a_reading`'s, and it reads only the text: no
+    confidence, no size, no position.
+    """
+    readings = tuple(item for item in items if could_be_a_reading(item.text))
+    fragments = tuple(item for item in items if not could_be_a_reading(item.text))
+    return readings, fragments
+
+
+def _fragment_texts(fragments: Sequence[OcrItem]) -> list[str]:
+    """What the unrecorded fragments said, most frequent first — `7 × 'L'` — for the page result.
+
+    Bounded like every other list a payload carries; the exact total is `ocr_fragments`.
+    """
+    counts = Counter(item.text for item in fragments)
+    return [
+        f"{count} × {text!r}"
+        for text, count in sorted(counts.items(), key=lambda entry: (-entry[1], entry[0]))
+    ][:REPORTED_REFUSALS]
+
+
 #: The media type of an `.xlsx` workbook, spelled out once.
 #:
 #: The long OOXML name rather than a friendly alias, because it is what a browser and a mail client
@@ -561,8 +593,36 @@ class _VisionAssociationLink:
     source_candidate_id: UUID
 
 
+@dataclass(frozen=True, slots=True)
+class _VisionRegion:
+    """Where a vision reader is pointed: a recorded reading's box, or an OCR box that read as no number.
+
+    **Not every region is a reading (#703).** On the client's drawing RapidOCR returned 903 boxes on
+    2026-09-29 and not one parsed to a value — line-work read as `一`, `口`, `L`, `/`. But those
+    boxes are also where the vision readers look: 903 of the run's roughly 940 vision regions were
+    OCR boxes, and the vision readers' values were read from crops cut around them. So an OCR box
+    whose text cannot be a reading keeps its place on the vision readers' list, and its text is not
+    recorded as a candidate.
+    """
+
+    id: UUID
+    """What a vision reading is linked back to for association (`_association_source_items`). A
+    recorded reading's own id, or a fresh one for a box nothing recorded. It is never persisted."""
+
+    polygon: list[list[int]]
+    document_version_id: UUID
+
+    @classmethod
+    def of(cls, row: ObservationCandidate) -> _VisionRegion:
+        return cls(id=row.id, polygon=row.polygon, document_version_id=row.document_version_id)
+
+
+#: What an OCR item's geometry is paired with: its recorded row, or the region kept in its place.
+_Source = TypeVar("_Source", ObservationCandidate, _VisionRegion)
+
+
 def _association_source_items(
-    *groups: tuple[Sequence[ReadItem], Sequence[ObservationCandidate]],
+    *groups: tuple[Sequence[ReadItem], Sequence[ObservationCandidate | _VisionRegion]],
 ) -> dict[UUID, ReadItem]:
     """The fixed-reader geometry that a later model crop is allowed to reuse.
 
@@ -916,6 +976,7 @@ class DatabaseStages:
             vector_rows: list[ObservationCandidate] = []
             ocr_items: tuple[OcrItem, ...] = ()
             ocr_rows: list[ObservationCandidate] = []
+            ocr_fragments: tuple[OcrItem, ...] = ()
             vision_rows: list[ObservationCandidate] = []
             vision_invocations = 0
             vision_refusals: list[str] = []
@@ -1000,7 +1061,7 @@ class DatabaseStages:
                     )
                     if plan.to_read:
                         route = "localized_ocr"
-                        ocr_items, ocr_rows = self._read_page_by_localized_ocr(
+                        ocr_items, ocr_rows, ocr_fragments = self._read_page_by_localized_ocr(
                             session,
                             version_id=version_id,
                             data=data,
@@ -1014,10 +1075,10 @@ class DatabaseStages:
                         # back to full-page OCR would reintroduce the tiny-text failure and could
                         # grab an unrelated number; reviewers can see the geometry set-asides.
                         route = "localized_ocr"
-                        ocr_items, ocr_rows = (), []
+                        ocr_items, ocr_rows, ocr_fragments = (), [], ()
                 else:
                     route = "ocr"
-                    ocr_items, ocr_rows = self._read_page_by_ocr(
+                    ocr_items, ocr_rows, ocr_fragments = self._read_page_by_ocr(
                         session,
                         version_id=version_id,
                         data=data,
@@ -1031,6 +1092,19 @@ class DatabaseStages:
                 tuple(vector_rows),
             )
             ocr_association_inputs = self._ocr_association_inputs(ocr_items, ocr_rows)
+            # **The boxes of OCR text that could not be a reading** (#703). Not candidates, and not
+            # given to `associate` as readings. A vision reading of one is associated under the
+            # rule a recorded row's is — only where the OCR layout established an orientation,
+            # which for a box like these it usually has not — so nothing here attaches more than
+            # the recorded row would have.
+            fragment_regions = tuple(
+                _VisionRegion(
+                    id=uuid4(),
+                    polygon=[[point.x, point.y] for point in item.image_extent],
+                    document_version_id=version_id,
+                )
+                for item in ocr_fragments
+            )
             association_sources: Mapping[UUID, ReadItem] = {}
 
             vision_association_links: tuple[_VisionAssociationLink, ...] = ()
@@ -1038,6 +1112,7 @@ class DatabaseStages:
                 association_sources = _association_source_items(
                     vector_association_inputs,
                     ocr_association_inputs,
+                    self._ocr_association_inputs(ocr_fragments, fragment_regions),
                 )
                 (
                     vision_rows,
@@ -1050,7 +1125,10 @@ class DatabaseStages:
                     data=data,
                     page=page,
                     task_run_id=run.task_run_id,
-                    regions=tuple(vector_rows + ocr_rows),
+                    regions=(
+                        tuple(_VisionRegion.of(row) for row in vector_rows + ocr_rows)
+                        + fragment_regions
+                    ),
                     stacked_fractions=(() if layers is None else layers.stacked_fractions),
                 )
 
@@ -1116,6 +1194,11 @@ class DatabaseStages:
                         "candidates": written + len(vision_rows) + len(agent_rows),
                         "markup_candidates": len(markup_rows),
                         "vision_candidates": len(vision_rows),
+                        # OCR text that could not be a reading (#703): counted here because it is
+                        # not a candidate, so without this the page would simply look smaller.
+                        # Each box was still offered to the vision readers.
+                        "ocr_fragments": len(ocr_fragments),
+                        "ocr_fragment_texts": _fragment_texts(ocr_fragments),
                         "agent_candidates": len(agent_rows),
                         "agent_abstentions": agent_abstentions,
                         "layout_proposals": layout_written,
@@ -1262,8 +1345,8 @@ class DatabaseStages:
 
     @staticmethod
     def _ocr_association_inputs(
-        items: tuple[OcrItem, ...], rows: list[ObservationCandidate]
-    ) -> tuple[tuple[_LocatedOcrReading, ...], tuple[ObservationCandidate, ...]]:
+        items: tuple[OcrItem, ...], rows: Sequence[_Source]
+    ) -> tuple[tuple[_LocatedOcrReading, ...], tuple[_Source, ...]]:
         """Keep only OCR readings whose layout states an axis; retain row pairing exactly.
 
         Arbitrary OCR boxes carry no declared rotation, and production association deliberately
@@ -1272,7 +1355,7 @@ class DatabaseStages:
         and markup text. Everything else remains recorded but unassociated.
         """
         located: list[_LocatedOcrReading] = []
-        located_rows: list[ObservationCandidate] = []
+        located_rows: list[_Source] = []
         for item, row in zip(items, rows, strict=True):
             if item.extent is None or item.rotation_degrees is None:
                 continue
@@ -1691,8 +1774,12 @@ class DatabaseStages:
         data: bytes,
         page: Page,
         task_run_id: UUID,
-    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate]]:
+    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate], tuple[OcrItem, ...]]:
         """Render one page and read it with the OCR engine, recording what it found.
+
+        Returns the readings, their rows, and the OCR items whose text could not be a reading
+        (`could_be_a_reading`, #703): not recorded, and returned so their boxes still reach the
+        vision readers and their count still reaches the page's result.
 
         **A separate extraction run, not the vector one.** A candidate points at a run to say what
         read it, and `open_extraction_run` keys a run on extractor, version and config — so OCR
@@ -1728,6 +1815,7 @@ class DatabaseStages:
             extractor_version=engine.version,
         ):
             read = read_page(rendered, engine=engine)
+            readings, fragments = _split_ocr_readings(read.items)
             ocr_run = open_extraction_run(
                 session,
                 task_run_id=task_run_id,
@@ -1735,19 +1823,21 @@ class DatabaseStages:
                 extractor_version=engine.version,
                 # `layers=vendor` because the pixels changed (#742): a run from before it read the
                 # reviewer's notes too, and must not be reused as though it had not.
-                config_hash=f"dpi={self._dpi};layers=vendor",
+                # `fragments=unrecorded` because what is recorded changed (#703): a run from before
+                # it holds rows for text that could not be a reading.
+                config_hash=f"dpi={self._dpi};layers=vendor;{OCR_FRAGMENTS_CONFIG}",
                 dpi=self._dpi,
             )
             rows = record_ocr_candidates(
                 session,
-                read.items,
+                readings,
                 document_version_id=version_id,
                 page_id=page.id,
                 extraction_run_id=ocr_run.id,
                 page_index=page.index,
                 flush=False,
             )
-            return read.items, self._ordered_ocr_rows(read.items, rows)
+            return readings, self._ordered_ocr_rows(readings, rows), fragments
 
     def _read_page_by_localized_ocr(
         self,
@@ -1759,8 +1849,10 @@ class DatabaseStages:
         task_run_id: UUID,
         layers: PageLayers,
         regions: Sequence[OutlinedTextRegion],
-    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate]]:
+    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate], tuple[OcrItem, ...]]:
         """Read vendor outlined-text regions as bounded, vendor-only high-DPI crops.
+
+        Returns what `_read_page_by_ocr` returns, and splits readings from fragments the same way.
 
         ``layers`` was read with the deployment's explicit geometry thresholds. ``region_crop``
         independently strips non-stamp annotations from each rendered crop, so a reviewer
@@ -1815,6 +1907,7 @@ class DatabaseStages:
                     else CROP_CONTEXT_MARGIN_PT
                 ),
             )
+            readings, fragments = _split_ocr_readings(items)
             ocr_run = open_extraction_run(
                 session,
                 task_run_id=task_run_id,
@@ -1823,6 +1916,7 @@ class DatabaseStages:
                 config_hash=(
                     f"dpi={self._dpi};route=localized_vendor_regions;crop_dpi={VISION_CROP_DPI};"
                     f"{self._localized_ocr.config_hash if self._localized_ocr is not None else ''}"
+                    f";{OCR_FRAGMENTS_CONFIG}"
                 ),
                 # Candidate polygons use this full-page frame. The actual pixel resolution used by
                 # OCR is separately retained in config_hash above.
@@ -1830,14 +1924,14 @@ class DatabaseStages:
             )
             rows = record_ocr_candidates(
                 session,
-                items,
+                readings,
                 document_version_id=version_id,
                 page_id=page.id,
                 extraction_run_id=ocr_run.id,
                 page_index=page.index,
                 flush=False,
             )
-            return items, self._ordered_ocr_rows(items, rows)
+            return readings, self._ordered_ocr_rows(readings, rows), fragments
 
     def _read_page_by_vision(
         self,
@@ -1847,10 +1941,13 @@ class DatabaseStages:
         data: bytes,
         page: Page,
         task_run_id: UUID,
-        regions: Sequence[ObservationCandidate],
+        regions: Sequence[_VisionRegion],
         stacked_fractions: Sequence[StackedFraction],
     ) -> tuple[list[ObservationCandidate], int, list[str], tuple[_VisionAssociationLink, ...]]:
-        """Read each existing candidate region with every configured vision reader.
+        """Read each region with every configured vision reader.
+
+        **A region is a recorded reading's box or an OCR box whose text was not a reading** (#703).
+        Both are read the same way; see `_VisionRegion` for why the second kind stays on the list.
 
         **Each request says whether its crop shows a stacked fraction** (#735), found on the vendor's
         layer by `extraction/glyph_bands.py` when the page's geometry was read. The validator then
@@ -1970,7 +2067,7 @@ class DatabaseStages:
         return rows, invocations, refusals, tuple(association_links)
 
     def _vision_crop(
-        self, rendered: RenderedPage, candidate: ObservationCandidate
+        self, rendered: RenderedPage, candidate: _VisionRegion
     ) -> tuple[bytes, tuple[int, int, int, int]] | None:
         """The crop a vision reader is shown, and the page pixels it was cut from.
 
@@ -3009,7 +3106,9 @@ def _crop_shows_a_stacked_fraction(
     return False
 
 
-def _stored_polygon(candidate: ObservationCandidate, rendered: RenderedPage) -> Polygon | None:
+def _stored_polygon(
+    candidate: ObservationCandidate | _VisionRegion, rendered: RenderedPage
+) -> Polygon | None:
     """A candidate's image-pixel polygon as the normalised one a `CropSpec` takes.
 
     Returns `None` rather than raising, and rather than clamping. A point outside the rendering means
