@@ -333,18 +333,20 @@ def _whole_label_px() -> int:
     return int((max(xs) - min(xs) + 2 * VISION_CROP_CONTEXT_MARGIN_PT) * DPI / 72) - 2
 
 
+@dataclass
 class _PartOfTheLabel:
     """An OCR engine that reads the last two digits of whatever it is shown — the #641 crop."""
 
-    name = "part-ocr"
-    version = "part/1"
+    text: str = "92"
+    name: str = "part-ocr"
+    version: str = "part/1"
 
     def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
         del rgb
         left = width * 11 // 20
         return (
             OcrItem(
-                text="92",
+                text=self.text,
                 confidence=Decimal("0.9"),
                 image_extent=(
                     ImagePoint(left, 0),
@@ -432,13 +434,17 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
 
 
 def _stages(
-    store: LocalStore, readers: tuple[_WholeLabelReader, ...], agent: ReadingAgentSettings | None
+    store: LocalStore,
+    readers: tuple[_WholeLabelReader, ...],
+    agent: ReadingAgentSettings | None,
+    *,
+    ocr_text: str = "92",
 ) -> DatabaseStages:
     return DatabaseStages(
         store,
         dpi=DPI,
         association=ASSOCIATION,
-        ocr_engine=_PartOfTheLabel(),  # type: ignore[arg-type]
+        ocr_engine=_PartOfTheLabel(ocr_text),  # type: ignore[arg-type]
         localized_ocr=LOCALIZED,
         vision_readers=readers,
         reading_agent=agent,
@@ -602,3 +608,58 @@ def test_the_641_case_goes_to_a_reviewer_with_the_whole_reading_beside_the_cut_o
         if row.raw_text == '92"'
     ]
     assert cut == ['92"', '92"']
+
+
+def _region_statuses(session: Session) -> list[tuple[str, str, str | None, str | None]]:
+    return sorted(
+        (
+            (row.raw_text, run.extractor, row.corroboration_status, row.corroboration_lane)
+            for row, run in session.execute(
+                select(ObservationCandidate, ExtractionRun).join(
+                    ExtractionRun, ObservationCandidate.extraction_run_id == ExtractionRun.id
+                )
+            )
+        ),
+        key=str,
+    )
+
+
+def test_an_agreement_the_agent_contradicts_is_marked_conflicting_not_left_standing(
+    session: Session, store: LocalStore
+) -> None:
+    """**No region ends with two agreed values.** OCR and both vision readers read the cut crop as
+    `92"` and agree, so the first pass marks it as readers agreeing. The agent reads the whole label,
+    `10192"`, twice. Outcome: every row of the region is conflicting — a reviewer decides — where
+    before this the `92"` agreement and a `10192"` agreement of the agent's own both stood, and
+    automatic typing could have sealed either."""
+    revision = _revision(session, store, data=SHEET)
+    session.commit()
+    primary, escalation = _readers(cut_reading='92"')
+
+    _stages(store, (primary, escalation), _settings(), ocr_text='92"').extract_pages(
+        session, revision.id
+    )
+    session.commit()
+
+    statuses = _region_statuses(session)
+    assert {text for text, *_ in statuses} == {'92"', '10192"'}
+    assert {(status, lane) for *_, status, lane in statuses} == {("CONFLICTING", "SECOND_READER")}
+
+
+def test_an_agent_reading_that_agrees_leaves_the_agreement_standing(
+    session: Session, store: LocalStore
+) -> None:
+    """Outcome: the whole label was never cut for the readers here, so the agent's reading agrees
+    with theirs and nothing is marked conflicting — the check only ever takes an agreement away."""
+    revision = _revision(session, store, data=SHEET)
+    session.commit()
+    primary, escalation = _readers(cut_reading='10192"')
+
+    _stages(store, (primary, escalation), _settings(), ocr_text='10192"').extract_pages(
+        session, revision.id
+    )
+    session.commit()
+
+    statuses = _region_statuses(session)
+    assert {text for text, *_ in statuses} == {'10192"'}
+    assert all(status != "CONFLICTING" for *_, status, _lane in statuses)
