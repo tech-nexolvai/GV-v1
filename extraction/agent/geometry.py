@@ -132,11 +132,12 @@ def label_geometry(
     `region` is the box a reader's reading was placed at; `crop` is the page area a crop of it
     shows. Both in PDF points, the space the glyph paths are in.
     """
-    # **Only characters that could join, and exactly those.** While a label is still growing its
-    # box is at most `maximum_label_pt` across and holds a seed, which touches the region; a joining
-    # character is within `label_gap_pt` of that box. Nothing farther can join, so leaving it out
-    # changes no result — it only keeps a busy sheet from being scanned whole for every region.
-    reach_pt = reach.maximum_label_pt + reach.label_gap_pt
+    # **Only characters that could matter, and exactly those.** While a label is still growing its
+    # box is at most `maximum_label_pt` across and holds a seed, which touches the region. A joining
+    # character is within `label_gap_pt` of that box, and one that leaves the label's end unsettled
+    # is within `glyph_gap_pt` of it (`gather_label`, #756). Nothing farther can do either, so leaving
+    # it out changes no result — it only keeps a busy sheet from being scanned whole for every region.
+    reach_pt = reach.maximum_label_pt + max(reach.label_gap_pt, reach.glyph_gap_pt)
     around = (
         region[0] - reach_pt,
         region[1] - reach_pt,
