@@ -8,7 +8,15 @@ its shape: drawn once into a normalised raster, compared with shapes a person ha
 read exactly every time it recurs, with no model involved.
 
 This module grows with the phases on #756. Phase A is `rasterise`: drawing a character's paths the
-way the file draws them.
+way the file draws them. Phase B adds what the inventory and the reader share: `describe` (a
+character's shape and its size relative to its label), `overlap` and `chamfer` (how alike two shapes
+are), and `cluster_shapes` (grouping the alike, so a person labels each shape once).
+
+**Every comparison is exact.** Overlap is a ratio of whole pixel counts and chamfer distance a mean
+of whole city-block distances, both returned as `Fraction`s and compared against the caller's stated
+`Decimal` thresholds without a float in between. A match is a decision about which character a
+shape is, and a float rounding either side of a threshold would make it one on one machine and not
+on another.
 
 **Drawing it the way the file does is the whole difficulty.** Points alone join an inch mark's two
 ticks into one stroke and put a corner at every Bézier control point, and two characters that
@@ -27,6 +35,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
+from fractions import Fraction
 
 import cv2
 import numpy as np
@@ -34,7 +43,19 @@ from numpy.typing import NDArray
 
 from extraction.annotations import SegmentKind, VectorPath
 
-__all__ = ["SubPath", "UndrawablePath", "rasterise", "subpaths"]
+__all__ = [
+    "GlyphShape",
+    "ShapeSettings",
+    "SubPath",
+    "UndrawablePath",
+    "chamfer",
+    "cluster_shapes",
+    "describe",
+    "overlap",
+    "rasterise",
+    "size_ratio",
+    "subpaths",
+]
 
 
 class UndrawablePath(ValueError):
@@ -190,3 +211,213 @@ def rasterise(
     if not raster.any():
         raise UndrawablePath("the paths are neither stroked nor filled, so nothing is drawn")
     return raster
+
+
+@dataclass(frozen=True, slots=True)
+class ShapeSettings:
+    """How a character is drawn for comparison. Stated by the caller, recorded with what it made.
+
+    `dilate_px` thickens every drawn stroke before two shapes are compared. The client's file draws
+    the same character with different point counts at different sizes — a `0` is an octagon at one
+    size and a smooth loop at another (#756) — and a one-pixel line of each does not overlap the
+    other, where the same line a few pixels wide does.
+    """
+
+    size_px: int
+    bezier_steps: int
+    stroke_px: int
+    dilate_px: int
+
+    def __post_init__(self) -> None:
+        for name in ("size_px", "bezier_steps", "stroke_px"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if (
+            isinstance(self.dilate_px, bool)
+            or not isinstance(self.dilate_px, int)
+            or self.dilate_px < 0
+        ):
+            raise ValueError("dilate_px must be a whole number of pixels")
+
+    @property
+    def config_hash(self) -> str:
+        return (
+            f"size_px={self.size_px};bezier_steps={self.bezier_steps};"
+            f"stroke_px={self.stroke_px};dilate_px={self.dilate_px}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GlyphShape:
+    """One character as it is compared: its drawn shape and its size relative to its label.
+
+    **The size is what the shape alone cannot say.** Normalised to its own box, a `1`, a `|`, an
+    inch tick and a fraction bar turned on end are all one vertical line. Relative to the height of
+    the run it sits in, a `1` is full height and a tick is a third of it.
+
+    A `dot` is a path with no extent at all — a single point. It has no shape to normalise, so its
+    raster is empty and it is compared only with other dots.
+    """
+
+    raster: NDArray[np.bool_]
+    relative_height: Fraction
+    relative_width: Fraction
+    dot: bool = False
+    straight: bool = False
+    """One straight segment and nothing else. A `1`, a `-`, a `/`, an inch tick — or, far more often
+    on the client's drawing, a piece of line-work. Its shape cannot say which; only where it sits
+    can, so nothing is suggested for it (`scripts/glyph_inventory.py`)."""
+
+
+def _dilated(raster: NDArray[np.uint8], dilate_px: int) -> NDArray[np.bool_]:
+    if not dilate_px:
+        return np.asarray(raster > 0, dtype=np.bool_)
+    kernel = np.ones((2 * dilate_px + 1, 2 * dilate_px + 1), dtype=np.uint8)
+    return np.asarray(cv2.dilate(raster, kernel) > 0, dtype=np.bool_)
+
+
+def describe(path: VectorPath, *, run_height: Decimal, settings: ShapeSettings) -> GlyphShape:
+    """One path as a `GlyphShape`, sized against `run_height` — the height of the label it is in.
+
+    Raises `UndrawablePath` where `rasterise` would, except for a single point, which is a dot.
+    """
+    if run_height <= 0:
+        raise ValueError("run_height must be positive; a character is sized against its label")
+    xs = [x for x, _ in path.points]
+    ys = [y for _, y in path.points]
+    if not xs:
+        raise UndrawablePath("the path has no points")
+    height = Fraction(max(ys) - min(ys)) / Fraction(run_height)
+    width = Fraction(max(xs) - min(xs)) / Fraction(run_height)
+    if height == 0 and width == 0:
+        return GlyphShape(
+            raster=np.zeros((settings.size_px, settings.size_px), dtype=np.bool_),
+            relative_height=height,
+            relative_width=width,
+            dot=True,
+        )
+    raster = rasterise(
+        (path,),
+        size_px=settings.size_px,
+        bezier_steps=settings.bezier_steps,
+        stroke_px=settings.stroke_px,
+    )
+    parts = subpaths(path, bezier_steps=settings.bezier_steps)
+    return GlyphShape(
+        raster=_dilated(raster, settings.dilate_px),
+        relative_height=height,
+        relative_width=width,
+        straight=len(parts) == 1 and len(parts[0].points) == 2,
+    )
+
+
+def overlap(first: NDArray[np.bool_], second: NDArray[np.bool_]) -> Fraction:
+    """Shared ink over combined ink, exactly. `1` is the same shape; `0` shares nothing."""
+    union = int(np.logical_or(first, second).sum())
+    if union == 0:
+        return Fraction(0)
+    return Fraction(int(np.logical_and(first, second).sum()), union)
+
+
+def _distances(raster: NDArray[np.bool_]) -> NDArray[np.int64]:
+    """City-block distance from every pixel to the nearest ink, as whole numbers.
+
+    OpenCV returns the L1 transform as float32, but every value it holds is a small whole number,
+    so the conversion to integers is exact rather than a rounding.
+    """
+    return cv2.distanceTransform(
+        np.where(raster, 0, 255).astype(np.uint8), cv2.DIST_L1, cv2.DIST_MASK_3
+    ).astype(np.int64)
+
+
+def chamfer(first: NDArray[np.bool_], second: NDArray[np.bool_]) -> Fraction:
+    """The symmetric mean distance, in pixels, from each shape's ink to the other's. `0` is equal.
+
+    City-block distance, because it is a whole number for every pixel and the mean of whole
+    numbers is an exact fraction; a Euclidean transform would round. Raises for an empty raster,
+    which has no ink to measure from.
+    """
+    first_ink = int(first.sum())
+    second_ink = int(second.sum())
+    if not first_ink or not second_ink:
+        raise ValueError("chamfer distance needs ink in both shapes")
+    to_second = int(_distances(second)[first].sum())
+    to_first = int(_distances(first)[second].sum())
+    return (Fraction(to_second, first_ink) + Fraction(to_first, second_ink)) / 2
+
+
+def size_ratio(first: GlyphShape, second: GlyphShape) -> Fraction:
+    """How far apart two characters' sizes are, as the larger ratio of height and of width. `1` is equal.
+
+    A zero dimension — a perfectly straight stroke has no width — is compared only with another
+    zero: a flat line and a character with width are not the same size by any ratio.
+    """
+    worst = Fraction(1)
+    for mine, theirs in (
+        (first.relative_height, second.relative_height),
+        (first.relative_width, second.relative_width),
+    ):
+        if mine == 0 or theirs == 0:
+            if mine != theirs:
+                return Fraction(10**9)
+            continue
+        worst = max(worst, max(mine, theirs) / min(mine, theirs))
+    return worst
+
+
+def cluster_shapes(
+    shapes: Sequence[GlyphShape], *, minimum_overlap: Decimal, maximum_size_ratio: Decimal
+) -> list[list[int]]:
+    """Group alike shapes, in input order, each around the first member that founded it.
+
+    A shape joins the cluster whose founder it overlaps most, provided the overlap reaches
+    `minimum_overlap` and their sizes are within `maximum_size_ratio`; otherwise it founds a new
+    cluster. Every dot is one cluster. Deterministic: the same shapes in the same order give the same
+    clusters, which is what lets a label a person gave today apply to the same cluster tomorrow.
+
+    Leader clustering rather than anything cleverer, because what it produces is shown to a person
+    who checks every cluster's members — a stray member is visible on the contact sheet, and a
+    cluster that mixes two characters is refused and split tighter (#756 phase B).
+    """
+    if not Decimal(0) < minimum_overlap <= Decimal(1):
+        raise ValueError("minimum_overlap must be in (0, 1]")
+    if maximum_size_ratio < 1:
+        raise ValueError("maximum_size_ratio must be at least 1")
+    threshold = Fraction(minimum_overlap)
+    ratio_limit = Fraction(maximum_size_ratio)
+
+    clusters: list[list[int]] = []
+    founders: list[int] = []
+    stacked: NDArray[np.bool_] | None = None
+    dot_cluster: int | None = None
+    for index, shape in enumerate(shapes):
+        if shape.dot:
+            if dot_cluster is None:
+                dot_cluster = len(clusters)
+                clusters.append([])
+                founders.append(index)
+                row = shape.raster[np.newaxis]
+                stacked = row if stacked is None else np.concatenate((stacked, row))
+            clusters[dot_cluster].append(index)
+            continue
+        best: int | None = None
+        best_overlap = Fraction(0)
+        if stacked is not None:
+            shared = np.logical_and(stacked, shape.raster).sum(axis=(1, 2))
+            combined = np.logical_or(stacked, shape.raster).sum(axis=(1, 2))
+            for candidate in np.flatnonzero(shared):
+                founder = shapes[founders[candidate]]
+                if founder.dot or size_ratio(shape, founder) > ratio_limit:
+                    continue
+                score = Fraction(int(shared[candidate]), int(combined[candidate]))
+                if score >= threshold and score > best_overlap:
+                    best, best_overlap = int(candidate), score
+        if best is None:
+            clusters.append([index])
+            founders.append(index)
+            row = shape.raster[np.newaxis]
+            stacked = row if stacked is None else np.concatenate((stacked, row))
+        else:
+            clusters[best].append(index)
+    return clusters

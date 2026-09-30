@@ -12,13 +12,26 @@ Every fixture is authored geometry. No client drawing is read here.
 
 from __future__ import annotations
 
+import math
 from decimal import Decimal
+from fractions import Fraction
 
 import numpy as np
 import pytest
 
 from extraction.annotations import PathSegment, SegmentKind, VectorPath, read_annotation_layers
-from extraction.glyph_shapes import UndrawablePath, rasterise, subpaths
+from extraction.glyph_shapes import (
+    GlyphShape,
+    ShapeSettings,
+    UndrawablePath,
+    chamfer,
+    cluster_shapes,
+    describe,
+    overlap,
+    rasterise,
+    size_ratio,
+    subpaths,
+)
 from tests.extraction.test_annotations import DOCUMENT, DPI, _appearance, _pdf, _stamp
 
 SIZE = 33
@@ -252,3 +265,154 @@ def test_a_regions_paths_do_not_change_what_the_region_is() -> None:
     (region,) = _shape_layers().outlined_regions
 
     assert replace(region, glyph_paths=()) == region
+
+
+# ---------------------------------------------------------------------------
+# Phase B: describing, comparing and grouping shapes
+# ---------------------------------------------------------------------------
+
+
+SETTINGS = ShapeSettings(size_px=24, bezier_steps=8, stroke_px=1, dilate_px=1)
+RUN = Decimal(10)
+
+
+def _polygon(sides: int, radius: str = "5") -> VectorPath:
+    """A closed regular polygon, its points rounded to thousandths so the geometry is exact."""
+    r = Decimal(radius)
+    points = [
+        (
+            Decimal(str(round(math.cos(2 * math.pi * k / sides), 3))) * r,
+            Decimal(str(round(math.sin(2 * math.pi * k / sides), 3))) * r,
+        )
+        for k in range(sides)
+    ]
+    steps = [(MOVE, points[0])] + [(LINE, point) for point in points[1:]]
+    return _path(*steps, closes_last=True)
+
+
+VERTICAL = _path((MOVE, _point(0, 0)), (LINE, _point(0, 10)))
+TICK = _path((MOVE, _point(0, 7)), (LINE, _point(0, 10)))
+HORIZONTAL = _path((MOVE, _point(0, 5)), (LINE, _point(6, 5)))
+DOT = _path((MOVE, _point(2, 2)))
+
+
+def test_a_shape_is_sized_exactly_against_its_label() -> None:
+    """Outcome: a 10-high stroke in a 10-high run is height 1; a 3-high tick is 3/10, exactly."""
+    assert describe(VERTICAL, run_height=RUN, settings=SETTINGS).relative_height == 1
+    tick = describe(TICK, run_height=RUN, settings=SETTINGS)
+    assert tick.relative_height == Fraction(3, 10)
+    assert tick.relative_width == 0
+
+
+def test_a_single_point_is_a_dot_not_a_refusal() -> None:
+    """Outcome: 395 of the client's member paths are single points; each becomes a dot (#756)."""
+    dot = describe(DOT, run_height=RUN, settings=SETTINGS)
+
+    assert dot.dot
+    assert not dot.raster.any()
+
+
+def test_a_character_cannot_be_sized_against_nothing() -> None:
+    with pytest.raises(ValueError, match="run_height"):
+        describe(VERTICAL, run_height=Decimal(0), settings=SETTINGS)
+
+
+def test_overlap_is_an_exact_ratio() -> None:
+    """Outcome: the same shape is 1, disjoint shapes are 0, and nothing in between is a float."""
+    a = describe(VERTICAL, run_height=RUN, settings=SETTINGS).raster
+    b = describe(HORIZONTAL, run_height=RUN, settings=SETTINGS).raster
+
+    assert overlap(a, a) == 1
+    score = overlap(a, b)
+    assert isinstance(score, Fraction)
+    assert 0 < score < 1
+
+
+def test_chamfer_distance_is_exact_symmetric_and_zero_for_the_same_shape() -> None:
+    a = describe(VERTICAL, run_height=RUN, settings=SETTINGS).raster
+    b = describe(HORIZONTAL, run_height=RUN, settings=SETTINGS).raster
+
+    assert chamfer(a, a) == 0
+    assert chamfer(a, b) == chamfer(b, a)
+    assert isinstance(chamfer(a, b), Fraction) and chamfer(a, b) > 0
+    with pytest.raises(ValueError, match="ink"):
+        chamfer(a, np.zeros_like(a))
+
+
+def test_a_flat_stroke_is_never_the_same_size_as_a_character_with_width() -> None:
+    """Outcome: a perfectly vertical line has width 0, and no ratio makes that equal to a `0`."""
+    line = describe(VERTICAL, run_height=RUN, settings=SETTINGS)
+    ring = describe(_polygon(8), run_height=RUN, settings=SETTINGS)
+
+    assert size_ratio(line, line) == 1
+    assert size_ratio(line, ring) > 1000
+
+
+def test_the_same_character_drawn_with_different_point_counts_clusters_together() -> None:
+    """**The measured obstacle** (#756). Outcome: an octagon `0` and a 24-point `0` are one cluster.
+
+    Exact point fingerprints gave 951–1,124 "distinct shapes" on the client's drawing, because the
+    same character is stored with different point counts at different sizes. Compared as dilated
+    rasters, the two are one shape.
+    """
+    shapes = [
+        describe(_polygon(8), run_height=RUN, settings=SETTINGS),
+        describe(_polygon(24), run_height=RUN, settings=SETTINGS),
+    ]
+
+    clusters = cluster_shapes(
+        shapes, minimum_overlap=Decimal("0.5"), maximum_size_ratio=Decimal("1.3")
+    )
+
+    assert clusters == [[0, 1]]
+
+
+def test_size_separates_what_shape_alone_cannot() -> None:
+    """Outcome: a full-height stroke and a tick are one line normalised, and two clusters by size."""
+    shapes = [
+        describe(VERTICAL, run_height=RUN, settings=SETTINGS),
+        describe(TICK, run_height=RUN, settings=SETTINGS),
+        describe(VERTICAL, run_height=RUN, settings=SETTINGS),
+    ]
+
+    clusters = cluster_shapes(
+        shapes, minimum_overlap=Decimal("0.5"), maximum_size_ratio=Decimal("1.3")
+    )
+
+    assert overlap(shapes[0].raster, shapes[1].raster) == 1, "the same line once normalised"
+    assert clusters == [[0, 2], [1]]
+
+
+def test_every_dot_is_one_cluster_and_clustering_is_deterministic() -> None:
+    shapes = [
+        describe(DOT, run_height=RUN, settings=SETTINGS),
+        describe(VERTICAL, run_height=RUN, settings=SETTINGS),
+        describe(DOT, run_height=RUN, settings=SETTINGS),
+        describe(HORIZONTAL, run_height=RUN, settings=SETTINGS),
+    ]
+    arguments = {"minimum_overlap": Decimal("0.5"), "maximum_size_ratio": Decimal("1.3")}
+
+    first = cluster_shapes(shapes, **arguments)
+
+    assert first == [[0, 2], [1], [3]]
+    assert cluster_shapes(shapes, **arguments) == first
+
+
+def test_grouping_thresholds_are_the_callers_and_are_checked() -> None:
+    with pytest.raises(ValueError, match="minimum_overlap"):
+        cluster_shapes([], minimum_overlap=Decimal(0), maximum_size_ratio=Decimal(1))
+    with pytest.raises(ValueError, match="maximum_size_ratio"):
+        cluster_shapes([], minimum_overlap=Decimal("0.5"), maximum_size_ratio=Decimal("0.9"))
+    with pytest.raises(ValueError, match="dilate_px"):
+        ShapeSettings(size_px=24, bezier_steps=8, stroke_px=1, dilate_px=-1)
+    assert isinstance(GlyphShape, type)
+
+
+def test_a_single_straight_segment_is_marked_straight_and_nothing_else_is() -> None:
+    """Outcome: vertical, horizontal and slanted strokes are straight; a ring and an inch mark are not."""
+    slant = _path((MOVE, _point(0, 0)), (LINE, _point(4, 10)))
+
+    for path in (VERTICAL, HORIZONTAL, slant):
+        assert describe(path, run_height=RUN, settings=SETTINGS).straight
+    for path in (_polygon(8), INCH_MARK):
+        assert not describe(path, run_height=RUN, settings=SETTINGS).straight
