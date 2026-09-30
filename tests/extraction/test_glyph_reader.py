@@ -17,6 +17,7 @@ Every fixture is authored geometry in a made-up font. No client drawing is read 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -396,6 +397,53 @@ def test_a_label_is_gathered_whole_from_the_page_rather_than_cut_to_its_seed() -
     assert len(label) == len(paths)
     reading = read_label(paths[2:3], paths + elsewhere, templates=TEMPLATES, settings=SETTINGS)
     assert isinstance(reading, GlyphReading) and reading.text == '192"'
+
+
+#: A label gap narrower than the run gap, as a real deployment's can be (phase D locked 3.0 pt against
+#: the 4 pt run gap the templates were sized with). The band between them is where a label's end is
+#: not settled.
+NARROW = replace(SETTINGS, label_gap_pt=Decimal(3))
+
+
+def test_a_character_just_past_a_labels_end_on_its_line_makes_it_abstain() -> None:
+    """**The phase D wrong reading, reproduced** (#756, 2026-10-01). A `1` stands in the middle of its
+    cell, so the space after it is wider than between other characters: in `10"` it is 3.5 units
+    here, past a 3-unit label gap. Before this rule the label closed without the `1` and read `0"`.
+    Outcome: the reader refuses — the `1` shares the label's run, so its end is not settled."""
+    paths, _ = _row('10"', 0, 0)
+
+    label, unclosed = gather_label(paths[1:], paths, settings=NARROW)
+    reading = read_label(paths[1:], paths, templates=TEMPLATES, settings=NARROW)
+
+    assert len(label) == len(paths) - 1, "the 1 is past the label gap"
+    assert unclosed is not None and "just past" in unclosed
+    assert isinstance(reading, GlyphAbstention), f"read {getattr(reading, 'text', None)!r}"
+    assert "just past" in reading.reason
+
+
+def test_a_character_near_a_label_but_off_its_line_does_not_stop_it() -> None:
+    """Outcome: a character 3.5 units above the label — inside the run gap, but on another line — is
+    not the label continuing, so `20"` still reads."""
+    paths, _ = _row('20"', 0, 0)
+    above, _ = _row("7", 0, 13.5)
+
+    reading = read_label(paths, paths + above, templates=TEMPLATES, settings=NARROW)
+
+    assert isinstance(reading, GlyphReading), reading
+    assert reading.text == '20"'
+
+
+def test_a_character_on_the_line_but_past_the_run_gap_does_not_stop_it() -> None:
+    """Outcome: the next label along the same line, further away than any run joins, is another
+    label — `20"` still reads."""
+    paths, _ = _row('20"', 0, 0)
+    right = max(point[0] for path in paths for point in path.points)
+    next_label, _ = _row('7"', float(right) + 5, 0)
+
+    reading = read_label(paths, paths + next_label, templates=TEMPLATES, settings=NARROW)
+
+    assert isinstance(reading, GlyphReading), reading
+    assert reading.text == '20"'
 
 
 def test_a_template_set_is_identified_by_its_hash(tmp_path: Path) -> None:

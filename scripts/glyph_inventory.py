@@ -4,11 +4,16 @@
 each group from standard font shapes, and writes a page where a person confirms or corrects every
 group. Only what the person confirmed becomes a template, and only templates ever read anything.
 
-Two steps.
+Three steps.
 
     inventory  DRAWING.pdf --pages 1,6,9 --out data/glyph_inventory/<name>/ --reader-settings scripts/demo.sh ...
                -> label.html (the page to label in a browser), HOW_TO_LABEL.md, clusters.csv,
                   inventory.json, glyphs.json, rasters.npy
+
+    split      data/glyph_inventory/<name>/ --pdf DRAWING.pdf --clusters c0164,c0067 --minimum-overlap 0.8
+               [--labels saved-labels.csv]
+               -> the named groups regrouped tighter, and label.html rewritten with the new groups
+                  first and every earlier label filled back in
 
     build      data/glyph_inventory/<name>/ --labelled-by "..." --on 2026-10-01
                -> data/glyph_templates/<set-id>/ : templates.npz + manifest.json (with the set's hash)
@@ -743,11 +748,19 @@ def _write_label_page(
     clusters: Sequence[Sequence[int]],
     suggestions: Sequence[Suggestion | None],
     references: dict[tuple[str, str], Reference],
+    *,
+    cluster_ids: Sequence[str] | None = None,
+    carried: dict[str, dict[str, str]] | None = None,
 ) -> None:
     """A page that opens from disk, shows every cluster, and saves the labels as `clusters.csv`.
 
     Local on purpose: the images are the client's drawing, so the page embeds them and is opened
     from the file system — nothing is uploaded anywhere.
+
+    `cluster_ids` names the rows when they are not the inventory's own numbering — after a split,
+    whose new groups are shown first. `carried` fills back in what a person already saved, so a
+    split never costs them the labels they had given: the page saves every row, so a row left empty
+    here would be saved empty.
     """
     regions: dict[tuple[int, int], OutlinedTextRegion] = {}
     for page_index in pages:
@@ -773,7 +786,8 @@ def _write_label_page(
     rows: list[str] = []
     for number, (members, suggestion) in enumerate(zip(clusters, suggestions, strict=True)):
         founder = glyphs[members[0]]
-        cluster_id = _cluster_id(number)
+        cluster_id = _cluster_id(number) if cluster_ids is None else cluster_ids[number]
+        previous = (carried or {}).get(cluster_id, {})
         strip = "".join(
             f'<img class="m" src="data:image/png;base64,{_png(_ink(glyphs[i].shape.raster, 2))}">'
             for i in _spread(members, 10)
@@ -785,19 +799,31 @@ def _write_label_page(
         if suggestion is None:
             suggestion_cell = "<span class=none>no suggestion</span>"
         else:
-            reference = references[(suggestion.label, suggestion.source)]
+            # A reference drawn from a font the deployment supplied is not in `references` when the
+            # page is rewritten by `split`, which is not given the fonts again. The suggestion is
+            # still shown, as text: its picture is a convenience, the label is what is confirmed.
+            reference = references.get((suggestion.label, suggestion.source))
+            picture = (
+                ""
+                if reference is None
+                else f'<img src="data:image/png;base64,{_png(_ink(reference.shape.raster, 3))}"><br>'
+            )
             suggestion_cell = (
-                f'<img src="data:image/png;base64,{_png(_ink(reference.shape.raster, 3))}"><br>'
-                f"<b>{html.escape(suggestion.label)}</b> "
+                f"{picture}<b>{html.escape(suggestion.label)}</b> "
                 f"<small>{html.escape(suggestion.source)} · {float(suggestion.distance):.2f}</small>"
             )
+        label_value = html.escape((previous.get("label") or "").strip(), quote=True)
+        note_value = html.escape((previous.get("note") or "").strip(), quote=True)
+        mixed_checked = " checked" if (previous.get("mixed") or "").strip() else ""
+        label_attribute = f' value="{label_value}"' if label_value else ""
+        note_attribute = f' value="{note_value}"' if note_value else ""
         rows.append(
             f'<tr data-id="{cluster_id}" data-suggested="{html.escape(suggestion.label if suggestion else "")}">'
             f"<td><b>{cluster_id}</b><br>{len(members)} copies</td>"
             f"<td>{shape_cell}</td><td>{suggestion_cell}</td>"
             f'<td><img src="data:image/png;base64,{_png(_context(regions, founder, height=110))}"></td>'
             f"<td>{strip}</td>"
-            '<td><input class="label" size="14" placeholder="type it"> '
+            f'<td><input class="label" size="14" placeholder="type it"{label_attribute}> '
             + (
                 '<button class="accept" type="button">accept</button> '
                 if suggestion is not None
@@ -805,8 +831,8 @@ def _write_label_page(
             )
             + '<button class="word" data-word="not_a_character" type="button">not a character</button> '
             '<button class="word" data-word="sideways" type="button">sideways</button>'
-            '<br><label><input class="mixed" type="checkbox"> mixed</label>'
-            '<br><input class="note" size="18" placeholder="note"></td></tr>'
+            f'<br><label><input class="mixed" type="checkbox"{mixed_checked}> mixed</label>'
+            f'<br><input class="note" size="18" placeholder="note"{note_attribute}></td></tr>'
         )
     # **A script is not HTML.** Entities are not decoded inside `<script>`, so the alphabet goes in
     # as a JSON string literal — never through `html.escape`, which turned its quote into `&quot;`
@@ -906,8 +932,9 @@ copy of that shape reads as what you said.
    **sideways** buttons fill those words in one click; most groups are pieces of the drawing.
 5. You do not have to label every group. The page is sorted with the most common first; a group
    you leave empty reads nothing, and a label that needs it is handed to a reviewer instead.
-6. Tick **mixed** if the copies are not all the same character. That group will be split and shown
-   again.
+6. Tick **mixed** if the copies are not all the same character, and leave its label empty. A mixed
+   group is regrouped more strictly by `glyph_inventory.py split`, and its new groups come back at
+   the top of this page with every other label you gave still filled in.
 7. A straight line may be a `1`, a `-`, or a piece of the drawing. Label it by what it is **when it
    sits in a label** (the red stroke shows you where it came from). The reader checks every label
    it composes, so a line read as `1` in the middle of a drawing is refused, not used.
@@ -977,7 +1004,10 @@ def build(arguments: argparse.Namespace) -> int:
     for cluster_id, row in labels.items():
         label = (row.get("label") or "").strip()
         if (row.get("mixed") or "").strip():
-            problems.append(f"{cluster_id} is marked mixed: it must be split before it can read")
+            problems.append(
+                f"{cluster_id} is marked mixed: it must be split before it can read "
+                "(glyph_inventory.py split)"
+            )
             continue
         if not label:
             continue
@@ -1022,6 +1052,11 @@ def build(arguments: argparse.Namespace) -> int:
             for cluster_id in sorted(labelled)
         ],
     }
+    if meta.get("splits"):
+        # Which groups were regrouped, and how strictly, is part of what the labels mean: `c0164.2`
+        # names nothing without the split that made it. Recorded only when there was one, so a set
+        # built from an unsplit inventory hashes exactly as it did before splitting existed.
+        content["splits"] = meta["splits"]
     digest = hashlib.sha256()
     digest.update(json.dumps(content, sort_keys=True).encode("utf-8"))
     digest.update(json.dumps([template_labels, heights, widths, dots]).encode("utf-8"))
@@ -1060,6 +1095,266 @@ def build(arguments: argparse.Namespace) -> int:
         f"  accepted {counts['accepted']}, corrected {counts['corrected']}, typed {counts['typed']}"
     )
     print(f"  written to {target}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# split
+# ---------------------------------------------------------------------------
+
+
+def _read_label_rows(path: Path) -> dict[str, dict[str, str]]:
+    """A saved labels file, by group: what the page downloads, or a draft written in its format."""
+    try:
+        with path.open(encoding="utf-8", newline="") as stream:
+            return {row["cluster_id"]: row for row in csv.DictReader(stream)}
+    except (OSError, KeyError, csv.Error) as error:
+        raise InventoryError(
+            f"{path} is not a labels file the page could have saved: {error}"
+        ) from error
+
+
+def _formed_at(meta: dict[str, Any], cluster_id: str) -> Decimal:
+    """The overlap that made this group: the inventory's own, or that of the split which made it."""
+    for record in meta.get("splits", []):
+        if cluster_id in record["into"]:
+            return Decimal(record["minimum_overlap"])
+    return Decimal(meta["minimum_overlap"])
+
+
+def split(arguments: argparse.Namespace) -> int:
+    """Regroup the named groups more strictly, and rewrite the page with their new groups first.
+
+    **Why this exists.** A group is formed around its first member by how much ink two shapes share,
+    and at the overlap an inventory is made with, different characters can share enough to land in
+    one group — measured on `AI_Set_2`: a `3` with a `5`, a `0` with a `D`, a `9` with a `)`. `build`
+    refuses a group marked mixed, because every member of a labelled group becomes a template, and
+    a `5` among the templates for `3` would read every `5` as a `3`.
+
+    **Only what was named is regrouped**, with the same comparison and size limit the inventory
+    used and a stricter overlap, which must be stricter than the one that formed the group — a split
+    at the same overlap would reproduce it. A group that does not come apart is left exactly as it
+    was and said so. Nothing else changes: every other group keeps its name, so every label a person
+    has given still names the same shapes.
+
+    **The new groups carry no suggestion.** The parent's suggestion was made for a group that held
+    two characters, and a suggestion the person would have to argue with costs more than none.
+
+    **Labels are carried, never invented.** `--labels` is what the person saved; each label it gives
+    to a group that still exists is filled back in on the rewritten page, with its note. A label the
+    file gave a group that has now been split is not carried: it named a mixture.
+    """
+    out = Path(arguments.out)
+    try:
+        meta = json.loads((out / INVENTORY).read_text(encoding="utf-8"))
+        records = json.loads((out / GLYPHS).read_text(encoding="utf-8"))
+        rasters = np.load(out / RASTERS)
+        with (out / CLUSTERS_CSV).open(encoding="utf-8", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+    except (OSError, ValueError) as error:
+        raise InventoryError(f"{out} is not a complete inventory: {error}") from error
+    pdf_path = Path(arguments.pdf)
+    try:
+        pdf = pdf_path.read_bytes()
+    except OSError as error:
+        raise InventoryError(f"could not read {pdf_path}: {error}") from error
+    if hashlib.sha256(pdf).hexdigest() != meta["source_sha256"]:
+        raise InventoryError(
+            f"{pdf_path.name} is not the drawing this inventory was made from "
+            f"({meta['source_pdf']}): its contents differ"
+        )
+
+    try:
+        minimum_overlap = Decimal(arguments.minimum_overlap)
+    except ArithmeticError as error:
+        raise InventoryError(
+            f"--minimum-overlap {arguments.minimum_overlap!r} is not a number"
+        ) from error
+    if not Decimal(0) < minimum_overlap <= Decimal(1):
+        raise InventoryError("--minimum-overlap must be above 0 and at most 1")
+    known = [row["cluster_id"] for row in rows]
+    wanted = list(dict.fromkeys(c.strip() for c in arguments.clusters.split(",") if c.strip()))
+    if not wanted:
+        raise InventoryError("--clusters names no group")
+    unknown = [c for c in wanted if c not in known]
+    if unknown:
+        raise InventoryError(f"this inventory has no group named {unknown[:5]}")
+    for cluster_id in wanted:
+        formed = _formed_at(meta, cluster_id)
+        if minimum_overlap <= formed:
+            raise InventoryError(
+                f"{cluster_id} was grouped at an overlap of {formed}; a split must be stricter "
+                f"than that, and {minimum_overlap} is not"
+            )
+    carried: dict[str, dict[str, str]] = {}
+    if arguments.labels is not None:
+        carried = _read_label_rows(Path(arguments.labels))
+        strangers = sorted(set(carried) - set(known))
+        if strangers:
+            raise InventoryError(
+                f"{arguments.labels} names groups this inventory does not have: {strangers[:5]}"
+            )
+        wrong = sorted(
+            c
+            for c, row in carried.items()
+            if (row.get("label") or "").strip() not in ALPHABET | {""}
+        )
+        if wrong:
+            raise InventoryError(
+                f"{arguments.labels} gives labels outside the alphabet to {wrong[:5]}"
+            )
+
+    members_of: dict[str, list[int]] = {}
+    for index, record in enumerate(records):
+        members_of.setdefault(str(record["cluster"]), []).append(index)
+    shapes = [
+        GlyphShape(
+            raster=np.asarray(rasters[index], dtype=np.bool_),
+            relative_height=Fraction(str(record["relative_height"])),
+            relative_width=Fraction(str(record["relative_width"])),
+            dot=bool(record["dot"]),
+        )
+        for index, record in enumerate(records)
+    ]
+    ratio = Decimal(meta["maximum_size_ratio"])
+
+    replaced: dict[str, list[tuple[str, list[int]]]] = {}
+    report: list[str] = []
+    for cluster_id in wanted:
+        members = members_of.get(cluster_id, [])
+        groups = cluster_shapes(
+            [shapes[index] for index in members],
+            minimum_overlap=minimum_overlap,
+            maximum_size_ratio=ratio,
+        )
+        regrouped = sorted(
+            ([members[k] for k in group] for group in groups), key=lambda g: (-len(g), g[0])
+        )
+        if len(regrouped) < 2:
+            report.append(
+                f"    {cluster_id} ({len(members)} copies) did not come apart at an overlap of "
+                f"{minimum_overlap}; left as it was"
+            )
+            continue
+        parts = [(f"{cluster_id}.{k + 1}", group) for k, group in enumerate(regrouped)]
+        replaced[cluster_id] = parts
+        report.append(
+            f"    {cluster_id} ({len(members)} copies) -> "
+            + ", ".join(f"{new_id} ({len(group)})" for new_id, group in parts)
+        )
+
+    print(f"\n  split at an overlap of {minimum_overlap}:")
+    print("\n".join(report))
+    if not replaced:
+        print("\n  nothing came apart, so nothing was rewritten")
+        return 0
+
+    for parts in replaced.values():
+        for new_id, group in parts:
+            for index in group:
+                records[index]["cluster"] = new_id
+    new_rows: list[dict[str, str]] = []
+    for row in rows:
+        pieces = replaced.get(row["cluster_id"])
+        if pieces is None:
+            new_rows.append(row)
+            continue
+        for new_id, group in pieces:
+            new_rows.append(
+                {
+                    "cluster_id": new_id,
+                    "count": str(len(group)),
+                    "suggested": "",
+                    "suggested_from": "",
+                    "distance": "",
+                    "label": "",
+                    "mixed": "",
+                    "note": f"split from {row['cluster_id']} at an overlap of {minimum_overlap}",
+                }
+            )
+    meta["splits"] = [
+        *meta.get("splits", []),
+        *(
+            {
+                "cluster": cluster_id,
+                "minimum_overlap": str(minimum_overlap),
+                "into": [new_id for new_id, _ in parts],
+                "sizes": [len(group) for _, group in parts],
+            }
+            for cluster_id, parts in replaced.items()
+        ),
+    ]
+    meta["clusters"] = len(new_rows)
+
+    (out / GLYPHS).write_text(json.dumps(records, indent=0), encoding="utf-8")
+    with (out / CLUSTERS_CSV).open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(new_rows)
+    (out / INVENTORY).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    new_ids = {new_id for parts in replaced.values() for new_id, _ in parts}
+    ordered = [row for row in new_rows if row["cluster_id"] in new_ids] + [
+        row for row in new_rows if row["cluster_id"] not in new_ids
+    ]
+    member_lists: dict[str, list[int]] = {}
+    for index, record in enumerate(records):
+        member_lists.setdefault(str(record["cluster"]), []).append(index)
+    glyphs = [
+        Glyph(
+            page=int(record["page"]),
+            region=int(record["region"]),
+            path=int(record["path"]),
+            box_px=(
+                int(record["box_px"][0]),
+                int(record["box_px"][1]),
+                int(record["box_px"][2]),
+                int(record["box_px"][3]),
+            ),
+            shape=shapes[index],
+        )
+        for index, record in enumerate(records)
+    ]
+    suggestions = [
+        (
+            Suggestion(
+                label=row["suggested"],
+                source=row["suggested_from"],
+                distance=Fraction(row["distance"] or "0"),
+                margin=Fraction(0),
+            )
+            if row["suggested"]
+            else None
+        )
+        for row in ordered
+    ]
+    settings = ShapeSettings.from_config_hash(meta["shape_settings"])
+    references = {(ref.label, ref.source): ref for ref in reference_shapes(settings=settings)}
+    dropped = sorted(
+        c for c in carried if c in replaced and (carried[c].get("label") or "").strip()
+    )
+    kept = {c: row for c, row in carried.items() if c not in replaced}
+    _write_label_page(
+        out,
+        pdf,
+        [page - 1 for page in meta["pages"]],
+        meta["reader_settings"],
+        glyphs,
+        [member_lists[row["cluster_id"]] for row in ordered],
+        suggestions,
+        references,
+        cluster_ids=[row["cluster_id"] for row in ordered],
+        carried=kept,
+    )
+
+    print(f"\n  {len(new_ids)} new groups are at the top of {out / LABEL_PAGE}")
+    if kept:
+        print(
+            f"  {sum(1 for row in kept.values() if (row.get('label') or '').strip())} earlier labels filled back in"
+        )
+    if dropped:
+        print(f"  not carried, because each named a group that held two characters: {dropped}")
+    print("  label the new groups, press Save, and put labels.csv in this folder")
     return 0
 
 
@@ -1104,6 +1399,27 @@ def main(argv: list[str] | None = None) -> int:
         help="an extra font file to suggest from, which the deployment is licensed for; repeatable",
     )
     make.set_defaults(handler=inventory)
+
+    regroup = subcommands.add_parser(
+        "split", help="regroup mixed groups more strictly, keeping every other label"
+    )
+    regroup.add_argument("out", help="the directory inventory wrote")
+    regroup.add_argument(
+        "--pdf", required=True, help="the drawing the inventory was made from; its hash is checked"
+    )
+    regroup.add_argument(
+        "--clusters", required=True, help="the groups to regroup, comma-separated, e.g. c0164,c0067"
+    )
+    regroup.add_argument(
+        "--minimum-overlap",
+        required=True,
+        help="shared ink needed to stay together, stricter than the one that formed each group (no default)",
+    )
+    regroup.add_argument(
+        "--labels",
+        help="a labels file the page saved; its labels are filled back in on the rewritten page",
+    )
+    regroup.set_defaults(handler=split)
 
     finish = subcommands.add_parser("build", help="turn the saved labels into a template set")
     finish.add_argument("out", help="the directory inventory wrote")
