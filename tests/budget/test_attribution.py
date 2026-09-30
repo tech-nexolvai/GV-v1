@@ -102,6 +102,26 @@ def test_package_usage_reports_calls_tokens_latency_and_cost() -> None:
     assert not hasattr(result, "cpu_cost_micros")
 
 
+def test_a_call_with_no_stated_price_is_counted_as_unpriced_not_added_as_zero() -> None:
+    """**#700.** A call whose model has no stated price records `NULL`. It is counted, and the total
+    covers only the priced calls — adding it as zero is exactly how the system reported costing
+    nothing. While any call is unpriced, the total is a lower bound, and the result says so."""
+    result = usage_by_package(
+        _Session(
+            [
+                (PACKAGE_A, INVOCATION_A, 10, 2, 50, 101),
+                (PACKAGE_A, INVOCATION_B, 20, 3, 70, None),
+            ]
+        ),  # type: ignore[arg-type]
+        timedelta(days=30),
+        as_of=NOW,
+    )[PACKAGE_A]
+
+    assert result.cost_usd_micros == 101
+    assert result.unpriced_invocations == 1
+    assert result.invocation_count == 2
+
+
 def test_finding_attribution_follows_candidate_evidence_and_deduplicates_invocations() -> None:
     """Input: one shared invocation joined twice. Output: charged once to this finding."""
 

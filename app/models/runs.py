@@ -231,7 +231,9 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
     bound_pt: Mapped[Decimal | None] = mapped_column(Numeric(), default=None)
     input_tokens: Mapped[int]
     output_tokens: Mapped[int]
-    cost_micros: Mapped[int]
+    cost_micros: Mapped[int | None] = mapped_column(default=None)
+    """What the call cost in millionths of a US dollar, or `NULL` when no price was stated for the
+    model (#700). Never a stand-in zero: a zero here means the call used no tokens."""
     latency_ms: Mapped[int]
     outcome: Mapped[str] = mapped_column(String(32))
     rejection_reason: Mapped[str | None] = mapped_column(String(500), default=None)

@@ -76,6 +76,7 @@ from app.models.runs import (
     ModelInvocation,
     ModelInvocationOutcome,
 )
+from app.runs.rates import call_cost_micros, rates_from_environment
 
 __all__ = [
     "BedrockConverseInvocationRecorder",
@@ -134,7 +135,7 @@ class _InvocationRecordLike(Protocol):
     def output_tokens(self) -> int: ...
 
     @property
-    def cost_micros(self) -> int: ...
+    def cost_micros(self) -> int | None: ...
 
     @property
     def latency_ms(self) -> int: ...
@@ -322,7 +323,9 @@ class BedrockConverseInvocationRecorder:
                 crop_artifact_id=None,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                cost_micros=0,
+                cost_micros=call_cost_micros(
+                    rates_from_environment(), model_id, input_tokens, output_tokens
+                ),
                 latency_ms=_milliseconds_since(started_ns),
                 outcome=outcome,
                 rejection_reason=(

@@ -93,6 +93,7 @@ from app.runs.invocations import (
 from app.runs.invocations import (
     record as record_model_invocation,
 )
+from app.runs.rates import call_cost_micros, rates_from_environment
 from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
@@ -387,7 +388,18 @@ class _BufferedVisionRecorder:
                         in {NovaInvocationOutcome.REFUSED, NovaInvocationOutcome.TIMEOUT}
                         else invocation.output_tokens
                     ),
-                    cost_micros=0,
+                    # From the deployment's stated price file, or unknown — never a literal zero (#700).
+                    cost_micros=call_cost_micros(
+                        rates_from_environment(),
+                        invocation.model_id,
+                        invocation.input_tokens,
+                        (
+                            0
+                            if invocation.outcome
+                            in {NovaInvocationOutcome.REFUSED, NovaInvocationOutcome.TIMEOUT}
+                            else invocation.output_tokens
+                        ),
+                    ),
                     latency_ms=invocation.latency_ms,
                     outcome=_stored_invocation_outcome(invocation.outcome),
                     candidate_id=(

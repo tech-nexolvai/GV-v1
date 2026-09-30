@@ -86,7 +86,11 @@ say "6/6  the API, review worker, and UI"
 # field on `Settings`, and `extra="forbid"` means a `.env` containing them stops the API starting
 # (#504). `VITE_PROJECT_ID` is exported for the same shape of reason — writing `.env.local` is what
 # two sessions used to fight over.
+# **What each model call cost (#700).** Both processes record model calls — the worker's readers and
+# the API's reviewer chat — and price them from this stated file, which names its own source and
+# date. Without it every call's cost is recorded as unknown, never as a free zero.
 GV_DATABASE_URL="$BARE_URL" \
+GV_MODEL_RATES_FILE="deploy/model_rates.us-east-1.json" \
 GV_DEV_PRINCIPAL="demo reviewer" \
 GV_DEV_PROJECTS="$PROJECT_UUID" \
 GV_DEV_PORT="$API_PORT" \
@@ -148,6 +152,7 @@ API_PID=$!
 # counts for exactly that reason — the benefit and the bill are read off the same table.
 GV_DATABASE_URL="$BARE_URL" \
 GV_DEV_STORAGE=".dev-storage" \
+GV_MODEL_RATES_FILE="deploy/model_rates.us-east-1.json" \
 GV_LOCALIZED_OCR_ENABLED=1 \
 GV_BEDROCK_VISION_ENABLED=1 \
 GV_READER_LINE_MINIMUM_PT=6 \
