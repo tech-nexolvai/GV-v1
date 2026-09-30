@@ -121,7 +121,7 @@ countertop jobs. Survivable at two products, not at five. Add the field, filter 
 before the next product lands.
 
 **8 · Close the measurement loop** — *blocked on client*
-A human-read answer key (~40–60 crops, ours to schedule) turns on the bake-off and the existing
+A human-read answer key (~40–60 crops, ours to schedule — **done 2026-09-30, 51 crops, #666**) turns on the bake-off and the existing
 `eval/` metrics — `critical_false_pass_rate`, `numeric_exact_match_accuracy`, `automation_coverage`.
 The real drawing set (#274) and Q20 tags turn on matching and the release gate.
 
@@ -155,6 +155,24 @@ a re-measurement, never a guess.
 
 **What this does not claim.** Seven models returned seven different readings for the same crops.
 This chooses readers that *function*; ranking them for accuracy is #666.
+
+### Measured accuracy (2026-09-30, #641)
+
+Against the 51-crop human-read key (#666), 35 crops scored, one drawing:
+
+| Reader | Read right | Accepted but wrong | $ per 1,000 crops |
+|---|---|---|---|
+| mistral-large-3 | 16 | 7 | 0.45 |
+| nova-2-lite | 15 | 11 | 0.78 (two calls per crop, #702) |
+| ministral-3b | 13 | 10 | 0.08 |
+| nova-pro | 8 | 12 | 1.43 |
+
+**No reader is reliable alone**: each accepts wrong readings about as often as right ones. What makes a
+seal safe is the *pair*. **Nova 2 Lite + Ministral 3B**, both configured above, is the lowest-harm
+cross-vendor pair measured: it agreed on the right value 9 times and **never on a wrong one** once
+#740's stacked-fraction rule applies. The recommendation on #641 is to run that pair and turn Nova Pro
+off, the least accurate reader and the most expensive; that is the admin's call. The post-quota
+re-run on the 17-page set (#716) is the confirmation. Full tables: #641.
 
 ---
 
