@@ -316,3 +316,41 @@ def test_the_table_decides_from_observations_only() -> None:
     assert observe(_facts(rotation_degrees=90), progress) == frozenset(  # type: ignore[arg-type]
         {Fact.SIDEWAYS, Fact.NO_READING}
     )
+
+
+# ---------------------------------------------------------------------------
+# A number read with no unit counts against a different value (#777)
+# ---------------------------------------------------------------------------
+
+
+def test_digits_read_without_a_unit_count_against_a_different_value() -> None:
+    """**The #757 re-run's wrong proposal (#777).** The primary reads `26 3/4` — the right digits, no
+    unit — and it is set aside; the escalation reads `26 1/4"`. Outcome: a reviewer, with both
+    readings named — never the escalation's value proposed over the primary's digits."""
+    tools = _Tools(readings=[_reading("26 3/4"), _reading('26 1/4"', "escalation")])
+
+    result = _run(tools, _facts())
+
+    assert _steps(tools) == ["vlm-primary", "refine-sharper", "vlm-escalation", "abstain"]
+    assert isinstance(result, AbstentionTerminal)
+    assert "disagree" in result.abstention.reason
+    assert "'26 3/4'" in result.abstention.reason and "'26 1/4\"'" in result.abstention.reason
+
+
+def test_two_read_without_a_unit_is_not_two_feet() -> None:
+    """Outcome: `2` then `2'` goes to a reviewer — 2 inches is not 24 inches (#757's `2"` label)."""
+    tools = _Tools(readings=[_reading("2"), _reading("2'", "escalation")])
+
+    result = _run(tools, _facts())
+
+    assert isinstance(result, AbstentionTerminal)
+
+
+def test_digits_that_agree_still_let_the_value_through() -> None:
+    """Outcome: `26 3/4` then `26 3/4"` is proposed, as before — the bare digits count against a
+    different value and never for this one; the proposal is the reading with its unit."""
+    tools = _Tools(readings=[_reading("26 3/4"), _reading('26 3/4"', "escalation")])
+
+    result = _run(tools, _facts())
+
+    assert isinstance(result, CandidateTerminal) and result.candidate.raw_text == '26 3/4"'
