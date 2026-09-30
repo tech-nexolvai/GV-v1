@@ -750,3 +750,155 @@ def test_each_reader_carries_its_own_model_override(monkeypatch) -> None:  # typ
     configs = vision_configs_from_environment()
 
     assert "mistral.something-else" in {config.model_id for config in configs}
+
+
+# ---------------------------------------------------------------------------
+# The inference profile is learned once, not paid for on every call (#702)
+# ---------------------------------------------------------------------------
+
+
+def _config_for(model_id: str, region: str | None = "us-east-1") -> NovaConfig:
+    return NovaConfig(
+        model_id=model_id,
+        prompt_id="dimension-reader-v1",
+        template_id="bounded-crop-v1",
+        connect_timeout_seconds=2,
+        read_timeout_seconds=8,
+        max_attempts=1,
+        region_name=region,
+        coordinate_mode=CoordinateMode.NOVA_GRID,
+    )
+
+
+def _refused_then_answers() -> FakeBedrock:
+    return FakeBedrock(
+        _client_error("AccessDeniedException", "Your account is currently being verified."),
+        _tool_response(_VALID_PAYLOAD),
+        _tool_response(_VALID_PAYLOAD),
+    )
+
+
+def test_a_second_call_goes_straight_to_the_profile() -> None:
+    """**Acceptance 1.** Measured: every Nova 2 Lite call was two round trips — 39 refused on the
+    plain id, 39 answered on the profile. The first call discovers it; the next does not repeat it.
+
+    A fresh adapter for the second call, because that is what production does per crop."""
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    client = _refused_then_answers()
+    config = _config_for("amazon.nova-pro-v1:0")
+
+    NovaAdapter(config, client, RecordingSink(), routes).extract(_request())
+    NovaAdapter(config, client, RecordingSink(), routes).extract(_request())
+
+    assert [request["modelId"] for request in client.requests] == [
+        "amazon.nova-pro-v1:0",
+        "us.amazon.nova-pro-v1:0",
+        "us.amazon.nova-pro-v1:0",
+    ]
+
+
+def test_a_model_never_tried_still_starts_from_its_plain_id() -> None:
+    """**Acceptance 2.** Learning one model says nothing about another; the fallback stays."""
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    routes.learn("us-east-1", "amazon.nova-pro-v1:0")
+    client = _refused_then_answers()
+
+    NovaAdapter(_config_for("amazon.nova-lite-v1:0"), client, RecordingSink(), routes).extract(
+        _request()
+    )
+
+    assert [request["modelId"] for request in client.requests] == [
+        "amazon.nova-lite-v1:0",
+        "us.amazon.nova-lite-v1:0",
+    ]
+
+
+def test_what_is_learned_in_one_region_is_not_assumed_in_another() -> None:
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    routes.learn("us-east-1", "amazon.nova-pro-v1:0")
+    client = FakeBedrock(_tool_response(_VALID_PAYLOAD))
+
+    NovaAdapter(
+        _config_for("amazon.nova-pro-v1:0", "eu-west-1"), client, RecordingSink(), routes
+    ).extract(_request())
+
+    assert [request["modelId"] for request in client.requests] == ["amazon.nova-pro-v1:0"]
+
+
+def test_nothing_is_learned_when_the_profile_fails_too() -> None:
+    """Only an answer from the profile proves the route. If it fails as well, the next call starts
+    from the plain id again rather than trusting a route that has never worked."""
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    client = FakeBedrock(
+        _client_error("AccessDeniedException", "no."),
+        _client_error("AccessDeniedException", "no."),
+    )
+
+    with pytest.raises(NovaServiceError):
+        NovaAdapter(_config_for("amazon.nova-pro-v1:0"), client, RecordingSink(), routes).extract(
+            _request()
+        )
+
+    assert routes.knows("us-east-1", "amazon.nova-pro-v1:0") is False
+
+
+def test_a_refused_payload_from_the_profile_still_proves_the_route() -> None:
+    """The profile answered; the local validator refused what it said. That is about the reading,
+    not the route, so the route is kept."""
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    client = FakeBedrock(
+        _client_error("AccessDeniedException", "no."),
+        _tool_response({"reading": "984"}),  # missing required fields: rejected locally
+    )
+
+    with pytest.raises(NovaPayloadRejectedError):
+        NovaAdapter(_config_for("amazon.nova-pro-v1:0"), client, RecordingSink(), routes).extract(
+            _request()
+        )
+
+    assert routes.knows("us-east-1", "amazon.nova-pro-v1:0") is True
+
+
+def test_the_learned_route_is_logged_once(caplog: pytest.LogCaptureFixture) -> None:
+    """**Acceptance 4.** Recorded where an operator on another account will see it: the first
+    refused attempt stays in `model_invocations`, and the discovery is logged — once."""
+    from extraction.models.nova import InferenceProfileRoutes
+
+    routes = InferenceProfileRoutes()
+    client = _refused_then_answers()
+    config = _config_for("amazon.nova-pro-v1:0")
+
+    with caplog.at_level("INFO", logger="extraction.models.nova"):
+        NovaAdapter(config, client, RecordingSink(), routes).extract(_request())
+        NovaAdapter(config, client, RecordingSink(), routes).extract(_request())
+
+    assert [r.message for r in caplog.records].count(
+        "Bedrock model answers only through its inference profile on this account; later calls "
+        "in this process go there first (#702)"
+    ) == 1
+
+
+def test_no_model_id_constant_hard_codes_the_profile_prefix() -> None:
+    """**Acceptance 3.** The prefix is learned per account, never written into a model id — an
+    account where the plain id works must keep using it."""
+    from extraction.models import nova
+
+    constants = {
+        name: value
+        for name, value in vars(nova).items()
+        if name.endswith("_MODEL_ID") and isinstance(value, str)
+    }
+    ids = set(constants.values()) | {reader.model_id for reader in VISION_READERS}
+
+    assert constants, "no *_MODEL_ID constants found, so this test checks nothing"
+    assert not [model_id for model_id in ids if model_id.startswith(nova.INFERENCE_PROFILE_PREFIX)]

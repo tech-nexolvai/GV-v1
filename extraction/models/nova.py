@@ -9,7 +9,9 @@ Verification: ``tests/extraction/models/test_nova.py``.
 
 from __future__ import annotations
 
+import logging
 import struct
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -339,6 +341,50 @@ def vision_configs_from_environment(
     )
 
 
+class InferenceProfileRoutes:
+    """Which models this process has found answer only through their inference profile (#702).
+
+    **Measured on this account: every Nova 2 Lite call was two round trips.** The plain id was
+    refused every time, and the `us.` profile answered every time: 39 refused attempts with zero
+    tokens, then 39 that answered, on one run. The fallback in `NovaAdapter.extract` was doing
+    exactly its job — it had simply become the only path that ever worked.
+
+    So the first time a model needs its profile, the process remembers it, and later calls go
+    straight there. **Learned, not configured**: nothing writes `us.` into a model id, so an account
+    or region where the plain id works keeps using it, and a model never tried still starts from its
+    plain id with the fallback behind it. Keyed by region as well, because a profile is.
+
+    Per process, because the production reader builds a fresh adapter for every crop
+    (`workflow.stages.BedrockVisionReader`), so an adapter's own memory would last one call.
+    """
+
+    def __init__(self) -> None:
+        self._needed: set[tuple[str, str]] = set()
+        self._lock = threading.Lock()
+
+    def knows(self, region_name: str, model_id: str) -> bool:
+        with self._lock:
+            return (region_name, model_id) in self._needed
+
+    def learn(self, region_name: str, model_id: str) -> bool:
+        """Remember it; `True` the first time, so the caller can say so exactly once."""
+        with self._lock:
+            if (region_name, model_id) in self._needed:
+                return False
+            self._needed.add((region_name, model_id))
+            return True
+
+    def forget(self) -> None:
+        with self._lock:
+            self._needed.clear()
+
+
+#: The process-wide memory every `NovaAdapter` shares unless it is handed its own.
+PROFILE_ROUTES: Final = InferenceProfileRoutes()
+
+logger = logging.getLogger(__name__)
+
+
 def needs_inference_profile(error: BaseException, model_id: str) -> bool:
     """Whether this failure means "invoke the inference profile instead".
 
@@ -617,10 +663,12 @@ class NovaAdapter:
         config: NovaConfig,
         client: BedrockRuntimeClient,
         recorder: InvocationRecorder,
+        profile_routes: InferenceProfileRoutes | None = None,
     ) -> None:
         self._config = config
         self._client = client
         self._recorder = recorder
+        self._routes = PROFILE_ROUTES if profile_routes is None else profile_routes
 
     @classmethod
     def from_environment(cls, config: NovaConfig, recorder: InvocationRecorder) -> NovaAdapter:
@@ -653,14 +701,41 @@ class NovaAdapter:
         **The refused attempt stays recorded.** It happened, it took time, and a record showing only
         the id that worked would misstate what this call did — and hide from the next operator that
         the configured id needs changing.
+
+        **And it happens once per process, not once per call (#702).** When the profile answers, that
+        is remembered (`InferenceProfileRoutes`), and later calls for the same model and region go to
+        the profile first — so the refusal is recorded the first time and not paid for again.
         """
+        model_id = self._config.model_id
+        # `None` is boto3's own default region, remembered as such rather than as a region name.
+        region = self._config.region_name or "(default region)"
+        profile_id = f"{INFERENCE_PROFILE_PREFIX}{model_id}"
+        if not model_id.startswith(INFERENCE_PROFILE_PREFIX) and self._routes.knows(
+            region, model_id
+        ):
+            return self._attempt(request, profile_id)
         try:
-            return self._attempt(request, self._config.model_id)
+            return self._attempt(request, model_id)
         except NovaServiceError as error:
             cause = error.__cause__
-            if cause is None or not needs_inference_profile(cause, self._config.model_id):
+            if cause is None or not needs_inference_profile(cause, model_id):
                 raise
-            return self._attempt(request, f"{INFERENCE_PROFILE_PREFIX}{self._config.model_id}")
+        try:
+            candidate = self._attempt(request, profile_id)
+        except (NovaPayloadRejectedError, NovaProtocolError, NovaRefusalError):
+            # The profile answered — its answer was refused, which says nothing against the route.
+            self._remember_profile(region, model_id)
+            raise
+        self._remember_profile(region, model_id)
+        return candidate
+
+    def _remember_profile(self, region: str, model_id: str) -> None:
+        if self._routes.learn(region, model_id):
+            logger.info(
+                "Bedrock model answers only through its inference profile on this account; later "
+                "calls in this process go there first (#702)",
+                extra={"model_id": model_id, "region": region, "profile": INFERENCE_PROFILE_PREFIX},
+            )
 
     def _attempt(self, request: NovaRequest, model_id: str) -> ObservationCandidate:
         """One model id, with its own bounded retry loop and its own records."""
