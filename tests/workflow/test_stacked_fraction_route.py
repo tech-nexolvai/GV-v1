@@ -1,9 +1,11 @@
-"""A vision reading of a stacked fraction reaches the validator marked as one (#735).
+"""A vision crop known to show a stacked fraction is refused before a model call (#735, #713).
 
 #541 built the guard and tested it by setting the flag by hand. In production the chain was broken
 in three places — the geometry was never measured, the region's flag was never carried, and neither
-adapter passed it — so the guard never once ran. These tests go through `DatabaseStages` itself: a
-real stamp is read, a real crop is cut, and what arrives at the reader is what is checked.
+adapter passed it — so the guard never once ran. The workflow now applies that same deterministic
+fact before Bedrock: a crop the local geometry already says must go to review is not a paid call.
+These tests go through `DatabaseStages` itself: a real stamp is read, a real crop is cut, and the
+stage decides whether the reader should see it.
 
 Verification for: `workflow/stages.py` (`_read_page_by_vision`, `crop_shows_a_stacked_fraction`).
 """
@@ -31,7 +33,7 @@ from storage.local import LocalStore
 from tests.extraction.test_annotations import STACKED_APPEARANCE, _appearance, _pdf, _stamp
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from units.measurement import Unit
-from workflow.stages import DatabaseStages, crop_shows_a_stacked_fraction
+from workflow.stages import DatabaseStages, _vision_pre_call_refusal, crop_shows_a_stacked_fraction
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -152,39 +154,50 @@ def store() -> Iterator[LocalStore]:
         yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
 
 
-def _requests_for(session: Session, store: LocalStore, data: bytes) -> list[NovaRequest]:
+def _vision_result_for(
+    session: Session, store: LocalStore, data: bytes
+) -> tuple[list[NovaRequest], dict[str, object]]:
     revision = _revision(session, store, data=data)
     session.commit()
     reader = _reader()
-    DatabaseStages(
+    (result,) = DatabaseStages(
         store,
         dpi=150,
         association=replace(SETTINGS, proximity_limit=Decimal("0.9")),
-        ocr_engine=_WholeCropOcr(),  # type: ignore[arg-type]
+        ocr_engine=_WholeCropOcr(),
         localized_ocr=LOCALIZED,
-        vision_readers=(reader,),  # type: ignore[arg-type]
+        vision_readers=(reader,),
     ).extract_pages(session, revision.id)
     session.commit()
-    return reader.requests
+    return reader.requests, dict(result.payload)
 
 
-def test_a_crop_that_shows_a_stacked_fraction_is_sent_marked_stacked(
+def _requests_for(session: Session, store: LocalStore, data: bytes) -> list[NovaRequest]:
+    requests, _ = _vision_result_for(session, store, data)
+    return requests
+
+
+def test_a_crop_that_shows_a_stacked_fraction_is_skipped_before_the_model_call(
     session: Session, store: LocalStore
 ) -> None:
-    """**Acceptance criterion 2 of #735.** A real stamp, the real reader, a real crop: the request
-    the vision reader receives says the crop shows a stacked fraction."""
-    requests = _requests_for(session, store, STACKED_SHEET)
+    """A real stamp, the real reader, a real crop: the guaranteed rejection is not a paid call."""
+    requests, payload = _vision_result_for(session, store, STACKED_SHEET)
 
-    assert requests, "no region reached the vision reader, so this test proves nothing"
-    assert any(request.stacked_label for request in requests)
+    assert requests == []
+    assert payload["vision_invocations"] == 0
+    assert payload["vision_candidates"] == 0
+    refusals = payload["vision_refusals"]
+    assert isinstance(refusals, list)
+    assert any("stacked_fraction_requires_review" in str(refusal) for refusal in refusals)
 
 
 def test_the_same_label_without_its_fraction_is_not(session: Session, store: LocalStore) -> None:
     """The control: the flag comes from the drawing, not from every crop being marked."""
-    requests = _requests_for(session, store, PLAIN_SHEET)
+    requests, payload = _vision_result_for(session, store, PLAIN_SHEET)
 
     assert requests, "no region reached the vision reader, so this test proves nothing"
     assert not any(request.stacked_label for request in requests)
+    assert payload["vision_invocations"] == len(requests)
 
 
 # ---------------------------------------------------------------------------
@@ -238,3 +251,16 @@ def test_a_fraction_elsewhere_on_the_page_is_not() -> None:
 
 def test_no_fractions_nothing_shown() -> None:
     assert not crop_shows_a_stacked_fraction((100, 100, 200, 200), [])
+
+
+def test_stacked_crop_has_a_pre_call_refusal() -> None:
+    """The model call would be rejected after it returns, so the workflow can skip it before."""
+
+    assert (
+        _vision_pre_call_refusal((100, 100, 200, 200), [_fraction(120, 120, 140, 160)])
+        == "stacked_fraction_requires_review"
+    )
+
+
+def test_unstacked_crop_has_no_pre_call_refusal() -> None:
+    assert _vision_pre_call_refusal((100, 100, 200, 200), []) is None
