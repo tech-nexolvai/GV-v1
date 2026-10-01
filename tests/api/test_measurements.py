@@ -181,6 +181,103 @@ def test_a_corrected_value_mints_the_next_version(session: Session) -> None:
     assert corrected.json()["parameter_set_version"] > first.json()["parameter_set_version"]
 
 
+def _project_settings(session: Session) -> dict[str, tuple[str, Any]]:
+    """The project's settings as the checks will resolve them: name → (value, when it was set)."""
+    from app.models.parameters import load_parameter_sets
+    from rules.parameters import ParameterLayer
+
+    (project,) = [
+        layer
+        for layer in load_parameter_sets(session, PROJECT)
+        if layer.layer is ParameterLayer.PROJECT
+    ]
+    return {
+        name: (str(value.value.value), value.set_at) for name, value in project.parameters.items()
+    }
+
+
+def test_saving_one_project_setting_keeps_the_ones_saved_before(session: Session) -> None:
+    """**#799.** Monday: cabinet depth and overhang. Tuesday: side thickness alone — the form sends
+    only what is filled in. Outcome: all three resolve. Before #799 the latest version held only the
+    side thickness, and the depth and overhang checks went back to NOT_FOUND with nobody removing
+    anything."""
+    package = _package(session)
+    client = _client(session)
+    url = f"/api/v1/projects/{PROJECT}/packages/{package}/measurements"
+
+    client.post(
+        url,
+        json={
+            "parameters": [
+                {"name": "cabinet_depth", "value": '24"'},
+                {"name": "countertop_overhang", "value": '1 1/2"'},
+            ]
+        },
+    )
+    later = client.post(
+        url, json={"parameters": [{"name": "cabinet_side_thickness", "value": '3/4"'}]}
+    )
+
+    assert later.status_code == 201, later.text
+    assert {name: value for name, (value, _) in _project_settings(session).items()} == {
+        "cabinet_depth": "24",
+        "countertop_overhang": "3/2",
+        "cabinet_side_thickness": "3/4",
+    }
+
+
+def test_a_changed_project_setting_replaces_the_old_value_in_a_new_version(
+    session: Session,
+) -> None:
+    """Outcome: the changed value wins, the untouched one is carried with it, and the version still
+    advances — a finding keeps citing the version that judged it (ADR-0016)."""
+    package = _package(session)
+    client = _client(session)
+    url = f"/api/v1/projects/{PROJECT}/packages/{package}/measurements"
+
+    first = client.post(
+        url,
+        json={
+            "parameters": [
+                {"name": "cabinet_depth", "value": '24"'},
+                {"name": "countertop_overhang", "value": '1 1/2"'},
+            ]
+        },
+    )
+    second = client.post(url, json={"parameters": [{"name": "cabinet_depth", "value": '25"'}]})
+
+    assert second.json()["parameter_set_version"] > first.json()["parameter_set_version"]
+    settings = _project_settings(session)
+    assert (settings["cabinet_depth"][0], settings["countertop_overhang"][0]) == ("25", "3/2")
+    # The carried overhang keeps its own record: set with the first save, not stamped as new.
+    assert settings["countertop_overhang"][1] < settings["cabinet_depth"][1]
+
+
+def test_a_run_save_still_holds_only_what_it_sent(session: Session) -> None:
+    """**Deliberately unchanged by #799.** RUN sets are per project, not per package (#798 Step 0c),
+    so carrying a RUN value forward would hand one package's sink size to another package's checks.
+    Outcome: the second RUN save holds only its own value, until RUN is per package."""
+    from workflow.measurements import run_parameters_for
+
+    package = _package(session)
+    client = _client(session)
+    url = f"/api/v1/projects/{PROJECT}/packages/{package}/measurements"
+
+    client.post(
+        url, json={"parameters": [{"name": "sink_interior_width", "value": '28"', "scope": "run"}]}
+    )
+    client.post(
+        url, json={"parameters": [{"name": "sink_interior_depth", "value": '16"', "scope": "run"}]}
+    )
+
+    revision = session.execute(
+        select(PackageRevision).where(PackageRevision.package_id == package)
+    ).scalar_one()
+    run = run_parameters_for(session, revision.id)
+    assert run is not None
+    assert set(run.parameters) == {"sink_interior_depth"}
+
+
 def test_asking_for_checks_enqueues_and_runs_nothing(session: Session) -> None:
     """**202, and no findings.**
 

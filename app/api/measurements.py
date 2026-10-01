@@ -63,7 +63,8 @@ from app.models.evidence import (
     ObservationCandidate,
 )
 from app.models.parameters import ParameterSet as StoredParameterSet
-from app.models.parameters import to_rows
+from app.models.parameters import ParameterValue as StoredParameterValue
+from app.models.parameters import from_rows, to_rows
 from app.schemas.measurements import (
     AssignmentEvent,
     AssignmentStepOut,
@@ -175,8 +176,18 @@ def _store(
     values: dict[str, Measurement],
     typed: dict[str, str],
     actor: str,
+    carry_forward: bool,
 ) -> tuple[int | None, tuple[StoredValue, ...]]:
     """Persist one layer's values, reusing an identical set rather than minting a second.
+
+    **With `carry_forward`, the new version keeps every earlier value this request does not set**
+    (#799). The checks read only the latest version of a layer, and the form sends only the fields
+    it has filled, so a version holding only what was sent erased every other setting: a reviewer
+    who corrected the side thickness on Tuesday lost Monday's depth and overhang. A carried value is
+    the earlier `ParameterValue` itself — its who, when and provenance unchanged — so the record
+    still says who set each number. Only the PROJECT layer carries forward: a RUN set is per project
+    rather than per package (#798 Step 0c), and carrying one forward would hand one package's sink
+    size to another package's checks.
 
     **A re-submission mints a new version, and that is by design rather than a shortcoming.**
     `ParameterSet.set_id` puts `set_at` *inside* the content hash deliberately —
@@ -204,21 +215,49 @@ def _store(
         ).scalar_one()
         + 1
     )
+    carried: dict[str, ParameterValue] = {}
+    if carry_forward:
+        previous = session.execute(
+            select(StoredParameterSet)
+            .where(
+                StoredParameterSet.project_id == project_id,
+                StoredParameterSet.layer == layer.value,
+            )
+            .order_by(StoredParameterSet.version.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if previous is not None:
+            rows = list(
+                session.execute(
+                    select(StoredParameterValue).where(
+                        StoredParameterValue.parameter_set_id == previous.id
+                    )
+                ).scalars()
+            )
+            carried = {
+                name: value
+                for name, value in from_rows(previous, rows).parameters.items()
+                if name not in values
+            }
+
     parameters = ParameterSet(
         project_id=str(project_id),
         layer=layer,
         version=next_version,
         parameters={
-            name: ParameterValue(
-                value=Quantity(value=measurement.exact, unit=measurement.unit),
-                # MEASURED: a person measured or read it. `HUMAN_PROVENANCES` is a closed set with no
-                # member a model could claim, which is what keeps a model's number out of here — not
-                # a check in this module.
-                provenance=Provenance.MEASURED,
-                set_by=actor,
-                set_at=now,
-            )
-            for name, measurement in values.items()
+            **carried,
+            **{
+                name: ParameterValue(
+                    value=Quantity(value=measurement.exact, unit=measurement.unit),
+                    # MEASURED: a person measured or read it. `HUMAN_PROVENANCES` is a closed set with
+                    # no member a model could claim, which is what keeps a model's number out of here
+                    # — not a check in this module.
+                    provenance=Provenance.MEASURED,
+                    set_by=actor,
+                    set_at=now,
+                )
+                for name, measurement in values.items()
+            },
         },
     )
 
@@ -575,6 +614,7 @@ def enter_measurements(
         values=project_values,
         typed=project_typed,
         actor=principal.id,
+        carry_forward=True,
     )
     # **Run parameters and measurements share one stored set.** `rules/parameters.py` refuses two sets
     # in one layer, so they cannot be stored separately — and they belong together anyway, being the
@@ -587,6 +627,7 @@ def enter_measurements(
         values=run_values,
         typed=run_typed,
         actor=principal.id,
+        carry_forward=False,
     )
     stored_measurements = tuple(v for v in stored_run if v.name in measurement_keys)
     stored_parameters = (
