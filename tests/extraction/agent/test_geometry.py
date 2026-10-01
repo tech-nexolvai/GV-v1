@@ -194,3 +194,45 @@ def test_a_character_past_the_labels_end_is_seen_when_the_run_gap_is_the_wider_o
 
     assert unclosed is not None
     assert not geometry.closed
+
+
+# ---------------------------------------------------------------------------
+# Which way it runs: the longest run, on a settled label (#783)
+# ---------------------------------------------------------------------------
+
+
+def test_a_turned_label_with_pieces_side_by_side_is_still_sideways() -> None:
+    """**The labels the old rule missed.** A two-line label — `102` above `[4]`, the shape of the
+    client's millimetre-and-inch labels — turned to read up the page puts the two lines side by side,
+    so some characters do form a run across. Outcome: sideways, because its longest run goes up."""
+    top, _ = _row("102", 0, 12)
+    bottom, _ = _row("[4]", 3, 0)
+    turned = _turned(top + bottom, 90)
+    region = _box(turned)
+
+    geometry = label_geometry(region, _grown(region, 2), turned, REACH)
+
+    assert geometry.closed
+    assert geometry.rotation_degrees == 90
+
+
+def test_the_same_label_upright_reads_as_it_stands() -> None:
+    top, _ = _row("102", 0, 12)
+    bottom, _ = _row("[4]", 3, 0)
+    region = _box(top + bottom)
+
+    assert label_geometry(region, _grown(region, 2), top + bottom, REACH).rotation_degrees == 0
+
+
+def test_an_unsettled_label_has_no_direction() -> None:
+    """**The #778 false alarm.** Characters stacked up the page for longer than one label may run
+    leave where the label ends unsettled. Outcome: no direction — a "label" whose extent is not
+    settled has no settled direction either."""
+    column, _ = _row("8888888888888888", 0, 0)
+    turned = _turned(column, 90)
+    region = _box(turned[:2])
+
+    geometry = label_geometry(region, _grown(region, 2), turned, REACH)
+
+    assert not geometry.closed
+    assert geometry.rotation_degrees == 0
