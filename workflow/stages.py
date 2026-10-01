@@ -250,6 +250,14 @@ CAD_TEXT_EXTRACTOR_VERSION = "extraction.cad_text/1"
 STAMP_TEXT_EXTRACTOR = "extraction.stamp_text"
 STAMP_TEXT_EXTRACTOR_VERSION = "extraction.stamp_text/1"
 
+#: The routes whose text is the file's own characters rather than a reading of its pixels (#792): the
+#: vector text, the reviewer's `/FreeText` markup, the vendor's CAD notes and a pasted drawing's font
+#: text. A model shown a picture of that text can only read what the file already says, so a string of
+#: theirs that does not parse as a number — a word, a tag, a title — is no reason to ask one.
+EXACT_TEXT_EXTRACTORS: Final = frozenset(
+    {EXTRACTOR, MARKUP_EXTRACTOR, CAD_TEXT_EXTRACTOR, STAMP_TEXT_EXTRACTOR}
+)
+
 #: The association step's own identity, so its thresholds are part of a run's identity (#545).
 #:
 #: A third run per page, and for the same reason as the second: `open_extraction_run` keys a run on
@@ -376,17 +384,28 @@ def _vision_candidate_value(raw_text: str) -> tuple[Measurement | None, str | No
         return None, UNPARSED_FLAG
 
 
-def _ambiguity_reasons(row: ObservationCandidate) -> frozenset[AmbiguityReason]:
+def _ambiguity_reasons(
+    row: ObservationCandidate, *, exact_text: bool
+) -> frozenset[AmbiguityReason]:
     flags = set(row.ambiguity_flags)
     reasons: set[AmbiguityReason] = set()
     if UNKNOWN_UNIT_FLAG in flags:
         reasons.add(AmbiguityReason.UNKNOWN_UNIT)
-    if UNPARSED_FLAG in flags:
+    # An exact route's string that does not parse is still exactly what the file says (#792), so no
+    # look at its picture can read it differently. Measured on AI_Set_2, this flag alone sent 999
+    # regions of a pasted drawing's own text to two paid readers. Its unit and its geometry still can.
+    if UNPARSED_FLAG in flags and not exact_text:
         reasons.add(AmbiguityReason.UNREADABLE_TEXT)
     # `NOT_A_SINGLE_VALUE_FLAG` is deliberately **not** mapped (#733). These reasons trigger a bounded,
     # paid agent retry; a compound like `39 1/4"+6"` was read correctly and is genuinely two values, so
     # no retry can turn it into one. Before #733 a compound was flagged unparsed and retried for nothing.
     return frozenset(reasons)
+
+
+def _shows_a_numeral(text: str | None) -> bool:
+    """Whether any character of `text` is a numeral — a vulgar fraction such as `½` included."""
+
+    return text is not None and any(character.isnumeric() for character in text)
 
 
 #: Where a deployment states what the AI readers may spend on one drawing set, in US dollars.
@@ -753,6 +772,9 @@ class _AgentPageOutcome:
 
     reused: int = 0
     """Regions an earlier delivery of this stage already ran, whose rows were reused unpaid."""
+
+    without_a_numeral: int = 0
+    """Regions set aside before any geometry because no route read a numeral in them (#792)."""
 
     invocations: int = 0
     """Model calls the agent made and recorded, retries included."""
@@ -1660,6 +1682,7 @@ class DatabaseStages:
                         ),
                         "agent_invocations": agent.invocations,
                         "agent_regions_reused": agent.reused,
+                        "agent_regions_without_a_numeral": agent.without_a_numeral,
                         "layout_proposals": layout_written,
                         # `None` when the page's annotations could not be read at all.
                         "panels": panels,
@@ -1988,6 +2011,10 @@ class DatabaseStages:
         **The trigger's reasons now include the file's geometry** — cut off at the crop's edge,
         sideways, a stacked fraction — each from `RegionFacts`, which holds no reading's text.
 
+        **Only a region some route read a numeral in is looked at, and an exact route's unparsed
+        string is no reason** (#792): what is left out is words, whose only "value" a model can find
+        is a neighbouring label's.
+
         **The shape reader's readings are not handed to the agent.** The admin's #756 D2
         (2026-10-01) decided what confirms one — a second witness, through corroboration — not what
         the agent may do with it. The decision table can take one as a witness —
@@ -2042,10 +2069,36 @@ class DatabaseStages:
                 crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT), fractions
             )
 
+        def region_of(row: ObservationCandidate) -> tuple[tuple[int, ...], ...]:
+            return tuple(tuple(int(value) for value in point) for point in row.polygon)
+
+        # **A region no route read a numeral in is not the agent's** (#792). Every route's text
+        # counts — the file's own, OCR's, the gate reader's — so a label any of them saw a digit of is
+        # still looked at. What is left is words and marks. On AI_Set_2 the agent's readers returned a
+        # value in 148 such regions — 92 words, 23 single letters, 33 marks like `"` — and what they
+        # read was a label elsewhere in the crop (`Vendor` read as `24"`): a value pinned to a place
+        # that does not hold it, which two readers of different vendors could agree on. Set aside
+        # here, before any geometry is computed or any model is asked.
+        with_a_numeral = {region_of(row) for row in candidates if _shows_a_numeral(row.raw_text)}
+        without_a_numeral: set[tuple[tuple[int, ...], ...]] = set()
+        run_ids = {row.extraction_run_id for row in candidates}
+        with session.no_autoflush:
+            extractor_of = {
+                run_id: extractor
+                for run_id, extractor in session.execute(
+                    select(ExtractionRun.id, ExtractionRun.extractor).where(
+                        ExtractionRun.id.in_(run_ids)
+                    )
+                ).tuples()
+            }
+
         handled: set[tuple[tuple[int, ...], ...]] = set()
         for candidate in candidates:
-            region = tuple(tuple(int(value) for value in point) for point in candidate.polygon)
+            region = region_of(candidate)
             if region in handled:
+                continue
+            if region not in with_a_numeral:
+                without_a_numeral.add(region)
                 continue
             status = _candidate_evidence_status(candidate)
             if status is not EvidenceStatus.RAW_CANDIDATE:
@@ -2063,7 +2116,10 @@ class DatabaseStages:
                 page_glyphs=page_glyphs,
                 stacked=stacked,
             )
-            reasons = _ambiguity_reasons(candidate) | trigger_reasons(facts)
+            reasons = _ambiguity_reasons(
+                candidate,
+                exact_text=extractor_of[candidate.extraction_run_id] in EXACT_TEXT_EXTRACTORS,
+            ) | trigger_reasons(facts)
             if not reasons:
                 continue
 
@@ -2190,6 +2246,7 @@ class DatabaseStages:
                 outcome.invocations += recorder.persist(
                     candidate_id=None if row is None else row.id, flush=False
                 )
+        outcome.without_a_numeral = len(without_a_numeral)
         return outcome
 
     def _agent_config_hash(self, source_candidate_id: UUID) -> str:

@@ -61,7 +61,7 @@ from tests.extraction.test_reader import _pdf
 from units.measurement import Unit
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
-from workflow.stages import DatabaseStages
+from workflow.stages import DatabaseStages, _shows_a_numeral
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -340,3 +340,95 @@ def test_graph_bounds_are_enforced_when_workflow_supplies_too_many_actions(
     assert [run.extractor for _, run in _candidate_runs(session)] == ["pdfplumber"]
     assert results[0].payload["agent_candidates"] == 0
     assert results[0].payload["agent_abstentions"] == 1
+
+
+def _vision(reading: str) -> _Reader:
+    return _Reader(
+        NovaConfig(
+            model_id="vision-test/1",
+            prompt_id="dimension-reader-v1",
+            template_id="bounded-crop-v1",
+            connect_timeout_seconds=1,
+            read_timeout_seconds=1,
+            max_attempts=1,
+            extractor="vision-test",
+        ),
+        reading=reading,
+    )
+
+
+def _run_on_text(
+    session: Session, store: LocalStore, text: bytes, *readers: _Reader
+) -> tuple[_Recorder, dict[str, object]]:
+    """The file's own text `text` at one place, read by `readers`, and the agent on it."""
+    revision = _revision(
+        session, store, data=_pdf(b"BT /F1 10 Tf 1 0 0 1 20 70 Tm (" + text + b") Tj ET\n")
+    )
+    recorder = _Recorder()
+    results = DatabaseStages(
+        store,
+        vision_readers=readers,
+        bounded_agent=_graph(
+            recorder, ocr_result=RetryableToolFailure("unused"), vlm_result=_agent_candidate()
+        ),
+    ).extract_pages(session, revision.id)
+    return recorder, results[0].payload
+
+
+def test_a_region_no_route_read_a_numeral_in_never_reaches_the_agent(
+    session: Session, store: LocalStore
+) -> None:
+    """**#792 (a), the one that matters most.** The file says `SINK` and a vision reader reads
+    `SINK`, which it flags unparsed. On AI_Set_2, the only values the agent's readers found in such
+    regions belonged to a neighbouring label: `Vendor` was read as `24"`. That is a value in the wrong
+    place, and two readers of different vendors could agree on it. Outcome: no agent call, and the
+    page counts the region it set aside."""
+    recorder, payload = _run_on_text(session, store, b"SINK", _vision("SINK"))
+
+    assert recorder.calls == []
+    assert payload["agent_regions"] == 0
+    assert payload["agent_regions_without_a_numeral"] == 1
+
+
+def test_a_numeral_any_route_read_keeps_the_region_the_agents(
+    session: Session, store: LocalStore
+) -> None:
+    """**Every route's text counts.** The file says `SINK` and the vision reader reads `24` at the
+    same place, with no unit. Outcome: the agent runs on the region once, because a reader saw a digit
+    there."""
+    recorder, payload = _run_on_text(session, store, b"SINK", _vision("24"))
+
+    assert recorder.calls != []
+    assert payload["agent_regions"] == 1
+    assert payload["agent_regions_without_a_numeral"] == 0
+
+
+def test_the_files_own_text_that_does_not_parse_is_no_reason_to_ask_a_model(
+    session: Session, store: LocalStore
+) -> None:
+    """**#792 (b).** The file's own `B24` (a cabinet tag: a numeral, not a dimension) is unparsed.
+    A model shown its picture can only read what the file already says. Outcome: no agent call."""
+    recorder, payload = _run_on_text(session, store, b"B24")
+
+    assert recorder.calls == []
+    assert payload["agent_regions"] == 0
+    assert payload["agent_regions_without_a_numeral"] == 0
+
+
+def test_a_models_reading_that_does_not_parse_still_is(session: Session, store: LocalStore) -> None:
+    """**The rule is the route's, not the string's.** The same `B24`, read by a vision reader at the
+    same place, is a reading of pixels, and one look may read it differently. Outcome: the agent
+    runs."""
+    recorder, payload = _run_on_text(session, store, b"B24", _vision("B24"))
+
+    assert recorder.calls != []
+    assert payload["agent_regions"] == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "numeral"),
+    [("SINK", False), ('"', False), ("", False), (None, False), ("B24", True), ("½", True)],
+)
+def test_a_numeral_is_any_digit_a_vulgar_fraction_included(text: str | None, numeral: bool) -> None:
+    """`½` is a numeral that `str.isdigit` does not count, and a label can be nothing else."""
+    assert _shows_a_numeral(text) is numeral

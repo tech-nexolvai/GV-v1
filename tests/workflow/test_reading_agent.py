@@ -610,6 +610,30 @@ def test_the_641_case_goes_to_a_reviewer_with_the_whole_reading_beside_the_cut_o
     assert cut == ['92"', '92"']
 
 
+def test_a_cut_label_no_route_read_a_numeral_of_is_set_aside_all_the_same(
+    session: Session, store: LocalStore
+) -> None:
+    """**What #792's rule (a) gives up, pinned so it is never given up by accident.** OCR finds only
+    `LED` where the file's own paths say the crop cuts a label, and both vision readers read the cut
+    crop as `LED` too. Before #792 the agent widened it and read `10192"`. Now a region no route read a numeral
+    in is set aside before its geometry is looked at: a value read there is, by construction, not
+    what any route saw at that place. The admin chose this on 2026-10-01. Outcome: the region goes to
+    a reviewer unread, and the page counts it."""
+    revision = _revision(session, store, data=SHEET)
+    session.commit()
+    primary, escalation = _readers(cut_reading="LED")
+
+    results = _stages(store, (primary, escalation), _settings(), ocr_text="LED").extract_pages(
+        session, revision.id
+    )
+    session.commit()
+
+    assert _agent_rows(session) == []
+    assert all(width < _whole_label_px() for width in primary.widths)
+    (payload,) = [result.payload for result in results]
+    assert (payload["agent_regions"], payload["agent_regions_without_a_numeral"]) == (0, 1)
+
+
 def _region_statuses(session: Session) -> list[tuple[str, str, str | None, str | None]]:
     return sorted(
         (
