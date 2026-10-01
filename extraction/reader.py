@@ -213,6 +213,9 @@ class TextItem:
 
     rotation_degrees: int
     upright: bool
+    stacked: bool = False
+    """Composed from a label set as a stacked fraction (#738): exact, and a reviewer's suggestion
+    only — recorded with `STACKED_FRACTION_FLAG`, so no number of readers agrees it into evidence."""
 
 
 class SetAsideReason(StrEnum):
@@ -481,6 +484,11 @@ def read_page_contents(
             # **Stacked fractions come out before anything is joined or read** (#738). A `2434"` left
             # in would be a reading; a `24` beside it could be joined into a dual token.
             words, set_aside = _set_aside_stacked(words, digits)
+            # **Then what can be read whole from its own characters is** (#738): a stacked fraction
+            # whose whole, numerator and denominator are where a stack puts them becomes `24 3/4"`,
+            # marked as stacked; millimetres written over their bracketed inches become `610 [24]`.
+            # Anything that does not fit those shapes exactly stays set aside.
+            words, set_aside = _read_what_composes(words, set_aside, digits)
             # **Dual tokens are read whole, before the words they are made of.** `984 [38 3/4]` is
             # one reading of one dimension, and `extract_words` splits it at the spaces into `984`,
             # `[38` and `3/4]` — three fragments, none of which is a dimension. That splitting is the
@@ -581,8 +589,10 @@ class _DigitGrid:
         tallest = max((frame[3] - frame[2] for _, frame in measured), default=0.0)
         self._cell = 3 * tallest or 1.0
         self._cells: dict[tuple[int, int], list[tuple[int, _Frame]]] = defaultdict(list)
+        self._boxes: dict[int, tuple[float, float, float, float]] = {}
         for char, frame in measured:
             self._cells[self._key(char)].append((id(char), frame))
+            self._boxes[id(char)] = _page_box(char)
 
     def _key(self, char: dict[str, Any]) -> tuple[int, int]:
         centre_x = (float(char["x0"]) + float(char["x1"])) / 2
@@ -598,6 +608,32 @@ class _DigitGrid:
             for dy in (-1, 0, 1)
             for entry in self._cells.get((column + dx, row + dy), ())
         ]
+
+    def printed_over(self, word: dict[str, Any]) -> bool:
+        """Whether a digit that is not the word's own overlaps it on the page, whichever way it reads:
+        two labels printed one over the other, which no reading of either can be trusted from."""
+        chars = list(word.get("chars") or ())
+        if not chars:
+            return False
+        own = {id(char) for char in chars}
+        boxes = [_page_box(char) for char in chars]
+        left = min(box[0] for box in boxes)
+        right = max(box[1] for box in boxes)
+        bottom = min(box[2] for box in boxes)
+        top = max(box[3] for box in boxes)
+        for char in chars:
+            for other_id, _ in self.near(char):
+                if other_id in own:
+                    continue
+                x0, x1, y0, y1 = self._boxes[other_id]
+                if min(right, x1) > max(left, x0) and min(top, y1) > max(bottom, y0):
+                    return True
+        return False
+
+
+def _page_box(char: dict[str, Any]) -> tuple[float, float, float, float]:
+    """A character's `(x0, x1, y0, y1)` on the page, y upward."""
+    return float(char["x0"]), float(char["x1"]), float(char["y0"]), float(char["y1"])
 
 
 def _mixed(frames: list[_Frame | None]) -> bool:
@@ -681,6 +717,170 @@ def _set_aside_stacked(
         else:
             kept.append(word)
     return kept, set_aside
+
+
+#: The denominators an inch fraction is written over. A stack whose bottom is anything else is not
+#: read as a fraction of an inch.
+_DENOMINATORS: Final = frozenset({2, 4, 8, 16, 32, 64})
+
+#: The two lines of a dual dimension written one over the other: millimetres, and bracketed inches.
+_MILLIMETRES_RE: Final = re.compile(r"\d+(?:\.\d+)?")
+_BRACKETED_RE: Final = re.compile(r"\[[^\[\]]+\]")
+
+#: An inch or foot mark, as fonts set them.
+_UNIT_MARK_RE: Final = re.compile(r"['’′\"”″]")
+
+#: A character with where it sits, as `_frame` measures it.
+_Framed = tuple[dict[str, Any], _Frame]
+
+
+def _two_rows(framed: list[_Framed]) -> tuple[list[_Framed], list[_Framed]] | None:
+    """`(upper, lower)`: characters on exactly two lines, each in reading order, or `None`.
+
+    Their centres across the line are sorted and split at the widest gap. That gap must be at
+    least half a text height and every other gap less, so two lines are found only where there are
+    two lines and not three, or one with a character a little out of place.
+    """
+    if len(framed) < 2:
+        return None
+    height = min(frame[3] - frame[2] for _, frame in framed)
+    ordered = sorted(framed, key=lambda entry: (entry[1][2] + entry[1][3]) / 2)
+    centres = [(frame[2] + frame[3]) / 2 for _, frame in ordered]
+    gaps = [above - below for below, above in pairwise(centres)]
+    widest = max(range(len(gaps)), key=lambda index: gaps[index])
+    if gaps[widest] < 0.5 * height or any(
+        gap >= 0.5 * height for index, gap in enumerate(gaps) if index != widest
+    ):
+        return None
+    lower, upper = ordered[: widest + 1], ordered[widest + 1 :]
+    return (
+        sorted(upper, key=lambda entry: entry[1][0]),
+        sorted(lower, key=lambda entry: entry[1][0]),
+    )
+
+
+def _framed(word: dict[str, Any]) -> list[_Framed] | None:
+    """A word's printed characters with their places, or `None` if any cannot be placed or they do
+    not all read the same way."""
+    framed: list[_Framed] = []
+    for char in word.get("chars") or ():
+        if not str(char.get("text", "")).strip():
+            continue
+        frame = _frame(char)
+        if frame is None:
+            return None
+        framed.append((char, frame))
+    if not framed or len({frame[4] for _, frame in framed}) > 1:
+        return None
+    return framed
+
+
+def _text_of(entries: list[_Framed]) -> str:
+    return "".join(str(char["text"]) for char, _ in entries)
+
+
+def _compose_fraction(word: dict[str, Any]) -> str | None:
+    """A stacked fraction's label as one line — `24 3/4"`, `2'-10 1/2"`, `3/4"` — or `None`.
+
+    Read from where the characters sit, never from their order in the word. The fraction's digits
+    are those smaller than the label's tallest (or all of them, for a fraction standing alone), and
+    they must lie on exactly two lines, one over the other along the label: the upper line is the
+    numerator, the lower the denominator. The rest of the label — the whole number, a feet part, the
+    inch mark — keeps its order, with the fraction put where it stands. Refused unless the
+    numerator is less than the denominator and the denominator is a fraction of an inch.
+    """
+    framed = _framed(word)
+    if framed is None:
+        return None
+    digits = [entry for entry in framed if str(entry[0]["text"]).isdigit()]
+    if len(digits) < 2:
+        return None
+    tallest = max(frame[3] - frame[2] for _, frame in digits)
+    small = [entry for entry in digits if entry[1][3] - entry[1][2] < tallest * (1 - _SAME)]
+    if not small:
+        small = digits  # a fraction standing alone: both its lines are the label's size
+    rows = _two_rows(small)
+    if rows is None:
+        return None
+    upper, lower = rows
+    overlap = min(max(entry[1][1] for entry in upper), max(entry[1][1] for entry in lower)) - max(
+        min(entry[1][0] for entry in upper), min(entry[1][0] for entry in lower)
+    )
+    if overlap <= 0:
+        return None  # the two lines are side by side, not one over the other
+    numerator, denominator = int(_text_of(upper)), int(_text_of(lower))
+    if denominator not in _DENOMINATORS or not 0 < numerator < denominator:
+        return None
+
+    stack = {id(char) for char, _ in small}
+    rest = [entry for entry in framed if id(entry[0]) not in stack]
+    starts = min(frame[0] for _, frame in small)
+    ends = max(frame[1] for _, frame in small)
+    before = [entry for entry in rest if (entry[1][0] + entry[1][1]) / 2 < starts]
+    after = [entry for entry in rest if (entry[1][0] + entry[1][1]) / 2 > ends]
+    if len(before) + len(after) != len(rest):
+        return None  # something of the label's own stands inside the stack
+    if any(str(char["text"]).isdigit() for char, _ in after):
+        return None  # a whole number reads before its fraction, never after
+    before.sort(key=lambda entry: entry[1][0])
+    after.sort(key=lambda entry: entry[1][0])
+    # **One label, touching end to end.** A `4"` beside a stacked `3/4"` is a label of its own;
+    # glued into the same word, it would be read as `4 3/4"`. Every gap along the label — inside the
+    # whole number, up to the stack, and from the stack to the mark — must be a touch, not a space.
+    reach = _TOUCHING * tallest
+    edges = [(frame[0], frame[1]) for _, frame in before] + [(starts, ends)]
+    edges += [(frame[0], frame[1]) for _, frame in after]
+    if any(following[0] - leading[1] > reach for leading, following in pairwise(edges)):
+        return None
+    text = f"{_text_of(before)} {numerator}/{denominator}{_text_of(after)}".strip()
+    # A bare `3/8` inside a note says nothing of its unit; only a label with its mark is suggested.
+    return text if _UNIT_MARK_RE.search(text) else None
+
+
+def _compose_two_lines(word: dict[str, Any]) -> str | None:
+    """Millimetres written over their bracketed inches, as the one dual token they are — `610 [24]`
+    — or `None`. Either line may be the upper one; the token is written millimetres first."""
+    framed = _framed(word)
+    if framed is None:
+        return None
+    rows = _two_rows(framed)
+    if rows is None:
+        return None
+    first, second = (_text_of(row) for row in rows)
+    for millimetres, inches in ((first, second), (second, first)):
+        if _MILLIMETRES_RE.fullmatch(millimetres) and _BRACKETED_RE.fullmatch(inches):
+            token = f"{millimetres} {inches}"
+            return token if DUAL_TOKEN_RE.fullmatch(token) else None
+    return None
+
+
+def _read_what_composes(
+    words: list[dict[str, Any]],
+    set_aside: list[tuple[dict[str, Any], SetAsideReason]],
+    digits: _DigitGrid,
+) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], SetAsideReason]]]:
+    """`(words, set_aside)` with every set-aside label that composes moved back among the words.
+
+    Never a label another label is printed over (measured on `AI_Set_1`: a sideways `4 3/4"` drawn
+    through an upright `ϕ 1 3/4"` composes perfectly and is not what anyone meant).
+    """
+    kept = list(words)
+    still: list[tuple[dict[str, Any], SetAsideReason]] = []
+    for word, reason in set_aside:
+        composed: str | None = None
+        if digits.printed_over(word):
+            pass
+        elif reason is SetAsideReason.STACKED_FRACTION:
+            composed = _compose_fraction(word)
+        elif reason is SetAsideReason.TWO_LINES:
+            composed = _compose_two_lines(word)
+        if composed is None:
+            still.append((word, reason))
+            continue
+        kept.append(
+            {**word, "text": composed, "stacked": reason is SetAsideReason.STACKED_FRACTION}
+        )
+    return kept, still
 
 
 def _is_fragment(run: dict[str, Any], digits: _DigitGrid, partners: set[int]) -> bool:
@@ -840,6 +1040,9 @@ def _join_lines(
                     "x1": box[2],
                     "bottom": box[3],
                     "upright": run[0].get("upright", True),
+                    # A stacked fraction joined into a longer label keeps its mark: the label is
+                    # still one a reviewer must confirm (#726).
+                    "stacked": any(word.get("stacked", False) for word in run),
                 }
                 item = _text_item(merged, transform, height, document_version_id, page_index)
                 if item is not None:
@@ -974,6 +1177,7 @@ def _text_item(
         image_extent=image_corners,
         rotation_degrees=rotation,
         upright=bool(word.get("upright", True)),
+        stacked=bool(word.get("stacked", False)),
     )
 
 

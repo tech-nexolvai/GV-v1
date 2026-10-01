@@ -169,3 +169,26 @@ def test_a_stacked_fraction_in_a_pasted_drawing_is_set_aside() -> None:
 
     assert not any(item.text.startswith("24") for item in reading.contents.texts)
     assert [label.reason.value for label in reading.contents.set_aside] == ["stacked_fraction"]
+
+
+#: `24 3/4"` at the client's sizes inside a pasted drawing: a 3-point `24`, a 2-point `3` over a `4`
+#: touching it, and the mark. Small enough that `extract_words` keeps the stack in one word.
+CLIENT_SIZE_STACK = (
+    b'/F1 3 Tf (24) Tj /F1 2 Tf 3.6 1.2 Td (3) Tj 0 -2.2 Td (4) Tj /F1 3 Tf 1.2 1 Td (") Tj'
+)
+
+
+def test_a_stacked_fraction_in_a_pasted_drawing_is_read_whole_and_marked() -> None:
+    """Outcome: `24 3/4"`, marked stacked — a reviewer's suggestion, never `2434"`."""
+    reading = read_stamp_text(_sheet(CLIENT_SIZE_STACK), 0, document_version_id=DOCUMENT, dpi=DPI)
+
+    assert [(item.text, item.stacked) for item in reading.contents.texts] == [('24 3/4"', True)]
+    assert reading.contents.set_aside == ()
+
+
+def test_millimetres_over_inches_in_a_pasted_drawing_are_one_dual_token() -> None:
+    reading = read_stamp_text(
+        _sheet(b"/F1 3 Tf (585) Tj 0.4 -3 Td ([23]) Tj"), 0, document_version_id=DOCUMENT, dpi=DPI
+    )
+
+    assert [(item.text, item.stacked) for item in reading.contents.texts] == [("585 [23]", False)]

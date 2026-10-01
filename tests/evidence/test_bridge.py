@@ -36,6 +36,7 @@ from app.audit.events import SYSTEM_ACTOR, AuditCategory, AuditEvent
 from app.db.session import session_factory
 from app.evidence.automatic_typing import (
     AutomaticTypingSettings,
+    qualify_exact_tag_pair,
     qualify_exact_tags_for_revision,
 )
 from app.evidence.confirm import ConfirmationRefused, RefusalReason, confirm_candidate_type
@@ -649,3 +650,45 @@ def test_automatic_typing_counts_two_readers_of_one_vendor_as_one(
     session.flush()
 
     assert _second_reader_candidate_ids(session, reading) == ()
+
+
+def test_a_stacked_fraction_is_never_typed_automatically(
+    session: Session, store: LocalStore
+) -> None:
+    """**#726, held where a reading is promoted.** Outcome: a reading flagged as a stacked fraction
+    is sent to a reviewer by the automatic lane, before any tag, line or agreement is looked at —
+    the second guard behind `corroborate`'s."""
+    from evidence.candidate import STACKED_FRACTION_FLAG
+    from evidence.semantic_typing import SemanticTypingDecision, TypingDisposition
+
+    _revision_row, candidate_id = _extract(session, store, token=EXACT_DEPTH_SINGLE_UNIT)
+    reading = session.get(ObservationCandidate, candidate_id)
+    assert reading is not None
+    stacked = ObservationCandidate(
+        document_version_id=reading.document_version_id,
+        page_id=reading.page_id,
+        extraction_run_id=reading.extraction_run_id,
+        raw_text='24 3/4"',
+        value_numerator=99,
+        value_denominator=4,
+        unit=reading.unit,
+        unit_guess=reading.unit,
+        semantic_guess=None,
+        polygon=[[70, 70], [90, 70], [90, 85]],
+        coordinate_space="image",
+        confidence=None,
+        ambiguity_flags=[STACKED_FRACTION_FLAG],
+    )
+    session.add(stacked)
+    session.flush()
+
+    decision = qualify_exact_tag_pair(
+        session,
+        candidate_id=stacked.id,
+        tag_candidate_id=candidate_id,
+        settings=AutomaticTypingSettings(frozenset({SemanticType.CT010})),
+    )
+
+    assert isinstance(decision, SemanticTypingDecision)
+    assert decision.disposition is TypingDisposition.REVIEW_REQUIRED
+    assert "#726" in decision.reason

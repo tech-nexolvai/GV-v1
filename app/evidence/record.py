@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 from app.models.document import Page
 from app.models.evidence import ObservationAssociation, ObservationCandidate, line_key
 from app.models.runs import ExtractionFailure, ExtractionRun
+from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.coordinates import ImagePoint, PageBox
 from evidence.corroborate import corroborate
@@ -215,6 +216,9 @@ def record_candidates(
         crop_rotation_degrees = getattr(item, "crop_rotation_degrees", 0)
         if crop_rotation_degrees:
             stored_flags.append(f"crop_rotated_{crop_rotation_degrees}_degrees")
+        # A stacked fraction read exactly (#738) is a reviewer's suggestion, never evidence (#726).
+        if getattr(item, "stacked", False):
+            stored_flags.append(STACKED_FRACTION_FLAG)
         row = ObservationCandidate(
             document_version_id=document_version_id,
             page_id=page_id,

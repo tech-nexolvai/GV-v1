@@ -400,14 +400,19 @@ STACKED = _pdf(
 )
 
 
-def test_a_stacked_fraction_is_never_read_as_a_number() -> None:
+def test_a_stacked_fraction_is_read_whole_and_marked_stacked() -> None:
     """**The failure this prevents.** `extract_words` joins `24 3/4"` into `2434"` — 2,434 inches,
-    exact and wrong; 69 labels on `AI_Set_1` came back that way. Outcome: no number from it, its
-    place kept as a stacked fraction, and the plain label beside it still read."""
+    exact and wrong; 69 labels on `AI_Set_1` came back that way. Outcome: `24 3/4"`, read from where
+    each character sits, marked as stacked so it is only ever a reviewer's suggestion (#726) — and
+    the plain label beside it read as before, unmarked."""
     contents = _contents(STACKED)
+    items = {item.text: item for item in contents.texts}
 
-    assert _valued(contents) == ['36"']
-    assert _set_aside(contents) == ["stacked_fraction"]
+    assert sorted(_valued(contents)) == ['24 3/4"', '36"']
+    assert items['24 3/4"'].stacked is True
+    assert items['36"'].stacked is False
+    assert not any(text.startswith(("243", "244")) for text in items)
+    assert contents.set_aside == ()
 
 
 #: A stack `extract_words` split: the whole `2`, then a numerator `1"` set apart from it, over its
@@ -449,13 +454,15 @@ TWO_LINE_DUAL = _pdf(
 )
 
 
-def test_millimetres_over_inches_on_two_lines_are_not_a_fraction() -> None:
-    """Outcome: not read as one garbled number, and not sent to the stacked-fraction rule either —
-    it is a dual dimension, which the OCR route joins (`[52835]` on `AI_Set_1`)."""
+def test_millimetres_over_inches_on_two_lines_are_read_as_one_dual_token() -> None:
+    """`extract_words` made `[52835]` of `585` over `[23]` (84 on `AI_Set_1`). Outcome: `585 [23]`,
+    the dual token it is — not a fraction, so not marked stacked."""
     contents = _contents(TWO_LINE_DUAL)
+    (item,) = contents.texts
 
-    assert _valued(contents) == []
-    assert _set_aside(contents) == ["two_lines"]
+    assert item.text == "585 [23]"
+    assert item.stacked is False
+    assert contents.set_aside == ()
 
 
 #: A sideways `2' - 0"`, as the client's elevations write their heights.
@@ -547,3 +554,55 @@ def test_inches_and_a_fraction_split_by_a_space_are_read_whole() -> None:
 
     assert [item.text for item in contents.texts] == ['24 3/4"']
     assert contents.set_aside == ()
+
+
+# ---------------------------------------------------------------------------
+# What a stacked label is never composed from
+# ---------------------------------------------------------------------------
+
+
+def _stack(whole: bytes, top: bytes, bottom: bytes, *, mark: bytes = b'"', x: float = 20) -> bytes:
+    """`whole`, then `top` over `bottom`, then `mark`, at the client's sizes (3 and 2 points)."""
+    width = 1.668 * len(whole)  # Helvetica digits are 556/1000 wide
+    stream = b""
+    if whole:
+        stream += b"BT /F1 3 Tf 1 0 0 1 %.2f 50 Tm (%s) Tj ET\n" % (x, whole)
+    stream += b"BT /F1 2 Tf 1 0 0 1 %.2f 51.2 Tm (%s) Tj ET\n" % (x + width + 0.26, top)
+    stream += b"BT /F1 2 Tf 1 0 0 1 %.2f 49 Tm (%s) Tj ET\n" % (x + width + 0.26, bottom)
+    if mark:
+        stream += b"BT /F1 3 Tf 1 0 0 1 %.2f 50 Tm (%s) Tj ET\n" % (x + width + 1.46, mark)
+    return stream
+
+
+def test_a_fraction_standing_alone_reads_alone() -> None:
+    contents = _contents(_pdf(_stack(b"", b"3", b"4")))
+
+    assert [(item.text, item.stacked) for item in contents.texts] == [('3/4"', True)]
+
+
+def test_a_stack_that_is_not_an_inch_fraction_is_left_unread() -> None:
+    """Outcome: `5` over `3` — a numerator over a smaller number, or over anything that is not a
+    fraction of an inch — is not composed, and stays with a reviewer."""
+    for top, bottom in ((b"5", b"3"), (b"1", b"5")):
+        contents = _contents(_pdf(_stack(b"24", top, bottom)))
+
+        assert _valued(contents) == [], (top, bottom)
+        assert _set_aside(contents) == ["stacked_fraction"]
+
+
+def test_a_stack_without_its_unit_mark_is_not_suggested() -> None:
+    """A bare `3/8` inside a note says nothing of its unit."""
+    contents = _contents(_pdf(_stack(b"", b"3", b"8", mark=b"")))
+
+    assert contents.texts == ()
+    assert _set_aside(contents) == ["stacked_fraction"]
+
+
+def test_a_label_printed_over_a_stack_stops_it_being_composed() -> None:
+    """Measured on `AI_Set_1`: a sideways `4 3/4"` drawn through an upright `1 3/4"` composes
+    perfectly from its own characters and is not what anybody wrote. Outcome: not suggested."""
+    over = b"BT /F1 3 Tf 0 1 -1 0 22.5 48 Tm (19) Tj ET\n"
+    contents = _contents(_pdf(_stack(b"24", b"3", b"4") + over))
+
+    assert not any(item.stacked for item in contents.texts)
+    assert "stacked_fraction" in _set_aside(contents)

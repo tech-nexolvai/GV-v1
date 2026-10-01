@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from evidence.candidate import ObservationCandidate
+from evidence.candidate import STACKED_FRACTION_FLAG, ObservationCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from units.dual import DualDimension
 from units.policy import Consistency, check_dual
@@ -185,6 +185,11 @@ def corroborate(
     if any(not isinstance(candidate, ObservationCandidate) for candidate in candidate_tuple):
         raise TypeError("candidates must contain only ObservationCandidate values")
     candidate_ids = _candidate_ids(candidate_tuple)
+
+    # **A stacked fraction is never agreed into evidence** (#726). However many readers say the same,
+    # and however exactly it was read, a reviewer confirms it: the whole group stays a raw candidate.
+    if any(STACKED_FRACTION_FLAG in candidate.ambiguity_flags for candidate in candidate_tuple):
+        return CorroborationResult(EvidenceStatus.RAW_CANDIDATE, candidate_ids, (), None)
 
     if dual_dimension is not None:
         if len(candidate_tuple) != 1:
