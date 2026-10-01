@@ -229,7 +229,9 @@ def _store(
     stored, rows = to_rows(
         InMemoryParameterSet(
             project_id=str(package.project_id), layer=layer, version=1, parameters=flattened
-        )
+        ),
+        # A RUN set belongs to its review (#801); a PROJECT set to no revision.
+        package_revision_id=revision.id if layer is ParameterLayer.RUN else None,
     )
     session.add(stored)
     for row in rows:

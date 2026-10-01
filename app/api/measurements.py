@@ -177,6 +177,7 @@ def _store(
     typed: dict[str, str],
     actor: str,
     carry_forward: bool,
+    package_revision_id: UUID | None = None,
 ) -> tuple[int | None, tuple[StoredValue, ...]]:
     """Persist one layer's values, reusing an identical set rather than minting a second.
 
@@ -185,9 +186,8 @@ def _store(
     it has filled, so a version holding only what was sent erased every other setting: a reviewer
     who corrected the side thickness on Tuesday lost Monday's depth and overhang. A carried value is
     the earlier `ParameterValue` itself — its who, when and provenance unchanged — so the record
-    still says who set each number. Only the PROJECT layer carries forward: a RUN set is per project
-    rather than per package (#798 Step 0c), and carrying one forward would hand one package's sink
-    size to another package's checks.
+    still says who set each number. A RUN set belongs to one package revision (#801), so carrying it
+    forward stays within that package: `package_revision_id` names it, and is required for RUN.
 
     **A re-submission mints a new version, and that is by design rather than a shortcoming.**
     `ParameterSet.set_id` puts `set_at` *inside* the content hash deliberately —
@@ -222,6 +222,12 @@ def _store(
             .where(
                 StoredParameterSet.project_id == project_id,
                 StoredParameterSet.layer == layer.value,
+                # Within one review for RUN (#801); `IS NULL` for the other layers, which name none.
+                (
+                    StoredParameterSet.package_revision_id.is_(None)
+                    if package_revision_id is None
+                    else StoredParameterSet.package_revision_id == package_revision_id
+                ),
             )
             .order_by(StoredParameterSet.version.desc())
             .limit(1)
@@ -267,7 +273,7 @@ def _store(
     if existing is not None:
         version = existing.version
     else:
-        stored, rows = to_rows(parameters)
+        stored, rows = to_rows(parameters, package_revision_id=package_revision_id)
         session.add(stored)
         for row in rows:
             session.add(row)
@@ -627,7 +633,10 @@ def enter_measurements(
         values=run_values,
         typed=run_typed,
         actor=principal.id,
-        carry_forward=False,
+        # Safe since #801: the set is this package revision's alone, so a carried value is one this
+        # package's reviewer typed, never another package's.
+        carry_forward=True,
+        package_revision_id=revision.id,
     )
     stored_measurements = tuple(v for v in stored_run if v.name in measurement_keys)
     stored_parameters = (

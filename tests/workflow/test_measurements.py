@@ -80,7 +80,7 @@ def _store_run_values(
             for name, value in values.items()
         },
     )
-    stored, rows = to_rows(parameters)
+    stored, rows = to_rows(parameters, package_revision_id=revision.id)
     session.add(stored)
     for row in rows:
         session.add(row)

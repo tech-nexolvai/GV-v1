@@ -103,6 +103,16 @@ class ParameterSet(Base, TimestampedUUID, Immutable):
     layer: Mapped[str] = mapped_column(String(50), index=True)
     version: Mapped[int] = mapped_column()
 
+    package_revision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    """The review a RUN set's values were true for; `NULL` for GLOBAL and PROJECT (#801).
+
+    A RUN set holds what was true for one review — a sink's cut-sheet size, the measurements typed for
+    one package — and was keyed by project alone, so every package in a project shared one: package
+    A's checks ran on package B's numbers. Migration 0054 adds this, and refuses a new RUN set without
+    it; RUN rows written before it name no revision and are read by nothing."""
+
     __table_args__ = (
         UniqueConstraint(
             "project_id", "layer", "version", name="uq_parameter_sets_project_layer_version"
@@ -120,6 +130,12 @@ class ParameterSet(Base, TimestampedUUID, Immutable):
         CheckConstraint(
             "(layer = 'global') = (project_id IS NULL)",
             name="global_has_no_project",
+        ),
+        # A RUN set names its review, and no other layer does (#801). `NOT VALID` in migration 0054,
+        # so RUN rows written before it are exempt — and ignored, since every read filters by it.
+        CheckConstraint(
+            "(layer = 'run') = (package_revision_id IS NOT NULL)",
+            name="run_names_its_revision",
         ),
         Index("ix_parameter_sets_project_layer", "project_id", "layer"),
     )
@@ -168,8 +184,14 @@ class ParameterValue(Base, TimestampedUUID, Immutable):
         return Fraction(self.numerator, self.denominator)
 
 
-def to_rows(parameters: InMemoryParameterSet) -> tuple[ParameterSet, list[ParameterValue]]:
+def to_rows(
+    parameters: InMemoryParameterSet, *, package_revision_id: UUID | None = None
+) -> tuple[ParameterSet, list[ParameterValue]]:
     """Turn an in-memory set into the rows that store it, keeping its content hash.
+
+    `package_revision_id` is the review a RUN set belongs to, and is required for one and refused for
+    any other layer (#801) — refused here, before the database's own check, so the mistake names
+    itself.
 
     The hash is taken from the value object rather than recomputed here. One definition of "what these
     numbers are" — a second implementation would be a second answer, and the two would disagree the first
@@ -178,11 +200,17 @@ def to_rows(parameters: InMemoryParameterSet) -> tuple[ParameterSet, list[Parame
     Reading back is `from_rows`, and `tests/db/test_parameter_models.py` round-trips a set through
     PostgreSQL and asserts the recomputed hash still equals the stored one.
     """
+    is_run = parameters.layer is ParameterLayer.RUN
+    if is_run != (package_revision_id is not None):
+        raise ValueError(
+            "a RUN set names the package revision it was true for, and no other layer names one"
+        )
     stored = ParameterSet(
         set_id=parameters.set_id,
         project_id=UUID(parameters.project_id) if parameters.project_id is not None else None,
         layer=parameters.layer.value,
         version=parameters.version,
+        package_revision_id=package_revision_id,
     )
     values = [
         ParameterValue(
