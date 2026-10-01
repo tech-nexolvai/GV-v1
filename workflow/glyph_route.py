@@ -10,11 +10,13 @@ to record.
 five match settings are required and none has a default, for the reason every threshold on this
 route has none (#756 §Rules).
 
-**Its readings never seal, until the admin decides what they may seal (#756 D2).** The stage records
-them as candidates for a reviewer to confirm — they reach the form pre-filled (#712) — and keeps
-them out of cross-route corroboration entirely, so a shape reading and a vision reading that agree
-do not become a sealed value. A mislabelled template is a systematic error that repeats on every
-sheet; what may count as its second witness is the admin's decision, not this module's.
+**Its readings are never confirmed alone — the admin's decision (#756 D2, 2026-10-01).** A
+mislabelled template is a systematic error that repeats on every sheet, and a witness that did not
+use the templates is what catches it: another reader agreeing on the same box (the stage asks the
+vision readers about each reading's box, and cross-route corroboration decides), or the label's own
+millimetres agreeing with its inches (the dual lane). Without one, a reading is a value a reviewer
+confirms, pre-filled (#712). A stacked fraction is flagged and never confirmed by any agreement
+(#756 D3, #726).
 
 Source: issue #756 · Verification: `tests/workflow/test_glyph_route.py`
 """

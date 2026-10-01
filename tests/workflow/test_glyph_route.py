@@ -122,14 +122,16 @@ def store() -> Iterator[LocalStore]:
         yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
 
 
-def _stages(store: LocalStore, route: GlyphRoute | None) -> DatabaseStages:
+def _stages(
+    store: LocalStore, route: GlyphRoute | None, vision_readers: tuple[object, ...] = ()
+) -> DatabaseStages:
     return DatabaseStages(
         store,
         dpi=150,
         association=ASSOCIATION,
         ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
         localized_ocr=LOCALIZED,
-        vision_readers=(),
+        vision_readers=vision_readers,  # type: ignore[arg-type]
         glyph_route=route,
     )
 
@@ -172,19 +174,8 @@ def test_a_label_is_read_from_its_shapes_and_recorded_under_its_own_reader(
     assert payload["glyph_abstentions"] == 0
 
 
-def test_a_glyph_reading_is_never_sealed(
-    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**Until the admin decides D2** (#756). Outcome: no corroboration status, and neither the
-    corroboration step nor the bounded agent is ever handed a glyph row."""
-    handed: list[ObservationCandidate] = []
-    original = DatabaseStages._apply_cross_route_corroboration
-
-    def watching(session: Session, *, page_index: int, candidates: object) -> None:
-        handed.extend(candidates)  # type: ignore[call-overload]
-        original(session, page_index=page_index, candidates=candidates)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(DatabaseStages, "_apply_cross_route_corroboration", staticmethod(watching))
+def _watch_agent(monkeypatch: pytest.MonkeyPatch) -> list[ObservationCandidate]:
+    """Record every candidate handed to the bounded agent."""
     agent: list[ObservationCandidate] = []
     original_agent = DatabaseStages._run_bounded_agent_for_ambiguous_regions
 
@@ -193,16 +184,60 @@ def test_a_glyph_reading_is_never_sealed(
         return original_agent(self, session, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(DatabaseStages, "_run_bounded_agent_for_ambiguous_regions", watching_agent)
+    return agent
+
+
+def _read_with_vision(
+    session: Session, store: LocalStore, readers: tuple[object, ...]
+) -> ObservationCandidate:
     revision = _revision(session, store, data=SHEET)
     session.commit()
-
-    _stages(store, GlyphRoute(_templates(), _settings())).extract_pages(session, revision.id)
+    _stages(store, GlyphRoute(_templates(), _settings()), readers).extract_pages(
+        session, revision.id
+    )
     session.commit()
-
     (row,) = _glyph_rows(session)
-    assert row.corroboration_status is None and row.corroboration_lane is None
-    assert all(candidate.id != row.id for candidate in handed)
+    return row
+
+
+def test_a_glyph_reading_alone_is_not_confirmed(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**#756 D2, decided 2026-10-01: never confirmed alone.** Outcome: with no other reader, the
+    reading is a value for a person to confirm — no agreement lane — and the bounded agent is never
+    handed it."""
+    agent = _watch_agent(monkeypatch)
+
+    row = _read_with_vision(session, store, ())
+
+    assert row.corroboration_lane is None
+    assert row.corroboration_status != "CORROBORATED"
     assert all(candidate.id != row.id for candidate in agent)
+
+
+def test_a_glyph_reading_is_confirmed_by_another_reader_agreeing_on_its_box(
+    session: Session, store: LocalStore
+) -> None:
+    """**The second witness (#756 D2).** The page asks the vision readers about the glyph
+    reading's own box; one that did not use the templates agreeing on `12"` is what confirms it."""
+    from evidence.canonical import CorroborationLane
+    from tests.evidence.test_bridge import _AgreeingVisionReader
+
+    row = _read_with_vision(session, store, (_AgreeingVisionReader('12"'),))
+
+    assert row.corroboration_lane == CorroborationLane.SECOND_READER.value
+    assert row.corroboration_status != "CONFLICTING"
+
+
+def test_a_glyph_reading_another_reader_disagrees_with_goes_to_a_person(
+    session: Session, store: LocalStore
+) -> None:
+    from evidence.canonical import EvidenceStatus
+    from tests.evidence.test_bridge import _AgreeingVisionReader
+
+    row = _read_with_vision(session, store, (_AgreeingVisionReader('13"'),))
+
+    assert row.corroboration_status == EvidenceStatus.CONFLICTING.value
 
 
 def test_a_glyph_reading_attaches_to_the_line_it_labels(
@@ -318,3 +353,33 @@ def test_a_configured_route_reads_with_the_sets_own_sizing(tmp_path: Path) -> No
     assert route.settings.glyph_gap_pt == ASSOCIATION.glyph_gap_pt
     assert route.settings.minimum_margin == Decimal("0.1")
     assert route.templates.set_hash in route.config_hash
+
+
+@pytest.mark.parametrize(
+    ("written", "flags", "lane", "status"),
+    [
+        ("381 [15]", [], "DUAL_UNIT", "RAW_CANDIDATE"),
+        ("381 [16]", [], "DUAL_UNIT", "CONFLICTING"),
+        ('15"', [], None, None),
+        ("381 [15]", ["stacked_fraction"], None, None),
+    ],
+)
+def test_a_glyph_label_stating_millimetres_and_inches_is_its_own_witness(
+    written: str, flags: list[str], lane: str | None, status: str | None
+) -> None:
+    """**#756 D2's other witness.** A label whose millimetres agree with its inches is checked by
+    the dual lane like any reading; halves that disagree are a conflict for a person; a label with no
+    millimetres has no lane; and nothing marked stacked is ever agreed (#726)."""
+    from app.evidence.record import dual_unit_lane
+    from workflow.glyph_route import GLYPH_EXTRACTOR
+
+    row = ObservationCandidate(
+        raw_text=written,
+        unit_guess="in",
+        polygon=[[0, 0], [10, 0], [10, 5], [0, 5]],
+        confidence=None,
+        ambiguity_flags=flags,
+    )
+    run = ExtractionRun(extractor=GLYPH_EXTRACTOR, extractor_version="a6e5e73d269f")
+
+    assert dual_unit_lane(row, run=run, page_index=0) == (status, lane)
