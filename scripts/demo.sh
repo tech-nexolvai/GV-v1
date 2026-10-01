@@ -159,6 +159,11 @@ API_PID=$!
 # two wrong values for a person to catch, and read nothing the pair had missed — so it is on here to
 # be tried on real drawings, and nowhere else. About 40% more model cost per crop. Every setting is
 # required; `workflow/reading_agent.py` says what each one is.
+# **Ministral reads first (#787).** Nova 2 Lite is held to 20 requests a minute on this account and
+# AWS declined to raise it (#716), so Nova reads only the crops Ministral found a value in — about 83
+# of 1,009 on AI_Set_2, which is minutes of Nova's quota instead of 50. Nothing that could be
+# confirmed is lost: a confirmation is two readers' values agreeing (#775).
+GV_VISION_GATE_READER=bedrock-ministral-3-3b \
 GV_READING_AGENT=1 \
 GV_AGENT_MAX_STEPS=6 \
 GV_AGENT_MAX_ESCALATIONS=1 \

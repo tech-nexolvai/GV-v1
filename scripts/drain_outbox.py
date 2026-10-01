@@ -166,6 +166,9 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         glyph_route=glyph_route_from_environment(),
         # Off unless GV_READING_AGENT is on, and then every one of its settings is required (#757).
         reading_agent=reading_agent_from_environment(),
+        # Off unless named: the vision reader that goes first, the others reading only where it
+        # read a value (#787). An unknown name is refused when the stages are built.
+        vision_gate=os.environ.get("GV_VISION_GATE_READER", "").strip() or None,
     )
 
 

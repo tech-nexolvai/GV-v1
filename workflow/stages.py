@@ -875,6 +875,7 @@ class DatabaseStages:
         bounded_agent_planner: _AgentPlannerFactory | None = None,
         glyph_route: GlyphRoute | None = None,
         reading_agent: ReadingAgentSettings | None = None,
+        vision_gate: str | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -914,6 +915,19 @@ class DatabaseStages:
                 for reader in layout_readers
             )
         )
+        # **The gate reader (#787), off unless a deployment names one.** It reads every region
+        # first; every other vision reader reads only where it read a value. Nova 2 Lite's quota is
+        # 20 a minute on this account (#716), and a crop the gate found no value in can never be
+        # confirmed — a confirmation is two readers' values agreeing (#775) — so asking the others
+        # about it buys at most a lone reading for a person to check.
+        if vision_gate is not None and vision_gate not in {
+            reader.config.extractor for reader in self._vision_readers
+        }:
+            raise ValueError(
+                f"the vision gate reader is {vision_gate!r}, which is not a configured vision "
+                "reader"
+            )
+        self._vision_gate = vision_gate
         if bounded_agent is None and reading_agent is None and bounded_agent_planner is not None:
             raise ValueError("bounded_agent_planner cannot be supplied without a bounded_agent")
         if bounded_agent is not None and reading_agent is not None:
@@ -1181,6 +1195,7 @@ class DatabaseStages:
             glyph_abstentions: Counter[str] | None = None
             vision_rows: list[ObservationCandidate] = []
             vision_invocations = 0
+            vision_held_back = 0
             vision_refusals: list[str] = []
             read: PageContents | None = None
             if page.has_vector_text:
@@ -1381,6 +1396,7 @@ class DatabaseStages:
                     vision_invocations,
                     vision_refusals,
                     vision_association_links,
+                    vision_held_back,
                 ) = self._read_page_by_vision(
                     session,
                     version_id=version_id,
@@ -1537,6 +1553,11 @@ class DatabaseStages:
                         "panels": panels,
                         "layout_refusals": layout_refusals[:REPORTED_REFUSALS],
                         "vision_invocations": vision_invocations,
+                        # Regions a gated reader was not asked about, the gate having read no value
+                        # in them (#787). `None` where no gate is configured.
+                        "vision_gate_held_back": (
+                            None if self._vision_gate is None else vision_held_back
+                        ),
                         "vision_refusals": vision_refusals[:REPORTED_REFUSALS],
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
@@ -2709,7 +2730,7 @@ class DatabaseStages:
         task_run_id: UUID,
         regions: Sequence[_VisionRegion],
         stacked_fractions: Sequence[StackedFraction],
-    ) -> tuple[list[ObservationCandidate], int, list[str], tuple[_VisionAssociationLink, ...]]:
+    ) -> tuple[list[ObservationCandidate], int, list[str], tuple[_VisionAssociationLink, ...], int]:
         """Read each region with every configured vision reader.
 
         **A region is a recorded reading's box or an OCR box whose text was not a reading** (#703).
@@ -2733,7 +2754,7 @@ class DatabaseStages:
         model-read numbers and detected line-work but zero `observation_associations` rows.
         """
         if not regions or self._store is None:
-            return [], 0, [], ()
+            return [], 0, [], (), 0
 
         try:
             rendered = render_page(
@@ -2748,13 +2769,23 @@ class DatabaseStages:
                 vendor_only=True,
             )
         except (PageTooLarge, UnreadablePdf, ValueError) as error:
-            return [], 0, [f"page {page.index}: {error}"], ()
+            return [], 0, [f"page {page.index}: {error}"], (), 0
 
         rows: list[ObservationCandidate] = []
         association_links: list[_VisionAssociationLink] = []
         invocations = 0
         refusals: list[str] = []
-        for reader in self._vision_readers:
+        gate = self._vision_gate
+        # The gate first, so the others know where it read a value; otherwise configured order.
+        readers = sorted(self._vision_readers, key=lambda reader: reader.config.extractor != gate)
+        gate_valued: set[tuple[tuple[int, ...], ...]] = set()
+        held_back = 0
+
+        def place(polygon: Sequence[Sequence[int]]) -> tuple[tuple[int, ...], ...]:
+            return tuple(tuple(int(value) for value in point) for point in polygon)
+
+        for reader in readers:
+            gated = gate is not None and reader.config.extractor != gate
             run = open_extraction_run(
                 session,
                 task_run_id=task_run_id,
@@ -2771,6 +2802,8 @@ class DatabaseStages:
                         if self._association is None
                         else f";fraction_bar={self._association.fraction_bar.config_hash}"
                     )
+                    # A gated reader read only what the gate found a value in: another run.
+                    + (f";gate={gate}" if gated else "")
                 ),
                 dpi=self._dpi,
             )
@@ -2785,9 +2818,17 @@ class DatabaseStages:
                 )
             if existing:
                 rows.extend(existing)
+                if not gated and gate is not None:
+                    gate_valued = {
+                        place(row.polygon) for row in existing if row.value_numerator is not None
+                    }
                 continue
 
-            for region in regions:
+            targets = regions
+            if gated:
+                targets = [region for region in regions if place(region.polygon) in gate_valued]
+                held_back += len(regions) - len(targets)
+            for region in targets:
                 cropped = self._vision_crop(rendered, region)
                 if cropped is None:
                     refusals.append(
@@ -2836,10 +2877,12 @@ class DatabaseStages:
                 )
                 invocations += recorder.persist(candidate_id=row.id, flush=False)
                 rows.append(row)
+                if gate is not None and not gated and row.value_numerator is not None:
+                    gate_valued.add(place(region.polygon))
                 association_links.append(
                     _VisionAssociationLink(row=row, source_candidate_id=region.id)
                 )
-        return rows, invocations, refusals, tuple(association_links)
+        return rows, invocations, refusals, tuple(association_links), held_back
 
     def _vision_crop(
         self, rendered: RenderedPage, candidate: _VisionRegion
