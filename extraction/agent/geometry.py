@@ -14,9 +14,14 @@ exactly what cut the label on #641; the label's whole run is what the widening r
 **Touching the crop's edge counts as cut.** A path's points are the centre line of the stroke, so
 ink runs half a line width past them: a label whose points meet the edge has lost that much of it.
 
-**Which way it runs, from where the characters sit.** A label runs up the page when its characters
-form runs advancing up the page (`extraction/annotations.glyph_runs` turned 90°) and none advancing
-across it. Which of the two vertical directions it reads in, the boxes cannot say: a character's
+**Which way it runs, from where the characters sit (#783).** A label runs up the page when its
+**longest** run of characters advances up the page (`extraction/annotations.glyph_runs` turned 90°)
+— at least two characters, and longer than any run across — **and its end is settled**. Not "no run
+across": nearly every sideways label on the client's drawing has pieces side by side, a millimetre
+line beside its bracketed inches or a fraction's parts, and that rule found 1 of 14 on the key. A
+"label" whose end is not settled has no settled direction either — the one false alarm measured on
+the #778 check sheet was a dashed line drawn as hundreds of flat pieces. Which of the two vertical
+directions it reads in, the boxes cannot say: a character's
 box is the same either way up. The drafting convention decides — aligned dimensions read from the
 bottom or the right of the sheet, so a vertical label reads up the page (90°). Where a drawing
 breaks the convention the turned crop shows the label upside down, and what a reader makes of that
@@ -119,9 +124,12 @@ def _strictly_inside(inner: Box, outer: Box) -> bool:
 
 
 def _runs_up_the_page(boxes: list[Box], glyph_gap_pt: Decimal) -> bool:
+    """Whether the label's longest run of characters goes up the page (#783)."""
     across, _ = glyph_runs(boxes, glyph_gap_pt, 0)
     up, _ = glyph_runs(boxes, glyph_gap_pt, 90)
-    return not across and bool(up)
+    longest_across = max((len(run) for run in across), default=0)
+    longest_up = max((len(run) for run in up), default=0)
+    return longest_up >= 2 and longest_up > longest_across
 
 
 def label_geometry(
@@ -160,7 +168,10 @@ def label_geometry(
         label_box=label_box,
         closed=unclosed is None,
         cut_at_edge=not _strictly_inside(label_box, crop),
+        # An unsettled "label" has no settled direction (#783).
         rotation_degrees=(
-            CONVENTIONAL_VERTICAL_DEGREES if _runs_up_the_page(boxes, reach.glyph_gap_pt) else 0
+            CONVENTIONAL_VERTICAL_DEGREES
+            if unclosed is None and _runs_up_the_page(boxes, reach.glyph_gap_pt)
+            else 0
         ),
     )
