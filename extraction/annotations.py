@@ -218,8 +218,35 @@ _LAYER_BY_SUBTYPE: Final = {
 AUTOCAD_SHX_TEXT: Final = "autocad shx text"
 
 
+#: The intent a measuring tool writes on a length it measured (PDF 32000-1 §12.5.6.7, `/IT`).
+#: Bluebeam's measurement lines carry it, with the length and its explanation in `/Contents`.
+LINE_DIMENSION_INTENT: Final = "LineDimension"
+
+
+def _name(value: object) -> str:
+    """A PDF name without its slash, or `""` when there is none."""
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name
+    return str(value).lstrip("/").strip("'") if value is not None else ""
+
+
 def _layer_of(annotation: dict[str, Any], subtype: str) -> DrawingLayer:
-    """Which authority an annotation carries: its subtype, except AutoCAD's own text notes."""
+    """Which authority an annotation carries: its subtype, except AutoCAD's own text notes and a
+    reviewer's measurement lines.
+
+    **A measurement line with text is the reviewer's markup** (#805). On the first real set the
+    reviewer drew 60 Bluebeam lines whose text is what they measured — `N"(Including fillers on both
+    sides)` — and folded into `OTHER` they were never read. A line with no text says nothing and
+    stays `OTHER`. As markup it has no side (`app/evidence/sides.py`, #802): what a reviewer measured
+    is never the architect's or the vendor's number.
+    """
+    if (
+        subtype == "Line"
+        and _name(annotation.get("IT")) == LINE_DIMENSION_INTENT
+        and (_text(annotation.get("Contents")) or "").strip()
+    ):
+        return DrawingLayer.REVIEWER_MARKUP
     if subtype == "Square" and any(
         (_text(annotation.get(key)) or "").strip().lower() == AUTOCAD_SHX_TEXT
         for key in ("T", "Subj")
@@ -259,6 +286,10 @@ class MarkupNote:
 
     annotation_index: int
     """Where in `/Annots` it came from, so a reader can go back to the file and check."""
+
+    intent: str | None = None
+    """`/IT` as the file names it — `LineDimension` on a measurement line (#805) — or `None` when it
+    names none, which is the ordinary case for a note."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -479,11 +510,7 @@ def _rotation_degrees(annotation: dict[str, Any]) -> int:
 
 def _subtype(annotation: dict[str, Any]) -> str:
     """The `/Subtype` name without its slash, or `""` when it has none."""
-    value = annotation.get("Subtype")
-    name = getattr(value, "name", None)
-    if isinstance(name, str):
-        return name
-    return str(value).lstrip("/").strip("'") if value is not None else ""
+    return _name(annotation.get("Subtype"))
 
 
 def _appearance_transform(
@@ -1162,6 +1189,7 @@ def _read_layers(
                     image_extent=image_extent,
                     rotation_degrees=rotation,
                     annotation_index=index,
+                    intent=_name(annotation.get("IT")) or None,
                 )
                 if layer is DrawingLayer.REVIEWER_MARKUP:
                     markup.append(note)

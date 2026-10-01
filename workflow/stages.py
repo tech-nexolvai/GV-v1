@@ -128,6 +128,7 @@ from extraction.agent.tools import (
 )
 from extraction.agent.trigger import AmbiguityReason, RegionContext, evaluate_trigger
 from extraction.annotations import (
+    LINE_DIMENSION_INTENT,
     OutlinedTextRegion,
     PageLayers,
     StackedFraction,
@@ -1631,6 +1632,25 @@ class DatabaseStages:
                         + len(agent_rows)
                         + len(glyph_rows),
                         "markup_candidates": len(markup_rows),
+                        # The reviewer's measurement lines (#805): read as markup when they carry
+                        # text, set aside when they carry none. `None` when the annotations could
+                        # not be read at all.
+                        "measurement_lines": (
+                            None
+                            if layers is None
+                            else sum(
+                                1 for note in layers.markup if note.intent == LINE_DIMENSION_INTENT
+                            )
+                        ),
+                        "measurement_lines_without_text": (
+                            None
+                            if layers is None
+                            else sum(
+                                1
+                                for note in layers.other_layer_notes
+                                if note.intent == LINE_DIMENSION_INTENT
+                            )
+                        ),
                         # The vendor's exact CAD text (AutoCAD SHX notes): zero on a drawing that
                         # was printed to PDF rather than exported, which is every drawing so far.
                         "cad_text_candidates": len(cad_text_rows),

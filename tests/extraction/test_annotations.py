@@ -922,3 +922,49 @@ def test_a_page_with_only_vendor_text_is_readable() -> None:
     layers = _markup_only(_pdf(annotations=[_cad_text()]))
 
     assert layers.readable
+
+
+def _measurement_line(
+    text: str | None, *, intent: bytes = b"/LineDimension", rect: bytes = b"[40 120 200 140]"
+) -> bytes:
+    """A reviewer's Bluebeam measurement: a `/Line` with an intent, its length in `/Contents`."""
+    contents = b"" if text is None else b" /Contents (" + text.encode("latin-1") + b")"
+    return (
+        b"<< /Type /Annot /Subtype /Line /Rect "
+        + rect
+        + b" /L [50 130 190 130] /IT "
+        + intent
+        + contents
+        + b" /T ("
+        + KNOWN_AUTHOR.encode("latin-1")
+        + b") >>"
+    )
+
+
+def test_a_reviewers_measurement_line_with_text_is_their_markup() -> None:
+    """**#805.** The client's reviewer measured 60 lengths this way, and none was ever read. Outcome:
+    the line's text is reviewer markup, exactly as the file holds it, with its author and intent."""
+    layers = _markup_only(_pdf(annotations=[_measurement_line('24"(field)')]))
+
+    (note,) = layers.markup
+    assert (note.text, note.subtype, note.intent) == ('24"(field)', "Line", "LineDimension")
+    assert note.layer is DrawingLayer.REVIEWER_MARKUP
+    assert note.author == KNOWN_AUTHOR
+    assert layers.other_layer_notes == ()
+
+
+def test_a_measurement_line_with_no_text_says_nothing_and_stays_other() -> None:
+    layers = _markup_only(_pdf(annotations=[_measurement_line(None)]))
+
+    assert layers.markup == ()
+    assert [(note.subtype, note.intent) for note in layers.other_layer_notes] == [
+        ("Line", "LineDimension")
+    ]
+
+
+def test_a_line_that_is_not_a_measurement_stays_other_even_with_text() -> None:
+    """An arrow carries `LineArrow`, and its words are a pointer, not a length."""
+    layers = _markup_only(_pdf(annotations=[_measurement_line("see note", intent=b"/LineArrow")]))
+
+    assert layers.markup == ()
+    assert [note.intent for note in layers.other_layer_notes] == ["LineArrow"]

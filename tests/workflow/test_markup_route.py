@@ -51,6 +51,7 @@ from tests.extraction.test_annotations import (
     _appearance,
     _cad_text,
     _free_text,
+    _measurement_line,
     _pdf,
     _stamp,
 )
@@ -584,3 +585,34 @@ def test_millimetres_over_inches_in_a_pasted_drawing_are_valued_by_their_inches(
     assert row.corroboration_lane == CorroborationLane.DUAL_UNIT.value
     assert result.payload["text_set_aside"] == {}
     assert result.payload["stacked_fractions_read"] == 0
+
+
+# ---------------------------------------------------------------------------
+# The reviewer's measurement lines (#805)
+# ---------------------------------------------------------------------------
+
+
+def test_a_reviewers_measurement_line_is_recorded_as_markup_with_no_side(
+    session: Session, store: LocalStore
+) -> None:
+    """**#805.** One measured line with text, one with none. Outcome: the measured one is a markup
+    candidate — its exact text, its value, its author — and has no side (#802), so it can never be
+    either drawing's number; the page counts one read and one set aside."""
+    from app.evidence.sides import ReadingSides, SideRefusal, SideRefusalReason
+
+    data = _pdf(annotations=[_measurement_line('24"(field)'), _measurement_line(None)])
+    revision = _revision(session, store, data=data)
+    session.commit()
+    (result,) = _stages(store).extract_pages(session, revision.id)
+    session.commit()
+
+    (row,) = _markup_rows(session)
+    assert row.raw_text == '24"(field)'
+    assert (row.value_numerator, row.value_denominator, row.unit) == (24, 1, "in")
+    assert row.source_author == KNOWN_AUTHOR
+    side = ReadingSides(session).of(row)
+    assert isinstance(side, SideRefusal) and side.reason is SideRefusalReason.MARKUP
+    assert (
+        result.payload["measurement_lines"],
+        result.payload["measurement_lines_without_text"],
+    ) == (1, 1)
