@@ -74,9 +74,9 @@ def _parameter(name: str, value: int | Fraction) -> ResolvedParameter:
     )
 
 
-#: Every bound the rule needs, supplied per test. **Not defaults** — CAB-FILLER-001 v2 has none, by
-#: the same Q21 reasoning that removed them from the rule, so each one arrives here explicitly and a
-#: test that wants a different bound says so.
+#: Every bound the rule needs, supplied per test, at the GLOBAL layer. The filler pair matches the
+#: rule's own defaults (Raj's email, #674); the cabinet bounds have none, so each arrives here
+#: explicitly and a test that wants a different bound says so.
 def _parameters(**overrides: int | Fraction) -> dict[str, ResolvedParameter]:
     values: dict[str, int | Fraction] = {
         "filler_min": 1,
@@ -170,9 +170,17 @@ def test_rule_declares_the_client_sources_bounds_and_exact_operation() -> None:
     for run in ("architectural_fillers", "shop_fillers", "architectural_cabinets", "shop_cabinets"):
         assert rule.inputs[run].cardinality is Cardinality.MANY
 
-    # v1 shipped filler_min 1" / filler_max 2" — numbers CLIENT_FACTS Q21 records at three
-    # different values — so every package was checked against bounds nobody confirmed.
-    assert [name for name, p in rule.parameters.items() if p.default is not None] == []
+    # The filler bounds follow Raj's written rule — his email's 1" and 2" — by the admin's decision
+    # of 2026-10-02 (#674), each with a note that his deck's worked examples use 2" and 3". The
+    # per-type cabinet bounds, which he has never given, still have no default at all.
+    defaults = {name: p.default for name, p in rule.parameters.items() if p.default is not None}
+    assert defaults == {
+        "filler_min": Quantity(value=1, unit=Unit.INCH),
+        "filler_max": Quantity(value=2, unit=Unit.INCH),
+    }
+    for name in ("filler_min", "filler_max"):
+        note = rule.parameters[name].note
+        assert note is not None and "Raj" in note and "#674" in note
 
 
 def test_the_first_worked_example_runs_as_a_check() -> None:
@@ -388,3 +396,43 @@ def test_operation_still_refuses_malformed_modes_and_bounds() -> None:
             filler_max=_inch(1),
             allow_asymmetric=0,
         )
+
+
+def test_a_finding_on_rajs_default_bounds_says_his_examples_differ() -> None:
+    """**#674, the admin's decision of 2026-10-02.** Outcome: a check that used Raj's written 1"/2"
+    says, on the finding itself, that his worked examples use 2"/3" and that we are asking him."""
+    finding = execute(publish(_load_rule()), _operands(proposed_fillers=(2, 2)), _parameters())
+
+    assert any(note.startswith("filler_min: 1\" is Raj's written rule") for note in finding.notes)
+    assert any(note.startswith("filler_max: 2\" is Raj's written rule") for note in finding.notes)
+
+
+def test_a_bound_a_reviewer_set_carries_no_doubt() -> None:
+    """Outcome: once a project states its own bound, the note about the default is not printed —
+    the reviewer chose that number, and the doubt was about the default."""
+    from dataclasses import replace
+
+    parameters = _parameters()
+    for name in ("filler_min", "filler_max"):
+        parameters[name] = replace(parameters[name], layer=ParameterLayer.PROJECT)
+
+    finding = execute(publish(_load_rule()), _operands(proposed_fillers=(2, 2)), parameters)
+
+    assert not any(note.startswith(("filler_min:", "filler_max:")) for note in finding.notes)
+
+
+def test_bounds_other_than_the_default_carry_no_doubt() -> None:
+    """Raj's worked-example values, supplied as the global bounds, are not the rule's default."""
+    finding = execute(
+        publish(_load_rule()),
+        _operands(
+            field=82,
+            design=90,
+            design_fillers=(3, 3),
+            proposed_fillers=(3, 3),
+            design_cabinets=(24, 36, 24),
+        ),
+        _parameters(filler_min=2, filler_max=3),
+    )
+
+    assert not any(note.startswith(("filler_min:", "filler_max:")) for note in finding.notes)

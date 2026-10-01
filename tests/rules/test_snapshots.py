@@ -403,3 +403,35 @@ def test_two_different_rules_may_share_a_version() -> None:
     assert len(store) == 2
     assert store.latest("CT-WIDTH-001") is not None
     assert store.latest("CT-DEPTH-002") is not None
+
+
+def test_a_parameter_without_a_note_hashes_as_it_did_before_notes_existed() -> None:
+    """**Published snapshots must not move.** `note` was added to `Parameter` after rules were
+    published (#674); while unset it is left out of the canonical bytes, so a rule that gives none
+    hashes exactly as it always has. One that gives a note is new content, and hashes differently.
+    """
+    from rules.schema import Parameter, Quantity
+
+    plain = _rule(parameters={"filler_min": Parameter(default=Quantity(value=1, unit=Unit.INCH))})
+    noted = _rule(
+        parameters={
+            "filler_min": Parameter(
+                default=Quantity(value=1, unit=Unit.INCH), note="Raj's written rule (#674)"
+            )
+        }
+    )
+
+    assert "note" not in json.loads(canonical_json(plain))["parameters"]["filler_min"]
+    assert json.loads(canonical_json(noted))["parameters"]["filler_min"]["note"] == (
+        "Raj's written rule (#674)"
+    )
+    assert compute_snapshot_id(plain) != compute_snapshot_id(noted)
+
+
+def test_a_blank_parameter_note_is_refused() -> None:
+    from pydantic import ValidationError
+
+    from rules.schema import Parameter
+
+    with pytest.raises(ValidationError, match="must say something"):
+        Parameter(note="   ")

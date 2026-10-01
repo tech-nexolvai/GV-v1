@@ -1,5 +1,5 @@
 id: CAB-FILLER-001
-version: 2.0.0
+version: 2.1.0
 product_type: cabinet
 check_type: arch_vs_shop
 severity: FLAG
@@ -67,18 +67,35 @@ inputs:
     scope: same_assembly
     cardinality: many
 
-# **Not one of these carries a default, and that is the point.** CLIENT_FACTS Q21 records the
-# filler bounds at three different values — the email said 1"/2", the 2026-08-25 call said 3-4",
-# Raj's worked examples use 2"/3" — and the per-type cabinet bounds have never been given at all
-# ("we will provide the complete list we typically follow for the final run"). Version 1 shipped
-# 1"/2" as defaults, so every package was checked against numbers nobody confirmed. A parameter no
-# layer supplies is NOT_FOUND (#67, AGENTS.md §2.4), which sends a reviewer to find the number
-# rather than handing them a confident verdict computed from a guess.
+# **The filler bounds follow Raj's written rule** — the admin's decision, 2026-10-02: stick with what
+# Raj said. His email states the rule: "Keep minimum filler width as 1" and create a mutable variable
+# which can be adjusted later", and for the maximum "please use 2"" (CLIENT_FACTS Q8, Q21). His
+# 2026-09-21 deck's two worked examples use 2" and 3" instead; a number inside an example does not
+# replace a rule he wrote, so the defaults are 1" and 2", every finding that relies on them says the
+# examples differ, and Raj is asked which is right (#674). Global, so a project or run value — Raj's
+# "mutable variable" — replaces them, and the override report shows it.
+#
+# The per-type cabinet bounds still carry no default: Raj has never given them ("we will provide the
+# complete list we typically follow for the final run"). A parameter no layer supplies is NOT_FOUND
+# (#67, AGENTS.md §2.4), which sends a reviewer to find the number rather than handing them a
+# confident verdict computed from a guess.
 parameters:
   filler_min:
-    scope: project
+    default:
+      value: "1"
+      unit: in
+    scope: global
+    note: >-
+      1" is Raj's written rule (his email: "Keep minimum filler width as 1""). The worked examples
+      in his 2026-09-21 deck use 2" — awaiting his confirmation (#674).
   filler_max:
-    scope: project
+    default:
+      value: "2"
+      unit: in
+    scope: global
+    note: >-
+      2" is Raj's written rule (his email: "please use 2""). The worked examples in his 2026-09-21
+      deck use 3" — awaiting his confirmation (#674).
   single_door_cab_width_min:
     scope: project
   single_door_cab_width_max:
