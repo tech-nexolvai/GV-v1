@@ -834,3 +834,31 @@ export async function downloadLayoutProposalCrop(
 
 export type ApprovalOut =
   paths['/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve']['post']['responses'][201]['content']['application/json'];
+
+export async function downloadDocument(
+  projectId: string,
+  packageId: string,
+  documentVersionId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/documents/${documentVersionId}/download`,
+    { headers: { Accept: 'application/pdf,*/*;q=0.8' } }
+  );
+
+  if (!response.ok) {
+    const isJson = response.headers.get('content-type')?.includes('application/json');
+    let envelope: ErrorEnvelope;
+    if (isJson) {
+      envelope = await response.json();
+    } else {
+      envelope = {
+        error: 'Download Failed',
+        message: `The document could not be downloaded (HTTP ${response.status}).`,
+        request_id: '',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+
+  return response.blob();
+}

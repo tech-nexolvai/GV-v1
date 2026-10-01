@@ -216,3 +216,23 @@
   .shell__evidence > * { animation: none; }
   .shell__evidence { transition: none; }
 }
+
+/* ── Resizer ───────────────────────────────────────── */
+.shell__resizer {
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 10;
+  transition: background 0.2s;
+  order: 2; /* Between sidebar/evidence and main based on data-style */
+}
+[data-style="ide"] .shell__resizer {
+  order: 2; /* In IDE mode, Evidence is 2, Main is 3. So Evidence (Left), Resizer, Main (Right) */
+}
+[data-style="ide"] .shell__evidence {
+  order: 1; /* override order so Evidence is before resizer */
+}
+.shell__resizer:hover, .shell__resizer:active {
+  background: var(--border-strong);
+}

@@ -24,6 +24,7 @@ export function AppShell({
   onNewPackage,
 }: AppShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mainWidth, setMainWidth] = useState<number | null>(null);
   const showEvidencePanel = Boolean(evidencePanel);
 
   return (
@@ -46,6 +47,7 @@ export function AppShell({
         <main
           className="shell__main"
           id="main-content"
+          style={{ width: mainWidth ? `${mainWidth}px` : undefined, flex: mainWidth ? 'none' : undefined }}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => e.preventDefault()}
         >
@@ -61,6 +63,24 @@ export function AppShell({
             {children}
           </div>
         </main>
+
+        <div 
+          className="shell__resizer" 
+          onMouseDown={(e) => {
+            const startX = e.clientX;
+            const startWidth = mainWidth || 480;
+            const onMouseMove = (moveEvent: MouseEvent) => {
+              const delta = startX - moveEvent.clientX; // Left side gets wider if dragging left, so right pane (main) gets wider if delta is positive
+              setMainWidth(Math.max(360, Math.min(800, startWidth + delta)));
+            };
+            const onMouseUp = () => {
+              document.removeEventListener('mousemove', onMouseMove);
+              document.removeEventListener('mouseup', onMouseUp);
+            };
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+          }}
+        />
 
         {/* Evidence panel — slides in from right */}
         <div
