@@ -39,14 +39,14 @@ import os
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from io import BytesIO
-from typing import Protocol, TypeVar, cast
+from typing import Final, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from opentelemetry.trace import Status, StatusCode
-from sqlalchemy import inspect, select
+from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
 from app.api.documents import storage_key
@@ -56,6 +56,7 @@ from app.evidence.record import (
     NOT_A_SINGLE_VALUE_FLAG,
     UNKNOWN_UNIT_FLAG,
     UNPARSED_FLAG,
+    dual_unit_lane,
     open_extraction_run,
     persist_manifest,
     record_associations,
@@ -85,7 +86,7 @@ from app.models.package import Package, PackageRevision
 from app.models.parameters import declared_defaults, load_parameter_sets
 from app.models.rules import RuleDefinition
 from app.models.rules import RuleSnapshot as RuleSnapshotRow
-from app.models.runs import ExtractionRun, TaskRun
+from app.models.runs import ExtractionRun, ModelInvocation, TaskRun
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
 from app.runs.invocations import (
@@ -98,6 +99,7 @@ from app.runs.rates import call_cost_micros, rates_from_environment
 from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
+from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
@@ -387,6 +389,70 @@ def _ambiguity_reasons(row: ObservationCandidate) -> frozenset[AmbiguityReason]:
     return frozenset(reasons)
 
 
+#: Where a deployment states what the AI readers may spend on one drawing set, in US dollars.
+AI_BUDGET_ENV: Final = "GV_AI_BUDGET_PER_SET_USD"
+
+#: The admin's cap (#757, decided 2026-10-01): $3 for one drawing set. Measured use is at most about
+#: $1.60 per 1,000 labels — under a dollar for a set the size of the client's 17 pages — so the cap
+#: never limits ordinary work. It stops a runaway: once a set has spent it, every label left goes to
+#: a reviewer without a model reading, and the page result says so.
+DEFAULT_AI_BUDGET_USD: Final = Decimal(3)
+
+
+def ai_budget_from_environment(environ: Mapping[str, str] = os.environ) -> Decimal:
+    """The deployment's stated cap, or the admin's $3 where it states none."""
+    raw = environ.get(AI_BUDGET_ENV, "").strip()
+    if not raw:
+        return DEFAULT_AI_BUDGET_USD
+    try:
+        value = Decimal(raw)
+    except InvalidOperation as error:
+        raise ValueError(f"{AI_BUDGET_ENV} must be an amount in dollars, not {raw!r}") from error
+    if not value.is_finite() or value <= 0:
+        raise ValueError(f"{AI_BUDGET_ENV} must be more than zero dollars, not {raw!r}")
+    return value
+
+
+@dataclass(slots=True)
+class _SpendMeter:
+    """What the AI readers have spent on one drawing set, against its cap (#757).
+
+    Counted from each call's recorded cost. A call whose model has no stated price has no cost to
+    count (#700 keeps that unknown rather than zero), so it is counted by number instead and reported:
+    the cap holds only where the deployment's price file names its models.
+    """
+
+    cap_micros: int
+    spent_micros: int = 0
+    unpriced_calls: int = 0
+
+    def add(self, cost_micros: int | None) -> None:
+        if cost_micros is None:
+            self.unpriced_calls += 1
+        else:
+            self.spent_micros += cost_micros
+
+    @property
+    def reached(self) -> bool:
+        return self.spent_micros >= self.cap_micros
+
+    @property
+    def reason(self) -> str:
+        cap = Decimal(self.cap_micros) / 1_000_000
+        return (
+            f"this drawing set has spent its AI budget of ${cap:.2f}, so the label goes to a "
+            "reviewer without a model reading"
+        )
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "cap_usd": str(Decimal(self.cap_micros) / 1_000_000),
+            "spent_usd": str(Decimal(self.spent_micros) / 1_000_000),
+            "calls_without_a_price": self.unpriced_calls,
+            "reached": self.reached,
+        }
+
+
 @dataclass(slots=True)
 class _BufferedVisionRecorder:
     """Collect adapter attempt records until the workflow can persist them with run context."""
@@ -395,6 +461,8 @@ class _BufferedVisionRecorder:
     extraction_run_id: UUID
     request_candidate_id: UUID
     crop_artifact_id: UUID | None = None
+    meter: _SpendMeter | None = None
+    """The drawing set's spend, which every call persisted here adds to."""
     _invocations: list[NovaInvocation] = field(init=False, default_factory=list)
     _rejections: list[ValidationRejection] = field(init=False, default_factory=list)
 
@@ -411,7 +479,7 @@ class _BufferedVisionRecorder:
     def persist(self, *, candidate_id: UUID | None, flush: bool = True) -> int:
         written = 0
         for invocation in self._invocations:
-            record_model_invocation(
+            stored = record_model_invocation(
                 self.session,
                 InvocationRecord(
                     extraction_run_id=self.extraction_run_id,
@@ -449,6 +517,8 @@ class _BufferedVisionRecorder:
                 ),
                 flush=flush,
             )
+            if self.meter is not None:
+                self.meter.add(stored.cost_micros)
             written += 1
         return written
 
@@ -722,6 +792,7 @@ class _AgentReads:
     crops: RegionCrops
     readers: Mapping[VlmRole, _VisionReader]
     open_run: Callable[[_VisionReader], UUID]
+    meter: _SpendMeter | None = None
     recorders: list[tuple[_BufferedVisionRecorder, list[DomainCandidate]]] = field(
         default_factory=list
     )
@@ -731,11 +802,14 @@ class _AgentReads:
         reader = self.readers.get(arguments.role)
         if reader is None:
             return RetryableToolFailure(f"no {arguments.role.value} reader is configured")
+        if self.meter is not None and self.meter.reached:
+            return RetryableToolFailure(self.meter.reason)
         request_candidate_id = uuid4()
         recorder = _BufferedVisionRecorder(
             session=self.session,
             extraction_run_id=self.open_run(reader),
             request_candidate_id=request_candidate_id,
+            meter=self.meter,
         )
         produced: list[DomainCandidate] = []
         self.recorders.append((recorder, produced))
@@ -876,6 +950,7 @@ class DatabaseStages:
         glyph_route: GlyphRoute | None = None,
         reading_agent: ReadingAgentSettings | None = None,
         vision_gate: str | None = None,
+        ai_budget_usd: Decimal | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -928,6 +1003,13 @@ class DatabaseStages:
                 "reader"
             )
         self._vision_gate = vision_gate
+        # **What the AI readers may spend on one drawing set (#757)**: the admin's $3 unless the
+        # deployment states its own. Metered per `extract_pages`, from the set's recorded calls.
+        budget = ai_budget_from_environment() if ai_budget_usd is None else ai_budget_usd
+        if not budget.is_finite() or budget <= 0:
+            raise ValueError("the AI budget for a drawing set must be more than zero dollars")
+        self._ai_budget_micros = int(budget * 1_000_000)
+        self._meter: _SpendMeter | None = None
         if bounded_agent is None and reading_agent is None and bounded_agent_planner is not None:
             raise ValueError("bounded_agent_planner cannot be supplied without a bounded_agent")
         if bounded_agent is not None and reading_agent is not None:
@@ -943,7 +1025,7 @@ class DatabaseStages:
         if reading_agent is not None:
             self._agent_readers = _agent_readers(reading_agent, self._vision_readers, dpi)
         # **The shape reader (#756), off unless a deployment points it at a template set.** Its
-        # readings are recorded for a reviewer to confirm and never sealed; see `workflow/glyph_route`.
+        # readings are confirmed only by a second witness (#756 D2); see `workflow/glyph_route`.
         self._glyph_route = glyph_route
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
@@ -1094,6 +1176,22 @@ class DatabaseStages:
             dpi=self._dpi,
         )
         layout_discriminators = _layout_discriminators(session)
+        # **The drawing set's AI spend so far** (#757): every call this task's runs have recorded,
+        # so a stage run again after a failure carries on from what was already spent.
+        with session.no_autoflush:
+            spent, unpriced = session.execute(
+                select(
+                    func.coalesce(func.sum(ModelInvocation.cost_micros), 0),
+                    func.count().filter(ModelInvocation.cost_micros.is_(None)),
+                )
+                .join(ExtractionRun, ModelInvocation.extraction_run_id == ExtractionRun.id)
+                .where(ExtractionRun.task_run_id == task_run.id)
+            ).one()
+        self._meter = _SpendMeter(
+            cap_micros=self._ai_budget_micros,
+            spent_micros=int(spent),
+            unpriced_calls=int(unpriced),
+        )
 
         results: list[PageResult] = []
         for version, key, sha256, _ in documents:
@@ -1403,8 +1501,10 @@ class DatabaseStages:
                     data=data,
                     page=page,
                     task_run_id=run.task_run_id,
+                    # The shape reader's boxes too (#756 D2): a vision reading of the same box is the
+                    # second witness a glyph reading may be confirmed by.
                     regions=(
-                        tuple(_VisionRegion.of(row) for row in vector_rows + ocr_rows)
+                        tuple(_VisionRegion.of(row) for row in vector_rows + ocr_rows + glyph_rows)
                         + fragment_regions
                     ),
                     stacked_fractions=page_stacked,
@@ -1420,6 +1520,7 @@ class DatabaseStages:
                     + cad_text_rows
                     + stamp_text_rows
                     + vision_rows
+                    + glyph_rows
                 ),
             )
             agent = self._run_bounded_agent_for_ambiguous_regions(
@@ -1523,6 +1624,17 @@ class DatabaseStages:
                         # The shape reader (#756): `None` when it did not run on this page, which
                         # is not the same fact as its having read nothing.
                         "glyph_readings": None if glyph_abstentions is None else len(glyph_rows),
+                        # Of those, the stacked fractions pre-filled for a person (#756 D3).
+                        "glyph_stacked_fractions": (
+                            None
+                            if glyph_abstentions is None
+                            else sum(
+                                STACKED_FRACTION_FLAG in row.ambiguity_flags for row in glyph_rows
+                            )
+                        ),
+                        # What the AI readers have spent on this drawing set so far, against its
+                        # cap (#757): once reached, labels go to a reviewer without a model reading.
+                        "ai_budget": None if self._meter is None else self._meter.as_payload(),
                         "glyph_abstentions": (
                             None if glyph_abstentions is None else sum(glyph_abstentions.values())
                         ),
@@ -1868,10 +1980,11 @@ class DatabaseStages:
         **The trigger's reasons now include the file's geometry** — cut off at the crop's edge,
         sideways, a stacked fraction — each from `RegionFacts`, which holds no reading's text.
 
-        **The shape reader's readings are not handed over** (#756 phase E: they reach neither
-        corroboration nor the agent until the admin decides D2). The decision table can take one as
-        a witness — `RegionFacts.shape_reading`, which can turn a proposal into an abstention and
-        never the reverse — and it stays `None` here until that decision.
+        **The shape reader's readings are not handed to the agent.** The admin's #756 D2
+        (2026-10-01) decided what confirms one — a second witness, through corroboration — not what
+        the agent may do with it. The decision table can take one as a witness —
+        `RegionFacts.shape_reading`, which can turn a proposal into an abstention and never the
+        reverse — and it stays `None` here until that is built and measured on its own.
         """
         outcome = _AgentPageOutcome()
         if (
@@ -2011,6 +2124,7 @@ class DatabaseStages:
                     crops=crops,
                     readers=self._agent_readers,
                     open_run=open_run,
+                    meter=self._meter,
                 )
                 graph = BoundedAgentGraph(
                     limits=settings.limits,
@@ -2646,9 +2760,16 @@ class DatabaseStages:
     ]:
         """Read the planned regions' labels from their shapes; record each reading; count the rest.
 
-        **Recorded, never sealed.** `corroboration_status` stays unset and the rows are not passed
-        to cross-route corroboration or the bounded agent: until the admin decides what a glyph
-        reading may seal (#756 D2), it is a value a reviewer confirms, pre-filled.
+        **Confirmed only by a second witness** — the admin's decision (#756 D2, 2026-10-01). A
+        mislabelled template would repeat its mistake on every sheet, and a witness that did not
+        use the templates is what catches it. So a reading is never confirmed alone: the label's
+        own millimetres agreeing with its inches (the dual lane, set here), or another reader
+        agreeing on the same box (the page asks the vision readers about each reading's box, and
+        cross-route corroboration decides). Otherwise it is a value a reviewer confirms, pre-filled.
+        Its rows are not given to the bounded agent.
+
+        **A stacked fraction is flagged** (#756 D3): read and pre-filled, never confirmed by any
+        number of readers (#726).
 
         **Its own extraction run**, keyed on the template set's hash, so a reading made with one set
         is never mistaken for a reading made with another. A re-run finds its rows and reads nothing.
@@ -2713,7 +2834,11 @@ class DatabaseStages:
                 polygon=[[corner.x, corner.y] for corner in corners],
                 coordinate_space="image",
                 confidence=None,
-                ambiguity_flags=[],
+                ambiguity_flags=[STACKED_FRACTION_FLAG] if reading.stacked else [],
+            )
+            # Set before the insert: the table is append-only (see `record_candidates`).
+            row.corroboration_status, row.corroboration_lane = dual_unit_lane(
+                row, run=run, page_index=page.index
             )
             session.add(row)
             rows.append(row)
@@ -2843,11 +2968,17 @@ class DatabaseStages:
                         f"{pre_call_refusal}: crop skipped before model call"
                     )
                     continue
+                if self._meter is not None and self._meter.reached:
+                    refusals.append(
+                        f"page {page.index}: {reader.config.extractor}: {self._meter.reason}"
+                    )
+                    continue
                 request_candidate_id = uuid4()
                 recorder = _BufferedVisionRecorder(
                     session=session,
                     extraction_run_id=run.id,
                     request_candidate_id=request_candidate_id,
+                    meter=self._meter,
                 )
                 request = NovaRequest(
                     candidate_id=str(request_candidate_id),
@@ -3965,7 +4096,7 @@ def region_facts(
         cut_at_edge=cut_at_edge,
         rotation_degrees=rotation_degrees,
         stacked_fraction=polygon is not None and stacked(polygon),
-        # Not handed over until the admin decides #756 D2; see the caller's docstring.
+        # Not handed to the agent; see the caller's docstring.
         shape_reading=None,
         other_route_values=witnesses,
     )

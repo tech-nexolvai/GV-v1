@@ -188,6 +188,9 @@ class GlyphReading:
 
     box: Box
     template_set: str
+    stacked: bool = False
+    """Composed across a fraction bar: a stacked fraction, which a reviewer always confirms (#726).
+    The admin's decision for this reader (#756 D3, 2026-10-01): read it and pre-fill it, never more."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -686,25 +689,30 @@ def _value(text: str) -> Measurement | None:
 
 def _attempt(
     paths: Sequence[VectorPath], rotation: int, templates: TemplateSet, settings: ReaderSettings
-) -> tuple[str | None, str]:
-    """Read the label turned upright from `rotation`: the text, or `None` and why not."""
+) -> tuple[str | None, str, bool]:
+    """Read the label turned upright from `rotation`: the text, or `None` and why not, and whether
+    it was composed across a fraction bar."""
     upright = [_turned(path, _UPRIGHT[rotation]) for path in paths]
     glyphs = _matched(upright, templates, settings)
     unmatched = sum(glyph.label is None for glyph in glyphs)
     if unmatched:
-        return None, (
-            f"{unmatched} of the label's {len(glyphs)} characters "
-            f"{'has' if unmatched == 1 else 'have'} not been labelled yet, or look like more than "
-            "one labelled shape"
+        return (
+            None,
+            (
+                f"{unmatched} of the label's {len(glyphs)} characters "
+                f"{'has' if unmatched == 1 else 'have'} not been labelled yet, or look like more than "
+                "one labelled shape"
+            ),
+            False,
         )
     if any(glyph.label == SIDEWAYS for glyph in glyphs):
-        return None, "the characters are turned on their side in this direction"
+        return None, "the characters are turned on their side in this direction", False
     if any(glyph.label == NOT_A_CHARACTER for glyph in glyphs):
-        return None, "a piece of the drawing sits inside the label"
+        return None, "a piece of the drawing sits inside the label", False
     text, layout = _compose(glyphs)
     if text is None:
-        return None, layout or "the characters could not be put in order"
-    return text, ""
+        return None, layout or "the characters could not be put in order", False
+    return text, "", any(glyph.label == _BAR for glyph in glyphs)
 
 
 def read_label(
@@ -744,16 +752,16 @@ def read_label(
             box=box,
         )
 
-    upright, why = _attempt(paths, 0, templates, settings)
+    upright, why, upright_stacked = _attempt(paths, 0, templates, settings)
     if upright is not None:
         value = _value(upright)
         if value is not None:
-            return GlyphReading(upright, value, 0, box, templates.set_hash)
+            return GlyphReading(upright, value, 0, box, templates.set_hash, upright_stacked)
         why = f"it reads as {upright!r}, which is not one dimension"
 
     # The drafting convention first; the other way only where the convention fails and it does not.
-    conventional, conventional_why = _attempt(paths, 90, templates, settings)
-    opposite, _ = _attempt(paths, 270, templates, settings)
+    conventional, conventional_why, conventional_stacked = _attempt(paths, 90, templates, settings)
+    opposite, _, opposite_stacked = _attempt(paths, 270, templates, settings)
     conventional_value = None if conventional is None else _value(conventional)
     opposite_value = None if opposite is None else _value(opposite)
     if conventional_value is not None and opposite_value is not None:
@@ -765,7 +773,11 @@ def read_label(
             box=box,
         )
     if conventional_value is not None and conventional is not None:
-        return GlyphReading(conventional, conventional_value, 90, box, templates.set_hash)
+        return GlyphReading(
+            conventional, conventional_value, 90, box, templates.set_hash, conventional_stacked
+        )
     if opposite_value is not None and opposite is not None:
-        return GlyphReading(opposite, opposite_value, 270, box, templates.set_hash)
+        return GlyphReading(
+            opposite, opposite_value, 270, box, templates.set_hash, opposite_stacked
+        )
     return GlyphAbstention(reason=why or conventional_why, box=box)

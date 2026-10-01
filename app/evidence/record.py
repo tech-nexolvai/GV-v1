@@ -59,6 +59,7 @@ __all__ = [
     "NOT_A_SINGLE_VALUE_FLAG",
     "UNKNOWN_UNIT_FLAG",
     "UNPARSED_FLAG",
+    "dual_unit_lane",
     "open_extraction_run",
     "persist_manifest",
     "record_associations",
@@ -591,6 +592,19 @@ def _corroboration(
         # already refuses those, and this is the belt to that braces.
         return None, None
     return result.status.value, result.lane.value
+
+
+def dual_unit_lane(
+    row: ObservationCandidate, *, run: ExtractionRun, page_index: int
+) -> tuple[str | None, str | None]:
+    """What the dual-unit lane makes of a row a route built itself, as `(status, lane)`.
+
+    For the shape reader (#756), whose rows `record_candidates` does not write. A label that states
+    its millimetres and its bracketed inches is its own second witness when the two agree: the
+    admin's decision on what a glyph reading may be confirmed by (#756 D2, 2026-10-01) names it.
+    """
+    _measurement, _flags, dual = _parse(row.raw_text)
+    return _corroboration(row, dual=dual, run=run, page_index=page_index)
 
 
 def _dual(text: str) -> DualDimension | None:

@@ -218,6 +218,8 @@ def test_a_stacked_fraction_is_composed_from_geometry_never_as_a_whole_number() 
     assert isinstance(reading, GlyphReading), reading
     assert reading.text == '3/4"'
     assert reading.value.exact == Fraction(3, 4)
+    # #756 D3 (2026-10-01): read and pre-filled, and marked so it is never confirmed by agreement.
+    assert reading.stacked is True
 
 
 def test_a_whole_number_and_a_fraction_read_together() -> None:
@@ -546,3 +548,12 @@ def test_matching_every_template_at_once_decides_exactly_what_one_pair_at_a_time
             )
             checked += 1
     assert checked > 30
+
+
+def test_a_label_without_a_fraction_bar_is_not_marked_stacked() -> None:
+    """The mark is earned by the bar alone: a plain label is confirmed like any other reading."""
+    paths, _ = _row('12"', 0, 0)
+    reading = _read(paths)
+
+    assert isinstance(reading, GlyphReading), reading
+    assert reading.stacked is False
