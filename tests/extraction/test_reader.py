@@ -336,3 +336,30 @@ def test_the_reader_survives_a_real_multi_page_document() -> None:
     contents = read_page_contents(REAL_PDF.read_bytes(), 0, document_version_id=uuid4(), dpi=DPI)
     assert contents.texts
     assert contents.readable is True
+
+
+# ---------------------------------------------------------------------------
+# Feet and inches, read whole (formats phase 1)
+# ---------------------------------------------------------------------------
+
+#: `2' -5"` written as one string with a space in it, as the client's stamps write their labels.
+FEET_AND_INCHES = _pdf(b"BT /F1 10 Tf 1 0 0 1 20 70 Tm (2' -5\") Tj ET\n1 w 20 40 m 120 40 l S\n")
+
+
+def test_a_feet_and_inches_label_split_by_a_space_is_read_whole() -> None:
+    """**The failure this prevents.** `extract_words` splits `2' -5"` into `2'` and `-5"`, and `2'`
+    alone is 24 inches for a label that says 29. Outcome: one run, `2' -5"`, and no `2'`."""
+    texts = [item.text for item in _contents(FEET_AND_INCHES).texts]
+
+    # The font's standard encoding writes the straight apostrophe as `’`; `units.notation` reads it
+    # as a foot mark, so the one run below values as 29 inches.
+    assert texts == ['2’ -5"'], texts
+
+
+def test_the_feet_and_inches_pattern_takes_only_whole_dimensions() -> None:
+    from extraction.reader import FEET_INCH_TOKEN_RE
+
+    for whole in ("2' -5\"", "6' -0\"", "5' -5 1/2\"", '3’ − 6"', "1'-0\"", "12' 3/4\""):
+        assert FEET_INCH_TOKEN_RE.fullmatch(whole), whole
+    for part in ("2'", '-5"', "984 [38 3/4]", '38 3/4"', "2' -5"):
+        assert not FEET_INCH_TOKEN_RE.fullmatch(part), part

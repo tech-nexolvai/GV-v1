@@ -43,6 +43,7 @@ associate text with lines. The last two need thresholds, and thresholds need rea
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 from itertools import pairwise
@@ -64,6 +65,22 @@ from evidence.polygon import Polygon
 from extraction.geometry.containment import DimensionExtent
 from extraction.manifest import RawPage
 from units.dual import DUAL_TOKEN_RE
+
+#: A feet-and-inches dimension a space splits into two words: `2' -5"`, `6' -0"`, `5' -5 1/2"`.
+#:
+#: **Read whole or not at all.** `extract_words` splits `2' -5"` at the space into `2'` and `-5"`,
+#: and `2'` alone is a well-formed dimension — 24 inches, recorded exactly, for a label that says 29.
+#: Measured on the client's drawings (formats phase 1): their stamps hold labels written this way,
+#: and every one split. The inch half alone parses to nothing, so it was the foot half that would
+#: have been believed. Joined here by the mechanism that joins `984 [38 3/4]`, for the same reason.
+#: Typographic marks (`’`, `”`, `−`) are matched too, so the label is joined even where the unit
+#: parser cannot yet value it — a joined label it refuses is safe; a split one it values is not.
+FEET_INCH_TOKEN_RE = re.compile(
+    r"\d+(?:\s+\d+/\d+)?\s*['’′]\s*[-−–]?\s*\d+(?:\s+\d+/\d+|/\d+)?\s*[\"”″]"
+)
+
+#: The tokens `extract_words` splits that must be read whole: the dual dimension and feet-and-inches.
+_WHOLE_TOKENS: Final = (DUAL_TOKEN_RE, FEET_INCH_TOKEN_RE)
 
 __all__ = [
     "PageContents",
@@ -413,7 +430,10 @@ def _dual_tokens(
     document_version_id: UUID,
     page_index: int,
 ) -> tuple[tuple[TextItem, _Box], ...]:
-    """Every `984 [38 3/4]` on the page, as one text run each, with the box it occupies.
+    """Every `984 [38 3/4]` and every `2' -5"` on the page, as one text run each, with its box.
+
+    Both shapes are in `_WHOLE_TOKENS`: a dimension `extract_words` splits at a space, whose parts
+    would be read as other dimensions or as none.
 
     **Rebuilt from the words, not from character offsets.** The first version matched the regex
     against a line's text and sliced its characters by the match offsets, which is wrong in a way
@@ -435,7 +455,8 @@ def _dual_tokens(
         while index < len(members):
             for size in range(min(_MAXIMUM_TOKEN_WORDS, len(members) - index), 0, -1):
                 run = members[index : index + size]
-                if not DUAL_TOKEN_RE.fullmatch(" ".join(str(word["text"]) for word in run)):
+                joined = " ".join(str(word["text"]) for word in run)
+                if not any(pattern.fullmatch(joined) for pattern in _WHOLE_TOKENS):
                     continue
                 box = (
                     min(word["x0"] for word in run),

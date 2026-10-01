@@ -35,6 +35,14 @@ def _inches(written: str) -> Fraction:
         ("8'-6''", "102"),  # two apostrophes for the inch mark — a model's typewriter spelling
         ("2'-10-1/2\"", "69/2"),  # feet, then a hyphenated fraction
         ("12″", "12"),
+        # Curly quotes and a real minus: how a PDF font sets a straight `'`, `"` and `-` (formats
+        # phase 1, read from the client's stamps).
+        ('2’ -5"', "29"),
+        ("2' -5”", "29"),
+        ('3’ − 6"', "42"),
+        ("36”", "36"),
+        ("1’–0”", "12"),
+        ("8’-6’’", "102"),  # two curly quotes for the inch mark, as two straight ones are read
     ],
 )
 def test_every_notation_on_the_client_sheets_reaches_an_exact_value(
@@ -49,7 +57,9 @@ def test_a_compound_is_recognised_rather_than_rewritten(written: str) -> None:
     assert is_compound(written)
 
 
-@pytest.mark.parametrize("written", ["2' - 10\"", "6'-0\"", '10-1/4"', "300 [12]"])
+@pytest.mark.parametrize(
+    "written", ["2' - 10\"", "6'-0\"", '10-1/4"', "300 [12]", '3’ − 6"', "2’ -5”"]
+)
 def test_feet_inches_and_hyphens_are_not_mistaken_for_compounds(written: str) -> None:
     """The operator must follow an inch mark; a foot mark's hyphen is feet-inches."""
     assert not is_compound(written)

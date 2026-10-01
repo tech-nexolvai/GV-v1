@@ -35,7 +35,21 @@ __all__ = ["canonical_notation", "is_compound"]
 #: `''` is how the inch double-prime has been typed on typewriters and in plain ASCII for a century;
 #: `minicpm-v`, asked for `8' - 6"`, returned `8'-6''`. `″` and `′` are the typographic primes. Each is
 #: a transcription equivalence — no number changes.
-_MARK_SPELLINGS: Final = (("″", '"'), ("′", "'"), ("''", '"'))
+#:
+#: `’` and `”` are the curly quotes a PDF font writes for the straight ones: a Type 1 font's standard
+#: encoding maps the ASCII apostrophe to `quoteright`, so a vendor's `2' -5"` reaches the reader as
+#: `2’ -5"` (formats phase 1, measured on the client's stamps). `−` (minus) and `–` (en dash) are the
+#: hyphen of a feet-and-inches label as a drawing font sets it: `3’ − 6"`. `’` is mapped before `''`
+#: is, so two curly quotes written as an inch mark become one inch mark, as two straight ones do.
+_MARK_SPELLINGS: Final = (
+    ("″", '"'),
+    ("′", "'"),
+    ("’", "'"),
+    ("”", '"'),
+    ("−", "-"),
+    ("–", "-"),
+    ("''", '"'),
+)
 
 #: `39 1/4"+6"` — two dimensions and an operator. Not a value, and not illegible either. An inch mark
 #: must precede the operator, which is what keeps `2' - 10"` (feet-inches) out of it.
