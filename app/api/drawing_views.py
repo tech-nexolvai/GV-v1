@@ -21,13 +21,21 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_session
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
-from app.models import DrawingView, Package, PackageRevision, ViewRole
+from app.evidence.sides import ReadingSides
+from app.models import DrawingView, Package, PackageRevision, Page, ViewRole
+from vocabulary.semantic_types import DocumentRole
 from workflow.view_roles import RevisionView, confirm_view_role, revision_views
 
 router = APIRouter(tags=["drawing views"])
 
 #: The same words for a package that does not exist and one the caller may not see.
 NOT_FOUND_DETAIL: Final = "Not found"
+
+#: A side as the drawing-view API spells a role: `arch` or `shop`, like `ViewOut.role`.
+_UPLOAD_SIDE: Final = {
+    DocumentRole.ARCH: ViewRole.ARCH.value,
+    DocumentRole.SHOP: ViewRole.SHOP.value,
+}
 
 
 class ViewOut(BaseModel):
@@ -43,6 +51,10 @@ class ViewOut(BaseModel):
     suggested_from: str | None
     """The label the sheet prints above this drawing, when one was used."""
     reason: str | None
+    upload_side: str | None = None
+    """`arch` or `shop` when nobody has confirmed this drawing and the upload decides its readings'
+    side anyway: the package has both an architectural and a shop document, and this page holds this
+    one drawing (#795). Null otherwise — including once a reviewer has confirmed it."""
 
 
 class ViewsOut(BaseModel):
@@ -66,8 +78,10 @@ def _revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRe
     return revision
 
 
-def _out(entry: RevisionView) -> ViewOut:
+def _out(entry: RevisionView, sides: ReadingSides, session: Session) -> ViewOut:
     view, page_index, proposal = entry.view, entry.page_index, entry.proposal
+    page = session.get(Page, view.page_id)
+    upload = None if view.role is not None or page is None else sides.unconfirmed_side(page)
     return ViewOut(
         view_id=view.id,
         page_index=page_index,
@@ -76,6 +90,7 @@ def _out(entry: RevisionView) -> ViewOut:
         suggested_role=None if proposal is None else proposal.proposed_role,
         suggested_from=None if proposal is None else proposal.heading,
         reason=None if proposal is None else proposal.reason,
+        upload_side=None if upload is None else _UPLOAD_SIDE[upload],
     )
 
 
@@ -91,7 +106,10 @@ def list_views(
     package_id: UUID,
 ) -> ViewsOut:
     revision = _revision(session, project_id, package_id)
-    return ViewsOut(views=[_out(entry) for entry in revision_views(session, revision.id)])
+    sides = ReadingSides(session)
+    return ViewsOut(
+        views=[_out(entry, sides, session) for entry in revision_views(session, revision.id)]
+    )
 
 
 @router.post(
@@ -125,4 +143,4 @@ def confirm_role(
         session.rollback()
         raise
     refreshed = {e.view.id: e for e in revision_views(session, revision.id)}[view_id]
-    return _out(refreshed)
+    return _out(refreshed, ReadingSides(session), session)

@@ -52,8 +52,10 @@ from app.models import (
     PackageRevision,
     PackageRevisionDocument,
     PackageState,
+    Page,
     Project,
     SourceArtifact,
+    ViewRole,
 )
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from evidence.candidate import ObservationCandidate as DomainCandidate
@@ -72,6 +74,7 @@ from vocabulary.semantic_types import SemanticType
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import DatabaseStages
+from workflow.view_roles import confirm_view_role, record_panel_view
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -312,15 +315,8 @@ def test_without_a_confirmation_the_check_still_abstains(
     assert _outcome_for(session, revision, "CT-DEPTH-001") != "PASS"
 
 
-def test_exact_vector_tag_on_same_line_becomes_operand_without_a_reviewer_typing(
-    session: Session, store: LocalStore
-) -> None:
-    """The narrow automatic lane is a tag binding, not an AI guess.
-
-    The numeric reading and `CT010` are separate immutable candidates, both attached to the same
-    line.  `run_checks` then qualifies the evidence and the unchanged deterministic depth rule
-    decides PASS.  No caller supplies an operand, and the raw candidate remains untyped.
-    """
+def _exact_tag_pair(session: Session, store: LocalStore) -> tuple[PackageRevision, UUID]:
+    """A shop depth reading and the exact `CT010` beside it, both attached to one line and cropped."""
     revision, candidate_id = _extract(
         session, store, token=EXACT_DEPTH_SINGLE_UNIT, second_reader=True
     )
@@ -382,6 +378,19 @@ def test_exact_vector_tag_on_same_line_becomes_operand_without_a_reviewer_typing
                 coordinate_space="image",
             )
         )
+    return revision, candidate_id
+
+
+def test_exact_vector_tag_on_same_line_becomes_operand_without_a_reviewer_typing(
+    session: Session, store: LocalStore
+) -> None:
+    """The narrow automatic lane is a tag binding, not an AI guess.
+
+    The numeric reading and `CT010` are separate immutable candidates, both attached to the same
+    line.  `run_checks` then qualifies the evidence and the unchanged deterministic depth rule
+    decides PASS.  No caller supplies an operand, and the raw candidate remains untyped.
+    """
+    revision, candidate_id = _exact_tag_pair(session, store)
     _publish_rulebook(session)
     _project_depth_parameters(session, revision)
 
@@ -401,6 +410,77 @@ def test_exact_vector_tag_on_same_line_becomes_operand_without_a_reviewer_typing
     event = session.execute(select(AuditEvent)).scalars().one()
     assert event.category == AuditCategory.EVIDENCE_QUALIFICATION.value
     assert event.actor == SYSTEM_ACTOR
+
+
+def _the_page_is_one_drawing(
+    session: Session, revision: PackageRevision, role: ViewRole | None
+) -> None:
+    """The whole page recorded as one drawing view, confirmed as `role` when one is given."""
+    page = session.execute(
+        select(Page)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == Page.document_version_id,
+        )
+        .where(PackageRevisionDocument.package_revision_id == revision.id)
+    ).scalar_one()
+    view = record_panel_view(
+        session,
+        page_id=page.id,
+        annotation_index=0,
+        stored_points=(
+            (Decimal(0), Decimal(0)),
+            (Decimal(1), Decimal(0)),
+            (Decimal(1), Decimal(1)),
+            (Decimal(0), Decimal(1)),
+        ),
+        proposed_role=None,
+        heading=None,
+        reason="the whole test page",
+    )
+    if role is not None:
+        confirm_view_role(session, view=view, role=role, actor="a reviewer")
+
+
+def test_the_automatic_lane_types_nothing_on_a_drawing_nobody_has_confirmed(
+    session: Session, store: LocalStore
+) -> None:
+    """**#795 on the exact-tag lane.** The same tag pair, on a page that holds a drawing whose role
+    nobody has confirmed. Outcome: held for review, no observation — not the upload's `shop`."""
+    revision, _candidate_id = _exact_tag_pair(session, store)
+    _the_page_is_one_drawing(session, revision, None)
+    _publish_rulebook(session)
+    _project_depth_parameters(session, revision)
+
+    result = DatabaseStages(
+        store,
+        automatic_typing=AutomaticTypingSettings(frozenset({SemanticType.CT010})),
+    ).run_checks(session, revision.id)
+
+    assert result["automatic_types_qualified"] == 0
+    assert session.execute(select(CanonicalObservation)).scalars().all() == []
+    assert _outcome_for(session, revision, "CT-DEPTH-001") != "PASS"
+
+
+def test_the_automatic_lane_takes_the_confirmed_drawings_side_over_the_uploads(
+    session: Session, store: LocalStore
+) -> None:
+    """Uploaded as `shop`, the drawing confirmed the architect's. Outcome: the qualified observation
+    is ARCH, so the shop depth check cannot use it and does not PASS."""
+    revision, _candidate_id = _exact_tag_pair(session, store)
+    _the_page_is_one_drawing(session, revision, ViewRole.ARCH)
+    _publish_rulebook(session)
+    _project_depth_parameters(session, revision)
+
+    result = DatabaseStages(
+        store,
+        automatic_typing=AutomaticTypingSettings(frozenset({SemanticType.CT010})),
+    ).run_checks(session, revision.id)
+
+    assert result["automatic_types_qualified"] == 1
+    observation = session.execute(select(CanonicalObservation)).scalars().one()
+    assert observation.document_role == "ARCH"
+    assert _outcome_for(session, revision, "CT-DEPTH-001") != "PASS"
 
 
 def test_conflicting_exact_tags_stay_review_required_and_cannot_create_an_operand(

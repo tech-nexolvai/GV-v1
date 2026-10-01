@@ -26,9 +26,8 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_artifact_store, get_session
 from app.auth import Principal, authenticate, require_project_access
 from app.evidence.confirm import ConfirmationRefused, RefusalReason, confirm_candidate_type
+from app.evidence.sides import ReadingSides, SideRefusal
 from app.models.document import (
-    Document,
-    DocumentKind,
     DocumentVersion,
     PackageRevisionDocument,
     Page,
@@ -88,22 +87,21 @@ class CandidateOut(BaseModel):
     )
     corroboration_status: str | None = None
     corroboration_lane: str | None = None
-    source: str | None = None
-
-
-def document_source(document_kind: str | None) -> str | None:
-    """Normalize a document kind to the document-role vocabulary used by rule inputs.
-
-    Only architecturally-meaningful documents are candidates for rulebook quantities.
-    """
-    if document_kind is None:
-        return None
-    kind = str(document_kind)
-    if kind == DocumentKind.ARCHITECTURAL.value:
-        return "ARCH"
-    if kind == DocumentKind.SHOP.value:
-        return "SHOP"
-    return None
+    source: str | None = Field(
+        default=None,
+        description=(
+            "`ARCH` or `SHOP`: which drawing the reading is on, and so which fields it can fill. "
+            "From the confirmed drawing holding it on a sheet that has drawings, from the upload "
+            "otherwise (#795). Null when that is not known; `source_refusal` says why."
+        ),
+    )
+    source_refusal: str | None = Field(
+        default=None,
+        description=(
+            "Why the reading has no side, for the reviewer: for example, that the drawing holding "
+            "it has not been confirmed as the architect's or the vendor's yet."
+        ),
+    )
 
 
 class CandidatesOut(BaseModel):
@@ -171,11 +169,9 @@ def list_candidates(
             ObservationCandidate,
             Page.index,
             EvidenceArtifact.storage_key,
-            Document.kind,
         )
         .join(Page, Page.id == ObservationCandidate.page_id)
         .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
-        .join(Document, Document.id == DocumentVersion.document_id)
         .join(
             PackageRevisionDocument,
             PackageRevisionDocument.document_version_id == DocumentVersion.id,
@@ -203,6 +199,15 @@ def list_candidates(
             ),
         )
 
+    sides = ReadingSides(session)
+
+    def side(row: ObservationCandidate) -> tuple[str | None, str | None]:
+        found = sides.of(row)
+        if isinstance(found, SideRefusal):
+            return None, found.detail
+        return found.value, None
+
+    placed = {row.id: side(row) for row, *_ in rows}
     return CandidatesOut(
         candidates=tuple(
             CandidateOut(
@@ -219,9 +224,10 @@ def list_candidates(
                 confidence=None if row.confidence is None else str(row.confidence),
                 corroboration_status=row.corroboration_status,
                 corroboration_lane=row.corroboration_lane,
-                source=document_source(document_kind),
+                source=placed[row.id][0],
+                source_refusal=placed[row.id][1],
             )
-            for row, page_index, crop_key, document_kind in rows
+            for row, page_index, crop_key in rows
         ),
         total=len(rows),
     )

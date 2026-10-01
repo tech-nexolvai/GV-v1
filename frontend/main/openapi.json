@@ -587,7 +587,20 @@
                 "type": "null"
               }
             ],
+            "description": "`ARCH` or `SHOP`: which drawing the reading is on, and so which fields it can fill. From the confirmed drawing holding it on a sheet that has drawings, from the upload otherwise (#795). Null when that is not known; `source_refusal` says why.",
             "title": "Source"
+          },
+          "source_refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the reading has no side, for the reviewer: for example, that the drawing holding it has not been confirmed as the architect's or the vendor's yet.",
+            "title": "Source Refusal"
           },
           "value": {
             "anyOf": [
@@ -3530,6 +3543,17 @@
           "tag": {
             "title": "Tag",
             "type": "string"
+          },
+          "upload_side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Side"
           },
           "view_id": {
             "format": "uuid",

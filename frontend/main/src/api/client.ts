@@ -605,6 +605,33 @@ export function confirmCandidate(
   );
 }
 
+/** The drawings found on this package's sheets, and what each one is suggested to be (#710). */
+export function listDrawingViews(projectId: string, packageId: string) {
+  return request<DrawingViewsOut>(`/projects/${projectId}/packages/${packageId}/views`);
+}
+
+/**
+ * Say which drawing one is: the architect's or the vendor's (#795).
+ *
+ * The answer decides which side of every comparison the readings inside it are on, so it is only
+ * ever sent by a reviewer's click. The sheet's own label is shown as a suggestion and never sent.
+ */
+export function confirmDrawingRole(
+  projectId: string,
+  packageId: string,
+  viewId: string,
+  role: 'arch' | 'shop',
+) {
+  return request<DrawingViewOut>(
+    `/projects/${projectId}/packages/${packageId}/views/${viewId}/role`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    },
+  );
+}
+
 /**
  * The shapes above, taken from the generated schema rather than written out here.
  *
@@ -619,6 +646,8 @@ export type CandidatesOut = Get<'/api/v1/projects/{project_id}/packages/{package
 export type CandidateOut = CandidatesOut['candidates'][number] & {
   source?: string | null;
 };
+export type DrawingViewsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/views'>;
+export type DrawingViewOut = DrawingViewsOut['views'][number];
 export type ConfirmedOut =
   paths['/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm']['post']['responses'][201]['content']['application/json'];
 

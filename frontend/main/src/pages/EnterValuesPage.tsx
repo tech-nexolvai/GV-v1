@@ -26,6 +26,7 @@ import {
 } from '../api/client';
 import { projectId } from '../api/config';
 import { AssignmentProgress } from '../components/measure/AssignmentProgress';
+import { DrawingRoles } from '../components/measure/DrawingRoles';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { distributionFieldWidthKey } from '../components/measure/fillerDistribution';
 import {
@@ -843,6 +844,17 @@ export function EnterValuesPage({
         </p>
       </header>
 
+      {/* **Before any reading can fill a field on a combined sheet** (#795): a reading is used only on
+          the side of the drawing it sits in, so the drawings' roles come first. Nothing renders for
+          a package of two separate PDFs. Each answer re-reads the readings, which now have a side. */}
+      {packageId && (
+        <DrawingRoles
+          key={packageId}
+          packageId={packageId}
+          onConfirmed={() => setReload((count) => count + 1)}
+        />
+      )}
+
       <section className="enter-values__section">
         <h2>Measurements</h2>
 
@@ -1048,7 +1060,11 @@ export function EnterValuesPage({
                 <div className="ai-proposal" key={candidate.candidate_id}>
                   <div className="ai-proposal__facts">
                     <strong>{candidate.value}</strong>
-                    <span>{SOURCE_LABEL[candidate.source ?? ''] ?? 'drawing source unavailable'}</span>
+                    <span>
+                      {SOURCE_LABEL[candidate.source ?? ''] ??
+                        candidate.source_refusal ??
+                        'drawing source unavailable'}
+                    </span>
                     <span>p{candidate.page_index + 1}</span>
                     {/* No confidence score — it is written only by RapidOCR, which produced 903
                         candidates and zero values on the real drawing. #720. */}
