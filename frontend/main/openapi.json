@@ -746,6 +746,189 @@
         "title": "ClassificationEntry",
         "type": "object"
       },
+      "CompanySettingOut": {
+        "description": "One parameter, as an admin needs to see it to decide GV's standard.",
+        "properties": {
+          "company_set_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Set At"
+          },
+          "company_set_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Set By"
+          },
+          "company_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Value"
+          },
+          "in_use": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What a check starts from on a project that sets nothing: the company value, else the rulebook default, else nothing \u2014 and then the check says NOT_FOUND.",
+            "title": "In Use"
+          },
+          "in_use_from": {
+            "anyOf": [
+              {
+                "enum": [
+                  "company",
+                  "rulebook"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Use From"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rule_ids": {
+            "description": "The published checks that use it.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Rule Ids",
+            "type": "array"
+          },
+          "rulebook_default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The rule author's default, `2 1/2 in`, or null where the rulebook gives none.",
+            "title": "Rulebook Default"
+          },
+          "rulebook_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the rulebook default rests on and any doubt about it (#674).",
+            "title": "Rulebook Note"
+          },
+          "scope": {
+            "enum": [
+              "global",
+              "project"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "scope",
+          "rule_ids",
+          "rulebook_default",
+          "rulebook_note"
+        ],
+        "title": "CompanySettingOut",
+        "type": "object"
+      },
+      "CompanySettingsIn": {
+        "properties": {
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/CompanyValueIn"
+            },
+            "minItems": 1,
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "title": "CompanySettingsIn",
+        "type": "object"
+      },
+      "CompanySettingsOut": {
+        "properties": {
+          "settings": {
+            "items": {
+              "$ref": "#/components/schemas/CompanySettingOut"
+            },
+            "title": "Settings",
+            "type": "array"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The company layer's current version, or null before the first.",
+            "title": "Version"
+          }
+        },
+        "required": [
+          "settings"
+        ],
+        "title": "CompanySettingsOut",
+        "type": "object"
+      },
+      "CompanyValueIn": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "value": {
+            "description": "With its unit \u2014 `24\"`, `610 mm`. A bare number is refused.",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "CompanyValueIn",
+        "type": "object"
+      },
       "ConfirmIn": {
         "description": "A reviewer naming what a reading is.",
         "properties": {
@@ -3690,6 +3873,67 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/company-settings": {
+      "get": {
+        "operationId": "read_company_settings_api_v1_company_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanySettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "GV's standard numbers, which every project starts from",
+        "tags": [
+          "company settings"
+        ]
+      },
+      "post": {
+        "description": "A new version of the company layer: these values, and every earlier one not sent.\n\nA name the published rules do not declare at global or project scope is refused rather than\nstored: a misspelt standard would be a number no check ever reads, saved as though it mattered.",
+        "operationId": "save_company_settings_api_v1_company_settings_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompanySettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanySettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record GV's standard numbers; every value not sent stays as it was",
+        "tags": [
+          "company settings"
+        ]
+      }
+    },
     "/api/v1/operations": {
       "get": {
         "description": "Every reviewed operation in the typed registry, in name order.\n\nRead from `verdict.registry.REGISTRY` as it stands right now. Nothing in this module names an\noperation, so this endpoint cannot fall out of step with the engine: an operation the engine can\nrun appears here, and one it cannot does not.\n\nEach entry is a signature \u2014 a name, a version, whether it decides an outcome or derives an\nintermediate value, and what operands it takes. Not the implementation, and not a way to invoke\none: this API never runs a check on request.",

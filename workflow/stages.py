@@ -3760,6 +3760,7 @@ class DatabaseStages:
             [snapshot.rule for snapshot in rules if snapshot is not None], when=utc_now()
         )
         layers = _layered(defaults, stored_layers)
+        cited = _cited_sets(defaults, stored_layers)
         resolved = resolve_all(*layers)
 
         # `ProjectScope` wants the pinned project layer. Where a project has set nothing, the
@@ -3821,7 +3822,7 @@ class DatabaseStages:
                     package_revision_id=package_revision_id,
                     finding=_unresolved(snapshot, abstention),
                     operands={},
-                    parameter_set_ids={layer.layer.value: layer.set_id for layer in layers},
+                    parameter_set_ids=cited,
                 )
                 written += 1
 
@@ -3866,7 +3867,7 @@ class DatabaseStages:
                     package_revision_id=package_revision_id,
                     finding=finding,
                     operands=supplied,
-                    parameter_set_ids={layer.layer.value: layer.set_id for layer in layers},
+                    parameter_set_ids=cited,
                     missing=_declared_inputs(applicable.snapshot.rule),
                 )
                 written += 1
@@ -3901,17 +3902,38 @@ def _unresolved(snapshot: RuleSnapshot, abstention: Abstention) -> Finding:
 
 
 def _layered(defaults: ParameterSet, stored: Sequence[ParameterSet]) -> tuple[ParameterSet, ...]:
-    """The rulebook defaults beneath whatever the database supplies.
+    """The rulebook defaults beneath whatever the database supplies, merged by name (#812).
 
-    `rules.parameters.resolve` refuses two sets in one layer, and the defaults are GLOBAL — so a
-    stored global set replaces them wholesale rather than merging. That is the correct reading: a
-    company standard that has been recorded is the standard, and a rule author's default is what
-    applies until somebody records one.
+    `rules.parameters.resolve` refuses two sets in one layer, and the defaults are GLOBAL, as company
+    standards are. **They used to be replaced wholesale** by any stored company set — so recording one
+    company standard, the usual cabinet depth, silently removed every rule author's default: the
+    2.5" back-offset minimum, the 4" front offset, the 1/4" clearance, the 1"/2" filler bounds, and
+    each of those checks went back to NOT_FOUND. Now a recorded company value replaces the rulebook's
+    default **of the same name** and nothing else. A rule author's default is what applies until
+    somebody records that one.
+
+    The merged set is resolution's input, not a record: a finding cites the stored company set's own
+    hash (`_cited_sets`), and the defaults beneath it are pinned by the rule snapshot it also cites.
     """
-    stored_layers = {layer.layer for layer in stored}
-    if defaults.layer in stored_layers:
-        return tuple(stored)
-    return (defaults, *stored)
+    company = next((layer for layer in stored if layer.layer is defaults.layer), None)
+    if company is None:
+        return (defaults, *stored)
+    merged = ParameterSet(
+        project_id=company.project_id,
+        layer=company.layer,
+        version=company.version,
+        parameters={**defaults.parameters, **company.parameters},
+    )
+    return tuple(merged if layer is company else layer for layer in stored)
+
+
+def _cited_sets(defaults: ParameterSet, stored: Sequence[ParameterSet]) -> dict[str, str]:
+    """Which parameter sets judged a finding, by layer, as hashes that resolve to a record.
+
+    The stored sets as stored — never the merged one `_layered` builds, whose hash no row holds — and
+    the rulebook defaults' set only where no company set was recorded.
+    """
+    return {layer.layer.value: layer.set_id for layer in (defaults, *stored)}
 
 
 def _empty_project(package: Package) -> ParameterSet:

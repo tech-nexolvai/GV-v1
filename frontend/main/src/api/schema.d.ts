@@ -4,6 +4,30 @@
  */
 
 export interface paths {
+    "/api/v1/company-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GV's standard numbers, which every project starts from */
+        get: operations["read_company_settings_api_v1_company_settings_get"];
+        put?: never;
+        /**
+         * Record GV's standard numbers; every value not sent stays as it was
+         * @description A new version of the company layer: these values, and every earlier one not sent.
+         *
+         *     A name the published rules do not declare at global or project scope is refused rather than
+         *     stored: a misspelt standard would be a number no check ever reads, saved as though it mattered.
+         */
+        post: operations["save_company_settings_api_v1_company_settings_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations": {
         parameters: {
             query?: never;
@@ -1611,6 +1635,72 @@ export interface components {
             rule_id: string;
         };
         /**
+         * CompanySettingOut
+         * @description One parameter, as an admin needs to see it to decide GV's standard.
+         */
+        CompanySettingOut: {
+            /** Company Set At */
+            company_set_at?: string | null;
+            /** Company Set By */
+            company_set_by?: string | null;
+            /** Company Value */
+            company_value?: string | null;
+            /**
+             * In Use
+             * @description What a check starts from on a project that sets nothing: the company value, else the rulebook default, else nothing — and then the check says NOT_FOUND.
+             */
+            in_use?: string | null;
+            /** In Use From */
+            in_use_from?: ("company" | "rulebook") | null;
+            /** Name */
+            name: string;
+            /**
+             * Rule Ids
+             * @description The published checks that use it.
+             */
+            rule_ids: string[];
+            /**
+             * Rulebook Default
+             * @description The rule author's default, `2 1/2 in`, or null where the rulebook gives none.
+             */
+            rulebook_default: string | null;
+            /**
+             * Rulebook Note
+             * @description What the rulebook default rests on and any doubt about it (#674).
+             */
+            rulebook_note: string | null;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "global" | "project";
+        };
+        /** CompanySettingsIn */
+        CompanySettingsIn: {
+            /** Values */
+            values: components["schemas"]["CompanyValueIn"][];
+        };
+        /** CompanySettingsOut */
+        CompanySettingsOut: {
+            /** Settings */
+            settings: components["schemas"]["CompanySettingOut"][];
+            /**
+             * Version
+             * @description The company layer's current version, or null before the first.
+             */
+            version?: number | null;
+        };
+        /** CompanyValueIn */
+        CompanyValueIn: {
+            /** Name */
+            name: string;
+            /**
+             * Value
+             * @description With its unit — `24"`, `610 mm`. A bare number is refused.
+             */
+            value: string;
+        };
+        /**
          * ConfirmIn
          * @description A reviewer naming what a reading is.
          */
@@ -3208,6 +3298,59 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    read_company_settings_api_v1_company_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanySettingsOut"];
+                };
+            };
+        };
+    };
+    save_company_settings_api_v1_company_settings_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompanySettingsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanySettingsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_operations_api_v1_operations_get: {
         parameters: {
             query?: never;

@@ -632,6 +632,23 @@ export function confirmDrawingRole(
   );
 }
 
+/** GV's standard numbers, which every project starts from (#812). */
+export function getCompanySettings() {
+  return request<CompanySettings>('/company-settings');
+}
+
+/**
+ * Record GV's standard numbers. Only the values sent change; every one not sent stays as it was.
+ * Refused for anyone but an admin, with the same "Not found" every authorisation failure gives.
+ */
+export function saveCompanySettings(values: { name: string; value: string }[]) {
+  return request<CompanySettings>('/company-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values }),
+  });
+}
+
 /**
  * The shapes above, taken from the generated schema rather than written out here.
  *
@@ -648,6 +665,7 @@ export type CandidateOut = CandidatesOut['candidates'][number] & {
 };
 export type DrawingViewsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/views'>;
 export type DrawingViewOut = DrawingViewsOut['views'][number];
+export type CompanySettings = Get<'/api/v1/company-settings'>;
 export type ConfirmedOut =
   paths['/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm']['post']['responses'][201]['content']['application/json'];
 

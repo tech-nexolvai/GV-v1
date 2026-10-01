@@ -6,6 +6,7 @@ import {
   Plus,
   ChevronRight,
   Ruler,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { listReviewSessions } from '../../api/client';
 import { projectId } from '../../api/config';
@@ -29,6 +30,8 @@ const NAV_ITEMS = [
   // reviewer chooses their meaning; that same choice fills the appropriate editable field.
   { id: 'measure',   label: 'Measure',   icon: Ruler },
   { id: 'rulebook',  label: 'Rulebook',  icon: BookOpen },
+  // GV's standard numbers, set once for every project (#812).
+  { id: 'settings',  label: 'Company settings', icon: SlidersHorizontal },
   { id: 'usage',     label: 'Usage',     icon: BarChart2 },
 ];
 
