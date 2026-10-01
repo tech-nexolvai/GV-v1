@@ -281,7 +281,42 @@ def test_plain_model_text_is_never_parsed_as_structured_output() -> None:
     assert len(client.requests) == 1
     assert sink.items[0].outcome is NovaInvocationOutcome.REJECTED
     assert sink.items[0].rejection_reason == (
-        "protocol_error: Bedrock must return exactly one tool call and no model text"
+        "protocol_error: Bedrock must return exactly one tool call and no model text; "
+        "it returned no tool call"
+    )
+
+
+def _tool_block(index: int) -> dict[str, object]:
+    return {"toolUse": {"name": TOOL_NAME, "toolUseId": f"call-{index}", "input": _valid_payload()}}
+
+
+@pytest.mark.parametrize(
+    ("content", "returned"),
+    [
+        ([_tool_block(1), _tool_block(2)], "2 tool calls"),
+        ([_tool_block(1), _tool_block(2), _tool_block(3)], "3 tool calls"),
+        ([{"text": "Here is the reading."}, _tool_block(1)], "model text beside its tool call"),
+    ],
+)
+def test_a_malformed_answer_is_refused_and_its_record_says_what_came_back(
+    content: list[dict[str, object]], returned: str
+) -> None:
+    """**#792.** One sentence covered all three ways an answer can break the one-call rule, and on
+    AI_Set_2 it hid that Mistral Large 3's 383 refusals were a crop's two labels each reported, not
+    prose. Input: each shape. Outcome: still refused, and the stored reason names the shape."""
+
+    response = _tool_response(_valid_payload())
+    response["output"]["message"]["content"] = content
+    client = FakeBedrock(response)
+    adapter, sink = _adapter(client)
+
+    with pytest.raises(NovaProtocolError, match="exactly one tool call"):
+        adapter.extract(_request())
+
+    assert sink.items[0].outcome is NovaInvocationOutcome.REJECTED
+    assert sink.items[0].rejection_reason == (
+        "protocol_error: Bedrock must return exactly one tool call and no model text; "
+        f"it returned {returned}"
     )
 
 

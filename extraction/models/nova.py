@@ -926,7 +926,18 @@ class NovaAdapter:
             if isinstance(block, Mapping) and isinstance(block.get("toolUse"), Mapping)
         ]
         if len(tool_calls) != 1 or len(content) != 1:
-            raise NovaProtocolError("Bedrock must return exactly one tool call and no model text")
+            # Which of three things came back, so a run can count them apart (#792). On AI_Set_2 one
+            # shared sentence covered 383 of Mistral Large 3's refusals; replayed, they were two or
+            # three tool calls for a crop holding two labels, not the prose the sentence implied.
+            if not tool_calls:
+                returned = "no tool call"
+            elif len(tool_calls) > 1:
+                returned = f"{len(tool_calls)} tool calls"
+            else:
+                returned = "model text beside its tool call"
+            raise NovaProtocolError(
+                f"Bedrock must return exactly one tool call and no model text; it returned {returned}"
+            )
         tool_call = cast(Mapping[str, Any], tool_calls[0])
         if tool_call.get("name") != TOOL_NAME:
             raise NovaProtocolError(f"Bedrock called an unexpected tool: {tool_call.get('name')!r}")
