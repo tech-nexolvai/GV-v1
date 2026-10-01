@@ -107,6 +107,16 @@ class DrawingLayer(StrEnum):
     REVIEWER_MARKUP = "reviewer_markup"
     """`/FreeText` — what a reviewer wrote on top of it, as exact text."""
 
+    VENDOR_TEXT = "vendor_text"
+    """The vendor's own text, kept by its CAD program as exact strings: the invisible `/Square`
+    annotations AutoCAD writes for every string drawn in an SHX font, titled `AutoCAD SHX Text`.
+
+    AutoCAD's SHX fonts cannot be embedded in a PDF, so its export draws each string as strokes —
+    the same unreadable shapes #756 exists to read — and, with `PDFSHX=1` (its default), also writes
+    one of these notes per string holding the text and its rectangle. The strokes and the note say
+    the same thing; the note says it exactly. It is the vendor's authority, never the reviewer's,
+    and it is never folded into `markup`."""
+
     OTHER = "other"
     """Everything else: `/Line`, `/Square`, `/Ink`. Reported, never merged into the two above."""
 
@@ -200,6 +210,22 @@ _LAYER_BY_SUBTYPE: Final = {
     "Stamp": DrawingLayer.VENDOR_DRAWING,
     "FreeText": DrawingLayer.REVIEWER_MARKUP,
 }
+
+#: The title AutoCAD gives the note it writes for each SHX-font string. Matched exactly (ignoring
+#: case and surrounding space) on `/T` or `/Subj`, never by resemblance: a reviewer's own `/Square`
+#: box is a markup, and treating it as the vendor's text would give the reviewer's hand the vendor's
+#: authority.
+AUTOCAD_SHX_TEXT: Final = "autocad shx text"
+
+
+def _layer_of(annotation: dict[str, Any], subtype: str) -> DrawingLayer:
+    """Which authority an annotation carries: its subtype, except AutoCAD's own text notes."""
+    if subtype == "Square" and any(
+        (_text(annotation.get(key)) or "").strip().lower() == AUTOCAD_SHX_TEXT
+        for key in ("T", "Subj")
+    ):
+        return DrawingLayer.VENDOR_TEXT
+    return _LAYER_BY_SUBTYPE.get(subtype, DrawingLayer.OTHER)
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +377,11 @@ class PageLayers:
 
     vendor_stamps: tuple[VendorStamp, ...] = ()
     """Every vendor-drawing stamp on the page, in `/Annots` order (#710). Filled by both reads."""
+
+    vendor_text: tuple[MarkupNote, ...] = ()
+    """The vendor's exact text as its CAD program kept it (`DrawingLayer.VENDOR_TEXT`). Filled by
+    both reads, because reading it needs no threshold: the string and its rectangle are dictionary
+    values. Empty on every page without an AutoCAD SHX export, which is most drawings today."""
 
     fractions_read: bool = False
     """Whether the bar detector ran. `False` makes an empty `stacked_fractions` mean *nobody looked*,
@@ -975,6 +1006,7 @@ def _read_layers(
         raise ValueError("dpi must be a positive integer; stored coordinates depend on it")
 
     markup: list[MarkupNote] = []
+    vendor_text: list[MarkupNote] = []
     other: list[MarkupNote] = []
     segments: list[DimensionExtent] = []
     regions: list[OutlinedTextRegion] = []
@@ -1009,7 +1041,7 @@ def _read_layers(
         try:
             for index, annotation in enumerate(annotations):
                 subtype = _subtype(annotation)
-                layer = _LAYER_BY_SUBTYPE.get(subtype, DrawingLayer.OTHER)
+                layer = _layer_of(annotation, subtype)
                 try:
                     rect = _rect(annotation.get("Rect"))
                     seen = _pdfium_rect(pdfium_document, page_index, index)
@@ -1121,13 +1153,22 @@ def _read_layers(
                     layer=layer,
                     subtype=subtype,
                     text=_text(annotation.get("Contents")) or "",
-                    author=_text(annotation.get("T")),
+                    # AutoCAD's `/T` names its own export, not a person; the vendor's text has no
+                    # author the way a reviewer's correction does.
+                    author=(
+                        None if layer is DrawingLayer.VENDOR_TEXT else _text(annotation.get("T"))
+                    ),
                     extent=extent,
                     image_extent=image_extent,
                     rotation_degrees=rotation,
                     annotation_index=index,
                 )
-                (markup if layer is DrawingLayer.REVIEWER_MARKUP else other).append(note)
+                if layer is DrawingLayer.REVIEWER_MARKUP:
+                    markup.append(note)
+                elif layer is DrawingLayer.VENDOR_TEXT:
+                    vendor_text.append(note)
+                else:
+                    other.append(note)
         finally:
             pdfium_document.close()
     except UnreadablePdf:
@@ -1144,7 +1185,7 @@ def _read_layers(
         refusals=tuple(refusals),
         unreadable_reason=(
             None
-            if (markup or segments or regions or other)
+            if (markup or segments or regions or other or vendor_text)
             else "this page carries no annotation layers to read"
         ),
         geometry_read=geometry is not None,
@@ -1152,6 +1193,7 @@ def _read_layers(
         fractions_read=geometry is not None and geometry[3] is not None,
         vendor_stamps=tuple(stamps),
         glyph_paths=tuple(glyph_paths),
+        vendor_text=tuple(vendor_text),
     )
 
 

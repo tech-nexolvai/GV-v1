@@ -20,6 +20,7 @@ import hashlib
 import io
 import tempfile
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
 
@@ -48,15 +49,19 @@ from tests.extraction.test_annotations import (
     KNOWN_AUTHOR,
     KNOWN_MARKUP,
     _appearance,
+    _cad_text,
     _free_text,
     _pdf,
     _stamp,
 )
+from tests.extraction.test_stamp_text import _sheet
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import (
+    CAD_TEXT_EXTRACTOR,
     MARKUP_EXTRACTOR,
     MARKUP_EXTRACTOR_VERSION,
+    STAMP_TEXT_EXTRACTOR,
     DatabaseStages,
 )
 
@@ -407,3 +412,103 @@ def test_the_two_layers_are_not_reconciled(session: Session, store: LocalStore) 
     assert _markup_rows(session)
     assert not hasattr(ObservationCandidate, "supersedes")
     assert not hasattr(ObservationCandidate, "agrees_with")
+
+
+# ---------------------------------------------------------------------------
+# The vendor's own exact text: AutoCAD's notes and pasted drawings (formats phase 1)
+# ---------------------------------------------------------------------------
+
+
+def _route_rows(session: Session, extractor: str) -> list[ObservationCandidate]:
+    runs = {
+        run.id
+        for run in session.execute(
+            select(ExtractionRun).where(ExtractionRun.extractor == extractor)
+        ).scalars()
+    }
+    return [row for row in _candidates(session) if row.extraction_run_id in runs]
+
+
+#: An AutoCAD SHX export with a reviewer's note on it: the vendor's two strings and one correction.
+CAD_EXPORT = _pdf(
+    annotations=[
+        _cad_text('36"', rect=b"[200 40 230 55]"),
+        _cad_text("2' -5\"", rect=b"[240 40 280 55]"),
+        _free_text(KNOWN_MARKUP, rect=b"[40 40 120 60]"),
+    ]
+)
+
+
+def test_autocad_text_is_recorded_as_the_vendors_never_the_reviewers(
+    session: Session, store: LocalStore
+) -> None:
+    """**The hard stop.** Outcome: the vendor's strings are under the CAD-text route with no
+    author; the reviewer's note is under the markup route, alone."""
+    _extract(session, store, data=CAD_EXPORT)
+
+    cad = _route_rows(session, CAD_TEXT_EXTRACTOR)
+    markup = _route_rows(session, MARKUP_EXTRACTOR)
+    assert sorted(row.raw_text for row in cad) == ["2' -5\"", '36"']
+    assert all(row.source_author is None for row in cad)
+    assert [row.raw_text for row in markup] == [KNOWN_MARKUP]
+
+
+def test_autocad_text_is_valued_exactly(session: Session, store: LocalStore) -> None:
+    _extract(session, store, data=CAD_EXPORT)
+
+    values = {
+        row.raw_text: Fraction(row.value_numerator, row.value_denominator)
+        for row in _route_rows(session, CAD_TEXT_EXTRACTOR)
+    }
+    assert values == {'36"': Fraction(36), "2' -5\"": Fraction(29)}
+
+
+def test_a_page_without_cad_text_opens_no_cad_text_run(session: Session, store: LocalStore) -> None:
+    _extract(session, store, data=ANNOTATED)
+
+    assert _route_rows(session, CAD_TEXT_EXTRACTOR) == []
+    assert (
+        session.execute(
+            select(ExtractionRun).where(ExtractionRun.extractor == CAD_TEXT_EXTRACTOR)
+        ).first()
+        is None
+    )
+
+
+def test_the_text_inside_a_pasted_drawing_is_recorded_exactly(
+    session: Session, store: LocalStore
+) -> None:
+    """Outcome: the stamp's font text is a candidate of its own route, valued exactly, and the
+    reviewer's note beside it is still only under the markup route."""
+    _extract(session, store, data=_sheet(b'(36") Tj', with_markup=True))
+
+    stamp = _route_rows(session, STAMP_TEXT_EXTRACTOR)
+    # `"` is `quotedbl` in a Type 1 font's standard encoding, so it comes back straight.
+    assert [row.raw_text for row in stamp] == ['36"']
+    (row,) = stamp
+    assert Fraction(row.value_numerator, row.value_denominator) == 36
+    assert [markup.raw_text for markup in _route_rows(session, MARKUP_EXTRACTOR)] == ['38"']
+
+
+def test_a_drawing_of_strokes_alone_opens_no_stamp_text_run(
+    session: Session, store: LocalStore
+) -> None:
+    _extract(session, store, data=UNANNOTATED)
+
+    assert _route_rows(session, STAMP_TEXT_EXTRACTOR) == []
+
+
+def test_the_page_result_says_which_forms_its_text_arrived_in(
+    session: Session, store: LocalStore
+) -> None:
+    revision = _revision(session, store, data=CAD_EXPORT)
+    session.commit()
+    (result,) = _stages(store).extract_pages(session, revision.id)
+    session.commit()
+
+    assert result.payload["cad_text_candidates"] == 2
+    assert result.payload["stamp_text_candidates"] == 0
+    sources = result.payload["text_sources"]
+    assert sources["cad_text_notes"] == 2
+    assert "cad_text_notes" in sources["kinds"]
+    assert sources["not_read_yet"] == []

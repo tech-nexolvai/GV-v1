@@ -164,7 +164,15 @@ from extraction.models.validation import ValidationRejection
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_reading, read_page
 from extraction.panels import propose_panel_roles
 from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
-from extraction.reader import PageContents, UnreadablePdf, read_page_contents, read_pages
+from extraction.reader import (
+    PageContents,
+    TextItem,
+    UnreadablePdf,
+    read_page_contents,
+    read_pages,
+)
+from extraction.stamp_text import read_stamp_text
+from extraction.text_sources import survey_page
 from extraction.vector_first import plan_reads
 from reports.findings_pdf import FINDINGS_PDF_MEDIA_TYPE, FindingsPdfInput, write_findings_pdf
 from reports.spreadsheet import StoredFinding, decode_reference, write_stored_workbook
@@ -223,6 +231,20 @@ EXTRACTOR_VERSION = "extraction.reader/1"
 #: idempotency guard in each writer only ever sees its own route's rows.
 MARKUP_EXTRACTOR = "extraction.annotations"
 MARKUP_EXTRACTOR_VERSION = "extraction.annotations/1"
+
+#: The vendor's own exact text, where its CAD program kept it: AutoCAD's `AutoCAD SHX Text` notes
+#: (`DrawingLayer.VENDOR_TEXT`). Its own route, and never the markup route's: the markup route holds
+#: the reviewer's corrections, and a vendor string recorded under it would carry a reviewer's
+#: authority. As a route that is not a model it counts as independent of every model reader
+#: (`evidence.corroborate.independence_key`), which is right: nothing read it but the file.
+CAD_TEXT_EXTRACTOR = "extraction.cad_text"
+CAD_TEXT_EXTRACTOR_VERSION = "extraction.cad_text/1"
+
+#: The font text inside a pasted drawing (`extraction/stamp_text.py`): exact, like the vector route,
+#: and its own route for the same reason the CAD text has one — a reader of a page's own content and a
+#: reader of its pasted drawings are two different things a reviewer must be able to tell apart.
+STAMP_TEXT_EXTRACTOR = "extraction.stamp_text"
+STAMP_TEXT_EXTRACTOR_VERSION = "extraction.stamp_text/1"
 
 #: The association step's own identity, so its thresholds are part of a run's identity (#545).
 #:
@@ -1213,6 +1235,33 @@ class DatabaseStages:
                 page=page,
                 task_run_id=run.task_run_id,
             )
+            # **The vendor's own text, where its CAD program kept it exactly.** A drawing exported
+            # from AutoCAD with SHX fonts draws every string as strokes — the shapes #756 reads — and
+            # also keeps each string as an invisible note. Read here, not guessed from the strokes.
+            cad_text_rows = self._read_page_cad_text(
+                session,
+                version_id=version_id,
+                page=page,
+                task_run_id=run.task_run_id,
+                layers=layers,
+            )
+            # **The text inside the pasted drawings, read exactly.** #738 took it for unreadable; it
+            # is font text a snapshot carried over from the sheet it was taken from (formats phase 1).
+            stamp_texts, stamp_text_rows = self._read_page_stamp_text(
+                session,
+                version_id=version_id,
+                data=data,
+                page=page,
+                task_run_id=run.task_run_id,
+                layers=layers,
+            )
+            # **Which forms this page's text arrived in, and which of them nothing reads yet.** A
+            # vendor does not choose how its PDF stores numbers; the page result says, so a page whose
+            # text sits in a form no route reads is reported as that, not as a page with no numbers.
+            try:
+                text_sources: dict[str, object] | None = survey_page(data, page.index).as_payload()
+            except UnreadablePdf:
+                text_sources = None
             # **Which drawing is which, on a combined sheet (#710).** Each drawing becomes a view, and
             # the label the sheet prints above it gives a suggestion. Never the role: only a person's
             # confirmation sets that, through the API.
@@ -1324,7 +1373,14 @@ class DatabaseStages:
             self._apply_cross_route_corroboration(
                 session,
                 page_index=page.index,
-                candidates=tuple(vector_rows + ocr_rows + markup_rows + vision_rows),
+                candidates=tuple(
+                    vector_rows
+                    + ocr_rows
+                    + markup_rows
+                    + cad_text_rows
+                    + stamp_text_rows
+                    + vision_rows
+                ),
             )
             agent = self._run_bounded_agent_for_ambiguous_regions(
                 session,
@@ -1332,12 +1388,27 @@ class DatabaseStages:
                 data=data,
                 page=page,
                 task_run_id=run.task_run_id,
-                candidates=tuple(vector_rows + ocr_rows + markup_rows + vision_rows),
+                candidates=tuple(
+                    vector_rows
+                    + ocr_rows
+                    + markup_rows
+                    + cad_text_rows
+                    + stamp_text_rows
+                    + vision_rows
+                ),
                 layers=layers,
             )
             agent_rows = agent.rows
             if agent_rows:
-                page_rows = tuple(vector_rows + ocr_rows + markup_rows + vision_rows + agent_rows)
+                page_rows = tuple(
+                    vector_rows
+                    + ocr_rows
+                    + markup_rows
+                    + cad_text_rows
+                    + stamp_text_rows
+                    + vision_rows
+                    + agent_rows
+                )
                 self._apply_cross_route_corroboration(
                     session, page_index=page.index, candidates=page_rows
                 )
@@ -1372,6 +1443,8 @@ class DatabaseStages:
                         association_sources,
                     ),
                     ((layers.markup if layers is not None else ()), markup_rows),
+                    ((layers.vendor_text if layers is not None else ()), cad_text_rows),
+                    (stamp_texts, stamp_text_rows),
                     # Glyph readings attach to the line they label like any reading — the reader
                     # established which way each label runs, which is what `associate` needs.
                     glyph_association,
@@ -1390,6 +1463,11 @@ class DatabaseStages:
                         + len(agent_rows)
                         + len(glyph_rows),
                         "markup_candidates": len(markup_rows),
+                        # The vendor's exact CAD text (AutoCAD SHX notes): zero on a drawing that
+                        # was printed to PDF rather than exported, which is every drawing so far.
+                        "cad_text_candidates": len(cad_text_rows),
+                        "stamp_text_candidates": len(stamp_text_rows),
+                        "text_sources": text_sources,
                         "vision_candidates": len(vision_rows),
                         # OCR text that could not be a reading (#703): counted here because it is
                         # not a candidate, so without this the page would simply look smaller.
@@ -2215,6 +2293,120 @@ class DatabaseStages:
                 ),
                 layers,
             )
+
+    def _read_page_cad_text(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        page: Page,
+        task_run_id: UUID,
+        layers: PageLayers | None,
+    ) -> list[ObservationCandidate]:
+        """Record the vendor's exact CAD text notes as candidates, under a route of their own.
+
+        **Exact, like the markup route, and for the same reason:** the string and its rectangle are
+        dictionary values, so there is nothing between the file and the reading that could misread
+        it. The writer is the markup route's, because what it does with a note — parse the value it
+        states, keep its box, never infer a type — is the same. The run is not: a reviewer's
+        correction and the vendor's own string must stay distinguishable in every row.
+
+        No run is opened for a page without such notes, which is every page printed to PDF rather
+        than exported from CAD: a run is a record of work, and there was none.
+        """
+        if layers is None or not layers.vendor_text:
+            return []
+        with traced(
+            "extraction.page.cad_text",
+            document_version_id=str(version_id),
+            page_index=page.index,
+            extractor_version=CAD_TEXT_EXTRACTOR_VERSION,
+        ):
+            cad_run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=CAD_TEXT_EXTRACTOR,
+                extractor_version=CAD_TEXT_EXTRACTOR_VERSION,
+                config_hash=f"dpi={self._dpi}",
+                dpi=self._dpi,
+            )
+            return record_markup_candidates(
+                session,
+                layers.vendor_text,
+                document_version_id=version_id,
+                page_id=page.id,
+                extraction_run_id=cad_run.id,
+                page_index=page.index,
+                flush=False,
+            )
+
+    def _read_page_stamp_text(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        data: bytes,
+        page: Page,
+        task_run_id: UUID,
+        layers: PageLayers | None,
+    ) -> tuple[tuple[TextItem, ...], list[ObservationCandidate]]:
+        """Record the font text inside the page's pasted drawings, under a route of its own.
+
+        Read by `extraction/stamp_text.py` from a copy of the page holding only its stamps — never
+        the reviewer's markup, never the page's own content — and written by the vector route's own
+        writer, because a run of text is a run of text wherever it was put.
+
+        **No run for a page with nothing to read.** A page with no stamps, or stamps holding only
+        drawn strokes (most of `AI_Set_2`), opens none. A page whose stamps could not be prepared is
+        recorded as unreadable under this route, not skipped, as every other route does (#491).
+        """
+        if layers is None or not layers.vendor_stamps:
+            return (), []
+        try:
+            stamp = read_stamp_text(data, page.index, document_version_id=version_id, dpi=self._dpi)
+        except UnreadablePdf as error:
+            failed_run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=STAMP_TEXT_EXTRACTOR,
+                extractor_version=STAMP_TEXT_EXTRACTOR_VERSION,
+                config_hash=f"dpi={self._dpi}",
+                dpi=self._dpi,
+            )
+            record_unreadable_page(
+                session,
+                extraction_run_id=failed_run.id,
+                document_version_id=version_id,
+                page_index=page.index,
+                error=error,
+            )
+            return (), []
+        if not stamp.contents.texts:
+            return (), []
+        with traced(
+            "extraction.page.stamp_text",
+            document_version_id=str(version_id),
+            page_index=page.index,
+            extractor_version=STAMP_TEXT_EXTRACTOR_VERSION,
+        ):
+            stamp_run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=STAMP_TEXT_EXTRACTOR,
+                extractor_version=STAMP_TEXT_EXTRACTOR_VERSION,
+                config_hash=f"dpi={self._dpi}",
+                dpi=self._dpi,
+            )
+            rows = record_candidates(
+                session,
+                stamp.contents.texts,
+                document_version_id=version_id,
+                page_id=page.id,
+                extraction_run_id=stamp_run.id,
+                page_index=page.index,
+                flush=False,
+            )
+            return stamp.contents.texts, rows
 
     def _read_page_by_ocr(
         self,
