@@ -40,6 +40,10 @@ class Action(StrEnum):
     APPROVE_PACKAGE = "approve_package"
     PUBLISH_RULE = "publish_rule"
     MANAGE_PROJECT = "manage_project"
+    #: Record GV's company standards — the numbers every project starts from (#812). Its own action
+    #: rather than `MANAGE_PROJECT`, because it changes every future verdict on every project, not
+    #: one job's.
+    MANAGE_COMPANY_STANDARDS = "manage_company_standards"
 
 
 #: Which roles may take which action. Exhaustive over `Action` — see `_every_action_is_assigned`.
@@ -53,6 +57,7 @@ PERMISSIONS: dict[Action, frozenset[Role]] = {
     Action.APPROVE_PACKAGE: frozenset({Role.REVIEWER, Role.ADMIN}),
     Action.PUBLISH_RULE: frozenset({Role.RULE_ADMIN, Role.ADMIN}),
     Action.MANAGE_PROJECT: frozenset({Role.ADMIN}),
+    Action.MANAGE_COMPANY_STANDARDS: frozenset({Role.ADMIN}),
 }
 
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from rules.derivations import DerivationBinding
-from rules.parameters import ParameterLayer, ResolvedParameter
+from rules.parameters import ParameterLayer, ResolvedParameter, is_rulebook_default
 from rules.schema import Applicability, Rule
 from rules.snapshot import RuleSnapshot
 from units.measurement import Measurement, MixedUnitError, Unit
@@ -168,16 +168,17 @@ def execute(
     discriminators = discriminators or {}
     notes: list[str] = []
     # **A default with a known doubt says so on the finding** (#674). Only while the rule's own
-    # default is the value in use: once a project or run value replaces it, the reviewer chose the
-    # number and the doubt about the default no longer applies.
+    # default is the value in use: once a person has set the number — a company standard, a project
+    # or a run value — the doubt about the default no longer applies. Tested by where the value came
+    # from, not by its number (#812): a company standard confirmed at the default's own value is a
+    # person's answer, and "awaiting his confirmation" beside it would be false.
     for name, declared in sorted(rule.parameters.items()):
         resolved = parameters.get(name)
         if (
             declared.note is not None
-            and declared.default is not None
             and resolved is not None
-            and resolved.value.value == declared.default
             and resolved.layer is ParameterLayer.GLOBAL
+            and is_rulebook_default(resolved.value)
         ):
             notes.append(f"{name}: {declared.note}")
 

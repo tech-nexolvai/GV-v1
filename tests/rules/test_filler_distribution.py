@@ -13,7 +13,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from rules.parameters import ParameterLayer, ParameterValue, Provenance, ResolvedParameter
+from rules.parameters import (
+    RULEBOOK_DEFAULT,
+    ParameterLayer,
+    ParameterValue,
+    Provenance,
+    ResolvedParameter,
+)
 from rules.schema import Cardinality, Quantity, Rule
 from rules.snapshot import publish
 from units.measurement import Measurement, Unit
@@ -61,17 +67,25 @@ def _operand(
     )
 
 
-def _parameter(name: str, value: int | Fraction) -> ResolvedParameter:
+def _parameter(name: str, value: int | Fraction, set_by: str = "GV") -> ResolvedParameter:
     return ResolvedParameter(
         name=name,
         value=ParameterValue(
             value=Quantity(value=value, unit=Unit.INCH),
             provenance=Provenance.COMPANY_STANDARD,
-            set_by="GV",
+            set_by=set_by,
             set_at=datetime(2026, 8, 22, tzinfo=UTC),
         ),
         layer=ParameterLayer.GLOBAL,
     )
+
+
+def _with_rulebook_filler_defaults() -> dict[str, ResolvedParameter]:
+    """The bounds as `declared_defaults` hands them over: the rule author's own 1"/2"."""
+    parameters = _parameters()
+    for name, value in (("filler_min", 1), ("filler_max", 2)):
+        parameters[name] = _parameter(name, value, set_by=f"{RULEBOOK_DEFAULT} (CAB-FILLER-001)")
+    return parameters
 
 
 #: Every bound the rule needs, supplied per test, at the GLOBAL layer. The filler pair matches the
@@ -401,10 +415,21 @@ def test_operation_still_refuses_malformed_modes_and_bounds() -> None:
 def test_a_finding_on_rajs_default_bounds_says_his_examples_differ() -> None:
     """**#674, the admin's decision of 2026-10-02.** Outcome: a check that used Raj's written 1"/2"
     says, on the finding itself, that his worked examples use 2"/3" and that we are asking him."""
-    finding = execute(publish(_load_rule()), _operands(proposed_fillers=(2, 2)), _parameters())
+    finding = execute(
+        publish(_load_rule()), _operands(proposed_fillers=(2, 2)), _with_rulebook_filler_defaults()
+    )
 
     assert any(note.startswith("filler_min: 1\" is Raj's written rule") for note in finding.notes)
     assert any(note.startswith("filler_max: 2\" is Raj's written rule") for note in finding.notes)
+
+
+def test_a_company_standard_at_the_defaults_own_value_carries_no_doubt() -> None:
+    """**#812, the second #674 trap.** GV records 2" as its company standard: the same number as the
+    default, at the same GLOBAL layer, but a person's answer. Outcome: no "awaiting his
+    confirmation" — the note is about the rule author's default, and that is not what is in use."""
+    finding = execute(publish(_load_rule()), _operands(proposed_fillers=(2, 2)), _parameters())
+
+    assert not any(note.startswith(("filler_min:", "filler_max:")) for note in finding.notes)
 
 
 def test_a_bound_a_reviewer_set_carries_no_doubt() -> None:
@@ -412,7 +437,7 @@ def test_a_bound_a_reviewer_set_carries_no_doubt() -> None:
     the reviewer chose that number, and the doubt was about the default."""
     from dataclasses import replace
 
-    parameters = _parameters()
+    parameters = _with_rulebook_filler_defaults()
     for name in ("filler_min", "filler_max"):
         parameters[name] = replace(parameters[name], layer=ParameterLayer.PROJECT)
 

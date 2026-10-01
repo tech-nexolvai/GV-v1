@@ -437,6 +437,27 @@ def resolve_all(*sets: ParameterSet) -> dict[str, ResolvedParameter]:
 
 
 # ---------------------------------------------------------------------------
+# The rulebook's own defaults (#812)
+# ---------------------------------------------------------------------------
+
+#: What `set_by` says of a value that is a rule author's declared default rather than one a person
+#: recorded: `app.models.parameters.declared_defaults` writes `"<this> (<rule id>)"`. Named here,
+#: beside the type it marks, so the builder and `verdict.engine` — which prints a default's doubt
+#: only while the default itself is in use — cannot spell it two ways.
+RULEBOOK_DEFAULT: str = "rulebook default"
+
+
+def is_rulebook_default(value: ParameterValue) -> bool:
+    """Whether `value` is a rule's declared default, not a number a person set (#812).
+
+    The test the engine needs for a default's doubt note (#674). Comparing the *number* was wrong: a
+    company standard confirmed at the default's own value is a person's answer, and the note
+    "awaiting his confirmation" would then sit on every finding after the confirmation came.
+    """
+    return value.set_by == RULEBOOK_DEFAULT or value.set_by.startswith(f"{RULEBOOK_DEFAULT} (")
+
+
+# ---------------------------------------------------------------------------
 # USER_INPUT — the operand a human types in (#66)
 # ---------------------------------------------------------------------------
 

@@ -48,7 +48,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime
-from rules.parameters import ParameterLayer, Provenance
+from rules.parameters import RULEBOOK_DEFAULT, ParameterLayer, Provenance
 from rules.parameters import ParameterSet as InMemoryParameterSet
 from rules.parameters import ParameterValue as InMemoryParameterValue
 from rules.schema import Quantity, Rule
@@ -318,7 +318,7 @@ def declared_defaults(rules: Iterable[Rule], *, when: datetime) -> InMemoryParam
             parameters[name] = InMemoryParameterValue(
                 value=declared.default,
                 provenance=Provenance.COMPANY_STANDARD,
-                set_by=f"rulebook default ({rule.id})",
+                set_by=f"{RULEBOOK_DEFAULT} ({rule.id})",
                 set_at=when,
             )
     return InMemoryParameterSet(

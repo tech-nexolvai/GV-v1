@@ -171,13 +171,14 @@ def _revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRe
 def _store(
     session: Session,
     *,
-    project_id: UUID,
+    project_id: UUID | None,
     layer: ParameterLayer,
     values: dict[str, Measurement],
     typed: dict[str, str],
     actor: str,
     carry_forward: bool,
     package_revision_id: UUID | None = None,
+    provenance: Provenance = Provenance.MEASURED,
 ) -> tuple[int | None, tuple[StoredValue, ...]]:
     """Persist one layer's values, reusing an identical set rather than minting a second.
 
@@ -247,7 +248,8 @@ def _store(
             }
 
     parameters = ParameterSet(
-        project_id=str(project_id),
+        # `None` for the company layer (#812), which belongs to no project.
+        project_id=None if project_id is None else str(project_id),
         layer=layer,
         version=next_version,
         parameters={
@@ -255,10 +257,11 @@ def _store(
             **{
                 name: ParameterValue(
                     value=Quantity(value=measurement.exact, unit=measurement.unit),
-                    # MEASURED: a person measured or read it. `HUMAN_PROVENANCES` is a closed set with
-                    # no member a model could claim, which is what keeps a model's number out of here
-                    # — not a check in this module.
-                    provenance=Provenance.MEASURED,
+                    # MEASURED: a person measured or read it — or COMPANY_STANDARD for the company
+                    # layer (#812). Every member of `Provenance` is a person's or the rulebook's;
+                    # none is one a model could claim, which is what keeps a model's number out of
+                    # here — not a check in this module.
+                    provenance=provenance,
                     set_by=actor,
                     set_at=now,
                 )

@@ -4,6 +4,7 @@ import { ReviewPage } from './pages/ReviewPage';
 import { PackagesPage } from './pages/PackagesPage';
 import { WelcomePage } from './pages/WelcomePage';
 
+import { CompanySettingsPage } from './pages/CompanySettingsPage';
 import { RulebookPage } from './pages/RulebookPage';
 import { UsagePage } from './pages/UsagePage';
 import { createPackage } from './api/upload';
@@ -133,6 +134,8 @@ export default function App() {
       )}
 
       {activePage === 'rulebook' && <RulebookPage />}
+
+      {activePage === 'settings' && <CompanySettingsPage />}
 
       {activePage === 'usage' && <UsagePage />}
 
