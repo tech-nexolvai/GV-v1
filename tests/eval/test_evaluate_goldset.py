@@ -633,9 +633,9 @@ def test_a_wrong_reading_is_reported_as_wrong(
 ) -> None:
     """**Input: the synthetic package. Outcome: one reading right, one reported wrong.**
 
-    The fixture's second dimension is `28 3/4"` — a mixed fraction with a space in it, which
-    `extract_words` splits, so the reader confirms `3/4"`. That is a genuine weakness in the reader
-    and the grader has to show it.
+    The fixture's drawing says `28 1/2"` where its answer key says `28 3/4"`, and the grader has to
+    show it. (It once came from the reader splitting `28 3/4"` and reading `3/4"`; that is fixed,
+    #738, and the disagreement is now written into the fixture.)
 
     Asserted because the alternative is a tautology. The answer key supplies the reviewer's *types*
     so a rule can run at all, and if it supplied the *values* too then reading accuracy would be

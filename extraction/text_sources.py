@@ -9,6 +9,7 @@ button that was pressed:
 | `EXACT_TEXT` | exported with its fonts kept (TrueType, or AutoCAD `PDFSHX=2`) | the vector route, exactly |
 | `CAD_TEXT_NOTES` | AutoCAD export with SHX fonts (`PDFSHX=1`, its default) | the CAD-text route, exactly |
 | `STAMP_TEXT` | a text PDF pasted into a review set (Bluebeam snapshot): `AI_Set_1`, part of `AI_Set_2` | the stamp-text route, exactly |
+| `STAMP_COLOURED_TEXT` | coloured text inside a pasted drawing: on `AI_Set_1`, a reviewer's markup snapped with the sheet | not read: it may be the answer |
 | `UNDECODED_TEXT` | font text whose characters map to nothing | not read: there is no text to read |
 | `DRAWN_SHAPES` | printed to PDF: every character a pen stroke (most of `AI_Set_2`) | the shape reader and model readers |
 | `SCANNED` | a picture of a drawing | OCR and model readers |
@@ -52,6 +53,7 @@ class TextKind(StrEnum):
     EXACT_TEXT = "exact_text"
     CAD_TEXT_NOTES = "cad_text_notes"
     STAMP_TEXT = "stamp_text"
+    STAMP_COLOURED_TEXT = "stamp_coloured_text"
     UNDECODED_TEXT = "undecoded_text"
     DRAWN_SHAPES = "drawn_shapes"
     SCANNED = "scanned"
@@ -63,6 +65,7 @@ READ_BY: Final[dict[TextKind, str | None]] = {
     TextKind.EXACT_TEXT: "vector",
     TextKind.CAD_TEXT_NOTES: "cad_text",
     TextKind.STAMP_TEXT: "stamp_text",
+    TextKind.STAMP_COLOURED_TEXT: None,
     TextKind.UNDECODED_TEXT: None,
     TextKind.DRAWN_SHAPES: "glyph + vision",
     TextKind.SCANNED: "ocr + vision",
@@ -86,6 +89,10 @@ class TextSources:
     stamp_text_undecoded: int
     """Characters of font text inside pasted drawings that map to nothing."""
 
+    stamp_text_coloured: int
+    """Characters of font text inside pasted drawings set in colour, which may be a reviewer's markup
+    snapped with the sheet (`extraction/stamp_text.py`)."""
+
     drawn_paths: int
     """Path objects, in the page's content and inside pasted drawings: line-work, and on a printed
     drawing every character too."""
@@ -103,6 +110,8 @@ class TextSources:
             present.append(TextKind.CAD_TEXT_NOTES)
         if self.stamp_text_decoded:
             present.append(TextKind.STAMP_TEXT)
+        if self.stamp_text_coloured:
+            present.append(TextKind.STAMP_COLOURED_TEXT)
         if self.stamp_text_undecoded:
             present.append(TextKind.UNDECODED_TEXT)
         if self.drawn_paths:
@@ -111,6 +120,7 @@ class TextSources:
             self.content_characters
             or self.cad_text_notes
             or self.stamp_text_decoded
+            or self.stamp_text_coloured
             or self.stamp_text_undecoded
             or self.drawn_paths
         ):
@@ -129,6 +139,7 @@ class TextSources:
             "cad_text_notes": self.cad_text_notes,
             "stamp_text_decoded": self.stamp_text_decoded,
             "stamp_text_undecoded": self.stamp_text_undecoded,
+            "stamp_text_coloured": self.stamp_text_coloured,
             "drawn_paths": self.drawn_paths,
             "images": self.images,
             "kinds": [kind.value for kind in self.kinds],
@@ -160,9 +171,7 @@ def survey_page(data: bytes, page_index: int) -> TextSources:
         if _layer_of(annotation, _subtype(annotation)) is DrawingLayer.VENDOR_TEXT
     )
     has_stamps = any(_subtype(annotation) == "Stamp" for annotation in annotations)
-    stamp_text_decoded, stamp_text_undecoded = (
-        stamp_character_counts(data, page_index) if has_stamps else (0, 0)
-    )
+    stamp = stamp_character_counts(data, page_index) if has_stamps else None
 
     drawn_paths = 0
     document = pdfium.PdfDocument(data)
@@ -194,8 +203,9 @@ def survey_page(data: bytes, page_index: int) -> TextSources:
         page_index=page_index,
         content_characters=content_characters,
         cad_text_notes=cad_text_notes,
-        stamp_text_decoded=stamp_text_decoded,
-        stamp_text_undecoded=stamp_text_undecoded,
+        stamp_text_decoded=0 if stamp is None else stamp.readable,
+        stamp_text_undecoded=0 if stamp is None else stamp.unmapped,
+        stamp_text_coloured=0 if stamp is None else stamp.coloured,
         drawn_paths=drawn_paths,
         images=images,
     )

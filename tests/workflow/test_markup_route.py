@@ -512,3 +512,33 @@ def test_the_page_result_says_which_forms_its_text_arrived_in(
     assert sources["cad_text_notes"] == 2
     assert "cad_text_notes" in sources["kinds"]
     assert sources["not_read_yet"] == []
+
+
+#: `24 3/4"` set as CAD text inside a pasted drawing: a `24`, a smaller `3` over a `4`, an inch mark.
+STACKED_IN_A_STAMP = _sheet(
+    b'(24) Tj /F1 8 Tf 13.3 3 Td (3) Tj 0 -6 Td (4) Tj /F1 12 Tf 4.4 3 Td (") Tj'
+)
+
+
+def test_a_stacked_fraction_in_a_pasted_drawing_goes_to_a_reviewer_unread(
+    session: Session, store: LocalStore
+) -> None:
+    """**The failure this prevents (#738).** The stamp route read `24 3/4"` as `2434"`. Outcome: no
+    value is recorded from it, and the page result counts it as a stacked fraction set aside — the
+    place the admin's rule sends a reviewer (#726)."""
+    revision = _revision(session, store, data=STACKED_IN_A_STAMP)
+    session.commit()
+    (result,) = _stages(store).extract_pages(session, revision.id)
+    session.commit()
+
+    assert result.payload["text_set_aside"] == {"stacked_fraction": 1}
+    assert all(row.value_numerator is None for row in _route_rows(session, STAMP_TEXT_EXTRACTOR))
+
+
+def test_a_page_with_nothing_set_aside_says_so(session: Session, store: LocalStore) -> None:
+    revision = _revision(session, store, data=_sheet(b'(36") Tj'))
+    session.commit()
+    (result,) = _stages(store).extract_pages(session, revision.id)
+    session.commit()
+
+    assert result.payload["text_set_aside"] == {}
