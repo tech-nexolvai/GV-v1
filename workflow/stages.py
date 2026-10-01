@@ -198,6 +198,7 @@ from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
+from verdict.outcomes import Outcome
 from workflow.association import (
     AssociationSettings,
     LocalizedOcrSettings,
@@ -205,7 +206,11 @@ from workflow.association import (
     dimension_texts,
 )
 from workflow.config import READER_RASTER_DPI
-from workflow.evidence_operands import operands_from_evidence
+from workflow.evidence_operands import (
+    IDENTIFIER_PAIRING_WITHHELD,
+    identifier_paired_inputs,
+    operands_from_evidence,
+)
 from workflow.findings_composer import (
     ComposerFinding,
     ComposerOperand,
@@ -3827,6 +3832,15 @@ class DatabaseStages:
                     resolved,
                     discriminators=self._discriminators,
                 )
+                # A pairing input evidence was not allowed to fill (#794), named in the reviewer's
+                # sentence — otherwise "could not resolve 'architectural_cabinets'" reads as though
+                # labelling a cabinet would fix it, when it is the tag that is missing.
+                if finding.outcome is Outcome.NOT_FOUND and (
+                    identifier_paired_inputs(applicable.snapshot.rule) - supplied.keys()
+                ):
+                    finding = replace(
+                        finding, reason=f"{IDENTIFIER_PAIRING_WITHHELD} ({finding.reason})"
+                    )
                 record_finding(
                     session,
                     package_revision_id=package_revision_id,
