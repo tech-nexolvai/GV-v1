@@ -7,7 +7,7 @@ from fractions import Fraction
 
 import pytest
 
-from evidence.candidate import ObservationCandidate
+from evidence.candidate import STACKED_FRACTION_FLAG, ObservationCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint
 from evidence.corroborate import CorroborationResult, corroborate
@@ -327,3 +327,30 @@ def test_every_defined_vision_reader_has_a_known_vendor() -> None:
     assert "vendor:unknown" not in keys.values(), keys
     assert keys["bedrock-nova-2-lite"] != keys["bedrock-ministral-3-3b"]
     assert keys["bedrock-ministral-3-3b"] == keys["bedrock-mistral-large-3"]
+
+
+def test_a_stacked_fraction_is_never_agreed_into_evidence() -> None:
+    """**#726, held where agreement is decided.** Input: two independent readers — one the exact
+    text of a stacked `24 3/4"`, flagged stacked — agreeing in value and meaning. Outcome: still a
+    raw candidate, with no lane: a reviewer confirms a stacked fraction, however many readers agree.
+    """
+    from dataclasses import replace
+
+    exact = _candidate(
+        "stamp-1", "extraction.stamp_text", exact=Fraction(99, 4), raw_text='24 3/4"'
+    )
+    stacked = replace(exact, ambiguity_flags=(STACKED_FRACTION_FLAG,))
+    vision = _candidate(
+        "vision-1",
+        "extraction.models.vision",
+        exact=Fraction(99, 4),
+        raw_text='24 3/4"',
+        extractor_version="us.amazon.nova-2-lite-v1:0",
+    )
+
+    assert corroborate((exact, vision)).status is EvidenceStatus.CORROBORATED  # the control
+    result = corroborate((stacked, vision))
+
+    assert result.status is EvidenceStatus.RAW_CANDIDATE
+    assert result.lane is None
+    assert result.conflicts_with == ()

@@ -11,10 +11,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Final
 
 from evidence.coordinates import ImagePoint
 from units.measurement import Measurement, Unit
 from vocabulary.semantic_types import SemanticType
+
+#: A reading of a label set as a stacked fraction (#738): `24 3/4"` composed exactly from the file's
+#: own characters — the `24`, the `3` set over the `4`, the mark — and kept so a reviewer opens it
+#: already filled in. **Never agreed into evidence, by any number of readers**: the admin's rule is
+#: that a stacked fraction always goes to a reviewer (#726), and a reading composed from geometry is
+#: still a reading of one.
+STACKED_FRACTION_FLAG: Final = "stacked_fraction"
 
 
 @dataclass(frozen=True, slots=True)

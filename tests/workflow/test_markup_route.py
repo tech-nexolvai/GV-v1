@@ -54,7 +54,7 @@ from tests.extraction.test_annotations import (
     _pdf,
     _stamp,
 )
-from tests.extraction.test_stamp_text import _sheet
+from tests.extraction.test_stamp_text import CLIENT_SIZE_STACK, _sheet
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import (
@@ -542,3 +542,45 @@ def test_a_page_with_nothing_set_aside_says_so(session: Session, store: LocalSto
     session.commit()
 
     assert result.payload["text_set_aside"] == {}
+
+
+def test_a_stacked_fraction_read_whole_is_a_suggestion_never_evidence(
+    session: Session, store: LocalStore
+) -> None:
+    """**The quick win, and its limit (#738, #726).** Outcome: `24 3/4"` is recorded with its exact
+    value, so a reviewer opens it filled in — flagged as stacked, with no corroboration lane, and
+    counted on the page as a stacked fraction read."""
+    from evidence.candidate import STACKED_FRACTION_FLAG
+
+    revision = _revision(session, store, data=_sheet(CLIENT_SIZE_STACK))
+    session.commit()
+    (result,) = _stages(store).extract_pages(session, revision.id)
+    session.commit()
+
+    (row,) = _route_rows(session, STAMP_TEXT_EXTRACTOR)
+    assert row.raw_text == '24 3/4"'
+    assert Fraction(row.value_numerator, row.value_denominator) == Fraction(99, 4)
+    assert STACKED_FRACTION_FLAG in row.ambiguity_flags
+    assert row.corroboration_lane is None
+    assert result.payload["stacked_fractions_read"] == 1
+    assert result.payload["text_set_aside"] == {}
+
+
+def test_millimetres_over_inches_in_a_pasted_drawing_are_valued_by_their_inches(
+    session: Session, store: LocalStore
+) -> None:
+    """Outcome: `585 [23]` is one reading, valued at its bracketed 23 inches, with the dual lane's
+    check of the millimetres against them — not set aside, and not a stacked fraction."""
+    revision = _revision(session, store, data=_sheet(b"/F1 3 Tf (585) Tj 0.4 -3 Td ([23]) Tj"))
+    session.commit()
+    (result,) = _stages(store).extract_pages(session, revision.id)
+    session.commit()
+
+    (row,) = _route_rows(session, STAMP_TEXT_EXTRACTOR)
+    assert row.raw_text == "585 [23]"
+    assert Fraction(row.value_numerator, row.value_denominator) == 23
+    from evidence.canonical import CorroborationLane
+
+    assert row.corroboration_lane == CorroborationLane.DUAL_UNIT.value
+    assert result.payload["text_set_aside"] == {}
+    assert result.payload["stacked_fractions_read"] == 0

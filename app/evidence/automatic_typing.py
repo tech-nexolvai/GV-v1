@@ -28,6 +28,7 @@ from app.models.evidence import (
     ObservationCandidate,
 )
 from app.models.runs import ExtractionRun
+from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import Authority, CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint
@@ -225,6 +226,11 @@ def qualify_exact_tag_pair(
         return _review(
             candidate_id=candidate_id,
             reason="the reading and tag are not on the same document page",
+        )
+    if STACKED_FRACTION_FLAG in (reading.ambiguity_flags or ()):
+        return _review(
+            candidate_id=candidate_id,
+            reason="a stacked fraction always goes to a reviewer (#726)",
         )
     if _already_qualified(session, candidate_id):
         return _review(

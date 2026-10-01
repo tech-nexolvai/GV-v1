@@ -1261,10 +1261,20 @@ class DatabaseStages:
             # readers set them aside rather than read `24 3/4"` as `2434"`; listing them here is what
             # sends them to a reviewer and makes every model crop that shows one abstain (#726).
             text_set_aside = (read.set_aside if read is not None else ()) + stamp_set_aside
+            # A stacked fraction read whole (`24 3/4"`, recorded flagged as stacked) is still one: its
+            # place is listed with those set aside, so the same rule applies to it (#726).
+            stacked_read = tuple(
+                item
+                for item in (read.texts if read is not None else ()) + stamp_texts
+                if item.stacked
+            )
             text_stacked = tuple(
                 StackedFraction(extent=label.extent, image_extent=label.image_extent)
                 for label in text_set_aside
                 if label.reason is SetAsideReason.STACKED_FRACTION
+            ) + tuple(
+                StackedFraction(extent=item.extent, image_extent=item.image_extent)
+                for item in stacked_read
             )
             if layers is not None and text_stacked:
                 layers = replace(layers, stacked_fractions=layers.stacked_fractions + text_stacked)
@@ -1486,6 +1496,8 @@ class DatabaseStages:
                         "text_set_aside": dict(
                             Counter(label.reason.value for label in text_set_aside)
                         ),
+                        # Stacked fractions read whole and recorded as a reviewer's suggestion.
+                        "stacked_fractions_read": len(stacked_read),
                         "text_sources": text_sources,
                         "vision_candidates": len(vision_rows),
                         # OCR text that could not be a reading (#703): counted here because it is
