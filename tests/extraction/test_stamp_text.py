@@ -15,7 +15,9 @@ import zlib
 from decimal import Decimal
 from uuid import UUID
 
-from extraction.stamp_text import read_stamp_text, stamps_only
+import pytest
+
+from extraction.stamp_text import drawing_ink, read_stamp_text, stamps_only
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
 
 DOCUMENT = UUID("22222222-2222-4222-8222-222222222222")
@@ -101,7 +103,7 @@ def test_a_page_without_pasted_text_says_so() -> None:
 
     assert reading.contents.texts == ()
     assert reading.contents.unreadable_reason is not None
-    assert reading.readable_characters == 0
+    assert reading.characters.readable == 0
 
 
 def test_the_stamps_line_work_is_not_read_twice() -> None:
@@ -118,3 +120,52 @@ def test_the_file_passed_in_is_never_changed() -> None:
     stamps_only(data, 0)
 
     assert data == before
+
+
+def test_coloured_text_in_a_pasted_drawing_is_not_read() -> None:
+    """**The vendor-layer rule, inside a snapshot.** Measured on `AI_Set_1`: it has no `/FreeText`;
+    the reviewer's red corrections are text inside the pasted drawings, and were read as the
+    vendor's. Outcome: the black `36"` is read, the red `38"` is counted and not read."""
+    reading = read_stamp_text(
+        _sheet(b'(36") Tj 1 0 0 rg 0 -20 Td (38") Tj'),
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+    )
+
+    assert [item.text for item in reading.contents.texts] == ['36"']
+    assert reading.characters.coloured == 3
+    assert reading.characters.readable == 3
+
+
+@pytest.mark.parametrize(
+    ("colour", "ink"),
+    [
+        (None, True),
+        ((0,), True),
+        ((0.5,), True),
+        ((0.0, 0.0, 0.0), True),
+        ((0.3, 0.3, 0.3), True),
+        ((0.0, 0.0, 0.0, 1.0), True),
+        ((1.0, 0.0, 0.0), False),
+        ((0.0, 0.0, 1.0), False),
+        ((0.16, 0.192, 0.537), False),
+        ((0.0, 1.0, 1.0, 0.0), False),
+        (("P1",), False),
+    ],
+)
+def test_drawing_ink_is_black_or_grey(colour: object, ink: bool) -> None:
+    assert drawing_ink({"non_stroking_color": colour}) is ink
+
+
+def test_a_stacked_fraction_in_a_pasted_drawing_is_set_aside() -> None:
+    """Outcome: `24 3/4"` set as CAD text inside a snapshot is never `2434"`."""
+    reading = read_stamp_text(
+        _sheet(b'(24) Tj /F1 8 Tf 13.3 3 Td (3) Tj 0 -6 Td (4) Tj /F1 12 Tf 4.4 3 Td (") Tj'),
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+    )
+
+    assert not any(item.text.startswith("24") for item in reading.contents.texts)
+    assert [label.reason.value for label in reading.contents.set_aside] == ["stacked_fraction"]

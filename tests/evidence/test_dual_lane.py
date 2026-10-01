@@ -248,14 +248,13 @@ def test_a_single_reading_token_says_no_lane_applied(session: Session, store: Lo
     Null rather than a status meaning "nothing found": no lane examined this reading, which is a
     different fact from a lane examining it and reaching no conclusion.
     """
-    # `extract_words` splits `38 3/4"` at the space, so the reader emits `38` and `3/4"` — only the
-    # second carries its own unit marker and therefore a value. That splitting is exactly what the
-    # dual-token path above exists to undo, and leaving it visible here is the point: this is what an
-    # ordinary single-reading dimension looks like coming out of the reader today.
+    # `extract_words` splits `38 3/4"` at the space; the reader joins it back, as it joins a dual
+    # token, because `3/4"` alone would be three quarters of an inch (#738). This is what an ordinary
+    # single-reading dimension looks like coming out of the reader.
     candidates = _read(session, store, '38 3/4"')
 
-    candidate = candidates['3/4"']
-    assert candidate.value_numerator == 3
+    candidate = candidates['38 3/4"']
+    assert candidate.value_numerator == 155
     assert candidate.value_denominator == 4
     assert candidate.corroboration_status is None
     assert candidate.corroboration_lane is None

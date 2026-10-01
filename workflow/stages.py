@@ -166,6 +166,8 @@ from extraction.panels import propose_panel_roles
 from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
 from extraction.reader import (
     PageContents,
+    SetAsideLabel,
+    SetAsideReason,
     TextItem,
     UnreadablePdf,
     read_page_contents,
@@ -1247,7 +1249,7 @@ class DatabaseStages:
             )
             # **The text inside the pasted drawings, read exactly.** #738 took it for unreadable; it
             # is font text a snapshot carried over from the sheet it was taken from (formats phase 1).
-            stamp_texts, stamp_text_rows = self._read_page_stamp_text(
+            stamp_texts, stamp_set_aside, stamp_text_rows = self._read_page_stamp_text(
                 session,
                 version_id=version_id,
                 data=data,
@@ -1255,6 +1257,18 @@ class DatabaseStages:
                 task_run_id=run.task_run_id,
                 layers=layers,
             )
+            # **Stacked fractions set in text join the ones the bar detector found** (#738). The text
+            # readers set them aside rather than read `24 3/4"` as `2434"`; listing them here is what
+            # sends them to a reviewer and makes every model crop that shows one abstain (#726).
+            text_set_aside = (read.set_aside if read is not None else ()) + stamp_set_aside
+            text_stacked = tuple(
+                StackedFraction(extent=label.extent, image_extent=label.image_extent)
+                for label in text_set_aside
+                if label.reason is SetAsideReason.STACKED_FRACTION
+            )
+            if layers is not None and text_stacked:
+                layers = replace(layers, stacked_fractions=layers.stacked_fractions + text_stacked)
+            page_stacked = layers.stacked_fractions if layers is not None else text_stacked
             # **Which forms this page's text arrived in, and which of them nothing reads yet.** A
             # vendor does not choose how its PDF stores numbers; the page result says, so a page whose
             # text sits in a form no route reads is reported as that, not as a page with no numbers.
@@ -1367,7 +1381,7 @@ class DatabaseStages:
                         tuple(_VisionRegion.of(row) for row in vector_rows + ocr_rows)
                         + fragment_regions
                     ),
-                    stacked_fractions=(() if layers is None else layers.stacked_fractions),
+                    stacked_fractions=page_stacked,
                 )
 
             self._apply_cross_route_corroboration(
@@ -1467,6 +1481,11 @@ class DatabaseStages:
                         # was printed to PDF rather than exported, which is every drawing so far.
                         "cad_text_candidates": len(cad_text_rows),
                         "stamp_text_candidates": len(stamp_text_rows),
+                        # Runs of text never read as numbers (#738), by why: the stacked fractions
+                        # go to a reviewer; the others are left for the readers that see the whole.
+                        "text_set_aside": dict(
+                            Counter(label.reason.value for label in text_set_aside)
+                        ),
                         "text_sources": text_sources,
                         "vision_candidates": len(vision_rows),
                         # OCR text that could not be a reading (#703): counted here because it is
@@ -2349,8 +2368,10 @@ class DatabaseStages:
         page: Page,
         task_run_id: UUID,
         layers: PageLayers | None,
-    ) -> tuple[tuple[TextItem, ...], list[ObservationCandidate]]:
+    ) -> tuple[tuple[TextItem, ...], tuple[SetAsideLabel, ...], list[ObservationCandidate]]:
         """Record the font text inside the page's pasted drawings, under a route of its own.
+
+        Returns the runs read, the runs set aside unread (#738), and the rows written.
 
         Read by `extraction/stamp_text.py` from a copy of the page holding only its stamps — never
         the reviewer's markup, never the page's own content — and written by the vector route's own
@@ -2361,7 +2382,7 @@ class DatabaseStages:
         recorded as unreadable under this route, not skipped, as every other route does (#491).
         """
         if layers is None or not layers.vendor_stamps:
-            return (), []
+            return (), (), []
         try:
             stamp = read_stamp_text(data, page.index, document_version_id=version_id, dpi=self._dpi)
         except UnreadablePdf as error:
@@ -2380,9 +2401,10 @@ class DatabaseStages:
                 page_index=page.index,
                 error=error,
             )
-            return (), []
+            return (), (), []
+        stacked = stamp.contents.set_aside
         if not stamp.contents.texts:
-            return (), []
+            return (), stacked, []
         with traced(
             "extraction.page.stamp_text",
             document_version_id=str(version_id),
@@ -2406,7 +2428,7 @@ class DatabaseStages:
                 page_index=page.index,
                 flush=False,
             )
-            return stamp.contents.texts, rows
+            return stamp.contents.texts, stacked, rows
 
     def _read_page_by_ocr(
         self,

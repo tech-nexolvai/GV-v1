@@ -249,9 +249,10 @@ def test_a_token_carrying_its_own_unit_is_parsed(session: Session, store: LocalS
     revision = _revision(session, store)
     DatabaseStages(store).extract_pages(session, revision.id)
 
-    inches = _candidates(session)['3/4"']
+    # Read whole: `3/4"` alone would be three quarters of an inch for a label of 38 3/4 (#738).
+    inches = _candidates(session)['38 3/4"']
 
-    assert inches.value_numerator == 3
+    assert inches.value_numerator == 155
     assert inches.value_denominator == 4
     assert inches.unit == "in"
     assert inches.ambiguity_flags == []

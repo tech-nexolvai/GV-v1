@@ -138,6 +138,7 @@ def test_a_kind_nobody_reads_is_reported_unread() -> None:
         cad_text_notes=0,
         stamp_text_decoded=0,
         stamp_text_undecoded=5,
+        stamp_text_coloured=0,
         drawn_paths=40,
         images=0,
     )
@@ -163,3 +164,20 @@ def test_a_page_beyond_the_document_is_refused() -> None:
 
     with pytest.raises(UnreadablePdf):
         survey_page(TEXT_PAGE, 3)
+
+
+def test_coloured_text_in_a_pasted_drawing_is_reported_unread() -> None:
+    """Outcome: coloured text inside a snapshot, which may be somebody's markup, is named as unread."""
+    sources = TextSources(
+        page_index=0,
+        content_characters=0,
+        cad_text_notes=0,
+        stamp_text_decoded=12,
+        stamp_text_undecoded=0,
+        stamp_text_coloured=4,
+        drawn_paths=0,
+        images=0,
+    )
+
+    assert sources.kinds == (TextKind.STAMP_TEXT, TextKind.STAMP_COLOURED_TEXT)
+    assert sources.as_payload()["not_read_yet"] == ["stamp_coloured_text"]
