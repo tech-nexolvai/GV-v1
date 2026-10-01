@@ -52,8 +52,9 @@ from app.main import create_app
 from app.models import Project
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
+from tests.extraction.test_annotations import _pdf, _stamp
 from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
+from tests.extraction.test_stamp_text import HELVETICA, _text_appearance
 from tests.workflow.test_stages import _publish_rulebook
 from workflow.association import AssociationSettings
 from workflow.review import run_all
@@ -82,30 +83,39 @@ SETTINGS = AssociationSettings(
 #: Two dimensions drawn end to end at page y=100 — page x=100..200 and x=200..300 — with witness
 #: lines crossing at each junction. A cabinet run, in other words: the shape `_chains` groups and
 #: the only shape a many-valued field can be filled from.
+#:
+#: **The numbers are the vendor's own text, inside the pasted drawing** (`extraction.stamp_text`).
+#: They were reviewer `/FreeText` notes until #802, which made markup sideless: on the client's
+#: sheets a FreeText number is the reviewer's correction written over the vendor's, and a fixture
+#: that filled the form from one was testing the very path that could pass a wrong drawing.
+#: Appearance coordinates map to the page as x - 50, y - 450, so each label sits just above its line.
 SHOP_DRAWING = _pdf(
-    annotations=[
-        _free_text('15"', rect=b"[110 90 190 110]"),
-        _free_text('36"', rect=b"[210 90 290 110]"),
-        _stamp(appearance_object=8),
-    ],
+    annotations=[_stamp(appearance_object=6)],
     extra_objects=[
-        _appearance(
+        _text_appearance(
             b"1 w 150 550 m 250 550 l S\n"
             b"1 w 250 550 m 350 550 l S\n"
             b"1 w 150 520 m 150 580 l S\n"
             b"1 w 250 520 m 250 580 l S\n"
             b"1 w 350 520 m 350 580 l S\n"
-        )
+            b'BT /F1 10 Tf 185 553 Td (15") Tj ET\n'
+            b'BT /F1 10 Tf 285 553 Td (36") Tj ET\n',
+            7,
+        ),
+        HELVETICA,
     ],
 )
 
 #: One dimension on the other sheet, so the package is the pair the modal requires.
 ARCH_DRAWING = _pdf(
-    annotations=[_free_text('51"', rect=b"[110 90 190 110]"), _stamp(appearance_object=7)],
+    annotations=[_stamp(appearance_object=6)],
     extra_objects=[
-        _appearance(
+        _text_appearance(
             b"1 w 150 550 m 250 550 l S\n1 w 150 520 m 150 580 l S\n1 w 250 520 m 250 580 l S\n"
-        )
+            b'BT /F1 10 Tf 185 553 Td (51") Tj ET\n',
+            7,
+        ),
+        HELVETICA,
     ],
 )
 

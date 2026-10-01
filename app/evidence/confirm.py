@@ -69,11 +69,14 @@ class RefusalReason(StrEnum):
     VIEW_ROLE_UNCONFIRMED = "view_role_unconfirmed"
     #: The reading's page holds drawings, and no single one holds it (#795).
     NOT_IN_ONE_VIEW = "not_in_one_view"
+    #: The reading is the reviewer's own markup, which is neither drawing (#802).
+    REVIEWER_MARKUP = "reviewer_markup"
 
 
 #: How a reading with no side is refused (`app/evidence/sides.py`, #795).
 _SIDE_REFUSAL = {
     SideRefusalReason.NOT_COMPARED: RefusalReason.NOT_NORMALISABLE,
+    SideRefusalReason.MARKUP: RefusalReason.REVIEWER_MARKUP,
     SideRefusalReason.NO_TRANSFORM: RefusalReason.NO_TRANSFORM,
     SideRefusalReason.NOT_IN_ONE_VIEW: RefusalReason.NOT_IN_ONE_VIEW,
     SideRefusalReason.VIEW_ROLE_UNCONFIRMED: RefusalReason.VIEW_ROLE_UNCONFIRMED,

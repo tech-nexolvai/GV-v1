@@ -11,6 +11,10 @@ exact-tag lane (`app/evidence/automatic_typing.py`), the fields the Measure page
 (`app/api/confirmations.py`) and the readings the form-filler may use (`workflow/propose.py`) all ask
 `ReadingSides.of`. A second rule anywhere would be the hole the first one closed.
 
+- **A reviewer's markup has no side at all** (#802). The markup route records the reviewer's
+  `/FreeText` notes, and on the client's sheets those are mostly boxes writing the architect's number
+  over the vendor's. Given the drawing's side, a boxed correction became the vendor's reading, so a
+  check could PASS the drawing the reviewer had just marked wrong.
 - **A page with no drawing views** — a genuine two-PDF package — takes its side from `Document.kind`,
   exactly as before.
 - **A page with views** takes it from the one view whose region holds the reading, once a person has
@@ -35,6 +39,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
+from typing import Final
 from uuid import UUID
 
 from sqlalchemy import select
@@ -54,13 +59,25 @@ from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
 from evidence.polygon import Polygon
 from vocabulary.semantic_types import DocumentRole
 
-__all__ = ["ReadingSides", "SideRefusal", "SideRefusalReason", "reading_transform"]
+__all__ = [
+    "MARKUP_ROUTE",
+    "ReadingSides",
+    "SideRefusal",
+    "SideRefusalReason",
+    "reading_transform",
+]
+
+#: The route the reviewer's markup is recorded under — `workflow.stages.MARKUP_EXTRACTOR`, restated
+#: because that module reads PDFs and the API may not import it (`tests/api/test_no_heavy_work.py`).
+#: `tests/evidence/test_sides.py` fails if the two part.
+MARKUP_ROUTE: Final = "extraction.annotations"
 
 
 class SideRefusalReason(StrEnum):
     """Why a reading has no side. Each is a fact about the drawing or its record, never a guess."""
 
     NOT_COMPARED = "not_compared"
+    MARKUP = "markup"
     NO_TRANSFORM = "no_transform"
     NOT_IN_ONE_VIEW = "not_in_one_view"
     VIEW_ROLE_UNCONFIRMED = "view_role_unconfirmed"
@@ -193,6 +210,13 @@ class ReadingSides:
 
     def of(self, row: ObservationCandidate) -> DocumentRole | SideRefusal:
         """`row`'s side, or why it has none."""
+        run = self._session.get(ExtractionRun, row.extraction_run_id)
+        if run is not None and run.extractor == MARKUP_ROUTE:
+            return SideRefusal(
+                SideRefusalReason.MARKUP,
+                "this is a reviewer's markup, not the architect's or the vendor's drawing, so it "
+                "cannot be either side's reading",
+            )
         page = self._session.get(Page, row.page_id)
         views = () if page is None else self._page_views(page)
         if not views:
@@ -206,7 +230,6 @@ class ReadingSides:
             return side
 
         assert page is not None
-        run = self._session.get(ExtractionRun, row.extraction_run_id)
         transform = None if run is None else reading_transform(page, run)
         if transform is None:
             return SideRefusal(
