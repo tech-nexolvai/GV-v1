@@ -253,10 +253,15 @@ def test_a_changed_project_setting_replaces_the_old_value_in_a_new_version(
     assert settings["countertop_overhang"][1] < settings["cabinet_depth"][1]
 
 
-def test_a_run_save_still_holds_only_what_it_sent(session: Session) -> None:
-    """**Deliberately unchanged by #799.** RUN sets are per project, not per package (#798 Step 0c),
-    so carrying a RUN value forward would hand one package's sink size to another package's checks.
-    Outcome: the second RUN save holds only its own value, until RUN is per package."""
+def _revision_of(session: Session, package: UUID) -> PackageRevision:
+    return session.execute(
+        select(PackageRevision).where(PackageRevision.package_id == package)
+    ).scalar_one()
+
+
+def test_a_second_run_save_keeps_that_packages_earlier_values(session: Session) -> None:
+    """**#801 lets RUN carry forward, within one package.** Outcome: the sink width typed first and
+    the depth typed second both stand for this package's checks."""
     from workflow.measurements import run_parameters_for
 
     package = _package(session)
@@ -270,12 +275,58 @@ def test_a_run_save_still_holds_only_what_it_sent(session: Session) -> None:
         url, json={"parameters": [{"name": "sink_interior_depth", "value": '16"', "scope": "run"}]}
     )
 
-    revision = session.execute(
-        select(PackageRevision).where(PackageRevision.package_id == package)
-    ).scalar_one()
-    run = run_parameters_for(session, revision.id)
+    run = run_parameters_for(session, _revision_of(session, package).id)
     assert run is not None
-    assert set(run.parameters) == {"sink_interior_depth"}
+    assert {name: str(value.value.value) for name, value in run.parameters.items()} == {
+        "sink_interior_width": "28",
+        "sink_interior_depth": "16",
+    }
+
+
+def test_two_packages_in_one_project_are_each_checked_on_their_own_values(
+    session: Session,
+) -> None:
+    """**#801, the one that matters most.** Two packages, one project, each with its own sink and its
+    own typed cabinet width; the first also gives a sink depth the second does not. Before #801 both
+    were judged on whichever was saved last — package A on package B's sink. Outcome: each package's
+    checks see only its own numbers, and the second never inherits the first one's depth."""
+    from workflow.measurements import operands_for, run_parameters_for
+
+    first, second = _package(session), _package(session)
+    client = _client(session)
+    entries = {
+        first: ([("sink_interior_width", '28"'), ("sink_interior_depth", '16"')], '30"'),
+        second: ([("sink_interior_width", '33"')], '36"'),
+    }
+    for package, (parameters, cabinet) in entries.items():
+        response = client.post(
+            f"/api/v1/projects/{PROJECT}/packages/{package}/measurements",
+            json={
+                "parameters": [
+                    {"name": name, "value": value, "scope": "run"} for name, value in parameters
+                ],
+                "measurements": [
+                    {
+                        "rule_id": "CT-SINK-CABINET-WIDTH-001",
+                        "name": "sink_cabinet_width",
+                        "value": cabinet,
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    expected = {
+        first: ({"sink_interior_width": "28", "sink_interior_depth": "16"}, "30"),
+        second: ({"sink_interior_width": "33"}, "36"),
+    }
+    for package, (run_values, cabinet) in expected.items():
+        revision = _revision_of(session, package)
+        run = run_parameters_for(session, revision.id)
+        assert run is not None
+        assert {n: str(v.value.value) for n, v in run.parameters.items()} == run_values
+        typed = operands_for(session, revision.id)["CT-SINK-CABINET-WIDTH-001"]
+        assert str(typed["sink_cabinet_width"].value.exact) == cabinet  # type: ignore[union-attr]
 
 
 def test_asking_for_checks_enqueues_and_runs_nothing(session: Session) -> None:

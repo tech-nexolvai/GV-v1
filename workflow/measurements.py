@@ -27,7 +27,6 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Package, PackageRevision
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import ParameterValue as StoredParameterValue
 from app.models.parameters import from_rows
@@ -57,25 +56,21 @@ LIST_MARKER = "#"
 def _latest_run_set(
     session: Session, package_revision_id: UUID
 ) -> tuple[StoredParameterSet | None, ParameterSet | None]:
-    """The newest RUN set for this package's project, and its values.
+    """The newest RUN set for this package revision, and its values.
+
+    **This revision's, not the project's** (#801). A RUN set is what was true for one review; read by
+    project, every package in it shared the newest one, so package A was checked on package B's sink
+    size. RUN rows written before migration 0054 name no revision and are read by nothing.
 
     **The newest, because a reviewer who corrects a typo submits again.** Running against an earlier
     set would judge the package on a number the reviewer had already replaced, and it would look
     entirely normal on the findings list. Earlier versions stay: a finding cites the version that
     judged it (ADR-0016), and superseding a value is not deleting it.
     """
-    project_id = session.execute(
-        select(Package.project_id)
-        .join(PackageRevision, PackageRevision.package_id == Package.id)
-        .where(PackageRevision.id == package_revision_id)
-    ).scalar_one_or_none()
-    if project_id is None:
-        return None, None
-
     stored = session.execute(
         select(StoredParameterSet)
         .where(
-            StoredParameterSet.project_id == project_id,
+            StoredParameterSet.package_revision_id == package_revision_id,
             StoredParameterSet.layer == ParameterLayer.RUN.value,
         )
         .order_by(StoredParameterSet.version.desc())
@@ -95,7 +90,7 @@ def _latest_run_set(
 def operands_for(
     session: Session, package_revision_id: UUID
 ) -> dict[str, dict[str, VerdictOperand]]:
-    """Every reviewer measurement for this package's project, keyed by rule then input name.
+    """Every reviewer measurement for this package revision, keyed by rule then input name.
 
     The stored key is `rule_id:name`, because two rules may each declare an input called `width` and
     they are not the same reading. Split here rather than stored pre-split: one column that holds a
