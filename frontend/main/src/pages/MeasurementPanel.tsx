@@ -35,7 +35,7 @@ import {
   isCategorical,
 } from './classificationFields';
 import { layoutChoiceDefaults } from './layoutChoices';
-import './EnterValuesPage.css';
+import './MeasurementPanel.css';
 
 /**
  * The reviewer completes the dimensions, and the deterministic engine decides.
@@ -248,7 +248,7 @@ function fieldLabel(quantity: Quantity): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-export function EnterValuesPage({
+export function MeasurementPanel({
   packageId: selectedPackageId,
   onDone,
   onChoosePackage,

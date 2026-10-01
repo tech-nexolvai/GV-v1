@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, X, FileImage, MapPin } from 'lucide-react';
 import type { Finding } from '../../data/types';
-import { downloadEvidenceCrop } from '../../api/client';
+import { downloadEvidenceCrop, downloadDocument } from '../../api/client';
 import { OutcomeBadge } from '../ui/Badge';
+import { PdfViewer } from './PdfViewer';
 import './EvidencePanel.css';
 
 interface EvidencePanelProps {
@@ -171,34 +172,52 @@ interface PdfPaneProps {
 }
 
 function PdfPane({ label, role, evidence, projectId, packageId }: PdfPaneProps) {
-  const [crop, setCrop] = useState<{ status: 'loading' } | { status: 'ready'; url: string } | { status: 'error'; message: string }>({ status: 'loading' });
+  const [docUrl, setDocUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     let objectUrl: string | null = null;
-    void downloadEvidenceCrop(projectId, packageId, evidence.canonical_observation_id).then(
-      (blob) => {
-        objectUrl = URL.createObjectURL(blob);
-        if (active) {
-          setCrop({ status: 'ready', url: objectUrl });
-        } else {
-          URL.revokeObjectURL(objectUrl);
-        }
-      },
-      (cause: unknown) => {
-        if (active) {
-          setCrop({
-            status: 'error',
-            message: cause instanceof Error ? cause.message : 'The stored crop could not be loaded.',
-          });
-        }
-      },
-    );
+    
+    // First try fetching the full document PDF for an interactive viewer
+    if (evidence.document_version_id) {
+      downloadDocument(projectId, packageId, evidence.document_version_id)
+        .then((blob) => {
+          objectUrl = URL.createObjectURL(blob);
+          if (active) setDocUrl(objectUrl);
+          else URL.revokeObjectURL(objectUrl);
+        })
+        .catch((e) => {
+          console.warn("Failed to download full PDF, falling back to crop", e);
+          // Fallback to crop if backend doesn't support downloading full PDF yet
+          downloadEvidenceCrop(projectId, packageId, evidence.canonical_observation_id)
+            .then((blob) => {
+              objectUrl = URL.createObjectURL(blob);
+              if (active) setDocUrl(objectUrl);
+              else URL.revokeObjectURL(objectUrl);
+            })
+            .catch((cause) => {
+              if (active) setError(cause instanceof Error ? cause.message : 'The evidence could not be loaded.');
+            });
+        });
+    } else {
+      // Direct fallback to crop
+      downloadEvidenceCrop(projectId, packageId, evidence.canonical_observation_id)
+        .then((blob) => {
+          objectUrl = URL.createObjectURL(blob);
+          if (active) setDocUrl(objectUrl);
+          else URL.revokeObjectURL(objectUrl);
+        })
+        .catch((cause) => {
+          if (active) setError(cause instanceof Error ? cause.message : 'The evidence could not be loaded.');
+        });
+    }
+
     return () => {
       active = false;
       if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
     };
-  }, [evidence.canonical_observation_id, packageId, projectId]);
+  }, [evidence.canonical_observation_id, evidence.document_version_id, packageId, projectId]);
 
   return (
     <div className="pdf-pane">
@@ -208,8 +227,6 @@ function PdfPane({ label, role, evidence, projectId, packageId }: PdfPaneProps) 
             {role}
           </div>
           <span className="pdf-pane__label">{label}</span>
-          {/* The filename used to be a fixed string here — two of them, naming documents
-              nobody uploaded. A finding does not carry one, so nothing is shown. */}
         </div>
         <span className="pdf-pane__page">
           <MapPin size={11} />
@@ -217,22 +234,22 @@ function PdfPane({ label, role, evidence, projectId, packageId }: PdfPaneProps) 
         </span>
       </div>
 
-      <div className="pdf-pane__crop">
-        {crop.status === 'loading' && <p className="pdf-pane__crop-state">Loading stored crop…</p>}
-        {crop.status === 'ready' && (
-          <img
-            className="pdf-pane__crop-image"
-            src={crop.url}
-            alt={`Mechanical evidence crop for ${evidence.semantic_type} on page ${evidence.page}`}
+      <div className="pdf-pane__crop" style={{ height: '400px', display: 'flex', position: 'relative' }}>
+        {!docUrl && !error && <p className="pdf-pane__crop-state">Loading document…</p>}
+        {docUrl && (
+          <PdfViewer
+            url={docUrl}
+            pageIndex={evidence.page}
+            polygon={evidence.polygon.map(p => [p[0].toString(), p[1].toString()])}
           />
         )}
-        {crop.status === 'error' && <p className="pdf-pane__crop-state pdf-pane__crop-state--error">{crop.message}</p>}
+        {error && <p className="pdf-pane__crop-state pdf-pane__crop-state--error">{error}</p>}
       </div>
 
       <div className="pdf-pane__meta">
-        <span className="pdf-pane__meta-label">Mechanical evidence crop</span>
+        <span className="pdf-pane__meta-label">Interactive document viewer</span>
         <span className="pdf-pane__extractor">
-          Pixel region only — not a full drawing, placement claim, or redline.
+          Full context view — highlighting mechanical extraction region.
         </span>
       </div>
     </div>

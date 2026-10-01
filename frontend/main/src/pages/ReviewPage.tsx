@@ -22,6 +22,7 @@ import {
 } from '../api/client';
 import type { ReviewSession, ReviewerChatReply } from '../api/client';
 import { explanationUnavailable, factsMessage, replyMessage } from '../components/chat/chatReply';
+import { MeasurementPanel } from './MeasurementPanel';
 import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
@@ -62,6 +63,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const selectedFindingRef = useRef<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [activeTab, setActiveTab] = useState<'chat' | 'measure'>('chat');
   const [isProcessing, setIsProcessing] = useState(false);
   const [session, setSession] = useState<ReviewSession | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -630,27 +632,55 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
         </div>
       )}
 
-      {/* Messages */}
-      <ChatThread
-        messages={messages.map(m => ({
-          ...m,
-          findings: m.findings?.map(f => findings.find(rf => rf.id === f.id) ?? f),
-        }))}
-        selectedFinding={selectedFindingId}
-        onViewEvidence={handleViewEvidence}
-        onAction={handleAction}
-        onCorrect={handleCorrect}
-        onExcept={handleExcept}
-      />
+      {/* View Tabs */}
+      <div className="review-page__tabs">
+        <button 
+          className={`btn ${activeTab === 'chat' ? 'btn--primary' : 'btn--ghost'}`}
+          onClick={() => setActiveTab('chat')}
+        >
+          Chat & Findings
+        </button>
+        <button 
+          className={`btn ${activeTab === 'measure' ? 'btn--primary' : 'btn--ghost'}`}
+          onClick={() => setActiveTab('measure')}
+        >
+          Measurements
+        </button>
+      </div>
 
-      {/* Input */}
-      <ChatInput
-        onSend={handleSend}
-        disabled={isProcessing}
-        models={chatModels}
-        selectedModel={selectedModel}
-        onSelectModel={setSelectedModel}
-      />
+      {activeTab === 'chat' ? (
+        <>
+          {/* Messages */}
+          <ChatThread
+            messages={messages.map(m => ({
+              ...m,
+              findings: m.findings?.map(f => findings.find(rf => rf.id === f.id) ?? f),
+            }))}
+            selectedFinding={selectedFindingId}
+            onViewEvidence={handleViewEvidence}
+            onAction={handleAction}
+            onCorrect={handleCorrect}
+            onExcept={handleExcept}
+          />
+
+          {/* Input */}
+          <ChatInput
+            onSend={handleSend}
+            disabled={isProcessing}
+            models={chatModels}
+            selectedModel={selectedModel}
+            onSelectModel={setSelectedModel}
+          />
+        </>
+      ) : (
+        <div className="review-page__measure-container">
+          <MeasurementPanel
+            packageId={packageId}
+            onChoosePackage={onBackToDocuments}
+            onDone={() => setActiveTab('chat')}
+          />
+        </div>
+      )}
     </div>
   );
 }

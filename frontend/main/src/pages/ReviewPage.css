@@ -246,3 +246,27 @@
 .review-page__error p {
   color: var(--text-muted, #6b7280);
 }
+
+/* ── Tabs ─────────────────────────────────────────────────── */
+.review-page__tabs {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+
+.review-page__measure-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* MeasurementPanel has its own scrolling, so we let it take full height */
+}
+/* Ensure MeasurementPanel fills the container without looking nested in another page */
+.review-page__measure-container .enter-values-page {
+  height: 100%;
+  padding-top: 0;
+  border-radius: 0;
+  box-shadow: none;
+}

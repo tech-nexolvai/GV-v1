@@ -117,6 +117,7 @@ function _evidenceFor(
 
   return {
     canonical_observation_id: located.canonical_observation_id,
+    document_version_id: located.document_version_id,
     // The API persists page indexes from zero; people holding a PDF count pages from one.
     page: located.page_index + 1,
     polygon,

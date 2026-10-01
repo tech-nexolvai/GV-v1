@@ -62,6 +62,7 @@ export type ReviewerAction = components['schemas']['ReviewActionKind'];
  * mechanical region cut for this candidate; it never renders a full drawing or a redline. */
 export interface Evidence {
   canonical_observation_id: string;
+  document_version_id: string;
   page: number;
   polygon: Array<[number, number]>;
   semantic_type: string;

@@ -3,7 +3,7 @@ import { AppShell } from './components/shell/AppShell';
 import { ReviewPage } from './pages/ReviewPage';
 import { PackagesPage } from './pages/PackagesPage';
 import { WelcomePage } from './pages/WelcomePage';
-import { EnterValuesPage } from './pages/EnterValuesPage';
+
 import { RulebookPage } from './pages/RulebookPage';
 import { UsagePage } from './pages/UsagePage';
 import { createPackage } from './api/upload';
@@ -81,10 +81,7 @@ export default function App() {
       // ReviewPage loads package-scoped endpoints. A review-session id is a different resource and
       // passing it here made every newly uploaded package look like a 404.
       setActiveSession(packageId);
-      // Measure starts with the AI proposals and their crops.  Keeping a separate confirmation
-      // screen made the reviewer classify a reading in one place, then look for the result in a
-      // different empty-looking form.  Here one explicit type choice both confirms and fills.
-      setActivePage('measure');
+      setActivePage('review');
       setEvidencePanel(null);
       setArchFile(null);
       setShopFile(null);
@@ -135,18 +132,6 @@ export default function App() {
         />
       )}
 
-      {/* `confirm` is retained as a transient compatibility state for an already-open dev tab from
-          the earlier two-screen flow.  It now renders the unified Measure experience. */}
-      {(activePage === 'measure' || activePage === 'confirm') && (
-        <EnterValuesPage
-          packageId={activeSession || undefined}
-          onChoosePackage={() => handleNavigate('documents')}
-          onDone={(packageId) => {
-            setActiveSession(packageId);
-            setActivePage('review');
-          }}
-        />
-      )}
       {activePage === 'rulebook' && <RulebookPage />}
 
       {activePage === 'usage' && <UsagePage />}
