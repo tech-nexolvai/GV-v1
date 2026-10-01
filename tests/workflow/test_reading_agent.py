@@ -681,3 +681,40 @@ def test_the_escalation_reader_can_be_a_defined_one_the_vision_route_does_not_ru
 
     assert stages._agent_readers[VlmRole.ESCALATION].config.extractor == MISTRAL_LARGE_3_EXTRACTOR
     assert [reader.config.extractor for reader in stages._vision_readers] == ["reader-a"]
+
+
+def test_a_contradiction_found_after_the_first_readings_were_saved_still_blocks_the_agreement(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**The crash of the first end-to-end run (#790).** In a real run the page's panel step saves the
+    first readings before the agent runs, and a saved reading is append-only. Outcome: no crash; the
+    agent's readings are marked conflicting; the first readers' `92"` agreement keeps the status it
+    was saved with — and automatic typing still refuses to lock it in, because its region holds a
+    conflict."""
+    from app.evidence.automatic_typing import _second_reader_candidate_ids
+
+    original = DatabaseStages._run_bounded_agent_for_ambiguous_regions
+
+    def saved_first(self: DatabaseStages, session: Session, **kwargs: object) -> object:
+        session.flush()
+        return original(self, session, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(DatabaseStages, "_run_bounded_agent_for_ambiguous_regions", saved_first)
+    revision = _revision(session, store, data=SHEET)
+    session.commit()
+    primary, escalation = _readers(cut_reading='92"')
+
+    _stages(store, (primary, escalation), _settings(), ocr_text='92"').extract_pages(
+        session, revision.id
+    )
+    session.commit()
+
+    rows = list(session.execute(select(ObservationCandidate)).scalars())
+    agent = [row for row, _run in _agent_rows(session)]
+    assert {row.raw_text for row in agent} == {'10192"'}
+    assert {row.corroboration_status for row in agent} == {"CONFLICTING"}
+    first = next(
+        row for row in rows if row.raw_text == '92"' and row.corroboration_lane == "SECOND_READER"
+    )
+    assert first.corroboration_status != "CONFLICTING"
+    assert _second_reader_candidate_ids(session, first) == ()
