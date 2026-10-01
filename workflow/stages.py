@@ -1956,7 +1956,15 @@ class DatabaseStages:
             )
             if result.status is not EvidenceStatus.CONFLICTING or result.lane is None:
                 continue
+            # **Only readings not yet saved (#790).** A reading is append-only once it is in the
+            # database, and the page's panel step saves earlier routes' readings before the vision
+            # readers run. A saved reading in the region keeps its status; the region still counts
+            # as conflicting, because automatic typing refuses any region that holds one
+            # (`app/evidence/automatic_typing._second_reader_candidate_ids`), and these readings —
+            # the agent's own among them — are marked so.
             for row in rows:
+                if not inspect(row).pending:
+                    continue
                 row.corroboration_status = result.status.value
                 row.corroboration_lane = result.lane.value
 

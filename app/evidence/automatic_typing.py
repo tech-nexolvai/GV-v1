@@ -176,6 +176,18 @@ def _second_reader_candidate_ids(
         if candidate.polygon == reading.polygon
         and candidate.corroboration_status in agreement_statuses
     )
+    # **A region holding a conflict is never locked in (#790).** A reading saved before a later
+    # reader contradicted it cannot be re-marked — readings are append-only — so the conflict is
+    # carried by the region's other readings, and any one of them is enough to refuse the agreement.
+    conflicted = session.execute(
+        select(ObservationCandidate.polygon).where(
+            ObservationCandidate.document_version_id == reading.document_version_id,
+            ObservationCandidate.page_id == reading.page_id,
+            ObservationCandidate.corroboration_status == EvidenceStatus.CONFLICTING.value,
+        )
+    ).scalars()
+    if any(polygon == reading.polygon for polygon in conflicted):
+        return ()
     candidate_ids = tuple(candidate.id for candidate, _run in matching)
     # Independent by the rule `corroborate` agrees by (#775): model readers by vendor.
     independent = {
