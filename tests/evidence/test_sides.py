@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 from app.api.documents import storage_key
 from app.db.session import session_factory
 from app.evidence.confirm import ConfirmationRefused, RefusalReason, confirm_candidate_type
-from app.evidence.sides import ReadingSides, SideRefusal, SideRefusalReason
+from app.evidence.sides import MARKUP_ROUTE, ReadingSides, SideRefusal, SideRefusalReason
 from app.models import (
     CanonicalObservation,
     Document,
@@ -52,6 +52,8 @@ from app.models.runs import TaskRun, WorkflowRun
 from storage.local import LocalStore
 from tests.api.test_drawing_views import _client
 from tests.evidence.test_bridge import _upgrade
+from tests.extraction.test_annotations import _free_text
+from tests.extraction.test_annotations import _pdf as _annotated_pdf
 from tests.extraction.test_reader import _pdf
 from vocabulary.semantic_types import DocumentRole
 from workflow.idempotency import stage_idempotency_key
@@ -99,11 +101,16 @@ def store() -> Iterator[LocalStore]:
 
 
 def _read(
-    session: Session, store: LocalStore, *, kind: str, also: str | None = None
+    session: Session,
+    store: LocalStore,
+    *,
+    kind: str,
+    also: str | None = None,
+    data: bytes = SHEET,
 ) -> PackageRevision:
     """The sheet uploaded as one document of `kind`, and read — with, given `also`, a second
     drawing of that kind in the same package, the way a two-PDF package arrives."""
-    digest = hashlib.sha256(SHEET).hexdigest()
+    digest = hashlib.sha256(data).hexdigest()
     project = Project(name=f"sides {uuid4()}")
     session.add(project)
     session.flush()
@@ -119,7 +126,7 @@ def _read(
     session.add(document)
     session.flush()
     key = storage_key(document.id, digest)
-    artifact = SourceArtifact(storage_key=key, sha256=digest, size=len(SHEET))
+    artifact = SourceArtifact(storage_key=key, sha256=digest, size=len(data))
     session.add(artifact)
     session.flush()
     version = DocumentVersion(
@@ -152,7 +159,7 @@ def _read(
         )
     )
     session.flush()
-    store.put(key, io.BytesIO(SHEET), content_type="application/pdf")
+    store.put(key, io.BytesIO(data), content_type="application/pdf")
     if also is not None:
         other = Document(package_id=package.id, kind=also)
         session.add(other)
@@ -187,7 +194,7 @@ def _read(
     return revision
 
 
-def _page(session: Session, revision: PackageRevision) -> Page:
+def _page(session: Session, revision: PackageRevision, data: bytes = SHEET) -> Page:
     """The sheet's page — not the second drawing's, in a two-PDF package."""
     return session.execute(
         select(Page)
@@ -198,7 +205,7 @@ def _page(session: Session, revision: PackageRevision) -> Page:
         )
         .where(
             PackageRevisionDocument.package_revision_id == revision.id,
-            DocumentVersion.sha256 == hashlib.sha256(SHEET).hexdigest(),
+            DocumentVersion.sha256 == hashlib.sha256(data).hexdigest(),
         )
     ).scalar_one()
 
@@ -222,11 +229,13 @@ def _halves(
             confirm_view_role(session, view=view, role=role, actor="a reviewer")
 
 
-def _one_drawing(session: Session, revision: PackageRevision, role: ViewRole | None) -> None:
+def _one_drawing(
+    session: Session, revision: PackageRevision, role: ViewRole | None, data: bytes = SHEET
+) -> None:
     """The whole sheet recorded as one drawing, as a `/Stamp` filling the page is."""
     view = record_panel_view(
         session,
-        page_id=_page(session, revision).id,
+        page_id=_page(session, revision, data).id,
         annotation_index=0,
         stored_points=(
             (Decimal(0), Decimal(0)),
@@ -242,8 +251,10 @@ def _one_drawing(session: Session, revision: PackageRevision, role: ViewRole | N
         confirm_view_role(session, view=view, role=role, actor="a reviewer")
 
 
-def _reading(session: Session, revision: PackageRevision, text: str) -> ObservationCandidate:
-    page = _page(session, revision)
+def _reading(
+    session: Session, revision: PackageRevision, text: str, data: bytes = SHEET
+) -> ObservationCandidate:
+    page = _page(session, revision, data)
     candidate = (
         session.execute(
             select(ObservationCandidate)
@@ -472,3 +483,87 @@ def test_the_drawings_list_says_which_drawings_the_upload_decides(
     assert response.status_code == 200, response.text
     (view,) = response.json()["views"]
     assert (view["role"], view["upload_side"]) == (None, expected)
+
+
+# ---------------------------------------------------------------------------
+# A reviewer's markup (#802)
+# ---------------------------------------------------------------------------
+
+#: A sheet whose only reading is a reviewer's note: a box writing a number over the drawing, the
+#: way the client's reviewer writes the architect's number over the vendor's.
+MARKUP_SHEET = _annotated_pdf(annotations=[_free_text('25 1/2"', rect=b"[40 40 120 60]")])
+
+
+def _markup_on_a_confirmed_vendor_drawing(
+    session: Session, store: LocalStore
+) -> tuple[PackageRevision, ObservationCandidate]:
+    revision = _read(session, store, kind="shop", data=MARKUP_SHEET)
+    _one_drawing(session, revision, ViewRole.SHOP, data=MARKUP_SHEET)
+    return revision, _reading(session, revision, '25 1/2"', data=MARKUP_SHEET)
+
+
+def test_a_reviewers_markup_has_no_side_even_on_a_confirmed_vendor_drawing(
+    session: Session, store: LocalStore
+) -> None:
+    """**#802, the one that matters most.** The note sits on a drawing a person confirmed as the
+    vendor's. Outcome: no side — a reviewer's correction is never the vendor's reading, so no check
+    can PASS the vendor's drawing on the number the reviewer wrote over it."""
+    _revision, markup = _markup_on_a_confirmed_vendor_drawing(session, store)
+
+    side = ReadingSides(session).of(markup)
+
+    assert isinstance(side, SideRefusal)
+    assert side.reason is SideRefusalReason.MARKUP
+
+
+def test_labelling_a_reviewers_markup_is_refused(session: Session, store: LocalStore) -> None:
+    _revision, markup = _markup_on_a_confirmed_vendor_drawing(session, store)
+
+    refused = confirm_candidate_type(
+        session, candidate_id=markup.id, semantic_type="CT010", confirmed_by="a reviewer"
+    )
+
+    assert isinstance(refused, ConfirmationRefused)
+    assert refused.reason is RefusalReason.REVIEWER_MARKUP
+    assert session.execute(select(CanonicalObservation)).scalars().all() == []
+
+
+def test_the_form_filler_never_offers_a_reviewers_markup(
+    session: Session, store: LocalStore
+) -> None:
+    revision, _markup = _markup_on_a_confirmed_vendor_drawing(session, store)
+
+    assert assignment_readings(session, revision) == ()
+
+
+def test_the_measure_page_says_a_markup_reading_is_neither_drawing(
+    session: Session, store: LocalStore
+) -> None:
+    revision, _markup = _markup_on_a_confirmed_vendor_drawing(session, store)
+    session.commit()
+    package = session.get(Package, revision.package_id)
+    assert package is not None
+
+    response = _client(session, store, package.project_id).get(
+        f"/api/v1/projects/{package.project_id}/packages/{package.id}/candidates"
+    )
+
+    assert response.status_code == 200, response.text
+    (item,) = response.json()["candidates"]
+    assert item["source"] is None
+    assert "reviewer's markup" in item["source_refusal"]
+
+
+def test_the_markup_route_named_here_is_the_one_the_stage_records() -> None:
+    """**The drift guard.** `sides.py` restates the route name because it may not import the stage;
+    a renamed route would otherwise quietly hand markup a side again."""
+    from workflow.stages import MARKUP_EXTRACTOR
+
+    assert MARKUP_ROUTE == MARKUP_EXTRACTOR
+
+
+def test_every_reason_a_reading_has_no_side_is_a_reason_a_label_is_refused() -> None:
+    """A reason with no mapping would raise inside a reviewer's click rather than refuse it."""
+    from app.evidence.confirm import _SIDE_REFUSAL
+
+    assert set(_SIDE_REFUSAL) == set(SideRefusalReason)
