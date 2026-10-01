@@ -80,7 +80,7 @@
   min-width: var(--sidebar-width);
 }
 
-[data-style="ide"] .shell__evidence {
+[data-style="ide"][data-page="review"] .shell__evidence {
   order: 2;
   border-left: none;
   border-right: 1px solid var(--border-default);
@@ -91,7 +91,7 @@
   pointer-events: auto !important;
 }
 
-[data-style="ide"] .shell__main {
+[data-style="ide"][data-page="review"] .shell__main {
   order: 3;
   flex: none !important;
   /* clamp: min 360px, prefer 35vw, max 480px — no overflow on 1280px screens */
@@ -219,18 +219,19 @@
 
 /* ── Resizer ───────────────────────────────────────── */
 .shell__resizer {
+  display: none; /* hidden by default */
+}
+[data-style="ide"][data-page="review"] .shell__resizer {
+  display: block;
   width: 6px;
   cursor: col-resize;
   background: transparent;
   position: relative;
   z-index: 10;
   transition: background 0.2s;
-  order: 2; /* Between sidebar/evidence and main based on data-style */
-}
-[data-style="ide"] .shell__resizer {
   order: 2; /* In IDE mode, Evidence is 2, Main is 3. So Evidence (Left), Resizer, Main (Right) */
 }
-[data-style="ide"] .shell__evidence {
+[data-style="ide"][data-page="review"] .shell__evidence {
   order: 1; /* override order so Evidence is before resizer */
 }
 .shell__resizer:hover, .shell__resizer:active {
