@@ -50,6 +50,7 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 
 DATABASE_URL = "postgresql+psycopg://gv:gv@localhost:5433/gv"
 SECRET = b"a-test-signing-secret-that-is-long-enough"
+NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _settings() -> Settings:
@@ -169,7 +170,7 @@ def _ticket(key: str = "documents/abc/deadbeef", **overrides: Any) -> UploadTick
         "key": key,
         "url": f"http://local/upload/{key}",
         "method": "PUT",
-        "expires_at": datetime.now(UTC) + timedelta(minutes=15),
+        "expires_at": NOW + timedelta(minutes=15),
         "required_headers": {"Content-Type": "application/pdf"},
     }
     return UploadTicket(**{**defaults, **overrides})
@@ -180,11 +181,8 @@ def _token(key: str = "documents/one/aaa", *, minutes: int = 5) -> str:
         secret=SECRET,
         purpose=UPLOAD_PURPOSE,
         key=key,
-        expires_at=datetime.now(UTC) + timedelta(minutes=minutes),
+        expires_at=NOW + timedelta(minutes=minutes),
     )
-
-
-NOW = datetime.now(UTC)
 
 
 def test_a_token_is_refused_for_a_different_key() -> None:
@@ -265,7 +263,7 @@ def test_the_ticket_type_refuses_a_naive_expiry() -> None:
     """A naive instant is compared against a different clock than it was written by, and that mistake
     runs one way: a ticket that outlives its lifetime."""
     with pytest.raises(ValueError, match="timezone-aware"):
-        _ticket(expires_at=datetime.now())  # noqa: DTZ005 - the point of the test
+        _ticket(expires_at=NOW.replace(tzinfo=None))
 
 
 def test_the_ticket_type_refuses_an_empty_key() -> None:

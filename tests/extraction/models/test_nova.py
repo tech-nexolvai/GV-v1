@@ -902,3 +902,37 @@ def test_no_model_id_constant_hard_codes_the_profile_prefix() -> None:
 
     assert constants, "no *_MODEL_ID constants found, so this test checks nothing"
     assert not [model_id for model_id in ids if model_id.startswith(nova.INFERENCE_PROFILE_PREFIX)]
+
+
+def test_mistral_large_3_is_defined_for_the_agent_and_off_for_the_vision_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**#757 D-A2.** Outcome: the agent can name it — measured pixels, its own extractor — and the
+    vision route, which reads every region with every enabled reader, does not run it: it shares a
+    vendor with Ministral 3B."""
+    from extraction.models.nova import (
+        MISTRAL_LARGE_3_EXTRACTOR,
+        MISTRAL_LARGE_3_MODEL_ID,
+        vision_config_for_extractor,
+        vision_configs_from_environment,
+    )
+
+    monkeypatch.delenv("GV_BEDROCK_VISION_READERS", raising=False)
+    config = vision_config_for_extractor(MISTRAL_LARGE_3_EXTRACTOR)
+
+    assert config is not None
+    assert (config.model_id, config.extractor) == (
+        MISTRAL_LARGE_3_MODEL_ID,
+        MISTRAL_LARGE_3_EXTRACTOR,
+    )
+    assert config.coordinate_mode is CoordinateMode.PIXELS
+    assert MISTRAL_LARGE_3_EXTRACTOR not in {
+        configured.extractor for configured in vision_configs_from_environment()
+    }
+
+
+def test_a_reader_with_no_measured_space_cannot_be_named() -> None:
+    from extraction.models.nova import CLAUDE_HAIKU_4_5_EXTRACTOR, vision_config_for_extractor
+
+    assert vision_config_for_extractor(CLAUDE_HAIKU_4_5_EXTRACTOR) is None
+    assert vision_config_for_extractor("bedrock-nobody") is None

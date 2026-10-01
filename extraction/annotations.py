@@ -17,9 +17,10 @@ file as strings.
    paths with real coordinates. `extraction/geometry/text_association.py` was written to attach a
    reading to the line it annotates and has never been given vector line-work on a sheet like this.
 
-3. **Only the vendor's numbers need a model.** Its text is converted to outlines — glyph shapes drawn
-   as paths — so no dictionary holds it and no OCR-free route exists. Those regions, and only those,
-   are what the vision seam is for.
+3. **Only the vendor's numbers need reading from shapes.** Its text is converted to outlines — glyph
+   shapes drawn as paths — so no dictionary holds it. Those regions, and only those, are what the
+   vision seam is for, and since #756 what `extraction/glyph_reader.py` reads from the paths
+   themselves once a person has labelled each character's shape.
 
 **And the layers contradict each other, which is the point.** On page 3 the vendor drawing says
 `191"` where the markup says `185 1/4"`; elsewhere the drawing says `3"+2"Filler` and the markup
@@ -51,7 +52,7 @@ from __future__ import annotations
 
 import ctypes
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from itertools import pairwise
@@ -74,8 +75,13 @@ __all__ = [
     "MarkupNote",
     "OutlinedTextRegion",
     "PageLayers",
+    "PathSegment",
+    "SegmentKind",
     "StackedFraction",
+    "VectorPath",
     "VendorStamp",
+    "glyph_runs",
+    "page_box_polygon",
     "read_annotation_layers",
     "read_markup_layer",
 ]
@@ -101,8 +107,100 @@ class DrawingLayer(StrEnum):
     REVIEWER_MARKUP = "reviewer_markup"
     """`/FreeText` — what a reviewer wrote on top of it, as exact text."""
 
+    VENDOR_TEXT = "vendor_text"
+    """The vendor's own text, kept by its CAD program as exact strings: the invisible `/Square`
+    annotations AutoCAD writes for every string drawn in an SHX font, titled `AutoCAD SHX Text`.
+
+    AutoCAD's SHX fonts cannot be embedded in a PDF, so its export draws each string as strokes —
+    the same unreadable shapes #756 exists to read — and, with `PDFSHX=1` (its default), also writes
+    one of these notes per string holding the text and its rectangle. The strokes and the note say
+    the same thing; the note says it exactly. It is the vendor's authority, never the reviewer's,
+    and it is never folded into `markup`."""
+
     OTHER = "other"
     """Everything else: `/Line`, `/Square`, `/Ink`. Reported, never merged into the two above."""
+
+
+class SegmentKind(StrEnum):
+    """What one step of a vector path does, as the file states it (#756)."""
+
+    MOVE = "move"
+    """Lift the pen and start a new sub-path here. The two ticks of an inch mark are two of these."""
+
+    LINE = "line"
+    """A straight line from the previous point to this one."""
+
+    BEZIER = "bezier"
+    """One of the three points of a cubic Bézier: two control points, then the end point, in order.
+    pdfium reports each as its own segment. A control point is not on the curve, so drawing
+    through it would put a corner where the file has a curve."""
+
+    UNKNOWN = "unknown"
+    """A step pdfium could not name. Kept rather than dropped, so a shape with one is known to be
+    incomplete and can be refused rather than drawn wrongly."""
+
+
+@dataclass(frozen=True, slots=True)
+class PathSegment:
+    """One step of a path: what it does, where it ends, and whether it closes its sub-path."""
+
+    kind: SegmentKind
+    point: tuple[Decimal, Decimal]
+    closes: bool
+
+
+@dataclass(frozen=True, slots=True)
+class VectorPath:
+    """One path object from the vendor's drawing, with what it takes to draw it again (#756).
+
+    **Why points alone were not enough.** A path used to be kept as its points, in order. That joins
+    an inch mark's two ticks into one stroke, draws a Bézier through its control points, and cannot
+    tell a filled outline from a stroked line — and on the client's drawing each character is one
+    path object, so the path *is* the character's shape. A shape reader needs the shape.
+
+    `points` is exactly the sequence the path used to be kept as, so everything that ran on points
+    runs on the same numbers.
+    """
+
+    segments: tuple[PathSegment, ...]
+    stroked: bool | None
+    """Whether the path is drawn as a line. `None` where pdfium could not say, which a shape reader
+    must treat as unknown rather than as either answer."""
+    filled: bool | None
+    """Whether the path is filled in. `None` as for `stroked`."""
+
+    @property
+    def points(self) -> tuple[tuple[Decimal, Decimal], ...]:
+        return tuple(segment.point for segment in self.segments)
+
+    def placed(
+        self, placement: tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal]
+    ) -> VectorPath:
+        """The same path in page space, through the stamp's placement affine."""
+        a, b, c, d, e, f = placement
+        return VectorPath(
+            segments=tuple(
+                PathSegment(
+                    kind=segment.kind,
+                    point=(
+                        a * segment.point[0] + c * segment.point[1] + e,
+                        b * segment.point[0] + d * segment.point[1] + f,
+                    ),
+                    closes=segment.closes,
+                )
+                for segment in self.segments
+            ),
+            stroked=self.stroked,
+            filled=self.filled,
+        )
+
+
+#: pdfium's segment types, by the raw constant.
+_SEGMENT_KINDS: Final = {
+    pdfium_raw.FPDF_SEGMENT_MOVETO: SegmentKind.MOVE,
+    pdfium_raw.FPDF_SEGMENT_LINETO: SegmentKind.LINE,
+    pdfium_raw.FPDF_SEGMENT_BEZIERTO: SegmentKind.BEZIER,
+}
 
 
 #: The annotation subtypes each layer is made of. A subtype absent here is `OTHER`, which is a
@@ -112,6 +210,22 @@ _LAYER_BY_SUBTYPE: Final = {
     "Stamp": DrawingLayer.VENDOR_DRAWING,
     "FreeText": DrawingLayer.REVIEWER_MARKUP,
 }
+
+#: The title AutoCAD gives the note it writes for each SHX-font string. Matched exactly (ignoring
+#: case and surrounding space) on `/T` or `/Subj`, never by resemblance: a reviewer's own `/Square`
+#: box is a markup, and treating it as the vendor's text would give the reviewer's hand the vendor's
+#: authority.
+AUTOCAD_SHX_TEXT: Final = "autocad shx text"
+
+
+def _layer_of(annotation: dict[str, Any], subtype: str) -> DrawingLayer:
+    """Which authority an annotation carries: its subtype, except AutoCAD's own text notes."""
+    if subtype == "Square" and any(
+        (_text(annotation.get(key)) or "").strip().lower() == AUTOCAD_SHX_TEXT
+        for key in ("T", "Subj")
+    ):
+        return DrawingLayer.VENDOR_TEXT
+    return _LAYER_BY_SUBTYPE.get(subtype, DrawingLayer.OTHER)
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +296,14 @@ class OutlinedTextRegion:
     This is read from the stamp's placement matrix, not from the crop pixels. ``region_crop`` uses
     it to turn vertical labels upright before a reader sees them, and to invert reader rectangles
     back to the unrotated page.
+    """
+
+    glyph_paths: tuple[VectorPath, ...] = field(default=(), compare=False)
+    """The paths this region was formed from, in page space (PDF points), in drawing order (#756).
+
+    On the client's drawing one path object is one character, so these are the label's characters
+    as the file draws them — what a shape reader reads, where a model reads the pixels. Not part of
+    the region's equality: a region is the same region whatever its paths are compared by.
     """
 
 
@@ -256,9 +378,23 @@ class PageLayers:
     vendor_stamps: tuple[VendorStamp, ...] = ()
     """Every vendor-drawing stamp on the page, in `/Annots` order (#710). Filled by both reads."""
 
+    vendor_text: tuple[MarkupNote, ...] = ()
+    """The vendor's exact text as its CAD program kept it (`DrawingLayer.VENDOR_TEXT`). Filled by
+    both reads, because reading it needs no threshold: the string and its rectangle are dictionary
+    values. Empty on every page without an AutoCAD SHX export, which is most drawings today."""
+
     fractions_read: bool = False
     """Whether the bar detector ran. `False` makes an empty `stacked_fractions` mean *nobody looked*,
     the same distinction `geometry_read` draws for line-work."""
+
+    glyph_paths: tuple[VectorPath, ...] = field(default=(), compare=False)
+    """Every glyph-sized path on the vendor's layer, in page space, whether or not a region holds it
+    (#756 phase C).
+
+    A region holds only the paths `_glyph_runs` grouped, and that grouping advances along the
+    stamp's baseline: a sideways label's characters and a stacked fraction's bar and denominator
+    are left out of every region. A shape reader forms its own labels from all of them.
+    """
 
     @property
     def readable(self) -> bool:
@@ -497,10 +633,12 @@ def _visible_annotation_rect(
     return visible
 
 
-def _stamp_paths(
-    opened_pdf: Any, page_index: int, annotation_index: int
-) -> tuple[tuple[tuple[Decimal, Decimal], ...], ...]:
-    """Every path in one annotation's appearance, as tuples of points in appearance space.
+def _stamp_paths(opened_pdf: Any, page_index: int, annotation_index: int) -> tuple[VectorPath, ...]:
+    """Every path in one annotation's appearance, in appearance space, as the file draws it.
+
+    Each keeps its segment kinds, close flags and draw mode (#756). A segment whose point pdfium
+    cannot read is skipped, exactly as before, so `VectorPath.points` is the sequence this used to
+    return.
 
     pypdfium2's raw bindings rather than its Python wrapper, because the wrapper has no annotation
     object accessor. The handle is closed in a `finally` so a raised refusal does not leak it.
@@ -514,7 +652,7 @@ def _stamp_paths(
     if not annotation:
         raise UnreadablePdf(f"annotation {annotation_index} could not be opened for its geometry")
     try:
-        paths: list[tuple[tuple[Decimal, Decimal], ...]] = []
+        paths: list[VectorPath] = []
         for index in range(pdfium_raw.FPDFAnnot_GetObjectCount(annotation)):
             page_object = pdfium_raw.FPDFAnnot_GetObject(annotation, index)
             if pdfium_raw.FPDFPageObj_GetType(page_object) != pdfium_raw.FPDF_PAGEOBJ_PATH:
@@ -543,7 +681,7 @@ def _stamp_paths(
                     Decimal(0),
                     Decimal(0),
                 )
-            points: list[tuple[Decimal, Decimal]] = []
+            segments: list[PathSegment] = []
             for position in range(pdfium_raw.FPDFPath_CountSegments(page_object)):
                 segment = pdfium_raw.FPDFPath_GetPathSegment(page_object, position)
                 x, y = ctypes.c_float(), ctypes.c_float()
@@ -552,9 +690,34 @@ def _stamp_paths(
                 ):
                     continue
                 point_x, point_y = _decimal(x.value), _decimal(y.value)
-                points.append((a * point_x + c * point_y + e, b * point_x + d * point_y + f))
-            if points:
-                paths.append(tuple(points))
+                segments.append(
+                    PathSegment(
+                        kind=_SEGMENT_KINDS.get(
+                            pdfium_raw.FPDFPathSegment_GetType(segment), SegmentKind.UNKNOWN
+                        ),
+                        point=(a * point_x + c * point_y + e, b * point_x + d * point_y + f),
+                        closes=bool(pdfium_raw.FPDFPathSegment_GetClose(segment)),
+                    )
+                )
+            if segments:
+                # **Stroked or filled, from the file.** 97.8% of the client's glyph-sized paths are
+                # stroked; the rest are outlines filled in. The two draw the same character
+                # differently, so a shape reader has to know which it is looking at.
+                fill_mode, stroke = ctypes.c_int(), ctypes.c_int()
+                known = bool(
+                    pdfium_raw.FPDFPath_GetDrawMode(
+                        page_object, ctypes.byref(fill_mode), ctypes.byref(stroke)
+                    )
+                )
+                paths.append(
+                    VectorPath(
+                        segments=tuple(segments),
+                        stroked=bool(stroke.value) if known else None,
+                        filled=(
+                            (fill_mode.value != pdfium_raw.FPDF_FILLMODE_NONE) if known else None
+                        ),
+                    )
+                )
         return tuple(paths)
     finally:
         pdfium_raw.FPDFPage_CloseAnnot(annotation)
@@ -575,15 +738,6 @@ def _pdfium_rect(
         return _rect([rect.left, rect.bottom, rect.right, rect.top])
     finally:
         pdfium_raw.FPDFPage_CloseAnnot(annotation)
-
-
-def _placed(
-    points: tuple[tuple[Decimal, Decimal], ...],
-    placement: tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal],
-) -> tuple[tuple[Decimal, Decimal], ...]:
-    """Appearance-space points in page space, through one affine."""
-    a, b, c, d, e, f = placement
-    return tuple((a * x + c * y + e, b * x + d * y + f) for x, y in points)
 
 
 def _long_segments(
@@ -714,6 +868,34 @@ def _glyph_runs(
     return runs, orphaned
 
 
+def page_box_polygon(
+    rect: tuple[Decimal, Decimal, Decimal, Decimal],
+    transform: PageTransform,
+    document_version_id: UUID,
+    page_index: int,
+) -> tuple[Polygon, tuple[ImagePoint, ...]]:
+    """A PDF-point box as the stored polygon and image corners every candidate row is placed by.
+
+    The same computation regions and markup are placed with, for a reader outside this module that
+    places a label it read from these paths (#756 phase E).
+    """
+    return _polygon(rect, transform, document_version_id, page_index)
+
+
+def glyph_runs(
+    boxes: list[tuple[Decimal, Decimal, Decimal, Decimal]],
+    gap_pt: Decimal,
+    baseline_rotation_degrees: int,
+) -> tuple[list[list[int]], int]:
+    """The run grouping regions are formed by, for a reader that must size characters the same way.
+
+    `scripts/glyph_inventory.py` sizes every character against the region it came from, and
+    `extraction/glyph_reader.py` has to size a character it reads by the same rule or a shape a
+    person labelled would not match itself (#756 phase C). One grouping, not two copies of it.
+    """
+    return _glyph_runs(boxes, gap_pt, baseline_rotation_degrees)
+
+
 def read_markup_layer(
     data: bytes,
     page_index: int,
@@ -824,11 +1006,13 @@ def _read_layers(
         raise ValueError("dpi must be a positive integer; stored coordinates depend on it")
 
     markup: list[MarkupNote] = []
+    vendor_text: list[MarkupNote] = []
     other: list[MarkupNote] = []
     segments: list[DimensionExtent] = []
     regions: list[OutlinedTextRegion] = []
     fractions: list[StackedFraction] = []
     stamps: list[VendorStamp] = []
+    glyph_paths: list[VectorPath] = []
     refusals: list[LayerRefusal] = []
 
     try:
@@ -857,7 +1041,7 @@ def _read_layers(
         try:
             for index, annotation in enumerate(annotations):
                 subtype = _subtype(annotation)
-                layer = _LAYER_BY_SUBTYPE.get(subtype, DrawingLayer.OTHER)
+                layer = _layer_of(annotation, subtype)
                 try:
                     rect = _rect(annotation.get("Rect"))
                     seen = _pdfium_rect(pdfium_document, page_index, index)
@@ -893,7 +1077,7 @@ def _read_layers(
                         placement = _appearance_transform(annotation, rect)
                         baseline_rotation_degrees = _baseline_rotation_degrees(placement)
                         paths = tuple(
-                            _placed(path, placement)
+                            path.placed(placement)
                             for path in _stamp_paths(pdfium_document, page_index, index)
                         )
                     except (UnreadablePdf, TypeError, ValueError) as error:
@@ -912,7 +1096,7 @@ def _read_layers(
                         if all(
                             visible_rect[0] <= x <= visible_rect[2]
                             and visible_rect[1] <= y <= visible_rect[3]
-                            for x, y in path
+                            for x, y in path.points
                         )
                     )
                     if len(inside) != len(paths):
@@ -939,6 +1123,7 @@ def _read_layers(
                     segments.extend(found[0])
                     regions.extend(found[1])
                     fractions.extend(found[2])
+                    glyph_paths.extend(found[3])
                     if ignored:
                         refusals.append(
                             LayerRefusal(
@@ -968,13 +1153,22 @@ def _read_layers(
                     layer=layer,
                     subtype=subtype,
                     text=_text(annotation.get("Contents")) or "",
-                    author=_text(annotation.get("T")),
+                    # AutoCAD's `/T` names its own export, not a person; the vendor's text has no
+                    # author the way a reviewer's correction does.
+                    author=(
+                        None if layer is DrawingLayer.VENDOR_TEXT else _text(annotation.get("T"))
+                    ),
                     extent=extent,
                     image_extent=image_extent,
                     rotation_degrees=rotation,
                     annotation_index=index,
                 )
-                (markup if layer is DrawingLayer.REVIEWER_MARKUP else other).append(note)
+                if layer is DrawingLayer.REVIEWER_MARKUP:
+                    markup.append(note)
+                elif layer is DrawingLayer.VENDOR_TEXT:
+                    vendor_text.append(note)
+                else:
+                    other.append(note)
         finally:
             pdfium_document.close()
     except UnreadablePdf:
@@ -991,18 +1185,20 @@ def _read_layers(
         refusals=tuple(refusals),
         unreadable_reason=(
             None
-            if (markup or segments or regions or other)
+            if (markup or segments or regions or other or vendor_text)
             else "this page carries no annotation layers to read"
         ),
         geometry_read=geometry is not None,
         stacked_fractions=tuple(fractions),
         fractions_read=geometry is not None and geometry[3] is not None,
         vendor_stamps=tuple(stamps),
+        glyph_paths=tuple(glyph_paths),
+        vendor_text=tuple(vendor_text),
     )
 
 
 def _drawing_geometry(
-    paths: tuple[tuple[tuple[Decimal, Decimal], ...], ...],
+    vector_paths: tuple[VectorPath, ...],
     *,
     transform: PageTransform,
     document_version_id: UUID,
@@ -1017,12 +1213,18 @@ def _drawing_geometry(
         tuple[DimensionExtent, ...],
         tuple[OutlinedTextRegion, ...],
         tuple[StackedFraction, ...],
+        tuple[VectorPath, ...],
     ],
     int,
     int,
 ]:
     """One stamp's paths split into line-work, candidate text regions and stacked fractions, plus
-    what was left over."""
+    what was left over.
+
+    Everything is decided on each path's points, as it always was. The full paths ride along only
+    so a region can carry its members (#756).
+    """
+    paths = tuple(path.points for path in vector_paths)
     segments: list[DimensionExtent] = []
     ignored_segments = 0
     for start, end in _long_segments(paths, line_minimum_pt):
@@ -1049,12 +1251,14 @@ def _drawing_geometry(
 
     small: list[tuple[Decimal, Decimal, Decimal, Decimal]] = []
     small_paths: list[tuple[tuple[Decimal, Decimal], ...]] = []
+    small_vector_paths: list[VectorPath] = []
     ignored = ignored_segments
-    for path in paths:
+    for path, vector_path in zip(paths, vector_paths, strict=True):
         left, bottom, right, top = _bounds(path)
         if right - left < glyph_maximum_pt and top - bottom < glyph_maximum_pt:
             small.append((left, bottom, right, top))
             small_paths.append(path)
+            small_vector_paths.append(vector_path)
         elif not _long_segments((path,), line_minimum_pt):
             ignored += 1
 
@@ -1104,10 +1308,15 @@ def _drawing_geometry(
                 point_count=sum(len(small_paths[index]) for index in cluster),
                 stacked_glyphs=any(_touches(rect, box) for box in fraction_boxes),
                 baseline_rotation_degrees=baseline_rotation_degrees,
+                glyph_paths=tuple(small_vector_paths[index] for index in cluster),
             )
         )
 
-    return (tuple(segments), tuple(regions), tuple(fractions)), ignored, orphaned_glyphs
+    return (
+        (tuple(segments), tuple(regions), tuple(fractions), tuple(small_vector_paths)),
+        ignored,
+        orphaned_glyphs,
+    )
 
 
 def _touches(first: GlyphBox, second: GlyphBox) -> bool:

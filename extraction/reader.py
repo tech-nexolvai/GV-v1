@@ -35,6 +35,15 @@ plain English.
 conversion used, because `Decimal(0.1)` carries binary rounding into a coordinate that a reviewer will
 later be shown as evidence.
 
+**A label the words came apart from is never read as a number (#738, #726).** CAD text sets
+`24 3/4"` as a `24`, a smaller `3` above a `4`, and an inch mark, and `extract_words` joins them in
+page order into `2434"` — a well-formed dimension, 2,434 inches, exact and wrong. Measured on the
+client's first set (`AI_Set_1`), 69 labels came back that way, every one a stacked fraction by eye;
+others came back as pieces (`7'` of a sideways `7' -11"`, 84 inches). So three kinds of run are set
+aside, with their place on the page and no text (`SetAsideReason`): a stacked fraction, a label
+written on two lines, and a piece of a longer label. The stacked fractions are what the admin's rule
+sends to a reviewer (#726).
+
 What this module deliberately does not do: rasterise a page, run OCR, merge fragmented dimensions, or
 associate text with lines. The last two need thresholds, and thresholds need real drawings (#274) —
 `AGENTS.md` §9, *"a fixture invented today encodes today's guess as ground truth"*.
@@ -43,8 +52,13 @@ associate text with lines. The last two need thresholds, and thresholds need rea
 from __future__ import annotations
 
 import io
+import math
+import re
+from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import StrEnum
 from itertools import pairwise
 from typing import Any, Final
 from uuid import UUID
@@ -65,13 +79,89 @@ from extraction.geometry.containment import DimensionExtent
 from extraction.manifest import RawPage
 from units.dual import DUAL_TOKEN_RE
 
+#: A feet-and-inches dimension a space splits into two words: `2' -5"`, `6' -0"`, `5' -5 1/2"`.
+#:
+#: **Read whole or not at all.** `extract_words` splits `2' -5"` at the space into `2'` and `-5"`,
+#: and `2'` alone is a well-formed dimension — 24 inches, recorded exactly, for a label that says 29.
+#: Measured on the client's drawings (formats phase 1): their stamps hold labels written this way,
+#: and every one split. The inch half alone parses to nothing, so it was the foot half that would
+#: have been believed. Joined here by the mechanism that joins `984 [38 3/4]`, for the same reason.
+#: Typographic marks (`’`, `”`, `−`) are matched too, so the label is joined even where the unit
+#: parser cannot yet value it — a joined label it refuses is safe; a split one it values is not.
+FEET_INCH_TOKEN_RE = re.compile(
+    r"\d+(?:\s+\d+/\d+)?\s*['’′]\s*[-−–]?\s*\d+(?:\s+\d+/\d+|/\d+)?\s*[\"”″]"
+)
+
+#: A whole number of inches and its fraction, which a space splits: `24 3/4"`, `10 1/4"`.
+#:
+#: **Read whole or not at all.** In text set large enough that its space is wider than
+#: `extract_words`' three-point gap, `24 3/4"` comes back as `24` and `3/4"`, and `3/4"` alone is
+#: three quarters of an inch, exact and wrong. Found converting CAD drawings (formats phase 2), where
+#: every label is the size its drawing sets.
+MIXED_INCH_TOKEN_RE = re.compile(r"\d+\s+\d+/\d+\s*[\"”″]")
+
+#: The tokens `extract_words` splits that must be read whole: the dual dimension, feet-and-inches,
+#: and inches with a fraction.
+_WHOLE_TOKENS: Final = (DUAL_TOKEN_RE, FEET_INCH_TOKEN_RE, MIXED_INCH_TOKEN_RE)
+
 __all__ = [
+    "FRAGMENT_REACH",
+    "STACK_REACH",
     "PageContents",
+    "SetAsideLabel",
+    "SetAsideReason",
     "TextItem",
     "UnreadablePdf",
     "read_page_contents",
     "read_pages",
 ]
+
+#: How far apart two digits set one over the other may be, in the text's own height, and still be
+#: taken for a numerator and its denominator rather than two lines of text.
+#:
+#: **A ratio of the text's height, so it does not depend on the drawing's scale.** Measured on both
+#: client sets (#738): a numerator and its denominator sit 0.8 to 1.1 text heights apart, centre to
+#: centre, and lines of notes 1.4 and more. The two error directions are not equal — a note line taken
+#: for a fraction costs a reviewer one look, a fraction taken for a note line lets a numerator be read
+#: as a whole number (`1"` for the `1` of `2 1/2"`) — so the reach sits above every fraction measured.
+STACK_REACH: Final = 1.3
+
+#: Two digits closer than this, centre to centre, are on one line, not stacked: overprinted text.
+_SAME_LINE: Final = 0.5
+
+#: How far along its own line, in the text's height, the inches may follow a feet number that stands
+#: alone before the feet are taken to be half of a longer label.
+#:
+#: **What it catches, measured on both client sets (#738):** sideways labels such as `7' -11"` and
+#: `3' - 6"`, which `extract_words` returns as `7'` and `-11"` about 1.5 heights apart, and which the
+#: feet-and-inches join cannot reach because it joins only along upright lines. `7'` alone is 84
+#: inches. The inch half (`-11"`) parses to nothing, so only the feet half needs this. The error
+#: directions are unequal again: a label set aside is read by another route or a reviewer, half a
+#: label read as a whole one is a confident wrong number.
+FRAGMENT_REACH: Final = 2.0
+
+#: Closer than this, in the text's height, another digit on a run's own line is part of the same
+#: label: narrower than any space between words. Measured on `AI_Set_1`: `9.7"` with the `1` of
+#: `19.7"` 0.26 heights before it, `10"` and `1"` cut from their labels at 0.26 and 0.34. Whole
+#: labels in a chain of dimensions stand a height and more apart, and are left alone.
+_TOUCHING: Final = 0.5
+
+#: A feet number standing alone, with no inches: `7'`, `3’`, `2 1/2'`.
+_BARE_FEET_RE: Final = re.compile(r"\d+(?:\s+\d+/\d+)?\s*['’′]")
+
+#: A run that could carry a value: it holds a unit mark, a bracket, or millimetres. Only those are
+#: tested as pieces of longer labels; a run with no unit is never given a value (`app/evidence`).
+_MAY_CARRY_A_VALUE: Final = re.compile(r"['’′\"”″\[\]]|mm")
+
+#: A numerator or a denominator that `extract_words` split from its stack and that carries a unit
+#: mark: `1"` for the `1` of `2 1/2"`. One or two digits, because a denominator is at most 64. Only
+#: such a word is tested for a digit stacked beside it — measured on `AI_Set_2`, a longer word with a
+#: digit over it is a line of a tightly set note (`29-7/8"W X` over `16-1/2"H)`), 18 of 18.
+_STACK_PIECE_RE: Final = re.compile(r"\d{1,2}\s*['’′\"”″]+")
+
+#: How much two sizes or two baselines may differ, in the text's height, and still be the same. Text
+#: set in one run shares them exactly; this absorbs only the arithmetic of reading them back.
+_SAME: Final = 0.01
 
 #: Read bottom-to-top for rotated runs. Without it pdfplumber returns the characters of a rotated
 #: dimension in reverse — `984` as `489` — which is a plausible number and therefore undetectable
@@ -83,6 +173,11 @@ _ROTATED_CHAR_DIRECTION: Final = "btt"
 _NO_TEXT_REASON: Final = (
     "no text objects on this page: it was plotted with text converted to outlines, or it is a "
     "scanned image. Its dimensions cannot be read without OCR."
+)
+
+_ONLY_SET_ASIDE_REASON: Final = (
+    "the only text on this page was set aside unread: stacked fractions, labels written on two "
+    "lines, or pieces of longer labels, none of which can be read as a number on its own."
 )
 
 
@@ -120,6 +215,34 @@ class TextItem:
     upright: bool
 
 
+class SetAsideReason(StrEnum):
+    """Why a run of text is not read as a number."""
+
+    STACKED_FRACTION = "stacked_fraction"
+    """Set as a stacked fraction: `2434"` for `24 3/4"`. Its place sends a reviewer to it and makes
+    every model crop showing it abstain (#726)."""
+
+    TWO_LINES = "two_lines"
+    """Millimetres written over their bracketed inches, read as one run: `[52835]` for `585` over
+    `[23]`. Not a fraction, so it is left for the readers that join that pair (`extraction/ocr.py`)."""
+
+    FRAGMENT = "fragment"
+    """A piece of a longer label: `7'` of a sideways `7' -11"`, `9.7"` of `19.7"`."""
+
+
+@dataclass(frozen=True, slots=True)
+class SetAsideLabel:
+    """Where a run of text set aside unread sits, and why. **No text, on purpose.**
+
+    What `extract_words` made of it is not what the drawing says, so it is not kept anywhere a later
+    step could read it as a number.
+    """
+
+    extent: Polygon
+    image_extent: tuple[ImagePoint, ...]
+    reason: SetAsideReason
+
+
 @dataclass(frozen=True, slots=True)
 class PageContents:
     """What one page holds: its text runs and its straight line segments.
@@ -132,6 +255,8 @@ class PageContents:
     texts: tuple[TextItem, ...]
     segments: tuple[DimensionExtent, ...]
     unreadable_reason: str | None = None
+    set_aside: tuple[SetAsideLabel, ...] = ()
+    """Runs not read as numbers, with why: never in `texts`, never a reading."""
 
     @property
     def readable(self) -> bool:
@@ -302,8 +427,12 @@ def read_page_contents(
     *,
     document_version_id: UUID,
     dpi: int,
+    keep_char: Callable[[dict[str, Any]], bool] | None = None,
 ) -> PageContents:
     """The text runs and straight segments on one page, in stored coordinates.
+
+    `keep_char`, where given, is asked of every character before any word is formed, and a character
+    it refuses is not read at all. `extraction/stamp_text.py` uses it to leave out coloured text.
 
     `dpi` has no default. Stored coordinates are normalised against the visible crop box and reached
     through integer image space, so the resolution decides how much precision survives the trip — a
@@ -338,8 +467,20 @@ def read_page_contents(
                 crop_box=crop_box,
             )
             height = _decimal(page.height)
+            if keep_char is not None:
+                test = keep_char
+                page = page.filter(lambda obj: obj.get("object_type") != "char" or test(obj))
+            # **Text printed twice in one place is read once.** Measured on `AI_Set_2`: a label drawn
+            # twice over itself came back as `22''`, 22 inches, for a `2' - 6"`. pdfplumber's own
+            # de-duplication removes a character only where an identical one, same font and size,
+            # sits within a point of it — a second copy, never a second character.
+            page = page.dedupe_chars()
 
             words = page.extract_words(return_chars=True, char_dir_rotated=_ROTATED_CHAR_DIRECTION)
+            digits = _DigitGrid(page.chars)
+            # **Stacked fractions come out before anything is joined or read** (#738). A `2434"` left
+            # in would be a reading; a `24` beside it could be joined into a dual token.
+            words, set_aside = _set_aside_stacked(words, digits)
             # **Dual tokens are read whole, before the words they are made of.** `984 [38 3/4]` is
             # one reading of one dimension, and `extract_words` splits it at the spaces into `984`,
             # `[38` and `3/4]` — three fragments, none of which is a dimension. That splitting is the
@@ -347,14 +488,41 @@ def read_page_contents(
             # means the corroboration lane sees the drawing's own second reading (#528); leaving the
             # fragments in as well would record one dimension four times.
             dual = _dual_tokens(page, words, transform, height, document_version_id, page_index)
+            runs = [merged for _, _, merged in dual] + [
+                word for word in words if not _inside_any(word, dual)
+            ]
+            # **Then whatever is a piece of a longer label**, once the joins above have put back
+            # together every label they can. `5' - 5"` is read whole; `7'` of a sideways `7' -11"`,
+            # which no join reached, is set aside rather than read as 84 inches.
+            kept_runs: list[dict[str, Any]] = []
+            partners: set[int] = set()
+            may_carry = [bool(_MAY_CARRY_A_VALUE.search(str(run.get("text", "")))) for run in runs]
+            fragments = [
+                carries and _is_fragment(run, digits, partners)
+                for run, carries in zip(runs, may_carry, strict=True)
+            ]
+            for run, carries, fragment in zip(runs, may_carry, fragments, strict=True):
+                # The other half of a feet number set aside goes with it: `0"` of a `2' - 0"` that
+                # no join reached is no more a label than the `2'` is.
+                other_half = carries and any(
+                    id(char) in partners for char in run.get("chars") or ()
+                )
+                if fragment or other_half:
+                    set_aside.append((run, SetAsideReason.FRAGMENT))
+                else:
+                    kept_runs.append(run)
             texts = tuple(
                 item
-                for word in words
-                if not _inside_any(word, dual)
-                and (item := _text_item(word, transform, height, document_version_id, page_index))
+                for run in kept_runs
+                if (item := _text_item(run, transform, height, document_version_id, page_index))
                 is not None
             )
-            texts = tuple(item for item, _ in dual) + texts
+            labels = tuple(
+                SetAsideLabel(extent=item.extent, image_extent=item.image_extent, reason=reason)
+                for run, reason in set_aside
+                if (item := _text_item(run, transform, height, document_version_id, page_index))
+                is not None
+            )
             segments = _segments(page, transform, height, document_version_id, page_index)
     except UnreadablePdf:
         raise
@@ -365,8 +533,196 @@ def read_page_contents(
         page_index=page_index,
         texts=texts,
         segments=segments,
-        unreadable_reason=None if texts else _NO_TEXT_REASON,
+        unreadable_reason=(
+            None if texts else (_ONLY_SET_ASIDE_REASON if labels else _NO_TEXT_REASON)
+        ),
+        set_aside=labels,
     )
+
+
+#: A digit's place in its own text frame: `(along_low, along_high, across_low, across_high, up)`.
+#: Along is the reading direction, across is up the line; `up` names the direction, rounded, so two
+#: digits are compared only when they read the same way.
+_Frame = tuple[float, float, float, float, tuple[float, float]]
+
+
+def _frame(char: dict[str, Any]) -> _Frame | None:
+    """Where one character sits, measured along and across its own line, whichever way it turns.
+
+    The character's matrix says which way is up for it; its box is projected onto that and onto the
+    reading direction. A sideways `7 3/8"` is then measured exactly as an upright one.
+    """
+    matrix = char.get("matrix")
+    if not isinstance(matrix, (tuple, list)) or len(matrix) != 6:
+        return None
+    up_x, up_y = float(matrix[2]), float(matrix[3])
+    length = math.hypot(up_x, up_y)
+    if length == 0:
+        return None
+    up_x, up_y = up_x / length, up_y / length
+    corners = [(float(char[x]), float(char[y])) for x in ("x0", "x1") for y in ("y0", "y1")]
+    across = [x * up_x + y * up_y for x, y in corners]
+    along = [x * up_y - y * up_x for x, y in corners]
+    return min(along), max(along), min(across), max(across), (round(up_x, 3), round(up_y, 3))
+
+
+def _digit_frames(chars: list[dict[str, Any]]) -> list[tuple[dict[str, Any], _Frame | None]]:
+    return [(char, _frame(char)) for char in chars if str(char.get("text", "")).isdigit()]
+
+
+class _DigitGrid:
+    """Every digit on the page, in square cells three times the tallest digit wide, so a character's
+    neighbours are found in the nine cells round it rather than by comparing it with every digit on
+    the sheet. Three heights covers both reaches (`STACK_REACH`, `FRAGMENT_REACH`) from any digit.
+    """
+
+    def __init__(self, chars: list[dict[str, Any]]) -> None:
+        measured = [(char, frame) for char, frame in _digit_frames(chars) if frame is not None]
+        tallest = max((frame[3] - frame[2] for _, frame in measured), default=0.0)
+        self._cell = 3 * tallest or 1.0
+        self._cells: dict[tuple[int, int], list[tuple[int, _Frame]]] = defaultdict(list)
+        for char, frame in measured:
+            self._cells[self._key(char)].append((id(char), frame))
+
+    def _key(self, char: dict[str, Any]) -> tuple[int, int]:
+        centre_x = (float(char["x0"]) + float(char["x1"])) / 2
+        centre_y = (float(char["y0"]) + float(char["y1"])) / 2
+        return int(centre_x // self._cell), int(centre_y // self._cell)
+
+    def near(self, char: dict[str, Any]) -> list[tuple[int, _Frame]]:
+        """The digits in the nine cells round `char`, each with the identity of its character."""
+        column, row = self._key(char)
+        return [
+            entry
+            for dx in (-1, 0, 1)
+            for dy in (-1, 0, 1)
+            for entry in self._cells.get((column + dx, row + dy), ())
+        ]
+
+
+def _mixed(frames: list[_Frame | None]) -> bool:
+    """Whether a word's digits are not all one size, on one baseline, reading one way."""
+    if any(frame is None for frame in frames):
+        return True
+    known = [frame for frame in frames if frame is not None]
+    heights = [frame[3] - frame[2] for frame in known]
+    bases = [frame[2] for frame in known]
+    tolerance = _SAME * max(heights)
+    return (
+        max(heights) - min(heights) > tolerance
+        or max(bases) - min(bases) > tolerance
+        or len({frame[4] for frame in known}) > 1
+    )
+
+
+def _one_size(frames: list[_Frame | None]) -> bool:
+    known = [frame for frame in frames if frame is not None]
+    heights = [frame[3] - frame[2] for frame in known]
+    return max(heights) - min(heights) <= _SAME * max(heights)
+
+
+def _stacked_over(mine: _Frame, other: _Frame) -> bool:
+    """Whether `other` is set directly over or under `mine`, as a numerator is over a denominator."""
+    if mine[4] != other[4]:
+        return False
+    overlap = min(mine[1], other[1]) - max(mine[0], other[0])
+    if overlap < 0.5 * min(mine[1] - mine[0], other[1] - other[0]):
+        return False
+    height = max(mine[3] - mine[2], other[3] - other[2])
+    offset = abs((mine[2] + mine[3]) - (other[2] + other[3])) / 2 / height
+    return _SAME_LINE <= offset <= STACK_REACH
+
+
+def _set_aside_stacked(
+    words: list[dict[str, Any]], digits: _DigitGrid
+) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], SetAsideReason]]]:
+    """`(kept, set_aside)`: the words that may be read, and those set on more than one line.
+
+    Two tests, both on digits only — an inch mark is routinely set smaller than its number.
+
+    - **Inside the word**: its digits are not one size on one baseline. `2434"` for `24 3/4"`. A
+      stacked fraction, unless its digits are all one size and it holds a bracket: then it is
+      millimetres written over their bracketed inches (`[52835]` for `585` over `[23]`), measured on
+      `AI_Set_1`.
+    - **Beside it**: the word is a lone numerator or denominator with its mark (`_STACK_PIECE_RE`)
+      and a digit of another word sits directly over or under one of its own, within
+      `STACK_REACH`. `1"` for the numerator of `2 1/2"`, when `extract_words` split the stack.
+    """
+    kept: list[dict[str, Any]] = []
+    set_aside: list[tuple[dict[str, Any], SetAsideReason]] = []
+    for word in words:
+        text = str(word.get("text", ""))
+        own = _digit_frames(list(word.get("chars") or ()))
+        if not own:
+            kept.append(word)
+            continue
+        frames = [frame for _, frame in own]
+        if _mixed(frames):
+            two_lines = (
+                not any(frame is None for frame in frames)
+                and _one_size(frames)
+                and ("[" in text or "]" in text)
+            )
+            reason = SetAsideReason.TWO_LINES if two_lines else SetAsideReason.STACKED_FRACTION
+            set_aside.append((word, reason))
+            continue
+        if not _STACK_PIECE_RE.fullmatch(text):
+            kept.append(word)
+            continue
+        own_ids = {id(char) for char, _ in own}
+        beside = any(
+            other_id not in own_ids and _stacked_over(frame, other)
+            for char, frame in own
+            if frame is not None
+            for other_id, other in digits.near(char)
+        )
+        if beside:
+            set_aside.append((word, SetAsideReason.STACKED_FRACTION))
+        else:
+            kept.append(word)
+    return kept, set_aside
+
+
+def _is_fragment(run: dict[str, Any], digits: _DigitGrid, partners: set[int]) -> bool:
+    """Whether a run is a piece of a longer label. Three shapes, each measured on the client's sets:
+
+    - **Inside**: another digit sits within the run's own span: `101"` whose stacked `3/4` sits
+      between the number and its mark.
+    - **Touching**: another digit on its line closer than `_TOUCHING` to either end: `9.7"` cut from
+      `19.7"`.
+    - **Feet alone**: a bare feet number with another digit on its line within `FRAGMENT_REACH`:
+      `7'` of a sideways `7' -11"`. Either side, because a drawing's mirrored text reads backwards.
+      The digits it found are added to `partners`, so the run they belong to is set aside with it.
+    """
+    chars = list(run.get("chars") or ())
+    own = [(char, frame) for char, frame in _digit_frames(chars) if frame is not None]
+    if not own:
+        return False
+    up = own[0][1][4]
+    frames = [frame for char in chars if (frame := _frame(char)) is not None and frame[4] == up]
+    start = min(frame[0] for frame in frames)
+    end = max(frame[1] for frame in frames)
+    height = max(frame[3] - frame[2] for _, frame in own)
+    centre = sum((frame[2] + frame[3]) / 2 for _, frame in own) / len(own)
+    low, high = centre - height / 2, centre + height / 2
+    bare_feet = _BARE_FEET_RE.fullmatch(str(run.get("text", "")).strip()) is not None
+    reach = (FRAGMENT_REACH if bare_feet else _TOUCHING) * height
+    found_partner = False
+    own_ids = {id(char) for char in chars}
+    for char, _ in own:
+        for other_id, other in digits.near(char):
+            if other_id in own_ids or other[4] != up:
+                continue
+            middle = (other[0] + other[1]) / 2
+            if start <= middle <= end and other[2] < high and other[3] > low:
+                return True
+            on_line = abs((other[2] + other[3]) / 2 - centre) <= _SAME_LINE * height
+            if on_line and (start - reach <= middle < start or end < middle <= end + reach):
+                if not bare_feet:
+                    return True
+                partners.add(other_id)
+                found_partner = True
+    return found_partner
 
 
 def _image(x: object, top: object, transform: PageTransform, height: Decimal) -> ImagePoint:
@@ -412,8 +768,12 @@ def _dual_tokens(
     height: Decimal,
     document_version_id: UUID,
     page_index: int,
-) -> tuple[tuple[TextItem, _Box], ...]:
-    """Every `984 [38 3/4]` on the page, as one text run each, with the box it occupies.
+) -> tuple[tuple[TextItem, _Box, dict[str, Any]], ...]:
+    """Every `984 [38 3/4]` and every `2' -5"` on the page, as one text run each, with its box and
+    the run itself (its characters are what `_is_fragment` measures).
+
+    Both shapes are in `_WHOLE_TOKENS`: a dimension `extract_words` splits at a space, whose parts
+    would be read as other dimensions or as none.
 
     **Rebuilt from the words, not from character offsets.** The first version matched the regex
     against a line's text and sliced its characters by the match offsets, which is wrong in a way
@@ -424,18 +784,47 @@ def _dual_tokens(
     So the line is used only to say which words share it, by exact box containment, and the token is
     found by joining consecutive words back together. The box that comes out is the union of real
     word boxes, which is what the drawing actually says.
+
+    **Sideways labels are joined too** (#738). `extract_text_lines` groups only upright text, so a
+    sideways `2' - 0"` stayed three words, and `2'` alone is 24 inches while `0"` alone is none.
+    Sideways words are put on lines by their own geometry (`_sideways_lines`) and joined the same way,
+    after the upright lines, from the words those did not use.
     """
-    found: list[tuple[TextItem, _Box]] = []
+    found: list[tuple[TextItem, _Box, dict[str, Any]]] = []
+    upright_lines = []
     for line in page.extract_text_lines(return_chars=True):
         line_box = (line["x0"], line["top"], line["x1"], line["bottom"])
-        members = sorted(
-            (word for word in words if _inside(word, line_box)), key=lambda word: word["x0"]
+        upright_lines.append(
+            sorted((word for word in words if _inside(word, line_box)), key=lambda word: word["x0"])
         )
+    _join_lines(upright_lines, found, transform, height, document_version_id, page_index)
+    sideways = [
+        word
+        for word in words
+        if not word.get("upright", True) and not _inside_any(word, tuple(found))
+    ]
+    _join_lines(
+        _sideways_lines(sideways), found, transform, height, document_version_id, page_index
+    )
+    return tuple(found)
+
+
+def _join_lines(
+    lines: list[list[dict[str, Any]]],
+    found: list[tuple[TextItem, _Box, dict[str, Any]]],
+    transform: PageTransform,
+    height: Decimal,
+    document_version_id: UUID,
+    page_index: int,
+) -> None:
+    """Join consecutive words of each line that together make one `_WHOLE_TOKENS` dimension."""
+    for members in lines:
         index = 0
         while index < len(members):
             for size in range(min(_MAXIMUM_TOKEN_WORDS, len(members) - index), 0, -1):
                 run = members[index : index + size]
-                if not DUAL_TOKEN_RE.fullmatch(" ".join(str(word["text"]) for word in run)):
+                joined = " ".join(str(word["text"]) for word in run)
+                if not any(pattern.fullmatch(joined) for pattern in _WHOLE_TOKENS):
                     continue
                 box = (
                     min(word["x0"] for word in run),
@@ -450,15 +839,63 @@ def _dual_tokens(
                     "top": box[1],
                     "x1": box[2],
                     "bottom": box[3],
+                    "upright": run[0].get("upright", True),
                 }
                 item = _text_item(merged, transform, height, document_version_id, page_index)
                 if item is not None:
-                    found.append((item, box))
+                    found.append((item, box, merged))
                 index += size
                 break
             else:
                 index += 1
-    return tuple(found)
+
+
+#: A sideways word as `_sideways_lines` places it: `(up, across_centre, height, start, end, word)`.
+_Placed = tuple[tuple[float, float], float, float, float, float, dict[str, Any]]
+
+
+def _sideways_lines(words: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Sideways words grouped into lines by their own geometry, each line in reading order.
+
+    Words share a line when they read the same way and their centres across the line are within
+    half a text height; a line is broken wherever the gap along it exceeds `FRAGMENT_REACH`, so two
+    labels on one dimension string are never joined into one.
+    """
+    placed: list[_Placed] = []
+    for word in words:
+        frames = [frame for char in word.get("chars") or () if (frame := _frame(char)) is not None]
+        if not frames or len({frame[4] for frame in frames}) > 1:
+            continue
+        low = min(frame[2] for frame in frames)
+        high = max(frame[3] for frame in frames)
+        start = min(frame[0] for frame in frames)
+        end = max(frame[1] for frame in frames)
+        placed.append((frames[0][4], (low + high) / 2, high - low, start, end, word))
+    placed.sort(key=lambda entry: (entry[0], entry[1]))
+
+    groups: list[list[_Placed]] = []
+    for entry in placed:
+        first = groups[-1][0] if groups else None
+        if (
+            first is not None
+            and entry[0] == first[0]
+            and entry[1] - first[1] <= _SAME_LINE * max(entry[2], first[2])
+        ):
+            groups[-1].append(entry)
+        else:
+            groups.append([entry])
+
+    lines: list[list[dict[str, Any]]] = []
+    for group in groups:
+        ordered = sorted(group, key=lambda entry: entry[3])
+        line = [ordered[0][5]]
+        for previous, entry in pairwise(ordered):
+            if entry[3] - previous[4] > FRAGMENT_REACH * max(entry[2], previous[2]):
+                lines.append(line)
+                line = []
+            line.append(entry[5])
+        lines.append(line)
+    return lines
 
 
 def _inside(word: dict[str, Any], box: _Box) -> bool:
@@ -472,7 +909,9 @@ def _inside(word: dict[str, Any], box: _Box) -> bool:
     )
 
 
-def _inside_any(word: dict[str, Any], dual: tuple[tuple[TextItem, _Box], ...]) -> bool:
+def _inside_any(
+    word: dict[str, Any], dual: tuple[tuple[TextItem, _Box, dict[str, Any]], ...]
+) -> bool:
     """Whether this word is a fragment of a dual token already read whole.
 
     Exact comparison, not a tolerance: the token's box is the union of the very characters the word
@@ -483,7 +922,7 @@ def _inside_any(word: dict[str, Any], dual: tuple[tuple[TextItem, _Box], ...]) -
         and word["x1"] <= right
         and word["top"] >= top
         and word["bottom"] <= bottom
-        for _, (left, top, right, bottom) in dual
+        for _, (left, top, right, bottom), _ in dual
     )
 
 

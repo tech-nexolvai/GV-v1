@@ -199,10 +199,12 @@ def make_fixture(directory: Path) -> Path:
     client material, and so the format has a worked example Raj's answers can be mapped onto. The
     numbers in it are arbitrary and nothing is tuned against them.
 
-    **Two answers, on purpose: one the reader should get and one it should not.** The drawing says
-    `25.5"` — one token, which the reader handles — and `28 3/4"`, a mixed fraction with a space in
-    it, which `extract_words` splits. A fixture where every answer matched would only prove the
-    scorecard can say "yes", and the number that matters here is the one it gets wrong.
+    **Two answers, on purpose: one the system gets and one it does not.** The drawing says `25.5"`,
+    which matches its answer, and `28 1/2"` where the answer key says `28 3/4"`. To the grader that
+    disagreement is exactly what a misreading looks like. It used to come from the reader itself,
+    which split `28 3/4"` at its space and read `3/4"`; that is fixed (#738), and no weakness known
+    today turns a label into a wrong number, so the disagreement is written into the drawing instead.
+    A fixture where every answer matched would only prove the scorecard can say "yes".
 
     The architectural drawing is present because `GoldCase` requires both — a match pairs an arch
     item with a shop item, and a case naming only one would be half unbound.
@@ -210,8 +212,8 @@ def make_fixture(directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     shop = directory / "shop.pdf"
     arch = directory / "arch.pdf"
-    shop.write_bytes(_pdf('25.5"|28 3/4"'))
-    arch.write_bytes(_pdf('25.5"|28 3/4"'))
+    shop.write_bytes(_pdf('25.5"|28 1/2"'))
+    arch.write_bytes(_pdf('25.5"|28 1/2"'))
 
     key = {
         "id": directory.name,
@@ -233,10 +235,9 @@ def make_fixture(directory: Path) -> Path:
                     "item_id": "synthetic-item-1",
                 },
                 {
-                    # **Deliberately a mixed fraction.** The generated drawing writes `28 3/4"` with
-                    # a space in it, which is how a drawing writes one — and it is the shape that
-                    # exposes a real reader weakness rather than a harness bug. A fixture where
-                    # every answer matches would prove the scorecard can say "yes" and nothing else.
+                    # **Deliberately not what the drawing says.** The generated drawing writes
+                    # `28 1/2"`; this answer is `28 3/4"`. A fixture where every answer matches
+                    # would prove the scorecard can say "yes" and nothing else.
                     "semantic_type": "CT008",
                     "source": "SHOP",
                     "value": {"exact": "115/4", "unit": "in", "raw_text": '28 3/4"'},

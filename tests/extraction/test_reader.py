@@ -336,3 +336,214 @@ def test_the_reader_survives_a_real_multi_page_document() -> None:
     contents = read_page_contents(REAL_PDF.read_bytes(), 0, document_version_id=uuid4(), dpi=DPI)
     assert contents.texts
     assert contents.readable is True
+
+
+# ---------------------------------------------------------------------------
+# Feet and inches, read whole (formats phase 1)
+# ---------------------------------------------------------------------------
+
+#: `2' -5"` written as one string with a space in it, as the client's stamps write their labels.
+FEET_AND_INCHES = _pdf(b"BT /F1 10 Tf 1 0 0 1 20 70 Tm (2' -5\") Tj ET\n1 w 20 40 m 120 40 l S\n")
+
+
+def test_a_feet_and_inches_label_split_by_a_space_is_read_whole() -> None:
+    """**The failure this prevents.** `extract_words` splits `2' -5"` into `2'` and `-5"`, and `2'`
+    alone is 24 inches for a label that says 29. Outcome: one run, `2' -5"`, and no `2'`."""
+    texts = [item.text for item in _contents(FEET_AND_INCHES).texts]
+
+    # The font's standard encoding writes the straight apostrophe as `’`; `units.notation` reads it
+    # as a foot mark, so the one run below values as 29 inches.
+    assert texts == ['2’ -5"'], texts
+
+
+def test_the_feet_and_inches_pattern_takes_only_whole_dimensions() -> None:
+    from extraction.reader import FEET_INCH_TOKEN_RE
+
+    for whole in ("2' -5\"", "6' -0\"", "5' -5 1/2\"", '3’ − 6"', "1'-0\"", "12' 3/4\""):
+        assert FEET_INCH_TOKEN_RE.fullmatch(whole), whole
+    for part in ("2'", '-5"', "984 [38 3/4]", '38 3/4"', "2' -5"):
+        assert not FEET_INCH_TOKEN_RE.fullmatch(part), part
+
+
+# ---------------------------------------------------------------------------
+# Labels the words came apart from (#738). Each PDF is built to hold one shape measured on the
+# client's sets; the measurement is in the test's docstring, not in the PDF.
+# ---------------------------------------------------------------------------
+
+
+def _set_aside(contents: PageContents) -> list[str]:
+    return [label.reason.value for label in contents.set_aside]
+
+
+def _valued(contents: PageContents) -> list[str]:
+    from units.normalise import UnitNormalisationError, normalise_to_inches
+    from units.notation import canonical_notation
+
+    valued = []
+    for item in contents.texts:
+        try:
+            normalise_to_inches(canonical_notation(item.text)[0])
+        except UnitNormalisationError:
+            continue
+        valued.append(item.text)
+    return valued
+
+
+#: `24 3/4"` as CAD text sets it: a `24`, a smaller `3` over a `4`, an inch mark — beside a plain
+#: `36"` that must still be read.
+STACKED = _pdf(
+    b"BT /F1 3 Tf 1 0 0 1 20 50 Tm (24) Tj ET\n"
+    b"BT /F1 2 Tf 1 0 0 1 23.6 51.2 Tm (3) Tj ET\n"
+    b"BT /F1 2 Tf 1 0 0 1 23.6 49 Tm (4) Tj ET\n"
+    b'BT /F1 3 Tf 1 0 0 1 24.8 50 Tm (") Tj ET\n'
+    b'BT /F1 10 Tf 1 0 0 1 100 50 Tm (36") Tj ET\n'
+)
+
+
+def test_a_stacked_fraction_is_never_read_as_a_number() -> None:
+    """**The failure this prevents.** `extract_words` joins `24 3/4"` into `2434"` — 2,434 inches,
+    exact and wrong; 69 labels on `AI_Set_1` came back that way. Outcome: no number from it, its
+    place kept as a stacked fraction, and the plain label beside it still read."""
+    contents = _contents(STACKED)
+
+    assert _valued(contents) == ['36"']
+    assert _set_aside(contents) == ["stacked_fraction"]
+
+
+#: A stack `extract_words` split: the whole `2`, then a numerator `1"` set apart from it, over its
+#: denominator `2`.
+SPLIT_STACK = _pdf(
+    b"BT /F1 10 Tf 1 0 0 1 20 50 Tm (2) Tj ET\n"
+    b'BT /F1 6 Tf 1 0 0 1 29.6 56 Tm (1") Tj ET\n'
+    b"BT /F1 6 Tf 1 0 0 1 29.6 49 Tm (2) Tj ET\n"
+)
+
+
+def test_a_numerator_split_from_its_stack_is_not_read_as_a_whole_number() -> None:
+    """Outcome: the `1"` of a `2 1/2"` is not read as one inch."""
+    contents = _contents(SPLIT_STACK)
+
+    assert _valued(contents) == []
+    assert "stacked_fraction" in _set_aside(contents)
+
+
+#: Two lines of an appliance note, set one text height apart: no fraction in it.
+TIGHT_NOTE = _pdf(
+    b'BT /F1 10 Tf 1 0 0 1 20 60 Tm (29-7/8"W) Tj ET\n'
+    b'BT /F1 10 Tf 1 0 0 1 20 50 Tm (16-1/2"H) Tj ET\n'
+)
+
+
+def test_lines_of_a_tightly_set_note_are_still_read() -> None:
+    """**No false alarm.** Measured on `AI_Set_2`: tables and notes set a height apart look like a
+    stack to a test of distance alone (335 words). Outcome: both lines are read."""
+    contents = _contents(TIGHT_NOTE)
+
+    assert sorted(item.text for item in contents.texts) == ['16-1/2"H', '29-7/8"W']
+    assert contents.set_aside == ()
+
+
+#: Millimetres written over their bracketed inches, close enough to come back as one word.
+TWO_LINE_DUAL = _pdf(
+    b"BT /F1 3 Tf 1 0 0 1 20 50 Tm (585) Tj ET\n" b"BT /F1 3 Tf 1 0 0 1 20.4 47 Tm ([23]) Tj ET\n"
+)
+
+
+def test_millimetres_over_inches_on_two_lines_are_not_a_fraction() -> None:
+    """Outcome: not read as one garbled number, and not sent to the stacked-fraction rule either —
+    it is a dual dimension, which the OCR route joins (`[52835]` on `AI_Set_1`)."""
+    contents = _contents(TWO_LINE_DUAL)
+
+    assert _valued(contents) == []
+    assert _set_aside(contents) == ["two_lines"]
+
+
+#: A sideways `2' - 0"`, as the client's elevations write their heights.
+SIDEWAYS_FEET_AND_INCHES = _pdf(
+    b"BT /F1 10 Tf 0 1 -1 0 150 10 Tm (2' - 0\") Tj ET\n", box=b"[0 0 200 100]"
+)
+
+
+def test_a_sideways_feet_and_inches_label_is_read_whole() -> None:
+    """**The failure this prevents.** The join for `2' -5"` worked only on upright lines, so a
+    sideways `2' - 0"` came back as `2'` (24 inches) and `0"` (none) — 94 such halves on `AI_Set_2`.
+    Outcome: one run, read whole."""
+    texts = [item.text for item in _contents(SIDEWAYS_FEET_AND_INCHES).texts]
+
+    assert texts == ['2’ - 0"'], texts
+
+
+#: A feet number with more digits right after it that no join can take: half a label.
+HALF_A_LABEL = _pdf(b"BT /F1 10 Tf 1 0 0 1 20 50 Tm (7' +11\") Tj ET\n")
+
+
+def test_a_feet_number_with_digits_right_after_it_is_not_read_alone() -> None:
+    """Outcome: neither `7'` (84 inches) nor the `11"` after it is read as a label of its own."""
+    contents = _contents(HALF_A_LABEL)
+
+    assert _valued(contents) == []
+    assert _set_aside(contents) == ["fragment", "fragment"]
+
+
+#: `19.7"` whose `1` the words came apart from: set a little off the line, so `extract_words` puts it
+#: on a line of its own, though it stands where the label's first digit belongs.
+CUT_NUMBER = _pdf(
+    b"BT /F1 10 Tf 1 0 0 1 24 53.5 Tm (1) Tj ET\n" b'BT /F1 10 Tf 1 0 0 1 29.6 50 Tm (9.7") Tj ET\n'
+)
+
+
+def test_a_number_cut_from_a_longer_one_is_not_read() -> None:
+    """Measured on `AI_Set_1`: `9.7"` with the `1` of `19.7"` 0.26 heights before it."""
+    contents = _contents(CUT_NUMBER)
+
+    assert _valued(contents) == []
+    assert _set_aside(contents) == ["fragment"]
+
+
+#: Labels in a chain of dimensions: whole, and well apart.
+CHAIN = _pdf(
+    b'BT /F1 10 Tf 1 0 0 1 20 50 Tm (24") Tj ET\n'
+    b'BT /F1 10 Tf 1 0 0 1 60 50 Tm (36") Tj ET\n'
+    b"BT /F1 10 Tf 1 0 0 1 100 50 Tm (1' - 11\") Tj ET\n"
+)
+
+
+def test_labels_in_a_chain_of_dimensions_are_each_read() -> None:
+    """**No false alarm.** Outcome: every label in the chain is read; none is taken for a piece."""
+    contents = _contents(CHAIN)
+
+    assert _valued(contents) == ['1’ - 11"', '24"', '36"']
+    assert contents.set_aside == ()
+
+
+#: One label drawn twice over itself, as a CAD program does for weight.
+PRINTED_TWICE = _pdf(
+    b"BT /F1 10 Tf 1 0 0 1 20 50 Tm (2' - 6\") Tj ET\n"
+    b"BT /F1 10 Tf 1 0 0 1 20 50 Tm (2' - 6\") Tj ET\n"
+)
+
+
+def test_text_printed_twice_in_one_place_is_read_once() -> None:
+    """Measured on `AI_Set_2`: a doubled `2' - 6"` came back as `22''`, 22 inches. Outcome: `2' - 6"`."""
+    assert [item.text for item in _contents(PRINTED_TWICE).texts] == ['2’ - 6"']
+
+
+def test_a_page_with_only_set_aside_text_says_so() -> None:
+    contents = _contents(_pdf(b"BT /F1 10 Tf 1 0 0 1 20 50 Tm (7' +11\") Tj ET\n"))
+
+    assert contents.texts == ()
+    assert contents.unreadable_reason is not None
+    assert "set aside" in contents.unreadable_reason
+
+
+#: `24 3/4"` set large enough that its space is wider than a word break.
+LARGE_MIXED = _pdf(b'BT /F1 24 Tf 1 0 0 1 10 40 Tm (24 3/4") Tj ET\n', box=b"[0 0 300 100]")
+
+
+def test_inches_and_a_fraction_split_by_a_space_are_read_whole() -> None:
+    """**The failure this prevents.** At 24 points the space is wider than `extract_words`' gap,
+    and `3/4"` alone is three quarters of an inch. Outcome: one run, `24 3/4"`."""
+    contents = _contents(LARGE_MIXED)
+
+    assert [item.text for item in contents.texts] == ['24 3/4"']
+    assert contents.set_aside == ()

@@ -833,3 +833,92 @@ def test_at_the_old_limit_the_digits_were_not_glyphs() -> None:
     )
 
     assert [region.path_count for region in layers.outlined_regions] == [2]
+
+
+# ---------------------------------------------------------------------------
+# The vendor's own text, as AutoCAD keeps it (formats phase 1)
+# ---------------------------------------------------------------------------
+
+
+def _cad_text(text: str = '36"', rect: bytes = b"[200 40 230 55]", key: bytes = b"T") -> bytes:
+    """One `AutoCAD SHX Text` note: the invisible `/Square` AutoCAD writes for each SHX string."""
+    return (
+        b"<< /Type /Annot /Subtype /Square /Rect "
+        + rect
+        + b" /"
+        + key
+        + b" (AutoCAD SHX Text) /Contents ("
+        + text.encode("latin-1")
+        + b") /F 2 >>"
+    )
+
+
+def _reviewer_box(rect: bytes = b"[260 40 300 60]") -> bytes:
+    """A reviewer's own `/Square` box: the same subtype, and a person's name as its title."""
+    return (
+        b"<< /Type /Annot /Subtype /Square /Rect "
+        + rect
+        + b" /T ("
+        + KNOWN_AUTHOR.encode("latin-1")
+        + b") /Contents (check this) >>"
+    )
+
+
+def _markup_only(data: bytes):  # type: ignore[no-untyped-def]
+    return read_markup_layer(data, 0, document_version_id=DOCUMENT, dpi=DPI)
+
+
+def test_autocad_shx_text_is_the_vendors_exact_text() -> None:
+    """Outcome: the note's string comes back exactly, as the vendor's, with no author."""
+    layers = _markup_only(_pdf(annotations=[_cad_text('36"'), _free_text()]))
+
+    (note,) = layers.vendor_text
+    assert note.text == '36"'
+    assert note.layer is DrawingLayer.VENDOR_TEXT
+    assert note.author is None, "AutoCAD's title names its export, not a person"
+    assert [markup.text for markup in layers.markup] == [KNOWN_MARKUP]
+    assert layers.other_layer_notes == ()
+
+
+def test_the_vendors_text_is_never_the_reviewers() -> None:
+    """**The hard stop.** Outcome: the vendor's string is never in `markup`, so it can never carry
+    a reviewer's authority — and a reviewer's note is never the vendor's text."""
+    layers = _markup_only(_pdf(annotations=[_cad_text('36"'), _free_text('38"')]))
+
+    assert {note.text for note in layers.vendor_text} == {'36"'}
+    assert {note.text for note in layers.markup} == {'38"'}
+
+
+def test_a_reviewers_square_stays_other() -> None:
+    """Outcome: a `/Square` a person drew is still reported as other markup, not vendor text."""
+    layers = _markup_only(_pdf(annotations=[_reviewer_box()]))
+
+    assert layers.vendor_text == ()
+    assert [note.text for note in layers.other_layer_notes] == ["check this"]
+
+
+def test_the_title_may_be_in_the_subject() -> None:
+    """Outcome: AutoCAD's title is recognised in `/Subj` as well as `/T`."""
+    layers = _markup_only(_pdf(annotations=[_cad_text("12", key=b"Subj")]))
+
+    assert [note.text for note in layers.vendor_text] == ["12"]
+
+
+def test_only_a_square_can_be_the_vendors_text() -> None:
+    """Outcome: a `/FreeText` titled like AutoCAD's notes is still a reviewer's note — the title
+    alone never moves a note between authorities."""
+    note = (
+        b"<< /Type /Annot /Subtype /FreeText /Rect [40 40 120 60] "
+        b"/T (AutoCAD SHX Text) /Contents (40) >>"
+    )
+    layers = _markup_only(_pdf(annotations=[note]))
+
+    assert layers.vendor_text == ()
+    assert [markup.text for markup in layers.markup] == ["40"]
+
+
+def test_a_page_with_only_vendor_text_is_readable() -> None:
+    """Outcome: a page whose only annotations are AutoCAD's notes is not reported unreadable."""
+    layers = _markup_only(_pdf(annotations=[_cad_text()]))
+
+    assert layers.readable
