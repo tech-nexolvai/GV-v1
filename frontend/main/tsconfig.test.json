@@ -32,6 +32,8 @@
     "src/components/output/findingsOrder.ts",
     "src/api/sse.ts",
     "src/api/chatStreamTypes.ts",
-    "src/components/chat/chatReply.ts"
+    "src/components/chat/chatReply.ts",
+    "src/components/measure/DrawingRolesList.tsx",
+    "src/components/measure/drawingRoleChoices.ts"
   ]
 }

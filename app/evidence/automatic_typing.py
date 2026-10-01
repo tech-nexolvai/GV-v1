@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.events import SYSTEM_ACTOR, AuditCategory, emit
-from app.evidence.confirm import _document_role, _transform
+from app.evidence.sides import ReadingSides, SideRefusal, reading_transform
 from app.models.document import PackageRevisionDocument, Page
 from app.models.evidence import (
     CanonicalObservation,
@@ -281,13 +281,17 @@ def qualify_exact_tag_pair(
         return _review(
             candidate_id=candidate_id, reason="the reading page or extraction run is absent"
         )
-    transform = _transform(page, run)
-    role = _document_role(session, reading.document_version_id)
-    if transform is None or role is None:
+    transform = reading_transform(page, run)
+    if transform is None:
         return _review(
             candidate_id=candidate_id,
             reason="the reading cannot be normalised into a document-backed evidence location",
         )
+    # The same side a reviewer's label would get (#795): the confirmed panel's, never the upload's
+    # on a sheet that holds both drawings.
+    role = ReadingSides(session).of(reading)
+    if isinstance(role, SideRefusal):
+        return _review(candidate_id=candidate_id, reason=role.detail)
     if (
         reading.value_numerator is None
         or reading.value_denominator is None

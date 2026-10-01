@@ -1059,3 +1059,39 @@ select.value-input {
 /* The rule ids moved into a `title`; the count is what stays on the row. Fourteen rows each ending
    in "CT-WIDTH-001, CAB-FILLER-001" was most of the noise on this screen. */
 .value-feeds { cursor: help; }
+
+/* ── Which drawing is which (#795) ───────────────────────────────────── */
+
+.drawing-roles__list {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+}
+
+.drawing-roles__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.drawing-roles__facts {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.drawing-roles__facts span {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.drawing-roles__choices {
+  display: flex;
+  gap: var(--space-2);
+}

@@ -31,9 +31,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.evidence.sides import ReadingSides, SideRefusal
 from app.models.document import (
-    Document,
-    DocumentKind,
     DocumentVersion,
     PackageRevisionDocument,
     Page,
@@ -73,22 +72,6 @@ __all__ = [
 #: picked up the title block and the scale bar, and asking a model to sort that out would spend a
 #: large prompt to produce a proposal the guard is likely to refuse whole.
 MAX_ASSIGNMENT_READINGS = 200
-
-
-def document_source(document_kind: str | None) -> str | None:
-    """Normalise a document kind to the document-role vocabulary rule inputs use.
-
-    Only the two drawings a rule can read from map to anything. Anything else is `None`, and a
-    reading off it can fill no field — which is a fact about the rulebook, not a shortcoming.
-    """
-    if document_kind is None:
-        return None
-    kind = str(document_kind)
-    if kind == DocumentKind.ARCHITECTURAL.value:
-        return "ARCH"
-    if kind == DocumentKind.SHOP.value:
-        return "SHOP"
-    return None
 
 
 def quantity_description(semantic_type: str) -> str | None:
@@ -156,10 +139,9 @@ def assignment_readings(session: Session, revision: PackageRevision) -> tuple[Re
     a competing opinion, and the later thresholds are the deployment's current ones.
     """
     rows = session.execute(
-        select(ObservationCandidate, Page.index, Document.kind, ObservationAssociation)
+        select(ObservationCandidate, Page.index, ObservationAssociation)
         .join(Page, Page.id == ObservationCandidate.page_id)
         .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
-        .join(Document, Document.id == DocumentVersion.document_id)
         .join(
             PackageRevisionDocument,
             PackageRevisionDocument.document_version_id == DocumentVersion.id,
@@ -182,12 +164,19 @@ def assignment_readings(session: Session, revision: PackageRevision) -> tuple[Re
     ).all()
 
     readings: dict[UUID, Reading] = {}
-    for candidate, page_index, document_kind, association in rows:
-        source = document_source(document_kind)
-        if source is None or candidate.value_denominator is None:
-            # Neither sheet the rules read from, or a value the parser could not make exact. It can
-            # fill no field, and putting it in the context would spend prompt on a refusal.
+    sides = ReadingSides(session)
+    for candidate, page_index, association in rows:
+        # **The side a reviewer's label would give it** (#795): the confirmed drawing holding it on a
+        # sheet with drawings, the upload's kind otherwise. A reading proposed for a SHOP field and
+        # accepted goes down the typed path even when its confirmation fails, so a side guessed here
+        # would reach the vendor's checks with nobody having said which drawing it came from.
+        side = sides.of(candidate)
+        if isinstance(side, SideRefusal) or candidate.value_denominator is None:
+            # No side the rules read from — a schedule, an unconfirmed drawing, a reading between
+            # drawings — or a value the parser could not make exact. It can fill no field, and putting
+            # it in the context would spend prompt on a refusal.
             continue
+        source = side.value
         attached = association is not None and association.refusal_reason is None
         readings[candidate.id] = Reading(
             candidate_id=str(candidate.id),

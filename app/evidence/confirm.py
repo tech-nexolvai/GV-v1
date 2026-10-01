@@ -25,7 +25,6 @@ uses to record a correction. What the extractor said stays exactly as it said it
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
 from enum import StrEnum
 from fractions import Fraction
 from uuid import UUID
@@ -34,7 +33,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.events import AuditCategory, emit
-from app.models.document import Document, DocumentVersion, Page
+from app.evidence.sides import ReadingSides, SideRefusal, SideRefusalReason, reading_transform
+from app.models.document import Page
 from app.models.evidence import (
     CanonicalObservation,
     EvidenceSupportingCandidate,
@@ -43,9 +43,9 @@ from app.models.evidence import (
 from app.models.runs import ExtractionRun
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import Authority, EvidenceStatus
-from evidence.coordinates import ImagePoint, PageTransform
+from evidence.coordinates import ImagePoint
 from evidence.normalize import NormalizationRefusal, normalize
-from rules.semantic_types import DocumentRole, SemanticType
+from rules.semantic_types import SemanticType
 from units.measurement import Measurement, Unit
 
 __all__ = ["ConfirmationRefused", "RefusalReason", "confirm_candidate_type"]
@@ -65,6 +65,19 @@ class RefusalReason(StrEnum):
     NO_TRANSFORM = "no_transform"
     NOT_NORMALISABLE = "not_normalisable"
     ALREADY_CONFIRMED = "already_confirmed"
+    #: The reading's page holds drawings, and the one holding it has no confirmed role yet (#795).
+    VIEW_ROLE_UNCONFIRMED = "view_role_unconfirmed"
+    #: The reading's page holds drawings, and no single one holds it (#795).
+    NOT_IN_ONE_VIEW = "not_in_one_view"
+
+
+#: How a reading with no side is refused (`app/evidence/sides.py`, #795).
+_SIDE_REFUSAL = {
+    SideRefusalReason.NOT_COMPARED: RefusalReason.NOT_NORMALISABLE,
+    SideRefusalReason.NO_TRANSFORM: RefusalReason.NO_TRANSFORM,
+    SideRefusalReason.NOT_IN_ONE_VIEW: RefusalReason.NOT_IN_ONE_VIEW,
+    SideRefusalReason.VIEW_ROLE_UNCONFIRMED: RefusalReason.VIEW_ROLE_UNCONFIRMED,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,42 +86,6 @@ class ConfirmationRefused:
 
     reason: RefusalReason
     detail: str
-
-
-def _document_role(session: Session, document_version_id: UUID) -> DocumentRole | None:
-    """The role of the document this reading came from, or `None` when it has no verdict role.
-
-    A schedule and a product spec are read like any other document and take no part in an
-    arch-to-shop comparison, so a reading from one cannot become an operand — which is a fact about
-    the document, not a failure of the reviewer.
-    """
-    kind = session.execute(
-        select(Document.kind)
-        .join(DocumentVersion, DocumentVersion.document_id == Document.id)
-        .where(DocumentVersion.id == document_version_id)
-    ).scalar_one_or_none()
-    return {"architectural": DocumentRole.ARCH, "shop": DocumentRole.SHOP}.get(str(kind))
-
-
-def _transform(page: Page, run: ExtractionRun) -> PageTransform | None:
-    """The transform the reading was made under, rebuilt exactly — or `None` if it was not recorded.
-
-    `None` rather than a reconstruction from the page's size. The conversion normalises by the crop
-    box, and assuming the crop box starts at the origin and fills the page is right for most PDFs and
-    silently wrong for the rest. Being silently wrong here does not lose evidence; it places evidence
-    on a region of the drawing nobody wrote, which a reviewer would have no way to notice.
-    """
-    if page.media_box is None or page.crop_box is None or run.dpi is None:
-        return None
-    try:
-        return PageTransform(
-            dpi=run.dpi,
-            rotation=page.rotation,
-            media_box=tuple(Decimal(value) for value in page.media_box),  # type: ignore[arg-type]
-            crop_box=tuple(Decimal(value) for value in page.crop_box),  # type: ignore[arg-type]
-        )
-    except (ArithmeticError, TypeError, ValueError):
-        return None
 
 
 def confirm_candidate_type(
@@ -167,7 +144,7 @@ def confirm_candidate_type(
             RefusalReason.NO_SUCH_CANDIDATE, "the candidate's page or extraction run is missing"
         )
 
-    transform = _transform(page, run)
+    transform = reading_transform(page, run)
     if transform is None:
         return ConfirmationRefused(
             RefusalReason.NO_TRANSFORM,
@@ -175,13 +152,12 @@ def confirm_candidate_type(
             "on the drawing; re-run extraction for this document",
         )
 
-    role = _document_role(session, row.document_version_id)
-    if role is None:
-        return ConfirmationRefused(
-            RefusalReason.NOT_NORMALISABLE,
-            "this document is neither architectural nor shop, so a reading from it takes no part "
-            "in a comparison",
-        )
+    # **Which drawing the reading is on, from the confirmed panel holding it** (#795, ADR-0020 §2).
+    # The upload's kind decides only for a page with no drawing views; on a combined sheet it would
+    # put the architect's number on the vendor's side of every check.
+    role = ReadingSides(session).of(row)
+    if isinstance(role, SideRefusal):
+        return ConfirmationRefused(_SIDE_REFUSAL[role.reason], role.detail)
 
     if row.value_numerator is None or row.value_denominator is None or row.unit is None:
         return ConfirmationRefused(

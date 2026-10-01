@@ -1527,8 +1527,16 @@ export interface components {
             page_index: number;
             /** Raw Text */
             raw_text: string;
-            /** Source */
+            /**
+             * Source
+             * @description `ARCH` or `SHOP`: which drawing the reading is on, and so which fields it can fill. From the confirmed drawing holding it on a sheet that has drawings, from the upload otherwise (#795). Null when that is not known; `source_refusal` says why.
+             */
             source?: string | null;
+            /**
+             * Source Refusal
+             * @description Why the reading has no side, for the reviewer: for example, that the drawing holding it has not been confirmed as the architect's or the vendor's yet.
+             */
+            source_refusal?: string | null;
             /**
              * Value
              * @description The reading as exact text, `25 1/2 in`. Null when the token carried no unit and was recorded without a value, which is most text on a drawing.
@@ -3136,6 +3144,8 @@ export interface components {
             suggested_role: string | null;
             /** Tag */
             tag: string;
+            /** Upload Side */
+            upload_side?: string | null;
             /**
              * View Id
              * Format: uuid
