@@ -75,7 +75,7 @@
 /* ============================================================
    IDE SLATE PRESET LAYOUT OVERRIDES (IDE Chat on Right)
    ============================================================ */
-[data-style="ide"] .sidebar {
+[data-style="ide"][data-page="review"] .sidebar {
   order: 1;
   min-width: var(--sidebar-width);
 }
@@ -134,11 +134,11 @@
   }
 
   /* IDE mode: stack vertically on mobile */
-  [data-style="ide"] .shell__main {
+  [data-style="ide"][data-page="review"] .shell__main {
     width: 100% !important;
     order: 1;
   }
-  [data-style="ide"] .shell__evidence {
+  [data-style="ide"][data-page="review"] .shell__evidence {
     order: 2;
     width: 100% !important;
     flex: none !important;
