@@ -75,6 +75,12 @@ def canonical_json(rule: Rule) -> str:
     # Round-trip through Pydantic's JSON first so field serialisers apply (Fraction -> "1/8",
     # enums -> their values), then re-emit with sorted keys.
     payload: Any = json.loads(rule.model_dump_json())
+    # **A field added after rules were published is left out while it is unset**, so the bytes of
+    # every snapshot published before it stay exactly what they were. A parameter's `note` (#674)
+    # is the first: a rule that gives none hashes as it always has.
+    for parameter in (payload.get("parameters") or {}).values():
+        if isinstance(parameter, dict) and parameter.get("note") is None:
+            parameter.pop("note", None)
     return json.dumps(
         payload,
         sort_keys=True,

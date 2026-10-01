@@ -143,19 +143,19 @@ def test_a_declared_default_is_reported_but_not_treated_as_confirmed() -> None:
 
 
 def test_the_distribution_bounds_are_asked_for_with_no_stand_in_at_all() -> None:
-    """CAB-FILLER-001 v2 carries no default for any bound, and the form must show that.
+    """The filler bounds come pre-filled with Raj's written rule; the cabinet bounds with nothing.
 
-    Version 1 shipped `filler_min: 1"` / `filler_max: 2"`, so a package was checked against numbers
-    nobody confirmed. Q21 has the filler bounds at three different values and the per-type cabinet
-    bounds have never been given at all — so a reviewer has to supply each one, and `declared_default`
-    being None is what makes the form ask instead of pre-filling.
+    The filler pair follows his email — 1" and 2" — by the admin's decision of 2026-10-02 (#674), so
+    the form shows them and a reviewer may change them per project. The per-type cabinet bounds have
+    never been given at all, so a reviewer has to supply each one, and `declared_default` being None
+    is what makes the form ask instead of pre-filling.
     """
     needs = required_inputs(_rules())
     by_name = {p.name: p for p in needs.parameters}
 
+    assert by_name["filler_min"].declared_default == "1 in"
+    assert by_name["filler_max"].declared_default == "2 in"
     for name in (
-        "filler_min",
-        "filler_max",
         "single_door_cab_width_min",
         "single_door_cab_width_max",
         "double_door_cab_width_min",

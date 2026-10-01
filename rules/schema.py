@@ -190,6 +190,22 @@ class Parameter(BaseModel):
 
     default: Quantity | None = None
     scope: ParameterScope = ParameterScope.PROJECT
+    note: str | None = None
+    """What the default rests on, and any doubt about it, in a sentence for the reviewer.
+
+    Printed on every finding that used the default (`verdict.engine.execute`), and never once a
+    project or run value has replaced it — the doubt is about the default, not about a number a
+    reviewer chose. First used for the filler bounds, where the client's written rule and his worked
+    examples give different numbers (#674): the default follows his written word, and the note
+    says so beside every result that relied on it.
+    """
+
+    @field_validator("note")
+    @classmethod
+    def _note_is_said(cls, note: str | None) -> str | None:
+        if note is not None and not note.strip():
+            raise ValueError("a parameter note, where given, must say something")
+        return note
 
 
 class ApplicabilityVariant(BaseModel):

@@ -361,6 +361,12 @@ source:  Raj email reply (3.1), full 3-step procedure, plus the 2nd reply follow
          examples now captured as distribution test cases (docs/decisions/CAB_CHECKS_FORMAT.md). The
          MAX-default flag stands: the deck's examples use MIN 2"/MAX 3" as illustrative values, so the
          committed defaults are one of the four asks sent back 2026-09-04.
+         DECISION (admin, 2026-10-02 — "stick with what Raj said"): until Raj answers #674, the
+         defaults are his WRITTEN rule, the email's MIN 1" / MAX 2" (CAB-FILLER-001 v2.1.0). A number
+         inside a worked example does not replace a rule he wrote; every finding that relies on the
+         defaults says his 2026-09-21 deck examples use 2"/3". Checked 2026-10-02: the 2026-08-25
+         transcript holds no filler numbers from Raj at all — the "3–4"" came from a meeting summary,
+         not his recorded words.
 
 <!-- CLIENT FACTS END -->
 
