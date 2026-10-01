@@ -13,6 +13,10 @@ means the rule abstains, which is the correct outcome and not an error to route 
 input's `source` and `semantic_type` — `CT-DEPTH-001` wants `SHOP` and `CT010` — and an observation
 carries exactly those two facts. So the join is the rule's own declaration, and a rule that asked for
 something nobody has confirmed finds nothing rather than something approximate.
+
+**An input a rule pairs by identifier gets nothing from evidence** (#794). No reading carries its
+cabinet's identifier yet (#748), and a list in the order readings were labelled, paired by position,
+passed two swapped cabinets. The form still supplies both lists, in the order the reviewer states.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from decimal import Decimal
 from fractions import Fraction
+from typing import Final
 from uuid import UUID
 
 from sqlalchemy import select
@@ -41,8 +46,37 @@ from rules.schema import Cardinality, Rule
 from rules.semantic_types import DocumentRole, SemanticType
 from units.measurement import Measurement, Unit
 from verdict.operands import VerdictOperand
+from verdict.operations.pairwise import IDENTIFIER_PAIRED_OPERATIONS
 
-__all__ = ["operands_from_evidence"]
+__all__ = [
+    "IDENTIFIER_PAIRING_WITHHELD",
+    "identifier_paired_inputs",
+    "operands_from_evidence",
+]
+
+#: What a check that pairs by identifier says when it abstains for want of one (#794), for the
+#: reviewer: why the readings they labelled were not used, and what will compare them today.
+IDENTIFIER_PAIRING_WITHHELD: Final = (
+    "This check pairs each cabinet with the one carrying the same tag, and no reading carries its "
+    "cabinet's tag yet, so labelled readings are not paired by the order they were labelled. Enter "
+    "both lists on the form, in the same order, to compare them."
+)
+
+
+def identifier_paired_inputs(rule: Rule) -> frozenset[str]:
+    """The inputs `rule` hands to an operation that pairs its lists by identifier (#794).
+
+    Read from the rule's own bindings — its final operation and every derivation — so a rule that
+    pairs through an intermediate is caught as surely as one that pairs at the end.
+    """
+    bound: set[str] = set()
+    if rule.operation.type in IDENTIFIER_PAIRED_OPERATIONS:
+        bound.update(rule.operation.operands.values())
+    for derivation in rule.derivations:
+        if derivation.operation in IDENTIFIER_PAIRED_OPERATIONS:
+            for binding in derivation.operands.values():
+                bound.update((binding,) if isinstance(binding, str) else binding)
+    return frozenset(bound & set(rule.inputs or {}))
 
 
 def _domain(
@@ -91,9 +125,9 @@ def operands_from_evidence(
     """Every rule input this revision has sealed evidence for, keyed by rule then input name.
 
     Ordered by the observation's own creation time, so a many-valued input arrives in the order the
-    readings were confirmed and two runs over unchanged evidence produce the same tuple. That matters
-    because `CAB-ARCH-VS-SHOP-001` compares two runs position by position: a set that reordered
-    between runs would report a mismatch that is an artefact of the query.
+    readings were confirmed and two runs over unchanged evidence produce the same tuple. **That order
+    says nothing about which reading is which**, so no input an operation pairs member by member is
+    given one (`identifier_paired_inputs`, #794); a sum or a count is indifferent to it.
     """
     rows = session.execute(
         select(CanonicalObservation, Page.index)
@@ -146,7 +180,10 @@ def operands_from_evidence(
 
     operands: dict[str, dict[str, VerdictOperand]] = {}
     for rule in rules:
+        paired = identifier_paired_inputs(rule)
         for name, selector in (rule.inputs or {}).items():
+            if name in paired:
+                continue
             source = getattr(selector.source, "value", str(selector.source))
             semantic = getattr(selector.semantic_type, "value", str(selector.semantic_type))
             found = by_need.get((source, semantic), [])

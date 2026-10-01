@@ -1,8 +1,12 @@
 """Identifier-keyed pairwise measurement comparison.
 
-Mappings arrive from the resolved extraction/evidence pipeline. A missing counterpart is
-therefore ``NOT_FOUND``: the operation knows that a comparison input is absent, but cannot
-claim whether the drawing omitted it or extraction missed it. Verified pair failures still
+A mapping pairs by identifier. An ordered list pairs by position, which is right only for two lists
+a reviewer typed in one stated order. **No evidence path supplies a mapping yet** — no reading
+carries its cabinet's identifier (#748) — so `workflow/evidence_operands.py` gives these operands
+nothing from evidence rather than a list in the order readings were labelled (#794).
+
+A missing counterpart is ``NOT_FOUND``: the operation knows that a comparison input is absent, but
+cannot claim whether the drawing omitted it or extraction missed it. Verified pair failures still
 dominate the aggregate result, while incomplete pairs can never contribute to a pass.
 """
 
@@ -10,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Final
 
 from units.measurement import Measurement
 from units.policy import require_same_unit
@@ -166,6 +171,12 @@ def pairwise_within_tolerance(
         tolerance=tolerance,
     )
 
+
+#: The operations whose list operands are paired member by member, so which member is which is part
+#: of the input (#794). Two swapped cabinets — 24" and 36" against 36" and 24" — pair as two
+#: matches by position and as two mismatches by identifier, so a list whose order nobody stated must
+#: never reach one of these.
+IDENTIFIER_PAIRED_OPERATIONS: Final = frozenset({"pairwise_within_tolerance"})
 
 PAIRWISE_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
