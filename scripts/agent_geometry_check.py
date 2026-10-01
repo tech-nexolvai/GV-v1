@@ -70,6 +70,7 @@ GEOMETRY_JSON: Final = "geometry.json"
 HOW_TO: Final = "HOW_TO_CHECK.md"
 SHEET: Final = "sheet.html"
 ANSWERS: Final = frozenset({"yes", "no"})
+ANSWER_COLUMNS: Final = ("label", "sideways", "cut_off")
 STRATA: Final = ("sideways", "tall", "cut", "whole")
 """The groups crops are drawn from, by what the geometry says: sideways; upright but taller than
 wide (where a missed sideways label would be); cut off; neither."""
@@ -97,12 +98,14 @@ Each crop `cNN.png` is exactly what the reading agent is shown. `cNN_wide.png` i
 more of the drawing around it; the red box is the crop's edge. Open `sheet.html` to see them side by
 side.
 
-For every row of `crops.csv`, type `yes` or `no` in two columns:
+For every row of `crops.csv`, type `yes` or `no` in three columns:
 
+- **label**: is there a dimension label — a number — in the red box, or running into it? Many crops
+  are drawing symbols (outlets, shelving); for those type `no`, and `no` in the other two.
 - **sideways**: does the label's text run up or down the page, rather than across it?
 - **cut_off**: does the label carry on past the red box, so the crop shows only part of it?
 
-Use `note` for anything else (no label here, two labels, can't tell). Nothing in these files says
+Use `note` for anything else (two labels, can't tell). Nothing in these files says
 what the machine thought, on purpose: your answer is the measurement.
 """
 
@@ -369,13 +372,14 @@ def sheet(
                 "top_px",
                 "right_px",
                 "bottom_px",
+                "label",
                 "sideways",
                 "cut_off",
                 "note",
             ]
         )
         for crop in chosen:
-            writer.writerow([crop.crop_id, crop.page_index + 1, *crop.region, "", "", ""])
+            writer.writerow([crop.crop_id, crop.page_index + 1, *crop.region, "", "", "", ""])
     (out / GEOMETRY_JSON).write_text(
         json.dumps(
             {
@@ -483,22 +487,29 @@ def score(arguments: argparse.Namespace) -> int:
     unanswered = [
         row["crop_id"]
         for row in rows
-        if row["sideways"].strip().lower() not in ANSWERS
-        or row["cut_off"].strip().lower() not in ANSWERS
+        if any(row[column].strip().lower() not in ANSWERS for column in ANSWER_COLUMNS)
     ]
     if unanswered:
         raise CheckError(
-            f"{len(unanswered)} of {len(rows)} crops are not answered yes or no in both columns: "
+            f"{len(unanswered)} of {len(rows)} crops are not answered yes or no in every column: "
             + ", ".join(unanswered[:12])
         )
+    # **Scored on labels only.** A crop with no label in it says nothing about reading a label's
+    # direction or extent; what the geometry calls on those is reported apart, as false alarms that
+    # would send the agent to look at a drawing symbol.
+    labelled = [row for row in rows if _yes(row["label"])]
     recorded = json.loads((out / GEOMETRY_JSON).read_text(encoding="utf-8"))
     pdf = arguments.pdf.read_bytes()
     reader = read_settings(arguments.reader_settings)
     geometry = _geometry(reader)
     margin = VISION_CROP_CONTEXT_MARGIN_PT
     tallies: dict[str, Counter[str]] = {}
+    on_symbols: Counter[str] = Counter()
 
-    def count(rule: str, said: bool, person: bool) -> None:
+    def count(rule: str, said: bool, person: bool, *, label: bool) -> None:
+        if not label:
+            on_symbols[rule] += said
+            return
         tally = tallies.setdefault(rule, Counter())
         tally["agree" if said == person else ("missed" if person else "false alarm")] += 1
 
@@ -516,25 +527,49 @@ def score(arguments: argparse.Namespace) -> int:
                     int(row["bottom_px"]),
                 )
                 facts, _ = page.facts(box, (), margin)
-                count(f"cut off, label gap {gap} pt", facts.cut_at_edge, _yes(row["cut_off"]))
+                label = _yes(row["label"])
+                count(
+                    f"cut off, label gap {gap} pt",
+                    facts.cut_at_edge,
+                    _yes(row["cut_off"]),
+                    label=label,
+                )
                 if gap == LABEL_GAPS_PT[0]:
                     sideways = _yes(row["sideways"])
-                    count("sideways, current rule", facts.rotation_degrees != 0, sideways)
-                    count("sideways, longest run up", longest_run_up(page, box, reach), sideways)
+                    count(
+                        "sideways, current rule",
+                        facts.rotation_degrees != 0,
+                        sideways,
+                        label=label,
+                    )
+                    count(
+                        "sideways, longest run up",
+                        longest_run_up(page, box, reach),
+                        sideways,
+                        label=label,
+                    )
             del page
 
-    sideways_yes = sum(_yes(row["sideways"]) for row in rows)
-    cut_yes = sum(_yes(row["cut_off"]) for row in rows)
+    sideways_yes = sum(_yes(row["sideways"]) for row in labelled)
+    cut_yes = sum(_yes(row["cut_off"]) for row in labelled)
+    symbols = len(rows) - len(labelled)
     lines = [
         f"## Geometry check against a person (#778), {len(rows)} crops outside the key",
         "",
-        f"The person answered sideways on {sideways_yes} and cut off on {cut_yes}.",
+        (
+            f"{len(labelled)} show a label; on those the person answered sideways on "
+            f"{sideways_yes} and cut off on {cut_yes}. {symbols} show no label."
+        ),
         "",
-        "| Rule | Agrees with the person | Missed | False alarm |",
-        "|---|---|---|---|",
+        "| Rule | Agrees with the person | Missed | False alarm | Fired on a crop with no label |",
+        "|---|---|---|---|---|",
     ]
-    for rule, tally in tallies.items():
-        lines.append(f"| {rule} | {tally['agree']} | {tally['missed']} | {tally['false alarm']} |")
+    for rule in dict.fromkeys([*tallies, *on_symbols]):
+        tally = tallies.get(rule, Counter())
+        lines.append(
+            f"| {rule} | {tally['agree']} | {tally['missed']} | {tally['false alarm']} | "
+            f"{on_symbols[rule]} of {symbols} |"
+        )
     text = "\n".join(lines) + "\n"
     if arguments.output is not None:
         arguments.output.write_text(text, encoding="utf-8")

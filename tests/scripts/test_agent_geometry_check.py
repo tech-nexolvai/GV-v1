@@ -127,11 +127,12 @@ def test_the_sheet_holds_the_crops_blind_with_empty_answers(tmp_path: Path) -> N
         "top_px",
         "right_px",
         "bottom_px",
+        "label",
         "sideways",
         "cut_off",
         "note",
     }
-    assert all(row["sideways"] == row["cut_off"] == "" for row in rows)
+    assert all(row["label"] == row["sideways"] == row["cut_off"] == "" for row in rows)
     for row in rows:
         assert (out / f"{row['crop_id']}.png").exists()
         assert (out / f"{row['crop_id']}_wide.png").exists()
@@ -211,7 +212,7 @@ def test_scoring_reports_every_rule_against_the_persons_answers(tmp_path: Path) 
     with (out / "crops.csv").open(encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     for row in rows:
-        row["sideways"], row["cut_off"] = "no", "no"
+        row["label"], row["sideways"], row["cut_off"] = "yes", "no", "no"
     with (out / "crops.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -228,7 +229,29 @@ def test_scoring_reports_every_rule_against_the_persons_answers(tmp_path: Path) 
         "cut off, label gap 2 pt",
     ):
         assert f"| {rule} |" in result
-    assert "The person answered sideways on 0 and cut off on 0." in result
+    assert "on those the person answered sideways on 0 and cut off on 0. 0 show no label." in result
+
+
+def test_crops_with_no_label_are_scored_apart(tmp_path: Path) -> None:
+    """Outcome: a crop the person says holds no label counts towards no rule's agreement; what each
+    rule called on it is reported as firing on a crop with no label."""
+    pdf, settings, key = _setup(tmp_path, [FAR])
+    out = tmp_path / "data" / "check"
+    _sheet(tmp_path, pdf, settings, key, out)
+    with (out / "crops.csv").open(encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    for row in rows:
+        row["label"], row["sideways"], row["cut_off"] = "no", "no", "no"
+    with (out / "crops.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    assert _score(tmp_path, pdf, settings, out) == 0
+
+    result = (tmp_path / "result.md").read_text(encoding="utf-8")
+    assert "0 show a label" in result
+    assert f"| sideways, current rule | 0 | 0 | 0 | 0 of {len(rows)} |" in result
 
 
 def test_a_settings_file_missing_a_detector_setting_is_refused(tmp_path: Path) -> None:
