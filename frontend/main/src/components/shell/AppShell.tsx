@@ -28,7 +28,7 @@ export function AppShell({
   const showEvidencePanel = Boolean(evidencePanel);
 
   return (
-    <div className="shell" data-sidebar-collapsed={sidebarCollapsed}>
+    <div className="shell" data-sidebar-collapsed={sidebarCollapsed} data-style="ide" data-page={activePage}>
       <Topbar
         onToggleSidebar={() => setSidebarCollapsed(c => !c)}
         sidebarCollapsed={sidebarCollapsed}
