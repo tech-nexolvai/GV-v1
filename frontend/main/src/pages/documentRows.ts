@@ -47,9 +47,14 @@ export interface DocumentListState {
   trail: readonly (string | undefined)[];
   requestedTrail: readonly (string | undefined)[];
 }
-export type DocumentListEvent = { type: 'loading' } | { type: 'next' } | { type: 'previous' } | { type: 'loaded'; data: DocumentRows } | { type: 'failed'; error: string };
+export type DocumentListEvent = { type: 'loading' } | { type: 'first' } | { type: 'next' } | { type: 'previous' } | { type: 'loaded'; data: DocumentRows } | { type: 'failed'; error: string };
 const firstPage = [undefined];
 export const initialDocumentList: DocumentListState = { data: null, loading: true, error: null, trail: firstPage, requestedTrail: firstPage };
+
+export function restoreDocumentList(cursors: readonly string[]): DocumentListState {
+  const trail = [undefined, ...cursors];
+  return { ...initialDocumentList, trail, requestedTrail: trail };
+}
 
 export function documentNavigation(state: DocumentListState) {
   const next = state.data?.nextCursor;
@@ -67,6 +72,7 @@ export function documentNavigation(state: DocumentListState) {
 export function documentListReducer(state: DocumentListState, event: DocumentListEvent): DocumentListState {
   switch (event.type) {
     case 'loading': return { ...state, loading: true, error: null };
+    case 'first': return { ...state, requestedTrail: [undefined], loading: true, error: null };
     case 'next': {
       if (documentNavigation(state).nextDisabled) return state;
       return { ...state, requestedTrail: [...state.trail, state.data!.nextCursor!], loading: true, error: null };

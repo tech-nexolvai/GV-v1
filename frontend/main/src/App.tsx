@@ -9,6 +9,7 @@ import { UsagePage } from './pages/UsagePage';
 import { useRoute } from './app/route';
 import type { Page } from './app/route';
 import { useTheme } from './app/theme';
+import { useDocumentPosition } from './app/useDocumentPosition';
 import './design/components.css';
 
 const PAGE_TITLES: Record<Page, string> = {
@@ -22,6 +23,7 @@ const PAGE_TITLES: Record<Page, string> = {
 export default function App() {
   const [route, navigate] = useRoute();
   const [theme, toggleTheme] = useTheme();
+  const [documentPosition, rememberDocumentPosition] = useDocumentPosition();
   // Evidence belongs to the package that requested it, including during browser Back/Forward.
   const [evidencePanel, setEvidencePanel] = useState<{ route: typeof route; packageId: string; panel: React.ReactNode } | null>(null);
   const [evidenceDismissKey, setEvidenceDismissKey] = useState(0);
@@ -94,7 +96,9 @@ export default function App() {
       )}
 
       {route.page === 'documents' && (
-        <PackagesPage onOpenReview={openReview} onNewPackage={newReview} />
+        <PackagesPage onOpenReview={openReview} onNewPackage={newReview}
+          initialCursors={documentPosition.cursors} positionNotice={documentPosition.notice}
+          onPositionChange={rememberDocumentPosition} />
       )}
 
       {route.page === 'rulebook' && <RulebookPage />}
