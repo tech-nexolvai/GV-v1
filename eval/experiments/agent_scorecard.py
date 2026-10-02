@@ -43,6 +43,7 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
+from eval.experiments.model_bakeoff import ModelBakeoffError, key_frame, key_polygon_dpi
 from eval.gold_set.schema import GoldCase
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import EvidenceStatus
@@ -88,6 +89,7 @@ __all__ = [
     "ScorecardPage",
     "build_pages",
     "judge",
+    "key_frame_dpi",
     "load_key",
     "render_markdown",
     "results_json",
@@ -199,6 +201,29 @@ def load_key(case_dir: Path) -> tuple[KeyCrop, ...]:
     if not crops:
         raise ScorecardError(f"the key in {case_dir} has no crops")
     return tuple(crops)
+
+
+def key_frame_dpi(case_dir: Path, *, key_dpi: int | None, margin_pt: Decimal) -> int:
+    """The pixel frame the key's crops are in, refused where the scorecard would misplace them (#835).
+
+    The frame comes from `model_bakeoff.key_polygon_dpi`, the rule every loader of a key applies.
+    **The margin is checked as well**, because `score_crop` finds each region by taking `margin_pt`
+    off the crop: a key cut with a different margin would hand the agent a region that is not the
+    one the crop was cut round. A key that records no frame records no margin either, and is read
+    as cut with `margin_pt`, as it always was.
+    """
+    try:
+        dpi = key_polygon_dpi(case_dir, polygon_dpi=key_dpi)
+        frame = key_frame(case_dir)
+    except ModelBakeoffError as error:
+        raise ScorecardError(str(error)) from error
+    if frame is not None and frame.margin_pt != margin_pt:
+        raise ScorecardError(
+            f"the key in {case_dir} was cut with a {frame.margin_pt} pt margin, and the scorecard "
+            f"takes {margin_pt} pt off each crop to find its region. Recut the key with the stage's "
+            "margin; scored as it is, each crop's region would be the wrong size."
+        )
+    return dpi
 
 
 # ---------------------------------------------------------------------------

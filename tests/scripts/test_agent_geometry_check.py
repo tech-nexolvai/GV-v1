@@ -78,15 +78,17 @@ def _setup(tmp_path: Path, key_rows: list[dict[str, str]]) -> tuple[Path, Path, 
     return pdf, settings, key
 
 
-def _sheet(tmp_path: Path, pdf: Path, settings: Path, key: Path, out: Path) -> int:
+def _sheet(
+    tmp_path: Path, pdf: Path, settings: Path, key: Path, out: Path, key_dpi: str | None = "600"
+) -> int:
+    """`key_dpi=None` leaves `--key-dpi` out, for a key that records its own frame (#835)."""
     return main(
         [
             "sheet",
             str(pdf),
             "--key",
             str(key),
-            "--key-dpi",
-            "600",
+            *([] if key_dpi is None else ["--key-dpi", key_dpi]),
             "--reader-settings",
             str(settings),
             "--stage-dpi",
@@ -164,6 +166,40 @@ def test_a_region_touching_a_key_crop_is_never_on_the_sheet(tmp_path: Path) -> N
         json.loads((out / "geometry.json").read_text(encoding="utf-8"))["left_out_touching_the_key"]
         >= 1
     )
+
+
+def test_the_key_is_placed_in_the_frame_it_records_and_a_different_one_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**#835.** The key's crops are left off the sheet by where they are, so they must be placed in
+    the key's own frame. Outcome: a key that records 600 dpi needs no `--key-dpi` and its crop over
+    the label still leaves the label off; a different `--key-dpi`, or none for a key that records
+    no frame, is refused before anything is written."""
+    over = _row(
+        "k0",
+        value='10192"',
+        exact="10192",
+        left_px="0",
+        top_px="0",
+        right_px="3300",
+        bottom_px="2400",
+    )
+    pdf, settings, key = _setup(tmp_path, [over])
+
+    assert _sheet(tmp_path, pdf, settings, key, tmp_path / "data" / "none", key_dpi=None) == 2
+    assert "does not record the pixel frame" in capsys.readouterr().err
+
+    (key / "model_bakeoff_metadata.json").write_text(
+        json.dumps({"frame": {"polygon_dpi": 600, "margin_pt": "9"}, "tags": {}}), "utf-8"
+    )
+    assert _sheet(tmp_path, pdf, settings, key, tmp_path / "data" / "other", key_dpi="300") == 2
+    assert "records its polygons at 600 dpi" in capsys.readouterr().err
+    assert not (tmp_path / "data" / "other").exists()
+
+    out = tmp_path / "data" / "check"
+    assert _sheet(tmp_path, pdf, settings, key, out, key_dpi=None) == 0
+    with (out / "crops.csv").open(encoding="utf-8") as handle:
+        assert list(csv.DictReader(handle)) == []
 
 
 def test_the_sheet_is_written_only_under_data_and_never_over_one_being_checked(
