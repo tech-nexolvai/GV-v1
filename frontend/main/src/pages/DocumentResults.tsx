@@ -13,7 +13,7 @@ export function DocumentResults({ counts, error }: { counts: FindingCounts | nul
   return <div className="packages-table__results">
     {entries.filter(([, count]) => count > 0).map(([outcome, count]) => <span key={outcome} className="packages-table__result">
       <OutcomeIcon outcome={outcome} size={12} />
-      <span>{count} {OUTCOME_LABELS[outcome]}</span>
+      <span><strong className="document-result__count">{count}</strong> {OUTCOME_LABELS[outcome]}</span>
     </span>)}
   </div>;
 }
