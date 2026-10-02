@@ -2519,11 +2519,18 @@ export interface components {
             /** Name */
             name: string;
             /**
+             * Reference
+             * @description Where in that source, in the reviewer's words: "Architect A-501, section 3".
+             */
+            reference?: string | null;
+            /**
              * Scope
              * @default project
              * @enum {string}
              */
             scope: "project" | "run";
+            /** @description Where the value came from (#827), one of the setting's `sources` in required-inputs. May be left out only when the setting allows a single source. */
+            source?: components["schemas"]["Provenance"] | null;
             /**
              * Value
              * @description The value as typed, carrying its unit: 24", 610 mm.
@@ -2545,6 +2552,11 @@ export interface components {
             rule_ids: string[];
             /** Scope */
             scope: string;
+            /**
+             * Sources
+             * @default []
+             */
+            sources: components["schemas"]["SourceOut"][];
         };
         /**
          * PresignedUpload
@@ -2640,6 +2652,21 @@ export interface components {
             /** Value */
             value: string;
         };
+        /**
+         * Provenance
+         * @description Where a parameter's value came from.
+         *
+         *     A controlled vocabulary rather than a free string, for the reason ADR-0007 gave for
+         *     `ProductType`: a typo'd or improvised source publishes cleanly and then misleads a reviewer
+         *     about the authority behind a number. Provenance is the field a reviewer reads when deciding
+         *     whether to trust a value, so it is the last one that should be free text.
+         *
+         *     These are the three sources #64 names. `docs/V1_RESEARCH_AND_PLAN.md` §F5 records the
+         *     client's own phrasing in six variants; mapping the remaining three onto these is a client
+         *     vocabulary question, raised on the issue rather than guessed at here.
+         * @enum {string}
+         */
+        Provenance: "G.C / Client" | "Company standard" | "Measured" | "Fabricator";
         /**
          * PublicationOut
          * @description What was published, by whom, and on what basis.
@@ -3107,6 +3134,16 @@ export interface components {
          */
         Severity: "FLAG" | "CRITICAL" | "MAJOR" | "MINOR" | "ADVISORY";
         /**
+         * SourceOut
+         * @description One source a setting may come from, and what choosing it means (#827).
+         */
+        SourceOut: {
+            /** Guidance */
+            guidance: string;
+            /** Value */
+            value: string;
+        };
+        /**
          * StoredList
          * @description One many-valued input as stored, in layout order.
          */
@@ -3129,6 +3166,10 @@ export interface components {
             name: string;
             /** Numerator */
             numerator: string;
+            /** Reference */
+            reference?: string | null;
+            /** Source */
+            source?: string | null;
             /** Unit */
             unit: string;
         };

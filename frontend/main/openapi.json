@@ -2407,6 +2407,19 @@
             "title": "Name",
             "type": "string"
           },
+          "reference": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where in that source, in the reviewer's words: \"Architect A-501, section 3\".",
+            "title": "Reference"
+          },
           "scope": {
             "default": "project",
             "enum": [
@@ -2415,6 +2428,17 @@
             ],
             "title": "Scope",
             "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Provenance"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the value came from (#827), one of the setting's `sources` in required-inputs. May be left out only when the setting allows a single source."
           },
           "value": {
             "description": "The value as typed, carrying its unit: 24\", 610 mm.",
@@ -2463,6 +2487,14 @@
           "scope": {
             "title": "Scope",
             "type": "string"
+          },
+          "sources": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SourceOut"
+            },
+            "title": "Sources",
+            "type": "array"
           }
         },
         "required": [
@@ -2666,6 +2698,17 @@
         ],
         "title": "ProposedReadingOut",
         "type": "object"
+      },
+      "Provenance": {
+        "description": "Where a parameter's value came from.\n\nA controlled vocabulary rather than a free string, for the reason ADR-0007 gave for\n`ProductType`: a typo'd or improvised source publishes cleanly and then misleads a reviewer\nabout the authority behind a number. Provenance is the field a reviewer reads when deciding\nwhether to trust a value, so it is the last one that should be free text.\n\nThese are the three sources #64 names. `docs/V1_RESEARCH_AND_PLAN.md` \u00a7F5 records the\nclient's own phrasing in six variants; mapping the remaining three onto these is a client\nvocabulary question, raised on the issue rather than guessed at here.",
+        "enum": [
+          "G.C / Client",
+          "Company standard",
+          "Measured",
+          "Fabricator"
+        ],
+        "title": "Provenance",
+        "type": "string"
       },
       "PublicationOut": {
         "additionalProperties": false,
@@ -3463,6 +3506,25 @@
         "title": "Severity",
         "type": "string"
       },
+      "SourceOut": {
+        "description": "One source a setting may come from, and what choosing it means (#827).",
+        "properties": {
+          "guidance": {
+            "title": "Guidance",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "guidance"
+        ],
+        "title": "SourceOut",
+        "type": "object"
+      },
       "StoredList": {
         "description": "One many-valued input as stored, in layout order.",
         "properties": {
@@ -3503,6 +3565,28 @@
           "numerator": {
             "title": "Numerator",
             "type": "string"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           },
           "unit": {
             "title": "Unit",

@@ -71,7 +71,7 @@ class Override:
         return (
             f"{self.name} = {format_inches(self.effective.value.exact_value)} "
             f"{self.effective.value.unit.value} ({self.layer.value}, "
-            f"{self.effective.provenance.value}, set by {self.effective.set_by}); "
+            f"{self.effective.source_text}, set by {self.effective.set_by}); "
             f"overrides {displaced}"
         )
 

@@ -185,6 +185,14 @@ def execute(
             and is_rulebook_default(resolved.value)
         ):
             notes.append(f"{name}: {declared.note}")
+    # **Where every setting came from, on the finding** (#827). The overhang a check used is a number
+    # the reviewer must be able to question: "¾ in (project, G.C / Client: Architect A-501, set by
+    # anant)" says who to ask and where to look, and a bare ¾ says neither. Descriptive only — it is
+    # written from the resolved value and changes no arithmetic.
+    for name in sorted(rule.parameters):
+        resolved = parameters.get(name)
+        if resolved is not None:
+            notes.append(resolved.explain())
 
     # ---- step 1: applicability -------------------------------------------------
     # `applicability` is always present: a rule with no layout discriminator declares
