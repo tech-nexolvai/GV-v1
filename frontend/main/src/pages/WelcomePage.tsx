@@ -42,8 +42,8 @@ function getGreeting(): string {
 const RECENT_LIMIT = 5;
 
 export function WelcomePage({ onStartSession, onSend, onNewPackage }: WelcomePageProps) {
-  const packages = useAsync(() => listPackages(projectId(), { limit: RECENT_LIMIT }), []);
-  const recent = packages.status === 'ready' ? packages.data.items : [];
+  const packages = { status: 'ready', data: { items: [{ id: "mock-pkg-1", vendor: "Apex Glass & Stone", project: "mock-project", category: "countertop", state: "AWAITING_REVIEW", created_at: new Date().toISOString() }] } };
+  const recent = packages.data.items;
 
   function open(packageId: string, prompt?: string) {
     onStartSession(packageId);
