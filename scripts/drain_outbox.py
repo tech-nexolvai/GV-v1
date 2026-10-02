@@ -136,6 +136,63 @@ def _automatic_typing_configuration() -> AutomaticTypingSettings | None:
     return AutomaticTypingSettings(permitted)
 
 
+#: The phrase index's one setting (#836): how wide a space between two runs on one line may be, in line
+#: heights, and still join them. No default — it is measured on the client's drawings and stated in
+#: the worker's environment by the deployment, and without it no phrases are built.
+PHRASE_GAP_VARIABLE = "GV_PHRASE_GAP_LINE_HEIGHTS"
+
+
+def _phrase_grouping() -> object | None:
+    """The stated phrase gap, or `None` when the deployment has not stated one.
+
+    A value that is not a finite number, or is negative, is refused rather than ignored: a typo that
+    quietly left the index unbuilt would look exactly like a deployment that chose not to build it.
+    """
+    raw = os.environ.get(PHRASE_GAP_VARIABLE, "").strip()
+    if not raw:
+        return None
+    from decimal import InvalidOperation
+
+    from retrieval.package_text import PhraseGrouping
+
+    try:
+        gap = Decimal(raw)
+    except InvalidOperation as error:
+        raise ValueError(
+            f"{PHRASE_GAP_VARIABLE} must be a number of line heights, such as 0.25"
+        ) from error
+    return PhraseGrouping(gap_line_heights=gap)
+
+
+def _build_package_text(session: object, package_revision_id: UUID) -> Mapping[str, object]:
+    """Build the revision's phrase index, and report what happened. Never raises.
+
+    **It cannot fail the extraction.** The drawings were read and the readings are recorded; a
+    search index is built from them and can be built again. So every failure is caught and reported
+    in the worker's log line, and the build runs inside a savepoint, so a failure part-way through
+    takes back its own rows and nothing that extraction wrote.
+
+    A failure is named by its type alone. A database error repeats the row it refused, and a row here
+    is the drawing's own text, which has no place in a log line (`AGENTS.md` §6).
+    """
+    try:
+        grouping = _phrase_grouping()
+    except ValueError as error:
+        return {"built": False, "reason": str(error)}
+    if grouping is None:
+        return {"built": False, "reason": f"{PHRASE_GAP_VARIABLE} is not set"}
+    from retrieval.package_text import build_package_phrases
+
+    try:
+        with session.begin_nested():  # type: ignore[attr-defined]
+            built = build_package_phrases(
+                session, package_revision_id, grouping  # type: ignore[arg-type]
+            )
+    except Exception as error:  # noqa: BLE001 - reported, never fatal to a read drawing
+        return {"built": False, "reason": f"the phrase build failed: {type(error).__name__}"}
+    return built.summary()
+
+
 def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
     from storage.local import LocalStore
@@ -334,6 +391,11 @@ def _extract_package(
             stages=stages,  # type: ignore[arg-type]
         )
         results[stage] = dict(outcome.payload)
+    # **Index the package's own words, once they are all recorded** (#836). Built from the stored
+    # rows, so it needs nothing extraction did not already write, and it cannot fail the extraction:
+    # `_build_package_text` reports a failure rather than raising one.
+    results["package_text"] = _build_package_text(session, package_revision_id)
+
     # **Fill the reviewer's form, now, while the facts are in hand.**
     #
     # This is the whole point of doing it here rather than behind a button on the form: a reviewer
