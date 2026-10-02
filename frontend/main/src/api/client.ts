@@ -422,7 +422,15 @@ export function enterMeasurements(
   projectId: string,
   packageId: string,
   entry: {
-    parameters?: { name: string; value: string; scope?: 'project' | 'run' }[];
+    parameters?: {
+      name: string;
+      value: string;
+      scope?: 'project' | 'run';
+      /** Where it came from (#827): one of the setting's `sources` from required-inputs. */
+      source?: string;
+      /** Where in that source, in the reviewer's words. */
+      reference?: string;
+    }[];
     measurements?: {
       rule_id: string;
       name: string;

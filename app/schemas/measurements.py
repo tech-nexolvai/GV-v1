@@ -25,6 +25,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from rules.parameters import REFERENCE_MAX_LENGTH, Provenance
+
 
 class ParameterEntry(BaseModel):
     """One setting a reviewer supplies for this job — a cabinet depth, an overhang, a sink interior.
@@ -47,6 +49,26 @@ class ParameterEntry(BaseModel):
         description='The value as typed, carrying its unit: 24", 610 mm.',
     )
     scope: Literal["project", "run"] = "project"
+    source: Provenance | None = Field(
+        default=None,
+        description=(
+            "Where the value came from (#827), one of the setting's `sources` in required-inputs. "
+            "May be left out only when the setting allows a single source."
+        ),
+    )
+    reference: str | None = Field(
+        default=None,
+        max_length=REFERENCE_MAX_LENGTH,
+        description='Where in that source, in the reviewer\'s words: "Architect A-501, section 3".',
+    )
+
+    @field_validator("reference")
+    @classmethod
+    def _blank_is_none(cls, reference: str | None) -> str | None:
+        """An empty box is no reference, not a blank one — the form sends what the reviewer left."""
+        if reference is None or not reference.strip():
+            return None
+        return reference.strip()
 
 
 class MeasurementEntry(BaseModel):
@@ -163,6 +185,9 @@ class StoredValue(BaseModel):
     denominator: str
     unit: str
     as_typed: str
+    #: Where a setting came from and where in it (#827); absent for a measurement.
+    source: str | None = None
+    reference: str | None = None
 
 
 class StoredList(BaseModel):
@@ -226,6 +251,13 @@ class ConfirmedReadingOut(BaseModel):
     qualification: Literal["reviewer_confirmed", "exact_vector_tag"]
 
 
+class SourceOut(BaseModel):
+    """One source a setting may come from, and what choosing it means (#827)."""
+
+    value: str
+    guidance: str
+
+
 class ParameterOut(BaseModel):
     """One setting the reviewer supplies or confirms."""
 
@@ -238,6 +270,9 @@ class ParameterOut(BaseModel):
     #: True for a value nobody may supply. Today only `back_offset_minimum`, whose rule states the
     #: vendor has not given it; offering a field would invite an invented safety threshold.
     blocked: bool
+    #: The sources a value may honestly claim, in the order the form offers them (#827). One means the
+    #: form need not ask.
+    sources: tuple[SourceOut, ...] = ()
 
 
 class LayoutProposalOut(BaseModel):
