@@ -36,5 +36,5 @@ assert.match(notListed, /<dt>Category<\/dt><dd>Not provided<\/dd>/, 'do not inve
 const page = readFileSync('src/pages/PackagesPage.tsx', 'utf8');
 assert.ok(page.indexOf('Open review\n') < page.indexOf('<DocumentDetails row='));
 assert.ok(page.indexOf('<DocumentResults counts=') < page.indexOf('<DocumentDetails row='));
-assert.match(page, /<ul className="document-cards" aria-label="Drawing reviews">/);
+assert.match(page, /<ul className="document-cards" role="list" aria-label="Drawing reviews">/);
 console.log('document-record: complete identifiers, escaped vendor, revision, disclosure, unavailable vs absent reviewer, immutable records passed');
