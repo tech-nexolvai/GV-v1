@@ -1,7 +1,7 @@
 """Record the drawing's parts: suggested by the computer, confirmed by a person (#852).
 
-Revision ID: 0057_drawing_parts
-Revises: 0056_text_phrases
+Revision ID: 0058_drawing_parts
+Revises: 0057_parameter_proposals
 
 Four append-only tables, step 2 of the plan on #748:
 
@@ -37,8 +37,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from alembic import op
 from app.db.roles import ROLE_GRANTS
 
-revision: str = "0057_drawing_parts"
-down_revision: str | None = "0056_text_phrases"
+revision: str = "0058_drawing_parts"
+down_revision: str | None = "0057_parameter_proposals"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
