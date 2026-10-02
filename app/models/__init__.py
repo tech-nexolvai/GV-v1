@@ -70,6 +70,7 @@ from app.models.matching import (
 from app.models.outbox import OutboxEntry
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
 from app.models.package_text import PhraseTag, TextPhrase, TextPhraseMember
+from app.models.parameter_proposals import ParameterProposal
 from app.models.parameters import ParameterSet, ParameterValue
 from app.models.retention import LegalHold
 from app.models.review import (
@@ -161,6 +162,7 @@ __all__ = [
     "PackageStateEvent",
     "Page",
     "PageType",
+    "ParameterProposal",
     "ParameterSet",
     "ParameterValue",
     "PartConfirmation",
