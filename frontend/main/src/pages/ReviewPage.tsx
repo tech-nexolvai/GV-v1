@@ -27,7 +27,8 @@ import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import type { AsyncState } from '../api/useAsync';
 import { checksFinished, isReviewWorking, reviewOverview, reviewActionCounts } from './reviewState';
-import { ArrowLeft, FileText, Info } from 'lucide-react';
+import { ArrowLeft, RefreshCw } from 'lucide-react';
+import { ReviewPackageDetails } from './ReviewPackageDetails';
 import { ReviewHandoff } from './ReviewHandoff';
 import { receiveReport } from './reviewHandoffState';
 import type { DownloadState, ReportFormat } from './reviewHandoffState';
@@ -600,9 +601,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             className="btn btn--ghost btn--sm review-page__back"
             onClick={onBackToDocuments}
             aria-label="Back to documents"
+            title="Back to documents"
           >
             <ArrowLeft size={13} />
-            Documents
+            <span>Documents</span>
           </button>
           <div className="review-page__pkg-info">
             <span className="review-page__pkg-vendor">{pkg.vendor}</span>
@@ -610,36 +612,15 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
               <span className="review-page__pkg-summary">
                 Reviewer package{pkg.revision === null ? '' : ` · Revision ${pkg.revision}`}
               </span>
-              <details className="review-page__record-ids">
-                <summary>Record IDs</summary>
-                <span><FileText size={11} /> Package {pkg.id}</span>
-                <span>Project {pkg.project}</span>
-              </details>
             </div>
           </div>
           <StatusBadge status={pkg.status} />
-          <details className="review-page__workflow">
-            <summary>Review steps</summary>
+          <ReviewPackageDetails packageId={pkg.id} projectId={pkg.project}>
             <ReviewProgress status={pkg.status} />
-          </details>
+          </ReviewPackageDetails>
         </div>
 
         <div className="review-page__header-right">
-          {/* The same sentence was on screen three times: here permanently, under the chat input,
-              and again on the welcome screen. The claim matters, so it is kept — but as something
-              available on demand rather than as two lines of standing text in a header whose job is
-              to show the state of this package. The input's disclosure is the one that is always
-              visible, because that is where a verdict is being asked about. */}
-          <span
-            className="review-page__method"
-            tabIndex={0}
-            role="note"
-            aria-label="How this review works: recorded values, then deterministic checks, then optional AI narration"
-            data-tooltip="Recorded values → deterministic checks → optional AI narration"
-          >
-            <Info size={13} aria-hidden="true" />
-            How this works
-          </span>
           <ReviewHandoff
             findingsCount={findings.length}
             reviewed={actioned}
@@ -698,8 +679,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         >
           Measurements
         </button>
-        <button className="btn btn--ghost" onClick={() => setRefreshKey((key) => key + 1)}>
-          Refresh results
+        <button className="btn btn--ghost review-page__refresh" aria-label="Refresh results"
+          title="Refresh results" onClick={() => setRefreshKey((key) => key + 1)}>
+          <RefreshCw size={16} aria-hidden="true" /><span>Refresh results</span>
         </button>
       </div>
 

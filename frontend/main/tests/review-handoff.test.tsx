@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ReviewHandoff } from '../src/pages/ReviewHandoff.js';
+import { ReviewPackageDetails } from '../src/pages/ReviewPackageDetails.js';
 import { handoffAvailability, receiveReport } from '../src/pages/reviewHandoffState.js';
 import type { ReportFormat } from '../src/pages/reviewHandoffState.js';
 
@@ -72,3 +73,21 @@ resolve(new Blob(['synthetic response bytes']));
 await pending;
 assert.equal(deliverCalls, 1);
 console.log('review handoff: approval gates, closed disclosure, 3 artifacts, pending/empty/error responses, exact blob delivery passed');
+
+const packageDetails = renderToStaticMarkup(<ReviewPackageDetails
+  packageId="00000000-0000-4000-8000-000000000101"
+  projectId="00000000-0000-4000-8000-000000000201">
+  <ol aria-label="Recorded workflow"><li>Upload</li><li>Review</li></ol>
+</ReviewPackageDetails>);
+assert.match(packageDetails, /<details class="review-package-details">/);
+assert.doesNotMatch(packageDetails, /<details[^>]* open=/, 'secondary details start collapsed, not deleted');
+for (const content of ['Details &amp; steps', 'Record IDs', 'Package', 'Project',
+  '00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000201',
+  'Recorded workflow', 'Upload', 'Review', 'deterministic checks', 'optional AI narration']) {
+  assert.ok(packageDetails.includes(content), `preserve ${content}`);
+}
+assert.doesNotMatch(packageDetails, /data-tooltip/, 'method explanation is readable on touch, not hover-only');
+assert.match(packageDetails, /tabindex="0" role="region" aria-label="Package details and review steps"/,
+  'scrollable details remain reachable by keyboard');
+assert.doesNotMatch(packageDetails, /<button/, 'secondary context cannot approve, rerun or mutate records');
+console.log('review package details: exact IDs, passed workflow and touch-readable explanation retained');

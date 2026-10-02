@@ -20,6 +20,7 @@
 }
 
 .review-page__header-left {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -36,6 +37,7 @@
 
 .review-page__header-right {
   display: flex;
+  margin-left: auto;
   align-items: center;
   gap: var(--space-3);
   flex-wrap: wrap;
@@ -74,10 +76,26 @@
 .review-handoff__option:disabled { opacity: 0.55; cursor: not-allowed; }
 .review-handoff__availability { padding: var(--space-2); margin: var(--space-1) 0 0; border-top: 1px solid var(--border-subtle); font-size: var(--text-xs); color: var(--text-muted); line-height: var(--leading-normal); }
 .review-handoff__error { margin: var(--space-1) 0 0; padding: var(--space-2); border: 1px solid var(--status-fail); border-radius: var(--radius-sm); font-size: var(--text-xs); line-height: var(--leading-normal); color: var(--text-primary); overflow-wrap: anywhere; }
-.review-page__workflow { font-size: var(--text-xs); color: var(--text-muted); }
-.review-page__workflow summary { cursor: pointer; padding: var(--space-1); }
-.review-page__workflow[open] { flex-basis: 100%; }
-.review-page__workflow .review-path { margin-top: var(--space-2); }
+.review-package-details { font-size: var(--text-xs); color: var(--text-muted); }
+.review-package-details > summary {
+  cursor: pointer; padding: var(--space-2); border-radius: var(--radius-sm);
+}
+.review-package-details > summary:hover { background: var(--bg-hover); color: var(--text-primary); }
+.review-package-details > summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.review-package-details__body {
+  position: absolute; top: calc(100% + var(--space-2)); right: 0; z-index: 45;
+  width: min(420px, 100%); max-height: min(50dvh, 360px); overflow-y: auto;
+  padding: var(--space-4); border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg); background: var(--bg-base); box-shadow: var(--shadow-lg);
+  line-height: var(--leading-normal); overflow-wrap: anywhere;
+}
+.review-package-details__body p { margin: 0 0 var(--space-2); }
+.review-package-details__body .review-package-details__title { margin-top: var(--space-4); font-weight: var(--weight-semi); color: var(--text-primary); }
+.review-package-details__body .review-package-details__title:first-child { margin-top: 0; }
+.review-package-details__body dl { margin: 0; }
+.review-package-details__body dd { margin: 0 0 var(--space-2); color: var(--text-primary); }
+.review-package-details__body .review-path { padding: 0; border: 0; }
+.review-package-details__body:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
 
 .review-path {
   display: flex;
@@ -154,45 +172,6 @@
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text-muted);
-}
-
-.review-page__record-ids {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-}
-
-.review-page__record-ids summary { cursor: pointer; }
-.review-page__record-ids[open] { display: flex; flex-direction: column; gap: 3px; }
-.review-page__record-ids span { display: flex; align-items: center; gap: var(--space-1); }
-.review-page__record-ids span { overflow-wrap: anywhere; }
-
-/* One quiet affordance rather than two lines of standing text — the sentence itself is in the
-   tooltip. Focusable, so it is reachable without a mouse: an explanation only hover can reach is
-   an explanation some people never get. */
-.review-page__method {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 3px var(--space-2);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-default);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  cursor: help;
-  white-space: nowrap;
-  transition:
-    color var(--duration-base) var(--ease-out),
-    border-color var(--duration-base) var(--ease-out),
-    background-color var(--duration-base) var(--ease-out);
-}
-
-.review-page__method:hover,
-.review-page__method:focus-visible {
-  color: var(--gv-crimson);
-  border-color: var(--gv-crimson-border);
-  background: var(--gv-crimson-dim-2);
-  outline: none;
 }
 
 /* Pkg ID — demoted to mono caption */
@@ -277,16 +256,29 @@
 .review-page__notice { flex-shrink: 0; padding: var(--space-2) var(--space-6); border-bottom: 1px solid var(--border-subtle); font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--text-muted); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 
 @media (max-width: 767px) {
-  .review-page__header { padding: var(--space-3) var(--space-4); }
+  .review-page__header { padding: var(--space-2) var(--space-4); gap: var(--space-2); }
   .review-page__header-left,
   .review-page__header-right { width: 100%; }
+  .review-page__header-left { gap: var(--space-1) var(--space-2); }
+  .review-page__back { width: 44px; height: 44px; padding: 0; justify-content: center; }
+  .review-page__back > span { display: none; }
+  .review-page__pkg-info { flex: 1 1 calc(100% - 52px); min-width: 0; border: 0; padding: 0; }
+  .review-page__pkg-vendor { overflow-wrap: anywhere; }
+  .review-package-details > summary { min-height: 44px; align-content: center; }
   .review-page__header-right { gap: var(--space-2); }
   .review-handoff { flex: 1; max-width: none; }
-  .review-page__method { padding-inline: var(--space-1); }
-  .review-page__header-right .btn { padding-inline: var(--space-2); }
+  .review-handoff__actions { justify-content: space-between; }
+  .review-handoff__hint,
+  .review-handoff__download-state p { text-align: left; }
+  .review-page__header-right .btn { min-height: 44px; padding-inline: var(--space-2); }
   .review-path { width: 100%; border-left: 0; padding-left: 0; }
-  .review-page__tabs { padding: var(--space-2) var(--space-4); }
-  .review-page__record-ids { max-width: 100%; }
+  .review-page__tabs { padding: var(--space-2) var(--space-4); gap: var(--space-1); }
+  .review-page__tabs > .btn { min-height: 44px; padding-inline: var(--space-2); }
+  .review-page__tabs > .review-page__refresh { width: 44px; padding: 0; flex-shrink: 0; }
+  .review-page__refresh > span { display: none; }
+}
+@media (max-width: 359px) {
+  .review-page__tabs > .btn { font-size: var(--text-xs); padding-inline: var(--space-1); }
 }
 /* Ensure MeasurementPanel fills the container without looking nested in another page */
 .review-page__measure-container .enter-values-page {
