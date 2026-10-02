@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { User, CheckCircle2, XCircle, AlertCircle, CircleDashed, Sparkles, Shield } from 'lucide-react';
+import { User, Sparkles, Shield } from 'lucide-react';
+import { OutcomeIcon } from '../ui/OutcomeIcon';
 import { OUTCOME_LABELS } from '../../data/outcomeLabels.js';
 import type { ChatMessage, Finding } from '../../data/types';
 import { FindingCard } from './FindingCard';
@@ -231,10 +232,10 @@ function FindingsSummary({ findings }: { findings: Finding[] }) {
 
       <div className="summary__counts">
         {/* "not found" read as missing evidence; it means a value the check needs was never supplied. */}
-        {counts.PASS > 0 && <Count icon={<CheckCircle2 size={12} />} kind="pass" n={counts.PASS} label={OUTCOME_LABELS.PASS.toLowerCase()} />}
-        {counts.FAIL > 0 && <Count icon={<XCircle size={12} />} kind="fail" n={counts.FAIL} label={OUTCOME_LABELS.FAIL.toLowerCase()} />}
-        {counts.REVIEW_REQUIRED > 0 && <Count icon={<AlertCircle size={12} />} kind="review" n={counts.REVIEW_REQUIRED} label={OUTCOME_LABELS.REVIEW_REQUIRED.toLowerCase()} />}
-        {counts.NOT_FOUND > 0 && <Count icon={<CircleDashed size={12} />} kind="missing" n={counts.NOT_FOUND} label={OUTCOME_LABELS.NOT_FOUND.toLowerCase()} />}
+        {counts.PASS > 0 && <Count icon={<OutcomeIcon outcome="PASS" size={12} />} kind="pass" n={counts.PASS} label={OUTCOME_LABELS.PASS.toLowerCase()} />}
+        {counts.FAIL > 0 && <Count icon={<OutcomeIcon outcome="FAIL" size={12} />} kind="fail" n={counts.FAIL} label={OUTCOME_LABELS.FAIL.toLowerCase()} />}
+        {counts.REVIEW_REQUIRED > 0 && <Count icon={<OutcomeIcon outcome="REVIEW_REQUIRED" size={12} />} kind="review" n={counts.REVIEW_REQUIRED} label={OUTCOME_LABELS.REVIEW_REQUIRED.toLowerCase()} />}
+        {counts.NOT_FOUND > 0 && <Count icon={<OutcomeIcon outcome="NOT_FOUND" size={12} />} kind="missing" n={counts.NOT_FOUND} label={OUTCOME_LABELS.NOT_FOUND.toLowerCase()} />}
       </div>
     </div>
   );

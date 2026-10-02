@@ -82,6 +82,17 @@ The existing component runner contains 12 test programs; the new polish runner c
 
 ## Next slice and release
 
-Consolidate outcome glyph styling across Badge/table/card without changing outcome labels or meaning. Complete approval/download and partial-upload browser regression coverage before claiming the entire product path certified.
+The follow-up slice is isolated on `codex/frontend-outcome-consistency`, based on PR #830; it does not update or merge that PR. It consolidates outcome glyphs across badges, cards, tables and chat summaries through one decorative `OutcomeIcon`. All five stored outcomes retain the existing shared wording, and each has a distinct shape without relying on colour. The rendering regression test checks identical glyph geometry, unchanged exact values, no finding mutation, and no extra screen-reader or keyboard stops. Run it with `npm run test:outcomes`.
+
+Approval/download and partial-upload browser scenarios are exercised only against the separate synthetic harness. They test the frontend contract, not production storage, approval policy, OCR or report generation. No real backend record is approved or uploaded for these checks.
+
+Follow-up browser results:
+
+- Native file inputs accepted two generated synthetic PDFs. An intentional shop-storage 503 retained one package, both document registrations and one confirmed architect PDF. Start review became disabled and Open saved review opened the same package; no replacement or extraction was requested.
+- Three explicit synthetic review actions unlocked sign-off. This found a stale-state defect: download controls became available while the header/sidebar still said Awaiting Review. After a successful approval response, the frontend now re-fetches both authoritative package views; the repeat test showed Approved in both, without changing any verdict.
+- PDF, workbook and redline downloaded to disk and matched fixture bytes exactly (698, 2227 and 732 bytes). The browser automation's download-event waiter timed out even though the PDF was saved; filesystem verification established completion. No download code was changed based on that tooling timeout.
+- The 390px viewport has no document overflow. All outcome labels remain visible; decorative glyphs add neither screen-reader announcements nor keyboard stops.
+
+Reproduce locally: `GV_QA_PORT=5195 node tests/browser-qa-server.mjs`, then use `?scenario=partial-upload#/` or `?scenario=approval#/review/00000000-0000-4000-8000-000000000101`. `node tests/browser-qa-create-pdfs.mjs` generates synthetic PDFs in a unique temporary directory for the native file chooser. `/__qa` displays in-memory scenario counters and requests. Run `npm run test:browser-scenarios` for the scenario contract regression tests. No scenario forwards to the backend; unimplemented writes are refused.
 
 Raise a frontend-only PR with screenshots and tests. Before merging, pull the latest origin/main in the integration checkout, reconcile the concurrent session's work, rerun checks, and inspect the final diff. Do not merge or discard another session's changes merely to make the branch clean.

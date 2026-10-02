@@ -27,7 +27,7 @@ export default function App() {
   const [evidenceDismissKey, setEvidenceDismissKey] = useState(0);
   // The vendor of the review on screen, reported by the review once its package has loaded.
   const [reviewTitle, setReviewTitle] = useState<{ packageId: string; title: string } | null>(null);
-  // Bumped after a new review is created, so the sidebar lists it without a reload.
+  // Refresh after confirmed creation/approval; package status remains server-owned.
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
 
   const packageId = route.page === 'review' ? route.packageId : null;
@@ -88,6 +88,7 @@ export default function App() {
           evidenceDismissKey={evidenceDismissKey}
           onEvidenceChange={(panel) => setEvidencePanel(panel ? { route, packageId, panel } : null)}
           onTitleChange={(vendor) => setReviewTitle({ packageId, title: vendor })}
+          onPackageChanged={() => setSidebarRefreshKey((key) => key + 1)}
           onBackToDocuments={() => go('documents')}
         />
       )}

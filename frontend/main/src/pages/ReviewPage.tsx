@@ -36,12 +36,14 @@ interface ReviewPageProps {
   onBackToDocuments: () => void;
   /** Reports the vendor once the package has loaded, for the header title. */
   onTitleChange?: (title: string) => void;
+  /** Refresh surrounding package lists after a confirmed server-side state change. */
+  onPackageChanged?: () => void;
   evidenceDismissKey?: number;
   initialMessage?: string;
   onMessageConsumed?: () => void;
 }
 
-export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onTitleChange, evidenceDismissKey, initialMessage, onMessageConsumed }: ReviewPageProps) {
+export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onTitleChange, onPackageChanged, evidenceDismissKey, initialMessage, onMessageConsumed }: ReviewPageProps) {
   // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
   const packageId = sessionId;
 
@@ -504,6 +506,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       const current = await ensureSession();
       await approvePackage(projectId(), current.id);
       setApproved(true);
+      // Re-fetch the authoritative package state for both the header and the sidebar.
+      // Do not leave "Awaiting Review" beside successful sign-off/download controls.
+      setRefreshKey((key) => key + 1);
+      onPackageChanged?.();
       // Re-read rather than assume: approval completes the sitting server-side, and the package
       // state a moment ago is not the one the download button should be reading.
       // Approval already succeeded. An optional session refresh must not report that write as failed.
