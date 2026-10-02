@@ -37,6 +37,8 @@ import {
 } from './classificationFields';
 import { layoutChoiceDefaults } from './layoutChoices';
 import { MeasurementGuidance, StoredProposalGuidance } from './MeasurementGuidance';
+import { MeasurementSectionNav } from './MeasurementSectionNav';
+import { jumpToMeasurementSection, measurementSections } from './measurementNavigation';
 import { prefillReadingValues } from './measurementDraft';
 import { appendConfirmedRunValue, confirmCandidateOnce, confirmProposalFields, newConfirmationLedger } from './measurementConfirmation';
 import './MeasurementPanel.css';
@@ -314,6 +316,7 @@ export function MeasurementPanel({
   const loadedPackageRef = useRef<string | undefined>(undefined);
   const confirmationLedger = useRef(newConfirmationLedger());
   const appliedConfirmations = useRef(new Set<string>());
+  const formContainer = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -799,9 +802,15 @@ export function MeasurementPanel({
     [],
   );
   const fieldDimensionKey = distributionFieldWidthKey(needed.quantities);
+  const sections = measurementSections(
+    sheets.map((sheet) => ({ key: sheet, label: SOURCE_LABEL[sheet] ?? sheet })),
+    needed.discriminators.length > 0,
+    stored.length > 0,
+  );
 
   return (
-    <div className="enter-values">
+    <div className="enter-values" ref={formContainer}>
+      <MeasurementSectionNav sections={sections} onJump={(key) => jumpToMeasurementSection(formContainer.current, key)} />
       {loadError && (
         <div className="enter-values__error" role="alert">
           New readings could not be loaded. Your entries are retained. {loadError}
@@ -822,7 +831,7 @@ export function MeasurementPanel({
       )}
 
       <section className="enter-values__section">
-        <h2>Measurements</h2>
+        <h2 data-measure-section="overview" tabIndex={-1}>Measurements</h2>
 
         {/* **One line, one bar, three counts.**
             This was five stat tiles and a paragraph, and a reviewer opening the page could not tell
@@ -1079,7 +1088,7 @@ export function MeasurementPanel({
           return (
             <div className="sheet-group" key={sheet}>
               <div className="sheet-group__head">
-                <h3 className="sheet-group__title">
+                <h3 className="sheet-group__title" data-measure-section={`source:${sheet}`} tabIndex={-1}>
                   From the {SOURCE_LABEL[sheet] ?? sheet}
                 </h3>
                 <span className="sheet-group__count mono">
@@ -1231,7 +1240,7 @@ export function MeasurementPanel({
       </section>
 
       <section className="enter-values__section">
-        <h2>Settings</h2>
+        <h2 data-measure-section="settings" tabIndex={-1}>Settings</h2>
         <p className="enter-values__hint">
           Values for this job rather than dimensions off a drawing. Where the rulebook suggests one it
           is shown — a rule author&apos;s stand-in, not a number the client has confirmed.
@@ -1294,7 +1303,7 @@ export function MeasurementPanel({
 
       {needed.discriminators.length > 0 && (
         <section className="enter-values__section">
-          <h2>Layout</h2>
+          <h2 data-measure-section="layout" tabIndex={-1}>Layout</h2>
           <p className="enter-values__hint">
             What the drawing shows. Proposed answers are pre-selected with the crop that supports
             them. A blank field means the reader abstained, so choose the value from the drawing or
@@ -1362,7 +1371,7 @@ export function MeasurementPanel({
 
       {stored.length > 0 && (
         <section className="enter-values__section" aria-live="polite">
-          <h2>Stored, as the system read them</h2>
+          <h2 data-measure-section="stored" tabIndex={-1}>Stored, as the system read them</h2>
           <ul className="enter-values__stored">
             {stored.map((line) => (
               <li key={line}>{line}</li>
@@ -1371,7 +1380,7 @@ export function MeasurementPanel({
         </section>
       )}
 
-      <footer className="enter-values__actions">
+      <footer className="enter-values__actions" data-measure-section="actions" tabIndex={-1} aria-label="Save and run controls">
         <button type="button" className="value-primary" onClick={onSave} disabled={busy}>
           Save values
         </button>
