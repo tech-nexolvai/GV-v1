@@ -54,6 +54,7 @@ from eval.experiments.agent_scorecard import (
     build_pages,
     load_key,
 )
+from eval.experiments.model_bakeoff import ModelBakeoffError, key_polygon_dpi
 from evidence.coordinates import ImagePoint
 from evidence.crop import CropSpec, crop_pixel_box, encode_png
 from extraction.agent.geometry import Box, LabelReach
@@ -315,7 +316,11 @@ def sheet(
     reader = read_settings(arguments.reader_settings)
     geometry = _geometry(reader)
     reach = LabelReach(arguments.label_gap_pt, arguments.max_label_pt, geometry.glyph_gap_pt)
-    scale = Fraction(arguments.stage_dpi, arguments.key_dpi)
+    try:
+        key_dpi = key_polygon_dpi(arguments.key, polygon_dpi=arguments.key_dpi)
+    except ModelBakeoffError as error:
+        raise CheckError(str(error)) from error
+    scale = Fraction(arguments.stage_dpi, key_dpi)
     exclude: dict[int, list[tuple[int, ...]]] = {}
     for key_crop in load_key(arguments.key):
         exclude.setdefault(key_crop.page_index, []).append(
@@ -585,7 +590,11 @@ def main(argv: list[str] | None = None) -> int:
     make = commands.add_parser("sheet", help="write crops for a person to check")
     make.add_argument("pdf", type=Path)
     make.add_argument("--key", type=Path, required=True, help="the key whose crops are left out")
-    make.add_argument("--key-dpi", type=int, required=True)
+    make.add_argument(
+        "--key-dpi",
+        type=int,
+        help="only for a key that does not record its frame (#835); refused if it differs",
+    )
     make.add_argument("--reader-settings", type=Path, required=True)
     make.add_argument("--stage-dpi", type=int, required=True)
     make.add_argument("--label-gap-pt", type=Decimal, required=True)

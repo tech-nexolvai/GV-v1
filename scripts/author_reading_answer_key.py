@@ -7,15 +7,27 @@ agreement with ourselves. `eval/experiments/model_bakeoff.py` refuses such a key
 
 Two steps.
 
-    scaffold  DRAWING.pdf --pages 3-5 --out data/goldset/reading-key/ --count 50
-              -> numbered PNGs + crops.csv with an empty `value` column
+    scaffold  DRAWING.pdf --pages 3-5 --out data/goldset/reading-key/ --count 50 \\
+              --reader-settings scripts/demo.sh
+              -> numbered PNGs, a wide view of each, and crops.csv with an empty `value` column
 
-    build     data/goldset/reading-key/ --annotator "..." --on 2026-09-27
+    build     data/goldset/reading-key/ --pdf DRAWING.pdf --annotator "..." --on 2026-09-27
               -> answer_key.json + model_bakeoff_metadata.json, verified by loading them back
 
-The crops come from the pipeline's own region finder, so they are the crops the reader will actually
-face rather than a separate idea of where text is. The sample is stratified, because a key made only
-of legible crops measures nothing that matters.
+**The crops are cut the way production cuts them (#835).** The regions come from the pipeline's own
+region finder, planned with the thresholds the stage runs with — read from the settings file the
+worker is started with, never copied into this script. Each crop is the region plus the stage's
+vision margin (`workflow.stages.VISION_CROP_CONTEXT_MARGIN_PT`), at `VISION_CROP_DPI`, from the
+vendor's layer only. It is rendered by the bake-off's own `render_crop`, so the picture a person
+reads is, byte for byte, the picture `load_crops` later shows a model. Before #835 the scaffold cut
+the bare region, with no margin and its own thresholds: a person read crops no model is shown, and
+the margin's absence cut labels short.
+
+**The key records its frame** — the dpi its polygons are in and the margin they hold. The bake-off,
+the agent scorecard and the geometry check refuse a key that records none unless their caller names
+it, and refuse a named frame that differs from the recorded one (`key_polygon_dpi`).
+
+The sample is stratified, because a key made only of legible crops measures nothing that matters.
 
 **Nothing it writes belongs in the repository.** The output directory lives under `data/`, which is
 gitignored, and `tests/test_repo_hygiene.py` asks git rather than reading this file.
@@ -31,19 +43,25 @@ import json
 import random
 import sys
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 from typing import Final
 from uuid import UUID, uuid4
 
+import pypdfium2 as pdfium  # type: ignore[import-untyped]
+
 from eval.experiments.model_bakeoff import (
     HARD_CASE_TAGS,
+    KeyFrame,
     ModelBakeoffError,
+    key_frame,
     load_crops,
     render_crop,
 )
+from evidence.crop import POINTS_PER_INCH, decode_rgb_png, encode_png
 from extraction.annotations import read_annotation_layers
 from extraction.geometry.dimension_lines import detect
 from extraction.geometry.text_association import lines_within
@@ -52,12 +70,26 @@ from extraction.rasterise import VISION_CROP_DPI
 from extraction.vector_first import plan_reads
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation, is_compound
+from workflow.stages import VISION_CROP_CONTEXT_MARGIN_PT
 
 CROPS_CSV: Final = "crops.csv"
 ANSWER_KEY: Final = "answer_key.json"
 BAKEOFF_METADATA: Final = "model_bakeoff_metadata.json"
 HOW_TO: Final = "HOW_TO_READ_THESE.md"
 CONTACT_SHEET: Final = "contact_sheet.html"
+
+#: The frame every crop this script cuts is in: pixels at the vision crop resolution, each polygon
+#: holding the stage's vision margin round its region. Written beside the crops by `scaffold` and
+#: carried into the key by `build`, so a loader never has to be told it (#835).
+_FRAME: Final = KeyFrame(polygon_dpi=VISION_CROP_DPI, margin_pt=VISION_CROP_CONTEXT_MARGIN_PT)
+
+#: How much drawing the wide view shows round a region, so a label the crop cut can be seen carrying
+#: on past the crop's edge. The width the #778 check sheet uses. A viewing aid; nothing is decided
+#: by it, and no model is shown it.
+WIDE_VIEW_PT: Final = Decimal(30)
+
+#: The colour of the crop's edge in the wide view, the red the #778 check sheet draws it in.
+_EDGE: Final = b"\xdd\x11\x11"
 
 #: Longest axis, in pixels at the crop DPI, below which a region is a small glyph rather than a
 #: label. Measured, not chosen: on `AI_Set_2.pdf` the median planned region is 37px and a legible
@@ -66,71 +98,103 @@ CONTACT_SHEET: Final = "contact_sheet.html"
 #: any of them says.
 SMALL_GLYPH_PX: Final = 60
 
-#: Longest axis, in pixels at the crop DPI, below which the crop is a speck rather than a reading
+#: Longest axis, in pixels at the crop DPI, below which a region is a speck rather than a reading
 #: task. This is the boundary the previous scaffold only warned about. It is still just an
 #: authoring-filter: values below it are reported and excluded from the sheet; nothing here decides
 #: what any surviving crop says.
 MIN_LEGIBLE_AXIS_PX: Final = 20
-
-#: The reader thresholds this script plans with. Arguments rather than defaults for the reason
-#: `extraction/geometry/text_association.py` gives at length: they are empirical, one sheet cannot
-#: fix them, and a default in a script is how today's guess becomes tomorrow's ground truth. These
-#: are the values `--help` quotes for AI_Set 2, so a run can be repeated and not so it can be assumed.
-DEFAULT_THRESHOLDS: Final = {
-    "line_minimum_pt": "12",
-    "glyph_maximum_pt": "12",
-    "glyph_gap_pt": "2.5",
-    "proximity_limit": "0.01",
-    "minimum_paths": 2,
-    "maximum_span": "0.05",
-    # The dimension-line detector values are the measured demo/client-drawing values from
-    # `scripts/demo.sh`. They select which strokes count as dimension lines for this sampling run.
-    "witness_tolerance": "0.004",
-    "minimum_span": "0.01",
-    "straightness": "0.0005",
-    "crossing_margin": "0.0005",
-    # The stacked-fraction detector, as `scripts/demo.sh` states it (#735). Without it the
-    # `stacked_fraction` stratum below is always empty — which every key built before #735 was.
-    "fraction_bar_thickness_max_pt": "0.3",
-    "fraction_bar_length_min_pt": "1",
-    "fraction_reach_pt": "3",
-    "fraction_glyph_min_pt": "1",
-    "fraction_glyph_max_pt": "12",
-    "fraction_proportion_max": "2.5",
-    # How far apart one stacked label's characters may be (#834). Only the layout uses it, never
-    # whether a fraction is found, so the strata below do not move with it.
-    "fraction_character_gap_pt": "4",
-}
 
 
 class ScaffoldError(Exception):
     """The crop set could not be prepared, or the filled sheet could not be trusted."""
 
 
+def _reader_settings(path: Path) -> dict[str, str]:
+    """The stage's reader thresholds, from the settings file the worker is started with.
+
+    **Read, never copied** (#835). This script used to carry its own values, and they had drifted
+    from the ones `scripts/demo.sh` starts the worker with — a 12 pt line minimum against its 6 — so
+    the regions a person read were not the regions the stage plans. Every value is required and none
+    has a default; the file is read by the function `scripts/agent_geometry_check.py` reads it with.
+    """
+    from scripts.agent_geometry_check import CheckError, read_settings
+    from scripts.glyph_inventory import InventoryError
+
+    try:
+        return read_settings(path)
+    except (CheckError, InventoryError) as error:
+        raise ScaffoldError(str(error)) from error
+
+
 @dataclass(frozen=True, slots=True)
 class Candidate:
-    """One region a person will be asked to read."""
+    """One region a person will be asked to read, and the crop they will read it from."""
 
     crop_id: str
     page: int
     """One-based, as `GoldObservation` requires."""
 
-    polygon: tuple[int, int, int, int]
+    region: tuple[int, int, int, int]
+    """The planned region — left, top, right, bottom — in pixels at `VISION_CROP_DPI`."""
+
+    crop: tuple[int, int, int, int]
+    """The region with the stage's vision margin round it, in the same pixels. This is what is
+    rendered, and it is the polygon the key records."""
+
     stratum: str
     path_count: int
     line_count: int
 
     @property
     def width_px(self) -> int:
-        return self.polygon[2] - self.polygon[0]
+        """The region's width: the label's size, not the crop's."""
+        return self.region[2] - self.region[0]
 
     @property
     def height_px(self) -> int:
-        return self.polygon[3] - self.polygon[1]
+        return self.region[3] - self.region[1]
 
     @property
     def long_axis_px(self) -> int:
         return max(self.width_px, self.height_px)
+
+
+def _page_px(pdf: bytes, page_index: int) -> tuple[int, int]:
+    """The page's size in whole pixels at `VISION_CROP_DPI`: as far as a crop may reach.
+
+    Measured as `model_bakeoff.pdf_box` measures the page, so no crop reaches past the edge the
+    bake-off checks a polygon against.
+    """
+    document = pdfium.PdfDocument(pdf)
+    try:
+        width_pt, height_pt = (Decimal(str(value)) for value in document[page_index].get_size())
+    finally:
+        document.close()
+    per_px = POINTS_PER_INCH / Decimal(VISION_CROP_DPI)
+    return (
+        int((width_pt / per_px).to_integral_value(rounding=ROUND_FLOOR)),
+        int((height_pt / per_px).to_integral_value(rounding=ROUND_FLOOR)),
+    )
+
+
+def _grown(
+    region: tuple[int, int, int, int], *, margin_pt: Decimal, page_px: tuple[int, int]
+) -> tuple[int, int, int, int]:
+    """`region` with `margin_pt` of page round it, in whole pixels at `VISION_CROP_DPI`.
+
+    Rounded outward, as `evidence.crop.crop_pixel_box` rounds production's crop, so no side has less
+    margin than it was given; and held inside the page, as production's crop is held inside its
+    render.
+    """
+    margin = margin_pt * Decimal(VISION_CROP_DPI) / POINTS_PER_INCH
+    left, top, right, bottom = region
+    width, height = page_px
+    return (
+        max(0, int((left - margin).to_integral_value(rounding=ROUND_FLOOR))),
+        max(0, int((top - margin).to_integral_value(rounding=ROUND_FLOOR))),
+        min(width, int((right + margin).to_integral_value(rounding=ROUND_CEILING))),
+        min(height, int((bottom + margin).to_integral_value(rounding=ROUND_CEILING))),
+    )
 
 
 def _stratum(
@@ -149,46 +213,53 @@ def _stratum(
     return "dimension_label"
 
 
-def _candidates(pdf: bytes, *, page_index: int, thresholds: dict[str, object]) -> list[Candidate]:
-    """Every region the reader would plan on one page, as boxes at the crop DPI."""
+def _candidates(pdf: bytes, *, page_index: int, settings: Mapping[str, str]) -> list[Candidate]:
+    """The regions the stage would plan on one page that sit next to a detected dimension line,
+    each with the crop production's margin makes of it.
+
+    Planned as the stage plans its localized reads (`workflow/stages.py`): the same layer reader,
+    the same `plan_reads`, and the same named settings in each place. The dimension-line filter is
+    this script's own sampling choice, not the stage's.
+    """
     layers = read_annotation_layers(
         pdf,
         page_index,
         document_version_id=uuid4(),
         dpi=VISION_CROP_DPI,
-        line_minimum_pt=Decimal(str(thresholds["line_minimum_pt"])),
-        glyph_maximum_pt=Decimal(str(thresholds["glyph_maximum_pt"])),
-        glyph_gap_pt=Decimal(str(thresholds["glyph_gap_pt"])),
+        line_minimum_pt=Decimal(settings["GV_READER_LINE_MINIMUM_PT"]),
+        glyph_maximum_pt=Decimal(settings["GV_READER_GLYPH_MAXIMUM_PT"]),
+        glyph_gap_pt=Decimal(settings["GV_READER_GLYPH_GAP_PT"]),
         fraction_bar=FractionBarGeometry(
-            bar_thickness_max_pt=Decimal(str(thresholds["fraction_bar_thickness_max_pt"])),
-            bar_length_min_pt=Decimal(str(thresholds["fraction_bar_length_min_pt"])),
-            reach_pt=Decimal(str(thresholds["fraction_reach_pt"])),
-            glyph_min_pt=Decimal(str(thresholds["fraction_glyph_min_pt"])),
-            glyph_max_pt=Decimal(str(thresholds["fraction_glyph_max_pt"])),
-            proportion_max=Decimal(str(thresholds["fraction_proportion_max"])),
-            character_gap_pt=Decimal(str(thresholds["fraction_character_gap_pt"])),
+            bar_thickness_max_pt=Decimal(settings["GV_READER_FRACTION_BAR_THICKNESS_MAX_PT"]),
+            bar_length_min_pt=Decimal(settings["GV_READER_FRACTION_BAR_LENGTH_MIN_PT"]),
+            reach_pt=Decimal(settings["GV_READER_FRACTION_REACH_PT"]),
+            glyph_min_pt=Decimal(settings["GV_READER_FRACTION_GLYPH_MIN_PT"]),
+            glyph_max_pt=Decimal(settings["GV_READER_FRACTION_GLYPH_MAX_PT"]),
+            proportion_max=Decimal(settings["GV_READER_FRACTION_PROPORTION_MAX"]),
+            character_gap_pt=Decimal(settings["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
         ),
     )
     plan = plan_reads(
         layers,
-        proximity_limit=Decimal(str(thresholds["proximity_limit"])),
-        minimum_paths=int(str(thresholds["minimum_paths"])),
-        maximum_span=Decimal(str(thresholds["maximum_span"])),
+        proximity_limit=Decimal(settings["GV_READER_PROXIMITY_LIMIT"]),
+        minimum_paths=int(settings["GV_READER_LOCALIZED_MINIMUM_PATHS"]),
+        maximum_span=Decimal(settings["GV_READER_LOCALIZED_MAXIMUM_SPAN"]),
     )
     detected = detect(
         layers.drawing_segments,
-        witness_tolerance=Decimal(str(thresholds["witness_tolerance"])),
-        minimum_span=Decimal(str(thresholds["minimum_span"])),
-        straightness=Decimal(str(thresholds["straightness"])),
-        crossing_margin=Decimal(str(thresholds["crossing_margin"])),
+        witness_tolerance=Decimal(settings["GV_READER_WITNESS_TOLERANCE"]),
+        minimum_span=Decimal(settings["GV_READER_MINIMUM_SPAN"]),
+        straightness=Decimal(settings["GV_READER_STRAIGHTNESS"]),
+        crossing_margin=Decimal(settings["GV_READER_CROSSING_MARGIN"]),
     )
     dimension_lines = tuple(line.extent for line in detected.lines)
+    page_px = _page_px(pdf, page_index)
     found: list[Candidate] = []
     for index, entry in enumerate(plan.to_read):
         near_dimension_lines = lines_within(
             entry.region.extent,
             dimension_lines,
-            proximity_limit=Decimal(str(thresholds["proximity_limit"])),
+            proximity_limit=Decimal(settings["GV_READER_PROXIMITY_LIMIT"]),
         )
         if not near_dimension_lines:
             continue
@@ -200,11 +271,13 @@ def _candidates(pdf: bytes, *, page_index: int, thresholds: dict[str, object]) -
         if right <= left or bottom <= top:
             continue
         long_axis = max(right - left, bottom - top)
+        region = (left, top, right, bottom)
         found.append(
             Candidate(
                 crop_id=f"p{page_index + 1}-r{index:04d}",
                 page=page_index + 1,
-                polygon=(left, top, right, bottom),
+                region=region,
+                crop=_grown(region, margin_pt=VISION_CROP_CONTEXT_MARGIN_PT, page_px=page_px),
                 stratum=_stratum(
                     long_axis_px=long_axis,
                     stacked_glyphs=entry.region.stacked_glyphs,
@@ -246,14 +319,55 @@ def _stratified(candidates: list[Candidate], *, count: int, seed: int) -> list[C
     return sorted(chosen, key=lambda candidate: (candidate.page, candidate.crop_id))
 
 
+def _wide_name(candidate: Candidate) -> str:
+    return f"{candidate.crop_id}_wide.png"
+
+
+def _wide_view(
+    pdf: bytes, candidate: Candidate, *, crop_size: tuple[int, int], page_px: tuple[int, int]
+) -> bytes:
+    """The region with `WIDE_VIEW_PT` of drawing round it, and the crop's edge drawn in red.
+
+    Rendered as the crop is, from the vendor's layer only. The line runs on the pixels just outside
+    the crop, so it covers nothing a model is shown; `crop_size` is the crop as rendered, which can
+    be a pixel short of its polygon.
+    """
+    wide = _grown(candidate.region, margin_pt=WIDE_VIEW_PT, page_px=page_px)
+    width, height, rgb = decode_rgb_png(
+        render_crop(
+            pdf,
+            page=candidate.page,
+            polygon=wide,
+            polygon_dpi=VISION_CROP_DPI,
+            output_dpi=VISION_CROP_DPI,
+        )
+    )
+    pixels = bytearray(rgb)
+    left = candidate.crop[0] - wide[0]
+    top = candidate.crop[1] - wide[1]
+    right = left + crop_size[0]
+    bottom = top + crop_size[1]
+    edge = [(x, y) for x in range(left - 1, right + 1) for y in (top - 1, bottom)]
+    edge += [(x, y) for y in range(top, bottom) for x in (left - 1, right)]
+    for x, y in edge:
+        if 0 <= x < width and 0 <= y < height:
+            offset = (y * width + x) * 3
+            pixels[offset : offset + 3] = _EDGE
+    return encode_png(width, height, bytes(pixels))
+
+
 def _write_sheet(out: Path, candidates: list[Candidate]) -> None:
-    """The sheet a person fills in. Two empty columns and nothing else to decide."""
+    """The sheet a person fills in. Two empty columns and nothing else to decide.
+
+    The four box columns are the crop, in pixels at `VISION_CROP_DPI` — the polygon `build` records.
+    """
     with (out / CROPS_CSV).open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(
             [
                 "crop_id",
                 "image",
+                "wide_image",
                 "page",
                 "left_px",
                 "top_px",
@@ -276,10 +390,11 @@ def _write_sheet(out: Path, candidates: list[Candidate]) -> None:
                 [
                     candidate.crop_id,
                     f"{candidate.crop_id}.png",
+                    _wide_name(candidate),
                     candidate.page,
-                    *candidate.polygon,
-                    candidate.width_px,
-                    candidate.height_px,
+                    *candidate.crop,
+                    candidate.crop[2] - candidate.crop[0],
+                    candidate.crop[3] - candidate.crop[1],
                     candidate.stratum,
                     candidate.line_count,
                     candidate.path_count,
@@ -292,18 +407,20 @@ def _write_sheet(out: Path, candidates: list[Candidate]) -> None:
 
 
 def _write_contact_sheet(out: Path, candidates: list[Candidate]) -> None:
-    """A browseable sheet of the crops before anyone starts typing answers."""
+    """A browseable sheet of the crops, each beside its wide view, before anyone types answers."""
     cards = []
     for candidate in candidates:
         crop_id = html.escape(candidate.crop_id)
         image = html.escape(f"{candidate.crop_id}.png")
+        wide = html.escape(_wide_name(candidate))
         meta = html.escape(
             f"p{candidate.page} · {candidate.stratum} · "
-            f"{candidate.width_px}x{candidate.height_px}px · "
+            f"label {candidate.width_px}x{candidate.height_px}px · "
             f"{candidate.line_count} line(s)"
         )
         cards.append(
-            f'<figure><img src="{image}" alt="{crop_id}"><figcaption>'
+            f'<figure><img src="{image}" alt="{crop_id}">'
+            f'<img src="{wide}" alt="{crop_id}, wide view"><figcaption>'
             f"<strong>{crop_id}</strong><br>{meta}</figcaption></figure>"
         )
     document = """<!doctype html>
@@ -313,9 +430,9 @@ def _write_contact_sheet(out: Path, candidates: list[Candidate]) -> None:
 <style>
 body { font-family: system-ui, sans-serif; margin: 24px; color: #222; }
 h1 { font-size: 20px; margin: 0 0 16px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
 figure { margin: 0; border: 1px solid #ddd; padding: 10px; background: #fafafa; }
-img { display: block; max-width: 100%; height: 120px; object-fit: contain; margin: 0 auto 8px; }
+img { display: inline-block; width: 48%; height: 160px; object-fit: contain; margin: 0 1% 8px; }
 figcaption { font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
 </style>
 <h1>Reading Answer-Key Contact Sheet</h1>
@@ -334,8 +451,15 @@ def _legible(candidates: list[Candidate]) -> tuple[list[Candidate], int]:
 
 _HOW_TO_TEXT: Final = """# Reading these crops
 
-Open each PNG, type what it says in the `value` column of `crops.csv`, and save. That is the whole
-task. Nothing here has read them: every value in the file will be one you put there.
+Open each crop (`p3-r0012.png`), type what it says in the `value` column of `crops.csv`, and save.
+That is the whole task. Nothing here has read them: every value in the file will be one you put
+there. Each crop is exactly the picture the readers you are marking will be shown.
+
+**Each crop has a wide view beside it** (`p3-r0012_wide.png`): the same place with more of the
+drawing round it, and the crop's edge drawn in red. Use it to see whether the label carries on past
+the red line. If it does, the crop has cut it off: put any character in `unreadable`, write `cut off`
+in `note`, and leave `value` empty. Type a value only from what is inside the line. Both pictures
+show the vendor's drawing alone; the reviewer's markup is left out of both, as it is for a model.
 
 **Write it exactly as the drawing writes it, with its unit.**
 
@@ -375,70 +499,79 @@ def scaffold(arguments: argparse.Namespace) -> int:
     except OSError as error:
         raise ScaffoldError(f"could not read {pdf_path}: {error}") from error
 
-    thresholds = dict(DEFAULT_THRESHOLDS)
-    for name in thresholds:
-        supplied = getattr(arguments, name, None)
-        if supplied is not None:
-            thresholds[name] = supplied
+    settings = _reader_settings(Path(arguments.reader_settings))
 
     candidates: list[Candidate] = []
     for page_index in _page_indexes(arguments.pages):
         try:
-            candidates.extend(_candidates(pdf, page_index=page_index, thresholds=thresholds))
+            candidates.extend(_candidates(pdf, page_index=page_index, settings=settings))
         except Exception as error:  # noqa: BLE001 - one unreadable page must not lose the rest
             print(f"  page {page_index + 1}: skipped ({type(error).__name__}: {error})")
 
     if not candidates:
         raise ScaffoldError(
             "no regions were planned next to detected dimension lines on those pages. Either the "
-            "thresholds exclude everything on this drawing, the dimension-line detector found no "
-            "lines, or the pages carry no outlined text; try --help for the values the first real "
-            "set was read with."
+            f"stage's thresholds in {arguments.reader_settings} exclude everything on this drawing, "
+            "the dimension-line detector found no lines, or the pages carry no outlined text."
         )
 
     candidates, too_small = _legible(candidates)
     if not candidates:
         raise ScaffoldError(
             f"all planned regions were under {MIN_LEGIBLE_AXIS_PX}px on their longest axis. They "
-            "are too small to ask a person to read; widen the pages or thresholds before authoring "
-            "a key."
+            "are too small to ask a person to read; choose other pages before authoring a key."
         )
 
     chosen = _stratified(candidates, count=arguments.count, seed=arguments.seed)
     out = Path(arguments.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    # **A region that will not render is not a crop.** 29 of 361 planned regions on page 3 of
-    # `AI_Set_2.pdf` are one or two pixels across at 600 dpi — a stray path, not a glyph cluster —
-    # and PDFium refuses them. Rather than invent a minimum size, the refusal is the criterion: what
-    # cannot be rendered cannot be read, and the count is reported rather than absorbed.
+    # **A crop that will not render is not a crop**, and the count is reported rather than absorbed.
+    # Before the margin, 29 of 361 planned regions on page 3 of `AI_Set_2.pdf` were one or two pixels
+    # across and PDFium refused them. Each crop now holds the margin round its region, so a refusal
+    # here is rarer, and still the renderer's to make rather than a minimum size invented here.
+    #
+    # **Rendered by `render_crop`, the bake-off's own renderer**, from the polygon the key will
+    # record, so the bytes written here are the bytes `load_crops` renders from it for a model.
     written: list[Candidate] = []
     unrenderable = 0
+    page_px = {page: _page_px(pdf, page - 1) for page in {candidate.page for candidate in chosen}}
     for candidate in chosen:
         try:
             image = render_crop(
                 pdf,
                 page=candidate.page,
-                polygon=candidate.polygon,
+                polygon=candidate.crop,
                 polygon_dpi=VISION_CROP_DPI,
+                output_dpi=VISION_CROP_DPI,
+            )
+            width, height, _rgb = decode_rgb_png(image)
+            wide = _wide_view(
+                pdf, candidate, crop_size=(width, height), page_px=page_px[candidate.page]
             )
         except (ModelBakeoffError, ValueError):
             unrenderable += 1
             continue
         (out / f"{candidate.crop_id}.png").write_bytes(image)
+        (out / _wide_name(candidate)).write_bytes(wide)
         written.append(candidate)
 
     if not written:
         raise ScaffoldError(
-            f"none of the {len(chosen)} sampled regions could be rendered as a crop. They are "
-            "sub-pixel at this DPI, which means the thresholds are finding stray paths rather than "
-            "glyph clusters."
+            f"none of the {len(chosen)} sampled regions could be rendered as a crop; the renderer "
+            "refused every one."
         )
 
     chosen = written
     _write_sheet(out, chosen)
     _write_contact_sheet(out, chosen)
     (out / HOW_TO).write_text(_HOW_TO_TEXT, encoding="utf-8")
+    # **The frame, written beside the crops it describes** (#835). `build` carries it into the key,
+    # and refuses a sheet without one: a sheet cut before #835 holds crops no model is shown.
+    (out / BAKEOFF_METADATA).write_text(
+        json.dumps({"frame": _FRAME.model_dump(mode="json"), "tags": {}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     # **Printed, because a thin stratum is worth seeing before anybody reads fifty crops.** A set
     # that turned out to be all small glyphs would still produce a scorecard, and the scorecard
@@ -452,22 +585,24 @@ def scaffold(arguments: argparse.Namespace) -> int:
             "longest axis and were dropped as too small to read"
         )
     if unrenderable:
-        print(f"    {unrenderable} sampled region(s) were too small to render and were dropped")
+        print(f"    {unrenderable} sampled crop(s) could not be rendered and were dropped")
     for stratum in sorted(available):
         print(f"    {stratum:<12} {counts.get(stratum, 0):>4} of {available[stratum]} available")
-    # **The size spread, because it predicts how the session will go.** A set whose median crop is
+    # **The size spread, because it predicts how the session will go.** A set whose median label is
     # 37px is a set where most of the reader's time goes on ticking `unreadable` — which is a real
-    # measurement of the region finder, and much better learned here than forty crops in.
+    # measurement of the region finder, and much better learned here than forty crops in. Measured
+    # on the regions, not the crops: the margin makes every crop look big enough.
     widths = sorted(candidate.width_px for candidate in chosen)
     tiny = sum(1 for width in widths if width < 20)
     print(
-        f"\n  crop width px: min {widths[0]}, median {widths[len(widths) // 2]}, max {widths[-1]}"
+        f"\n  label width px: min {widths[0]}, median {widths[len(widths) // 2]}, max {widths[-1]}"
     )
     if tiny:
         print(
-            f"    {tiny} of {len(widths)} are under 20px wide. Those are unlikely to be readable;\n"
-            "    raising --minimum-paths drops them, at the cost of a much smaller pool."
+            f"    {tiny} of {len(widths)} are under 20px wide, and unlikely to be readable. They are\n"
+            "    the stage's own regions, so they are kept: an unreadable tick is the measurement."
         )
+    print(f"\n  reader thresholds: {arguments.reader_settings}")
     print(
         "\n  the rotated CSV column is NOT assigned here: it is still for the reader to tick when\n"
         "  the crop itself reads sideways or upside down (#689).\n"
@@ -557,6 +692,27 @@ def _parsed(raw: str, *, crop_id: str) -> object:
         ) from refused
 
 
+def _sheet_frame(out: Path) -> KeyFrame:
+    """The frame `scaffold` recorded beside the crops, which `build` carries into the key (#835).
+
+    **Copied, not assumed from today's constants.** A sheet cut under another margin is a sheet
+    cut under another margin, and the key must say so rather than claim the current one.
+    """
+    try:
+        frame = key_frame(out)
+    except ModelBakeoffError as error:
+        raise ScaffoldError(
+            f"the frame recorded beside the crops is unreadable: {error}"
+        ) from error
+    if frame is None:
+        raise ScaffoldError(
+            f"{out} does not record the frame its crops were cut in, so it was scaffolded before "
+            "#835 made crops match production's. Its crops are not the ones a model is shown: "
+            "scaffold the pages again rather than build a key from these."
+        )
+    return frame
+
+
 def _rows(out: Path) -> list[dict[str, str]]:
     sheet = out / CROPS_CSV
     try:
@@ -571,6 +727,7 @@ def build(arguments: argparse.Namespace) -> int:
     rows = _rows(out)
     if not rows:
         raise ScaffoldError(f"{out / CROPS_CSV} has no rows; run scaffold first")
+    frame = _sheet_frame(out)
 
     pdf_path = Path(arguments.pdf)
     try:
@@ -675,7 +832,14 @@ def build(arguments: argparse.Namespace) -> int:
 
     (out / ANSWER_KEY).write_text(json.dumps(case, indent=2) + "\n", encoding="utf-8")
     (out / BAKEOFF_METADATA).write_text(
-        json.dumps({"tags": {k: v for k, v in sorted(tags.items())}}, indent=2) + "\n",
+        json.dumps(
+            {
+                "frame": frame.model_dump(mode="json"),
+                "tags": {k: v for k, v in sorted(tags.items())},
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     # The bake-off renders from the PDF beside the answer key, so it has to be there.
@@ -684,9 +848,10 @@ def build(arguments: argparse.Namespace) -> int:
         destination.write_bytes(pdf)
 
     # **Loaded back before this returns.** A key the bake-off would refuse must fail here, not after
-    # somebody has spent an afternoon typing values into it.
+    # somebody has spent an afternoon typing values into it. No frame is named: the key's own is the
+    # one every later loader will use, so it is the one checked.
     try:
-        crops = load_crops(out, polygon_dpi=VISION_CROP_DPI)
+        crops = load_crops(out)
     except ModelBakeoffError as error:
         raise ScaffoldError(
             f"the bake-off refused the key this just wrote: {error}\n"
@@ -739,10 +904,14 @@ def main(argv: list[str] | None = None) -> int:
     make.add_argument("--out", required=True, help="output directory; must be under data/")
     make.add_argument("--count", type=int, default=50, help="how many crops (default: 50)")
     make.add_argument("--seed", type=int, default=0, help="sampling seed; a re-run repeats the set")
-    for name, default in DEFAULT_THRESHOLDS.items():
-        make.add_argument(
-            f"--{name.replace('_', '-')}", help=f"reader threshold ({default} on AI_Set 2)"
-        )
+    make.add_argument(
+        "--reader-settings",
+        required=True,
+        help=(
+            "the settings file the worker is started with, e.g. scripts/demo.sh: every GV_READER_* "
+            "threshold is read from it, and none has a default"
+        ),
+    )
     make.set_defaults(handler=scaffold)
 
     finish = subcommands.add_parser("build", help="turn the filled sheet into an answer key")
