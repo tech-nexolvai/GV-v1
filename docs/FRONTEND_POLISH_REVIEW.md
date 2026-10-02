@@ -96,3 +96,58 @@ Follow-up browser results:
 Reproduce locally: `GV_QA_PORT=5195 node tests/browser-qa-server.mjs`, then use `?scenario=partial-upload#/` or `?scenario=approval#/review/00000000-0000-4000-8000-000000000101`. `node tests/browser-qa-create-pdfs.mjs` generates synthetic PDFs in a unique temporary directory for the native file chooser. `/__qa` displays in-memory scenario counters and requests. Run `npm run test:browser-scenarios` for the scenario contract regression tests. No scenario forwards to the backend; unimplemented writes are refused.
 
 Raise a frontend-only PR with screenshots and tests. Before merging, pull the latest origin/main in the integration checkout, reconcile the concurrent session's work, rerun checks, and inspect the final diff. Do not merge or discard another session's changes merely to make the branch clean.
+
+## Stage 5 — supporting pages and reviewer handoff
+
+Implemented on `codex/frontend-pages-handoff`, based on the unmerged outcome-consistency branch (PR #831). This slice does not merge or update the preceding PRs.
+
+- Documents, Rulebook, Company settings and Usage share a centered 1120px page frame, consistent headings and existing spacing tokens. Responsive/spacing guidance informed the container-based wrapping, narrow-screen layout and coarse-pointer targets; no new UI dependency was added.
+- All nine document columns remain in a keyboard-focusable horizontal scroll region. A native Open review button replaces the focusable table-row shortcut. Loading, empty and failed states are distinct; retry repeats the existing request.
+- Rule snapshots, versions, warnings and release notes remain visible, with full hashes wrapping. Empty settings do not claim every standard is configured. Usage retains all five outcomes, its aggregation scope and the unmeasured false-PASS disclosure.
+- Sign-off conditions are unchanged. Once approved, a single Reports disclosure offers PDF, workbook and redline. Escape closes it and restores focus. Download errors stay visible outside the disclosure without clearing approval or findings. A success message means a nonempty server blob was handed to the browser, not that a file was necessarily saved.
+
+Verification: production build, full frontend lint and **25 frontend test programs passed**. The focused Python checks again returned **88 passed, 1 skipped** (the opt-in remote CodeRabbit schema comparison). Semantic-type, verdict-isolation and repo-hygiene guards passed. No backend, API client/schema, package dependency, stored value or client-data change is included.
+
+Browser proof uses the live backend only for read-only inspection, plus the isolated synthetic harness on port 5196 for state/error/download interactions:
+
+- Live Rulebook still shows the nine actual published entries and their full returned fields in the new layout.
+- Synthetic populated settings preserve the exact `20 1/2 in` default and an unset value; empty settings clearly says there are no standards listed to edit.
+- A deliberate rulebook 503 remains an unavailable-data error after retry, not an empty rulebook. A deliberate report 503 leaves Approved and all four fixture findings intact.
+- All three report downloads match the fixture bytes exactly: PDF 698 bytes, workbook 2227 bytes, redline 732 bytes. This tests frontend delivery, not production report generation.
+- At 390px, the Rulebook stacks, Documents retains all nine columns in its own scroll region, and the Reports menu fits (x=34..374). Document width remains 390px. Normal viewport restored after testing.
+- Screenshots 28–38 in the task's external `artifacts/frontend-audit-2026-10-03/` folder include before/after supporting pages, desktop/mobile reports and a failed report request. The populated test screenshots are explicitly labeled synthetic.
+
+Additional commands:
+
+```sh
+cd frontend/main
+npm run test:pages
+npm run test:handoff
+GV_QA_PORT=5196 node tests/browser-qa-server.mjs
+```
+
+Harness routes: `#/rulebook`, `#/settings`, `#/documents`, `#/usage`; prefix `?pages=empty` or `?pages=error` for isolated fixtures. Reports use `?approved=1#/review/00000000-0000-4000-8000-000000000101`; add `&report-error=1` for a deliberate report refusal. No fixture forwards to the backend. No real upload, setting save, review action or approval was performed during this phase.
+
+Next: raise a frontend-only PR for this slice, then integration review against the latest origin before any merge. Do not merge automatically.
+
+## Post-plan phase — document resilience (2026-10-03)
+
+The numbered redesign plan ends at stage 5. This follow-up hardens that existing workflow rather than introducing backend features. A screenshot-first audit reproduced a document-discovery blocker: one failed `GET /packages/{id}/findings/summary` rejected the entire `Promise.all`, hiding successfully loaded package records. A separate review-session failure was also indistinguishable from an absent reviewer. The isolated harness reproduces both at `http://127.0.0.1:5197/?pages=partial#/documents`.
+
+Implemented:
+
+- Isolate each summary failure; retain the original document objects, order, identifiers, status, vendor and navigation.
+- Mark unavailable results explicitly, never as zero. A successful zero summary says “No findings recorded.” Reviewer fetch failures say “Unavailable”; an absent name in a successful response says “Not listed,” not “unclaimed.”
+- Retry preserves existing rows while loading. A failed primary-list refresh retains the last received rows with an explicit stale-data warning. Initial primary-list failure still gets the normal error state.
+- Show all five outcomes separately with the shared labels and decorative icons. `NOT_FOUND` and `NO_APPLICABLE_RULE` are no longer combined behind an unexplained symbol in Documents.
+- Disclose when the server returns a next-page cursor. Older-page navigation remains a follow-up; this change does not pretend the first returned page is the whole project.
+
+Audit steps and evidence (external task screenshot directory):
+
+1. **Documents during partial outage — fixed.** `39-documents-partial-before.jpg` shows the whole table missing. `40-documents-partial-after.jpg` shows both records retained, an availability notice and retry. Browser retry retained two rows; primary-list/recovery states also have reducer/loader regression coverage.
+2. **Open review and inspect evidence — healthy in the synthetic UI test.** The retained document opened the same package with four unchanged findings. Both ARCH and SHOP crop images decoded at 640×230, exact values remained visible, and Escape returned to findings. `41-resilient-review-evidence.jpg` shows the explicitly synthetic evidence.
+3. **Narrow-screen recovery — healthy.** At 390px, the retry notice fits and both rows remain in the keyboard-focusable table scroll region; body width stays 390px. `42-document-recovery-mobile.jpg` records this. Viewport reset afterward.
+
+Validation: production build, lint, all **26 frontend test programs**, and `git diff --check` pass. Focused Python checks: **88 passed, 1 optional remote-schema skip**. Semantic-type, repo-hygiene and verdict-isolation guards remain green. Read-only OpenAPI export comparison matches all 46 paths. The new test initially exposed missing Vite environment declarations in the test compiler and an incomplete synthetic session fixture; these were corrected without weakening assertions.
+
+Limits: live-backend interactions were navigation/read-only. Deliberate outages and fallback replies are synthetic contract tests, not production failure injection or model validation. No backend/client contract was changed; no record was saved, removed, approved or replaced. No full WCAG certification, gold-set run, production upload or OCR-accuracy claim is made. Stage 5 and this follow-up remain local frontend changes awaiting a PR; neither is merged.

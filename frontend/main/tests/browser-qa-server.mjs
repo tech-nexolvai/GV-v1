@@ -8,11 +8,14 @@ import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 import { project, populated, empty, packages, findings, chains, needed, candidates, cropPng, samplePdf, sampleWorkbook } from './browser-qa-fixtures.mjs';
 import { createScenarioState, handleScenario, scenarioSnapshot, scenarioPackages, scenarioFindings, fixturePdf } from './browser-qa-scenarios.mjs';
+import { pageFixture } from './browser-qa-pages.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const failCropOnce = new Set();
 let cropRetryMode = false;
 let approvedMode = false;
+let pageMode = 'populated';
+let reportErrorMode = false;
 let scenario = createScenarioState();
 const port = Number(process.env.GV_QA_PORT ?? '5193');
 const qa = {
@@ -28,6 +31,8 @@ const qa = {
       if (url.pathname === '/' || url.pathname === '/index.html') {
         cropRetryMode = url.searchParams.get('crop-error') === 'once';
         approvedMode = url.searchParams.get('approved') === '1';
+        pageMode = url.searchParams.get('pages') ?? 'populated';
+        reportErrorMode = url.searchParams.get('report-error') === '1';
         failCropOnce.clear();
         const requestedScenario = url.searchParams.get('scenario');
         if (requestedScenario !== scenario.name || url.searchParams.get('reset') === '1') scenario = createScenarioState(requestedScenario);
@@ -52,6 +57,8 @@ const qa = {
       } : row);
       const json = (body, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
       const refusal = (message, status = 404) => json({ error: 'synthetic_qa_only', message, request_id: 'SYNTHETIC_UI_QA' }, status);
+      const pageResponse = req.method === 'GET' ? pageFixture(path, pageMode) : null;
+      if (pageResponse) return json(pageResponse.body, pageResponse.status);
       let requestBody = {};
       if (!['GET', 'HEAD'].includes(req.method)) {
         const parts = []; let size = 0;
@@ -91,6 +98,7 @@ const qa = {
         if (cropRetryMode && !failCropOnce.has(path)) { failCropOnce.add(path); return refusal('Synthetic QA: temporary crop failure. Retry is safe.', 503); }
         res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' }); res.end(cropPng(path.includes('shop'))); return;
       }
+      if (reportErrorMode && /\/(report(?:\.pdf)?|redline\.pdf)$/.test(path)) return refusal('Synthetic report unavailable. Sign-off and findings are unchanged.', 503);
       if (/\/(report|redline)\.pdf$/.test(path)) { res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="synthetic-ui-qa.pdf"' }); res.end(samplePdf(path.endsWith('redline.pdf'))); return; }
       if (path.endsWith('/report')) { res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="synthetic-ui-qa.xlsx"' }); res.end(sampleWorkbook()); return; }
       if (pkg && path.endsWith(`/packages/${pkg.id}`)) return json(pkg);

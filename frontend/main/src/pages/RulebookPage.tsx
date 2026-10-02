@@ -16,6 +16,9 @@ import { ChevronRight } from 'lucide-react';
 import { listRules } from '../api/client';
 import type { Rule } from '../api/client';
 import { useAsync } from '../api/useAsync';
+import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
+import { rulebookEmptyState } from './rulebookState';
+import '../components/ui/PageFrame.css';
 import './RulebookPage.css';
 
 /** Derived from what the API returns, rather than a fixed list that could name a type with no rules. */
@@ -24,17 +27,16 @@ function categoriesOf(rules: readonly Rule[]): string[] {
 }
 
 export function RulebookPage() {
-  const rules = useAsync(() => listRules(), []);
+  const [attempt, setAttempt] = useState(0);
+  const rules = useAsync(() => listRules(), [attempt]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState('all');
 
   if (rules.status === 'loading') {
     return (
-      <div className="rulebook-page animate-fade-in">
-        <div className="rulebook-detail__body">
-          <p className="text-muted">Loading the rulebook…</p>
-        </div>
-      </div>
+      <PageFrame title="Rulebook" className="rulebook-page" description="Published checks and the exact rule snapshots used by the engine.">
+        <p className="page-frame__state" role="status">Loading the rulebook…</p>
+      </PageFrame>
     );
   }
 
@@ -43,16 +45,9 @@ export function RulebookPage() {
   // made.
   if (rules.status === 'error') {
     return (
-      <div className="rulebook-page animate-fade-in">
-        <div className="rulebook-detail__body" role="alert">
-          <h2 className="rulebook-detail__name">The rulebook could not be loaded</h2>
-          <div className="gv-bar" />
-          <p>{rules.error.message}</p>
-          <p className="text-muted">
-            This is not the same as there being no rules — nothing is known either way from here.
-          </p>
-        </div>
-      </div>
+      <PageFrame title="Rulebook" className="rulebook-page" description="Published checks and the exact rule snapshots used by the engine.">
+        <PageLoadError title="The rulebook could not be loaded" message={`${rules.error.message} The published rules are unavailable; this does not mean there are no rules.`} onRetry={() => setAttempt((value) => value + 1)} />
+      </PageFrame>
     );
   }
 
@@ -60,13 +55,13 @@ export function RulebookPage() {
   const categories = categoriesOf(all);
   const filtered = all.filter((rule) => activeCategory === 'all' || rule.product_type === activeCategory);
   const selected = filtered.find((rule) => rule.rule_id === selectedId) ?? filtered[0];
+  const empty = rulebookEmptyState(all.length);
 
   return (
-    <div className="rulebook-page animate-fade-in">
-      <div className="rulebook-sidebar">
+    <PageFrame title="Rulebook" className="rulebook-page" description="Published checks and the exact rule snapshots used by the engine.">
+      <div className="rulebook-workspace">
+      <nav className="rulebook-sidebar" aria-label="Published rules">
         <div className="rulebook-sidebar__header">
-          <div className="gv-bar" />
-          <h1 className="rulebook-sidebar__title">Rulebook</h1>
           <p className="rulebook-sidebar__subtitle">
             {all.length === 0
               ? 'Nothing published'
@@ -79,6 +74,7 @@ export function RulebookPage() {
                 <button
                   key={category}
                   className={`rulebook-sidebar__filter-btn ${activeCategory === category ? 'rulebook-sidebar__filter-btn--active' : ''}`}
+                  aria-pressed={activeCategory === category}
                   onClick={() => setActiveCategory(category)}
                 >
                   {category === 'all' ? 'All' : category.charAt(0).toUpperCase() + category.slice(1)}
@@ -93,6 +89,7 @@ export function RulebookPage() {
             <button
               key={rule.rule_id}
               className={`rulebook-rule-item ${selected?.rule_id === rule.rule_id ? 'rulebook-rule-item--active' : ''}`}
+              aria-current={selected?.rule_id === rule.rule_id ? 'true' : undefined}
               onClick={() => setSelectedId(rule.rule_id)}
             >
               <div className="rulebook-rule-item__top">
@@ -111,18 +108,15 @@ export function RulebookPage() {
             </button>
           ))}
         </div>
-      </div>
+      </nav>
 
       <div className="rulebook-detail">
         {selected === undefined ? (
           <div className="rulebook-detail__body">
-            <h2 className="rulebook-detail__name">No rules are published</h2>
+            <h2 className="rulebook-detail__name">{empty.title}</h2>
             <div className="gv-bar" />
-            <p>
-              Nothing has been published to the rulebook, so the engine has no checks to apply. This is
-              the expected state before D6 publishes the first snapshot — it is not a fault, and it is
-              not a filter hiding anything.
-            </p>
+            <p>{empty.message}</p>
+            {all.length > 0 && <button type="button" className="btn btn--ghost" onClick={() => setActiveCategory('all')}>Show all rules</button>}
             <div className="rulebook-detail__notice">
               <p>
                 Rules are authored in YAML, validated with Pydantic and JSON Schema, and stored as
@@ -183,7 +177,8 @@ export function RulebookPage() {
           </>
         )}
       </div>
-    </div>
+      </div>
+    </PageFrame>
   );
 }
 

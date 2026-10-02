@@ -13,11 +13,14 @@
  * which is why the page says how many packages it looked at.
  */
 
+import { useState } from 'react';
 import { listPackages, getFindingCounts } from '../api/client';
 import type { FindingCounts } from '../api/client';
 import { projectId } from '../api/config';
 import { OUTCOME_LABELS } from '../data/outcomeLabels.js';
 import { useAsync } from '../api/useAsync';
+import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
+import '../components/ui/PageFrame.css';
 import './UsagePage.css';
 
 /** How many packages to aggregate. Named, and reported on screen, rather than a silent truncation. */
@@ -57,31 +60,19 @@ async function loadTotals(): Promise<Totals> {
 }
 
 export function UsagePage() {
-  const totals = useAsync(loadTotals, []);
+  const [attempt, setAttempt] = useState(0);
+  const totals = useAsync(loadTotals, [attempt]);
 
   return (
-    <div className="usage-page animate-fade-in">
-      <div className="usage-page__header">
-        <div className="gv-bar" />
-        <h1 className="usage-page__title">Usage</h1>
-        <p className="usage-page__subtitle">
-          Counted from this project's packages and findings.
-        </p>
-      </div>
+    <PageFrame title="Usage" className="usage-page" description="Counted from this project's packages and findings.">
 
       <div className="usage-page__body">
-        {totals.status === 'loading' && <p className="text-muted">Counting…</p>}
+        {totals.status === 'loading' && <p className="page-frame__state" role="status">Counting…</p>}
 
         {/* Failure and emptiness must not look alike. Zeroes on a screen that could not reach the
             server would read as "nothing has gone wrong", which is a claim nobody made. */}
         {totals.status === 'error' && (
-          <div className="usage-section" role="alert">
-            <h2 className="usage-section__title">These figures could not be loaded</h2>
-            <p>{totals.error.message}</p>
-            <p className="text-muted">
-              Nothing is known either way from here — this is not a report of zero activity.
-            </p>
-          </div>
+          <PageLoadError title="These figures could not be loaded" message={`${totals.error.message} These figures are unavailable; this is not a report of zero activity.`} onRetry={() => setAttempt((value) => value + 1)} />
         )}
 
         {totals.status === 'ready' && (
@@ -146,20 +137,19 @@ export function UsagePage() {
               <h2 className="usage-section__title">Recent activity</h2>
               <p className="text-muted">
                 Not available. Reviewer actions are recorded per review session and there is no
-                endpoint that lists them across a project. This panel previously showed an invented
-                audit trail, which is worse than an empty one.
+                endpoint that lists them across a project.
               </p>
             </div>
           </>
         )}
       </div>
-    </div>
+    </PageFrame>
   );
 }
 
 function StatCard({ value, label, sub }: { value: string; label: string; sub: string }) {
   return (
-    <div className="usage-stat-card animate-slide-up">
+    <div className="usage-stat-card">
       <span className="usage-stat-card__value">{value}</span>
       <span className="usage-stat-card__label">{label}</span>
       <span className="usage-stat-card__sub">{sub}</span>
@@ -170,7 +160,7 @@ function StatCard({ value, label, sub }: { value: string; label: string; sub: st
 function OutcomeRow({ label, count, total, cls }: { label: string; count: number; total: number; cls: string }) {
   const pct = total === 0 ? 0 : Math.round((count / total) * 100);
   return (
-    <div className="usage-breakdown__row animate-slide-up">
+    <div className="usage-breakdown__row">
       <span className="usage-breakdown__label">{label}</span>
       <div className="usage-breakdown__bar-wrap">
         <div className={`usage-breakdown__bar ${cls}`} style={{ width: `${pct}%` }} />
