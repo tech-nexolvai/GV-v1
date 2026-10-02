@@ -18,13 +18,11 @@ function inches(numerator: number, denominator = 1): Quantity {
   };
 }
 
-function cabinet(
-  id: string,
-  type: 'single_door' | 'double_door' | 'drawer' | 'equipment',
-  original: number,
-  proposed: number,
-) {
-  return { id, type, adjustable: type !== 'equipment', original: inches(original), proposed: inches(proposed) };
+type CabinetType = FillerDistributionResponse['cabinets'][number]['type'];
+const ADJUSTABLE: ReadonlySet<CabinetType> = new Set(['single_door', 'double_door', 'drawer']);
+
+function cabinet(id: string, type: CabinetType, original: number, proposed: number) {
+  return { id, type, adjustable: ADJUSTABLE.has(type), original: inches(original), proposed: inches(proposed) };
 }
 
 function response(overrides: Partial<FillerDistributionResponse>): FillerDistributionResponse {
@@ -199,6 +197,24 @@ const scenario4 = response({
   assert.ok(html.includes('RFI to architect'), 'an unresolved run says what to do next');
   assert.ok(!html.includes('Corrected for site'), 'and does not draw a correction');
   assert.equal(html.match(/✕<\/text>/g)?.length ?? 0, 0);
+}
+
+// #818: the reviewer named the middle cabinet a sink cabinet. It is drawn as fixed width, like any
+// equipment cabinet, under its own name and code.
+{
+  const named = response({
+    ...scenario1,
+    cabinets: [
+      cabinet('cabinet-1', 'double_door', 24, 21),
+      cabinet('cabinet-2', 'sink_cabinet', 36, 36),
+      cabinet('cabinet-3', 'double_door', 24, 21),
+    ],
+  });
+  const sink = buildElevation(named).elements.find((element) => element.id === 'cabinet-2');
+  assert.ok(sink, 'the sink cabinet is drawn');
+  assert.deepEqual([sink.kind, sink.code, sink.name], ['equipment', 'SK', 'Sink cabinet 2']);
+  const html = renderToStaticMarkup(<ElevationDiagram result={named} />);
+  assert.ok(html.includes('Sink cabinet 2: 36&quot;'), 'its tooltip names the kind the reviewer chose');
 }
 
 // Written out so the drawing can be looked at, not only asserted on.

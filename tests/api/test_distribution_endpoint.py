@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import Principal, Role, authenticate
@@ -403,3 +404,23 @@ def test_the_explanation_never_shows_a_decimal() -> None:
     # half an inch each, and 24 1/2" is how a drawing writes it.
     assert '24 1/2"' in body["message"]
     assert not re.search(r"\d\.\d", body["message"]), body["message"]
+
+
+@pytest.mark.parametrize(
+    "kind", ["sink_cabinet", "microwave_cabinet", "under_counter_refrigeration_cabinet"]
+)
+def test_a_named_equipment_cabinet_holds_its_width_like_other_equipment(kind: str) -> None:
+    """**#818.** Slide 11's named kinds are equipment cabinets. Outcome: the same answer as the
+    run with `equipment` in the middle — the named cabinet keeps 36" and the regular ones move —
+    with only the name it was given changed."""
+    named = _payload()
+    named["assembly"]["cabinets"][1]["type"] = kind
+
+    expected = _client().post(PATH, json=_payload()).json()
+    body = _client().post(PATH, json=named).json()
+
+    assert [cabinet["adjustable"] for cabinet in body["cabinets"]] == [True, False, True]
+    assert body["cabinets"][1]["type"] == kind
+    assert _widths(body, "cabinets") == _widths(expected, "cabinets")
+    assert _widths(body, "fillers") == _widths(expected, "fillers")
+    assert body["outcome"] == expected["outcome"]

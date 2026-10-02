@@ -369,6 +369,9 @@
               "single_door",
               "double_door",
               "drawer",
+              "sink_cabinet",
+              "microwave_cabinet",
+              "under_counter_refrigeration_cabinet",
               "equipment"
             ],
             "title": "Type",
@@ -412,6 +415,9 @@
               "single_door",
               "double_door",
               "drawer",
+              "sink_cabinet",
+              "microwave_cabinet",
+              "under_counter_refrigeration_cabinet",
               "equipment"
             ],
             "title": "Type",

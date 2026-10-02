@@ -34,6 +34,18 @@ from verdict.operations.distribution import CabinetType, DistributionCondition
 __all__ = ["explain_distribution"]
 
 
+def _is_equipment(name: object) -> bool:
+    """Whether a traced category is a fixed-width kind — any of them (#818), not only `equipment`.
+
+    A name this vocabulary does not hold is not equipment, rather than an exception inside a sentence
+    a reviewer is reading: the check itself already refused that run's shape.
+    """
+    try:
+        return CabinetType(str(name)).is_equipment
+    except ValueError:
+        return False
+
+
 def _inches(value: Measurement | Fraction) -> str:
     """One exact value the way a drawing writes it: `21 1/2"`, never `21.5`."""
     exact = value.exact if isinstance(value, Measurement) else value
@@ -223,7 +235,7 @@ def _what_the_cabinets_take(facts: dict[str, object]) -> str:
         [
             design[index]
             for index, name in enumerate(types)
-            if name == CabinetType.EQUIPMENT.value and index < len(design)
+            if _is_equipment(name) and index < len(design)
         ]
         if isinstance(types, tuple)
         else []

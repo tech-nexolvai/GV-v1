@@ -505,6 +505,9 @@ def test_the_form_offers_the_choices_rather_than_a_text_box(session: Session) ->
         "single_door",
         "double_door",
         "drawer",
+        "sink_cabinet",
+        "microwave_cabinet",
+        "under_counter_refrigeration_cabinet",
         "equipment",
     )
     # Every other input is a dimension and must not grow a dropdown.
