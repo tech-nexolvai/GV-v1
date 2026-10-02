@@ -13,10 +13,17 @@ sheets into one view — after which every item beneath them belongs to the wron
 Requiring one would force somebody to invent a value, and an invented identifier is worse than an
 absent one because it matches.
 
-**An item is a candidate until corroborated.** Items come from reading a drawing, which is the AI's
-job, and `AGENTS.md` §2.1 keeps that separate from deciding. If an item could be created as a fact,
-the drawing model becomes a second unguarded route into the verdict — so `corroborated` defaults
-`False` and is set by the same discipline that governs observations, never at construction.
+**An item is a candidate until corroborated.** Items describe what a drawing shows, and `AGENTS.md`
+§2.1 keeps reading a drawing separate from deciding. If an item could be created as a fact, the
+drawing model becomes a second unguarded route into the verdict — so `corroborated` defaults `False`
+and is set by the same discipline that governs observations, never at construction.
+
+**A suggested part is not an item (#852).** The computer may suggest that a box on an elevation is a
+cabinet, a filler or a countertop (`PartProposal`). Outside tests, a `drawing_items` row is written
+only when a person confirms one (`PartConfirmation`): `workflow/parts.py:confirm_part` is the only
+code that writes it, and a guard test fails if another writer appears. The confirmation is the
+authority, as `ViewRoleConfirmation` is for a view's role, so an item a person confirmed is still
+created uncorroborated.
 
 **An alias is a small rule.** "Cab." meaning "cabinet" is a judgement somebody made, and it changes
 what matches what. So it carries who added it and why, and it is versioned alongside the rulebook
@@ -33,6 +40,7 @@ Verification: `tests/db/test_drawing_models.py`
 
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import StrEnum
 from typing import Final
 from uuid import UUID
@@ -42,12 +50,15 @@ from sqlalchemy import (
     DDL,
     CheckConstraint,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
+    Numeric,
     String,
     UniqueConstraint,
     event,
     func,
     select,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -55,8 +66,10 @@ from sqlalchemy.sql import Select
 
 from app.db.base import Base, Immutable, TimestampedUUID
 from vocabulary.dense_content import DenseContentKind
+from vocabulary.part_kinds import PartKind
 
 DENSE_CONTENT_KIND_VALUES = ", ".join(f"'{kind.value}'" for kind in DenseContentKind)
+PART_KIND_VALUES = ", ".join(f"'{kind.value}'" for kind in PartKind)
 
 
 #: The one schema every database-wide extension is created in and referenced through.
@@ -194,7 +207,8 @@ class DrawingItem(Base, TimestampedUUID):
     )
 
     item_type: Mapped[str] = mapped_column(String(100), index=True)
-    """From the canonical `CT0xx` vocabulary (ADR-0017), never free text.
+    """From the canonical `CT0xx` vocabulary (ADR-0017), never free text. A confirmed part's is the
+    generic type for its kind, `PartKind.item_type`.
 
     Stored as text rather than a database enum for the same reason `metric_results.metric` is: the
     vocabulary belongs to `rules/semantic_types.py`, and a migration every time it gains a member
@@ -211,6 +225,8 @@ class DrawingItem(Base, TimestampedUUID):
     An item read off a drawing is AI output. If it could be created corroborated, the drawing model
     would be a second route into the verdict that bypasses the evidence gate — the one thing
     `AGENTS.md` §2.1 forbids. Nothing in this module sets it True; promotion is `evidence/`'s job.
+    A person confirming the part does not set it either: the `PartConfirmation` row records that
+    decision, and the item stays a description of the drawing.
     """
 
     __table_args__ = (
@@ -374,6 +390,334 @@ class Alias(Base, TimestampedUUID, Immutable):
         CheckConstraint("canonical_term <> ''", name="alias_canonical_term_present"),
         CheckConstraint("added_by <> ''", name="alias_added_by_present"),
         CheckConstraint("rationale <> ''", name="alias_rationale_present"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# The drawing's parts: suggested, then confirmed (#852)
+# ---------------------------------------------------------------------------
+
+
+class PartDecision(StrEnum):
+    """What a person said about one suggested part."""
+
+    CONFIRMED = "confirmed"
+    """It is a part, of the kind and with the code the person gave."""
+
+    WITHDRAWN = "withdrawn"
+    """It is not a part — or no longer is, when this replaces a confirmation."""
+
+
+PART_DECISION_VALUES = ", ".join(f"'{decision.value}'" for decision in PartDecision)
+
+
+class PartProposal(Base, TimestampedUUID, Immutable):
+    """What the computer suggests one part of a drawing is: a cabinet, a filler or a countertop.
+
+    **A suggestion, never a part.** Writing one creates no `drawing_items` row; only a person's
+    `PartConfirmation` does. A suggestion nobody decides on stays a suggestion, and nothing that reads
+    `drawing_items` can find it there.
+
+    **A code is kept as printed and never decoded.** A cabinet code names a model, not one cabinet, so
+    two parts may carry the same one and nothing here asks for it to be unique. Nor is a width read
+    out of its digits: a part's width is a reading linked to it (`ReadingPart`), never its code.
+
+    Append-only: a different suggestion is another row.
+    """
+
+    __tablename__ = "part_proposals"
+
+    drawing_view_id: Mapped[UUID] = mapped_column(
+        ForeignKey("drawing_views.id", ondelete="RESTRICT"), index=True
+    )
+    """The drawing the part is on. One view, as for an item: the same cabinet seen in two drawings is
+    two suggestions, and saying they are one physical thing is cross-view identity (B7.3)."""
+
+    kind: Mapped[str] = mapped_column(String(16))
+    """`cabinet`, `filler` or `countertop` (`PartKind`)."""
+
+    extent: Mapped[dict[str, object]] = mapped_column(JSONB)
+    """The part's outline in stored page space, `{"space": "stored", "points": [[x, y], ...]}` — the
+    shape `record_panel_view` gives a view's region, with each coordinate as text so it stays exact.
+    The database refuses an extent that does not say it is in stored space.
+
+    A countertop's extent is its own, never the union of the parts beneath it. Taken from them, "the
+    run reaches both ends of the countertop" would be true by construction."""
+
+    code_as_printed: Mapped[str | None] = mapped_column(String(200), default=None)
+    """The code read on the part, verbatim, or `NULL` when none was read. Most fillers carry nothing,
+    and an invented code is worse than none because it matches."""
+
+    code_candidate_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), index=True, default=None
+    )
+    """The reading the code came from. Required with a code and absent without one: a code nobody
+    can trace to a reading is a code nobody can check against the sheet."""
+
+    defining_line: Mapped[dict[str, object] | None] = mapped_column(JSONB, default=None)
+    """The dimension line that defined the part, as two points in stored space, or `NULL` when no
+    line did. Inlined for the reason `ObservationAssociation` gives: there is no `dimension_lines`
+    table, and two endpoints say where strokes are drawn, not what they are."""
+
+    source: Mapped[str] = mapped_column(String(100))
+    """What made the suggestion."""
+
+    source_version: Mapped[str] = mapped_column(String(50))
+    """Which version of it, so a later, different suggester writes rows of its own rather than
+    appearing to agree with this one."""
+
+    reason: Mapped[str] = mapped_column(String(500))
+    """Why it was suggested, in plain English, for the person deciding."""
+
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({PART_KIND_VALUES})", name="part_proposal_kind"),
+        # Containment rather than `extent->>'space' = 'stored'`: a missing key makes that NULL, and a
+        # check that evaluates to NULL passes.
+        CheckConstraint(
+            """extent @> '{"space": "stored"}'::jsonb""", name="part_proposal_extent_stored"
+        ),
+        CheckConstraint(
+            """defining_line IS NULL OR defining_line @> '{"space": "stored"}'::jsonb""",
+            name="part_proposal_line_stored",
+        ),
+        # A code and the reading it came from, together or not at all.
+        CheckConstraint(
+            "(code_as_printed IS NULL) = (code_candidate_id IS NULL)",
+            name="part_proposal_code_has_reading",
+        ),
+        CheckConstraint(
+            "code_as_printed IS NULL OR code_as_printed !~ '^[[:space:]]*$'",
+            name="part_proposal_code_not_blank",
+        ),
+        CheckConstraint("source !~ '^[[:space:]]*$'", name="part_proposal_source_not_blank"),
+        CheckConstraint(
+            "source_version !~ '^[[:space:]]*$'", name="part_proposal_version_not_blank"
+        ),
+        CheckConstraint("reason !~ '^[[:space:]]*$'", name="part_proposal_reason_not_blank"),
+    )
+
+
+class PartConfirmation(Base, TimestampedUUID, Immutable):
+    """A person's decision on one suggested part: it is a part, or it is not.
+
+    **The only thing that makes an item.** Confirming writes a new `drawing_items` row, with a
+    `catalogue` identifier when the person kept a code, and names it in `drawing_item_id`. A
+    withdrawal writes no item. `workflow/parts.py:confirm_part` is the only code that does this, and
+    a guard in `tests/db/test_drawing_models.py` fails if any other module outside `tests/`
+    constructs or inserts into either table.
+
+    **The confirmation is the authority, not the item.** The item is created with `corroborated` left
+    `False`. What the person decided is this row, as `ViewRoleConfirmation` is for a view's role;
+    confirming that a part exists says nothing about whether any measurement of it is right.
+
+    **Every decision names the one it replaces.** A correction is a new row whose `supersedes_id` is
+    the decision before it on the same suggestion. Only a suggestion's first decision may replace
+    nothing, and each decision can be replaced once, so at most one decision per suggestion is
+    replaced by nothing: the current one. Two people deciding at once cannot both become current.
+
+    **A correction makes a new item.** The earlier item keeps its row, and its identifier with it —
+    no role holds `DELETE` on either table — but it is no longer current. An item is current only
+    while the confirmation that made it is.
+    """
+
+    __tablename__ = "part_confirmations"
+
+    part_proposal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("part_proposals.id", ondelete="RESTRICT"), index=True
+    )
+
+    supersedes_id: Mapped[UUID | None] = mapped_column(default=None)
+    """The decision this one replaces, or `NULL` for the first decision on the suggestion."""
+
+    decision: Mapped[str] = mapped_column(String(16))
+    """`confirmed` or `withdrawn` (`PartDecision`)."""
+
+    kind: Mapped[str | None] = mapped_column(String(16), default=None)
+    """The kind the person confirmed, which may differ from the suggestion's. `NULL` on a
+    withdrawal, which confirms nothing."""
+
+    code_as_printed: Mapped[str | None] = mapped_column(String(200), default=None)
+    """The code the person kept, verbatim, or `NULL` for none. The item carries it as a `catalogue`
+    identifier, because a code names a model and two parts may share one."""
+
+    drawing_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("drawing_items.id", ondelete="RESTRICT"), default=None
+    )
+    """The item this confirmation made. Every confirmation makes its own, so no item is named by
+    two."""
+
+    confirmed_by: Mapped[str] = mapped_column(String(200))
+    """Who decided, on a withdrawal too: whether a part exists is a person's call, so every call
+    names its person."""
+
+    __table_args__ = (
+        CheckConstraint(f"decision IN ({PART_DECISION_VALUES})", name="part_confirmation_decision"),
+        CheckConstraint(
+            f"kind IS NULL OR kind IN ({PART_KIND_VALUES})", name="part_confirmation_kind"
+        ),
+        # A confirmation names its kind and the item it made. A withdrawal names neither, nor a code:
+        # a row carrying both answers would be a decision nobody could read.
+        CheckConstraint(
+            "(decision = 'confirmed' AND kind IS NOT NULL AND drawing_item_id IS NOT NULL)"
+            " OR (decision = 'withdrawn' AND kind IS NULL AND code_as_printed IS NULL"
+            " AND drawing_item_id IS NULL)",
+            name="part_confirmation_decision_shape",
+        ),
+        CheckConstraint(
+            "code_as_printed IS NULL OR code_as_printed !~ '^[[:space:]]*$'",
+            name="part_confirmation_code_not_blank",
+        ),
+        CheckConstraint(
+            "confirmed_by !~ '^[[:space:]]*$'", name="part_confirmation_actor_not_blank"
+        ),
+        UniqueConstraint("drawing_item_id", name="uq_part_confirmations_drawing_item_id"),
+        # What the self-reference below points at, so a decision can only replace one on the same
+        # suggestion. With `supersedes_id` alone, a correction could end another part's history.
+        UniqueConstraint("id", "part_proposal_id", name="uq_part_confirmations_id_proposal"),
+        ForeignKeyConstraint(
+            ["supersedes_id", "part_proposal_id"],
+            ["part_confirmations.id", "part_confirmations.part_proposal_id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("supersedes_id", name="uq_part_confirmations_supersedes_id"),
+        Index(
+            "ix_part_confirmations_first_decision",
+            "part_proposal_id",
+            unique=True,
+            postgresql_where=text("supersedes_id IS NULL"),
+        ),
+    )
+
+
+class CountertopRun(Base, TimestampedUUID, Immutable):
+    """One member of a confirmed countertop run: a part beneath a countertop, and its place.
+
+    **A person always confirms which parts sit under a countertop; the computer only suggests.** So
+    every row names who confirmed the run, and the countertop and every member are `drawing_items`
+    rows — parts a person confirmed, never suggestions.
+
+    **One row per member, grouped by `run_id`**, as `measurement_proposals` groups one proposal's rows
+    by `proposal_id`. A list of ids in one column could not carry a foreign key, and a member that is
+    not a confirmed part is what this table has to refuse. The run's own columns — the countertop,
+    what proposed it, the edge tolerance, who confirmed it — repeat on each member's row.
+
+    **Order is a column.** `CAB-FILLER-001` compares two runs position by position, so a member's
+    place is an integer the database keeps unique within its run, never recovered from insertion
+    order.
+
+    Append-only: a correction is a new run under a new `run_id`.
+    """
+
+    __tablename__ = "countertop_runs"
+
+    run_id: Mapped[UUID] = mapped_column(index=True)
+    """Which run the row belongs to. The rows of one run share it."""
+
+    countertop_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("drawing_items.id", ondelete="RESTRICT"), index=True
+    )
+    """The countertop part. Its extent is the one confirmed for it, never the union of its members."""
+
+    position: Mapped[int]
+    """The member's place along the run, `0` upward, in the order the drawing draws it."""
+
+    member_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("drawing_items.id", ondelete="RESTRICT"), index=True
+    )
+
+    signal: Mapped[str] = mapped_column(String(500))
+    """Why this member was proposed for the run, in plain English — the sentence a reviewer checks
+    against the drawing."""
+
+    proposal_source: Mapped[str] = mapped_column(String(100))
+    """What proposed the run, and its version."""
+
+    edge_tolerance: Mapped[Decimal] = mapped_column(Numeric())
+    """The edge tolerance the proposal used, in stored units: the normalised `0..1` page space that
+    `extraction/model/assembly.py` takes it in. Exact, and refused when negative, infinite or NaN,
+    which that resolver refuses too — such a tolerance does not loosen its checks, it removes them."""
+
+    confirmed_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint("position >= 0", name="countertop_run_position_not_negative"),
+        CheckConstraint(
+            "member_item_id <> countertop_item_id", name="countertop_run_member_not_countertop"
+        ),
+        # PostgreSQL orders NaN above every number, Infinity included, so `>= 0` alone admits NaN
+        # and Infinity; the upper bound refuses both.
+        CheckConstraint(
+            "edge_tolerance >= 0 AND edge_tolerance < 'Infinity'::numeric",
+            name="countertop_run_tolerance_finite",
+        ),
+        CheckConstraint("signal !~ '^[[:space:]]*$'", name="countertop_run_signal_not_blank"),
+        CheckConstraint(
+            "proposal_source !~ '^[[:space:]]*$'", name="countertop_run_source_not_blank"
+        ),
+        CheckConstraint("confirmed_by !~ '^[[:space:]]*$'", name="countertop_run_actor_not_blank"),
+        UniqueConstraint("run_id", "position", name="uq_countertop_runs_slot"),
+        UniqueConstraint("run_id", "member_item_id", name="uq_countertop_runs_member"),
+    )
+
+
+class ReadingPart(Base, TimestampedUUID, Immutable):
+    """Which confirmed part one reading measures, why, and who said so.
+
+    A width means nothing until it is known which cabinet it is the width of. This links one
+    canonical observation to a `drawing_items` row — so only to a part a person confirmed, never to a
+    suggestion — with the signal that tied them and the person who confirmed the link.
+
+    **At most one live link per reading, held by the database.** A correction is a new row naming the
+    link it replaces in `supersedes_id`, and a row naming no part withdraws the link it replaces.
+    Only a reading's first link may replace nothing, and each link can be replaced once and only by a
+    link for the same reading, so at most one row per reading is replaced by nothing. That row is the
+    live link when it names a part.
+    """
+
+    __tablename__ = "reading_parts"
+
+    canonical_observation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("canonical_observations.id", ondelete="RESTRICT"), index=True
+    )
+
+    drawing_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("drawing_items.id", ondelete="RESTRICT"), index=True, default=None
+    )
+    """The part the reading measures, or `NULL` on a row that withdraws the link it replaces."""
+
+    supersedes_id: Mapped[UUID | None] = mapped_column(default=None)
+    """The link this one replaces, or `NULL` for the reading's first link."""
+
+    signal: Mapped[str] = mapped_column(String(500))
+    """Why the reading belongs to the part, in plain English — or, on a withdrawal, why it no longer
+    does."""
+
+    confirmed_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        # A withdrawal withdraws something. A first row naming no part would record a link that
+        # never existed being taken away.
+        CheckConstraint(
+            "drawing_item_id IS NOT NULL OR supersedes_id IS NOT NULL",
+            name="reading_part_withdraws_a_link",
+        ),
+        CheckConstraint("signal !~ '^[[:space:]]*$'", name="reading_part_signal_not_blank"),
+        CheckConstraint("confirmed_by !~ '^[[:space:]]*$'", name="reading_part_actor_not_blank"),
+        # What the self-reference below points at, so a link can only replace one for the same
+        # reading. With `supersedes_id` alone, relinking one reading could end another's live link.
+        UniqueConstraint("id", "canonical_observation_id", name="uq_reading_parts_id_observation"),
+        ForeignKeyConstraint(
+            ["supersedes_id", "canonical_observation_id"],
+            ["reading_parts.id", "reading_parts.canonical_observation_id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("supersedes_id", name="uq_reading_parts_supersedes_id"),
+        Index(
+            "ix_reading_parts_first_link",
+            "canonical_observation_id",
+            unique=True,
+            postgresql_where=text("supersedes_id IS NULL"),
+        ),
     )
 
 
