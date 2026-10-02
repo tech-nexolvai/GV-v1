@@ -2,8 +2,24 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { ChatMarkdown } from '../src/components/chat/ChatMarkdown.js';
+import { PromptSuggestions } from '../src/components/chat/PromptSuggestions.js';
 import { findingsTableMarkdown } from '../src/components/chat/findingsTable.js';
 import type { Finding } from '../src/data/types.js';
+
+const questions = ['Show all findings', 'Show FAIL findings', 'Show findings needing review',
+  'Which sheet has the failure?', 'Why did this fail?'];
+let sends = 0;
+const suggestions = renderToStaticMarkup(<PromptSuggestions prompts={questions} onSend={() => { sends += 1; }} />);
+assert.match(suggestions, /aria-expanded="false"/);
+assert.match(suggestions, /aria-controls="([^"]+)"/);
+const listId = suggestions.match(/aria-controls="([^"]+)"/)?.[1];
+assert.ok(suggestions.includes(`id="${listId}"`), 'toggle references the actual question list');
+assert.equal(suggestions.match(/class="chat-input-area__quick-btn"/g)?.length, 5);
+for (const question of questions) assert.equal(suggestions.split(question).length - 1, 1, 'no duplicated desktop/mobile prompts');
+const busySuggestions = renderToStaticMarkup(<PromptSuggestions prompts={questions} disabled onSend={() => { sends += 1; }} />);
+assert.equal(busySuggestions.match(/disabled=""/g)?.length, 5, 'every prompt respects the busy gate');
+assert.equal(renderToStaticMarkup(<PromptSuggestions prompts={[]} onSend={() => { sends += 1; }} />), '', 'no prompts, no empty disclosure');
+assert.equal(sends, 0, 'rendering never sends a question');
 
 function render(text: string): string {
   return renderToStaticMarkup(<ChatMarkdown text={text} />);

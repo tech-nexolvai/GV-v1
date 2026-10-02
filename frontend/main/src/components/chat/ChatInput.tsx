@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Send } from 'lucide-react';
+import { PromptSuggestions } from './PromptSuggestions';
 import './ChatInput.css';
 
 /** One selectable narration model, as the models endpoint returns it. */
@@ -75,22 +76,7 @@ export function ChatInput({
   return (
     <div className="chat-input-area">
       {/* Navigation suggestions, not model-generated statements. */}
-      {prompts.length > 0 && <div className="chat-input-area__quick">
-        <div className="chat-input-area__quick-header">
-          <span className="chat-input-area__quick-label">Suggested</span>
-          <div className="chat-input-area__quick-sep" />
-        </div>
-        {prompts.map(p => (
-          <button
-            key={p}
-            className="chat-input-area__quick-btn"
-            onClick={() => onSend(p)}
-            disabled={disabled}
-          >
-            {p}
-          </button>
-        ))}
-      </div>}
+      <PromptSuggestions prompts={prompts} disabled={disabled} onSend={onSend} />
 
       {/* Input row */}
       <div className="chat-input-area__row">
