@@ -35,6 +35,7 @@ import {
   isCategorical,
 } from './classificationFields';
 import { layoutChoiceDefaults } from './layoutChoices';
+import { settingMissingASource, sourceToSend, type SettingSource } from '../components/measure/settingSources';
 import './MeasurementPanel.css';
 
 /**
@@ -78,6 +79,8 @@ type Parameter = {
   rule_ids: string[];
   declared_default: string | null;
   blocked: boolean;
+  /** Where a value may come from (#827), in the order Raj's checklist gives them. */
+  sources?: SettingSource[];
 };
 type LayoutProposal = {
   value: string;
@@ -266,6 +269,9 @@ export function MeasurementPanel({
   /** Many-valued quantities, in layout order. */
   const [runs, setRuns] = useState<Record<string, string[]>>({});
   const [choices, setChoices] = useState<Record<string, string>>({});
+  /** Per setting: the source the reviewer chose, and where in it (#827). */
+  const [sourceChoices, setSourceChoices] = useState<Record<string, string>>({});
+  const [references, setReferences] = useState<Record<string, string>>({});
   const [stored, setStored] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -308,6 +314,8 @@ export function MeasurementPanel({
     reviewerEditedSinglesRef.current = freshEdits;
     setReviewerEditedSingles(freshEdits);
     setChoices({});
+    setSourceChoices({});
+    setReferences({});
     setCandidates([]);
     setSemanticTypes([]);
     setCandidateError(null);
@@ -583,6 +591,15 @@ export function MeasurementPanel({
 
   async function saveVisibleValues(): Promise<boolean> {
     if (!packageId || !needed) return false;
+    const unsourced = settingMissingASource(
+      needed.parameters.filter((p) => !p.blocked),
+      singles,
+      sourceChoices,
+    );
+    if (unsourced) {
+      setError(`Say where ${unsourced} came from before saving.`);
+      return false;
+    }
     try {
       const confirmedFromDrawing = await confirmAcceptedProposals();
 
@@ -618,11 +635,17 @@ export function MeasurementPanel({
 
       const parameters = needed.parameters
         .filter((p) => !p.blocked && (singles[p.name] ?? '').trim())
-        .map((p) => ({
-          name: p.name,
-          value: (singles[p.name] ?? '').trim(),
-          scope: (p.scope === 'run' ? 'run' : 'project') as 'run' | 'project',
-        }));
+        .map((p) => {
+          const source = sourceToSend(p, sourceChoices[p.name]);
+          const reference = (references[p.name] ?? '').trim();
+          return {
+            name: p.name,
+            value: (singles[p.name] ?? '').trim(),
+            scope: (p.scope === 'run' ? 'run' : 'project') as 'run' | 'project',
+            ...(source ? { source } : {}),
+            ...(reference ? { reference } : {}),
+          };
+        });
 
       const result = await enterMeasurements(projectId(), packageId, {
         parameters,
@@ -1339,6 +1362,17 @@ export function MeasurementPanel({
                     it, or type the value this job actually uses.
                   </p>
                 )}
+                <SettingSourceFields
+                  parameter={parameter}
+                  chosen={sourceChoices[parameter.name] ?? ''}
+                  reference={references[parameter.name] ?? ''}
+                  onChoose={(value) =>
+                    setSourceChoices((prior) => ({ ...prior, [parameter.name]: value }))
+                  }
+                  onReference={(value) =>
+                    setReferences((prior) => ({ ...prior, [parameter.name]: value }))
+                  }
+                />
               </>
             )}
           </div>
@@ -1610,5 +1644,64 @@ function LayoutProposalCrop({
       />
       <figcaption>Read from the plan view</figcaption>
     </figure>
+  );
+}
+
+/**
+ * Where a setting came from (#827). One allowed source is stated, not asked; several are a choice.
+ * The guidance line carries Q10 for the G.C / Client source: never copied from the vendor's drawing.
+ */
+function SettingSourceFields({
+  parameter,
+  chosen,
+  reference,
+  onChoose,
+  onReference,
+}: {
+  parameter: Parameter;
+  chosen: string;
+  reference: string;
+  onChoose: (value: string) => void;
+  onReference: (value: string) => void;
+}) {
+  const sources = parameter.sources ?? [];
+  if (sources.length === 0) return null;
+  const current = sources.length === 1 ? sources[0].value : chosen;
+  const selected = sources.find((source) => source.value === current);
+  return (
+    <div className="setting-source">
+      {sources.length === 1 ? (
+        <p className="enter-values__hint enter-values__hint--tight">
+          Source: <strong>{sources[0].value}</strong>
+        </p>
+      ) : (
+        <label className="setting-source__choice" htmlFor={`p-${parameter.name}-source`}>
+          Where from?
+          <select
+            className="value-input"
+            id={`p-${parameter.name}-source`}
+            value={chosen}
+            onChange={(e) => onChoose(e.target.value)}
+          >
+            <option value="">Choose…</option>
+            {sources.map((source) => (
+              <option key={source.value} value={source.value}>
+                {source.value}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {selected && <p className="enter-values__hint enter-values__hint--tight">{selected.guidance}</p>}
+      <input
+        className="value-input value-input--wide"
+        id={`p-${parameter.name}-reference`}
+        aria-label={`Where in the source ${parameter.name} is`}
+        placeholder="Reference (optional), e.g. Architect A-501, section 3"
+        maxLength={200}
+        value={reference}
+        onChange={(e) => onReference(e.target.value)}
+      />
+    </div>
   );
 }

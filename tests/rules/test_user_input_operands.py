@@ -88,11 +88,12 @@ def test_provenance_has_no_member_a_model_could_claim() -> None:
         )
 
 
-def test_provenance_is_exactly_the_three_human_or_standard_sources() -> None:
+def test_provenance_is_exactly_the_four_human_or_standard_sources() -> None:
     assert {p.value for p in Provenance} == {
         "G.C / Client",
         "Company standard",
         "Measured",
+        "Fabricator",  # #827: the stone fabricator sets the sink clearance for a job
     }
 
 
@@ -250,5 +251,8 @@ def test_user_input_is_an_operand_source_a_rule_can_name() -> None:
     assert OperandSource.USER_INPUT.value == "USER_INPUT"
 
 
-def test_human_provenances_are_the_two_a_person_can_give() -> None:
-    assert HUMAN_PROVENANCES == frozenset({Provenance.MEASURED, Provenance.GC_CLIENT})
+def test_human_provenances_are_the_three_a_person_can_give() -> None:
+    """Fabricator joined in #827: the stone fabricator is a person deciding the clearance."""
+    assert HUMAN_PROVENANCES == frozenset(
+        {Provenance.MEASURED, Provenance.GC_CLIENT, Provenance.FABRICATOR}
+    )

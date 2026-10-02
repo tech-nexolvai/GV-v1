@@ -38,7 +38,7 @@ Verification: `tests/api/test_measurements.py`
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from fractions import Fraction
 from typing import Annotated, Final
@@ -80,10 +80,12 @@ from app.schemas.measurements import (
     RequiredInputsOut,
     ReviewerEntry,
     ReviewerEntryOut,
+    SourceOut,
     StoredList,
     StoredValue,
 )
 from app.verdicts.rulebook import snapshot_store
+from rules.parameter_sources import SOURCE_GUIDANCE, allowed_sources
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
 from rules.required_inputs import allowed_categories_for, required_inputs
 from rules.schema import Quantity, Rule
@@ -168,6 +170,42 @@ def _revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRe
     return revision
 
 
+def _source(name: str, given: Provenance | None) -> Provenance:
+    """The source a setting is recorded with, or a 422 saying what the setting takes (#827).
+
+    **Refused rather than defaulted.** A setting the table does not know has no honest source, so
+    recording it as `Measured` — what every setting got before #827 — would be a guess dressed as a
+    fact. A setting that allows one source needs no answer; one that allows several needs the
+    reviewer's, because which of them is true is a fact about this job the system cannot know.
+    """
+    allowed = allowed_sources(name)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{name!r} is not a setting any published check uses, so it has no source to "
+                "record. Check the name against the form."
+            ),
+        )
+    choices = " or ".join(f"{source.value!r}" for source in allowed)
+    if given is None:
+        if len(allowed) == 1:
+            return allowed[0]
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Say where {name!r} came from: {choices}.",
+        )
+    if given not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{name!r} cannot come from {given.value!r}; it takes {choices}. "
+                f"{' '.join(SOURCE_GUIDANCE[source] for source in allowed)}"
+            ),
+        )
+    return given
+
+
 def _store(
     session: Session,
     *,
@@ -179,6 +217,7 @@ def _store(
     carry_forward: bool,
     package_revision_id: UUID | None = None,
     provenance: Provenance = Provenance.MEASURED,
+    sources: Mapping[str, tuple[Provenance, str | None]] | None = None,
 ) -> tuple[int | None, tuple[StoredValue, ...]]:
     """Persist one layer's values, reusing an identical set rather than minting a second.
 
@@ -247,6 +286,7 @@ def _store(
                 if name not in values
             }
 
+    chosen = dict(sources or {})
     parameters = ParameterSet(
         # `None` for the company layer (#812), which belongs to no project.
         project_id=None if project_id is None else str(project_id),
@@ -257,13 +297,16 @@ def _store(
             **{
                 name: ParameterValue(
                     value=Quantity(value=measurement.exact, unit=measurement.unit),
-                    # MEASURED: a person measured or read it — or COMPANY_STANDARD for the company
-                    # layer (#812). Every member of `Provenance` is a person's or the rulebook's;
-                    # none is one a model could claim, which is what keeps a model's number out of
-                    # here — not a check in this module.
-                    provenance=provenance,
+                    # The source the reviewer named for a setting (#827), checked against what the
+                    # setting allows before it reached here; otherwise `provenance` — MEASURED for a
+                    # dimension a person read, COMPANY_STANDARD for the company layer (#812). Every
+                    # member of `Provenance` is a person's or the rulebook's; none is one a model could
+                    # claim, which is what keeps a model's number out of here — not a check in this
+                    # module.
+                    provenance=chosen.get(name, (provenance, None))[0],
                     set_by=actor,
                     set_at=now,
+                    reference=chosen.get(name, (provenance, None))[1],
                 )
                 for name, measurement in values.items()
             },
@@ -289,6 +332,8 @@ def _store(
             denominator=str(measurement.exact.denominator),
             unit=measurement.unit.value,
             as_typed=typed[name],
+            source=chosen[name][0].value if name in chosen else None,
+            reference=chosen[name][1] if name in chosen else None,
         )
         for name, measurement in sorted(values.items())
     )
@@ -500,6 +545,10 @@ def read_required_inputs(
                 rule_ids=parameter.rule_ids,
                 declared_default=parameter.declared_default,
                 blocked=parameter.blocked,
+                sources=tuple(
+                    SourceOut(value=source.value, guidance=SOURCE_GUIDANCE[source])
+                    for source in allowed_sources(parameter.name)
+                ),
             )
             for parameter in needs.parameters
         ),
@@ -549,14 +598,19 @@ def enter_measurements(
     project_typed: dict[str, str] = {}
     run_values: dict[str, Measurement] = {}
     run_typed: dict[str, str] = {}
+    project_sources: dict[str, tuple[Provenance, str | None]] = {}
+    run_sources: dict[str, tuple[Provenance, str | None]] = {}
     for entry in body.parameters:
         parsed = _parse(entry.value, field=entry.name)
+        source = (_source(entry.name, entry.source), entry.reference)
         if entry.scope == "run":
             run_values[entry.name] = parsed
             run_typed[entry.name] = entry.value
+            run_sources[entry.name] = source
         else:
             project_values[entry.name] = parsed
             project_typed[entry.name] = entry.value
+            project_sources[entry.name] = source
 
     # Keyed `rule_id:name`, because two rules may each declare an input called `width` and they are
     # not the same reading. A many-valued input becomes one row per measurement, `#0` upward, in the
@@ -624,6 +678,7 @@ def enter_measurements(
         typed=project_typed,
         actor=principal.id,
         carry_forward=True,
+        sources=project_sources,
     )
     # **Run parameters and measurements share one stored set.** `rules/parameters.py` refuses two sets
     # in one layer, so they cannot be stored separately — and they belong together anyway, being the
@@ -640,6 +695,7 @@ def enter_measurements(
         # package's reviewer typed, never another package's.
         carry_forward=True,
         package_revision_id=revision.id,
+        sources=run_sources,
     )
     stored_measurements = tuple(v for v in stored_run if v.name in measurement_keys)
     stored_parameters = (

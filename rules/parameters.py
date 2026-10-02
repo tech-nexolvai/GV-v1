@@ -75,6 +75,13 @@ class Provenance(StrEnum):
     MEASURED = "Measured"
     """Someone measured it on site — e.g. the field wall-to-wall dimension."""
 
+    FABRICATOR = "Fabricator"
+    """The stone fabricator set it for this job — e.g. the sink cut-out clearance (#827).
+
+    Raj, 2026-08-25: the clearance *"changes from fabricator to fabricator. GV doesn't decide that
+    one."* Without this word, a clearance changed for one job had no honest source to record.
+    """
+
 
 class ParameterSetConflictError(Exception):
     """Raised when a `(project_id, layer, version)` would map to a second content hash.
@@ -86,6 +93,11 @@ class ParameterSetConflictError(Exception):
 
     The fix is always the same: bump the version.
     """
+
+
+#: The longest reference a setting may carry (#827): long enough for "Architect A-501, section 3,
+#: note 4", short enough that it stays a pointer to the document rather than a copy of it.
+REFERENCE_MAX_LENGTH = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +113,9 @@ class ParameterValue:
     provenance: Provenance
     set_by: str
     set_at: datetime
+    reference: str | None = None
+    """Where in that source the number is, in the reviewer's words (#827): "Architect A-501,
+    section 3", "Sink cut sheet, model XYZ". Optional, because a company standard needs none."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.value, Quantity):
@@ -114,6 +129,23 @@ class ParameterValue:
                 "set_by must name who set this parameter. An unattributed value cannot be "
                 "questioned later, which is the reason provenance is recorded at all."
             )
+        if self.reference is not None and not self.reference.strip():
+            raise ValueError(
+                "a reference, where given, must say where the number is. A blank one reads as "
+                "a citation and points nowhere."
+            )
+        if self.reference is not None and len(self.reference) > REFERENCE_MAX_LENGTH:
+            raise ValueError(
+                f"a reference is a short pointer of at most {REFERENCE_MAX_LENGTH} characters, "
+                "not a copy of the document"
+            )
+
+    @property
+    def source_text(self) -> str:
+        """The source as a reviewer reads it: `G.C / Client`, or `G.C / Client: Architect A-501`."""
+        if self.reference is None:
+            return self.provenance.value
+        return f"{self.provenance.value}: {self.reference}"
 
     def canonical_form(self) -> dict[str, str]:
         """This value as sorted primitive fields, for hashing.
@@ -122,13 +154,18 @@ class ParameterValue:
         forbids floats reaching arithmetic, and a float in the hashed bytes would mean the
         identifier itself was derived from an inexact number.
         """
-        return {
+        form = {
             "value": str(self.value.exact_value),
             "unit": self.value.unit.value,
             "provenance": self.provenance.value,
             "set_by": self.set_by,
             "set_at": self.set_at.isoformat(),
         }
+        # Only when given, so every value stored before #827 hashes exactly as it did: a set's id
+        # is the hash of its content, and a changed id would be a stored set nobody can find.
+        if self.reference is not None:
+            form["reference"] = self.reference
+        return form
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,7 +390,7 @@ class ResolvedParameter:
         head = (
             f"{self.name} = {format_inches(self.value.value.exact_value)} "
             f"{self.value.value.unit.value} "
-            f"({self.layer.value}, {self.value.provenance.value}, set by {self.value.set_by})"
+            f"({self.layer.value}, {self.value.source_text}, set by {self.value.set_by})"
         )
         if not self.shadowed:
             return head
@@ -468,7 +505,9 @@ class UserInputError(ValueError):
 
 #: Provenances that represent a human deciding or measuring something, as opposed to a value
 #: read off a drawing. Used to check that a `USER_INPUT` operand really is one.
-HUMAN_PROVENANCES: frozenset[Provenance] = frozenset({Provenance.MEASURED, Provenance.GC_CLIENT})
+HUMAN_PROVENANCES: frozenset[Provenance] = frozenset(
+    {Provenance.MEASURED, Provenance.GC_CLIENT, Provenance.FABRICATOR}
+)
 
 
 def user_input(

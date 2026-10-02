@@ -779,6 +779,22 @@
   font-size: var(--text-xs);
 }
 
+/* Where a setting came from (#827): the source and a short reference, under the value they describe. */
+.setting-source {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.setting-source__choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
 /* A value nobody may supply. Marked rather than hidden: a reviewer should be able to see that the
    check will abstain, and why, instead of hunting for a field that was never there. */
 .value-blocked {
