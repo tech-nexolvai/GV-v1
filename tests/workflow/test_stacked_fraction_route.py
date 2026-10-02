@@ -7,7 +7,8 @@ fact before Bedrock: a crop the local geometry already says must go to review is
 These tests go through `DatabaseStages` itself: a real stamp is read, a real crop is cut, and the
 stage decides whether the reader should see it.
 
-Verification for: `workflow/stages.py` (`_read_page_by_vision`, `crop_shows_a_stacked_fraction`).
+Verification for: `workflow/stages.py` (`_read_page_by_vision`, `crop_shows_a_stacked_fraction`,
+`stacked_layouts_shown`).
 """
 
 from __future__ import annotations
@@ -26,14 +27,21 @@ from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.coordinates import ImagePoint
 from evidence.polygon import Polygon
 from extraction.annotations import StackedFraction
+from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext
 from extraction.models.nova import NovaConfig, NovaInvocation, NovaInvocationOutcome, NovaRequest
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
+from tests.extraction.models.test_validation import THIRTY_NINE_AND_A_HALF_LAYOUT, THREE_QUARTERS
 from tests.extraction.test_annotations import STACKED_APPEARANCE, _appearance, _pdf, _stamp
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from units.measurement import Unit
-from workflow.stages import DatabaseStages, _vision_pre_call_refusal, crop_shows_a_stacked_fraction
+from workflow.stages import (
+    DatabaseStages,
+    _vision_pre_call_refusal,
+    crop_shows_a_stacked_fraction,
+    stacked_layouts_shown,
+)
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -205,7 +213,9 @@ def test_the_same_label_without_its_fraction_is_not(session: Session, store: Loc
 # ---------------------------------------------------------------------------
 
 
-def _fraction(left: int, top: int, right: int, bottom: int) -> StackedFraction:
+def _fraction(
+    left: int, top: int, right: int, bottom: int, layout: FractionLayout | None = None
+) -> StackedFraction:
     from uuid import uuid4
 
     from evidence.coordinates import StoredPoint
@@ -228,6 +238,7 @@ def _fraction(left: int, top: int, right: int, bottom: int) -> StackedFraction:
             ImagePoint(right, bottom),
             ImagePoint(left, bottom),
         ),
+        layout=layout,
     )
 
 
@@ -264,3 +275,23 @@ def test_stacked_crop_has_a_pre_call_refusal() -> None:
 
 def test_unstacked_crop_has_no_pre_call_refusal() -> None:
     assert _vision_pre_call_refusal((100, 100, 200, 200), []) is None
+
+
+def test_a_crop_has_the_layouts_of_the_fractions_it_shows_and_no_others() -> None:
+    """**By the same rule as whether it shows one** (#834): what a reading of the crop is checked
+    against is every stacked label in it, and nothing elsewhere on the page."""
+    (quarters,), (half,) = THREE_QUARTERS, THIRTY_NINE_AND_A_HALF_LAYOUT
+    fractions = [_fraction(190, 150, 230, 190, quarters), _fraction(300, 300, 340, 360, half)]
+
+    assert stacked_layouts_shown((100, 100, 200, 200), fractions) == (quarters,)
+    assert stacked_layouts_shown((100, 100, 400, 400), fractions) == (quarters, half)
+    assert stacked_layouts_shown((500, 500, 600, 600), fractions) == ()
+
+
+def test_a_fraction_set_in_text_shows_but_has_no_layout() -> None:
+    """Its characters are text, not paths, so nothing counts them: the crop shows a stacked
+    fraction and is refused as one, with no layout to check a reading by."""
+    text = [_fraction(120, 120, 140, 160)]
+
+    assert crop_shows_a_stacked_fraction((100, 100, 200, 200), text)
+    assert stacked_layouts_shown((100, 100, 200, 200), text) == ()

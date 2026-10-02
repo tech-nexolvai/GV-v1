@@ -13,6 +13,7 @@ import pytest
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
 from evidence.crop import encode_png
+from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.nova import (
     CLAUDE_HAIKU_4_5_EXTRACTOR,
@@ -39,6 +40,7 @@ from extraction.models.nova import (
     vision_configs_from_environment,
 )
 from extraction.models.validation import CoordinateMode, ValidationRejection
+from tests.extraction.models.test_validation import THREE_QUARTERS
 from units.measurement import Unit
 
 
@@ -90,7 +92,9 @@ def _config(*, max_attempts: int = 2) -> NovaConfig:
     )
 
 
-def _request(*, stacked_label: bool = False) -> NovaRequest:
+def _request(
+    *, stacked_label: bool = False, stacked_layouts: tuple[FractionLayout, ...] = ()
+) -> NovaRequest:
     return NovaRequest(
         candidate_id="candidate-249",
         page=3,
@@ -102,6 +106,7 @@ def _request(*, stacked_label: bool = False) -> NovaRequest:
         ),
         bound_pt=Decimal(12),
         stacked_label=stacked_label,
+        stacked_layouts=stacked_layouts,
     )
 
 
@@ -234,6 +239,7 @@ def test_drawing_text_is_sent_as_data_and_never_changes_instructions() -> None:
         ),
         bound_pt=Decimal(8),
         stacked_label=False,
+        stacked_layouts=(),
     )
     client = FakeBedrock(_tool_response(_valid_payload()))
     adapter, sink = _adapter(client)
@@ -261,6 +267,7 @@ def test_request_refuses_an_inexact_or_unsafe_context_bound(bound: object) -> No
             context=AssembledContext(nearby_text=(), nearby_geometry=()),
             bound_pt=bound,  # type: ignore[arg-type]
             stacked_label=False,
+            stacked_layouts=(),
         )
 
 
@@ -389,7 +396,28 @@ def test_request_refuses_a_stacked_label_that_is_not_a_bool() -> None:
             context=AssembledContext(nearby_text=(), nearby_geometry=()),
             bound_pt=Decimal(8),
             stacked_label=None,  # type: ignore[arg-type]
+            stacked_layouts=(),
         )
+
+
+def test_the_adapter_hands_the_requests_layouts_to_the_validator() -> None:
+    """**The link #834 adds, held as #735's was.** `28 3/4"` on a crop whose only stacked label is
+    drawn as a bare `3/4"` has a whole number the drawing does not, and is refused for it."""
+    client = FakeBedrock(_tool_response(_valid_payload(reading='28 3/4"', unit_guess="in")))
+    adapter, sink = _adapter(client)
+
+    with pytest.raises(NovaPayloadRejectedError):
+        adapter.extract(_request(stacked_label=True, stacked_layouts=THREE_QUARTERS))
+
+    assert sink.items[0].rejection_reason == "reading_contradicts_stacked_layout"
+
+
+def test_request_refuses_layouts_it_cannot_check_by() -> None:
+    """A tuple of layouts or nothing; and layouts only on a crop that says it shows a stacked label."""
+    with pytest.raises(TypeError, match="stacked_layouts"):
+        _request(stacked_label=True, stacked_layouts=[THREE_QUARTERS[0]])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="stacked label"):
+        _request(stacked_label=False, stacked_layouts=THREE_QUARTERS)
 
 
 def test_timeout_retries_within_bound_and_records_every_attempt() -> None:

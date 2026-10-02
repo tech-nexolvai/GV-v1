@@ -66,10 +66,11 @@ import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint
 from evidence.polygon import Polygon
 from extraction.geometry.containment import DimensionExtent
-from extraction.glyph_bands import FractionBarGeometry, GlyphBox, stacked_fractions
+from extraction.glyph_bands import FractionBarGeometry, FractionLayout, GlyphBox, stacked_fractions
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = [
+    "Colour",
     "DrawingLayer",
     "LayerRefusal",
     "MarkupNote",
@@ -96,6 +97,14 @@ __all__ = [
 #: to another's text. A hundredth of a point is float noise between a C float and a Decimal; anything
 #: larger is a different rectangle.
 _RECT_AGREEMENT_PT: Final = Decimal("0.01")
+
+#: How far apart a colour's red, green and blue may be, in pdfium's 0–255 steps, and the colour still
+#: be grey. The tolerance `stamp_text.drawing_ink` gives text — 0.02 of full scale — in whole steps:
+#: five is 0.0196 of 255 and six is 0.0235.
+_GREY_STEPS: Final = 5
+
+#: A colour as pdfium reports it for a page object: red, green, blue and alpha, each 0–255.
+type Colour = tuple[int, int, int, int]
 
 
 class DrawingLayer(StrEnum):
@@ -168,10 +177,39 @@ class VectorPath:
     must treat as unknown rather than as either answer."""
     filled: bool | None
     """Whether the path is filled in. `None` as for `stroked`."""
+    stroke_colour: Colour | None
+    """The colour its line is drawn in (#834), or `None` where pdfium could not read one."""
+    fill_colour: Colour | None
+    """The colour it is filled with, or `None` as for `stroke_colour`. Kept beside the stroke's
+    because a filled outline shows its fill, and some of the vendor's characters are drawn filled."""
 
     @property
     def points(self) -> tuple[tuple[Decimal, Decimal], ...]:
         return tuple(segment.point for segment in self.segments)
+
+    @property
+    def drawing_ink(self) -> bool:
+        """Whether the path is drawn only in black or grey: a drawing's ink, not a reviewer's (#834).
+
+        **The text reader's rule, for paths.** A snapshot of a sheet somebody already marked up
+        carries their markup inside the drawing, with nothing to tell it apart but its colour
+        (`extraction/stamp_text.py`). Measured on the client's sets, their vendor stamps hold red,
+        orange and yellow paths as well as black ones. Grey is equal parts of red, green and blue,
+        to within `_GREY_STEPS`; alpha is not looked at.
+
+        **The colours it is drawn with are the ones that count**: the line's if it is stroked, the
+        fill's if it is filled, and both where pdfium could not say which. A colour pdfium could not
+        read is not known to be ink, and a path drawn neither way shows no ink at all; neither is.
+        """
+        used: list[Colour | None] = []
+        if self.stroked is not False:
+            used.append(self.stroke_colour)
+        if self.filled is not False:
+            used.append(self.fill_colour)
+        return bool(used) and all(
+            colour is not None and max(colour[:3]) - min(colour[:3]) <= _GREY_STEPS
+            for colour in used
+        )
 
     def placed(
         self, placement: tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal]
@@ -192,6 +230,8 @@ class VectorPath:
             ),
             stroked=self.stroked,
             filled=self.filled,
+            stroke_colour=self.stroke_colour,
+            fill_colour=self.fill_colour,
         )
 
 
@@ -364,6 +404,13 @@ class StackedFraction:
 
     extent: Polygon
     image_extent: tuple[ImagePoint, ...]
+    layout: FractionLayout | None
+    """Where its whole number, numerator, bar, denominator and inch mark were drawn, in page space
+    (PDF points), counted from the vendor's black and grey paths (#834). What a reading of the label
+    is checked against: `extraction/models/validation.py` refuses one whose digit counts differ.
+
+    `None` for a stacked fraction set in text (#738). Its characters are not paths, so there is
+    nothing to count, and no reading of it can be checked this way."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -660,12 +707,23 @@ def _visible_annotation_rect(
     return visible
 
 
+def _colour(read: Any, page_object: Any) -> Colour | None:
+    """One of a page object's two colours through pdfium's reader for it, or `None` where it has
+    none pdfium can give as red, green and blue — a pattern, for one."""
+    red, green, blue, alpha = (ctypes.c_uint() for _ in range(4))
+    if not read(
+        page_object, ctypes.byref(red), ctypes.byref(green), ctypes.byref(blue), ctypes.byref(alpha)
+    ):
+        return None
+    return (red.value, green.value, blue.value, alpha.value)
+
+
 def _stamp_paths(opened_pdf: Any, page_index: int, annotation_index: int) -> tuple[VectorPath, ...]:
     """Every path in one annotation's appearance, in appearance space, as the file draws it.
 
-    Each keeps its segment kinds, close flags and draw mode (#756). A segment whose point pdfium
-    cannot read is skipped, exactly as before, so `VectorPath.points` is the sequence this used to
-    return.
+    Each keeps its segment kinds, close flags and draw mode (#756), and its colours (#834). A segment
+    whose point pdfium cannot read is skipped, exactly as before, so `VectorPath.points` is the
+    sequence this used to return.
 
     pypdfium2's raw bindings rather than its Python wrapper, because the wrapper has no annotation
     object accessor. The handle is closed in a `finally` so a raised refusal does not leak it.
@@ -743,6 +801,8 @@ def _stamp_paths(opened_pdf: Any, page_index: int, annotation_index: int) -> tup
                         filled=(
                             (fill_mode.value != pdfium_raw.FPDF_FILLMODE_NONE) if known else None
                         ),
+                        stroke_colour=_colour(pdfium_raw.FPDFPageObj_GetStrokeColor, page_object),
+                        fill_colour=_colour(pdfium_raw.FPDFPageObj_GetFillColor, page_object),
                     )
                 )
         return tuple(paths)
@@ -1292,24 +1352,28 @@ def _drawing_geometry(
 
     # **Every path, not `small`.** `small` is bounded by `glyph_maximum_pt`, which is tuned for the
     # dimension-line detector and excludes a full-height numerator, and the runs below have already
-    # orphaned the bar and denominator. The detector brings its own size bound.
-    fraction_boxes: tuple[GlyphBox, ...] = (
+    # orphaned the bar and denominator. The detector brings its own size bound. Each path's colour
+    # goes with it, so a reviewer's coloured markup inside the snapshot is found as part of no
+    # label's layout (#834).
+    layouts: tuple[FractionLayout, ...] = (
         ()
         if fraction_bar is None
         else stacked_fractions(
             [_bounds(path) for path in paths],
             geometry=fraction_bar,
+            ink=[vector_path.drawing_ink for vector_path in vector_paths],
             rotation_degrees=baseline_rotation_degrees,
         )
     )
+    fraction_boxes: tuple[GlyphBox, ...] = tuple(layout.box for layout in layouts)
     fractions: list[StackedFraction] = []
-    for box in fraction_boxes:
+    for layout in layouts:
         try:
-            extent, image_extent = _polygon(box, transform, document_version_id, page_index)
+            extent, image_extent = _polygon(layout.box, transform, document_version_id, page_index)
         except (TypeError, ValueError):
             # Outside the visible crop box, or a line in image space. Neither can be in a crop.
             continue
-        fractions.append(StackedFraction(extent=extent, image_extent=image_extent))
+        fractions.append(StackedFraction(extent=extent, image_extent=image_extent, layout=layout))
 
     regions: list[OutlinedTextRegion] = []
     runs, orphaned_glyphs = _glyph_runs(small, glyph_gap_pt, baseline_rotation_degrees)

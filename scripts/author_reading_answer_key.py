@@ -97,6 +97,9 @@ DEFAULT_THRESHOLDS: Final = {
     "fraction_glyph_min_pt": "1",
     "fraction_glyph_max_pt": "12",
     "fraction_proportion_max": "2.5",
+    # How far apart one stacked label's characters may be (#834). Only the layout uses it, never
+    # whether a fraction is found, so the strata below do not move with it.
+    "fraction_character_gap_pt": "4",
 }
 
 
@@ -163,6 +166,7 @@ def _candidates(pdf: bytes, *, page_index: int, thresholds: dict[str, object]) -
             glyph_min_pt=Decimal(str(thresholds["fraction_glyph_min_pt"])),
             glyph_max_pt=Decimal(str(thresholds["fraction_glyph_max_pt"])),
             proportion_max=Decimal(str(thresholds["fraction_proportion_max"])),
+            character_gap_pt=Decimal(str(thresholds["fraction_character_gap_pt"])),
         ),
     )
     plan = plan_reads(
