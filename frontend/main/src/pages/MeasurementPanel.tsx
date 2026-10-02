@@ -36,6 +36,7 @@ import {
   isCategorical,
 } from './classificationFields';
 import { layoutChoiceDefaults } from './layoutChoices';
+import { MeasurementGuidance, StoredProposalGuidance } from './MeasurementGuidance';
 import { prefillReadingValues } from './measurementDraft';
 import { appendConfirmedRunValue, confirmCandidateOnce, confirmProposalFields, newConfirmationLedger } from './measurementConfirmation';
 import './MeasurementPanel.css';
@@ -807,22 +808,7 @@ export function MeasurementPanel({
           <button type="button" className="value-secondary" onClick={() => setReload((count) => count + 1)}>Retry</button>
         </div>
       )}
-      {/* **Two sentences, not five.** Everything here was true and none of it was what a reviewer
-          opening the page needs first, which is the format of a value. The rest is the rationale
-          for the form's existence — worth saying once, in small type, under the instruction. */}
-      <header className="enter-values__head">
-        <h1>Enter measurements</h1>
-        <p>
-          Type each value with its unit — <code>25 1/2&quot;</code> or <code>648 mm</code>. A value
-          with no unit is refused rather than guessed at.
-        </p>
-        <p className="enter-values__hint">
-          Parsed exactly and compared by the rule engine; nothing is rounded and nothing is
-          inferred. Every field below comes from the {needed.rules_published} published rules, so a
-          check can only fail to decide for a reason you can see — never because a field was
-          missing.
-        </p>
-      </header>
+      <MeasurementGuidance rulesPublished={needed.rules_published} />
 
       {/* **Before any reading can fill a field on a combined sheet** (#795): a reading is used only on
           the side of the drawing it sits in, so the drawings' roles come first. Nothing renders for
@@ -854,6 +840,7 @@ export function MeasurementPanel({
           <div
             className="measure-coverage__track"
             role="progressbar"
+            aria-label="Measurement fields with a value, not reading accuracy"
             aria-valuenow={coveragePercent}
             aria-valuemin={0}
             aria-valuemax={100}
@@ -885,9 +872,7 @@ export function MeasurementPanel({
           </ul>
           {needed.still_reading && <ReadingProgress state={needed.revision_state} />}
           <p className="measure-coverage__caveat">
-            Coverage, not accuracy. A dimension the reader could not parse, or a number with no unit,
-            is not counted here at all — it was refused rather than guessed, and the field stays
-            empty for you.
+            Form coverage, not accuracy. A filled field still needs review; an empty field needs your input.
           </p>
         </div>
 
@@ -908,7 +893,7 @@ export function MeasurementPanel({
           <div className="measure-fill measure-fill--reading">
             <div className="measure-fill__text">
               <h3>
-                <ScanLine size={15} aria-hidden="true" /> Still reading, watching
+                <ScanLine size={15} aria-hidden="true" /> Reading drawings
               </h3>
               <p>
                 Current stage: <code>{needed.revision_state}</code>. This page will check again
@@ -923,27 +908,9 @@ export function MeasurementPanel({
           <div className="measure-fill measure-fill--done">
             <div className="measure-fill__text">
               <h3>
-                <Sparkles size={15} aria-hidden="true" /> Filled from the drawings
+                <Sparkles size={15} aria-hidden="true" /> AI suggestions ready to review
               </h3>
-              <p>
-                {storedProposalCount} field{storedProposalCount === 1 ? '' : 's'} below
-                {storedProposalCount === 1 ? ' was' : ' were'} filled when these drawings were read,
-                and every one passed the checks against the drawing — the right sheet, attached to a
-                real dimension line, one reading per field, and a run in the order the drawing draws
-                it. They are marked <strong>proposed by AI</strong>. Check them, edit anything that
-                is wrong, and press Save.
-              </p>
-              {unverifiedFields.size > 0 && (
-                <p className="measure-fill__caveat">
-                  <AlertTriangle size={13} aria-hidden="true" />
-                  <span>
-                    {unverifiedFields.size} of them could not be checked against the drawing&apos;s
-                    geometry: these sheets are scanned images with no dimension line-work, so
-                    nothing confirmed that each number sits on the dimension it measures. Open the
-                    crop for those before you keep them.
-                  </span>
-                </p>
-              )}
+              <StoredProposalGuidance count={storedProposalCount} unverifiedCount={unverifiedFields.size} />
             </div>
             <button
               type="button"
@@ -957,13 +924,10 @@ export function MeasurementPanel({
         ) : !attempted ? (
           <div className="measure-fill">
             <div className="measure-fill__text">
-              <h3>Fill these from the drawings</h3>
+              <h3>Suggest values from drawing readings</h3>
               <p>
-                A model proposes which reading fills which field when the drawings are read, so this
-                form normally arrives already filled. Every proposal is checked against the drawing —
-                the right sheet, attached to a real dimension line, one reading per field, and a run
-                in the order the drawing draws it — and refused as a batch if any part of it fails.
-                Nothing is saved until you press Save.
+                Ask AI to suggest where the available readings belong. Review suggestions against
+                their crops before saving, or enter values yourself. This does not run the checks.
               </p>
             </div>
             <button
@@ -1269,8 +1233,8 @@ export function MeasurementPanel({
                         already loaded and neither was on the screen. */}
                     {origin === 'empty' && (
                       <p className="value-help">
-                        Read it off the <strong>{SOURCE_LABEL[quantity.source] ?? quantity.source}</strong>
-                        {' '}and type it with its unit. Nothing was read here that could fill it.
+                        Enter the value from the <strong>{SOURCE_LABEL[quantity.source] ?? quantity.source}</strong>
+                        {' '}with its unit, or inspect an available reading before using it.
                       </p>
                     )}
                   </div>
