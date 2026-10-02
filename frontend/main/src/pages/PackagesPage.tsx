@@ -1,4 +1,4 @@
-import { Plus, ArrowRight, FileText } from 'lucide-react';
+import { Plus, ArrowRight } from 'lucide-react';
 import { listPackages, getFindingCounts, listReviewSessions } from '../api/client';
 import type { PackageStatus } from '../data/types';
 import { projectId } from '../api/config';
@@ -32,7 +32,7 @@ interface PackageRow {
  */
 async function loadRows(): Promise<PackageRow[]> {
   const project = projectId();
-  const page = { items: [{ id: "mock" }] };
+  const page = await listPackages(project);
 
   // **Deliberately not awaited alongside the packages.** With both in one `Promise.all`, a failure
   // fetching sessions rejected the whole load and the page reported that documents could not be
@@ -43,7 +43,7 @@ async function loadRows(): Promise<PackageRow[]> {
   // list showing only your own would leave somebody else's work looking unclaimed.
   let reviewerByRevision = new Map<string, string>();
   try {
-    const sessions = { items: [] };
+    const sessions = await listReviewSessions(project, { mine: false });
     // Keyed by revision, because that is what a sitting is opened against. A package whose drawings
     // were re-uploaded has a new revision, and the previous reviewer's name does not carry over.
     reviewerByRevision = new Map(
@@ -56,21 +56,25 @@ async function loadRows(): Promise<PackageRow[]> {
     reviewerByRevision = new Map();
   }
 
-  return [
-    {
-      id: "mock-pkg-1",
-      vendor: "Apex Glass & Stone",
-      project: project,
-      category: "countertop",
-      status: "AWAITING_REVIEW",
-      submitted_at: new Date().toISOString(),
-      reviewer: null,
-      pass_count: 3,
-      fail_count: 1,
-      review_count: 0,
-      missing_count: 0
-    }
-  ];
+  return Promise.all(
+    page.items.map(async (pkg) => {
+      const counts = await getFindingCounts(project, pkg.id);
+      return {
+        id: pkg.id,
+        vendor: pkg.vendor ?? '—',
+        project: pkg.project_id,
+        // No source on the wire yet; shown as absent rather than invented.
+        category: '—',
+        status: pkg.state as PackageStatus,
+        submitted_at: pkg.created_at,
+        reviewer: reviewerByRevision.get(pkg.current_revision_id) ?? null,
+        pass_count: counts.passed,
+        fail_count: counts.failed,
+        review_count: counts.review_required,
+        missing_count: counts.not_found + counts.no_applicable_rule,
+      };
+    }),
+  );
 }
 
 interface PackagesPageProps {
@@ -85,21 +89,7 @@ function formatDate(iso: string) {
 }
 
 export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) {
-  const rows = { status: 'ready', data: [
-    {
-      id: "mock-pkg-1",
-      vendor: "Apex Glass & Stone",
-      project: "mock-project",
-      category: "countertop",
-      status: "AWAITING_REVIEW",
-      submitted_at: new Date().toISOString(),
-      reviewer: null,
-      pass_count: 3,
-      fail_count: 1,
-      review_count: 0,
-      missing_count: 0
-    }
-  ] };
+  const rows = useAsync(loadRows, []);
 
   return (
     <div className="packages-page animate-fade-in">
@@ -150,22 +140,10 @@ export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) 
               </tr>
             )}
             {rows.status === 'ready' && rows.data.length === 0 && (
-  <tr>
-    <td colSpan={8} style={{ padding: 0 }}>
-      <div className="packages-table__empty-state">
-        <div className="empty-state__icon">
-          <FileText size={48} strokeWidth={1.5} />
-        </div>
-        <h2>No Documents Yet</h2>
-        <p>There are no packages uploaded to this project. Upload your first package to start reviewing architectural drawings.</p>
-        <button className="btn btn--primary btn--lg" onClick={onNewPackage}>
-          <Plus size={18} />
-          Submit Document
-        </button>
-      </div>
-    </td>
-  </tr>
-)}
+              <tr>
+                <td colSpan={8} className="packages-table__state">No documents yet.</td>
+              </tr>
+            )}
             {(rows.status === 'ready' ? rows.data : []).map((pkg, i) => (
               <tr
                 key={pkg.id}

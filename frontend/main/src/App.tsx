@@ -16,6 +16,7 @@ import './design/components.css';
 export default function App() {
   const [activePage, setActivePage] = useState<string>('review');
   const [activeSession, setActiveSession] = useState<string>('');
+  const [evidencePanel, setEvidencePanel] = useState<React.ReactNode>(null);
   const [pendingMessage, setPendingMessage] = useState<string>('');
 
   // New package form states
@@ -53,6 +54,7 @@ export default function App() {
   function handleWelcomeStart(sessionId: string) {
     setActiveSession(sessionId);
     setActivePage('review');
+    setEvidencePanel(null);
   }
 
   function handleWelcomeSend(text: string) {
@@ -81,6 +83,7 @@ export default function App() {
       // passing it here made every newly uploaded package look like a 404.
       setActiveSession(packageId);
       setActivePage('review');
+      setEvidencePanel(null);
       setArchFile(null);
       setShopFile(null);
     } catch (error) {
@@ -98,6 +101,7 @@ export default function App() {
       onNavigate={handleNavigate}
       activeSession={activeSession}
       onSelectSession={handleSelectSession}
+      evidencePanel={evidencePanel}
       onNewPackage={() => setIsModalOpen(true)}
     >
       {activePage === 'review' && !activeSession && (
@@ -112,6 +116,7 @@ export default function App() {
         <ReviewPage
           key={activeSession}
           sessionId={activeSession}
+          onEvidenceChange={setEvidencePanel}
           onBackToDocuments={() => {
             setActiveSession('');
             handleNavigate('documents');
