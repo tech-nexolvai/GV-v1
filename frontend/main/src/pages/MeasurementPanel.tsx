@@ -1068,21 +1068,6 @@ export function MeasurementPanel({
             value below.
           </p>
         )}
-        <FillerDistributionPanel
-          quantities={needed.quantities}
-          parameters={needed.parameters}
-          singles={singles}
-          runs={runs}
-          fieldWidth={fieldDimensionKey ? (singles[fieldDimensionKey] ?? '') : ''}
-          onFieldWidthChange={(value) => {
-            if (!fieldDimensionKey) return;
-            const nextEdits = new Set(reviewerEditedSinglesRef.current).add(fieldDimensionKey);
-            reviewerEditedSinglesRef.current = nextEdits;
-            setReviewerEditedSingles(nextEdits);
-            setSingles((prior) => ({ ...prior, [fieldDimensionKey]: value }));
-          }}
-          onCalculate={(request) => calculateFillerDistribution(projectId(), request)}
-        />
         {/* **Grouped by the sheet the value is read from.**
             A flat list of fourteen fields asked the reviewer to jump between two drawings on every
             row. Grouped, they fill the shop drawing's fields with the shop drawing open, which is
@@ -1288,6 +1273,24 @@ export function MeasurementPanel({
           </div>
         ))}
       </section>
+
+      {/* The calculator follows the measurements and limits it depends on. Its request and
+          reviewer-owned input handlers are unchanged; moving it never applies a proposal. */}
+      <FillerDistributionPanel
+        quantities={needed.quantities}
+        parameters={needed.parameters}
+        singles={singles}
+        runs={runs}
+        fieldWidth={fieldDimensionKey ? (singles[fieldDimensionKey] ?? '') : ''}
+        onFieldWidthChange={(value) => {
+          if (!fieldDimensionKey) return;
+          const nextEdits = new Set(reviewerEditedSinglesRef.current).add(fieldDimensionKey);
+          reviewerEditedSinglesRef.current = nextEdits;
+          setReviewerEditedSingles(nextEdits);
+          setSingles((prior) => ({ ...prior, [fieldDimensionKey]: value }));
+        }}
+        onCalculate={(request) => calculateFillerDistribution(projectId(), request)}
+      />
 
       {needed.discriminators.length > 0 && (
         <section className="enter-values__section">

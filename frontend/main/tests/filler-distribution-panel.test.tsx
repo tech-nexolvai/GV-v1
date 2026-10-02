@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
 
-import { FillerDistributionPanel } from '../src/components/measure/FillerDistributionPanel.js';
+import { DistributionMissingInputs, FillerDistributionPanel } from '../src/components/measure/FillerDistributionPanel.js';
 import {
   buildFillerDistributionRequest,
   CABINET_BOUND_NAMES,
@@ -129,6 +130,28 @@ const html = renderToStaticMarkup(
 );
 
 assert.match(html, /Site field width/);
+assert.match(html, /<details class="measure-guidance"><summary>What this calculation does/);
+assert.doesNotMatch(html, /<details[^>]* open/);
+assert.match(html, /It does not save your measurements or run the review checks/);
+assert.match(html, /Needed before calculating/);
+assert.match(html, /<button[^>]*disabled=""[^>]*>/, 'missing cabinet types still disable calculation');
+const missingItems = ['architectural cabinet widths', 'architectural filler widths', 'a type for every cabinet', 'filler maximum', 'single door cab width min', '<unknown future input>'];
+const snapshot = JSON.stringify(missingItems);
+const checklist = renderToStaticMarkup(<DistributionMissingInputs missing={missingItems} />);
+assert.equal(JSON.stringify(missingItems), snapshot);
+assert.equal((checklist.match(/<li\b/g) ?? []).length, missingItems.length, 'no missing requirement dropped or duplicated');
+for (const item of missingItems.slice(0, -1)) assert.ok(checklist.includes(item));
+assert.match(checklist, /&lt;unknown future input&gt;/, 'future missing requirements remain visible and escaped');
+assert.match(checklist, /Architectural measurements/);
+assert.match(checklist, /Cabinet types in this panel/);
+assert.match(checklist, /Settings \/ required inputs/);
+assert.match(checklist, /Single-door cabinet: minimum width/);
+assert.match(checklist, /Maximum filler width/);
+assert.match(checklist, /unavailable or blocked/);
+assert.equal(renderToStaticMarkup(<DistributionMissingInputs missing={[]} />), '');
+const panelSource = readFileSync('src/pages/MeasurementPanel.tsx', 'utf8');
+assert.ok(panelSource.indexOf('<FillerDistributionPanel') > panelSource.indexOf('<h2>Settings</h2>'), 'inputs precede dependent calculator');
+assert.equal((panelSource.match(/<FillerDistributionPanel/g) ?? []).length, 1);
 // One classification control per cabinet, not one "which cabinet moves" dropdown.
 assert.match(html, /reviewer classification/);
 assert.match(html, /distribution-cabinet-type-0/);
