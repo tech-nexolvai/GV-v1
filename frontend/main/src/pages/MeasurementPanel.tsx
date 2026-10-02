@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { SetStateAction } from 'react';
 import {
   AlertTriangle,
   ChevronRight,
@@ -35,6 +36,8 @@ import {
   isCategorical,
 } from './classificationFields';
 import { layoutChoiceDefaults } from './layoutChoices';
+import { prefillReadingValues } from './measurementDraft';
+import { appendConfirmedRunValue, confirmCandidateOnce, confirmProposalFields, newConfirmationLedger } from './measurementConfirmation';
 import './MeasurementPanel.css';
 
 /**
@@ -128,6 +131,12 @@ type Needed = {
   still_reading: boolean;
 };
 
+type MeasurementDraft = {
+  singles: Record<string, string>;
+  runs: Record<string, string[]>;
+  aiFilled: Record<string, string[]>;
+};
+
 const REQUIRED_INPUTS_POLL_MS = 2000;
 
 /** Which sheet a measurement is read from, in the words a reviewer uses. */
@@ -177,8 +186,8 @@ function ReadingProgress({ state }: { state: string }) {
         <span className="reading__bar" />
       </div>
       <p className="reading__note">
-        This usually takes about a minute. The page is watching and will fill itself in when the
-        reading finishes — you do not need to reload.
+        Waiting for the reader. Available readings update here automatically; larger drawing sets
+        can take longer. The timer shows time on this screen, not a completion estimate.
       </p>
     </div>
   );
@@ -252,19 +261,28 @@ export function MeasurementPanel({
   packageId: selectedPackageId,
   onDone,
   onChoosePackage,
+  onChecksRequested,
 }: {
   packageId?: string;
   onDone?: (packageId: string) => void;
   onChoosePackage?: () => void;
+  onChecksRequested?: () => void;
 }) {
   const [needed, setNeeded] = useState<Needed | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [packageId, setPackageId] = useState<string | null>(null);
-  /** Single-valued quantities and parameters, keyed by quantity key or parameter name. */
-  const [singles, setSingles] = useState<Record<string, string>>({});
+  // Values and proposal IDs update together, so a refreshed proposal never loses its provenance.
+  const [{ singles, runs, aiFilled }, setDraft] = useState<MeasurementDraft>({ singles: {}, runs: {}, aiFilled: {} });
+  function setSingles(value: SetStateAction<Record<string, string>>) {
+    setDraft(prior => ({ ...prior, singles: typeof value === 'function' ? value(prior.singles) : value }));
+  }
+  function setRuns(value: SetStateAction<Record<string, string[]>>) {
+    setDraft(prior => ({ ...prior, runs: typeof value === 'function' ? value(prior.runs) : value }));
+  }
+  function setAiFilled(value: SetStateAction<Record<string, string[]>>) {
+    setDraft(prior => ({ ...prior, aiFilled: typeof value === 'function' ? value(prior.aiFilled) : value }));
+  }
   const [reviewerEditedSingles, setReviewerEditedSingles] = useState<Set<string>>(() => new Set());
-  /** Many-valued quantities, in layout order. */
-  const [runs, setRuns] = useState<Record<string, string[]>>({});
   const [choices, setChoices] = useState<Record<string, string>>({});
   const [stored, setStored] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -291,31 +309,35 @@ export function MeasurementPanel({
    * confirmation is the only thing standing between a proposal and a verdict. The mark is dropped
    * the moment they type in the field: it is theirs from then on.
    */
-  const [aiFilled, setAiFilled] = useState<Record<string, string[]>>({});
   const reviewerEditedSinglesRef = useRef<Set<string>>(new Set());
+  const loadedPackageRef = useRef<string | undefined>(undefined);
+  const confirmationLedger = useRef(newConfirmationLedger());
+  const appliedConfirmations = useRef(new Set<string>());
 
   useEffect(() => {
     let cancelled = false;
     let poll: ReturnType<typeof window.setTimeout> | undefined;
     // A package switch must never leave the prior package's fields enabled while the new contract is
     // loading. The reviewer could otherwise submit a value against the wrong drawing pair.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPackageId('');
-    setNeeded(null);
-    setRuns({});
-    setSingles({});
-    const freshEdits = new Set<string>();
-    reviewerEditedSinglesRef.current = freshEdits;
-    setReviewerEditedSingles(freshEdits);
-    setChoices({});
-    setCandidates([]);
-    setSemanticTypes([]);
-    setCandidateError(null);
-    setLoadError(null);
-    setProposalSteps([]);
-    setProposal(null);
-    setProposalError(null);
-    setAiFilled({});
+    if (loadedPackageRef.current !== selectedPackageId) {
+      loadedPackageRef.current = selectedPackageId;
+      confirmationLedger.current = newConfirmationLedger();
+      appliedConfirmations.current = new Set();
+      setPackageId('');
+      setNeeded(null);
+      setDraft({ singles: {}, runs: {}, aiFilled: {} });
+      const freshEdits = new Set<string>();
+      reviewerEditedSinglesRef.current = freshEdits;
+      setReviewerEditedSingles(freshEdits);
+      setChoices({});
+      setCandidates([]);
+      setSemanticTypes([]);
+      setCandidateError(null);
+      setLoadError(null);
+      setProposalSteps([]);
+      setProposal(null);
+      setProposalError(null);
+    }
     const applyRequiredInputs = (required: Needed) => {
       const confirmedByKey = required.confirmed_readings.reduce<Record<string, string[]>>(
         (grouped, reading) => ({
@@ -324,54 +346,27 @@ export function MeasurementPanel({
         }),
         {},
       );
-      const nextMarks: Record<string, string[]> = {};
-
-      setSingles((prior) => {
-        const next = { ...prior };
-        for (const quantity of required.quantities.filter((q) => !q.many)) {
+      const edited = new Set(reviewerEditedSinglesRef.current);
+      setDraft((prior) => {
+        const next = { singles: { ...prior.singles }, runs: { ...prior.runs }, aiFilled: { ...prior.aiFilled } };
+        for (const quantity of required.quantities) {
+          const current = quantity.many ? (next.runs[quantity.key] ?? ['']) : [next.singles[quantity.key] ?? ''];
           const confirmed = confirmedByKey[quantity.key] ?? [];
-          if (
-            confirmed.length === 1 &&
-            !reviewerEditedSinglesRef.current.has(quantity.key) &&
-            !(next[quantity.key] ?? '').trim()
-          ) {
-            next[quantity.key] = confirmed[0];
+          const proposal = required.proposed_readings?.find((field) => field.field_key === quantity.key);
+          const merged = prefillReadingValues(
+            current, edited.has(quantity.key), confirmed,
+            proposal?.values.map((reading) => reading.value) ?? [], quantity.many,
+          );
+          if (quantity.many) next.runs[quantity.key] = merged.values;
+          else next.singles[quantity.key] = merged.values[0] ?? '';
+          if (merged.origin === 'proposed' && proposal) {
+            next.aiFilled[quantity.key] = proposal.values.map((reading) => reading.candidate_id);
+          } else if (merged.origin === 'confirmed') {
+            delete next.aiFilled[quantity.key];
           }
         }
-        for (const field of required.proposed_readings ?? []) {
-          if (field.many) continue;
-          const values = field.values.map((reading) => reading.value);
-          if (!values.length) continue;
-          if (confirmedByKey[field.field_key]?.length) continue;
-          if (reviewerEditedSinglesRef.current.has(field.field_key)) continue;
-          if ((next[field.field_key] ?? '').trim()) continue;
-          next[field.field_key] = values[0];
-          nextMarks[field.field_key] = field.values.map((reading) => reading.candidate_id);
-        }
         return next;
       });
-
-      setRuns((prior) => {
-        const next = { ...prior };
-        for (const quantity of required.quantities.filter((q) => q.many)) {
-          const existing = next[quantity.key] ?? [''];
-          if (existing.some((value) => value.trim())) continue;
-          const confirmed = (confirmedByKey[quantity.key] ?? []).filter((value) => value.trim());
-          next[quantity.key] = confirmed.length ? confirmed : [''];
-        }
-        for (const field of required.proposed_readings ?? []) {
-          if (!field.many) continue;
-          const values = field.values.map((reading) => reading.value).filter((value) => value.trim());
-          if (!values.length) continue;
-          if (confirmedByKey[field.field_key]?.length) continue;
-          if ((next[field.field_key] ?? []).some((value) => value.trim())) continue;
-          next[field.field_key] = values;
-          nextMarks[field.field_key] = field.values.map((reading) => reading.candidate_id);
-        }
-        return next;
-      });
-
-      setAiFilled((prior) => ({ ...prior, ...nextMarks }));
       setChoices((prior) => {
         const defaults = layoutChoiceDefaults(required.discriminators);
         if (Object.keys(defaults).length === 0) return prior;
@@ -391,6 +386,7 @@ export function MeasurementPanel({
         const required = fields as unknown as Needed;
         setPackageId(selectedPackageId);
         setNeeded(required);
+        setLoadError(null);
         setCandidates(read.candidates);
         if (includeVocabulary) {
           setSemanticTypes(vocabulary);
@@ -412,26 +408,6 @@ export function MeasurementPanel({
     };
     // Re-fetch only when the selected package changes, never on a keystroke within its form.
   }, [selectedPackageId, reload]);
-
-  /**
-   * Go back and look while the drawings are still being read.
-   *
-   * **The form loaded once, and reading a drawing takes the better part of a minute.** Opening
-   * Measure straight after uploading therefore showed "nothing was read off these drawings" — and
-   * kept showing it, because nothing went back to look. The readings landed thirty seconds later
-   * and the page never knew. Reported three times as "the AI is not filling anything"; the values
-   * were in the database the whole time.
-   *
-   * Only while the pipeline says it is still working, so a package it has finished with is not
-   * polled for ever. Five seconds because that is fast enough that nobody sits watching an empty
-   * form, and slow enough that a reviewer reading the page is not re-fetching it twelve times a
-   * minute.
-   */
-  useEffect(() => {
-    if (!needed?.still_reading) return;
-    const timer = window.setInterval(() => setReload((count) => count + 1), 5000);
-    return () => window.clearInterval(timer);
-  }, [needed?.still_reading]);
 
   if (!selectedPackageId) {
     return (
@@ -458,6 +434,7 @@ export function MeasurementPanel({
 
   async function confirmFromMeasure(candidate: CandidateOut, semanticType: string) {
     if (!packageId || !needed || !candidate.source || !candidate.value) return;
+    if (appliedConfirmations.current.has(candidate.candidate_id)) return;
     const target = needed.quantities.find(
       (quantity) => quantity.key === `${candidate.source}:${semanticType}`,
     );
@@ -471,12 +448,13 @@ export function MeasurementPanel({
     setConfirming(candidate.candidate_id);
     setCandidateError(null);
     try {
-      const result = await confirmCandidate(
-        projectId(),
-        packageId,
-        candidate.candidate_id,
-        semanticType,
+      const result = await confirmCandidateOnce(
+        confirmationLedger.current, candidate.candidate_id, semanticType,
+        (id, type) => confirmCandidate(projectId(), packageId, id, type),
       );
+      // Concurrent clicks share one request and apply its persisted reading only once.
+      if (appliedConfirmations.current.has(candidate.candidate_id)) return;
+      appliedConfirmations.current.add(candidate.candidate_id);
       const key = `${candidate.source}:${result.semantic_type}`;
       const reading: ConfirmedReading = {
         key,
@@ -495,10 +473,10 @@ export function MeasurementPanel({
       );
       if (target.many) {
         setRuns((prior) => {
-          const current = (prior[target.key] ?? []).filter((value) => value.trim());
           return {
             ...prior,
-            [target.key]: current.includes(reading.value) ? current : [...current, reading.value],
+            [target.key]: appendConfirmedRunValue(prior[target.key] ?? [], reading.value,
+              candidate.candidate_id, aiFilled[target.key]),
           };
         });
       } else {
@@ -561,24 +539,15 @@ export function MeasurementPanel({
    */
   async function confirmAcceptedProposals(): Promise<Set<string>> {
     if (!packageId || !needed) return new Set();
-    const confirmed = new Set<string>();
-    for (const [key, candidateIds] of Object.entries(aiFilled)) {
+    const fields = Object.entries(aiFilled).flatMap(([key, candidateIds]) => {
       const quantity = needed.quantities.find((item) => item.key === key);
-      if (!quantity || candidateIds.length === 0) continue;
-      try {
-        // In order: a many-valued field's readings are a run, and the evidence path orders a run by
-        // the time its readings were confirmed.
-        for (const candidateId of candidateIds) {
-          await confirmCandidate(projectId(), packageId, candidateId, quantity.semantic_type);
-        }
-        confirmed.add(key);
-      } catch {
-        // **A confirmation that fails costs the crop, never the value.** The number is still what
-        // the reviewer accepted, so it goes down the typed path as before and the check still runs.
-        // Losing a value because its provenance could not be recorded would be the worse trade.
-      }
-    }
-    return confirmed;
+      if (!quantity || candidateIds.length === 0) return [];
+      return [{ key, candidateIds, semanticType: quantity.semantic_type }];
+    });
+    // A partial failure stops the save. Successful receipts survive retries, because the backend
+    // rejects duplicate confirmations; a 409 or lost response is never guessed to be success.
+    return confirmProposalFields(fields, confirmationLedger.current,
+      (id, type) => confirmCandidate(projectId(), packageId, id, type));
   }
 
   async function saveVisibleValues(): Promise<boolean> {
@@ -690,7 +659,7 @@ export function MeasurementPanel({
       }
       setSingles((prior) => ({ ...prior, ...filledSingles }));
       setRuns((prior) => ({ ...prior, ...filledRuns }));
-      setAiFilled(marks);
+      setAiFilled((prior) => ({ ...prior, ...marks }));
     } catch (caught) {
       setProposalError(
         caught instanceof ApiError ? caught.message : 'The proposal could not be requested.',
@@ -702,6 +671,9 @@ export function MeasurementPanel({
 
   /** A reviewer typing in a field makes it theirs, so the proposal mark comes off. */
   function releaseField(key: string) {
+    const edited = new Set(reviewerEditedSinglesRef.current).add(key);
+    reviewerEditedSinglesRef.current = edited;
+    setReviewerEditedSingles(edited);
     setAiFilled((prior) => {
       if (!(key in prior)) return prior;
       const next = { ...prior };
@@ -733,6 +705,7 @@ export function MeasurementPanel({
       if (!(await saveVisibleValues())) return;
       const response = await requestChecks(projectId(), packageId, choices);
       setAccepted(response.accepted_id);
+      onChecksRequested?.();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : String(caught));
     } finally {
@@ -740,11 +713,12 @@ export function MeasurementPanel({
     }
   }
 
-  if (loadError) {
+  if (loadError && !needed) {
     return (
       <div className="enter-values">
         <div className="enter-values__error" role="alert">
           {loadError}
+          <button type="button" className="value-secondary" onClick={() => setReload((count) => count + 1)}>Try again</button>
         </div>
       </div>
     );
@@ -827,6 +801,12 @@ export function MeasurementPanel({
 
   return (
     <div className="enter-values">
+      {loadError && (
+        <div className="enter-values__error" role="alert">
+          New readings could not be loaded. Your entries are retained. {loadError}
+          <button type="button" className="value-secondary" onClick={() => setReload((count) => count + 1)}>Retry</button>
+        </div>
+      )}
       {/* **Two sentences, not five.** Everything here was true and none of it was what a reviewer
           opening the page needs first, which is the format of a value. The rest is the rationale
           for the form's existence — worth saying once, in small type, under the instruction. */}

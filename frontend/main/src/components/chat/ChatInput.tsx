@@ -12,6 +12,7 @@ interface ChatInputProps {
   onSend: (text: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  prompts?: readonly string[];
   /** The allow-listed narration models. Empty (or one) hides the picker — there is nothing to choose. */
   models?: ChatModelOption[];
   /** The model id currently selected, or '' for the deployment default. */
@@ -38,6 +39,7 @@ export function ChatInput({
   models = [],
   selectedModel = '',
   onSelectModel,
+  prompts = QUICK_PROMPTS,
 }: ChatInputProps) {
   const [value, setValue] = useState('');
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -72,13 +74,13 @@ export function ChatInput({
 
   return (
     <div className="chat-input-area">
-      {/* Quick prompts — labelled as AI suggestions */}
-      <div className="chat-input-area__quick">
+      {/* Navigation suggestions, not model-generated statements. */}
+      {prompts.length > 0 && <div className="chat-input-area__quick">
         <div className="chat-input-area__quick-header">
           <span className="chat-input-area__quick-label">Suggested</span>
           <div className="chat-input-area__quick-sep" />
         </div>
-        {QUICK_PROMPTS.map(p => (
+        {prompts.map(p => (
           <button
             key={p}
             className="chat-input-area__quick-btn"
@@ -88,7 +90,7 @@ export function ChatInput({
             {p}
           </button>
         ))}
-      </div>
+      </div>}
 
       {/* Input row */}
       <div className="chat-input-area__row">

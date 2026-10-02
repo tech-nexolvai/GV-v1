@@ -1,272 +1,106 @@
-import { useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AppShell } from './components/shell/AppShell';
 import { ReviewPage } from './pages/ReviewPage';
 import { PackagesPage } from './pages/PackagesPage';
 import { WelcomePage } from './pages/WelcomePage';
-
 import { CompanySettingsPage } from './pages/CompanySettingsPage';
 import { RulebookPage } from './pages/RulebookPage';
 import { UsagePage } from './pages/UsagePage';
-import { createPackage } from './api/upload';
-import type { UploadProgress } from './api/upload';
-import { projectId } from './api/config';
-import { X, UploadCloud, Loader2 } from 'lucide-react';
+import { useRoute } from './app/route';
+import type { Page } from './app/route';
+import { useTheme } from './app/theme';
 import './design/components.css';
 
+const PAGE_TITLES: Record<Page, string> = {
+  review: 'New review',
+  documents: 'Documents',
+  rulebook: 'Rulebook',
+  settings: 'Company settings',
+  usage: 'Usage',
+};
+
 export default function App() {
-  const [activePage, setActivePage] = useState<string>('review');
-  const [activeSession, setActiveSession] = useState<string>('');
-  const [evidencePanel, setEvidencePanel] = useState<React.ReactNode>(null);
-  const [pendingMessage, setPendingMessage] = useState<string>('');
+  const [route, navigate] = useRoute();
+  const [theme, toggleTheme] = useTheme();
+  // Evidence belongs to the package that requested it, including during browser Back/Forward.
+  const [evidencePanel, setEvidencePanel] = useState<{ route: typeof route; packageId: string; panel: React.ReactNode } | null>(null);
+  const [evidenceDismissKey, setEvidenceDismissKey] = useState(0);
+  // The vendor of the review on screen, reported by the review once its package has loaded.
+  const [reviewTitle, setReviewTitle] = useState<{ packageId: string; title: string } | null>(null);
+  // Bumped after a new review is created, so the sidebar lists it without a reload.
+  const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
 
-  // New package form states
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [vendor, setVendor] = useState('Apex Glass & Stone');
-  const [archFile, setArchFile] = useState<File | null>(null);
-  const [shopFile, setShopFile] = useState<File | null>(null);
-  const archInputRef = useRef<HTMLInputElement>(null);
-  const shopInputRef = useRef<HTMLInputElement>(null);
-  const [uploadStep, setUploadStep] = useState('');
-  const [uploadError, setUploadError] = useState<string | null>(null);
+  const packageId = route.page === 'review' ? route.packageId : null;
+  const title =
+    packageId !== null
+      ? reviewTitle?.packageId === packageId
+        ? reviewTitle.title
+        : 'Review'
+      : PAGE_TITLES[route.page];
 
-  const [isSimulating, setIsSimulating] = useState(false);
+  useEffect(() => {
+    document.title = `${title} · GV Review`;
+  }, [title]);
 
-  function handleNavigate(page: string) {
-    setActivePage(page);
+  function go(page: Page) {
     setEvidencePanel(null);
+    navigate({ page, packageId: null });
   }
 
-  function handleSelectSession(id: string) {
-    setActiveSession(id);
-    setActivePage('review');
+  function openReview(id: string) {
     setEvidencePanel(null);
+    navigate({ page: 'review', packageId: id });
   }
 
-  function handleOpenReview(packageId: string) {
-    // ReviewPage fetches by package id, so that is what the active selection carries. Sessions are
-    // listed in the sidebar from the API; there is no local table to look one up in.
-    setActiveSession(packageId);
-    setActivePage('review');
+  function newReview() {
     setEvidencePanel(null);
-  }
-
-  /** Called from WelcomePage — picks a session then queues the message */
-  function handleWelcomeStart(sessionId: string) {
-    setActiveSession(sessionId);
-    setActivePage('review');
-    setEvidencePanel(null);
-  }
-
-  function handleWelcomeSend(text: string) {
-    setPendingMessage(text);
-  }
-
-  async function triggerSubmitPipeline() {
-    setIsSimulating(true);
-    setUploadError(null);
-
-    try {
-      // The real thing: create the package, hash each file in the browser, register it, PUT the
-      // bytes straight to storage against the returned ticket, and confirm. The API never carries
-      // the file — `src/api/upload.ts` explains why.
-      const { packageId } = await createPackage(
-        projectId(),
-        { vendor, architectural: archFile, shop: shopFile },
-        (progress: UploadProgress) => {
-          setUploadStep(progress.file ? `${progress.step} ${progress.file}` : progress.step);
-        },
-      );
-
-      setIsSimulating(false);
-      setIsModalOpen(false);
-      // ReviewPage loads package-scoped endpoints. A review-session id is a different resource and
-      // passing it here made every newly uploaded package look like a 404.
-      setActiveSession(packageId);
-      setActivePage('review');
-      setEvidencePanel(null);
-      setArchFile(null);
-      setShopFile(null);
-    } catch (error) {
-      // Left on screen with the modal open. Closing it and returning to the list would look exactly
-      // like a successful upload, and the reviewer would go looking for a document that does not
-      // exist. Nothing has been recorded — the API confirms bytes before it writes anything.
-      setIsSimulating(false);
-      setUploadError(error instanceof Error ? error.message : String(error));
-    }
+    navigate({ page: 'review', packageId: null });
   }
 
   return (
     <AppShell
-      activePage={activePage}
-      onNavigate={handleNavigate}
-      activeSession={activeSession}
-      onSelectSession={handleSelectSession}
-      evidencePanel={evidencePanel}
-      onNewPackage={() => setIsModalOpen(true)}
+      title={title}
+      activePage={route.page}
+      activePackage={packageId}
+      theme={theme}
+      sidebarRefreshKey={sidebarRefreshKey}
+      evidencePanel={evidencePanel?.route === route && evidencePanel.packageId === packageId ? evidencePanel.panel : null}
+      onCloseEvidence={() => { setEvidencePanel(null); setEvidenceDismissKey((key) => key + 1); }}
+      onNavigate={go}
+      onOpenPackage={openReview}
+      onNewReview={newReview}
+      onToggleTheme={toggleTheme}
     >
-      {activePage === 'review' && !activeSession && (
+      {route.page === 'review' && packageId === null && (
         <WelcomePage
-          onStartSession={handleWelcomeStart}
-          onSend={handleWelcomeSend}
-          onNewPackage={() => setIsModalOpen(true)}
-        />
-      )}
-
-      {activePage === 'review' && activeSession && (
-        <ReviewPage
-          key={activeSession}
-          sessionId={activeSession}
-          onEvidenceChange={setEvidencePanel}
-          onBackToDocuments={() => {
-            setActiveSession('');
-            handleNavigate('documents');
+          onCreated={(id) => {
+            setSidebarRefreshKey((key) => key + 1);
+            openReview(id);
           }}
-          initialMessage={pendingMessage}
-          onMessageConsumed={() => setPendingMessage('')}
+          onOpenReview={openReview}
         />
       )}
 
-      {activePage === 'documents' && (
-        <PackagesPage
-          onOpenReview={handleOpenReview}
-          onNewPackage={() => setIsModalOpen(true)}
+      {route.page === 'review' && packageId !== null && (
+        <ReviewPage
+          key={packageId}
+          sessionId={packageId}
+          evidenceDismissKey={evidenceDismissKey}
+          onEvidenceChange={(panel) => setEvidencePanel(panel ? { route, packageId, panel } : null)}
+          onTitleChange={(vendor) => setReviewTitle({ packageId, title: vendor })}
+          onBackToDocuments={() => go('documents')}
         />
       )}
 
-      {activePage === 'rulebook' && <RulebookPage />}
-
-      {activePage === 'settings' && <CompanySettingsPage />}
-
-      {activePage === 'usage' && <UsagePage />}
-
-      {/* ── NEW PACKAGE UPLOAD MODAL ───────────────────────── */}
-      {isModalOpen && (
-        <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="modal">
-            <div className="modal__header">
-              <span className="modal__title">
-                {isSimulating ? 'Submitting document set' : 'Submit New Document'}
-              </span>
-              {!isSimulating && (
-                <button
-                  className="btn btn--subtle btn--icon btn--sm"
-                  onClick={() => setIsModalOpen(false)}
-                  aria-label="Close modal"
-                >
-                  <X size={15} />
-                </button>
-              )}
-            </div>
-
-            {uploadError && !isSimulating && (
-              /* Shown with the modal still open. Closing it would look exactly like a successful
-                 upload, and the reviewer would go looking for a document that does not exist.
-                 Nothing has been recorded — the API confirms the bytes before it writes anything. */
-              <div className="modal__body upload-error" role="alert">
-                <strong>The document set was not submitted.</strong>
-                <p>{uploadError}</p>
-              </div>
-            )}
-            {isSimulating ? (
-              /* The actual transfer state, supplied by the upload path — never a staged imitation. */
-              <div className="modal__body pipeline-overlay">
-                <Loader2 className="pipeline-loader" size={32} />
-                <p className="pipeline-step-live">{uploadStep || 'Starting document submission…'}</p>
-                <p className="pipeline-step__meta">The review opens when both uploaded PDFs are confirmed.</p>
-              </div>
-            ) : (
-              /* Package Submission Form */
-              <>
-                <div className="modal__body">
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label className="form-group__label">Vendor Name</label>
-                      <input
-                        className="input"
-                        value={vendor}
-                        onChange={e => setVendor(e.target.value)}
-                        placeholder="e.g. Apex Glass & Stone"
-                      />
-                    </div>
-                </div>
-
-                  <div className="form-group">
-                    <label className="form-group__label">Upload Drawings (PDF only)</label>
-                    <div className="upload-zone-wrapper">
-                      {/* Real file inputs. The zones used to set a filename string on click, which
-                          meant the pipeline had nothing to hash, upload or confirm. */}
-                      <input
-                        ref={archInputRef}
-                        type="file"
-                        accept="application/pdf"
-                        hidden
-                        onChange={(e) => setArchFile(e.target.files?.[0] ?? null)}
-                      />
-                      <input
-                        ref={shopInputRef}
-                        type="file"
-                        accept="application/pdf"
-                        hidden
-                        onChange={(e) => setShopFile(e.target.files?.[0] ?? null)}
-                      />
-
-                      {/* Arch upload zone */}
-                      <div
-                        className={`upload-zone ${archFile?.name ? 'upload-zone--has-file' : ''}`}
-                        onClick={() => archInputRef.current?.click()}
-
-                        role="button"
-                        aria-label="Upload Architectural Drawing Set"
-                      >
-                        <UploadCloud size={20} className="text-muted" />
-                        <span className="upload-zone__title">Architectural Set</span>
-                        {archFile?.name ? (
-                          <span className="upload-zone__filename">{archFile?.name}</span>
-                        ) : (
-                          <span className="upload-zone__desc">Click to select PDF</span>
-                        )}
-                      </div>
-
-                      {/* Shop drawing upload zone */}
-                      <div
-                        className={`upload-zone ${shopFile?.name ? 'upload-zone--has-file' : ''}`}
-                        onClick={() => shopInputRef.current?.click()}
-                        
-                        role="button"
-                        aria-label="Upload Shop Drawing Set"
-                      >
-                        <UploadCloud size={20} className="text-muted" />
-                        <span className="upload-zone__title">Shop Drawings</span>
-                        {shopFile?.name ? (
-                          <span className="upload-zone__filename">{shopFile?.name}</span>
-                        ) : (
-                          <span className="upload-zone__desc">Click to select PDF</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="modal__footer">
-                  <button
-                    className="btn btn--subtle"
-                    onClick={() => setIsModalOpen(false)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="btn btn--action"
-                    disabled={!vendor || !archFile?.name || !shopFile?.name}
-                    onClick={triggerSubmitPipeline}
-                  >
-                    Run Review Pipeline
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+      {route.page === 'documents' && (
+        <PackagesPage onOpenReview={openReview} onNewPackage={newReview} />
       )}
+
+      {route.page === 'rulebook' && <RulebookPage />}
+
+      {route.page === 'settings' && <CompanySettingsPage />}
+
+      {route.page === 'usage' && <UsagePage />}
     </AppShell>
   );
 }

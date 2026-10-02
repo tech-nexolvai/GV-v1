@@ -260,7 +260,7 @@
 .finding-card__trace-op { display: flex; gap: var(--space-3); align-items: baseline; }
 .finding-card__trace-key { color: var(--text-muted); min-width: 100px; flex-shrink: 0; }
 .finding-card__trace-val { color: var(--text-primary); }
-.finding-card__trace-source { color: var(--text-faint); font-size: 10px; margin-left: auto; }
+.finding-card__trace-source { color: var(--text-faint); font-size: var(--text-xs); margin-left: auto; }
 
 .finding-card__trace-comparison {
   margin-top: var(--space-1);

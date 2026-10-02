@@ -21,6 +21,7 @@
  */
 
 import { openReviewSession } from './client';
+import { PartialUploadError } from './uploadState';
 
 const BASE = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '');
 
@@ -124,7 +125,7 @@ export async function uploadDocument(
   });
   if (!written.ok) {
     throw new Error(
-      `The drawing could not be written to storage (${written.status}). Nothing has been recorded.`,
+      `The drawing could not be written to storage (${written.status}). Its registration may already exist; no saved records were removed.`,
     );
   }
 
@@ -162,6 +163,12 @@ export async function createPackage(
   input: NewPackage,
   onProgress?: (progress: UploadProgress) => void,
 ): Promise<{ packageId: string; reviewSessionId: string | null }> {
+  // Reject unreadable files before creating server records. This is validation, not a reading.
+  onProgress?.({ step: 'Validating PDF files' });
+  const { countPdfPages } = await import('./pdf');
+  for (const file of [input.architectural, input.shop]) {
+    if (file) await countPdfPages(file);
+  }
   onProgress?.({ step: 'Creating document set' });
   const created = await post<{ id: string; current_revision_id: string }>(
     `/projects/${projectId}/packages`,
@@ -172,17 +179,18 @@ export async function createPackage(
   if (input.architectural) files.push([input.architectural, 'architectural']);
   if (input.shop) files.push([input.shop, 'shop']);
 
-  for (const [file, kind] of files) {
-    await uploadDocument(projectId, created.id, file, kind, onProgress);
+  try {
+    for (const [file, kind] of files) {
+      await uploadDocument(projectId, created.id, file, kind, onProgress);
+    }
+    if (input.architectural && input.shop) {
+      onProgress?.({ step: 'Queuing AI reading' });
+      await startExtraction(projectId, created.id);
+    }
+    onProgress?.({ step: 'Opening review' });
+    const session = await openReviewSession(projectId, created.id, created.current_revision_id);
+    return { packageId: created.id, reviewSessionId: session.id };
+  } catch (error) {
+    throw new PartialUploadError(created.id, error);
   }
-
-  if (input.architectural && input.shop) {
-    onProgress?.({ step: 'Queuing AI reading' });
-    await startExtraction(projectId, created.id);
-  }
-
-  onProgress?.({ step: 'Opening review' });
-  const session = await openReviewSession(projectId, created.id, created.current_revision_id);
-
-  return { packageId: created.id, reviewSessionId: session.id };
 }

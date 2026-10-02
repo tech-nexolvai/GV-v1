@@ -20,12 +20,13 @@ import {
   downloadRedline,
   downloadReport,
 } from '../api/client';
-import type { ReviewSession, ReviewerChatReply } from '../api/client';
+import type { PackageDetail, ReviewSession, ReviewerChatReply } from '../api/client';
 import { explanationUnavailable, factsMessage, replyMessage } from '../components/chat/chatReply';
 import { MeasurementPanel } from './MeasurementPanel';
 import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
-import { useAsync } from '../api/useAsync';
+import type { AsyncState } from '../api/useAsync';
+import { checksFinished, isReviewWorking, reviewOverview, reviewActionCounts } from './reviewState';
 import { ArrowLeft, FileText, CheckSquare, Download, Info } from 'lucide-react';
 import './ReviewPage.css';
 
@@ -33,37 +34,34 @@ interface ReviewPageProps {
   sessionId: string;
   onEvidenceChange: (panel: React.ReactNode) => void;
   onBackToDocuments: () => void;
+  /** Reports the vendor once the package has loaded, for the header title. */
+  onTitleChange?: (title: string) => void;
+  evidenceDismissKey?: number;
   initialMessage?: string;
   onMessageConsumed?: () => void;
 }
 
-export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, initialMessage, onMessageConsumed }: ReviewPageProps) {
+export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onTitleChange, evidenceDismissKey, initialMessage, onMessageConsumed }: ReviewPageProps) {
   // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
   const packageId = sessionId;
 
-  const remote = useAsync(async () => {
-    const project = projectId();
-    const [detail, found, sessions] = await Promise.all([
-      getPackage(project, packageId),
-      loadFindings(project, packageId),
-      listReviewSessions(project),
-    ]);
-
-    // The reviewer's own open sitting over *this* revision, if they already have one. A session is
-    // scoped to a revision rather than a package because a re-upload is a different set of drawings,
-    // and decisions taken against the old one do not carry over to it.
-    const open = sessions.items.find(
-      (item) =>
-        item.package_revision_id === detail.current_revision_id && item.completed_at === null,
-    );
-    return { detail, found, session: open ?? null };
-  }, [packageId]);
+  const [remote, setRemote] = useState<AsyncState<{
+    detail: PackageDetail;
+    found: Finding[];
+    session: ReviewSession | null;
+    sessionError: string | null;
+  }>>({ status: 'loading' });
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [waitingForChecks, setWaitingForChecks] = useState(false);
+  const pendingChecks = useRef<{ previousIds: string[]; sawWorking: boolean } | null>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const selectedFindingRef = useRef<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [activeTab, setActiveTab] = useState<'chat' | 'measure'>('chat');
+  const [measurementOpened, setMeasurementOpened] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [session, setSession] = useState<ReviewSession | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -74,8 +72,68 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
   const [selectedModel, setSelectedModel] = useState('');
 
   useEffect(() => {
+    selectedFindingRef.current = null;
+    // The shell's Escape/outside-close also cancels an evidence request still in flight.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedFindingId(null);
+    return () => {
+      // A response from the previous package must not reopen evidence after navigation.
+      selectedFindingRef.current = null;
+    };
+  }, [evidenceDismissKey]);
+
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function refresh() {
+      try {
+        const project = projectId();
+        const [detail, found, sessionResult] = await Promise.all([
+          getPackage(project, packageId),
+          loadFindings(project, packageId),
+          listReviewSessions(project).then(
+            (data) => ({ data, error: null }),
+            (error: unknown) => ({ data: null, error: error instanceof Error ? error.message : String(error) }),
+          ),
+        ]);
+        if (!active) return;
+        const open = sessionResult.data?.items.find((item) =>
+          item.package_revision_id === detail.current_revision_id && item.completed_at === null,
+        );
+        setRemote({ status: 'ready', data: {
+          detail, found, session: open ?? null, sessionError: sessionResult.error,
+        } });
+        setRefreshError(null);
+        const pending = pendingChecks.current;
+        if (pending) {
+          pending.sawWorking ||= isReviewWorking(detail.state);
+          if (checksFinished(detail.state, pending.previousIds, found, pending.sawWorking)) {
+            pendingChecks.current = null;
+            setWaitingForChecks(false);
+          }
+        }
+        if (isReviewWorking(detail.state) || pendingChecks.current !== null) {
+          timer = setTimeout(() => void refresh(), 2500);
+        }
+      } catch (error) {
+        if (!active) return;
+        const failure = error instanceof Error ? error : new Error(String(error));
+        setRemote((current) => current.status === 'ready' ? current : { status: 'error', error: failure });
+        setRefreshError(failure.message);
+      }
+    }
+    void refresh();
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, [packageId, refreshKey]);
+
+  function openMeasurements() {
+    setMeasurementOpened(true);
+    setActiveTab('measure');
+  }
+
+  useEffect(() => {
     let cancelled = false;
-    getChatModels(projectId(), packageId)
+    Promise.resolve().then(() => getChatModels(projectId(), packageId))
       .then((available) => {
         if (cancelled) return;
         setChatModels(available.models);
@@ -92,6 +150,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
   }, [packageId]);
   const isLoading = remote.status === 'loading';
 
+  // The header shows the vendor, which is what a reviewer calls a document set.
+  const loadedVendor = remote.status === 'ready' ? remote.data.detail.vendor ?? 'Untitled document set' : null;
+  useEffect(() => {
+    if (loadedVendor !== null) onTitleChange?.(loadedVendor);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadedVendor]);
+
   // The fetched findings are the starting point; reviewer actions below are applied on top, so they
   // are not thrown away every time this re-renders.
   useEffect(() => {
@@ -100,7 +165,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
       // optimistically update it, so deriving it directly from `remote` would erase reviewer work.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setFindings(remote.data.found);
-      setSession(remote.data.session);
+      if (remote.data.sessionError === null) setSession(remote.data.session);
     }
   }, [remote]);
 
@@ -150,8 +215,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
         <h2>This review could not be loaded</h2>
         <p>{remote.error.message}</p>
         <p>
-          Nothing here has been checked. Do not read an empty list as a package with no findings.
+          The recorded results are unavailable. Do not treat this as an empty or passing review.
         </p>
+        <button className="btn btn--primary" onClick={() => setRefreshKey((key) => key + 1)}>Try again</button>
+        <button className="btn btn--ghost" onClick={onBackToDocuments}>Back to documents</button>
       </div>
     );
   }
@@ -196,6 +263,11 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
               factsShown = true;
               const shown = factsMessage(facts, source, replyId, now());
               setMessages(prev => prev.filter(m => !m.is_typing).concat(shown));
+            },
+            onStage: (stage) => {
+              setMessages(prev => prev.map(message => message.id === replyId || message.is_typing
+                ? { ...message, streamStage: stage }
+                : message));
             },
           },
           selectedModel || undefined,
@@ -352,9 +424,14 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
       // Through `evidence`, which is where the chain puts the observation an operand came from —
       // and `null` there is meaningful: an operand a reviewer supplied has no observation behind it,
       // so there is nothing to correct rather than something to correct blindly.
-      const observationId =
-        chain.operands?.find(operand => operand.evidence !== null)?.evidence
-          ?.canonical_observation_id ?? null;
+      const observationIds = [...new Set(chain.operands.flatMap(operand =>
+        operand.evidence ? [operand.evidence.canonical_observation_id] : [],
+      ))];
+      if (observationIds.length > 1) {
+        setActionError('This finding uses several drawing readings. Inspect its evidence and correct the specific measurement in Measurements before running the checks again.');
+        return;
+      }
+      const observationId = observationIds[0] ?? null;
       if (observationId === null) {
         setActionError(
           'This finding does not name a reading that can be corrected — it has no authoritative ' +
@@ -420,15 +497,17 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
    * the server check is what makes that a rule rather than a hint.
    */
   async function handleSignOff() {
-    if (session === null || isSigningOff) return;
+    if (isSigningOff) return;
     setActionError(null);
     setIsSigningOff(true);
     try {
-      await approvePackage(projectId(), session.id);
+      const current = await ensureSession();
+      await approvePackage(projectId(), current.id);
+      setApproved(true);
       // Re-read rather than assume: approval completes the sitting server-side, and the package
       // state a moment ago is not the one the download button should be reading.
-      setSession(await completeSessionState(session.id));
-      setApproved(true);
+      // Approval already succeeded. An optional session refresh must not report that write as failed.
+      setSession(await completeSessionState(current.id).catch(() => current));
     } catch (error) {
       setActionError(
         `Sign-off did not complete — ${error instanceof Error ? error.message : String(error)}`,
@@ -484,7 +563,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
     project: remote.status === 'ready' ? remote.data.detail.project_id : '',
     revision: remote.status === 'ready' ? remote.data.detail.current_revision_number : null,
   };
-  const actioned = findings.filter(f => f.reviewer_action !== null).length;
+  const { reviewed: actioned, total: requiringReview } = reviewActionCounts(findings);
   const needsAction = findings.filter(f =>
     f.reviewer_action === null &&
     f.outcome !== 'PASS' &&
@@ -519,7 +598,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
             </div>
           </div>
           <StatusBadge status={pkg.status} />
-          <ReviewProgress status={pkg.status} />
+          <details className="review-page__workflow">
+            <summary>Review steps</summary>
+            <ReviewProgress status={pkg.status} />
+          </details>
         </div>
 
         <div className="review-page__header-right">
@@ -540,14 +622,14 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
           </span>
           <div className="review-page__progress">
             <span className="review-page__progress-text">
-              {actioned} / {findings.filter(f => f.outcome !== 'PASS' && f.outcome !== 'NO_APPLICABLE_RULE').length} reviewed
+              {actioned} / {requiringReview} reviewed
             </span>
             <div className="review-page__progress-bar">
               <div
                 className="review-page__progress-fill"
                 style={{
                   width: `${findings.length > 0
-                    ? (actioned / Math.max(1, findings.filter(f => f.outcome !== 'PASS' && f.outcome !== 'NO_APPLICABLE_RULE').length)) * 100
+                    ? (actioned / Math.max(1, requiringReview)) * 100
                     : 0}%`
                 }}
               />
@@ -564,8 +646,11 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
               isSigningOff ||
               findings.length === 0 ||
               needsAction > 0 ||
-              session === null ||
-              session.completed_at !== null
+              approved ||
+              pkg.status === 'APPROVED' ||
+              session?.completed_at != null ||
+              waitingForChecks ||
+              isReviewWorking(pkg.status)
             }
             data-tooltip={
               findings.length === 0
@@ -574,15 +659,15 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
                 ? needsAction === 1
                   ? '1 finding still needs review'
                   : `${needsAction} findings still need review`
-                : session === null
-                ? 'Review a finding first — that is what opens the sitting this signs off'
-                : session.completed_at !== null
+                : waitingForChecks || isReviewWorking(pkg.status)
+                ? 'Wait for the current checks to finish'
+                : approved || pkg.status === 'APPROVED' || session?.completed_at != null
                 ? 'This sitting is already signed off'
                 : 'Sign off this package'
             }
           >
             <CheckSquare size={14} />
-            {session?.completed_at != null ? 'Signed off' : isSigningOff ? 'Signing off…' : 'Sign Off'}
+            {approved || pkg.status === 'APPROVED' || session?.completed_at != null ? 'Signed off' : isSigningOff ? 'Signing off…' : 'Sign Off'}
           </button>
 
           {/* The handoff. Shown once the package is approved, because that is what the endpoint
@@ -632,6 +717,24 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
         </div>
       )}
 
+      {remote.status === 'ready' && remote.data.sessionError && (
+        <div className="review-page__notice" role="status">
+          Your saved review session could not be loaded. The recorded findings remain available.
+          <button className="btn btn--ghost btn--sm" onClick={() => setRefreshKey((key) => key + 1)}>Retry</button>
+        </div>
+      )}
+      {refreshError && (
+        <div className="review-page__notice" role="alert">
+          Updates could not be loaded: {refreshError}. Showing the last recorded results.
+          <button className="btn btn--ghost btn--sm" onClick={() => setRefreshKey((key) => key + 1)}>Retry</button>
+        </div>
+      )}
+      {waitingForChecks && (
+        <div className="review-page__notice" role="status">
+          Checks requested. Watching for updated results; any findings below are from the last recorded run.
+        </div>
+      )}
+
       {/* View Tabs */}
       <div className="review-page__tabs">
         <button 
@@ -642,17 +745,26 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
         </button>
         <button 
           className={`btn ${activeTab === 'measure' ? 'btn--primary' : 'btn--ghost'}`}
-          onClick={() => setActiveTab('measure')}
+          onClick={openMeasurements}
         >
           Measurements
+        </button>
+        <button className="btn btn--ghost" onClick={() => setRefreshKey((key) => key + 1)}>
+          Refresh results
         </button>
       </div>
 
       {activeTab === 'chat' ? (
         <>
+          {findings.length === 0 && (
+            <div className="review-page__notice">
+              <button className="btn btn--primary" onClick={openMeasurements}>Open measurements</button>
+            </div>
+          )}
           {/* Messages */}
           <ChatThread
-            messages={messages.map(m => ({
+            messages={[reviewOverview(packageId, pkg.status, findings,
+              remote.status === 'ready' ? remote.data.detail.created_at : ''), ...messages].map(m => ({
               ...m,
               findings: m.findings?.map(f => findings.find(rf => rf.id === f.id) ?? f),
             }))}
@@ -666,18 +778,30 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
           {/* Input */}
           <ChatInput
             onSend={handleSend}
+            prompts={findings.length === 0 ? [] : undefined}
             disabled={isProcessing}
             models={chatModels}
             selectedModel={selectedModel}
             onSelectModel={setSelectedModel}
           />
         </>
-      ) : (
-        <div className="review-page__measure-container">
+      ) : null}
+      {measurementOpened && (
+        <div className="review-page__measure-container" hidden={activeTab !== 'measure'}>
           <MeasurementPanel
             packageId={packageId}
             onChoosePackage={onBackToDocuments}
             onDone={() => setActiveTab('chat')}
+            onChecksRequested={() => {
+              selectedFindingRef.current = null;
+              setSelectedFindingId(null);
+              onEvidenceChange(null);
+              pendingChecks.current = { previousIds: findings.map((finding) => finding.id), sawWorking: false };
+              setWaitingForChecks(true);
+              setApproved(false);
+              setActiveTab('chat');
+              setRefreshKey((key) => key + 1);
+            }}
           />
         </div>
       )}

@@ -6,7 +6,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: var(--space-4) var(--space-6) var(--space-5);
+  padding: var(--space-4) max(var(--space-6), calc((100% - var(--chat-max-width)) / 2)) var(--space-5);
   flex-shrink: 0;
 }
 
@@ -53,18 +53,16 @@
   transition:
     background-color var(--duration-base) var(--ease-out),
     border-color var(--duration-base) var(--ease-out),
-    color var(--duration-base) var(--ease-out),
-    transform var(--duration-micro) var(--ease-out);
+    color var(--duration-base) var(--ease-out);
 }
 
 .chat-input-area__quick-btn:hover:not(:disabled) {
   border-color: var(--gv-crimson-border);
   background: var(--gv-crimson-dim-2);
   color: var(--gv-crimson);
-  transform: translateY(-1px);
 }
 
-.chat-input-area__quick-btn:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.chat-input-area__quick-btn:active:not(:disabled) { background: var(--bg-active); }
 
 .chat-input-area__quick-btn:disabled {
   opacity: 0.45;
@@ -79,7 +77,7 @@
   gap: var(--space-2);
   padding: var(--space-2);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-composer);
   background: var(--bg-base);
   box-shadow: var(--elevation-1);
   transition:
@@ -108,7 +106,7 @@
   outline: none;
   background: transparent;
   font-family: inherit;
-  font-size: var(--text-md);
+  font-size: var(--text-lg);
   line-height: var(--leading-normal);
   color: var(--text-primary);
   padding: var(--space-2) var(--space-3);
@@ -121,10 +119,10 @@
 /* ── Send ─────────────────────────────────────────────────── */
 
 .chat-input-area__send {
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   padding: 0;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-full);
   flex-shrink: 0;
 }
 
@@ -132,14 +130,6 @@
    for something to send, so the eye is not re-finding it after every message. */
 .chat-input-area__send--disabled {
   opacity: 0.32;
-}
-
-.chat-input-area__send:not(:disabled) svg {
-  transition: transform var(--duration-base) var(--ease-emphasis);
-}
-
-.chat-input-area__send:not(:disabled):hover svg {
-  transform: translate(1px, -1px) scale(1.08);
 }
 
 /* ── Disclosure ───────────────────────────────────────────── */

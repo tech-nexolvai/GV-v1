@@ -132,26 +132,10 @@
 .anim-spin      { animation: gv-spin 900ms linear infinite; }
 
 /* ============================================================
-   STAGGER
-
-   Children enter in sequence rather than together. `--stagger` is 45ms: fast enough that a list of
-   nine findings is fully on screen in under half a second, slow enough to read as a cascade.
-
-   Capped at ten. Past that the last item waits long enough to look broken, so everything from the
-   eleventh on shares the tenth delay.
+   Lists appear together. Keep the utility name for existing screens without delaying content.
    ============================================================ */
 
-.stagger > * { animation: gv-rise var(--duration-slow) var(--ease-emphasis) both; }
-.stagger > *:nth-child(1)  { animation-delay: calc(var(--stagger) * 0); }
-.stagger > *:nth-child(2)  { animation-delay: calc(var(--stagger) * 1); }
-.stagger > *:nth-child(3)  { animation-delay: calc(var(--stagger) * 2); }
-.stagger > *:nth-child(4)  { animation-delay: calc(var(--stagger) * 3); }
-.stagger > *:nth-child(5)  { animation-delay: calc(var(--stagger) * 4); }
-.stagger > *:nth-child(6)  { animation-delay: calc(var(--stagger) * 5); }
-.stagger > *:nth-child(7)  { animation-delay: calc(var(--stagger) * 6); }
-.stagger > *:nth-child(8)  { animation-delay: calc(var(--stagger) * 7); }
-.stagger > *:nth-child(9)  { animation-delay: calc(var(--stagger) * 8); }
-.stagger > *:nth-child(n+10) { animation-delay: calc(var(--stagger) * 9); }
+.stagger > * { animation: none; }
 
 /* ============================================================
    ACCORDION
@@ -207,8 +191,10 @@
     color var(--duration-base) var(--ease-out);
 }
 
-.interactive:hover  { transform: translateY(-1px); }
-.interactive:active { transform: translateY(0) scale(0.985); transition-duration: var(--duration-micro); }
+/* V3: no lift. A control answers with its fill (each component sets its own hover background);
+   a surface that jumps on hover reads as a toy next to a ChatGPT-style shell. */
+.interactive:hover  { transform: none; }
+.interactive:active { transform: none; }
 .interactive:focus-visible {
   outline: none;
   box-shadow: var(--ring-focus);
@@ -222,7 +208,7 @@
   position: absolute;
   inset: -2px;
   border-radius: inherit;
-  border: 1.5px solid var(--gv-crimson);
+  border: 1.5px solid var(--text-primary);
   animation: gv-ping 520ms var(--ease-out) forwards;
   pointer-events: none;
 }
@@ -238,13 +224,15 @@
    ============================================================ */
 
 .page-transition {
-  animation: gv-page-enter var(--duration-slow) var(--ease-emphasis) both;
   height: 100%;
 }
 
+/* Opacity only. A transform here — even one that ends at zero — makes this wrapper the containing
+   block for anything `position: fixed` inside it, so a dialog opened from a page would be trapped
+   inside the page instead of covering the window. */
 @keyframes gv-page-enter {
-  from { opacity: 0; transform: translate3d(0, 6px, 0) scale(0.995); }
-  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* ============================================================
