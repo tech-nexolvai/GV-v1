@@ -389,6 +389,19 @@
   margin-top: 2px;
 }
 
+.distribution-panel__missing > div { min-width: 0; flex: 1; }
+.distribution-panel__missing p { margin: var(--space-3) 0 0; }
+.distribution-panel__requirements {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: var(--space-3) var(--space-5);
+  margin-top: var(--space-3);
+  overflow-wrap: anywhere;
+}
+.distribution-panel__requirements h3 { font-size: inherit; margin: 0 0 var(--space-2); }
+.distribution-panel__requirements ul { margin: 0; padding-left: var(--space-4); }
+.distribution-panel__requirements li + li { margin-top: var(--space-1); }
+
 .distribution-result {
   display: grid;
   gap: var(--space-3);

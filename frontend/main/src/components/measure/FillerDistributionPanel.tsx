@@ -19,6 +19,21 @@ import { buildElevation } from '../output/elevation.js';
 const DESIGN_CABINET_KEY = 'ARCH:cabinet_width';
 const DESIGN_FILLER_KEY = 'ARCH:filler_width';
 
+// Display labels only. Keep the original requirement in the title and never alter request keys.
+const REQUIREMENT_LABELS: Readonly<Record<string, string>> = {
+  'architectural cabinet widths': 'Cabinet widths from the architectural drawing',
+  'architectural filler widths': 'Filler widths from the architectural drawing',
+  'a type for every cabinet': 'Choose a type for every cabinet',
+  'filler minimum': 'Minimum filler width',
+  'filler maximum': 'Maximum filler width',
+  'single door cab width min': 'Single-door cabinet: minimum width',
+  'single door cab width max': 'Single-door cabinet: maximum width',
+  'double door cab width min': 'Double-door cabinet: minimum width',
+  'double door cab width max': 'Double-door cabinet: maximum width',
+  'drawer cab width min': 'Drawer cabinet: minimum width',
+  'drawer cab width max': 'Drawer cabinet: maximum width',
+};
+
 function valueRun(
   quantities: DistributionQuantity[],
   singles: Record<string, string>,
@@ -114,13 +129,22 @@ export function FillerDistributionPanel({
         <div>
           <h2 id="distribution-heading">Filler distribution</h2>
           <p className="enter-values__hint">
-            Enter the site field width and classify each cabinet. Equipment cabinets keep their
-            width; the difference the fillers cannot absorb is divided equally between the regular
-            ones. The proposal below is returned by the backend calculation.
+            Use the architectural widths and job limits entered above. Add the site width and
+            choose a type for each cabinet, then calculate a proposal.
           </p>
         </div>
         <Calculator size={18} aria-hidden="true" />
       </div>
+
+      <details className="measure-guidance">
+        <summary>What this calculation does</summary>
+        <p>
+          Equipment cabinets keep their width. The difference the fillers cannot absorb is divided
+          equally between the regular cabinets, within the supplied limits. The server calculates
+          the proposal; missing limits are never invented.
+        </p>
+        <p>This previews a proposal. It does not save your measurements or run the review checks.</p>
+      </details>
 
       <div className="distribution-panel__grid">
         <label className="value-field distribution-panel__field" htmlFor="distribution-field-width">
@@ -172,12 +196,7 @@ export function FillerDistributionPanel({
         ))}
       </div>
 
-      {built.missing.length > 0 && (
-        <p className="distribution-panel__missing" role="status">
-          <AlertTriangle size={14} aria-hidden="true" />
-          Enter {built.missing.join(', ')} above before asking for a distribution.
-        </p>
-      )}
+      <DistributionMissingInputs missing={built.missing} />
 
       <button
         type="button"
@@ -222,6 +241,35 @@ export function FillerDistributionPanel({
         </div>
       )}
     </section>
+  );
+}
+
+/** Group existing missing-input messages for display only; never change request eligibility. */
+export function DistributionMissingInputs({ missing }: { missing: string[] }) {
+  if (missing.length === 0) return null;
+  const groups = [
+    { title: 'Architectural measurements', items: missing.filter((item) => item === 'architectural cabinet widths' || item === 'architectural filler widths') },
+    { title: 'Cabinet types in this panel', items: missing.filter((item) => item === 'a type for every cabinet') },
+    { title: 'Settings / required inputs', items: missing.filter((item) => item !== 'architectural cabinet widths' && item !== 'architectural filler widths' && item !== 'a type for every cabinet') },
+  ];
+  return (
+    <div className="distribution-panel__missing" role="status">
+      <AlertTriangle size={14} aria-hidden="true" />
+      <div>
+        <strong>Needed before calculating</strong>
+        <div className="distribution-panel__requirements">
+          {groups.filter((group) => group.items.length > 0).map((group) => (
+            <div key={group.title}>
+              <h3>{group.title}</h3>
+              <ul>{group.items.map((item, index) => (
+                <li key={`${index}-${item}`} title={item}>{REQUIREMENT_LABELS[item] ?? item}</li>
+              ))}</ul>
+            </div>
+          ))}
+        </div>
+        <p>Review the fields above. If a required value is unavailable or blocked, leave it unresolved — do not guess.</p>
+      </div>
+    </div>
   );
 }
 
