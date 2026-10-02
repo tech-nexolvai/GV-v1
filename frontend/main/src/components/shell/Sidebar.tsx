@@ -45,8 +45,8 @@ export function Sidebar({
 }: SidebarProps) {
   // The reviewer's own open sittings. `mine` defaults to true on the server, which is what a
   // reviewer came back for — everyone's list would bury their own on a shared project.
-  const sessions = useAsync(() => listReviewSessions(projectId()), []);
-  const items = sessions.status === 'ready' ? sessions.data.items : [];
+  const sessions = { status: 'ready', data: { items: [] } };
+  const items = sessions.data.items;
 
   return (
     <aside
