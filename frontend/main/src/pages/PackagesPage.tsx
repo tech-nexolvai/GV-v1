@@ -4,7 +4,7 @@ import { listPackages, getFindingCounts, listReviewSessions } from '../api/clien
 import { projectId } from '../api/config';
 import { StatusBadge } from '../components/ui/Badge';
 import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
-import { documentListReducer, documentNavigation, initialDocumentList, loadDocumentRows } from './documentRows';
+import { documentListReducer, documentNavigation, restoreDocumentList, loadDocumentRows } from './documentRows';
 import { DocumentResults } from './DocumentResults';
 import '../components/ui/PageFrame.css';
 import './PackagesPage.css';
@@ -21,6 +21,9 @@ function loadRows(cursor?: string) {
 interface PackagesPageProps {
   onOpenReview: (packageId: string) => void;
   onNewPackage: () => void;
+  initialCursors?: readonly string[];
+  positionNotice?: string | null;
+  onPositionChange?: (cursors: readonly string[]) => void;
 }
 
 function formatDate(iso: string) {
@@ -29,17 +32,22 @@ function formatDate(iso: string) {
   });
 }
 
-export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) {
+export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], positionNotice, onPositionChange }: PackagesPageProps) {
   const [attempt, setAttempt] = useState(0);
-  const [state, dispatch] = useReducer(documentListReducer, initialDocumentList);
+  const [state, dispatch] = useReducer(documentListReducer, initialCursors, restoreDocumentList);
   useEffect(() => {
     let current = true;
     Promise.resolve().then(() => loadRows(state.requestedTrail.at(-1))).then(
-      (data) => { if (current) dispatch({ type: 'loaded', data }); },
+      (data) => {
+        if (current) {
+          dispatch({ type: 'loaded', data });
+          onPositionChange?.(state.requestedTrail.slice(1) as string[]);
+        }
+      },
       (error: unknown) => { if (current) dispatch({ type: 'failed', error: error instanceof Error ? error.message : String(error) }); },
     );
     return () => { current = false; };
-  }, [attempt, state.requestedTrail]);
+  }, [attempt, state.requestedTrail, onPositionChange]);
   function retry() {
     dispatch({ type: 'loading' });
     setAttempt((value) => value + 1);
@@ -54,8 +62,10 @@ export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) 
       actions={<button className="btn btn--action" onClick={onNewPackage}>
         <Plus size={14} aria-hidden="true" /> New Document
       </button>}>
+      {positionNotice && <p className="page-frame__state" role="status">{positionNotice}</p>}
       {state.loading && <p className="page-frame__state" role="status">{data ? navigation.changingPage ? `Loading page ${state.requestedTrail.length}… Page ${navigation.page} remains visible.` : 'Refreshing document details… Existing rows remain available.' : 'Loading documents…'}</p>}
       {!data && state.error && <PageLoadError title="Documents could not be loaded" message={state.error} onRetry={retry} />}
+      {!data && state.error && state.requestedTrail.length > 1 && <button type="button" className="btn btn--ghost" onClick={() => dispatch({ type: 'first' })}>Start from first page</button>}
       {data && (partial || state.error) && <aside className="packages-page__notice" aria-label="Document data availability">
         <div role="status">
           <strong>{state.error ? navigation.changingPage ? `Could not load page ${state.requestedTrail.length}. Still showing page ${navigation.page}.` : 'Refresh failed. Showing the last loaded documents.' : 'Documents loaded; some details are unavailable.'}</strong>
@@ -73,6 +83,7 @@ export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) 
       {data && <nav className="packages-page__pagination" aria-label="Document pages">
         <p role="status" aria-atomic="true">Page {navigation.page} · {data.rows.length} document{data.rows.length === 1 ? '' : 's'} on this page</p>
         <div>
+          {navigation.page > 1 && <button type="button" className="btn btn--ghost" disabled={state.loading} onClick={() => dispatch({ type: 'first' })}>First page</button>}
           <button type="button" className="btn btn--ghost" disabled={navigation.previousDisabled} onClick={() => dispatch({ type: 'previous' })}>Previous page</button>
           <button type="button" className="btn btn--ghost" disabled={navigation.nextDisabled} onClick={() => dispatch({ type: 'next' })}>Next page</button>
         </div>
