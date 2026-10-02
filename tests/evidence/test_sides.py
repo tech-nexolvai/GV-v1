@@ -349,6 +349,35 @@ def test_a_one_drawing_page_in_a_two_pdf_package_takes_the_uploads_side_until_co
     assert _side(session, revision, '24"') is DocumentRole.SHOP
 
 
+def test_a_settings_citation_never_takes_the_uploads_side(
+    session: Session, store: LocalStore
+) -> None:
+    """**#849.** The same unconfirmed drawing as above, asked for a setting's citation. Outcome:
+    refused until a person confirms it; once confirmed, its confirmed side."""
+    revision = _read(session, store, kind="architectural", also="shop")
+    _one_drawing(session, revision, None)
+    reading = _reading(session, revision, '24"')
+
+    side = ReadingSides(session).of(reading, confirmed_views_only=True)
+    assert isinstance(side, SideRefusal)
+    assert side.reason is SideRefusalReason.VIEW_ROLE_UNCONFIRMED
+
+    (view,) = session.execute(select(DrawingView)).scalars().all()
+    confirm_view_role(session, view=view, role=ViewRole.ARCH, actor="a reviewer")
+    assert ReadingSides(session).of(reading, confirmed_views_only=True) is DocumentRole.ARCH
+
+
+def test_a_page_with_no_drawings_keeps_its_kind_for_a_settings_citation(
+    session: Session, store: LocalStore
+) -> None:
+    """It has no drawing for anybody to confirm. Outcome: the upload's kind, flag or no flag."""
+    revision = _read(session, store, kind="architectural")
+
+    side = ReadingSides(session).of(_reading(session, revision, '24"'), confirmed_views_only=True)
+
+    assert side is DocumentRole.ARCH
+
+
 def test_a_confirmation_wins_over_the_uploads_side(session: Session, store: LocalStore) -> None:
     revision = _read(session, store, kind="shop", also="architectural")
     _one_drawing(session, revision, ViewRole.ARCH)
