@@ -6,6 +6,7 @@ import { StatusBadge } from '../components/ui/Badge';
 import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
 import { documentListReducer, documentNavigation, restoreDocumentList, loadDocumentRows } from './documentRows';
 import { DocumentResults } from './DocumentResults';
+import { DocumentRecord, DocumentDetails } from './DocumentRecord';
 import '../components/ui/PageFrame.css';
 import './PackagesPage.css';
 
@@ -58,7 +59,7 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
 
   return (
     <PageFrame title="Documents" className="packages-page"
-      description="Review submissions from vendors against the architectural set and rulebook."
+      description="Open a drawing review to check its findings and evidence, then continue reviewing."
       actions={<button className="btn btn--action" onClick={onNewPackage}>
         <Plus size={14} aria-hidden="true" /> New Document
       </button>}>
@@ -90,33 +91,30 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
       </nav>}
       {navigation.repeatedCursor && <p role="alert" className="page-frame__state">The server repeated a page cursor. Further navigation is unavailable; existing documents remain visible.</p>}
       {data && data.rows.length === 0 && <p className="page-frame__state">{navigation.page === 1 ? 'No documents yet. Start a review with New Document.' : 'No documents on this page. Use Previous page to return to the earlier results.'}</p>}
-      {data && data.rows.length > 0 && <div className="packages-table-wrap" role="region" aria-label="Documents table; scroll horizontally for all columns" tabIndex={0}>
-        <table className="packages-table">
-          <thead><tr>
-            <th scope="col">Document ID</th><th scope="col">Vendor</th><th scope="col">Project</th>
-            <th scope="col">Category</th><th scope="col">Status</th><th scope="col">Results</th>
-            <th scope="col">Submitted</th><th scope="col">Reviewer</th>
-            <th scope="col"><span className="sr-only">Open review</span></th>
-          </tr></thead>
-          <tbody>{data.rows.map(({ document: pkg, counts, countsError, reviewer }) => (
-            <tr key={pkg.id} className="packages-table__row" onClick={() => onOpenReview(pkg.id)}>
-              <td data-label="Package ID"><span className="packages-table__id">{pkg.id}</span></td>
-              <td data-label="Vendor"><span className="packages-table__vendor">{pkg.vendor ?? '—'}</span></td>
-              <td data-label="Project"><span className="packages-table__project">{pkg.project_id}</span></td>
-              <td data-label="Category"><span className="packages-table__category">—</span></td>
-              <td data-label="Status"><StatusBadge status={pkg.state} size="sm" /></td>
-              <td data-label="Results"><DocumentResults counts={counts} error={countsError} /></td>
-              <td data-label="Submitted"><span className="packages-table__date">{formatDate(pkg.created_at)}</span></td>
-              <td data-label="Reviewer"><span className="packages-table__reviewer">{reviewer ?? (data.reviewerError ? 'Unavailable' : 'Not listed')}</span></td>
-              <td><button type="button" className="btn btn--subtle btn--icon"
-                aria-label={`Open review for ${pkg.vendor ?? 'document'} (${pkg.id})`}
-                onClick={(event) => { event.stopPropagation(); onOpenReview(pkg.id); }}>
-                <ArrowRight size={16} className="packages-table__arrow" aria-hidden="true" />
-              </button></td>
-            </tr>
-          ))}</tbody>
-        </table>
-      </div>}
+      {data && data.rows.length > 0 && <ul className="document-cards" aria-label="Drawing reviews">
+          {data.rows.map((row) => (
+            <li key={row.document.id} className="document-card">
+              <div className="document-card__header">
+                <DocumentRecord row={row} />
+                <button type="button" className="btn btn--action"
+                aria-label={`Open review for ${row.document.vendor ?? 'document'} (${row.document.id})`}
+                onClick={() => onOpenReview(row.document.id)}>
+                Open review
+                <ArrowRight size={16} aria-hidden="true" />
+                </button>
+              </div>
+              <div className="document-card__meta">
+                <StatusBadge status={row.document.state} />
+                <span>Submitted <time dateTime={row.document.created_at}>{formatDate(row.document.created_at)}</time></span>
+              </div>
+              <div className="document-card__results">
+                <p className="document-card__results-heading">Recorded check results</p>
+                <DocumentResults counts={row.counts} error={row.countsError} />
+              </div>
+              <DocumentDetails row={row} reviewerUnavailable={data.reviewerError !== null} />
+            </li>
+          ))}
+      </ul>}
     </PageFrame>
   );
 }
