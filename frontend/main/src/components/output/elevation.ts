@@ -55,6 +55,9 @@ const CABINET_CODES: Record<CabinetType, { code: string; name: string }> = {
   single_door: { code: 'SD', name: 'Single-door cabinet' },
   double_door: { code: 'DD', name: 'Double-door cabinet' },
   drawer: { code: 'DR', name: 'Drawer cabinet' },
+  sink_cabinet: { code: 'SK', name: 'Sink cabinet' },
+  microwave_cabinet: { code: 'MW', name: 'Microwave cabinet' },
+  under_counter_refrigeration_cabinet: { code: 'RF', name: 'Under-counter refrigeration cabinet' },
   equipment: { code: 'EQ', name: 'Equipment cabinet' },
 };
 

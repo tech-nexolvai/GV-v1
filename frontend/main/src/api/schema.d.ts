@@ -1449,7 +1449,7 @@ export interface components {
              * @description The reviewer's classification of this cabinet. Slide 11 of the 2026-09-21 deck puts this with the reviewer — they categorise a cabinet and confirm whether its width may change — so it is a required input and the server never infers it.
              * @enum {string}
              */
-            type: "single_door" | "double_door" | "drawer" | "equipment";
+            type: "single_door" | "double_door" | "drawer" | "sink_cabinet" | "microwave_cabinet" | "under_counter_refrigeration_cabinet" | "equipment";
             /**
              * Width
              * @description Authored dimension with its unit, e.g. 30" or 762 mm.
@@ -1471,7 +1471,7 @@ export interface components {
              * Type
              * @enum {string}
              */
-            type: "single_door" | "double_door" | "drawer" | "equipment";
+            type: "single_door" | "double_door" | "drawer" | "sink_cabinet" | "microwave_cabinet" | "under_counter_refrigeration_cabinet" | "equipment";
         };
         /**
          * CalculationTraceOut

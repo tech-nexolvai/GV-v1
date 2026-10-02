@@ -133,7 +133,23 @@ assert.match(html, /Site field width/);
 assert.match(html, /reviewer classification/);
 assert.match(html, /distribution-cabinet-type-0/);
 assert.match(html, /distribution-cabinet-type-1/);
-assert.match(html, /Equipment \(width cannot change\)/);
+// #818: the reviewer names the equipment cabinet (Raj's deck, slide 11), in this order, with
+// "other" for anything else.
+const offered = [...html.split('distribution-cabinet-type-1')[0].matchAll(/<option value="([a-z_]*)"/g)].map(
+  (match) => match[1],
+);
+assert.deepEqual(offered, [
+  '',
+  'single_door',
+  'double_door',
+  'drawer',
+  'sink_cabinet',
+  'microwave_cabinet',
+  'under_counter_refrigeration_cabinet',
+  'equipment',
+]);
+assert.match(html, /Sink cabinet \(width cannot change\)/);
+assert.match(html, /Other equipment \(width cannot change\)/);
 assert.doesNotMatch(html, /Adjustable cabinet/);
 assert.doesNotMatch(html, /No cabinet selected/);
 assert.doesNotMatch(html, /32&quot;/);

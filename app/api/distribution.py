@@ -41,6 +41,7 @@ from units.normalise import UnitNormalisationError, normalise_to_inches
 from verdict.operations.distribution import DistributionCondition, cabinet_run_distribution
 from verdict.outcomes import Outcome
 from verdict.registry import RuleAuthoringError
+from vocabulary.cabinet_categories import CabinetCategory
 from workflow.distribution_narrative import explain_distribution
 
 router = APIRouter(tags=["distribution"])
@@ -225,7 +226,8 @@ def calculate_filler_distribution(
                     type=cabinet.type,
                     original=_quantity(original),
                     proposed=_quantity(proposed),
-                    adjustable=cabinet.type != "equipment",
+                    # Every equipment kind is fixed-width (#818), not only the one named so.
+                    adjustable=not CabinetCategory(cabinet.type).is_equipment,
                 )
                 for cabinet, original, proposed in zip(
                     payload.assembly.cabinets, cabinets, proposed_cabinets, strict=True

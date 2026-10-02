@@ -8,7 +8,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 #: The four categories Raj's deck names. Three regular types, each with its own width bound, plus
 #: the equipment cabinet, which has no bound here because the distribution never moves it.
-CabinetTypeName = Literal["single_door", "double_door", "drawer", "equipment"]
+CabinetTypeName = Literal[
+    "single_door",
+    "double_door",
+    "drawer",
+    "sink_cabinet",
+    "microwave_cabinet",
+    "under_counter_refrigeration_cabinet",
+    "equipment",
+]
 
 
 class CabinetInput(BaseModel):

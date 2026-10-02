@@ -19,9 +19,20 @@ export type DistributionParameter = {
 };
 
 export type CabinetTypeName =
-  'single_door' | 'double_door' | 'drawer' | 'equipment';
+  | 'single_door'
+  | 'double_door'
+  | 'drawer'
+  | 'sink_cabinet'
+  | 'microwave_cabinet'
+  | 'under_counter_refrigeration_cabinet'
+  | 'equipment';
 
-/** The reviewer's classification per cabinet, in the deck's own words. */
+/**
+ * The reviewer's classification per cabinet, in the deck's own words.
+ *
+ * Slide 11 names the equipment cabinets — sink, microwave, under-counter refrigeration (#818). All
+ * four equipment kinds are fixed-width; `equipment` is "other equipment", and keeps its stored value.
+ */
 export const CABINET_TYPE_LABELS: ReadonlyArray<{
   value: CabinetTypeName;
   label: string;
@@ -29,7 +40,13 @@ export const CABINET_TYPE_LABELS: ReadonlyArray<{
   { value: 'single_door', label: 'Single door' },
   { value: 'double_door', label: 'Double door' },
   { value: 'drawer', label: 'Drawer' },
-  { value: 'equipment', label: 'Equipment (width cannot change)' },
+  { value: 'sink_cabinet', label: 'Sink cabinet (width cannot change)' },
+  { value: 'microwave_cabinet', label: 'Microwave cabinet (width cannot change)' },
+  {
+    value: 'under_counter_refrigeration_cabinet',
+    label: 'Under-counter refrigeration cabinet (width cannot change)',
+  },
+  { value: 'equipment', label: 'Other equipment (width cannot change)' },
 ];
 
 /**

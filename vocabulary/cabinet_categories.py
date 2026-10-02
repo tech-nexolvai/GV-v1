@@ -1,6 +1,6 @@
 """What a cabinet *is*, as Raj's deck names it.
 
-Four categories, and the deck names all four. Three regular types carry their own width bound on
+Seven categories: the deck's three regular types and its equipment cabinet, named (#818). Three regular types carry their own width bound on
 slides 3 and 7 — `SINGLE_DOOR_CAB_WIDTH_MIN`, `DOUBLE_DOOR_CAB_WIDTH_MIN`,
 `DRAWER_CAB_WIDTH_MIN` — and `CAB_EQUIP` carries none, because the distribution never moves it.
 
@@ -28,11 +28,21 @@ __all__ = ["CABINET_CATEGORY_LABELS", "CabinetCategory"]
 
 
 class CabinetCategory(StrEnum):
-    """The reviewer's classification of one cabinet."""
+    """The reviewer's classification of one cabinet.
+
+    **Which equipment cabinet, by name** (#818). Slide 11: the reviewer should *"categorize that as a
+    particular equipment cabinet… For example, sink cabinet, MW cabinet, under counter refrigeration
+    cabinet."* The three named kinds and `EQUIPMENT` — "other equipment" — are all fixed-width; the
+    names say which appliance holds the width, for the reviewer and the finding. Added, never renamed:
+    `equipment` is stored on classifications that already exist.
+    """
 
     SINGLE_DOOR = "single_door"
     DOUBLE_DOOR = "double_door"
     DRAWER = "drawer"
+    SINK_CABINET = "sink_cabinet"
+    MICROWAVE_CABINET = "microwave_cabinet"
+    UNDER_COUNTER_REFRIGERATION_CABINET = "under_counter_refrigeration_cabinet"
     EQUIPMENT = "equipment"
 
     @property
@@ -41,9 +51,9 @@ class CabinetCategory(StrEnum):
 
         Slide 3: *"the equipment cabinet dimensions should not be reduced otherwise equipment will
         not fit."* It binds in both directions — scenario 2 grows the run, and an opening too wide
-        for the appliance is as wrong as one too narrow.
+        for the appliance is as wrong as one too narrow. True of every equipment kind (#818).
         """
-        return self is CabinetCategory.EQUIPMENT
+        return self in _EQUIPMENT
 
     @property
     def bound_prefix(self) -> str:
@@ -61,10 +71,26 @@ class CabinetCategory(StrEnum):
         return f"{self.value}_cab_width"
 
 
+#: The fixed-width kinds: the three slide 11 names, and other equipment.
+_EQUIPMENT: frozenset[CabinetCategory] = frozenset(
+    {
+        CabinetCategory.SINK_CABINET,
+        CabinetCategory.MICROWAVE_CABINET,
+        CabinetCategory.UNDER_COUNTER_REFRIGERATION_CABINET,
+        CabinetCategory.EQUIPMENT,
+    }
+)
+
 #: What to show a person, in the order a form should list them.
 CABINET_CATEGORY_LABELS: tuple[tuple[CabinetCategory, str], ...] = (
     (CabinetCategory.SINGLE_DOOR, "Single door"),
     (CabinetCategory.DOUBLE_DOOR, "Double door"),
     (CabinetCategory.DRAWER, "Drawer"),
-    (CabinetCategory.EQUIPMENT, "Equipment (width cannot change)"),
+    (CabinetCategory.SINK_CABINET, "Sink cabinet (width cannot change)"),
+    (CabinetCategory.MICROWAVE_CABINET, "Microwave cabinet (width cannot change)"),
+    (
+        CabinetCategory.UNDER_COUNTER_REFRIGERATION_CABINET,
+        "Under-counter refrigeration cabinet (width cannot change)",
+    ),
+    (CabinetCategory.EQUIPMENT, "Other equipment (width cannot change)"),
 )
