@@ -102,6 +102,20 @@ def test_the_equipment_cabinet_is_named_as_the_reason_the_cabinets_take_it_all()
     assert re.search(r"cannot be less than 36\"", said), said
 
 
+@pytest.mark.parametrize(
+    "kind", ["sink_cabinet", "microwave_cabinet", "under_counter_refrigeration_cabinet"]
+)
+def test_a_named_equipment_cabinet_is_the_reason_too(kind: str) -> None:
+    """#818: the reviewer said *which* equipment cabinet it is. Outcome: the paragraph still gives
+    its 36" as the reason the other cabinets take the whole 6", word for word as for `equipment`."""
+    named = {**RAJ_LAYOUT, "types": ("double_door", kind, "double_door")}
+
+    said = _explain(field=82, design=90, fillers=(3, 3), **named)
+
+    assert said == _explain(field=82, design=90, fillers=(3, 3), **RAJ_LAYOUT)
+    assert re.search(r"cannot be less than 36\"", said), said
+
+
 def test_no_float_reaches_the_page() -> None:
     """A half inch is `1 1/2"`, the way a drawing writes it — never `1.5`."""
     said = _explain(
