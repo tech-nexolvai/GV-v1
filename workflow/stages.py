@@ -207,11 +207,7 @@ from workflow.association import (
     dimension_texts,
 )
 from workflow.config import READER_RASTER_DPI
-from workflow.evidence_operands import (
-    IDENTIFIER_PAIRING_WITHHELD,
-    evidence_operands,
-    identifier_paired_inputs,
-)
+from workflow.evidence_operands import evidence_operands, position_sensitive_inputs
 from workflow.findings_composer import (
     ComposerFinding,
     ComposerOperand,
@@ -3858,15 +3854,19 @@ class DatabaseStages:
                     # input it was given an operand for.
                     ambiguous=evidence.ambiguous.get(rule_id, {}),
                 )
-                # A pairing input evidence was not allowed to fill (#794), named in the reviewer's
-                # sentence — otherwise "could not resolve 'architectural_cabinets'" reads as though
-                # labelling a cabinet would fix it, when it is the tag that is missing.
-                if finding.outcome is Outcome.NOT_FOUND and (
-                    identifier_paired_inputs(applicable.snapshot.rule) - supplied.keys()
-                ):
-                    finding = replace(
-                        finding, reason=f"{IDENTIFIER_PAIRING_WITHHELD} ({finding.reason})"
-                    )
+                # A run evidence was not allowed to fill (#794, #833), named in its check's own
+                # sentence — otherwise "could not resolve 'shop_cabinets'" reads as though labelling
+                # a cabinet would fix it, when it is the tag, or the order along the wall, that is
+                # missing. Sorted so that a rule with two such sentences reads the same every run.
+                unfilled = sorted(
+                    {
+                        why
+                        for name, why in position_sensitive_inputs(applicable.snapshot.rule).items()
+                        if name not in supplied
+                    }
+                )
+                if finding.outcome is Outcome.NOT_FOUND and unfilled:
+                    finding = replace(finding, reason=f"{' '.join(unfilled)} ({finding.reason})")
                 record_finding(
                     session,
                     package_revision_id=package_revision_id,
