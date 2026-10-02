@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -49,6 +51,24 @@ def test_the_phrase_gap_has_no_default(monkeypatch: pytest.MonkeyPatch) -> None:
         "built": False,
         "reason": f"{worker.PHRASE_GAP_VARIABLE} is not set",
     }
+
+
+def test_the_demo_worker_states_the_measured_phrase_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**The index is on in the demo (#849)**, at the admin's 0.34 of 2026-10-03, measured on both
+    client drawings in #840. Read from the worker's block the way the worker reads its environment.
+    """
+    import scripts.drain_outbox as worker
+    from retrieval.package_text import PhraseGrouping
+
+    demo = (Path(__file__).resolve().parents[2] / "scripts" / "demo.sh").read_text(encoding="utf-8")
+    worker_block = demo[: demo.index("scripts/drain_outbox.py --watch")]
+    stated = re.findall(
+        rf"^{worker.PHRASE_GAP_VARIABLE}=(\S+) \\$", worker_block, flags=re.MULTILINE
+    )
+    assert stated == ["0.34"]
+
+    monkeypatch.setenv(worker.PHRASE_GAP_VARIABLE, stated[0])
+    assert worker._phrase_grouping() == PhraseGrouping(gap_line_heights=Decimal("0.34"))
 
 
 def test_a_stated_phrase_gap_is_read_exactly(monkeypatch: pytest.MonkeyPatch) -> None:

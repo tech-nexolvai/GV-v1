@@ -17,9 +17,14 @@ reviewer chooses between the two that could apply.
 and `countertop_overhang` is one setting shared by two rules, which would otherwise each have to say
 the same thing and could say different things.
 
-**What this cannot do:** prove a typed number did not come from the vendor's drawing under review. A
-free-text reference is the reviewer's word. That guard needs a value that cites a document, which is
-what Step 3 of #798 adds.
+**Which side of a package each source may be cited from** is `CITABLE_SIDES` (#849): a G.C / Client
+value from the architect's drawings only, and a company standard, a fabricator's number or a site
+measurement from nothing in the package at all. `workflow/parameter_proposals.py` holds every
+passage it points at to that table.
+
+**What this cannot do yet:** prove a typed number did not come from the vendor's drawing under
+review. A free-text reference is the reviewer's word. Holding a typed value to the passage it cites
+is step 3.3 of #798.
 """
 
 from __future__ import annotations
@@ -29,8 +34,17 @@ from types import MappingProxyType
 from typing import Final
 
 from rules.parameters import Provenance
+from vocabulary.semantic_types import DocumentRole
 
-__all__ = ["ALLOWED_SOURCES", "SOURCE_GUIDANCE", "allowed_sources", "undeclared"]
+__all__ = [
+    "ALLOWED_SOURCES",
+    "CITABLE_SIDES",
+    "SOURCE_GUIDANCE",
+    "allowed_sources",
+    "citable_sides",
+    "citable_sources",
+    "undeclared",
+]
 
 _COMPANY: Final = (Provenance.COMPANY_STANDARD,)
 _SPECIFIED: Final = (Provenance.GC_CLIENT,)
@@ -82,6 +96,41 @@ SOURCE_GUIDANCE: Final[Mapping[Provenance, str]] = MappingProxyType(
         Provenance.MEASURED: "Measured on site.",
     }
 )
+
+
+#: The document sides a value from each source may be cited from — Q10 as a table (#849).
+#:
+#: **The vendor's drawing is on no row.** It is the thing under review, and a setting read off it
+#: would have the vendor checked against their own number (`rules/overrides.py`). A G.C / Client
+#: value comes from the architect's drawings. The other three cite nothing in a package: GV's own
+#: standard and the field cut are GV's, the fabricator's clearance is the fabricator's, and a
+#: measurement is taken on site. An empty set is the refusal, written out for every source so a new
+#: `Provenance` member fails the test that holds this table exhaustive rather than inheriting a side
+#: by accident.
+CITABLE_SIDES: Final[Mapping[Provenance, frozenset[DocumentRole]]] = MappingProxyType(
+    {
+        Provenance.GC_CLIENT: frozenset({DocumentRole.ARCH}),
+        Provenance.COMPANY_STANDARD: frozenset(),
+        Provenance.FABRICATOR: frozenset(),
+        Provenance.MEASURED: frozenset(),
+    }
+)
+
+
+def citable_sides(source: Provenance) -> frozenset[DocumentRole]:
+    """The sides a value from `source` may be cited from, or none for a source this table lacks."""
+    if source not in CITABLE_SIDES:
+        return frozenset()
+    return CITABLE_SIDES[source]
+
+
+def citable_sources(name: str) -> tuple[Provenance, ...]:
+    """The sources a value for `name` may claim *and* cite from a package, in the form's order.
+
+    Empty for a company standard and the field cut, so no passage anywhere in a package can propose
+    one, and for a setting this table does not know.
+    """
+    return tuple(source for source in allowed_sources(name) if citable_sides(source))
 
 
 def allowed_sources(name: str) -> tuple[Provenance, ...]:

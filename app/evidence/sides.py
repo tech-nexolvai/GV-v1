@@ -7,8 +7,9 @@ reading from the architect's half checked as the vendor's can pass a vendor's wr
 architect's right number.
 
 **One rule, for every place a side is decided.** A reviewer's label (`app/evidence/confirm.py`), the
-exact-tag lane (`app/evidence/automatic_typing.py`), the fields the Measure page offers a reading for
-(`app/api/confirmations.py`) and the readings the form-filler may use (`workflow/propose.py`) all ask
+exact-tag lane (`app/evidence/automatic_typing.py`), the fields the Measure page offers a reading
+for (`app/api/confirmations.py`), the readings the form-filler may use (`workflow/propose.py`) and
+the passages a setting may be cited from (`workflow/parameter_proposals.py`) all ask
 `ReadingSides.of`. A second rule anywhere would be the hole the first one closed.
 
 - **A reviewer's markup has no side at all** (#802). The markup route records the reviewer's
@@ -24,7 +25,8 @@ exact-tag lane (`app/evidence/automatic_typing.py`), the fields the Measure page
   a shop document *and* the page holds that one drawing (admin, 2026-10-01, #795): a genuine two-PDF
   package, whose drawings sit in `/Stamp`s and so are views, fills its form without a confirmation
   per drawing; a page with two drawings side by side never takes the upload's word for either.
-  Otherwise it has no side until somebody says.
+  Otherwise it has no side until somebody says. For a setting's citation, an unconfirmed view never
+  takes the upload's side (`confirmed_views_only`, #849).
 
 **No extraction imports**, like `workflow/view_roles.py`: the API reaches this, and
 `tests/api/test_no_heavy_work.py` keeps `app/api/` away from anything that renders or reads a PDF.
@@ -222,8 +224,17 @@ class ReadingSides:
             return None
         return _KIND_SIDE.get(self._kind(page.document_version_id) or "")
 
-    def of(self, row: ObservationCandidate) -> DocumentRole | SideRefusal:
-        """`row`'s side, or why it has none."""
+    def of(
+        self, row: ObservationCandidate, *, confirmed_views_only: bool = False
+    ) -> DocumentRole | SideRefusal:
+        """`row`'s side, or why it has none.
+
+        `confirmed_views_only` withholds the upload's side from a drawing nobody has confirmed, so a
+        reading on one is refused even in a two-PDF package (#849). On a sheet with drawings, a
+        setting is cited only from one a person has said is the architect's: the admin's fallback of
+        2026-10-01 was decided for filling the form, and is not extended to settings. A page with no
+        drawings still takes its document's kind, because it has no drawing for anybody to confirm.
+        """
         run = self._session.get(ExtractionRun, row.extraction_run_id)
         if run is not None and run.extractor == MARKUP_ROUTE:
             return SideRefusal(
@@ -277,7 +288,12 @@ class ReadingSides:
                 "architect's or the vendor's is unknown",
             )
         (view,) = holding
-        side = self.unconfirmed_side(page) if view.role is None else _VIEW_SIDE.get(view.role)
+        if view.role is not None:
+            side = _VIEW_SIDE.get(view.role)
+        elif confirmed_views_only:
+            side = None
+        else:
+            side = self.unconfirmed_side(page)
         if side is None:
             return SideRefusal(
                 SideRefusalReason.VIEW_ROLE_UNCONFIRMED,
