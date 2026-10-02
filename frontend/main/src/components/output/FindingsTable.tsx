@@ -20,18 +20,11 @@
  */
 
 import { useState, type ReactNode } from 'react';
-import { AlertCircle, CheckCircle2, ChevronRight, CircleDashed, Eye, MinusCircle, XCircle } from 'lucide-react';
-import type { Finding, Outcome } from '../../data/types';
+import { ChevronRight, Eye } from 'lucide-react';
+import type { Finding } from '../../data/types';
+import { OutcomeIcon } from '../ui/OutcomeIcon.js';
 import { findingCells } from '../chat/findingsTable.js';
 import { closedRows, sortFindings, toggleRow, type RowState } from './findingsOrder.js';
-
-const ICON: Record<Outcome, ReactNode> = {
-  FAIL: <XCircle size={13} aria-hidden="true" />,
-  REVIEW_REQUIRED: <AlertCircle size={13} aria-hidden="true" />,
-  NOT_FOUND: <CircleDashed size={13} aria-hidden="true" />,
-  PASS: <CheckCircle2 size={13} aria-hidden="true" />,
-  NO_APPLICABLE_RULE: <MinusCircle size={13} aria-hidden="true" />,
-};
 
 const NOT_RECORDED = 'Not recorded';
 
@@ -137,7 +130,7 @@ function FindingRows({
       >
         <td>
           <span className="ftable__chip" data-outcome={finding.outcome}>
-            {ICON[finding.outcome]}
+            <OutcomeIcon outcome={finding.outcome} size={13} />
             {cells.outcome}
           </span>
         </td>

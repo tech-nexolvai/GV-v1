@@ -1,17 +1,9 @@
 import { useState } from 'react';
-import { ChevronRight, FileSearch, ExternalLink, CheckCircle, XCircle, AlertTriangle, MinusCircle, TriangleAlert } from 'lucide-react';
+import { ChevronRight, FileSearch, ExternalLink, CheckCircle, TriangleAlert } from 'lucide-react';
 import type { Finding } from '../../data/types';
 import { OutcomeBadge, SeverityDot } from '../ui/Badge';
+import { OutcomeIcon } from '../ui/OutcomeIcon';
 import './FindingCard.css';
-
-// ── Outcome icon map — audit #7: HelpCircle→MinusCircle (neutral, not alarming)
-const OUTCOME_ICON = {
-  PASS:               CheckCircle,
-  FAIL:               XCircle,
-  REVIEW_REQUIRED:    AlertTriangle,
-  NOT_FOUND:          MinusCircle,
-  NO_APPLICABLE_RULE: MinusCircle,
-};
 
 function readableLabel(value: string): string {
   return value.replaceAll('_', ' ');
@@ -63,7 +55,6 @@ export function FindingCard({
   const [reason, setReason] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
 
-  const Icon = OUTCOME_ICON[finding.outcome];
   const hasAction = finding.reviewer_action !== null;
 
   return (
@@ -78,7 +69,7 @@ export function FindingCard({
         aria-expanded={expanded}
       >
         <div className="finding-card__header-left">
-          <Icon size={14} className="finding-card__outcome-icon" />
+          <OutcomeIcon outcome={finding.outcome} className="finding-card__outcome-icon" />
           <span className="finding-card__check-id">{finding.check_id}</span>
           <div className="finding-card__severity">
             <SeverityDot severity={finding.severity} />
