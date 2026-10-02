@@ -1,80 +1,21 @@
 import { Plus, ArrowRight } from 'lucide-react';
+import { useEffect, useReducer, useState } from 'react';
 import { listPackages, getFindingCounts, listReviewSessions } from '../api/client';
-import type { PackageStatus } from '../data/types';
 import { projectId } from '../api/config';
-import { useAsync } from '../api/useAsync';
 import { StatusBadge } from '../components/ui/Badge';
+import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
+import { documentListReducer, initialDocumentList, loadDocumentRows } from './documentRows';
+import { DocumentResults } from './DocumentResults';
+import '../components/ui/PageFrame.css';
 import './PackagesPage.css';
 
-/** A package plus its finding counts — two calls the table shows as one row. */
-interface PackageRow {
-  id: string;
-  vendor: string;
-  project: string;
-  category: string;
-  status: PackageStatus;
-  submitted_at: string;
-  reviewer: string | null;
-  pass_count: number;
-  fail_count: number;
-  review_count: number;
-  /** `NOT_FOUND` plus `NO_APPLICABLE_RULE` — the checks that produced no verdict at all. */
-  missing_count: number;
-}
-
-/**
- * Fetch the packages, then each one's counts.
- *
- * The counts are a second call per package because the list endpoint does not carry them, and
- * `Promise.all` rather than a loop so one slow package does not hold up the rest. If the number of
- * packages ever grows past a page this wants a batched endpoint instead — noted rather than
- * pre-built, since a page is currently 50.
- */
-async function loadRows(): Promise<PackageRow[]> {
+function loadRows() {
   const project = projectId();
-  const page = await listPackages(project);
-
-  // **Deliberately not awaited alongside the packages.** With both in one `Promise.all`, a failure
-  // fetching sessions rejected the whole load and the page reported that documents could not be
-  // listed — when the documents had arrived perfectly well and only the reviewer column was
-  // unavailable. A missing name in one column must not be able to hide the drawings.
-  //
-  // Every sitting in the project, not just the caller's: this column answers "who has this?", and a
-  // list showing only your own would leave somebody else's work looking unclaimed.
-  let reviewerByRevision = new Map<string, string>();
-  try {
-    const sessions = await listReviewSessions(project, { mine: false });
-    // Keyed by revision, because that is what a sitting is opened against. A package whose drawings
-    // were re-uploaded has a new revision, and the previous reviewer's name does not carry over.
-    reviewerByRevision = new Map(
-      sessions.items.map((item) => [item.package_revision_id, item.reviewer]),
-    );
-  } catch {
-    // Left empty, so the column renders unknown rather than the page rendering nothing. The rows
-    // below distinguish "nobody has claimed this" from "we could not find out", because a reviewer
-    // reading an unclaimed package differently from an unknown one is the whole point of the column.
-    reviewerByRevision = new Map();
-  }
-
-  return Promise.all(
-    page.items.map(async (pkg) => {
-      const counts = await getFindingCounts(project, pkg.id);
-      return {
-        id: pkg.id,
-        vendor: pkg.vendor ?? '—',
-        project: pkg.project_id,
-        // No source on the wire yet; shown as absent rather than invented.
-        category: '—',
-        status: pkg.state as PackageStatus,
-        submitted_at: pkg.created_at,
-        reviewer: reviewerByRevision.get(pkg.current_revision_id) ?? null,
-        pass_count: counts.passed,
-        fail_count: counts.failed,
-        review_count: counts.review_required,
-        missing_count: counts.not_found + counts.no_applicable_rule,
-      };
-    }),
-  );
+  return loadDocumentRows({
+    packages: () => listPackages(project),
+    counts: (id) => getFindingCounts(project, id),
+    sessions: () => listReviewSessions(project, { mine: false }),
+  });
 }
 
 interface PackagesPageProps {
@@ -89,107 +30,74 @@ function formatDate(iso: string) {
 }
 
 export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) {
-  const rows = useAsync(loadRows, []);
+  const [attempt, setAttempt] = useState(0);
+  const [state, dispatch] = useReducer(documentListReducer, initialDocumentList);
+  useEffect(() => {
+    let current = true;
+    Promise.resolve().then(loadRows).then(
+      (data) => { if (current) dispatch({ type: 'loaded', data }); },
+      (error: unknown) => { if (current) dispatch({ type: 'failed', error: error instanceof Error ? error.message : String(error) }); },
+    );
+    return () => { current = false; };
+  }, [attempt]);
+  function retry() {
+    dispatch({ type: 'loading' });
+    setAttempt((value) => value + 1);
+  }
+  const data = state.data;
+  const partial = data?.reviewerError != null || data?.rows.some((row) => row.countsError !== null);
 
   return (
-    <div className="packages-page animate-fade-in">
-      {/* Page header */}
-      <div className="packages-page__header">
-        <div>
-          <h1 className="packages-page__title">Documents</h1>
-          <p className="packages-page__subtitle">
-            Review submissions from vendors against the architectural set and rulebook.
-          </p>
+    <PageFrame title="Documents" className="packages-page"
+      description="Review submissions from vendors against the architectural set and rulebook."
+      actions={<button className="btn btn--action" onClick={onNewPackage}>
+        <Plus size={14} aria-hidden="true" /> New Document
+      </button>}>
+      {state.loading && <p className="page-frame__state" role="status">{data ? 'Refreshing document details… Existing rows remain available.' : 'Loading documents…'}</p>}
+      {!data && state.error && <PageLoadError title="Documents could not be loaded" message={state.error} onRetry={retry} />}
+      {data && (partial || state.error) && <aside className="packages-page__notice" aria-label="Document data availability">
+        <div role="status">
+          <strong>{state.error ? 'Refresh failed. Showing the last loaded documents.' : 'Documents loaded; some details are unavailable.'}</strong>
+          <p>{state.error ?? 'You can still open each review. Unavailable results are not zero findings.'}</p>
+          {data.reviewerError && <p>Reviewer details unavailable: {data.reviewerError}</p>}
+          {data.rows.some((row) => row.countsError !== null) && <details>
+            <summary>Result request details</summary>
+            <ul>{data.rows.filter((row) => row.countsError !== null).map((row) => <li key={row.document.id}>
+              {row.document.vendor ?? row.document.id}: {row.countsError}
+            </li>)}</ul>
+          </details>}
         </div>
-        <button className="btn btn--action" onClick={onNewPackage}>
-          <Plus size={14} />
-          New Document
-        </button>
-      </div>
-
-      {/* Table */}
-      <div className="packages-table-wrap">
+        <button type="button" className="btn btn--ghost" disabled={state.loading} onClick={retry}>Retry unavailable details</button>
+      </aside>}
+      {data && data.rows.length === 0 && <p className="page-frame__state">No documents yet. Start a review with New Document.</p>}
+      {data?.hasMore && <p className="page-frame__state">Showing the first {data.rows.length} documents returned by the server. Older documents are not included in this view.</p>}
+      {data && data.rows.length > 0 && <div className="packages-table-wrap" role="region" aria-label="Documents table; scroll horizontally for all columns" tabIndex={0}>
         <table className="packages-table">
-          <thead>
-            <tr>
-              <th>Document ID</th>
-              <th>Vendor</th>
-              <th>Project</th>
-              <th>Category</th>
-              <th>Status</th>
-              <th>Results</th>
-              <th>Submitted</th>
-              <th>Reviewer</th>
-              <th />
+          <thead><tr>
+            <th scope="col">Document ID</th><th scope="col">Vendor</th><th scope="col">Project</th>
+            <th scope="col">Category</th><th scope="col">Status</th><th scope="col">Results</th>
+            <th scope="col">Submitted</th><th scope="col">Reviewer</th>
+            <th scope="col"><span className="sr-only">Open review</span></th>
+          </tr></thead>
+          <tbody>{data.rows.map(({ document: pkg, counts, countsError, reviewer }) => (
+            <tr key={pkg.id} className="packages-table__row" onClick={() => onOpenReview(pkg.id)}>
+              <td data-label="Package ID"><span className="packages-table__id">{pkg.id}</span></td>
+              <td data-label="Vendor"><span className="packages-table__vendor">{pkg.vendor ?? '—'}</span></td>
+              <td data-label="Project"><span className="packages-table__project">{pkg.project_id}</span></td>
+              <td data-label="Category"><span className="packages-table__category">—</span></td>
+              <td data-label="Status"><StatusBadge status={pkg.state} size="sm" /></td>
+              <td data-label="Results"><DocumentResults counts={counts} error={countsError} /></td>
+              <td data-label="Submitted"><span className="packages-table__date">{formatDate(pkg.created_at)}</span></td>
+              <td data-label="Reviewer"><span className="packages-table__reviewer">{reviewer ?? (data.reviewerError ? 'Unavailable' : 'Not listed')}</span></td>
+              <td><button type="button" className="btn btn--subtle btn--icon"
+                aria-label={`Open review for ${pkg.vendor ?? 'document'} (${pkg.id})`}
+                onClick={(event) => { event.stopPropagation(); onOpenReview(pkg.id); }}>
+                <ArrowRight size={16} className="packages-table__arrow" aria-hidden="true" />
+              </button></td>
             </tr>
-          </thead>
-          <tbody>
-            {rows.status === 'loading' && (
-              <tr>
-                <td colSpan={8} className="packages-table__state">Loading documents…</td>
-              </tr>
-            )}
-            {rows.status === 'error' && (
-              /* Said out loud, not rendered as an empty table. An empty table here would read as
-                 "no documents", and in a review workflow that is the same sentence as "nothing to
-                 check" — the one thing a failure must never look like. */
-              <tr>
-                <td colSpan={8} className="packages-table__state packages-table__state--error">
-                  Could not load documents: {rows.error.message}
-                </td>
-              </tr>
-            )}
-            {rows.status === 'ready' && rows.data.length === 0 && (
-              <tr>
-                <td colSpan={8} className="packages-table__state">No documents yet.</td>
-              </tr>
-            )}
-            {(rows.status === 'ready' ? rows.data : []).map((pkg, i) => (
-              <tr
-                key={pkg.id}
-                className="packages-table__row animate-fade-in"
-                style={{ animationDelay: `${i * 40}ms` }}
-                onClick={() => onOpenReview(pkg.id)}
-                tabIndex={0}
-                role="button"
-                aria-label={`Open review for ${pkg.id}`}
-                onKeyDown={e => e.key === 'Enter' && onOpenReview(pkg.id)}
-              >
-                <td data-label="Package ID">
-                  <span className="packages-table__id">{pkg.id}</span>
-                </td>
-                <td data-label="Vendor">
-                  <span className="packages-table__vendor">{pkg.vendor}</span>
-                </td>
-                <td data-label="Project">
-                  <span className="packages-table__project">{pkg.project}</span>
-                </td>
-                <td data-label="Category">
-                  <span className="packages-table__category">{pkg.category}</span>
-                </td>
-                <td data-label="Status"><StatusBadge status={pkg.status} size="sm" /></td>
-                <td data-label="Results">
-                  <div className="packages-table__results">
-                    {pkg.pass_count > 0 && <span className="packages-table__result packages-table__result--pass">✓ {pkg.pass_count}</span>}
-                    {pkg.fail_count > 0 && <span className="packages-table__result packages-table__result--fail">✕ {pkg.fail_count}</span>}
-                    {pkg.review_count > 0 && <span className="packages-table__result packages-table__result--review">◎ {pkg.review_count}</span>}
-                    {pkg.missing_count > 0 && <span className="packages-table__result packages-table__result--missing">○ {pkg.missing_count}</span>}
-                  </div>
-                </td>
-                <td data-label="Submitted">
-                  <span className="packages-table__date">{formatDate(pkg.submitted_at)}</span>
-                </td>
-                <td data-label="Reviewer">
-                  <span className="packages-table__reviewer">{pkg.reviewer ?? '—'}</span>
-                </td>
-                <td>
-                  <ArrowRight size={14} className="packages-table__arrow" />
-                </td>
-              </tr>
-            ))}
-          </tbody>
+          ))}</tbody>
         </table>
-      </div>
-    </div>
+      </div>}
+    </PageFrame>
   );
 }

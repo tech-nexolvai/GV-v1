@@ -27,7 +27,10 @@ import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import type { AsyncState } from '../api/useAsync';
 import { checksFinished, isReviewWorking, reviewOverview, reviewActionCounts } from './reviewState';
-import { ArrowLeft, FileText, CheckSquare, Download, Info } from 'lucide-react';
+import { ArrowLeft, FileText, Info } from 'lucide-react';
+import { ReviewHandoff } from './ReviewHandoff';
+import { receiveReport } from './reviewHandoffState';
+import type { DownloadState, ReportFormat } from './reviewHandoffState';
 import './ReviewPage.css';
 
 interface ReviewPageProps {
@@ -69,6 +72,8 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSigningOff, setIsSigningOff] = useState(false);
   const [approved, setApproved] = useState(false);
+  const [download, setDownload] = useState<DownloadState>({ status: 'idle' });
+  const downloadInFlight = useRef(false);
   // The narration models a reviewer may pick, and the current choice ('' = deployment default).
   const [chatModels, setChatModels] = useState<{ id: string; label: string }[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -537,24 +542,33 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * — not approved, no report generated — surfaces as a message instead of a download that silently
    * does nothing.
    */
-  async function handleDownload(format: 'pdf' | 'workbook' | 'redline') {
-    setActionError(null);
+  async function handleDownload(format: ReportFormat) {
+    if (downloadInFlight.current || !(approved || (remote.status === 'ready' && remote.data.detail.state === 'APPROVED')) ||
+      waitingForChecks || (remote.status === 'ready' && isReviewWorking(remote.data.detail.state))) return;
+    downloadInFlight.current = true;
+    setDownload({ status: 'loading', format });
     try {
-      const blob = format === 'pdf'
-        ? await downloadPdfReport(projectId(), packageId)
-        : format === 'redline'
-          ? await downloadRedline(projectId(), packageId)
-          : await downloadReport(projectId(), packageId);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `gv-review-${packageId}${format === 'redline' ? '-redline' : ''}.${format === 'workbook' ? 'xlsx' : 'pdf'}`;
-      link.click();
-      URL.revokeObjectURL(url);
+      await receiveReport(format, (selected) => selected === 'pdf'
+        ? downloadPdfReport(projectId(), packageId)
+        : selected === 'redline'
+          ? downloadRedline(projectId(), packageId)
+          : downloadReport(projectId(), packageId), (blob) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `gv-review-${packageId}${format === 'redline' ? '-redline' : ''}.${format === 'workbook' ? 'xlsx' : 'pdf'}`;
+        document.body.append(link);
+        try { link.click(); } finally {
+          link.remove();
+          // Let the browser consume the object URL before releasing it.
+          window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+      });
+      setDownload({ status: 'started', format });
     } catch (error) {
-      setActionError(
-        `The report could not be downloaded — ${error instanceof Error ? error.message : String(error)}`,
-      );
+      setDownload({ status: 'error', format, message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      downloadInFlight.current = false;
     }
   }
 
@@ -626,90 +640,19 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             <Info size={13} aria-hidden="true" />
             How this works
           </span>
-          <div className="review-page__progress">
-            <span className="review-page__progress-text">
-              {actioned} / {requiringReview} reviewed
-            </span>
-            <div className="review-page__progress-bar">
-              <div
-                className="review-page__progress-fill"
-                style={{
-                  width: `${findings.length > 0
-                    ? (actioned / Math.max(1, requiringReview)) * 100
-                    : 0}%`
-                }}
-              />
-            </div>
-          </div>
-
-          {/* Wired now. It had no handler at all, and its only guard was `needsAction > 0`, so on a
-              package with no findings it rendered fully enabled — the one state in which signing off
-              means attesting to a review that never ran. Both are conditions here. */}
-          <button
-            className="btn btn--action"
-            onClick={handleSignOff}
-            disabled={
-              isSigningOff ||
-              findings.length === 0 ||
-              needsAction > 0 ||
-              approved ||
-              pkg.status === 'APPROVED' ||
-              session?.completed_at != null ||
-              waitingForChecks ||
-              isReviewWorking(pkg.status)
-            }
-            data-tooltip={
-              findings.length === 0
-                ? 'There are no findings to sign off on'
-                : needsAction > 0
-                ? needsAction === 1
-                  ? '1 finding still needs review'
-                  : `${needsAction} findings still need review`
-                : waitingForChecks || isReviewWorking(pkg.status)
-                ? 'Wait for the current checks to finish'
-                : approved || pkg.status === 'APPROVED' || session?.completed_at != null
-                ? 'This sitting is already signed off'
-                : 'Sign off this package'
-            }
-          >
-            <CheckSquare size={14} />
-            {approved || pkg.status === 'APPROVED' || session?.completed_at != null ? 'Signed off' : isSigningOff ? 'Signing off…' : 'Sign Off'}
-          </button>
-
-          {/* The handoff. Shown once the package is approved, because that is what the endpoint
-              requires — a review that left the building unsigned is one nobody stands behind
-              (ADR-0010). Before then the workbook exists and is deliberately unreachable. */}
-          {(approved || pkg.status === 'APPROVED') && (
-            <>
-              <button
-                type="button"
-                className="btn btn--ghost"
-                onClick={() => void handleDownload('pdf')}
-                data-tooltip="Download the signed-off review as a PDF"
-              >
-                <Download size={14} />
-                Download PDF
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost"
-                onClick={() => void handleDownload('workbook')}
-                data-tooltip="Download the signed-off review as a workbook"
-              >
-                <Download size={14} />
-                Download workbook
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost"
-                onClick={() => void handleDownload('redline')}
-                data-tooltip="Download the signed-off evidence-grounded drawing redline"
-              >
-                <Download size={14} />
-                Download redline
-              </button>
-            </>
-          )}
+          <ReviewHandoff
+            findingsCount={findings.length}
+            reviewed={actioned}
+            requiringReview={requiringReview}
+            needsAction={needsAction}
+            approved={approved || pkg.status === 'APPROVED'}
+            sessionCompleted={session?.completed_at != null}
+            signing={isSigningOff}
+            working={waitingForChecks || isReviewWorking(pkg.status)}
+            download={download}
+            onSignOff={() => void handleSignOff()}
+            onDownload={(format) => void handleDownload(format)}
+          />
         </div>
       </div>
 
