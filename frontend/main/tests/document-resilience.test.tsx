@@ -35,6 +35,10 @@ assert.equal(recovered.rows[0].countsError, null);
 assert.equal(recovered.hasMore, false);
 const paged = await loadDocumentRows({ packages: async () => ({ ...page, next_cursor: 'opaque-next' }), counts: async () => counts, sessions: async () => sessions });
 assert.equal(paged.hasMore, true, 'do not claim the first page is the whole project');
+assert.equal(paged.nextCursor, 'opaque-next');
+const missingCursor = await loadDocumentRows({ packages: async () => ({ ...page, next_cursor: undefined }), counts: async () => counts, sessions: async () => sessions });
+assert.equal(missingCursor.nextCursor, null, 'an omitted optional cursor cannot create a navigation target');
+assert.equal(missingCursor.hasMore, false);
 await assert.rejects(loadDocumentRows({ packages: async () => { throw new Error('packages 503'); }, counts: async () => counts, sessions: async () => sessions }), /packages 503/);
 
 let state = documentListReducer(initialDocumentList, { type: 'loaded', data: partial });

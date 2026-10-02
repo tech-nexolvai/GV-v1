@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { pageFixture, pageRules, pageSettings } from './browser-qa-pages.mjs';
+import { pageFixture, pageRules, pageSettings, syntheticNextCursor } from './browser-qa-pages.mjs';
 
 for (const mode of ['populated', 'empty', 'error']) {
   const rules = pageFixture('/api/v1/rules', mode);
@@ -25,3 +25,10 @@ assert.equal(pageFixture('/api/v1/projects/synthetic/packages/00000000-0000-4000
 assert.equal(pageFixture('/api/v1/projects/synthetic/packages/00000000-0000-4000-8000-000000000102/findings/summary', 'partial'), null, 'other documents still load');
 assert.equal(pageFixture('/api/v1/projects/synthetic/review-sessions', 'partial').status, 503);
 console.log('page fixtures: distinct populated/empty/error states, exact text and synthetic isolation passed');
+const first = pageFixture('/api/v1/projects/synthetic/packages', 'paginated');
+assert.equal(first.body.next_cursor, syntheticNextCursor);
+const second = pageFixture('/api/v1/projects/synthetic/packages', 'paginated', syntheticNextCursor);
+assert.equal(second.body.next_cursor, null);
+assert.notEqual(first.body.items[0].id, second.body.items[0].id);
+assert.equal(pageFixture('/api/v1/projects/synthetic/packages', 'page-error', syntheticNextCursor).status, 503);
+assert.equal(pageFixture('/api/v1/projects/synthetic/packages', 'paginated', 'made-up').status, 400);

@@ -57,7 +57,7 @@ const qa = {
       } : row);
       const json = (body, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
       const refusal = (message, status = 404) => json({ error: 'synthetic_qa_only', message, request_id: 'SYNTHETIC_UI_QA' }, status);
-      const pageResponse = req.method === 'GET' ? pageFixture(path, pageMode) : null;
+      const pageResponse = req.method === 'GET' ? pageFixture(path, pageMode, url.searchParams.get('cursor')) : null;
       if (pageResponse) return json(pageResponse.body, pageResponse.status);
       let requestBody = {};
       if (!['GET', 'HEAD'].includes(req.method)) {
