@@ -703,7 +703,13 @@ def _share_does_not_divide(
 
 
 def _runs_match(left: Sequence[Measurement], right: Sequence[Measurement]) -> bool:
-    """Exact equality, position by position. Q2 leaves no tolerance band to round into."""
+    """Exact equality, position by position. Q2 leaves no tolerance band to round into.
+
+    Position by position is why `cabinet_run_distribution` is declared in
+    `verdict.operations.POSITION_SENSITIVE_OPERATIONS` (#833): two runs with the same cabinets in a
+    different order are not equal here, so a run in the order its readings were labelled must not
+    reach this.
+    """
     return len(left) == len(right) and all(a.exact == b.exact for a, b in zip(left, right))
 
 
