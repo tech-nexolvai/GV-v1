@@ -39,8 +39,6 @@ export function ReviewPackageDetails({ packageId, projectId, children }: {
       role="region" aria-label="Package details and review steps">
       <p className="review-package-details__title">Review steps</p>
       {children}
-      <p className="review-package-details__title">How this review works</p>
-      <p>Recorded values → deterministic checks → optional AI narration.</p>
       <p className="review-package-details__title">Record IDs</p>
       <dl>
         <dt>Package</dt><dd>{packageId}</dd>

@@ -83,11 +83,12 @@ assert.match(packageDetails, /<details class="review-package-details">/);
 assert.doesNotMatch(packageDetails, /<details[^>]* open=/, 'secondary details start collapsed, not deleted');
 for (const content of ['Details &amp; steps', 'Record IDs', 'Package', 'Project',
   '00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000201',
-  'Recorded workflow', 'Upload', 'Review', 'deterministic checks', 'optional AI narration']) {
+  'Recorded workflow', 'Upload', 'Review']) {
   assert.ok(packageDetails.includes(content), `preserve ${content}`);
 }
-assert.doesNotMatch(packageDetails, /data-tooltip/, 'method explanation is readable on touch, not hover-only');
+assert.doesNotMatch(packageDetails, /How this review works|optional AI narration|Recorded values →/,
+  'package details do not add a generic explanation of AI behavior');
 assert.match(packageDetails, /tabindex="0" role="region" aria-label="Package details and review steps"/,
   'scrollable details remain reachable by keyboard');
 assert.doesNotMatch(packageDetails, /<button/, 'secondary context cannot approve, rerun or mutate records');
-console.log('review package details: exact IDs, passed workflow and touch-readable explanation retained');
+console.log('review package details: exact IDs and workflow retained; generic AI explanation removed');
