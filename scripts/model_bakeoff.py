@@ -38,8 +38,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--polygon-dpi",
         type=int,
-        required=True,
-        help="DPI of the answer-key polygon coordinate frame",
+        help=(
+            "DPI of the answer-key polygon frame, only for a key that does not record one (#835); "
+            "a key that records its frame is refused if this differs"
+        ),
     )
     parser.add_argument("--format", choices=("markdown", "csv"), default="markdown")
     parser.add_argument("--output", type=Path, help="write the scorecard here instead of stdout")

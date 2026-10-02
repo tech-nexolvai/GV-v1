@@ -30,6 +30,7 @@ from eval.experiments.agent_scorecard import (
     PageGeometry,
     ScorecardError,
     build_pages,
+    key_frame_dpi,
     load_key,
     render_markdown,
     results_json,
@@ -50,7 +51,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("key", type=Path, help="a key directory: answer_key.json, crops.csv, PDF")
     parser.add_argument("--reader-settings", type=Path, required=True)
-    parser.add_argument("--key-dpi", type=int, required=True, help="the frame crops.csv is in")
+    parser.add_argument(
+        "--key-dpi",
+        type=int,
+        help=(
+            "the frame crops.csv is in, only for a key that does not record one (#835); a key "
+            "that records its frame is refused if this differs"
+        ),
+    )
     parser.add_argument("--stage-dpi", type=int, required=True, help="the stage's render")
     parser.add_argument("--sharper-dpi", type=int, required=True)
     parser.add_argument("--label-gap-pt", type=Decimal, required=True)
@@ -73,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         crops = load_key(args.key)
+        key_dpi = key_frame_dpi(
+            args.key, key_dpi=args.key_dpi, margin_pt=VISION_CROP_CONTEXT_MARGIN_PT
+        )
         if args.only:
             wanted = {crop_id.strip() for crop_id in args.only.split(",")}
             crops = tuple(crop for crop in crops if crop.crop_id in wanted)
@@ -138,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
                     VlmRole.ESCALATION: readers[args.escalation],
                 },
                 settings=settings,
-                key_dpi=args.key_dpi,
+                key_dpi=key_dpi,
                 margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
             )
             results.append(result)
