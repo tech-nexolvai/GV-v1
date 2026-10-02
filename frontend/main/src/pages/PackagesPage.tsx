@@ -7,6 +7,7 @@ import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
 import { documentListReducer, documentNavigation, restoreDocumentList, loadDocumentRows } from './documentRows';
 import { DocumentResults } from './DocumentResults';
 import { DocumentRecord, DocumentDetails } from './DocumentRecord';
+import { documentGuidance } from './documentGuidance';
 import '../components/ui/PageFrame.css';
 import './PackagesPage.css';
 
@@ -91,7 +92,7 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
       </nav>}
       {navigation.repeatedCursor && <p role="alert" className="page-frame__state">The server repeated a page cursor. Further navigation is unavailable; existing documents remain visible.</p>}
       {data && data.rows.length === 0 && <p className="page-frame__state">{navigation.page === 1 ? 'No documents yet. Start a review with New Document.' : 'No documents on this page. Use Previous page to return to the earlier results.'}</p>}
-      {data && data.rows.length > 0 && <ul className="document-cards" aria-label="Drawing reviews">
+      {data && data.rows.length > 0 && <ul className="document-cards" role="list" aria-label="Drawing reviews">
           {data.rows.map((row) => (
             <li key={row.document.id} className="document-card">
               <div className="document-card__header">
@@ -109,8 +110,12 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
               </div>
               <div className="document-card__results">
                 <p className="document-card__results-heading">Recorded check results</p>
+                {row.counts && row.counts.total > 0 && <p className="document-card__count-note">
+                  {row.counts.total} recorded check{row.counts.total === 1 ? '' : 's'} — these count checks, not drawings or individual dimensions.
+                </p>}
                 <DocumentResults counts={row.counts} error={row.countsError} />
               </div>
+              <p className="document-card__guidance"><strong>Next step</strong> {documentGuidance(row.document.state, row.counts)}</p>
               <DocumentDetails row={row} reviewerUnavailable={data.reviewerError !== null} />
             </li>
           ))}
