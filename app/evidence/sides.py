@@ -195,6 +195,20 @@ class ReadingSides:
             )
         return self._both_kinds[document_version_id]
 
+    def drawings_holding(self, page: Page, reading: Polygon) -> tuple[DrawingView, ...] | None:
+        """The drawings on `page` whose region contains `reading`, or `None` when it has none (#826).
+
+        `reading` is in the stored space a canonical observation already carries. `None` and an empty
+        tuple are different answers: a plain one-drawing PDF has no views, so the page is the drawing;
+        a page that has views but none holding the reading cannot say which drawing it is on.
+        """
+        views = self._page_views(page)
+        if not views:
+            return None
+        return tuple(
+            view for view, region in views if region is not None and region.contains(reading)
+        )
+
     def unconfirmed_side(self, page: Page) -> DocumentRole | None:
         """The side the upload gives an unconfirmed drawing on `page`, or `None` when it gives none.
 

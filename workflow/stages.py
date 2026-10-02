@@ -209,8 +209,8 @@ from workflow.association import (
 from workflow.config import READER_RASTER_DPI
 from workflow.evidence_operands import (
     IDENTIFIER_PAIRING_WITHHELD,
+    evidence_operands,
     identifier_paired_inputs,
-    operands_from_evidence,
 )
 from workflow.findings_composer import (
     ComposerFinding,
@@ -3835,11 +3835,12 @@ class DatabaseStages:
             # reviewer entered that number for this run — and evidence is derived, so overriding the
             # explicit thing with the derived one would take an answer away from the person who gave
             # it. It also keeps the Q7 form path behaving exactly as it did.
-            from_evidence = operands_from_evidence(
+            evidence = evidence_operands(
                 session,
                 package_revision_id,
                 [applicable.snapshot.rule for applicable in resolution.applicable],
             )
+            from_evidence = evidence.operands
 
             for applicable in resolution.applicable:
                 rule_id = applicable.snapshot.rule.id
@@ -3852,6 +3853,10 @@ class DatabaseStages:
                     supplied,
                     resolved,
                     discriminators=self._discriminators,
+                    # Readings found on more than one drawing (#826). A value typed for the same
+                    # input still wins, as it does over evidence: the engine ignores an ambiguous
+                    # input it was given an operand for.
+                    ambiguous=evidence.ambiguous.get(rule_id, {}),
                 )
                 # A pairing input evidence was not allowed to fill (#794), named in the reviewer's
                 # sentence — otherwise "could not resolve 'architectural_cabinets'" reads as though

@@ -155,17 +155,21 @@ def execute(
     parameters: Mapping[str, ResolvedParameter] | None = None,
     *,
     discriminators: Mapping[str, str] | None = None,
+    ambiguous: Mapping[str, str] | None = None,
 ) -> Finding:
     """Run one check and return its finding.
 
     ``snapshot`` pins the exact rule text; ``operands`` are values that already cleared the
     evidence gate; ``parameters`` are the resolved project settings behind the check.
     ``discriminators`` carry what the drawing said about the item — ``wall_config`` and the
-    like — used to select the applicability variant.
+    like — used to select the applicability variant. ``ambiguous`` names inputs whose readings were
+    found but could not be shown to belong together (#826), each with why; an input named there and
+    not supplied makes the check return the rule's own ``on_ambiguous``.
     """
     rule: Rule = snapshot.rule
     parameters = parameters or {}
     discriminators = discriminators or {}
+    ambiguous = ambiguous or {}
     notes: list[str] = []
     # **A default with a known doubt says so on the finding** (#674). Only while the rule's own
     # default is the value in use: once a person has set the number — a company standard, a project
@@ -232,6 +236,23 @@ def execute(
             "FAIL can be honest. An unset tolerance is not zero.",
             operands,
             variant=variant_name,
+        )
+
+    # ---- step 1b: nothing found-but-ambiguous ----------------------------------
+    # **The rule decides what ambiguity means, not the caller** (#826): `on_ambiguous` is authored and
+    # the schema refuses anything but an abstention. An input supplied anyway — a value the reviewer
+    # typed for this check — is not ambiguous; that value is the reviewer's answer.
+    withheld = sorted(name for name in ambiguous if name in rule.inputs and name not in operands)
+    if withheld:
+        reasons = " ".join(sorted({ambiguous[name] for name in withheld}))
+        return _abstain(
+            rule,
+            snapshot.snapshot_id,
+            rule.on_ambiguous,
+            f"{reasons} (inputs: {', '.join(withheld)})",
+            operands,
+            variant=variant_name,
+            notes=notes,
         )
 
     # ---- step 2: every operand qualified ---------------------------------------
