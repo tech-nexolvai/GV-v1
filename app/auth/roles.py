@@ -19,7 +19,8 @@ class Role(StrEnum):
     """The three roles. Deliberately few — a role per endpoint is a permission system nobody reads."""
 
     REVIEWER = "reviewer"
-    """Confirms evidence and approves packages. May not change what the rules say."""
+    """Confirms evidence, enters a project's values, and approves packages. May not change what the
+    rules say, nor what was uploaded."""
 
     RULE_ADMIN = "rule_admin"
     """Publishes rule snapshots. May not approve the packages those rules judge.
@@ -40,6 +41,11 @@ class Action(StrEnum):
     APPROVE_PACKAGE = "approve_package"
     PUBLISH_RULE = "publish_rule"
     MANAGE_PROJECT = "manage_project"
+    #: Enter a project's values, ask the AI to fill them, and ask for the checks (#824). Its own action
+    #: rather than `MANAGE_PROJECT`, because the person who fills the form is usually the reviewer,
+    #: while creating packages and uploading drawings stay the admin's. Running the checks decides
+    #: nothing on its own: a reviewer still signs off on every finding.
+    ENTER_VALUES = "enter_values"
     #: Record GV's company standards — the numbers every project starts from (#812). Its own action
     #: rather than `MANAGE_PROJECT`, because it changes every future verdict on every project, not
     #: one job's.
@@ -57,6 +63,7 @@ PERMISSIONS: dict[Action, frozenset[Role]] = {
     Action.APPROVE_PACKAGE: frozenset({Role.REVIEWER, Role.ADMIN}),
     Action.PUBLISH_RULE: frozenset({Role.RULE_ADMIN, Role.ADMIN}),
     Action.MANAGE_PROJECT: frozenset({Role.ADMIN}),
+    Action.ENTER_VALUES: frozenset({Role.REVIEWER, Role.ADMIN}),
     Action.MANAGE_COMPANY_STANDARDS: frozenset({Role.ADMIN}),
 }
 

@@ -526,7 +526,7 @@ def read_required_inputs(
 )
 def enter_measurements(
     principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _: Annotated[Principal, Depends(require_action(Action.ENTER_VALUES))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
@@ -726,7 +726,7 @@ def _check_discriminators(session: Session, stated: dict[str, str]) -> None:
 )
 def request_checks(
     principal: Annotated[Principal, Depends(require_project_access)],
-    _action: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _action: Annotated[Principal, Depends(require_action(Action.ENTER_VALUES))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
@@ -841,7 +841,7 @@ def _phase_event(name: str, detail: str, *, attempt: int = 1) -> AssignmentEvent
 def propose_measurements(
     request: Request,
     _access: Annotated[Principal, Depends(require_project_access)],
-    _action: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _action: Annotated[Principal, Depends(require_action(Action.ENTER_VALUES))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
