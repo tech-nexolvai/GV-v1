@@ -150,7 +150,7 @@ assert.match(checklist, /Maximum filler width/);
 assert.match(checklist, /unavailable or blocked/);
 assert.equal(renderToStaticMarkup(<DistributionMissingInputs missing={[]} />), '');
 const panelSource = readFileSync('src/pages/MeasurementPanel.tsx', 'utf8');
-assert.ok(panelSource.indexOf('<FillerDistributionPanel') > panelSource.indexOf('<h2>Settings</h2>'), 'inputs precede dependent calculator');
+assert.ok(panelSource.indexOf('<FillerDistributionPanel') > panelSource.indexOf('data-measure-section="settings"'), 'inputs precede dependent calculator');
 assert.equal((panelSource.match(/<FillerDistributionPanel/g) ?? []).length, 1);
 // One classification control per cabinet, not one "which cabinet moves" dropdown.
 assert.match(html, /reviewer classification/);

@@ -127,7 +127,7 @@ export function FillerDistributionPanel({
     >
       <div className="distribution-panel__head">
         <div>
-          <h2 id="distribution-heading">Filler distribution</h2>
+          <h2 id="distribution-heading" data-measure-section="distribution" tabIndex={-1}>Filler distribution</h2>
           <p className="enter-values__hint">
             Use the architectural widths and job limits entered above. Add the site width and
             choose a type for each cabinet, then calculate a proposal.

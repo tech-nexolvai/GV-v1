@@ -28,6 +28,41 @@
   margin: 0 0 var(--space-2);
 }
 
+.measurement-nav {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-block: var(--space-2);
+  margin-bottom: var(--space-4);
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border-default);
+  /* Cover the scrollport's padded strip so old field text cannot peek above the sticky bar. */
+  box-shadow: 0 calc(-1 * var(--space-5)) 0 var(--bg-base);
+  font-size: var(--text-sm);
+}
+.measurement-nav label { flex-shrink: 0; }
+.measurement-nav select {
+  min-width: 0;
+  max-width: 30ch;
+  flex: 1;
+  min-height: 44px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding-inline: var(--space-2);
+}
+.measurement-nav button { min-height: 44px; min-width: 44px; }
+.measurement-nav select:focus-visible,
+[data-measure-section]:focus-visible {
+  outline: 2px solid var(--text-brand);
+  outline-offset: 2px;
+}
+
 .enter-values__head p,
 .enter-values__hint {
   font-size: var(--text-sm);
@@ -527,9 +562,9 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  /* The section navigator is the single sticky control; a second sticky heading would
+     overlap it and make the destination's measured position depend on prior scrolling. */
+  position: static;
   padding: var(--space-2) 0;
   margin-bottom: var(--space-3);
   border-bottom: 1px solid var(--border-default);
