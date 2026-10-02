@@ -1,4 +1,6 @@
 // Invented, explicitly synthetic page data. Imported only by the isolated test server.
+import { packages } from './browser-qa-fixtures.mjs';
+export const syntheticNextCursor = 'synthetic+/page=2';
 export const pageRules = [
   {
     rule_id: 'SYNTHETIC-CABINET-001', name: 'Synthetic cabinet check', product_type: 'CABINET',
@@ -29,7 +31,13 @@ export const pageSettings = { settings: [
   },
 ] };
 
-export function pageFixture(path, mode) {
+export function pageFixture(path, mode, cursor = null) {
+  if (['paginated', 'page-error'].includes(mode) && path.endsWith('/packages')) {
+    if (cursor === null) return { status: 200, body: { items: [packages[0]], next_cursor: syntheticNextCursor, limit: 1, ordering: 'synthetic-test-order' } };
+    if (cursor !== syntheticNextCursor) return { status: 400, body: { error: 'synthetic_bad_cursor', message: 'Unexpected synthetic cursor.', request_id: 'SYNTHETIC_UI_QA' } };
+    if (mode === 'page-error') return { status: 503, body: { error: 'synthetic_page_failure', message: 'Synthetic next-page failure; first-page records still exist.', request_id: 'SYNTHETIC_UI_QA' } };
+    return { status: 200, body: { items: [packages[1]], next_cursor: null, limit: 1, ordering: 'synthetic-test-order' } };
+  }
   if (mode === 'partial' && (path.endsWith('/review-sessions') || path.endsWith('/packages/00000000-0000-4000-8000-000000000101/findings/summary'))) {
     return { status: 503, body: { error: 'synthetic_partial_outage', message: 'Synthetic supplementary data unavailable; document records still exist.', request_id: 'SYNTHETIC_UI_QA' } };
   }

@@ -4,15 +4,15 @@ import { listPackages, getFindingCounts, listReviewSessions } from '../api/clien
 import { projectId } from '../api/config';
 import { StatusBadge } from '../components/ui/Badge';
 import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
-import { documentListReducer, initialDocumentList, loadDocumentRows } from './documentRows';
+import { documentListReducer, documentNavigation, initialDocumentList, loadDocumentRows } from './documentRows';
 import { DocumentResults } from './DocumentResults';
 import '../components/ui/PageFrame.css';
 import './PackagesPage.css';
 
-function loadRows() {
+function loadRows(cursor?: string) {
   const project = projectId();
   return loadDocumentRows({
-    packages: () => listPackages(project),
+    packages: () => listPackages(project, cursor ? { cursor } : undefined),
     counts: (id) => getFindingCounts(project, id),
     sessions: () => listReviewSessions(project, { mine: false }),
   });
@@ -34,17 +34,18 @@ export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) 
   const [state, dispatch] = useReducer(documentListReducer, initialDocumentList);
   useEffect(() => {
     let current = true;
-    Promise.resolve().then(loadRows).then(
+    Promise.resolve().then(() => loadRows(state.requestedTrail.at(-1))).then(
       (data) => { if (current) dispatch({ type: 'loaded', data }); },
       (error: unknown) => { if (current) dispatch({ type: 'failed', error: error instanceof Error ? error.message : String(error) }); },
     );
     return () => { current = false; };
-  }, [attempt]);
+  }, [attempt, state.requestedTrail]);
   function retry() {
     dispatch({ type: 'loading' });
     setAttempt((value) => value + 1);
   }
   const data = state.data;
+  const navigation = documentNavigation(state);
   const partial = data?.reviewerError != null || data?.rows.some((row) => row.countsError !== null);
 
   return (
@@ -53,11 +54,11 @@ export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) 
       actions={<button className="btn btn--action" onClick={onNewPackage}>
         <Plus size={14} aria-hidden="true" /> New Document
       </button>}>
-      {state.loading && <p className="page-frame__state" role="status">{data ? 'Refreshing document details… Existing rows remain available.' : 'Loading documents…'}</p>}
+      {state.loading && <p className="page-frame__state" role="status">{data ? navigation.changingPage ? `Loading page ${state.requestedTrail.length}… Page ${navigation.page} remains visible.` : 'Refreshing document details… Existing rows remain available.' : 'Loading documents…'}</p>}
       {!data && state.error && <PageLoadError title="Documents could not be loaded" message={state.error} onRetry={retry} />}
       {data && (partial || state.error) && <aside className="packages-page__notice" aria-label="Document data availability">
         <div role="status">
-          <strong>{state.error ? 'Refresh failed. Showing the last loaded documents.' : 'Documents loaded; some details are unavailable.'}</strong>
+          <strong>{state.error ? navigation.changingPage ? `Could not load page ${state.requestedTrail.length}. Still showing page ${navigation.page}.` : 'Refresh failed. Showing the last loaded documents.' : 'Documents loaded; some details are unavailable.'}</strong>
           <p>{state.error ?? 'You can still open each review. Unavailable results are not zero findings.'}</p>
           {data.reviewerError && <p>Reviewer details unavailable: {data.reviewerError}</p>}
           {data.rows.some((row) => row.countsError !== null) && <details>
@@ -67,10 +68,17 @@ export function PackagesPage({ onOpenReview, onNewPackage }: PackagesPageProps) 
             </li>)}</ul>
           </details>}
         </div>
-        <button type="button" className="btn btn--ghost" disabled={state.loading} onClick={retry}>Retry unavailable details</button>
+        <button type="button" className="btn btn--ghost" disabled={state.loading} onClick={retry}>{navigation.changingPage ? 'Retry page' : 'Retry unavailable details'}</button>
       </aside>}
-      {data && data.rows.length === 0 && <p className="page-frame__state">No documents yet. Start a review with New Document.</p>}
-      {data?.hasMore && <p className="page-frame__state">Showing the first {data.rows.length} documents returned by the server. Older documents are not included in this view.</p>}
+      {data && <nav className="packages-page__pagination" aria-label="Document pages">
+        <p role="status" aria-atomic="true">Page {navigation.page} · {data.rows.length} document{data.rows.length === 1 ? '' : 's'} on this page</p>
+        <div>
+          <button type="button" className="btn btn--ghost" disabled={navigation.previousDisabled} onClick={() => dispatch({ type: 'previous' })}>Previous page</button>
+          <button type="button" className="btn btn--ghost" disabled={navigation.nextDisabled} onClick={() => dispatch({ type: 'next' })}>Next page</button>
+        </div>
+      </nav>}
+      {navigation.repeatedCursor && <p role="alert" className="page-frame__state">The server repeated a page cursor. Further navigation is unavailable; existing documents remain visible.</p>}
+      {data && data.rows.length === 0 && <p className="page-frame__state">{navigation.page === 1 ? 'No documents yet. Start a review with New Document.' : 'No documents on this page. Use Previous page to return to the earlier results.'}</p>}
       {data && data.rows.length > 0 && <div className="packages-table-wrap" role="region" aria-label="Documents table; scroll horizontally for all columns" tabIndex={0}>
         <table className="packages-table">
           <thead><tr>
