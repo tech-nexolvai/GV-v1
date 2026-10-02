@@ -6,8 +6,13 @@ Until now nothing could record them company-wide: each project typed them again,
 NOT_FOUND. Recorded here once, they apply to every project; a project or a run still overrides one,
 and the override report (Q10) shows where.
 
-**What is listed.** Every parameter the published rules declare at `global` or `project` scope. Run
-scope is left out: a sink's cut-sheet size is true for one review, never for the company.
+**What is listed: GV's standards, and only those** (#817, the admin's decision of 2026-10-02). A company
+standard is a parameter the rulebook gives a default — the back-offset minimum, the sink's front offset
+and clearance, the filler bounds. The rest are per project by Raj's own checklist ("Specified · G.C /
+Client · Project Specific": side panel, overhang, backsplash; the cabinet depth, carcass plus door; the
+field cut; the six cabinet width bounds, mandatory entries per job), and they are, by design, the ones
+with no default. A company value for one of those would apply to every job a number GV does not set.
+Run scope is left out too: a sink's cut-sheet size is true for one review.
 
 **How a save is stored.** As a new version of the company (GLOBAL) layer that carries forward every
 earlier company value it does not set — the rule #799 gave the project layer — so saving the cabinet
@@ -117,11 +122,12 @@ def _company_set(session: Session) -> tuple[int | None, dict[str, ParameterValue
 
 
 def _declared(rules: list[Rule]) -> dict[str, tuple[ParameterScope, list[str]]]:
-    """Every company-scope parameter the rules declare, with the checks that use it."""
+    """Every company standard the rules declare — a default, at company or project scope — with the
+    checks that use it."""
     declared: dict[str, tuple[ParameterScope, list[str]]] = {}
     for rule in rules:
         for name, parameter in rule.parameters.items():
-            if parameter.scope not in _COMPANY_SCOPES:
+            if parameter.scope not in _COMPANY_SCOPES or parameter.default is None:
                 continue
             _scope, users = declared.setdefault(name, (parameter.scope, []))
             users.append(rule.id)
@@ -200,8 +206,8 @@ def save_company_settings(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
-                    f"{entry.name!r} is not a setting any published check uses at company or "
-                    "project scope."
+                    f"{entry.name!r} is not a company standard: it is a per-project setting, "
+                    "entered for each job, or not a setting any published check uses."
                 ),
             )
         values[entry.name] = _parse(entry.value, field=entry.name)

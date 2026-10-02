@@ -65,42 +65,43 @@ def _by_name(response: Any) -> dict[str, dict[str, Any]]:
     return {setting["name"]: setting for setting in response.json()["settings"]}
 
 
-def test_the_list_holds_company_and_project_settings_and_no_run_ones(session: Session) -> None:
-    """Outcome: the back-offset minimum is listed with its rulebook 2.5" in use; the cabinet depth,
-    a project setting, is listed with nothing in use; the sink's cut-sheet size, true for one review,
-    is not listed at all."""
+def test_the_list_holds_gvs_standards_and_nothing_per_project(session: Session) -> None:
+    """**#817, the admin's decision of 2026-10-02.** Outcome: exactly the five settings the rulebook
+    gives a default — the back-offset minimum with its 2.5" in use, and so on. Not the per-project
+    ones (side panel, overhang, backsplash, cabinet depth, field cut, the cabinet width bounds), and
+    not the sink's cut-sheet size, which is one review's."""
     response = _client(session).get(URL)
 
     assert response.status_code == 200, response.text
     settings = _by_name(response)
+    assert set(settings) == {
+        "back_offset_minimum",
+        "front_offset_required",
+        "sink_cutout_clearance",
+        "filler_min",
+        "filler_max",
+    }
     offset = settings["back_offset_minimum"]
     assert (offset["rulebook_default"], offset["in_use"], offset["in_use_from"]) == (
         "2 1/2 in",
         "2 1/2 in",
         "rulebook",
     )
-    depth = settings["cabinet_depth"]
-    assert (depth["scope"], depth["in_use"], depth["in_use_from"]) == ("project", None, None)
-    assert "CT-DEPTH-001" in depth["rule_ids"]
     assert "#674" in (settings["filler_max"]["rulebook_note"] or "")
-    assert "sink_interior_width" not in settings
-    assert "sink_interior_depth" not in settings
 
 
 def test_saving_one_standard_keeps_the_ones_saved_before(session: Session) -> None:
-    """**The point.** Monday the cabinet depth; Tuesday the side thickness alone. Outcome: both are
+    """**The point of #812.** Monday the front offset; Tuesday the clearance alone. Outcome: both are
     company values in use, with who set them, and the version moved on."""
     client = _client(session)
 
-    first = client.post(URL, json={"values": [{"name": "cabinet_depth", "value": '24"'}]})
-    second = client.post(
-        URL, json={"values": [{"name": "cabinet_side_thickness", "value": '3/4"'}]}
-    )
+    first = client.post(URL, json={"values": [{"name": "front_offset_required", "value": '4"'}]})
+    second = client.post(URL, json={"values": [{"name": "sink_cutout_clearance", "value": '1/8"'}]})
 
     assert (first.status_code, second.status_code) == (201, 201), second.text
     assert second.json()["version"] > first.json()["version"]
     settings = _by_name(second)
-    for name, value in (("cabinet_depth", "24 in"), ("cabinet_side_thickness", "3/4 in")):
+    for name, value in (("front_offset_required", "4 in"), ("sink_cutout_clearance", "1/8 in")):
         assert (settings[name]["company_value"], settings[name]["in_use_from"]) == (
             value,
             "company",
@@ -124,16 +125,19 @@ def test_a_company_value_replaces_the_rulebook_default_and_says_so(session: Sess
 @pytest.mark.parametrize(
     ("entry", "says"),
     [
-        ({"name": "cabinet_depth", "value": "24"}, "with its unit"),
-        ({"name": "cabinet_dpeth", "value": '24"'}, "not a setting"),
-        ({"name": "sink_interior_width", "value": '28"'}, "not a setting"),
+        ({"name": "back_offset_minimum", "value": "2"}, "with its unit"),
+        ({"name": "back_offset_minumum", "value": '2"'}, "not a company standard"),
+        ({"name": "sink_interior_width", "value": '28"'}, "not a company standard"),
+        # Per project by Raj's checklist (#817): entered for each job, never for the company.
+        ({"name": "cabinet_side_thickness", "value": '3/4"'}, "per-project setting"),
+        ({"name": "single_door_cab_width_min", "value": '9"'}, "per-project setting"),
     ],
 )
 def test_a_value_with_no_unit_or_a_name_no_check_uses_is_refused(
     session: Session, entry: dict[str, str], says: str
 ) -> None:
-    """A bare number is never guessed at, and a misspelt or run-only name would be a standard no
-    check ever reads, saved as though it mattered."""
+    """A bare number is never guessed at; a misspelt or run-only name would be a standard no check
+    ever reads; and a per-project setting is not GV's to fix for every job (#817)."""
     response = _client(session).post(URL, json={"values": [entry]})
 
     assert response.status_code == 422, response.text
@@ -146,13 +150,13 @@ def test_a_reviewer_may_read_the_standards_but_not_change_them(session: Session)
     client = _client(session, role="reviewer")
 
     assert client.get(URL).status_code == 200
-    refused = client.post(URL, json={"values": [{"name": "cabinet_depth", "value": '24"'}]})
+    refused = client.post(URL, json={"values": [{"name": "back_offset_minimum", "value": '2"'}]})
     assert refused.status_code == 404, refused.text
-    assert _by_name(_client(session).get(URL))["cabinet_depth"]["company_value"] is None
+    assert _by_name(_client(session).get(URL))["back_offset_minimum"]["company_value"] is None
 
 
 def test_a_save_is_audited_under_the_person_who_made_it(session: Session) -> None:
-    _client(session).post(URL, json={"values": [{"name": "cabinet_depth", "value": '24"'}]})
+    _client(session).post(URL, json={"values": [{"name": "front_offset_required", "value": '4"'}]})
 
     events = [
         event
