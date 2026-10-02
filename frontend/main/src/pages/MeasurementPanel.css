@@ -10,8 +10,12 @@
   height: 100%;
   overflow-y: auto;
   padding: var(--space-5) var(--space-6);
-  background: var(--bg-surface);
-  max-width: 900px;
+  background: var(--bg-base);
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+  min-width: 0;
+  scrollbar-gutter: stable;
 }
 
 .enter-values__head h1 {
@@ -20,7 +24,7 @@
   font-weight: var(--weight-semi);
   color: var(--text-primary);
   letter-spacing: var(--tracking-tight);
-  text-transform: uppercase;
+  text-transform: none;
   margin: 0 0 var(--space-2);
 }
 
@@ -43,7 +47,7 @@
   font-size: var(--text-base);
   font-weight: var(--weight-semi);
   color: var(--text-primary);
-  text-transform: uppercase;
+  text-transform: none;
   letter-spacing: var(--tracking-tight);
   margin: 0 0 var(--space-2);
 }
@@ -145,7 +149,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  color: var(--color-primary);
+  color: var(--text-brand);
   font-size: var(--text-sm);
 }
 
@@ -204,7 +208,7 @@
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   background: var(--color-primary-dim);
-  color: var(--color-primary);
+  color: var(--text-brand);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
 }
@@ -323,7 +327,7 @@
 
 .distribution-panel__head svg {
   flex-shrink: 0;
-  color: var(--color-primary);
+  color: var(--text-brand);
 }
 
 .distribution-panel__grid {
@@ -532,7 +536,7 @@
   color: var(--text-primary);
 }
 
-.ai-proposals__toggle:hover { color: var(--maroon-800); }
+.ai-proposals__toggle:hover { color: var(--gv-crimson-hover); }
 
 .ai-proposals__toggle:focus-visible {
   outline: 2px solid var(--border-focus);
@@ -597,7 +601,7 @@
 
 .ai-proposal__type .value-input { width: 100%; }
 
-@media (max-width: 48rem) {
+@media (max-width: 1023px) {
   .ai-proposal { grid-template-columns: 1fr; }
   .ai-reading-status { grid-template-columns: 1fr; }
 }
@@ -695,6 +699,16 @@
   flex-wrap: wrap;
 }
 
+@media (max-width: 767px) {
+  .enter-values { padding: var(--space-4); }
+  .value-row { flex-wrap: wrap; align-items: stretch; }
+  .value-input { flex-basis: 100%; font-size: 16px; }
+  .value-input--rule,
+  .value-input--value { flex: 1 1 100%; }
+  .value-feeds { margin-left: 0; }
+  .measure-coverage__head { flex-wrap: wrap; }
+}
+
 .enter-values__error {
   margin-top: var(--space-4);
   padding: var(--space-3) var(--space-4);
@@ -749,7 +763,7 @@
    field and what the rulebook matches on — worth showing, not worth leading with. */
 .value-code {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 1px 5px;
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
@@ -871,7 +885,6 @@ select.value-input {
   border-left: 2px solid var(--gv-crimson);
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
   background: var(--gv-crimson-dim-2);
-  animation: gv-rise-sm var(--duration-base) var(--ease-out) both;
 }
 
 /* A disclosure, so it has to look and behave like a button rather than a caption. */
@@ -892,7 +905,7 @@ select.value-input {
   text-align: left;
 }
 
-.ai-readings__label:hover { color: var(--maroon-800); }
+.ai-readings__label:hover { color: var(--gv-crimson-hover); }
 
 .ai-readings__label:focus-visible {
   outline: none;

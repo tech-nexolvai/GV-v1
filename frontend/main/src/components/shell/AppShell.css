@@ -1,187 +1,139 @@
+/* ============================================================
+   APP SHELL — sidebar | (header / screen + evidence on demand)
+   ============================================================ */
 .shell {
   display: flex;
-  flex-direction: column;
   height: 100vh;
-  width: 100vw;
+  height: 100dvh;
+  width: 100%;
   overflow: hidden;
-  background: transparent;
+  background: var(--bg-base);
+}
+
+.shell__content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .shell__body {
-  display: flex;
   flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
+  min-height: 0;
+  display: flex;
   position: relative;
-  /* Smooth custom horizontal scrollbar */
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) var(--bg-surface);
 }
 
-.shell__body::-webkit-scrollbar {
-  height: 6px;
-}
-.shell__body::-webkit-scrollbar-track {
-  background: var(--bg-surface);
-  border-top: 1px solid var(--border-subtle);
-}
-.shell__body::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: var(--radius-full);
-}
-.shell__body::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
-}
-
-/* Panel min-widths to prevent content squishing and enable smooth horizontal scrolling */
-.sidebar {
-  min-width: var(--sidebar-width);
-}
-[data-sidebar-collapsed="true"] .sidebar {
-  min-width: var(--sidebar-collapsed);
-}
-
-/* ── Main content ─────────────────────────────────────────── */
 .shell__main {
   flex: 1;
-  overflow: hidden;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   position: relative;
-  min-width: 420px; /* prevent flex overflow and preserve structural readability */
-  transition: margin-right var(--duration-panel) var(--ease-out);
+  outline: none;
 }
 
-/* ── Evidence panel ───────────────────────────────────────── */
+.shell__main > .page-transition {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Evidence, beside the conversation ─────────────────────── */
 .shell__evidence {
-  position: relative;
-  width: 0;
-  overflow: hidden;
-  border-left: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-  transition:
-    width var(--duration-panel) var(--ease-out),
-    opacity var(--duration-panel) var(--ease-out);
-  opacity: 0;
-  flex-shrink: 0;
-}
-
-.shell__evidence--open {
   width: var(--evidence-panel-width);
-  min-width: 360px;
-  opacity: 1;
-}
-
-/* ============================================================
-   IDE SLATE PRESET LAYOUT OVERRIDES (IDE Chat on Right)
-   ============================================================ */
-[data-style="ide"][data-page="review"] .sidebar {
-  min-width: var(--sidebar-width);
-}
-
-[data-style="ide"][data-page="review"] .shell__evidence {
-  border-left: none;
-  border-right: 1px solid var(--border-default);
-  opacity: 1 !important;
-  width: auto !important;
-  min-width: 360px !important;
-  flex: 1.3 !important;
-  flex-shrink: 1 !important;
-  pointer-events: auto !important;
-}
-
-[data-style="ide"][data-page="review"] .shell__main {
-  flex: none !important;
-  /* clamp: min 360px, prefer 35vw, max 480px — no overflow on 1280px screens */
-  width: clamp(360px, 35vw, 480px) !important;
-  min-width: 360px !important;
-  border-left: 1px solid var(--border-default);
-}
-
-/* ── Collapsed sidebar adjustments ───────────────────────── */
-[data-sidebar-collapsed="true"] .shell__evidence--open {
-  /* give more space when sidebar is narrow */
-  width: calc(var(--evidence-panel-width) + 40px);
-}
-
-/* ============================================================
-   RESPONSIVE BREAKPOINTS
-   ============================================================ */
-
-/* Tablet (≤ 1024px): narrow the evidence panel to free up chat space */
-@media (max-width: 1024px) {
-  .shell__evidence--open {
-    width: 320px;
-  }
-  [data-sidebar-collapsed="true"] .shell__evidence--open {
-    width: 360px;
-  }
-}
-
-/* Mobile (≤ 768px): evidence panel becomes a full-width overlay */
-@media (max-width: 768px) {
-  .shell__evidence--open {
-    position: absolute;
-    right: 0;
-    top: 0;
-    height: 100%;
-    width: 100% !important;
-    z-index: 30;
-    border-left: none;
-    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
-  }
-
-  /* IDE mode: stack vertically on mobile */
-  [data-style="ide"][data-page="review"] .shell__main {
-    width: 100% !important;
-    order: 1 !important;
-  }
-  [data-style="ide"][data-page="review"] .shell__evidence {
-    order: 2 !important;
-    width: 100% !important;
-    flex: none !important;
-    border-right: none;
-    border-top: 1px solid var(--border-default);
-  }
-}
-
-/* ============================================================
-   EVIDENCE PANEL — motion and empty state
-   ============================================================ */
-
-/* The panel's own `width` transition above is what the layout needs, and width cannot be
-   composited — it relayouts the main column on every frame. So the contents additionally slide on
-   `transform`, which is composited: the eye tracks the content, and the edge arriving a frame or
-   two behind it is not something anyone sees.
-   `will-change` only while it is open, so an idle panel is not holding a layer for nothing. */
-.shell__evidence > * {
-  animation: gv-enter-right var(--duration-panel) var(--ease-emphasis) both;
-}
-
-.shell__evidence--open { will-change: width; }
-
-.evidence-placeholder {
-  height: 100%;
+  max-width: 48%;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3);
-  padding: var(--space-8);
-  text-align: center;
-  font-size: var(--text-sm);
-  line-height: var(--leading-normal);
+  min-height: 0;
+  background: var(--bg-base);
+  border-left: 1px solid var(--border-default);
+  animation: gv-enter-right var(--duration-slow) var(--ease-out) both;
+}
+
+.shell__evidence > * {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Under 1100px there is no room for two columns: the evidence becomes a full-screen sheet with its
+   own close button, and the conversation is underneath, exactly where the reviewer left it. */
+@media (max-width: 1099px) {
+  .shell__evidence {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    width: auto;
+    max-width: none;
+    border-left: none;
+    animation: gv-rise-sm var(--duration-slow) var(--ease-out) both;
+  }
+}
+
+/* ── Drawer scrim (mobile) ─────────────────────────────────── */
+.shell__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: var(--bg-overlay);
+  animation: gv-fade-in var(--duration-base) var(--ease-out) both;
+}
+
+@media (min-width: 768px) {
+  .shell__scrim { display: none; }
+}
+
+/* ── Nexolv, bottom-right ──────────────────────────────────── */
+.shell__partner {
+  position: absolute;
+  right: var(--space-4);
+  bottom: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.shell__partner strong {
+  font-weight: var(--weight-semi);
   color: var(--text-muted);
 }
 
-.evidence-placeholder svg {
-  color: var(--text-faint);
+/* Only where it cannot sit on top of the composer: a wide conversation with no evidence open. */
+@media (max-width: 1279px) {
+  .shell__partner { display: none; }
+}
+.shell[data-evidence-open='true'] .shell__partner { display: none; }
+
+/* ── Skip link ─────────────────────────────────────────────── */
+.shell__skip {
+  position: fixed;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: 100;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--text-primary);
+  color: var(--text-inverse);
+  font-size: var(--text-sm);
+  transform: translateY(-200%);
 }
 
-/* ============================================================
-   BRAND LOCKUP
-   ============================================================ */
+.shell__skip:focus { transform: none; }
 
+.shell__sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.shell__modal-overlay { position: fixed; inset: 0; z-index: 80; background: var(--bg-overlay); }
+.shell__navigation-dialog { position: fixed; inset: 0 auto 0 0; width: min(320px, 88vw); z-index: 81; outline: none; }
+.shell__navigation-dialog .sidebar { position: static; width: 100%; transform: none; }
+.shell__evidence-dialog { position: fixed; inset: 16px 16px 16px auto; width: min(640px, calc(100vw - 32px)); z-index: 81; display: flex; flex-direction: column; background: var(--bg-base); border: 1px solid var(--border-default); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); overflow: hidden; outline: none; }
+.shell__evidence-dialog > .evidence-panel { flex: 1; min-height: 0; }
+@media (max-width: 560px) { .shell__evidence-dialog { inset: 0; width: 100%; border-radius: 0; } }
+
+/* ── Brand lockup (kept for any screen that shows the full name) ── */
 .gv-lockup {
   display: flex;
   align-items: center;
@@ -191,50 +143,25 @@
 .gv-lockup__text {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 
 .gv-lockup__name {
-  font-family: var(--font-heading);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   font-weight: var(--weight-semi);
   color: var(--text-primary);
-  letter-spacing: var(--tracking-wide);
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  line-height: 1;
+  line-height: 1.2;
 }
 
 .gv-lockup__product {
   font-size: var(--text-xs);
   color: var(--text-muted);
-  line-height: 1;
+  line-height: 1.2;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .shell__evidence > * { animation: none; }
-  .shell__evidence { transition: none; }
-}
-
-/* ── Resizer ───────────────────────────────────────── */
-.shell__resizer {
-  display: none; /* hidden by default */
-}
-[data-style="ide"][data-page="review"] .shell__resizer {
-  display: block;
-  width: 6px;
-  cursor: col-resize;
-  background: transparent;
-  position: relative;
-  z-index: 10;
-  transition: background 0.2s;
-}
-[data-style="ide"][data-page="review"] .shell__evidence {
-}
-.shell__resizer:hover, .shell__resizer:active {
-  background: var(--border-strong);
-}
-@media (max-width: 768px) {
-  [data-style="ide"][data-page="review"] .shell__resizer {
-    display: none !important;
-  }
+  .shell__evidence,
+  .shell__scrim { animation: none; }
 }

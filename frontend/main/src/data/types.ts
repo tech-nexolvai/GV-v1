@@ -66,6 +66,9 @@ export interface Evidence {
   page: number;
   polygon: Array<[number, number]>;
   semantic_type: string;
+  /** Complete location as recorded; string coordinates retain their exact source precision. */
+  recorded_location?: components['schemas']['EvidenceLocation'];
+  document_role?: string;
 }
 
 /** The arithmetic behind a verdict, so a reviewer can check the sum by hand.
@@ -86,6 +89,11 @@ export interface Finding {
   name: string;
   outcome: Outcome;
   severity: Severity;
+  /** Retain the complete API record alongside its display fields. */
+  recorded_finding?: components['schemas']['FindingOut'];
+  recorded_chain?: components['schemas']['FindingChain'];
+  /** Every located operand, including multiple locations on the same side. */
+  evidence?: Evidence[];
   /**
    * The values compared, the difference, the reason and the arithmetic.
    *
@@ -135,6 +143,8 @@ export interface Finding {
 
 /** One turn in the review thread. */
 export interface ChatMessage {
+  /** Progress reported by the server, never inferred from a timer. */
+  streamStage?: { stage: string; model_id: string | null };
   id: string;
   role: 'user' | 'assistant';
   content: string;

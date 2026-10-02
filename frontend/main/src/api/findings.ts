@@ -8,6 +8,7 @@
  */
 
 import { getFindingChain, listFindings } from './client';
+import { formatExact } from './fractions';
 import type { Evidence, Finding, Outcome, ReviewerAction, Severity, Trace } from '../data/types';
 
 type Listed = Awaited<ReturnType<typeof listFindings>>['items'][number];
@@ -28,6 +29,7 @@ export function toFinding(listed: Listed): Finding {
     name: listed.rule_id,
     outcome: listed.outcome as Outcome,
     severity: listed.severity as Severity,
+    recorded_finding: listed,
     // Read back from the server rather than reset to null on every load. This was `null`
     // unconditionally, so a reviewer who refreshed saw their own decisions vanish from the screen
     // while the ledger still held them — and could record the same one twice, because the first was
@@ -52,9 +54,7 @@ export function withChain(finding: Finding, chain: Chain): Finding {
     name: operand.name,
     // These are the immutable exact fields from the finding chain.  Do not turn them into a
     // JavaScript number: the evidence view is explanatory and must not silently round a value.
-    value: operand.denominator === '1'
-      ? `${operand.numerator} ${operand.unit}`
-      : `${operand.numerator}/${operand.denominator} ${operand.unit}`,
+    value: `${formatExact(operand)} ${operand.unit}`,
     source: tracedSources.get(operand.name) ?? operand.evidence?.document_role ?? 'RECORDED',
     status: operand.evidence_status,
     hasEvidence: operand.evidence !== null,
@@ -96,8 +96,10 @@ export function withChain(finding: Finding, chain: Chain): Finding {
 
   return {
     ...finding,
+    recorded_chain: chain,
     recorded_operands: recordedOperands,
     trace,
+    evidence: evidence.map(_toEvidence),
     arch_evidence: _evidenceFor(evidence, 'ARCH'),
     shop_evidence: _evidenceFor(evidence, 'SHOP'),
   };
@@ -112,23 +114,40 @@ function _evidenceFor(
     ?? evidence.find((item) => item.document_role.toUpperCase() === role);
   if (!located) return null;
 
-  const polygon = located.polygon.map(([x, y]) => [Number(x), Number(y)] as [number, number]);
-  if (polygon.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y))) return null;
+  return _toEvidence(located);
+}
 
+function _toEvidence(located: NonNullable<Chain['operands'][number]['evidence']>): Evidence {
+  const polygon = located.polygon.map(([x, y]) => [Number(x), Number(y)] as [number, number]);
   return {
     canonical_observation_id: located.canonical_observation_id,
     document_version_id: located.document_version_id,
     // The API persists page indexes from zero; people holding a PDF count pages from one.
     page: located.page_index + 1,
-    polygon,
+    // The verified crop endpoint does not depend on display coordinates. Preserve the location
+    // even when a coordinate cannot be projected into JavaScript's numeric representation.
+    polygon: polygon.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)) ? polygon : [],
     semantic_type: located.semantic_type,
+    document_role: located.document_role,
+    recorded_location: located,
   };
 }
 
 /** Every finding for a package, in the order the API ranks them. */
 export async function loadFindings(projectId: string, packageId: string): Promise<Finding[]> {
-  const page = await listFindings(projectId, packageId);
-  const base = page.items.map(toFinding);
+  const listed: Listed[] = [];
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const page = await listFindings(projectId, packageId, cursor ? { cursor } : undefined);
+    listed.push(...page.items);
+    cursor = page.next_cursor ?? undefined;
+    if (cursor && cursors.has(cursor)) {
+      throw new Error('The findings list could not be fully loaded. Please retry.');
+    }
+    if (cursor) cursors.add(cursor);
+  } while (cursor);
+  const base = listed.map(toFinding);
 
   // **Every finding arrives with its evidence, rather than one at a time on request.**
   //

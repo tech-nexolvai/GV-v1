@@ -36,12 +36,14 @@ const finding: Finding = {
   ],
   arch_evidence: {
     canonical_observation_id: 'obs-a',
+    document_version_id: 'dv-arch',
     page: 12,
     polygon: [[0, 0]],
     semantic_type: 'countertop_depth',
   },
   shop_evidence: {
     canonical_observation_id: 'obs-s',
+    document_version_id: 'dv-shop',
     page: 13,
     polygon: [[0, 0]],
     semantic_type: 'countertop_depth',

@@ -1,199 +1,112 @@
 /* ============================================================
-   WELCOME
-   The first screen. It carries the brand and nothing it does not need.
+   START SCREEN — a heading and the composer, centred like an empty chat.
    ============================================================ */
-
 .welcome {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
-  align-items: center;
   justify-content: center;
-  padding: var(--space-10) var(--space-6);
-  position: relative;
-}
-
-/* A single soft brand wash behind the content, anchored above the fold. It gives the screen a
-   centre of gravity without putting a coloured panel on the page. */
-.welcome::before {
-  content: '';
-  position: absolute;
-  top: -10%;
-  left: 50%;
-  width: min(760px, 90vw);
-  height: 420px;
-  transform: translateX(-50%);
-  background: radial-gradient(ellipse at center, var(--gv-crimson-dim) 0%, transparent 68%);
-  pointer-events: none;
+  padding: var(--space-6) var(--space-4) var(--space-12);
 }
 
 .welcome__inner {
-  position: relative;
   width: 100%;
-  max-width: 620px;
+  max-width: var(--chat-max-width);
+  margin: auto 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  align-items: stretch;
+  gap: var(--space-4);
 }
 
-/* ── Head ─────────────────────────────────────────────────── */
-
-.welcome__head {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-3);
+.welcome__heading {
+  font-size: var(--text-3xl);
+  font-weight: var(--weight-semi);
+  letter-spacing: var(--tracking-tight);
+  color: var(--text-primary);
   text-align: center;
 }
 
-.welcome__mark {
-  animation: gv-pop var(--duration-xl) var(--ease-emphasis) both;
-  filter: drop-shadow(0 6px 16px rgba(140, 16, 39, 0.24));
-}
-
-.welcome__greeting {
-  font-family: var(--font-heading);
-  font-size: var(--text-3xl);
-  font-weight: var(--weight-light);
-  letter-spacing: var(--tracking-tight);
-  color: var(--text-primary);
-  line-height: var(--leading-tight);
-  margin: 0;
-  animation: gv-rise var(--duration-slow) var(--ease-emphasis) both;
-  animation-delay: 70ms;
-}
-
-.welcome__subtitle {
-  font-size: var(--text-md);
+.welcome__sub {
+  max-width: 60ch;
+  margin: 0 auto var(--space-4);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
   color: var(--text-muted);
-  margin: 0;
-  animation: gv-rise var(--duration-slow) var(--ease-emphasis) both;
-  animation-delay: 130ms;
+  text-align: center;
 }
 
-/* ── Input ────────────────────────────────────────────────── */
-
-.welcome__input {
-  animation: gv-rise var(--duration-slow) var(--ease-emphasis) both;
-  animation-delay: 190ms;
+.welcome__error {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  text-align: center;
 }
-
-/* ── Recent ───────────────────────────────────────────────── */
 
 .welcome__recent {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  margin-top: var(--space-6);
 }
 
-.welcome__card {
+.welcome__recent-label {
+  padding: 0 var(--space-3) var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+.welcome__recent-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-default);
+}
+
+.welcome__recent-list > li { border-bottom: 1px solid var(--border-default); }
+
+.welcome__recent-item {
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-4);
-  width: 100%;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  background: var(--bg-base);
-  box-shadow: var(--elevation-1);
-  cursor: pointer;
+  gap: var(--space-3);
+  padding: var(--space-3);
   text-align: left;
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
-.welcome__card:hover {
-  border-color: var(--gv-crimson-border);
-  box-shadow: var(--elevation-2);
+.welcome__recent-item:hover { background: var(--bg-hover); }
+
+.welcome__recent-item:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
 }
 
-.welcome__card--skeleton {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-  cursor: default;
-  pointer-events: none;
-}
-
-.welcome__card-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.welcome__recent-vendor {
   min-width: 0;
-}
-
-.welcome__card-vendor {
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.welcome__card-id {
-  font-size: var(--text-xs);
-  color: var(--text-faint);
-}
-
-.welcome__card-right {
+.welcome__recent-meta {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   flex-shrink: 0;
 }
 
-/* The arrow only travels on hover. A static arrow is a label; one that moves toward where it is
-   sending you is the affordance. */
-.welcome__card-arrow {
-  color: var(--text-faint);
-  transition:
-    transform var(--duration-base) var(--ease-emphasis),
-    color var(--duration-base) var(--ease-out);
+.welcome__recent-date {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
 }
 
-.welcome__card:hover .welcome__card-arrow {
-  transform: translate(2px, -2px);
-  color: var(--gv-crimson);
-}
+.welcome__recent-arrow { color: var(--text-muted); }
 
-/* ── Empty and error ──────────────────────────────────────── */
-
-.welcome__empty {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  align-self: center;
-  padding: var(--space-3) var(--space-5);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-primary-border);
-  background: var(--color-primary);
-  color: var(--text-inverse);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-  cursor: pointer;
-  box-shadow: var(--elevation-1);
-}
-
-.welcome__empty:hover { box-shadow: var(--shadow-primary); }
-
-.welcome__error {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--status-fail-border);
-  background: var(--status-fail-bg);
-  color: var(--status-fail);
-  font-size: var(--text-sm);
-  text-align: center;
-}
-
-@media (max-width: 640px) {
-  .welcome { padding: var(--space-6) var(--space-4); align-items: flex-start; }
-  .welcome__greeting { font-size: var(--text-2xl); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .welcome__mark,
-  .welcome__greeting,
-  .welcome__subtitle,
-  .welcome__input { animation: none; }
-  .welcome__card:hover .welcome__card-arrow { transform: none; }
+@media (max-width: 560px) {
+  .welcome { padding-top: var(--space-4); }
+  .welcome__heading { font-size: var(--text-2xl); }
+  .welcome__recent-date { display: none; }
 }

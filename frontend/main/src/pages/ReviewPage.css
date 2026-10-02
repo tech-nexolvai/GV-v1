@@ -3,7 +3,7 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  background: var(--bg-surface);
+  background: var(--bg-base);
 }
 
 /* ── Header bar ───────────────────────────────────────────── */
@@ -11,8 +11,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-4) var(--space-6);
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-6);
   border-bottom: 1px solid var(--border-default);
   background: var(--bg-base);
   flex-shrink: 0;
@@ -24,6 +24,7 @@
   align-items: center;
   gap: var(--space-3);
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .review-page__back {
@@ -36,8 +37,13 @@
 .review-page__header-right {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
+  flex-wrap: wrap;
 }
+.review-page__workflow { font-size: var(--text-xs); color: var(--text-muted); }
+.review-page__workflow summary { cursor: pointer; padding: var(--space-1); }
+.review-page__workflow[open] { flex-basis: 100%; }
+.review-page__workflow .review-path { margin-top: var(--space-2); }
 
 .review-path {
   display: flex;
@@ -51,7 +57,7 @@
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .review-path__steps {
@@ -67,8 +73,9 @@
   border: 1px solid var(--border-default);
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 10px;
-  padding: 2px 5px;
+  font-size: var(--text-xs);
+  padding: 3px var(--space-2);
+  border-radius: var(--radius-sm);
 }
 
 .review-path__step--done {
@@ -78,9 +85,9 @@
 }
 
 .review-path__step--current {
-  background: var(--text-primary);
-  border-color: var(--text-primary);
-  color: var(--text-inverse);
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--text-on-primary);
 }
 
 
@@ -124,6 +131,7 @@
 .review-page__record-ids summary { cursor: pointer; }
 .review-page__record-ids[open] { display: flex; flex-direction: column; gap: 3px; }
 .review-page__record-ids span { display: flex; align-items: center; gap: var(--space-1); }
+.review-page__record-ids span { overflow-wrap: anywhere; }
 
 /* One quiet affordance rather than two lines of standing text — the sentence itself is in the
    tooltip. Focusable, so it is reachable without a mouse: an explanation only hover can reach is
@@ -179,7 +187,7 @@
 
 /* Progress text quieter than CTA */
 .review-page__progress-text {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   font-family: var(--font-mono);
 }
@@ -192,48 +200,12 @@
   overflow: hidden;
 }
 
-/* Progress fill = blue, not crimson */
+/* Progress is the recorded review count. */
 .review-page__progress-fill {
   height: 100%;
   background: var(--color-primary);
   border-radius: var(--radius-full);
   transition: width var(--duration-slow) var(--ease-out);
-}
-
-/* ============================================================
-   IDE ASSISTANT PRESET LAYOUT OVERRIDES (Narrow Header Reflow)
-   ============================================================ */
-
-[data-style="ide"] .review-page__header {
-  flex-direction: column;
-  align-items: stretch;
-  padding: var(--space-4);
-  gap: var(--space-3);
-}
-
-[data-style="ide"] .review-page__header-left {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-}
-
-[data-style="ide"] .review-page__pkg-info {
-  border-left: none;
-  padding-left: 0;
-}
-
-[data-style="ide"] .review-page__header-right {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  width: 100%;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: var(--space-3);
-  gap: var(--space-3);
-}
-
-[data-style="ide"] .review-page__progress {
-  align-items: flex-start;
 }
 
 /* A failure and a clean package must not look alike. */
@@ -253,15 +225,33 @@
   gap: var(--space-2);
   padding: var(--space-2) var(--space-5);
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
+  background: var(--bg-base);
+  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .review-page__measure-container {
   flex: 1;
+  min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   /* MeasurementPanel has its own scrolling, so we let it take full height */
+}
+.review-page__measure-container[hidden] { display: none; }
+.review-page__notice { flex-shrink: 0; padding: var(--space-2) var(--space-6); border-bottom: 1px solid var(--border-subtle); font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--text-muted); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+
+@media (max-width: 767px) {
+  .review-page__header { padding: var(--space-3) var(--space-4); }
+  .review-page__header-left,
+  .review-page__header-right { width: 100%; }
+  .review-page__header-right { gap: var(--space-2); }
+  .review-page__method { padding-inline: var(--space-1); }
+  .review-page__header-right .btn { padding-inline: var(--space-2); }
+  .review-path { width: 100%; border-left: 0; padding-left: 0; }
+  .review-page__tabs { padding: var(--space-2) var(--space-4); }
+  .review-page__record-ids { max-width: 100%; }
 }
 /* Ensure MeasurementPanel fills the container without looking nested in another page */
 .review-page__measure-container .enter-values-page {

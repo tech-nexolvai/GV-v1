@@ -1,100 +1,151 @@
 import { useState } from 'react';
-import { FileSearch } from 'lucide-react';
+import { useMediaQuery } from '../../app/useMediaQuery';
+import { ModalSheet } from './ModalSheet';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
+import { ShellSlotsContext } from './shellSlots';
+import type { Page } from '../../app/route';
+import type { Theme } from '../../app/theme';
 import './AppShell.css';
 
 interface AppShellProps {
   children: React.ReactNode;
-  activePage: string;
-  onNavigate: (page: string) => void;
-  activeSession?: string;
-  onSelectSession?: (id: string) => void;
+  title: string;
+  activePage: Page;
+  activePackage: string | null;
+  theme: Theme;
+  sidebarRefreshKey: number;
+  /** The evidence for the finding the reviewer opened, or nothing. Never open on its own. */
   evidencePanel?: React.ReactNode;
-  onNewPackage?: () => void;
+  onCloseEvidence: () => void;
+  onNavigate: (page: Page) => void;
+  onOpenPackage: (packageId: string) => void;
+  onNewReview: () => void;
+  onToggleTheme: () => void;
 }
 
+const COLLAPSED_KEY = 'gv-sidebar-collapsed';
+
+function readCollapsed(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The frame every screen sits in: sidebar, header, the screen, and — only when a finding's evidence
+ * has been opened — the evidence panel beside it.
+ *
+ * The previous frame pinned an evidence column open on every review screen, the start screen
+ * included, and squeezed the conversation into 360–480px; the findings table could not fit and the
+ * "View evidence" button was pushed off the edge. The conversation now gets the room, and the
+ * evidence takes its share only when there is evidence to show (a full-screen sheet under 1100px).
+ */
 export function AppShell({
   children,
+  title,
   activePage,
-  onNavigate,
-  activeSession,
-  onSelectSession,
+  activePackage,
+  theme,
+  sidebarRefreshKey,
   evidencePanel,
-  onNewPackage,
+  onCloseEvidence,
+  onNavigate,
+  onOpenPackage,
+  onNewReview,
+  onToggleTheme,
 }: AppShellProps) {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [mainWidth, setMainWidth] = useState<number | null>(null);
-  const showEvidencePanel = Boolean(evidencePanel);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [titleSlot, setTitleSlot] = useState<HTMLDivElement | null>(null);
+  const [actionsSlot, setActionsSlot] = useState<HTMLDivElement | null>(null);
+  const evidenceOpen = Boolean(evidencePanel);
+  const mobileNavigation = useMediaQuery('(max-width: 767px)');
+  const modalEvidence = useMediaQuery('(max-width: 1439px)');
+
+  function toggleCollapsed() {
+    setCollapsed((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(COLLAPSED_KEY, String(next));
+      } catch {
+        // Storage blocked: the choice lasts for this visit.
+      }
+      return next;
+    });
+  }
+
+  // Anything chosen from the drawer also closes it, so the reviewer lands on what they picked.
+  function closingDrawer<A extends unknown[]>(action: (...args: A) => void) {
+    return (...args: A) => {
+      setMobileOpen(false);
+      action(...args);
+    };
+  }
+
+  const sidebar = <Sidebar
+          collapsed={mobileNavigation ? false : collapsed}
+          mobileOpen={mobileOpen}
+          activePage={activePage}
+          activePackage={activePackage}
+          theme={theme}
+          refreshKey={sidebarRefreshKey}
+          onToggleCollapsed={toggleCollapsed}
+          onCloseMobile={() => setMobileOpen(false)}
+          onNavigate={closingDrawer(onNavigate)}
+          onOpenPackage={closingDrawer(onOpenPackage)}
+          onNewReview={closingDrawer(onNewReview)}
+          onToggleTheme={onToggleTheme}
+        />;
 
   return (
-    <div className="shell" data-sidebar-collapsed={sidebarCollapsed} data-style="ide" data-page={activePage}>
-      <Topbar
-        onToggleSidebar={() => setSidebarCollapsed(c => !c)}
-        sidebarCollapsed={sidebarCollapsed}
-      />
+    <ShellSlotsContext.Provider value={{ title: titleSlot, actions: actionsSlot }}>
+      <div className="shell" data-evidence-open={evidenceOpen} data-page={activePage}>
+        <a className="shell__skip" href="#main-content" onClick={(event) => {
+          event.preventDefault();
+          document.getElementById('main-content')?.focus();
+        }}>Skip to content</a>
+        {mobileNavigation ? (
+          <ModalSheet open={mobileOpen} onClose={() => setMobileOpen(false)} title="Navigation" className="shell__navigation-dialog">
+            {sidebar}
+          </ModalSheet>
+        ) : sidebar}
 
-      <div className="shell__body">
-        <Sidebar
-          collapsed={sidebarCollapsed}
-          activePage={activePage}
-          activeSession={activeSession}
-          onNavigate={onNavigate}
-          onSelectSession={onSelectSession}
-          onNewPackage={onNewPackage}
-        />
+        <div className="shell__content">
+          <Topbar
+            title={title}
+            onOpenMenu={() => setMobileOpen(true)}
+            titleRef={setTitleSlot}
+            actionsRef={setActionsSlot}
+          />
 
-        <main
-          className="shell__main"
-          id="main-content"
-          style={{ width: mainWidth ? `${mainWidth}px` : undefined, flex: mainWidth ? 'none' : undefined }}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => e.preventDefault()}
-        >
-          {/* Keyed on the page *and the selected package*, so React discards the wrapper and the
-              entrance replays on every navigation. Without a key at all the class stays mounted,
-              the animation runs once on first paint, and every later change is an instant swap.
+          <div className="shell__body">
+            <main className="shell__main" id="main-content" tabIndex={-1}>
+              {/* Keyed on the page and the package, so the fade replays on every navigation. */}
+              <div key={`${activePage}:${activePackage ?? ''}`} className="page-transition">
+                {children}
+              </div>
+              {/* The build partner, bottom-right and quiet, as the client's brief asks. */}
+              <p className="shell__partner">
+                built with <strong>Nexolv</strong>
+              </p>
+            </main>
 
-              The session has to be in the key too. Welcome and Review are both `activePage
-              === 'review'` — they are told apart by whether a package is selected — so keying on
-              the page alone left the single most-used transition in the product, opening a document
-              set from the welcome screen, as the one navigation with no animation at all. */}
-          <div key={`${activePage}:${activeSession ?? ''}`} className="page-transition">
-            {children}
+            {evidenceOpen && !modalEvidence && (
+              <aside className="shell__evidence" aria-label="Evidence">
+                {evidencePanel}
+              </aside>
+            )}
           </div>
-        </main>
-
-        <div 
-          className="shell__resizer" 
-          onMouseDown={(e) => {
-            const startX = e.clientX;
-            const startWidth = mainWidth || 480;
-            const onMouseMove = (moveEvent: MouseEvent) => {
-              const delta = startX - moveEvent.clientX; // Left side gets wider if dragging left, so right pane (main) gets wider if delta is positive
-              setMainWidth(Math.max(360, Math.min(800, startWidth + delta)));
-            };
-            const onMouseUp = () => {
-              document.removeEventListener('mousemove', onMouseMove);
-              document.removeEventListener('mouseup', onMouseUp);
-            };
-            document.addEventListener('mousemove', onMouseMove);
-            document.addEventListener('mouseup', onMouseUp);
-          }}
-        />
-
-        {/* Evidence panel — slides in from right */}
-        <div
-          className={`shell__evidence ${showEvidencePanel ? 'shell__evidence--open' : ''}`}
-          aria-label="Evidence viewer"
-        >
-          {evidencePanel || (
-            <div className="evidence-placeholder">
-              <FileSearch size={22} aria-hidden="true" />
-              <span>Open a finding's evidence to see the recorded crop here.</span>
-            </div>
-          )}
         </div>
       </div>
-    </div>
+      {modalEvidence && (
+        <ModalSheet open={evidenceOpen} onClose={onCloseEvidence} title="Drawing evidence and recorded facts" className="shell__evidence-dialog">
+          {evidencePanel}
+        </ModalSheet>
+      )}
+    </ShellSlotsContext.Provider>
   );
 }

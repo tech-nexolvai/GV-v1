@@ -25,17 +25,13 @@ body {
   line-height: var(--leading-normal);
   color: var(--text-body);
   background: var(--bg-base);
-  /* Global architectural grid background */
-  background-image: 
-    linear-gradient(var(--border-subtle) 1px, transparent 1px),
-    linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px);
-  background-size: 24px 24px;
   overflow: hidden; /* full-height app shell */
 }
 
 #root {
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -80,6 +76,12 @@ input:focus, textarea:focus {
   border-color: var(--border-focus);
 }
 
+input, textarea { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 767px) {
+  input, textarea, select { font-size: 16px; }
+}
+
 code, pre {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
@@ -88,24 +90,26 @@ code, pre {
 ul, ol { list-style: none; }
 
 /* ── Scrollbars ──────────────────────────────────────── */
-::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 /* ── Focus ring ──────────────────────────────────────── */
 :focus-visible {
-  outline: 2px solid var(--gv-crimson);
+  outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
 
 /* ── Selection ───────────────────────────────────────── */
 ::selection {
-  background: var(--gv-crimson-dim);
-  color: var(--text-primary);
+  background: var(--text-primary);
+  color: var(--text-inverse);
 }
 
 /* ── Utility classes ─────────────────────────────────── */
@@ -128,6 +132,25 @@ ul, ol { list-style: none; }
 }
 
 .mono { font-family: var(--font-mono); }
+
+/* What the upload pipeline is really doing, and what went wrong if it did not finish
+   (App.tsx's upload dialog and ReviewPage's error row). Moved here from App.css, which nothing
+   imported, so these two had been rendering unstyled. */
+.pipeline-step-live {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin-top: var(--space-2);
+}
+
+.upload-error {
+  color: var(--text-primary);
+}
+
+.upload-error p {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-2);
+}
 
 /* ── Animations ──────────────────────────────────────── */
 @keyframes pulseGlow {
@@ -219,4 +242,3 @@ ul, ol { list-style: none; }
   .col-mob-full { grid-column: span 4 / span 4; }
   .col-mob-half { grid-column: span 2 / span 2; }
 }
-

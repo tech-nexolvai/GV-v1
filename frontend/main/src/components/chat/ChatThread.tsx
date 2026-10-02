@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { User, CheckCircle2, XCircle, AlertCircle, CircleDashed, Sparkles, Shield } from 'lucide-react';
 import { OUTCOME_LABELS } from '../../data/outcomeLabels.js';
 import type { ChatMessage, Finding } from '../../data/types';
 import { FindingCard } from './FindingCard';
 import { GVMark } from '../brand/GVMark';
 import { ThinkingStream } from './ThinkingStream';
-import { StreamingText } from './StreamingText';
 import { ChatMarkdown } from './ChatMarkdown';
 import { FindingsTable } from '../output/FindingsTable.js';
 import './ChatThread.css';
@@ -29,24 +28,6 @@ export function ChatThread({
 }: ChatThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
-
-  /**
-   * Which reply is currently being revealed.
-   *
-   * Only a message that has just arrived streams. Without this, every answer in the thread would
-   * replay its reveal on any re-render — scrolling the history would look like the system was
-   * re-answering questions it had already answered.
-   */
-  const [streamingId, setStreamingId] = useState<string | null>(null);
-  const seen = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    const last = messages[messages.length - 1];
-    if (last && last.role === 'assistant' && !last.is_typing && !seen.current.has(last.id)) {
-      setStreamingId(last.id);
-    }
-    messages.forEach((message) => seen.current.add(message.id));
-  }, [messages]);
 
   /**
    * Follow the bottom of the thread as it grows — but only while the reviewer is already there.
@@ -113,14 +94,10 @@ export function ChatThread({
 
             {/* In-flight state, or the answer. */}
             {msg.is_typing ? (
-              <ThinkingStream />
+              <ThinkingStream stage={msg.streamStage} />
             ) : (
               <div className="chat-message__text">
-                <StreamingText
-                  text={msg.content}
-                  stream={msg.id === streamingId}
-                  render={(text) => <ChatMarkdown text={text} />}
-                />
+                <ChatMarkdown text={msg.content} />
               </div>
             )}
 

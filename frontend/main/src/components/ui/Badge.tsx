@@ -46,7 +46,7 @@ export function OutcomeBadge({ outcome, size = 'md' }: OutcomeBadgeProps) {
   return (
     <span
       className={`badge ${cfg.cls}`}
-      style={size === 'sm' ? { fontSize: '10px', padding: '1px 6px' } : undefined}
+      style={size === 'sm' ? { fontSize: '12px', padding: '1px 6px' } : undefined}
     >
       <span aria-hidden="true">{cfg.dot}</span>
       {OUTCOME_LABELS[outcome]}
@@ -80,7 +80,7 @@ export function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
   return (
     <span
       className={`badge ${cls}`}
-      style={size === 'sm' ? { fontSize: '10px', padding: '1px 6px' } : undefined}
+      style={size === 'sm' ? { fontSize: '12px', padding: '1px 6px' } : undefined}
     >
       {label}
     </span>

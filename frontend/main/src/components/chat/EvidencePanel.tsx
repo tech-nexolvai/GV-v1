@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, X, FileImage, MapPin } from 'lucide-react';
+import { ArrowLeft, X, FileImage, MapPin, ExternalLink, RefreshCw } from 'lucide-react';
 import type { Finding } from '../../data/types';
-import { downloadEvidenceCrop, downloadDocument } from '../../api/client';
+import { downloadEvidenceCrop } from '../../api/client';
 import { OutcomeBadge } from '../ui/Badge';
-import { PdfViewer } from './PdfViewer';
 import './EvidencePanel.css';
 
 interface EvidencePanelProps {
@@ -17,7 +16,11 @@ interface EvidencePanelProps {
 
 export function EvidencePanel({ finding, projectId, packageId, loading = false, error, onClose }: EvidencePanelProps) {
   const recordedOperands = finding.recorded_operands ?? [];
-  const hasMappedCrop = Boolean(finding.arch_evidence || finding.shop_evidence);
+  const locations = finding.evidence ?? [
+    ...(finding.arch_evidence ? [{ ...finding.arch_evidence, document_role: 'ARCH' }] : []),
+    ...(finding.shop_evidence ? [{ ...finding.shop_evidence, document_role: 'SHOP' }] : []),
+  ];
+  const hasMappedCrop = locations.length > 0;
   const hasUnmappedStoredCrop = !hasMappedCrop && recordedOperands.some(
     (operand) => operand.hasEvidence && operand.source !== 'ARCH' && operand.source !== 'SHOP',
   );
@@ -45,8 +48,8 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
       return 'This finding currently relies on non-drawing operands (for example, user input or intermediate values), so no drawing-backed crop is expected here.';
     }
 
-    if (finding.outcome === 'REVIEW_REQUIRED') {
-      return 'This is a reviewer decision (such as a layout choice), not a located drawing measurement. There is no crop to show for it.';
+    if (finding.recorded_operands === undefined) {
+      return 'The recorded details have not loaded yet. Return to the finding and retry Evidence & facts.';
     }
 
     if (finding.outcome === 'NOT_FOUND') {
@@ -62,7 +65,7 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
       >
         <div className="evidence-panel__title">
           <span className="evidence-panel__check-id">{finding.check_id}</span>
-          <span className="evidence-panel__name">{finding.name}</span>
+          {finding.name !== finding.check_id && <span className="evidence-panel__name">{finding.name}</span>}
           <OutcomeBadge outcome={finding.outcome} size="sm" />
         </div>
         <button
@@ -97,36 +100,24 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
           </div>
         )}
 
-        {/* Arch set viewer */}
-        {!loading && !error && finding.arch_evidence && (
-          <PdfPane
-            key={finding.arch_evidence.canonical_observation_id}
-            label="Architectural Set"
-            role="ARCH"
-            evidence={finding.arch_evidence}
+        {!loading && !error && locations.map((evidence, index) => (
+          <CropPane
+            key={`${projectId}:${packageId}:${evidence.canonical_observation_id}:${index}`}
+            evidence={evidence}
+            operands={recordedOperands.filter((operand) => operand.canonicalObservationId === evidence.canonical_observation_id)}
             projectId={projectId}
             packageId={packageId}
           />
-        )}
-
-        {/* Shop drawing viewer */}
-        {!loading && !error && finding.shop_evidence && (
-          <PdfPane
-            key={finding.shop_evidence.canonical_observation_id}
-            label="Shop Drawing"
-            role="SHOP"
-            evidence={finding.shop_evidence}
-            projectId={projectId}
-            packageId={packageId}
-          />
-        )}
+        ))}
 
         {/* No crop is intentionally not rendered as a plausible stand-in. A reviewer must be able to
             distinguish a rule result from visual drawing evidence. */}
-        {!loading && !error && !finding.arch_evidence && !finding.shop_evidence && (
+        {!loading && !error && !hasMappedCrop && (
           <div className="evidence-panel__no-evidence">
             <FileImage size={24} className="evidence-panel__no-evidence-icon" />
-            <p>No drawing crop is available for this check.</p>
+            <p>{finding.recorded_operands === undefined
+              ? 'Evidence details have not loaded.'
+              : 'No drawing crop is available for this check.'}</p>
             <p className="evidence-panel__no-evidence-sub">
               {noEvidenceMessage()}
             </p>
@@ -145,9 +136,7 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
             )}
             <ul className="evidence-panel__no-evidence-guide-list">
               <li>
-                {finding.outcome === 'REVIEW_REQUIRED'
-                  ? 'REVIEW REQUIRED is normal: it is waiting for a reviewer choice, not a missing image.'
-                  : 'A drawing crop appears only when a confirmed drawing reading has a stored location.'}
+                A drawing crop appears when the recorded drawing reading has stored visual evidence.
               </li>
               <li>Findings built from input-only values are intentionally shown without crops.</li>
             </ul>
@@ -162,62 +151,49 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
   );
 }
 
-// ── PDF Pane ─────────────────────────────────────────────────
-interface PdfPaneProps {
-  label: string;
-  role: 'ARCH' | 'SHOP';
+// Crops are verified images. Full drawing PDFs remain a separate viewer and artifact.
+interface CropPaneProps {
   evidence: NonNullable<Finding['arch_evidence']>;
+  operands: NonNullable<Finding['recorded_operands']>;
   projectId: string;
   packageId: string;
 }
 
-function PdfPane({ label, role, evidence, projectId, packageId }: PdfPaneProps) {
-  const [docUrl, setDocUrl] = useState<string | null>(null);
+function CropPane({ evidence, operands, projectId, packageId }: CropPaneProps) {
+  const role = evidence.document_role ?? 'RECORDED';
+  const label = role.toUpperCase() === 'ARCH' ? 'Architectural set'
+    : role.toUpperCase() === 'SHOP' ? 'Vendor shop drawing' : `Recorded drawing (${role})`;
+  const [cropUrl, setCropUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
     let objectUrl: string | null = null;
-    
-    // First try fetching the full document PDF for an interactive viewer
-    if (evidence.document_version_id) {
-      downloadDocument(projectId, packageId, evidence.document_version_id)
-        .then((blob) => {
-          objectUrl = URL.createObjectURL(blob);
-          if (active) setDocUrl(objectUrl);
-          else URL.revokeObjectURL(objectUrl);
-        })
-        .catch((e) => {
-          console.warn("Failed to download full PDF, falling back to crop", e);
-          // Fallback to crop if backend doesn't support downloading full PDF yet
-          downloadEvidenceCrop(projectId, packageId, evidence.canonical_observation_id)
-            .then((blob) => {
-              objectUrl = URL.createObjectURL(blob);
-              if (active) setDocUrl(objectUrl);
-              else URL.revokeObjectURL(objectUrl);
-            })
-            .catch((cause) => {
-              if (active) setError(cause instanceof Error ? cause.message : 'The evidence could not be loaded.');
-            });
-        });
-    } else {
-      // Direct fallback to crop
-      downloadEvidenceCrop(projectId, packageId, evidence.canonical_observation_id)
-        .then((blob) => {
-          objectUrl = URL.createObjectURL(blob);
-          if (active) setDocUrl(objectUrl);
-          else URL.revokeObjectURL(objectUrl);
-        })
-        .catch((cause) => {
-          if (active) setError(cause instanceof Error ? cause.message : 'The evidence could not be loaded.');
-        });
-    }
+    downloadEvidenceCrop(projectId, packageId, evidence.canonical_observation_id)
+      .then((blob) => {
+        if (!active) return;
+        if (!blob.type.startsWith('image/') || blob.size === 0) {
+          throw new Error('The evidence service did not return a drawing image. Please retry.');
+        }
+        objectUrl = URL.createObjectURL(blob);
+        setCropUrl(objectUrl);
+      })
+      .catch((cause) => {
+        if (active) setError(cause instanceof Error ? cause.message : 'The stored crop could not be loaded.');
+      });
 
     return () => {
       active = false;
       if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
     };
-  }, [evidence.canonical_observation_id, evidence.document_version_id, packageId, projectId]);
+  }, [evidence.canonical_observation_id, packageId, projectId, attempt]);
+
+  function retry() {
+    setCropUrl(null);
+    setError(null);
+    setAttempt((current) => current + 1);
+  }
 
   return (
     <div className="pdf-pane">
@@ -234,24 +210,47 @@ function PdfPane({ label, role, evidence, projectId, packageId }: PdfPaneProps) 
         </span>
       </div>
 
-      <div className="pdf-pane__crop" style={{ height: '400px', display: 'flex', position: 'relative' }}>
-        {!docUrl && !error && <p className="pdf-pane__crop-state">Loading document…</p>}
-        {docUrl && (
-          <PdfViewer
-            url={docUrl}
-            pageIndex={evidence.page}
-            polygon={evidence.polygon.map(p => [p[0].toString(), p[1].toString()])}
-          />
-        )}
-        {error && <p className="pdf-pane__crop-state pdf-pane__crop-state--error">{error}</p>}
+      <div className="pdf-pane__crop" aria-busy={!cropUrl && !error}>
+        {!cropUrl && !error && <p className="pdf-pane__crop-state" role="status">Loading recorded drawing crop…</p>}
+        {cropUrl && !error && <img
+          className="pdf-pane__crop-image"
+          src={cropUrl}
+          alt={`${label}, page ${evidence.page}: stored crop for ${evidence.semantic_type.replaceAll('_', ' ')}`}
+          onError={() => setError('The stored image could not be displayed. Please retry.')}
+        />}
+        {error && <div className="pdf-pane__crop-state pdf-pane__crop-state--error" role="alert">
+          <p>{error}</p>
+          <button className="btn btn--secondary btn--sm" onClick={retry}><RefreshCw size={14} /> Retry crop</button>
+        </div>}
       </div>
 
       <div className="pdf-pane__meta">
-        <span className="pdf-pane__meta-label">Interactive document viewer</span>
-        <span className="pdf-pane__extractor">
-          Full context view — highlighting mechanical extraction region.
-        </span>
+        <span className="pdf-pane__meta-label">Stored drawing crop</span>
+        {cropUrl && !error && <a className="btn btn--ghost btn--sm" href={cropUrl} target="_blank" rel="noreferrer">
+          <ExternalLink size={13} /> Open full-size crop
+        </a>}
       </div>
+      <p className="pdf-pane__explanation">The recorded source region for this reading. It is not a redline.</p>
+      {operands.length > 0 && <dl className="pdf-pane__values">
+        {operands.map((operand, index) => <div key={`${operand.name}:${index}`}>
+          <dt>{operand.name.replaceAll('_', ' ')}</dt>
+          <dd><strong>{operand.value}</strong><span>{operand.source} · {operand.status}</span></dd>
+        </div>)}
+      </dl>}
+      <details className="pdf-pane__provenance">
+        <summary>Recorded evidence details</summary>
+        <dl>
+          <dt>Semantic type</dt><dd>{evidence.semantic_type}</dd>
+          <dt>Observation</dt><dd>{evidence.canonical_observation_id}</dd>
+          <dt>Document version</dt><dd>{evidence.document_version_id}</dd>
+          {evidence.recorded_location && <>
+            <dt>Authority</dt><dd>{evidence.recorded_location.authority}</dd>
+            <dt>Coordinate space</dt><dd>{evidence.recorded_location.coordinate_space}</dd>
+            <dt>Page ID</dt><dd>{evidence.recorded_location.page_id}</dd>
+          </>}
+          <dt>Recorded polygon</dt><dd>{JSON.stringify(evidence.recorded_location?.polygon ?? evidence.polygon)}</dd>
+        </dl>
+      </details>
     </div>
   );
 }

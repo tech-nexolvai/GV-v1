@@ -4,9 +4,10 @@
 
 .chat-thread {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: var(--space-6) var(--space-6) var(--space-10);
+  padding: var(--space-6) max(var(--space-6), calc((100% - var(--chat-max-width)) / 2)) var(--space-8);
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
@@ -35,6 +36,8 @@
   display: flex;
   gap: var(--space-3);
   align-items: flex-start;
+  width: 100%;
+  animation: none;
 }
 
 .chat-message--user {
@@ -44,9 +47,7 @@
 /* ── Avatar ───────────────────────────────────────────────── */
 
 .chat-message__avatar {
-  flex-shrink: 0;
-  margin-top: 20px;
-  line-height: 0;
+  display: none;
 }
 
 .chat-message__avatar-user {
@@ -78,6 +79,7 @@
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
+  margin-bottom: var(--space-1);
 }
 
 .chat-message--user .chat-message__header {
@@ -88,14 +90,15 @@
   font-size: var(--text-xs);
   font-weight: var(--weight-semi);
   color: var(--text-primary);
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .chat-message__time {
   font-size: var(--text-xs);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
+  margin-left: auto;
 }
 
 /* ── Text ─────────────────────────────────────────────────── */
@@ -104,7 +107,8 @@
   font-size: var(--text-md);
   color: var(--text-body);
   line-height: var(--leading-loose);
-  max-width: min(640px, 100%);
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .chat-message__text p { margin: 0; }
@@ -175,12 +179,13 @@
 /* The reviewer's own question is boxed and brand-tinted, which is what separates the two voices
    now that the assistant's side has no container of its own. */
 .chat-message--user .chat-message__text {
-  background: var(--color-primary-dim);
-  border: 1px solid var(--color-primary-border);
-  border-radius: var(--radius-lg) var(--radius-sm) var(--radius-lg) var(--radius-lg);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
   padding: var(--space-3) var(--space-4);
   color: var(--text-primary);
   font-size: var(--text-base);
+  max-width: 85%;
 }
 
 /* ── Narration provenance ─────────────────────────────────── */
@@ -189,7 +194,7 @@
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  max-width: min(640px, 100%);
+  max-width: 100%;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   background: var(--bg-surface);
@@ -225,7 +230,8 @@
 
 .narration__body code {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
   padding: 0 4px;
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
@@ -309,7 +315,6 @@
   min-width: 3px;
   border-radius: var(--radius-full);
   transform-origin: left center;
-  animation: gv-meter var(--duration-xl) var(--ease-emphasis) both;
 }
 
 @keyframes gv-meter {
@@ -318,9 +323,9 @@
 }
 
 .summary__seg--pass            { background: var(--status-pass); }
-.summary__seg--fail            { background: var(--status-fail);   animation-delay: 60ms; }
-.summary__seg--review_required { background: var(--status-review); animation-delay: 120ms; }
-.summary__seg--not_found       { background: var(--status-missing); animation-delay: 180ms; }
+.summary__seg--fail            { background: var(--status-fail); }
+.summary__seg--review_required { background: var(--status-review); }
+.summary__seg--not_found       { background: var(--status-missing); }
 
 .summary__counts {
   display: flex;
