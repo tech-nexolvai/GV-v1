@@ -625,8 +625,10 @@ class BedrockBakeoffAdapter:
                     bound_pt=crop.bound_pt,
                     # **The bake-off measures the reader, not the gate.** A stacked crop must come
                     # back with what the model read, or the misreadings the gate exists for could
-                    # never be counted — `3 3/4"` for `3/4"` was found this way (#726).
+                    # never be counted — `3 3/4"` for `3/4"` was found this way (#726). No
+                    # layouts for the same reason: the digit-count check is part of the gate.
                     stacked_label=False,
+                    stacked_layouts=(),
                 )
             )
             attempts = self._sink.invocations[before:]

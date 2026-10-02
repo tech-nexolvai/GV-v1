@@ -82,6 +82,10 @@ def _reader_configuration() -> tuple[object | None, object | None]:
         "GV_READER_FRACTION_GLYPH_MIN_PT": os.environ.get("GV_READER_FRACTION_GLYPH_MIN_PT"),
         "GV_READER_FRACTION_GLYPH_MAX_PT": os.environ.get("GV_READER_FRACTION_GLYPH_MAX_PT"),
         "GV_READER_FRACTION_PROPORTION_MAX": os.environ.get("GV_READER_FRACTION_PROPORTION_MAX"),
+        # Where each part of a stacked label was drawn (#834), which a reading of it must match.
+        "GV_READER_FRACTION_CHARACTER_GAP_PT": os.environ.get(
+            "GV_READER_FRACTION_CHARACTER_GAP_PT"
+        ),
     }
     missing = [name for name, value in required.items() if not value]
     if missing:
@@ -109,6 +113,7 @@ def _reader_configuration() -> tuple[object | None, object | None]:
                 glyph_min_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MIN_PT"] or ""),
                 glyph_max_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MAX_PT"] or ""),
                 proportion_max=Decimal(required["GV_READER_FRACTION_PROPORTION_MAX"] or ""),
+                character_gap_pt=Decimal(required["GV_READER_FRACTION_CHARACTER_GAP_PT"] or ""),
             ),
         ),
         LocalizedOcrSettings(

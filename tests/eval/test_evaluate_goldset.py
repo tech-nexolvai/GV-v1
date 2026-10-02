@@ -82,7 +82,8 @@ ASSOCIATION_ARGUMENTS = [
     "0.0005",
     "--crossing-margin",
     "0.001",
-    # The stacked-fraction detector's six (#735), required with the rest for the same reason.
+    # The stacked-fraction detector's six (#735) and its layout's gap (#834), required with the rest
+    # for the same reason.
     "--fraction-bar-thickness-max-pt",
     "0.3",
     "--fraction-bar-length-min-pt",
@@ -95,6 +96,8 @@ ASSOCIATION_ARGUMENTS = [
     "12",
     "--fraction-proportion-max",
     "2.5",
+    "--fraction-character-gap-pt",
+    "4",
 ]
 
 

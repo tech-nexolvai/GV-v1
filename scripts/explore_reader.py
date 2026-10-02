@@ -239,6 +239,7 @@ def main() -> int:
             # An exploration of what a model reads, from a hand-written manifest with no geometry
             # read. Nothing it returns is accepted anywhere, so the guard has nothing to protect.
             stacked_label=False,
+            stacked_layouts=(),
         )
         started = time.monotonic()
         row: dict[str, Any] = {

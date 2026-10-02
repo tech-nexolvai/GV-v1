@@ -157,6 +157,9 @@ SETTINGS: Final = {
     "GV_READER_FRACTION_GLYPH_MIN_PT": "1",
     "GV_READER_FRACTION_GLYPH_MAX_PT": "12",
     "GV_READER_FRACTION_PROPORTION_MAX": "2.5",
+    # How far apart one stacked label's characters may be (#834). The layout uses it, never the
+    # detection, so it moves no stratum here; it is stated because no reader setting has a default.
+    "GV_READER_FRACTION_CHARACTER_GAP_PT": "4",
 }
 
 
@@ -205,6 +208,7 @@ def _production_regions(pdf: bytes) -> list[OutlinedTextRegion]:
             glyph_min_pt=Decimal(SETTINGS["GV_READER_FRACTION_GLYPH_MIN_PT"]),
             glyph_max_pt=Decimal(SETTINGS["GV_READER_FRACTION_GLYPH_MAX_PT"]),
             proportion_max=Decimal(SETTINGS["GV_READER_FRACTION_PROPORTION_MAX"]),
+            character_gap_pt=Decimal(SETTINGS["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
         ),
     )
     plan = plan_reads(

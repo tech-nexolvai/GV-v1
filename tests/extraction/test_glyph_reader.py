@@ -90,7 +90,13 @@ def _path(parts: list[Points], dx: float, dy: float, scale: float = 1) -> Vector
                     closes=False,
                 )
             )
-    return VectorPath(segments=tuple(segments), stroked=True, filled=False)
+    return VectorPath(
+        segments=tuple(segments),
+        stroked=True,
+        filled=False,
+        stroke_colour=(0, 0, 0, 255),
+        fill_colour=(0, 0, 0, 255),
+    )
 
 
 def _row(text: str, x: float, y: float, scale: float = 1) -> tuple[list[VectorPath], list[str]]:
@@ -183,6 +189,8 @@ def _turned(paths: list[VectorPath], degrees: int) -> list[VectorPath]:
             ),
             stroked=path.stroked,
             filled=path.filled,
+            stroke_colour=path.stroke_colour,
+            fill_colour=path.fill_colour,
         )
         for path in paths
     ]

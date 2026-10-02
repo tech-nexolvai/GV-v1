@@ -55,6 +55,7 @@ GV_READER_FRACTION_REACH_PT=3 \\
 GV_READER_FRACTION_GLYPH_MIN_PT=1 \\
 GV_READER_FRACTION_GLYPH_MAX_PT=12 \\
 GV_READER_FRACTION_PROPORTION_MAX=2.5 \\
+GV_READER_FRACTION_CHARACTER_GAP_PT=4 \\
 """
 
 SHAPE_ARGUMENTS = [
@@ -421,6 +422,8 @@ def test_a_slanted_stroke_is_not_suggested_as_a_slash() -> None:
         ),
         stroked=True,
         filled=False,
+        stroke_colour=(0, 0, 0, 255),
+        fill_colour=(0, 0, 0, 255),
     )
     shape = describe(slant, run_height=Decimal(10), settings=SETTINGS)
 

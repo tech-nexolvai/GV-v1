@@ -236,6 +236,7 @@ def _candidates(pdf: bytes, *, page_index: int, settings: Mapping[str, str]) -> 
             glyph_min_pt=Decimal(settings["GV_READER_FRACTION_GLYPH_MIN_PT"]),
             glyph_max_pt=Decimal(settings["GV_READER_FRACTION_GLYPH_MAX_PT"]),
             proportion_max=Decimal(settings["GV_READER_FRACTION_PROPORTION_MAX"]),
+            character_gap_pt=Decimal(settings["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
         ),
     )
     plan = plan_reads(

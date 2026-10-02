@@ -27,6 +27,9 @@ import pytest
 
 from extraction.annotations import (
     DrawingLayer,
+    PathSegment,
+    SegmentKind,
+    VectorPath,
     read_annotation_layers,
     read_markup_layer,
 )
@@ -708,16 +711,20 @@ FRACTION_BAR = FractionBarGeometry(
     glyph_min_pt=Decimal(1),
     glyph_max_pt=Decimal(12),
     proportion_max=Decimal("2.5"),
+    character_gap_pt=Decimal(4),
 )
 
 
 def _stacked_layers(
-    fraction_bar: FractionBarGeometry | None, *, glyph_maximum_pt: Decimal = Decimal(5)
+    fraction_bar: FractionBarGeometry | None,
+    *,
+    glyph_maximum_pt: Decimal = Decimal(5),
+    appearance: bytes = STACKED_APPEARANCE,
 ):
     return read_annotation_layers(
         _pdf(
             annotations=[_stamp(appearance_object=6)],
-            extra_objects=[_appearance(STACKED_APPEARANCE)],
+            extra_objects=[_appearance(appearance)],
         ),
         0,
         document_version_id=DOCUMENT,
@@ -755,6 +762,100 @@ def test_a_region_is_marked_stacked_only_when_it_touches_the_fraction() -> None:
 
     assert demo.outlined_regions and not any(r.stacked_glyphs for r in demo.outlined_regions)
     assert any(region.stacked_glyphs for region in wide.outlined_regions), wide.outlined_regions
+
+
+def test_each_stacked_fraction_carries_its_layout_from_the_reader_itself() -> None:
+    """**The layout as the page reports it** (#834), not as a list of boxes handed in: `28 3/4"` read
+    from a real stamp has two whole-number characters, one over one — its two-stroke `4` counted
+    once — and an inch mark, in page space."""
+    layers = _stacked_layers(FRACTION_BAR)
+
+    layout = layers.stacked_fractions[0].layout
+    assert layout is not None
+    assert (len(layout.whole), len(layout.numerator), len(layout.denominator)) == (2, 1, 1)
+    assert len(layout.inch_mark) == 2
+    assert len(layout.denominator[0]) == 2, "the 4's body and stem are one character"
+    # The stamp's placement moves its appearance by (-50, -450); the layout is where the page is.
+    # pdfium hands points over as C floats, so 73.8 arrives as 73.800003...
+    left, bottom, right, top = layout.bar
+    assert (left, bottom, top) == (Decimal(70), Decimal("75.5"), Decimal("75.5"))
+    assert abs(right - Decimal("73.8")) < Decimal("0.0001")
+
+
+#: A stroke as tall as the digits, drawn just before the `2` — in red, as a reviewer's mark baked
+#: into a snapshot would be, then the same stroke in black.
+RED_STROKE = b"q 1 0 0 RG 0.2 w 108 520.5 m 108 525 l S Q\n"
+BLACK_STROKE = b"q 0 0 0 RG 0.2 w 108 520.5 m 108 525 l S Q\n"
+
+
+def test_a_coloured_path_in_the_stamp_is_no_character_of_the_label() -> None:
+    """**How reviewer markup inside a snapshot is left out of a layout** (#834). The path is read with
+    its colour; in red it is not the vendor's and is not counted, and in black the same stroke is.
+    """
+    red = _stacked_layers(FRACTION_BAR, appearance=RED_STROKE + STACKED_APPEARANCE)
+    black = _stacked_layers(FRACTION_BAR, appearance=BLACK_STROKE + STACKED_APPEARANCE)
+
+    red_layout, black_layout = red.stacked_fractions[0].layout, black.stacked_fractions[0].layout
+    assert red_layout is not None and black_layout is not None
+    assert len(red_layout.whole) == 2
+    assert len(black_layout.whole) == 3
+    assert red.stacked_fractions[0].extent == black.stacked_fractions[0].extent
+
+
+def test_every_path_is_read_with_its_colours() -> None:
+    """pdfium's red, green, blue and alpha for each path, straight from the file."""
+    layers = _stacked_layers(
+        FRACTION_BAR, glyph_maximum_pt=Decimal(12), appearance=RED_STROKE + STACKED_APPEARANCE
+    )
+
+    colours = {path.stroke_colour for path in layers.glyph_paths}
+    assert colours == {(255, 0, 0, 255), (0, 0, 0, 255)}
+    assert sum(not path.drawing_ink for path in layers.glyph_paths) == 1
+
+
+def _drawn(
+    *,
+    stroked: bool | None,
+    filled: bool | None,
+    stroke: tuple[int, int, int, int] | None,
+    fill: tuple[int, int, int, int] | None,
+) -> VectorPath:
+    segments = (
+        PathSegment(SegmentKind.MOVE, (Decimal(0), Decimal(0)), False),
+        PathSegment(SegmentKind.LINE, (Decimal(1), Decimal(1)), False),
+    )
+    return VectorPath(
+        segments=segments, stroked=stroked, filled=filled, stroke_colour=stroke, fill_colour=fill
+    )
+
+
+BLACK = (0, 0, 0, 255)
+RED = (255, 0, 0, 255)
+
+
+@pytest.mark.parametrize(
+    ("path", "ink"),
+    [
+        (_drawn(stroked=True, filled=False, stroke=BLACK, fill=RED), True),
+        (_drawn(stroked=True, filled=False, stroke=(128, 128, 128, 255), fill=None), True),
+        (_drawn(stroked=True, filled=False, stroke=(100, 105, 102, 255), fill=None), True),
+        (_drawn(stroked=True, filled=False, stroke=(100, 106, 102, 255), fill=None), False),
+        (_drawn(stroked=True, filled=False, stroke=RED, fill=BLACK), False),
+        (_drawn(stroked=False, filled=True, stroke=BLACK, fill=RED), False),
+        (_drawn(stroked=False, filled=True, stroke=RED, fill=BLACK), True),
+        (_drawn(stroked=None, filled=None, stroke=BLACK, fill=RED), False),
+        (_drawn(stroked=None, filled=None, stroke=BLACK, fill=BLACK), True),
+        (_drawn(stroked=True, filled=False, stroke=None, fill=BLACK), False),
+        (_drawn(stroked=False, filled=False, stroke=BLACK, fill=BLACK), False),
+    ],
+)
+def test_drawing_ink_is_black_or_grey_in_the_colours_a_path_is_drawn_with(
+    path: VectorPath, ink: bool
+) -> None:
+    """Grey is equal parts of red, green and blue to within five steps of 255 — the tolerance the
+    text reader gives text. Only the colours the path is drawn with count; a colour pdfium could not
+    read is not known to be ink, and a path drawn neither way shows none."""
+    assert path.drawing_ink is ink
 
 
 def test_a_read_without_the_detector_says_it_never_looked() -> None:

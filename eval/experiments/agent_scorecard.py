@@ -69,7 +69,7 @@ from extraction.agent.tools import (
     VlmRole,
 )
 from extraction.agent.trigger import AmbiguityReason
-from extraction.glyph_bands import FractionBarGeometry
+from extraction.glyph_bands import FractionBarGeometry, FractionLayout
 from extraction.manifest import PageRecord
 from storage.store import ArtifactStore
 from units.measurement import Measurement
@@ -256,8 +256,11 @@ class CropReader(Protocol):
     @property
     def vendor(self) -> str: ...
 
-    def read(self, png: bytes, *, stacked_label: bool) -> Reading:
-        """Read the crop. `stacked_label` is what the geometry says it shows (#735)."""
+    def read(
+        self, png: bytes, *, stacked_label: bool, stacked_layouts: tuple[FractionLayout, ...]
+    ) -> Reading:
+        """Read the crop. `stacked_label` is what the geometry says it shows (#735), and
+        `stacked_layouts` where the parts of each stacked label in it were drawn (#834)."""
 
 
 def _candidate(reading: Reading) -> DomainCandidate:
@@ -489,6 +492,13 @@ class ScorecardPage:
             crop_box_px(self.rendered, polygon, margin_pt), self.layers.stacked_fractions
         )
 
+    def layouts(self, polygon: Polygon, margin_pt: Decimal) -> tuple[FractionLayout, ...]:
+        from workflow.stages import stacked_layouts_shown
+
+        return stacked_layouts_shown(
+            crop_box_px(self.rendered, polygon, margin_pt), self.layers.stacked_fractions
+        )
+
     def facts(
         self, box: tuple[int, int, int, int], readings: Sequence[Reading], margin_pt: Decimal
     ) -> tuple[RegionFacts, Polygon | None]:
@@ -552,6 +562,7 @@ class _Reads:
         reading = reader.read(
             self._crops.png(arguments.crop_artifact_id),
             stacked_label=self._crops.shows_stacked_fraction,
+            stacked_layouts=self._crops.stacked_layouts,
         )
         self.readings.append(reading)
         if reading.raw_text is None:
@@ -623,13 +634,19 @@ def score_crop(
         whole_run=whole_run,
         rotation_degrees=facts.rotation_degrees,
         stacked=lambda candidate: page.stacked(candidate, margin_pt),
+        layouts=lambda candidate: page.layouts(candidate, margin_pt),
     )
     first = crops.first()
     if first is None:
         raise ScorecardError(f"crop {crop.crop_id} could not be cut")
     png = crops.png(first)
     readings = tuple(
-        reader.read(png, stacked_label=crops.shows_stacked_fraction) for reader in pair
+        reader.read(
+            png,
+            stacked_label=crops.shows_stacked_fraction,
+            stacked_layouts=crops.stacked_layouts,
+        )
+        for reader in pair
     )
     facts, _ = page.facts(box, readings, margin_pt)
 
@@ -969,7 +986,9 @@ class BedrockCropReader:
                 self._sleep(wait)
         self._last = self._clock()
 
-    def read(self, png: bytes, *, stacked_label: bool) -> Reading:
+    def read(
+        self, png: bytes, *, stacked_label: bool, stacked_layouts: tuple[FractionLayout, ...]
+    ) -> Reading:
         from extraction.agent.observations import value_of
         from extraction.models.context import AssembledContext
         from extraction.models.nova import (
@@ -995,6 +1014,7 @@ class BedrockCropReader:
                         context=AssembledContext(nearby_text=(), nearby_geometry=()),
                         bound_pt=VISION_CONTEXT_BOUND_PT,
                         stacked_label=stacked_label,
+                        stacked_layouts=stacked_layouts,
                     )
                 )
                 refusal = None

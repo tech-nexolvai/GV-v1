@@ -20,6 +20,7 @@ from time import monotonic_ns
 from typing import Any, Final, Literal, Protocol, cast
 
 from evidence.candidate import ObservationCandidate
+from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext
 from extraction.models.sanitisation import CoordinateInstruction, InjectionAttempt, prepare_prompt
 from extraction.models.validation import (
@@ -483,10 +484,20 @@ class NovaRequest:
     """Whether the crop shows a stacked fraction, as the sheet's geometry says (#735). Handed to
     `validate_payload`, which abstains on any reading of such a crop. **No default**: a request that
     could not say is written `False` where it is built, so the gap is visible in that code."""
+    stacked_layouts: tuple[FractionLayout, ...]
+    """Where the parts of each stacked label in the crop were drawn (#834), for `validate_payload` to
+    refuse a reading they contradict. **No default**, as for `stacked_label`: empty where the crop
+    shows none, or only ones set in text."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.stacked_label, bool):
             raise TypeError("stacked_label must be a bool")
+        if not isinstance(self.stacked_layouts, tuple) or not all(
+            isinstance(layout, FractionLayout) for layout in self.stacked_layouts
+        ):
+            raise TypeError("stacked_layouts must be a tuple of FractionLayout")
+        if self.stacked_layouts and not self.stacked_label:
+            raise ValueError("a crop with stacked layouts shows a stacked label")
         if not isinstance(self.candidate_id, str) or not self.candidate_id.strip():
             raise ValueError("candidate_id must be a non-empty string")
         if isinstance(self.page, bool) or not isinstance(self.page, int) or self.page < 0:
@@ -954,6 +965,7 @@ class NovaAdapter:
             coordinate_mode=coordinate_mode,
             recorder=self._recorder,
             stacked_label=request.stacked_label,
+            stacked_layouts=request.stacked_layouts,
         )
         if isinstance(outcome, ValidationRejection):
             raise NovaPayloadRejectedError(outcome)

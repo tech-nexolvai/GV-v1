@@ -45,6 +45,7 @@ from eval.experiments.agent_scorecard import (
 from evidence.crop import decode_rgb_png
 from extraction.agent.tools import VlmRole
 from extraction.agent.trigger import AmbiguityReason
+from extraction.glyph_bands import FractionLayout
 from storage.local import LocalStore
 from tests.workflow.test_association import SETTINGS
 from tests.workflow.test_reading_agent import LABEL, SHEET, _settings
@@ -379,8 +380,10 @@ class _Reader:
     vendor: str = "Amazon"
     widths: list[int] = field(default_factory=list)
 
-    def read(self, png: bytes, *, stacked_label: bool) -> Reading:
-        del stacked_label
+    def read(
+        self, png: bytes, *, stacked_label: bool, stacked_layouts: tuple[FractionLayout, ...]
+    ) -> Reading:
+        del stacked_label, stacked_layouts
         width, _, _ = decode_rgb_png(png)
         self.widths.append(width)
         whole = width >= _whole_label_px()
@@ -523,7 +526,7 @@ def test_a_throttle_is_waited_out_and_never_scored_as_a_refusal(
         config, calls_per_minute=60, waits_seconds=(30,), clock=lambda: 0.0, sleep=slept.append
     )
 
-    reading = reader.read(b"png", stacked_label=False)
+    reading = reader.read(b"png", stacked_label=False, stacked_layouts=())
 
     assert reading.raw_text == '12"' and reading.value == _inches(12)
     assert reading.refusal is None

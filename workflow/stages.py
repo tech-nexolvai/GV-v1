@@ -140,6 +140,7 @@ from extraction.annotations import (
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import DetectedDimensions, detect
 from extraction.geometry.text_association import DimensionText, associate
+from extraction.glyph_bands import FractionLayout
 from extraction.layout import (
     BedrockClosedQuestionConfig,
     BedrockClosedQuestionReader,
@@ -679,6 +680,7 @@ __all__ = [
     "crop_shows_a_stacked_fraction",
     "page_transform",
     "region_facts",
+    "stacked_layouts_shown",
     "stored_polygon",
 ]
 
@@ -845,6 +847,7 @@ class _AgentReads:
             context=AssembledContext(nearby_text=(), nearby_geometry=()),
             bound_pt=VISION_CONTEXT_BOUND_PT,
             stacked_label=self.crops.shows_stacked_fraction,
+            stacked_layouts=self.crops.stacked_layouts,
         )
         try:
             candidate = reader.extract(request, recorder)
@@ -1405,12 +1408,13 @@ class DatabaseStages:
                 for item in (read.texts if read is not None else ()) + stamp_texts
                 if item.stacked
             )
+            # Set in text, so no paths to lay out (#834): `layout` is `None`.
             text_stacked = tuple(
-                StackedFraction(extent=label.extent, image_extent=label.image_extent)
+                StackedFraction(extent=label.extent, image_extent=label.image_extent, layout=None)
                 for label in text_set_aside
                 if label.reason is SetAsideReason.STACKED_FRACTION
             ) + tuple(
-                StackedFraction(extent=item.extent, image_extent=item.image_extent)
+                StackedFraction(extent=item.extent, image_extent=item.image_extent, layout=None)
                 for item in stacked_read
             )
             if layers is not None and text_stacked:
@@ -2090,6 +2094,11 @@ class DatabaseStages:
                 crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT), fractions
             )
 
+        def layouts(polygon: Polygon) -> tuple[FractionLayout, ...]:
+            return stacked_layouts_shown(
+                crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT), fractions
+            )
+
         def region_of(row: ObservationCandidate) -> tuple[tuple[int, ...], ...]:
             return tuple(tuple(int(value) for value in point) for point in row.polygon)
 
@@ -2157,6 +2166,7 @@ class DatabaseStages:
                     whole_run=whole_run,
                     rotation_degrees=facts.rotation_degrees,
                     stacked=stacked,
+                    layouts=layouts,
                 )
             )
             crop_artifact_id = None if crops is None else crops.first()
@@ -3073,9 +3083,10 @@ class DatabaseStages:
                     image_format="png",
                     context=AssembledContext(nearby_text=(), nearby_geometry=()),
                     bound_pt=VISION_CONTEXT_BOUND_PT,
-                    # Still computed, though `_vision_pre_call_refusal` has already kept every
-                    # crop that shows one from this call: the validator's guard stays behind it.
+                    # Both still computed, though `_vision_pre_call_refusal` has already kept every
+                    # crop that shows one from this call: the validator's guards stay behind it.
                     stacked_label=crop_shows_a_stacked_fraction(crop_box, stacked_fractions),
+                    stacked_layouts=stacked_layouts_shown(crop_box, stacked_fractions),
                 )
                 try:
                     candidate = reader.extract(request, recorder)
@@ -4229,6 +4240,13 @@ def region_facts(
     return facts, whole_run
 
 
+def _shows(crop_box: tuple[int, int, int, int], fraction: StackedFraction) -> bool:
+    left, top, right, bottom = crop_box
+    xs = [point.x for point in fraction.image_extent]
+    ys = [point.y for point in fraction.image_extent]
+    return min(xs) <= right and left <= max(xs) and min(ys) <= bottom and top <= max(ys)
+
+
 def crop_shows_a_stacked_fraction(
     crop_box: tuple[int, int, int, int], fractions: Sequence[StackedFraction]
 ) -> bool:
@@ -4238,13 +4256,22 @@ def crop_shows_a_stacked_fraction(
     edge is still there to be promoted into a whole number. The crop's own `(left, top, right,
     bottom)` and the fraction's corners are both page pixels at the reader's dpi.
     """
-    left, top, right, bottom = crop_box
-    for fraction in fractions:
-        xs = [point.x for point in fraction.image_extent]
-        ys = [point.y for point in fraction.image_extent]
-        if min(xs) <= right and left <= max(xs) and min(ys) <= bottom and top <= max(ys):
-            return True
-    return False
+    return any(_shows(crop_box, fraction) for fraction in fractions)
+
+
+def stacked_layouts_shown(
+    crop_box: tuple[int, int, int, int], fractions: Sequence[StackedFraction]
+) -> tuple[FractionLayout, ...]:
+    """The layouts of the stacked fractions a crop shows, by the rule above (#834).
+
+    A fraction set in text has no layout and adds none, so a crop showing only such fractions shows
+    a stacked fraction (`crop_shows_a_stacked_fraction`) and has no layouts to check a reading by.
+    """
+    return tuple(
+        fraction.layout
+        for fraction in fractions
+        if fraction.layout is not None and _shows(crop_box, fraction)
+    )
 
 
 def _vision_pre_call_refusal(

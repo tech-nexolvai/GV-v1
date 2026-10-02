@@ -151,6 +151,7 @@ def _geometry(reader: dict[str, str]) -> PageGeometry:
             glyph_min_pt=Decimal(reader["GV_READER_FRACTION_GLYPH_MIN_PT"]),
             glyph_max_pt=Decimal(reader["GV_READER_FRACTION_GLYPH_MAX_PT"]),
             proportion_max=Decimal(reader["GV_READER_FRACTION_PROPORTION_MAX"]),
+            character_gap_pt=Decimal(reader["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
         ),
     )
 
@@ -283,6 +284,7 @@ def _crop_png(
         whole_run=None,
         rotation_degrees=0,
         stacked=lambda _polygon: False,
+        layouts=lambda _polygon: (),
     )
     first = crops.first()
     assert first is not None

@@ -30,6 +30,7 @@ from typing import Any
 import pytest
 
 from evidence.candidate import ObservationCandidate
+from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.nova import NovaAdapter, NovaInvocationOutcome
 from extraction.models.openmodel import (
@@ -49,6 +50,7 @@ from extraction.models.openmodel import (
     StructuredOutputStrategy,
 )
 from extraction.models.validation import ValidationRejection
+from tests.extraction.models.test_validation import THREE_QUARTERS
 
 #: The reading the synthetic crop is drawn to contain.
 KNOWN_READING = '24 1/2"'
@@ -108,7 +110,12 @@ def _config(*, max_attempts: int = 2) -> OpenModelConfig:
     )
 
 
-def _request(crop: bytes | None = None, *, stacked_label: bool = False) -> OpenModelRequest:
+def _request(
+    crop: bytes | None = None,
+    *,
+    stacked_label: bool = False,
+    stacked_layouts: tuple[FractionLayout, ...] = (),
+) -> OpenModelRequest:
     return OpenModelRequest(
         candidate_id="candidate-534",
         page=3,
@@ -120,6 +127,7 @@ def _request(crop: bytes | None = None, *, stacked_label: bool = False) -> OpenM
         ),
         bound_pt=Decimal(96),
         stacked_label=stacked_label,
+        stacked_layouts=stacked_layouts,
     )
 
 
@@ -331,6 +339,23 @@ def test_a_stacked_crop_is_refused_by_the_adapter_and_recorded() -> None:
     assert raised.value.rejection.reason == "stacked_fraction_requires_review"
     assert [record.outcome for record in sink.items] == [OpenModelInvocationOutcome.REJECTED]
     assert len(endpoint.requests) == 1
+
+
+def test_the_adapter_hands_the_requests_layouts_to_the_validator() -> None:
+    """The same link as Nova's (#834): a reading the layout contradicts is refused for it."""
+    sink = RecordingSink()
+    endpoint = FakeEndpoint(_tool_response(_payload() | {"reading": '28 3/4"'}))
+    adapter = OpenModelAdapter(_config(), endpoint, sink)
+
+    with pytest.raises(OpenModelPayloadRejectedError) as raised:
+        adapter.extract(_request(stacked_label=True, stacked_layouts=THREE_QUARTERS))
+
+    assert raised.value.rejection.reason == "reading_contradicts_stacked_layout"
+
+
+def test_request_refuses_layouts_on_a_crop_said_to_show_no_stacked_label() -> None:
+    with pytest.raises(ValueError, match="stacked label"):
+        _request(stacked_label=False, stacked_layouts=THREE_QUARTERS)
 
 
 def test_a_connection_failure_retries_to_the_configured_bound_and_stops() -> None:

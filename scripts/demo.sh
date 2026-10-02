@@ -141,6 +141,11 @@ API_PID=$!
 # font text rather than paths — all of `AI_Set 1`'s, and some of `AI_Set 2`'s (pages 15 and 17) — are
 # not seen by it at all (#738).
 #
+# **`CHARACTER_GAP_PT` lays each one out (#834)**: how far apart along the baseline the whole number's
+# digits, the fraction and the inch mark may be. A reading whose digit counts the layout contradicts
+# — `3 3/4"` on a `3/4"` — is refused. On those 12 fractions every value from 3.2 to 6 pt counts every
+# part right; the widest gap inside a label is 3.12 pt, between the `1` and `3` of a `13 1/8"`.
+#
 # **The two Bedrock vision readers, and what turning them on costs (#651).** They were built in
 # #622/#623 and PC.3 and this flag is the only thing that starts them; until it was set here the
 # whole reading rebuild had never executed, and the demo ran the vector+OCR path alone. They are
@@ -195,6 +200,7 @@ GV_READER_FRACTION_REACH_PT=3 \
 GV_READER_FRACTION_GLYPH_MIN_PT=1 \
 GV_READER_FRACTION_GLYPH_MAX_PT=12 \
 GV_READER_FRACTION_PROPORTION_MAX=2.5 \
+GV_READER_FRACTION_CHARACTER_GAP_PT=4 \
   "$PYTHON" scripts/drain_outbox.py --watch &
 WORKER_PID=$!
 
