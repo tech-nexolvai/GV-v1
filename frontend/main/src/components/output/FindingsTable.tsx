@@ -53,26 +53,27 @@ export function FindingsTable({
 
   return (
     <div className="ftable-wrap">
-      <table className="ftable">
-        <thead>
-          <tr>
-            <th scope="col" className="ftable__col-outcome">Result</th>
-            <th scope="col">Check</th>
-            <th scope="col">
+      {/* Explicit roles retain table semantics when narrow layouts reflow rows with CSS grid. */}
+      <table className="ftable" role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th scope="col" role="columnheader" className="ftable__col-outcome">Result</th>
+            <th scope="col" role="columnheader">Check</th>
+            <th scope="col" role="columnheader">
               <span className="ftable__role ftable__role--shop" aria-hidden="true" />
               Shop
             </th>
-            <th scope="col">
+            <th scope="col" role="columnheader">
               <span className="ftable__role ftable__role--arch" aria-hidden="true" />
               Arch
             </th>
-            <th scope="col">Sheet</th>
-            <th scope="col" className="ftable__col-actions">
+            <th scope="col" role="columnheader">Sheet</th>
+            <th scope="col" role="columnheader" className="ftable__col-actions">
               <span className="sr-only">Actions</span>
             </th>
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup">
           {sortFindings(findings).map((finding) => (
             <FindingRows
               key={finding.id}
@@ -123,31 +124,35 @@ function FindingRows({
   return (
     <>
       <tr
+        role="row"
         className="ftable__row"
         data-outcome={finding.outcome}
         data-selected={isSelected || undefined}
         data-open={isOpen || undefined}
       >
-        <td>
+        <td role="cell" className="ftable__outcome">
           <span className="ftable__chip" data-outcome={finding.outcome}>
             <OutcomeIcon outcome={finding.outcome} size={13} />
             {cells.outcome}
           </span>
         </td>
-        <th scope="row" className="ftable__check">
+        <th scope="row" role="rowheader" className="ftable__check">
           {cells.check}
           {cells.check !== finding.check_id && <span className="ftable__rule mono">{finding.check_id}</span>}
         </th>
-        <td className="mono ftable__value ftable__value--shop" data-mismatch={finding.outcome === 'FAIL' || undefined}>
+        <td role="cell" className="mono ftable__value ftable__value--shop" data-mismatch={finding.outcome === 'FAIL' || undefined}>
+          <span className="ftable__cell-label" aria-hidden="true">Shop</span>
           <Value text={cells.reading} loaded={loaded} />
         </td>
-        <td className="mono ftable__value">
+        <td role="cell" className="mono ftable__value ftable__value--arch">
+          <span className="ftable__cell-label" aria-hidden="true">Arch</span>
           <Value text={cells.comparison} loaded={loaded} />
         </td>
-        <td className="mono ftable__sheet">
+        <td role="cell" className="mono ftable__sheet">
+          <span className="ftable__cell-label" aria-hidden="true">Sheet</span>
           <Value text={cells.sheet} loaded={loaded} />
         </td>
-        <td className="ftable__actions">
+        <td role="cell" className="ftable__actions">
           {onViewEvidence && (finding.shop_evidence || finding.arch_evidence) && (
             <button
               type="button"
@@ -157,6 +162,7 @@ function FindingRows({
               title="View evidence"
             >
               <Eye size={14} aria-hidden="true" />
+              <span className="ftable__action-label" aria-hidden="true">Evidence</span>
             </button>
           )}
           <button
@@ -169,12 +175,13 @@ function FindingRows({
             title={isOpen ? 'Hide details' : 'Details and actions'}
           >
             <ChevronRight size={14} aria-hidden="true" />
+            <span className="ftable__action-label" aria-hidden="true">{isOpen ? 'Hide details' : 'Details'}</span>
           </button>
         </td>
       </tr>
       {isMounted && (
-        <tr className="ftable__detail" id={detailId} data-outcome={finding.outcome} hidden={!isOpen}>
-          <td colSpan={6}>
+        <tr role="row" className="ftable__detail" id={detailId} data-outcome={finding.outcome} hidden={!isOpen}>
+          <td role="cell" colSpan={6}>
             {narrative && <p className="ftable__narrative">{narrative}</p>}
             {detail}
             {!narrative && detail === null && (

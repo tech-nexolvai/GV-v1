@@ -49,7 +49,7 @@ const html = renderToStaticMarkup(
   <FindingsTable findings={findings} narratives={narratives} onViewEvidence={() => undefined} />,
 );
 
-assert.match(html, /<table class="ftable">/);
+assert.match(html, /<table class="ftable" role="table">/);
 assert.doesNotMatch(html, /\|/, 'no markdown pipe ever reaches the screen');
 assert.equal(html.match(/class="ftable__row"/g)?.length, 5, 'one row per finding');
 assert.doesNotMatch(html, /half an inch deeper/, 'narratives are closed by default');
@@ -61,7 +61,7 @@ assert.ok(
 
 // The vendor's value is the highlighted one in a FAIL row, and only there.
 assert.equal(html.match(/data-mismatch="true"/g)?.length, 2, 'both FAIL rows highlight the shop value');
-assert.match(html, /data-mismatch="true">25 1\/2 in</);
+assert.match(html, /data-mismatch="true"><span[^>]*>Shop<\/span>25 1\/2 in</);
 
 // A missing value is a dash with an accessible name, not repeated words.
 assert.match(html, /aria-label="Not recorded">—</);
@@ -69,6 +69,25 @@ assert.doesNotMatch(html, />Not recorded</);
 
 // Evidence button only where there is evidence.
 assert.equal(html.match(/View evidence for/g)?.length, 4, 'the finding with no evidence has no evidence button');
+
+// Reflow adds labels, not another copy of the findings or editable details.
+assert.equal(html.match(/role="columnheader"/g)?.length, 6);
+assert.equal(html.match(/role="rowheader"/g)?.length, findings.length);
+for (const label of ['Shop', 'Arch', 'Sheet']) {
+  assert.equal(html.match(new RegExp(`class="ftable__cell-label" aria-hidden="true">${label}<`, 'g'))?.length,
+    findings.length, `each narrow row has a visible ${label} label without duplicating its accessible header`);
+}
+assert.equal(html.match(/class="ftable__action-label" aria-hidden="true">Evidence</g)?.length, 4);
+assert.equal(html.match(/class="ftable__action-label" aria-hidden="true">Details</g)?.length, findings.length);
+assert.equal(html.match(/25 1\/2 in/g)?.length, 1, 'one exact value, shared by desktop and narrow layout');
+assert.equal(findings[0].recorded_operands?.[0].value, '83 in', 'rendering leaves the source operands unchanged');
+
+const longValue = '12345678901234567890 1/128 in; 440 mm';
+const unusual = finding('long-rule-id-with-many-parts', 'NO_APPLICABLE_RULE', 'A long recorded check name', longValue);
+const unusualHtml = renderToStaticMarkup(<FindingsTable findings={[unusual]} onViewEvidence={() => undefined} />);
+assert.ok(unusualHtml.includes(longValue), 'long exact readings are never shortened or reparsed');
+assert.ok(unusualHtml.includes(unusual.check_id), 'the complete rule ID remains available');
+assert.match(unusualHtml, /data-outcome="NO_APPLICABLE_RULE"/);
 
 // --- an opened row ----------------------------------------------------------------------------
 
