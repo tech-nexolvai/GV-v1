@@ -412,6 +412,14 @@ class StackedFraction:
     `None` for a stacked fraction set in text (#738). Its characters are not paths, so there is
     nothing to count, and no reading of it can be checked this way."""
 
+    paths: tuple[VectorPath, ...] = field(default=(), compare=False)
+    """The black and grey paths that draw the layout's whole number, numerator and denominator, in
+    page space and drawing order (#848): what each piece of the label is drawn from to be read on
+    its own. Not the bar or the inch mark, which are never read, and nothing in a reviewer's colour.
+
+    Empty for a fraction set in text, which has no paths. Not part of the fraction's equality, as
+    `OutlinedTextRegion.glyph_paths` is not part of a region's."""
+
 
 @dataclass(frozen=True, slots=True)
 class LayerRefusal:
@@ -1355,11 +1363,12 @@ def _drawing_geometry(
     # orphaned the bar and denominator. The detector brings its own size bound. Each path's colour
     # goes with it, so a reviewer's coloured markup inside the snapshot is found as part of no
     # label's layout (#834).
+    boxes = [_bounds(path) for path in paths]
     layouts: tuple[FractionLayout, ...] = (
         ()
         if fraction_bar is None
         else stacked_fractions(
-            [_bounds(path) for path in paths],
+            boxes,
             geometry=fraction_bar,
             ink=[vector_path.drawing_ink for vector_path in vector_paths],
             rotation_degrees=baseline_rotation_degrees,
@@ -1373,7 +1382,26 @@ def _drawing_geometry(
         except (TypeError, ValueError):
             # Outside the visible crop box, or a line in image space. Neither can be in a crop.
             continue
-        fractions.append(StackedFraction(extent=extent, image_extent=image_extent, layout=layout))
+        # **Found again by place**: a layout's characters are the boxes of the paths that draw them,
+        # computed from these same points, so a box names its paths exactly (#848).
+        drawn = {
+            box
+            for part in (layout.whole, layout.numerator, layout.denominator)
+            for character in part
+            for box in character
+        }
+        fractions.append(
+            StackedFraction(
+                extent=extent,
+                image_extent=image_extent,
+                layout=layout,
+                paths=tuple(
+                    vector_path
+                    for vector_path, box in zip(vector_paths, boxes, strict=True)
+                    if vector_path.drawing_ink and box in drawn
+                ),
+            )
+        )
 
     regions: list[OutlinedTextRegion] = []
     runs, orphaned_glyphs = _glyph_runs(small, glyph_gap_pt, baseline_rotation_degrees)

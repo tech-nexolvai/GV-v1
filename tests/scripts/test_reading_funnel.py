@@ -104,6 +104,7 @@ def test_an_empty_database_reports_zeroes_without_raising(postgres_engine: Engin
     report = collect(postgres_engine)
 
     assert report["funnel"]["found"] == 0
+    assert report["funnel"]["read_in_parts"] == 0
     assert report["funnel"]["passes"] == 0
     for name, _ in QUERIES:
         assert report[name] == [], f"{name} should be empty on a fresh database"
@@ -325,3 +326,39 @@ def test_quota_config_rejects_missing_or_invalid_numbers() -> None:
         parse_quota_config('{"nova-2-lite":0}')
     with pytest.raises(TypeError, match="positive number"):
         parse_quota_config('{"nova-2-lite":true}')
+
+
+def test_stacked_fractions_read_in_parts_have_their_own_line() -> None:
+    """**Every one is a reading a person must still tick** (#848), so the count is shown on its own
+    rather than folded into what was found; a report put together without it shows a dash."""
+    report: dict[str, Any] = {
+        "funnel": {
+            "found": 10,
+            "with_a_value": 4,
+            "associated": 0,
+            "sealed": 0,
+            "read_in_parts": 4,
+            "findings": 0,
+            "passes": 0,
+        }
+    }
+
+    for rendered in (
+        render(report),
+        render_markdown(report, quota_config=QuotaConfig(requests_per_minute={})),
+    ):
+        (line,) = [line for line in rendered.splitlines() if "read in parts" in line]
+        assert line.split() == ["stacked", "fractions", "read", "in", "parts", "4"]
+    del report["funnel"]["read_in_parts"]
+    (line,) = [line for line in render(report).splitlines() if "read in parts" in line]
+    assert line.split()[-1] == "—"
+
+
+def test_the_line_counts_the_route_by_the_name_it_records_under() -> None:
+    """Written out in the script so it needs no extraction import; held to the route's own name."""
+    from reading_funnel import FRACTION_PARTS_EXTRACTOR as COUNTED
+
+    from extraction.fraction_parts import FRACTION_PARTS_EXTRACTOR
+
+    assert COUNTED == FRACTION_PARTS_EXTRACTOR
+    assert f"'{FRACTION_PARTS_EXTRACTOR}'" in FUNNEL_SQL

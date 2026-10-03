@@ -202,7 +202,7 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
     from storage.local import LocalStore
     from workflow.findings_bedrock import configured_findings_composer
-    from workflow.stages import DatabaseStages
+    from workflow.stages import DatabaseStages, fraction_parts_from_environment
 
     # A LocalStore needs a signing key to satisfy its interface, but this worker never issues upload
     # tickets.  It only reads already-confirmed objects from the same explicitly configured dev root.
@@ -231,6 +231,8 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         # Off unless named: the vision reader that goes first, the others reading only where it
         # read a value (#787). An unknown name is refused when the stages are built.
         vision_gate=os.environ.get("GV_VISION_GATE_READER", "").strip() or None,
+        # Off unless GV_FRACTION_PARTS is on, and then every drawing setting is required (#848).
+        fraction_parts=fraction_parts_from_environment(),
     )
 
 

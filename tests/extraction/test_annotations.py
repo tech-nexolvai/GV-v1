@@ -802,6 +802,40 @@ def test_a_coloured_path_in_the_stamp_is_no_character_of_the_label() -> None:
     assert red.stacked_fractions[0].extent == black.stacked_fractions[0].extent
 
 
+def test_a_fraction_keeps_the_ink_paths_its_pieces_are_drawn_from() -> None:
+    """**What each piece of the label is read from** (#848). The `28` is two paths, the `3` one, the
+    `4` a body and a stem: five, each the path one of the layout's boxes was measured from. The bar
+    and the inch mark are never read, so they are not kept; nor is a reviewer's red stroke where a
+    digit would be, nor one traced exactly over the `2`, which has the `2`'s own box."""
+    red_over_two = b"q 1 0 0 RG 0.2 w 110 520 m 113.6 525.5 l 110 525.5 l S Q\n"
+    layers = _stacked_layers(
+        FRACTION_BAR, appearance=RED_STROKE + red_over_two + STACKED_APPEARANCE
+    )
+
+    (fraction,) = layers.stacked_fractions
+    layout = fraction.layout
+    assert layout is not None
+    drawn = {
+        box
+        for part in (layout.whole, layout.numerator, layout.denominator)
+        for character in part
+        for box in character
+    }
+    kept = [
+        (
+            min(x for x, _ in path.points),
+            min(y for _, y in path.points),
+            max(x for x, _ in path.points),
+            max(y for _, y in path.points),
+        )
+        for path in fraction.paths
+    ]
+    assert len(kept) == 5
+    assert set(kept) == drawn
+    assert all(path.drawing_ink for path in fraction.paths)
+    assert layout.bar not in kept and not set(layout.inch_mark) & set(kept)
+
+
 def test_every_path_is_read_with_its_colours() -> None:
     """pdfium's red, green, blue and alpha for each path, straight from the file."""
     layers = _stacked_layers(
