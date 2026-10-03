@@ -1259,7 +1259,9 @@ def _dual_tokens(
 
     So the line is used only to say which words share it, by exact box containment, and the token is
     found by joining consecutive words back together. The box that comes out is the union of real
-    word boxes, which is what the drawing actually says.
+    word boxes, which is what the drawing actually says. A line's box can enclose a word that is not
+    on it, so one word can be on two lines; `_join_lines` joins each character into one token at
+    most, so the label it is part of is still read once (#894).
 
     **Sideways labels are joined too** (#738). `extract_text_lines` groups only upright text, so a
     sideways `2' - 0"` stayed three words, and `2'` alone is 24 inches while `0"` alone is none.
@@ -1293,7 +1295,24 @@ def _join_lines(
     document_version_id: UUID,
     page_index: int,
 ) -> None:
-    """Join consecutive words of each line that together make one `_WHOLE_TOKENS` dimension."""
+    """Join consecutive words of each line that together make one `_WHOLE_TOKENS` dimension.
+
+    **Each character is joined into one token at most** (#894). An upright line holds the words
+    whose boxes lie inside its box (`_dual_tokens`), and the box `extract_text_lines` gives a line is
+    the one round all of its characters, so it can enclose words that are not on it. Measured on
+    `AI_Set_1`, a line of a note running across a drawing enclosed a stacked fraction none of whose
+    characters it has, and the label was joined on its own line and again on the note's: one label
+    read twice, from the same characters. So a run that holds a character a token already found
+    holds — in this call or in `found` before it — is passed over as a run that does not match is,
+    and the next smaller run is tried. The first token found keeps the characters, in the order the
+    lines are joined; on both client sets every run passed over was a copy of that token.
+
+    Which words a line holds is left as it was. Holding only the words with a character on the line
+    was tried, and it changes real readings: measured on `AI_Set_2`, it lost a dual dimension whose
+    pieces `extract_text_lines` puts on two lines, joined only because one line's box encloses them
+    all, and changed the readings round it.
+    """
+    taken = {id(char) for _, _, merged in found for char in merged["chars"]}
     for members in lines:
         index = 0
         while index < len(members):
@@ -1301,6 +1320,9 @@ def _join_lines(
                 run = members[index : index + size]
                 joined = " ".join(str(word["text"]) for word in run)
                 if not any(pattern.fullmatch(joined) for pattern in _WHOLE_TOKENS):
+                    continue
+                chars = [char for word in run for char in (word.get("chars") or ())]
+                if any(id(char) in taken for char in chars):
                     continue
                 box = (
                     min(word["x0"] for word in run),
@@ -1310,7 +1332,7 @@ def _join_lines(
                 )
                 merged = {
                     "text": " ".join(str(word["text"]) for word in run),
-                    "chars": [char for word in run for char in (word.get("chars") or ())],
+                    "chars": chars,
                     "x0": box[0],
                     "top": box[1],
                     "x1": box[2],
@@ -1323,6 +1345,7 @@ def _join_lines(
                 item = _text_item(merged, transform, height, document_version_id, page_index)
                 if item is not None:
                     found.append((item, box, merged))
+                    taken.update(id(char) for char in chars)
                 index += size
                 break
             else:
