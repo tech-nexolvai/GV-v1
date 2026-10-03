@@ -19,9 +19,19 @@ import './DrawingParts.css';
  * Renders nothing while no drawing has a suggestion or is confirmed as the vendor's. `refresh` is
  * the page's own re-read counter: it changes while the drawings are still being read and after a
  * drawing's role is confirmed, which are the two moments the list can change without a decision
- * here. After each decision the list is read again, so positions and the count stay the server's.
+ * here. After each decision the list is read again, so positions and the count stay the server's,
+ * and `onDecided` is told, because the runs under each countertop (#893) depend on the parts.
  */
-export function DrawingParts({ packageId, refresh }: { packageId: string; refresh: number }) {
+export function DrawingParts({
+  packageId,
+  refresh,
+  onDecided,
+}: {
+  packageId: string;
+  refresh: number;
+  /** Told after each decision is saved, so what depends on the parts can be read again. */
+  onDecided?: () => void;
+}) {
   const [drawings, setDrawings] = useState<PartDrawing[] | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +57,7 @@ export function DrawingParts({ packageId, refresh }: { packageId: string; refres
     try {
       await decide();
       setDecided((count) => count + 1);
+      onDecided?.();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : String(caught));
     } finally {

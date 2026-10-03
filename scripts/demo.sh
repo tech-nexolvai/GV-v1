@@ -89,11 +89,20 @@ say "6/6  the API, review worker, and UI"
 # **What each model call cost (#700).** Both processes record model calls — the worker's readers and
 # the API's reviewer chat — and price them from this stated file, which names its own source and
 # date. Without it every call's cost is recorded as unknown, never as a free zero.
+#
+# **The run under each countertop (#893).** The Measure page suggests which confirmed cabinets and
+# fillers sit beneath each confirmed countertop, and `GV_RUN_EDGE_TOLERANCE` is how far a part's ends
+# and top may stray past the countertop's and still be suggested. It has no default: unset, nothing is
+# suggested and no run can be confirmed. The demo states the reader's own `GV_READER_WITNESS_TOLERANCE`
+# below, not a new number: it is the tolerance the part suggester already used to decide that a
+# countertop's ends meet its cabinets' (#868), and a second number for that question could disagree
+# with the first. `tests/api/test_countertop_runs.py` holds the two equal.
 GV_DATABASE_URL="$BARE_URL" \
 GV_MODEL_RATES_FILE="deploy/model_rates.us-east-1.json" \
 GV_DEV_PRINCIPAL="demo reviewer" \
 GV_DEV_PROJECTS="$PROJECT_UUID" \
 GV_DEV_PORT="$API_PORT" \
+GV_RUN_EDGE_TOLERANCE=0.004 \
   "$PYTHON" scripts/dev_server.py &
 API_PID=$!
 

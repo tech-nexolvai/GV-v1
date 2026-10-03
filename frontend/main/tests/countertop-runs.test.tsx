@@ -1,0 +1,197 @@
+import assert from 'node:assert/strict';
+import { renderToStaticMarkup } from 'react-dom/server';
+
+import { CountertopRunsList } from '../src/components/measure/CountertopRunsList.js';
+import {
+  isTheSuggestion,
+  partLabel,
+  runDecisionLabel,
+  runsStillToDecide,
+  startingSelection,
+  type RunCountertop,
+  type RunDrawing,
+  type RunsList,
+} from '../src/components/measure/countertopRunChoices.js';
+
+// One vendor's drawing as `GET …/countertop-runs` lists it (#893): a countertop (part 2) over two
+// cabinets (parts 1 and 3), and a cabinet a person added above the top (part 4), which the filter
+// left out. Nothing is decided yet.
+const signal = 'A confirmed cabinet on the same drawing as the countertop.';
+const countertop: RunCountertop = {
+  countertop_item_id: 'top',
+  number: 2,
+  code: null,
+  suggestion: {
+    members: [
+      { item_id: 'left', number: 1, kind: 'cabinet', position: 1, signal },
+      { item_id: 'right', number: 3, kind: 'cabinet', position: 2, signal },
+    ],
+    left_out: [
+      {
+        item_id: 'wall',
+        number: 4,
+        kind: 'cabinet',
+        reason: 'Left out: this cabinet reaches higher up the page than the countertop’s top.',
+      },
+    ],
+    warnings: [],
+    edge_tolerance: '0.004',
+  },
+  decision: null,
+};
+
+const drawing: RunDrawing = {
+  view_id: 'v-shop',
+  page_index: 1,
+  tag: 'panel-3',
+  can_confirm: true,
+  why_not: null,
+  parts: [
+    { item_id: 'left', number: 1, kind: 'cabinet', code: null },
+    { item_id: 'right', number: 3, kind: 'cabinet', code: null },
+    { item_id: 'wall', number: 4, kind: 'cabinet', code: null },
+  ],
+  countertops: [countertop],
+};
+
+const runs: RunsList = { can_suggest: true, why_not: null, drawings: [drawing] };
+
+const html = renderToStaticMarkup(
+  <CountertopRunsList
+    runs={runs}
+    saving={null}
+    onConfirm={() => undefined}
+    onWithdraw={() => undefined}
+  />,
+);
+
+// The question is asked, and how much is left is stated.
+assert.match(html, /Parts under each countertop/);
+assert.match(html, /Page 2: the vendor&#x27;s drawing/);
+assert.match(html, /1 still to decide\./);
+assert.equal(runsStillToDecide(runs), 1);
+
+// The suggested run is shown left to right, each part named as "Parts of each drawing" names it,
+// with why; the wall cabinet is shown as left out, with why, and is not in the run.
+assert.match(html, /Countertop, part 2/);
+assert.ok(html.indexOf('part 1 (cabinet)') < html.indexOf('part 3 (cabinet)'));
+assert.equal((html.match(/class="countertop-runs__members"/g) ?? []).length, 1);
+assert.match(html, /part 4 \(cabinet\): Left out/);
+assert.match(html, /Not decided yet\./);
+
+// **The suggestion is ticked for the person to keep or change, never sent without their click.**
+// The two suggested parts start ticked; the left-out one does not.
+assert.deepEqual(startingSelection(countertop), ['left', 'right']);
+assert.equal((html.match(/checked=""/g) ?? []).length, 2);
+assert.equal((html.match(/type="checkbox"/g) ?? []).length, 3);
+assert.match(html, />Confirm this run<\/button>/);
+
+// **There is no "confirm all".** Two buttons, both about this one countertop.
+assert.doesNotMatch(html, /confirm all|accept all|confirm every/i);
+assert.equal((html.match(/<button/g) ?? []).length, 2);
+assert.match(html, />Not this countertop&#x27;s run<\/button>/);
+assert.equal((html.match(/role="group"/g) ?? []).length, 1);
+assert.doesNotMatch(html, /aria-pressed="true"/);
+
+// Ticking a different set of parts makes it a correction, whatever order they were ticked in.
+assert.equal(isTheSuggestion(countertop, ['right', 'left']), true);
+assert.equal(isTheSuggestion(countertop, ['left']), false);
+assert.equal(isTheSuggestion(countertop, ['left', 'right', 'wall']), false);
+assert.equal(isTheSuggestion({ ...countertop, suggestion: null }, []), false);
+
+// A confirmed run that is still read starts the boxes from what was confirmed, and is said in a
+// sentence naming who and which parts.
+const confirmed: RunCountertop = {
+  ...countertop,
+  decision: {
+    decision: 'confirmed',
+    decided_by: 'reviewer@example.com',
+    decided_at: '2026-10-03T12:00:00Z',
+    members: [
+      { item_id: 'left', number: 1, kind: 'cabinet', position: 1, signal, stands: true },
+      { item_id: 'wall', number: 4, kind: 'cabinet', position: 2, signal, stands: true },
+    ],
+    read: true,
+    why_not_read: null,
+    edge_tolerance: '0.004',
+  },
+};
+assert.deepEqual(startingSelection(confirmed), ['left', 'wall']);
+assert.equal(
+  runDecisionLabel(confirmed),
+  'Confirmed by reviewer@example.com: part 1 (cabinet), part 4 (cabinet), left to right.',
+);
+
+// A confirmed run that is no longer read says why, and the boxes start from the suggestion again.
+const stale: RunCountertop = {
+  ...confirmed,
+  decision: {
+    ...confirmed.decision!,
+    read: false,
+    why_not_read: 'A part in this run was taken back or corrected after the run was confirmed.',
+  },
+};
+assert.deepEqual(startingSelection(stale), ['left', 'right']);
+const staleHtml = renderToStaticMarkup(
+  <CountertopRunsList
+    runs={{ ...runs, drawings: [{ ...drawing, countertops: [stale] }] }}
+    saving={null}
+    onConfirm={() => undefined}
+    onWithdraw={() => undefined}
+  />,
+);
+assert.match(staleHtml, /role="status">A part in this run was taken back/);
+assert.match(staleHtml, /Nothing left to decide\./);
+
+// A withdrawal is the pressed answer.
+const withdrawn: RunCountertop = {
+  ...countertop,
+  decision: {
+    decision: 'withdrawn',
+    decided_by: 'reviewer@example.com',
+    decided_at: '2026-10-03T12:00:00Z',
+    members: [],
+    read: false,
+    why_not_read: null,
+    edge_tolerance: null,
+  },
+};
+assert.equal(runDecisionLabel(withdrawn), "Said not to be this countertop's run by reviewer@example.com.");
+const withdrawnHtml = renderToStaticMarkup(
+  <CountertopRunsList
+    runs={{ ...runs, drawings: [{ ...drawing, countertops: [withdrawn] }] }}
+    saving={null}
+    onConfirm={() => undefined}
+    onWithdraw={() => undefined}
+  />,
+);
+assert.match(withdrawnHtml, /aria-pressed="true"[^>]*>Not this countertop&#x27;s run/);
+
+// Without a stated tolerance nothing is suggested, nothing can be confirmed, and the page says why.
+const unstated: RunsList = {
+  can_suggest: false,
+  why_not: 'No run can be suggested or confirmed yet: GV_RUN_EDGE_TOLERANCE has not been set.',
+  drawings: [{ ...drawing, countertops: [{ ...countertop, suggestion: null }] }],
+};
+const unstatedHtml = renderToStaticMarkup(
+  <CountertopRunsList runs={unstated} saving={null} onConfirm={() => undefined} onWithdraw={() => undefined} />,
+);
+assert.equal(runsStillToDecide(unstated), 0);
+assert.match(unstatedHtml, /GV_RUN_EDGE_TOLERANCE has not been set/);
+assert.match(unstatedHtml, /disabled=""[^>]*>Confirm the ticked parts<\/button>/);
+
+// On a drawing no longer confirmed as the vendor's, the boxes are locked and the page says why.
+const architects: RunsList = {
+  ...runs,
+  drawings: [{ ...drawing, can_confirm: false, why_not: 'This drawing is no longer confirmed as the vendor’s.' }],
+};
+const architectsHtml = renderToStaticMarkup(
+  <CountertopRunsList runs={architects} saving={null} onConfirm={() => undefined} onWithdraw={() => undefined} />,
+);
+assert.match(architectsHtml, /<fieldset[^>]*disabled=""/);
+assert.match(architectsHtml, /no longer confirmed as the vendor/);
+
+// A part is named by its kind when it has no number.
+assert.equal(partLabel({ number: null, kind: 'filler' }), 'an unnumbered filler');
+
+console.log('countertop runs: ok');

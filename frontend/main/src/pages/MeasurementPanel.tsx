@@ -28,6 +28,7 @@ import {
 import { projectId } from '../api/config';
 import { AssignmentProgress } from '../components/measure/AssignmentProgress';
 import { DrawingRoles } from '../components/measure/DrawingRoles';
+import { CountertopRuns } from '../components/measure/CountertopRuns';
 import { DrawingParts } from '../components/measure/DrawingParts';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { distributionFieldWidthKey } from '../components/measure/fillerDistribution';
@@ -302,6 +303,8 @@ export function MeasurementPanel({
   const [inspecting, setInspecting] = useState(false);
   /** Bumped to re-fetch the form while the reader is still working. */
   const [reload, setReload] = useState(0);
+  // Decisions on parts, which change the runs under each countertop (#893).
+  const [partsDecided, setPartsDecided] = useState(0);
   /**
    * Which fields a model proposed, by field key, with the readings it chose.
    *
@@ -892,7 +895,20 @@ export function MeasurementPanel({
       )}
 
       {/* **The parts of each vendor drawing** (#882): suggested, and each one decided by a person. */}
-      {packageId && <DrawingParts key={packageId} packageId={packageId} refresh={reload} />}
+      {packageId && (
+        <DrawingParts
+          key={packageId}
+          packageId={packageId}
+          refresh={reload}
+          onDecided={() => setPartsDecided((count) => count + 1)}
+        />
+      )}
+
+      {/* **Which parts sit under each countertop** (#893): suggested from the confirmed parts above,
+          and each countertop's run decided by a person. Read again whenever a part is decided. */}
+      {packageId && (
+        <CountertopRuns key={packageId} packageId={packageId} refresh={reload + partsDecided} />
+      )}
 
       <section className="enter-values__section">
         <h2>Measurements</h2>
