@@ -71,7 +71,11 @@ const qa = {
         else { try { requestBody = bytes.length ? JSON.parse(bytes.toString()) : {}; } catch { return refusal('Invalid synthetic request JSON.', 400); } }
       }
       const localResponse = handleScenario(scenario, req.method, path, requestBody);
-      if (localResponse) return json(localResponse.body, localResponse.status);
+      if (localResponse) {
+        // Deliberate delay only in isolated QA: makes the pending/disabled state inspectable.
+        if (scenario.name === 'decision-save' && req.method === 'POST' && /\/(evidence|exceptions)$/.test(path)) await new Promise(resolve => setTimeout(resolve, 1500));
+        return json(localResponse.body, localResponse.status);
+      }
       if (req.method === 'POST' && /\/chat(?:\/stream)?$/.test(path)) {
         const { question = '' } = requestBody;
         scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path, status: 200, result: 'Synthetic structured fallback; no model connection', question });

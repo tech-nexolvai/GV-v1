@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { ChatThread } from '../components/chat/ChatThread';
+import type { DecisionSaveResult } from '../components/chat/decisionSave';
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { StatusBadge } from '../components/ui/Badge';
@@ -424,7 +425,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * wrong for a multi-operand one, so a finding with more than one is left to the evidence view
    * rather than guessed at here.
    */
-  async function handleCorrect(findingId: string, correctedValue: string) {
+  async function handleCorrect(findingId: string, correctedValue: string): Promise<DecisionSaveResult> {
     setActionError(null);
     try {
       const current = await ensureSession();
@@ -436,16 +437,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         operand.evidence ? [operand.evidence.canonical_observation_id] : [],
       ))];
       if (observationIds.length > 1) {
-        setActionError('This finding uses several drawing readings. Inspect its evidence and correct the specific measurement in Measurements before running the checks again.');
-        return;
+        return { saved: false, error: 'This finding uses several drawing readings. Inspect its evidence and correct the specific measurement in Measurements before running the checks again.' };
       }
       const observationId = observationIds[0] ?? null;
       if (observationId === null) {
-        setActionError(
-          'This finding does not name a reading that can be corrected — it has no authoritative ' +
+        return { saved: false, error: 'This finding does not name a reading that can be corrected — it has no authoritative ' +
             'observation behind it, so there is nothing to correct.',
-        );
-        return;
+        };
       }
       await decideEvidence(projectId(), current.id, {
         finding_id: findingId,
@@ -456,10 +454,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       setFindings(prev =>
         prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'correct' } : f)),
       );
+      return { saved: true };
     } catch (error) {
-      setActionError(
-        `That correction was not recorded — ${error instanceof Error ? error.message : String(error)}`,
-      );
+      return { saved: false, error: `That correction was not recorded — ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -470,7 +467,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * the same as saying the rule should stop firing, and the second is a rule change that goes
    * through the rulebook where somebody reviews it.
    */
-  async function handleExcept(findingId: string, reason: string, expiresAt: string) {
+  async function handleExcept(findingId: string, reason: string, expiresAt: string): Promise<DecisionSaveResult> {
     setActionError(null);
     try {
       const current = await ensureSession();
@@ -484,10 +481,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       setFindings(prev =>
         prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'except' } : f)),
       );
+      return { saved: true };
     } catch (error) {
-      setActionError(
-        `That exception was not granted — ${error instanceof Error ? error.message : String(error)}`,
-      );
+      return { saved: false, error: `That exception was not granted — ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 

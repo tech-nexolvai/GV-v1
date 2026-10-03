@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { project, populated, revision, findings } from './browser-qa-fixtures.mjs';
+import { project, populated, revision, findings, chains } from './browser-qa-fixtures.mjs';
 import { createScenarioState, handleScenario, scenarioSnapshot, scenarioFindings, fixturePdf, uploadPackage } from './browser-qa-scenarios.mjs';
 
 const prefix = `/api/v1/projects/${project}`;
@@ -60,4 +60,27 @@ const prefix = `/api/v1/projects/${project}`;
   assert.equal(handleScenario(state, 'DELETE', `${prefix}/packages/${populated}`).status, 409, 'unknown writes never reach any backend');
 }
 assert.equal(handleScenario(createScenarioState(), 'POST', `${prefix}/packages`, {}), null, 'no scenario delegates to baseline refusal');
+{
+  const state = createScenarioState('decision-save');
+  const session = handleScenario(state, 'POST', `${prefix}/packages/${populated}/review-sessions`, { package_revision_id: revision }).body;
+  const scoped = `${prefix}/review-sessions/${session.id}`;
+  const chain = handleScenario(state, 'GET', `${prefix}/packages/${populated}/findings/${findings[0].id}/chain`).body;
+  assert.equal(chain.operands.filter(op => op.evidence).length, 1);
+  assert.equal(chains[findings[0].id].operands.filter(op => op.evidence).length, 2, 'baseline fixture never mutated');
+  const payloads = [
+    ['evidence', { finding_id: findings[0].id, observation_id: 'synthetic-shop-crop', action: 'correct', corrected_value: '25 1/2 in' }],
+    ['exceptions', { finding_id: findings[2].id, scope: 'finding', scope_id: findings[2].id, reason: 'Synthetic QA exception', expires_at: '2030-01-01T12:00:00.000Z' }],
+  ];
+  for (const [endpoint, body] of payloads) {
+    const before = state.actions.length;
+    assert.equal(handleScenario(state, 'POST', `${scoped}/${endpoint}`, { ...body, finding_id: 'wrong' }).status, 422);
+    assert.equal(handleScenario(state, 'POST', `${scoped}/${endpoint}`, body).status, 503);
+    assert.equal(state.actions.length, before, 'rejection records no action');
+    assert.equal(handleScenario(state, 'POST', `${scoped}/${endpoint}`, body).status, 201);
+    assert.equal(state.actions.length, before + 1, 'explicit retry records exactly one action');
+    assert.equal(handleScenario(state, 'POST', `${scoped}/${endpoint}`, body).status, 409);
+    assert.equal(state.actions.length, before + 1);
+  }
+  assert.deepEqual(scenarioFindings(state).map(f => f.outcome), findings.map(f => f.outcome), 'saved corrections/exceptions leave recorded verdicts unchanged');
+}
 console.log('browser-qa-scenarios: partial-upload retention, counts, approval gate, exact verdict preservation and download gating passed');

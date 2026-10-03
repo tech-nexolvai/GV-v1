@@ -339,6 +339,16 @@
   color: var(--text-muted);
 }
 
+.finding-card__save-error {
+  width: 100%;
+  margin: 0;
+  padding: var(--space-3);
+  border-inline-start: 2px solid var(--text-primary);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .finding-card__decision .btn {
   align-self: flex-start;
 }
