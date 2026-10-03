@@ -12,6 +12,7 @@ import { pageFixture } from './browser-qa-pages.mjs';
 import { fixtureParts, decisionPartsFixture } from './browser-qa-parts.mjs';
 import { roleViewsFixture } from './browser-qa-roles.mjs';
 import { distributionNeeded, distributionFixture } from './browser-qa-distribution.mjs';
+import { countertopRunsFixture } from './browser-qa-runs.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const failCropOnce = new Set();
@@ -31,6 +32,11 @@ const partDecisionAttempts = new Map();
 let scenario = createScenarioState();
 let rolesMode = '';
 let distributionMode = false;
+let runsMode = '';
+let runsAttempts = 0;
+let runsRefreshFails = false;
+let countertopRuns = countertopRunsFixture();
+const runSaveAttempts = new Map();
 let distributionAttempts = 0;
 let roleListAttempts = 0;
 let roleViews = roleViewsFixture();
@@ -62,6 +68,11 @@ const qa = {
         rolesMode = url.searchParams.get('roles') ?? '';
         distributionMode = url.searchParams.get('distribution') === '1';
         distributionAttempts = 0;
+        runsMode = url.searchParams.get('runs') ?? '';
+        runsAttempts = 0;
+        runsRefreshFails = false;
+        countertopRuns = countertopRunsFixture();
+        runSaveAttempts.clear();
         roleListAttempts = 0;
         roleViews = roleViewsFixture();
         roleSaveAttempts.clear();
@@ -110,6 +121,31 @@ const qa = {
         // Deliberate delay only in isolated QA: makes the pending/disabled state inspectable.
         if (scenario.name === 'decision-save' && req.method === 'POST' && /\/(evidence|exceptions)$/.test(path)) await new Promise(resolve => setTimeout(resolve, 1500));
         return json(localResponse.body, localResponse.status);
+      }
+      if (runsMode === 'decisions' && req.method === 'POST' &&
+          path.startsWith(`/api/v1/projects/${project}/packages/${populated}/countertop-runs/`)) {
+        const match = path.match(/\/countertop-runs\/([^/]+)\/(confirm|withdraw)$/);
+        const drawing = countertopRuns.drawings[0];
+        const top = match && drawing.countertops.find(item => item.countertop_item_id === match[1]);
+        if (!top) return refusal('Unknown synthetic countertop.', 404);
+        if (match[2] === 'confirm' && (!Array.isArray(requestBody.part_ids) || !requestBody.part_ids.length ||
+          requestBody.part_ids.some(id => !drawing.parts.some(part => part.item_id === id)))) return refusal('Unknown synthetic run parts.', 422);
+        const attempt = (runSaveAttempts.get(top.countertop_item_id) ?? 0) + 1;
+        runSaveAttempts.set(top.countertop_item_id, attempt);
+        const fails = top.number === 4 && attempt === 1;
+        await new Promise(resolve => setTimeout(resolve, fails ? 12000 : 1500));
+        scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path,
+          status: fails ? 409 : 201, body: requestBody, result: 'Synthetic run decision only' });
+        if (fails) return refusal('Synthetic conflict: review your selected parts before retrying.', 409);
+        const confirmed = match[2] === 'confirm';
+        top.decision = { decision: confirmed ? 'confirmed' : 'withdrawn', decided_by: 'Synthetic QA reviewer',
+          decided_at: new Date().toISOString(), read: confirmed, why_not_read: null,
+          edge_tolerance: confirmed ? '0.004' : null,
+          members: confirmed ? drawing.parts.filter(part => requestBody.part_ids.includes(part.item_id))
+            .map((part, index) => ({ ...part, position: index + 1, signal: 'Synthetic grouping only', stands: true })) : [],
+        };
+        if (top.number === 5) runsRefreshFails = true;
+        return json(top, 201);
       }
       if (distributionMode && req.method === 'POST' && path === `/api/v1/projects/${project}/filler-distribution`) {
         const result = distributionFixture(requestBody);
@@ -174,6 +210,15 @@ const qa = {
         return;
       }
       if (req.method !== 'GET') return refusal('This isolated QA harness does not save or run reviews. No backend request was made.', 409);
+      if (path.endsWith('/countertop-runs')) {
+        runsAttempts++;
+        const fails = runsMode === 'decisions' && (runsAttempts <= 2 || runsRefreshFails);
+        runsRefreshFails = false;
+        if (runsMode) scenario.events.push({ sequence: scenario.events.length + 1, method: req.method,
+          path, status: fails ? 503 : 200, result: 'Synthetic run list only' });
+        if (fails) return refusal('Synthetic countertop run list temporarily unavailable.', 503);
+        return json(runsMode ? countertopRuns : { can_suggest: false, why_not: null, drawings: [] });
+      }
       if (path.endsWith('/review-sessions')) return json({ items: [], next_cursor: null, limit: 50 });
       if (path.endsWith('/packages')) return json({ items: visiblePackages, next_cursor: null, limit: 50, ordering: 'created_at' });
       if (path.endsWith('/chat/models')) return json({ models: [], default: null });

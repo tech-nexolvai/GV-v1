@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
+import { CountertopRunFeedback, CountertopRunsLoadState } from '../src/components/measure/CountertopRunFeedback.js';
+import { createMeasurementDecisionSaver, type MeasurementDecisionState } from '../src/components/measure/measurementDecisionSave.js';
 
 import { CountertopRunsList } from '../src/components/measure/CountertopRunsList.js';
 import {
@@ -59,7 +62,6 @@ const runs: RunsList = { can_suggest: true, why_not: null, drawings: [drawing] }
 const html = renderToStaticMarkup(
   <CountertopRunsList
     runs={runs}
-    saving={null}
     onConfirm={() => undefined}
     onWithdraw={() => undefined}
   />,
@@ -135,7 +137,6 @@ assert.deepEqual(startingSelection(stale), ['left', 'right']);
 const staleHtml = renderToStaticMarkup(
   <CountertopRunsList
     runs={{ ...runs, drawings: [{ ...drawing, countertops: [stale] }] }}
-    saving={null}
     onConfirm={() => undefined}
     onWithdraw={() => undefined}
   />,
@@ -160,7 +161,6 @@ assert.equal(runDecisionLabel(withdrawn), "Said not to be this countertop's run 
 const withdrawnHtml = renderToStaticMarkup(
   <CountertopRunsList
     runs={{ ...runs, drawings: [{ ...drawing, countertops: [withdrawn] }] }}
-    saving={null}
     onConfirm={() => undefined}
     onWithdraw={() => undefined}
   />,
@@ -174,7 +174,7 @@ const unstated: RunsList = {
   drawings: [{ ...drawing, countertops: [{ ...countertop, suggestion: null }] }],
 };
 const unstatedHtml = renderToStaticMarkup(
-  <CountertopRunsList runs={unstated} saving={null} onConfirm={() => undefined} onWithdraw={() => undefined} />,
+  <CountertopRunsList runs={unstated} onConfirm={() => undefined} onWithdraw={() => undefined} />,
 );
 assert.equal(runsStillToDecide(unstated), 0);
 assert.match(unstatedHtml, /GV_RUN_EDGE_TOLERANCE has not been set/);
@@ -186,7 +186,7 @@ const architects: RunsList = {
   drawings: [{ ...drawing, can_confirm: false, why_not: 'This drawing is no longer confirmed as the vendor’s.' }],
 };
 const architectsHtml = renderToStaticMarkup(
-  <CountertopRunsList runs={architects} saving={null} onConfirm={() => undefined} onWithdraw={() => undefined} />,
+  <CountertopRunsList runs={architects} onConfirm={() => undefined} onWithdraw={() => undefined} />,
 );
 assert.match(architectsHtml, /<fieldset[^>]*disabled=""/);
 assert.match(architectsHtml, /no longer confirmed as the vendor/);
@@ -194,4 +194,47 @@ assert.match(architectsHtml, /no longer confirmed as the vendor/);
 // A part is named by its kind when it has no number.
 assert.equal(partLabel({ number: null, kind: 'filler' }), 'an unnumbered filler');
 
-console.log('countertop runs: ok');
+const two = { ...runs, drawings: [{ ...drawing, countertops: [countertop, { ...countertop, countertop_item_id: 'other', number: 5 }] }] };
+const pending = renderToStaticMarkup(<CountertopRunsList runs={two}
+  decisions={{ top: { kind: 'saving' }, other: { kind: 'saving' } }}
+  onConfirm={() => undefined} onWithdraw={() => undefined} />);
+assert.equal((pending.match(/<fieldset[^>]*disabled=""/g) ?? []).length, 2);
+assert.equal((pending.match(/Waiting for the server/g) ?? []).length, 2);
+const locked = renderToStaticMarkup(<CountertopRunsList runs={runs} locked
+  onConfirm={() => undefined} onWithdraw={() => undefined} />);
+assert.equal((locked.match(/<button[^>]*disabled=""/g) ?? []).length, 2);
+assert.match(locked, /<fieldset[^>]*disabled=""/);
+const error = renderToStaticMarkup(<CountertopRunFeedback state={{ kind: 'error', message: '409 <conflict>' }} />);
+assert.match(error, /409 &lt;conflict&gt;/);
+assert.match(error, /ticked parts are kept/);
+assert.doesNotMatch(error, /Run decision saved/);
+assert.match(renderToStaticMarkup(<CountertopRunFeedback state={{ kind: 'saved' }} />), /Run decision saved/);
+const load = (error: string | null, loading: boolean, hasDrawings: boolean) => renderToStaticMarkup(
+  <CountertopRunsLoadState error={error} loading={loading} hasDrawings={hasDrawings} onRetry={() => undefined} />);
+assert.equal(load(null, false, false), '', 'empty list stays quiet');
+assert.match(load(null, true, false), /role="status"/);
+assert.match(load('503 <unavailable>', false, true), /previous list is still shown/);
+assert.match(load('503 <unavailable>', false, true), /503 &lt;unavailable&gt;/);
+assert.match(load('503', true, true), /disabled=""/);
+
+const save = createMeasurementDecisionSaver();
+const states: Record<string, MeasurementDecisionState> = {};
+let readbacks = 0;
+let reject!: (error: Error) => void;
+const sent: string[][] = [];
+const ui = { state: (id: string, state: MeasurementDecisionState) => { states[id] = state; }, saved: () => { readbacks++; } };
+const first = save('top', () => { sent.push(['right', 'left']); return new Promise<void>((_, no) => { reject = no; }); }, ui);
+await save('other', async () => undefined, ui);
+await save('top', async () => { sent.push(['wall']); }, ui);
+assert.equal(states.top.kind, 'saving');
+reject(new Error('409 refused')); await first;
+assert.equal(readbacks, 1, 'refusal does not refresh or fabricate a decision');
+assert.deepEqual(sent, [['right', 'left']], 'no sorting, duplicate submit or automatic retry');
+await save('top', async () => { sent.push(['right', 'left']); }, ui);
+assert.equal(readbacks, 2);
+assert.equal(states.other.kind, 'saved');
+const panel = readFileSync('src/pages/MeasurementPanel.tsx', 'utf8');
+assert.match(panel, /<CountertopRuns key=\{`runs:\$\{packageId\}`\}/);
+assert.match(panel, /onDecided=\{\(\) => setPartsDecided/);
+assert.match(readFileSync('src/components/measure/DrawingParts.tsx', 'utf8'), /saved: \(\) => \{\s*setDecided[\s\S]*?onDecided\?\.\(\)/);
+console.log('countertop runs: upstream restrictions, independent saves, exact refusals, retry and stale-list locking passed');

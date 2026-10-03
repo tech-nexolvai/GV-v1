@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { CountertopRunFeedback } from './CountertopRunFeedback.js';
+import type { MeasurementDecisionState } from './measurementDecisionSave.js';
 
 import {
   isTheSuggestion,
@@ -28,13 +30,15 @@ import {
  */
 export function CountertopRunsList({
   runs,
-  saving,
+  decisions = {},
+  locked = false,
   onConfirm,
   onWithdraw,
 }: {
   runs: RunsList;
-  /** The countertop being saved, so its buttons cannot be pressed twice. */
-  saving: string | null;
+  decisions?: Readonly<Record<string, MeasurementDecisionState | undefined>>;
+  /** A refused refresh leaves the old list visible, but not actionable until retried. */
+  locked?: boolean;
   onConfirm: (countertop: RunCountertop, partIds: string[]) => void;
   onWithdraw: (countertop: RunCountertop) => void;
 }) {
@@ -69,7 +73,8 @@ export function CountertopRunsList({
                   canSuggest={runs.can_suggest}
                   drawing={drawing}
                   countertop={countertop}
-                  saving={saving === countertop.countertop_item_id}
+                  state={decisions[countertop.countertop_item_id]}
+                  locked={locked}
                   onConfirm={onConfirm}
                   onWithdraw={onWithdraw}
                 />
@@ -86,18 +91,21 @@ function CountertopRow({
   canSuggest,
   drawing,
   countertop,
-  saving,
+  state,
+  locked,
   onConfirm,
   onWithdraw,
 }: {
   canSuggest: boolean;
   drawing: RunDrawing;
   countertop: RunCountertop;
-  saving: boolean;
+  state?: MeasurementDecisionState;
+  locked: boolean;
   onConfirm: (countertop: RunCountertop, partIds: string[]) => void;
   onWithdraw: (countertop: RunCountertop) => void;
 }) {
   const [selected, setSelected] = useState<string[]>(() => startingSelection(countertop));
+  const saving = state?.kind === 'saving' || locked;
   const suggestion = countertop.suggestion;
   const decision = countertop.decision;
   const name = countertop.number === null ? 'A countertop' : `Countertop, part ${countertop.number}`;
@@ -184,6 +192,7 @@ function CountertopRow({
           Not this countertop&apos;s run
         </button>
       </div>
+      <CountertopRunFeedback state={state} />
     </li>
   );
 }
