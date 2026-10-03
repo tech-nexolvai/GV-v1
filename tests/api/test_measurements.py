@@ -516,3 +516,111 @@ def test_the_form_offers_the_choices_rather_than_a_text_box(session: Session) ->
         for q in body["quantities"]
         if q["semantic_type"] != "cabinet_category"
     )
+
+
+# ---------------------------------------------------------------------------
+# Where a setting came from (#827)
+# ---------------------------------------------------------------------------
+
+
+def _entered(session: Session, package: UUID, *entries: dict[str, str]) -> Any:
+    return _client(session).post(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/measurements",
+        json={"parameters": list(entries)},
+    )
+
+
+def _stored_row(session: Session, name: str) -> tuple[str, str | None]:
+    from app.models.parameters import ParameterValue as StoredValueRow
+
+    row = session.execute(select(StoredValueRow).where(StoredValueRow.name == name)).scalar_one()
+    return row.provenance, row.source_reference
+
+
+def test_a_setting_is_stored_with_its_source_and_reference(session: Session) -> None:
+    """**The point.** The overhang is specified by the client, so the form need not ask; the reviewer
+    adds where it is. Outcome: stored as G.C / Client with the reference, and echoed back so."""
+    package = _package(session)
+
+    response = _entered(
+        session,
+        package,
+        {"name": "countertop_overhang", "value": '3/4"', "reference": "Architect A-501, section 3"},
+    )
+
+    assert response.status_code == 201, response.text
+    echoed = response.json()["parameters"][0]
+    assert (echoed["source"], echoed["reference"]) == ("G.C / Client", "Architect A-501, section 3")
+    assert _stored_row(session, "countertop_overhang") == (
+        "G.C / Client",
+        "Architect A-501, section 3",
+    )
+
+
+def test_a_setting_with_two_sources_must_say_which(session: Session) -> None:
+    """The sink clearance is GV's ¼" or the fabricator's number for this job, and only the reviewer
+    knows which. Outcome: refused until it says, then stored as the fabricator's."""
+    package = _package(session)
+
+    unsaid = _entered(session, package, {"name": "sink_cutout_clearance", "value": '1/8"'})
+    said = _entered(
+        session,
+        package,
+        {"name": "sink_cutout_clearance", "value": '1/8"', "source": "Fabricator"},
+    )
+
+    assert unsaid.status_code == 422, unsaid.text
+    assert "Say where 'sink_cutout_clearance' came from" in unsaid.json()["message"]
+    assert said.status_code == 201, said.text
+    assert _stored_row(session, "sink_cutout_clearance") == ("Fabricator", None)
+
+
+def test_a_source_the_setting_does_not_take_is_refused_and_nothing_is_stored(
+    session: Session,
+) -> None:
+    """An overhang is the client's, never GV's own standard. Outcome: 422 naming what it takes and
+    Q10's sentence, and no value stored — not the overhang, and not the depth sent beside it."""
+    from app.models.parameters import ParameterValue as StoredValueRow
+
+    package = _package(session)
+
+    response = _entered(
+        session,
+        package,
+        {"name": "cabinet_depth", "value": '24"'},
+        {"name": "countertop_overhang", "value": '3/4"', "source": "Company standard"},
+    )
+
+    assert response.status_code == 422, response.text
+    message = response.json()["message"]
+    assert "'G.C / Client'" in message
+    assert "never from the vendor's drawing" in message
+    assert session.execute(select(func.count()).select_from(StoredValueRow)).scalar_one() == 0
+
+
+def test_a_setting_no_check_uses_has_no_source_to_record(session: Session) -> None:
+    """Before #827 a misspelt name was stored as Measured and read by nothing."""
+    package = _package(session)
+
+    response = _entered(session, package, {"name": "cabinet_dpeth", "value": '24"'})
+
+    assert response.status_code == 422, response.text
+    assert "not a setting any published check uses" in response.json()["message"]
+
+
+def test_the_form_lists_each_settings_sources_with_what_they_mean(session: Session) -> None:
+    """A cabinet width bound offers both sources (the admin, 2026-10-03); the filler bounds one."""
+    package = _package(session)
+    _publish_cabinet_rule(session)
+
+    body = (
+        _client(session)
+        .get(f"/api/v1/projects/{PROJECT}/packages/{package}/required-inputs")
+        .json()
+    )
+
+    by_name = {parameter["name"]: parameter for parameter in body["parameters"]}
+    bound = by_name["single_door_cab_width_min"]["sources"]
+    assert [source["value"] for source in bound] == ["Company standard", "G.C / Client"]
+    assert "never from the vendor's drawing" in bound[1]["guidance"]
+    assert [s["value"] for s in by_name["filler_max"]["sources"]] == ["Company standard"]

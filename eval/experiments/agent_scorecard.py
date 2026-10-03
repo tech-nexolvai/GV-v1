@@ -43,6 +43,7 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
+from eval.experiments.model_bakeoff import ModelBakeoffError, key_frame, key_polygon_dpi
 from eval.gold_set.schema import GoldCase
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import EvidenceStatus
@@ -68,7 +69,7 @@ from extraction.agent.tools import (
     VlmRole,
 )
 from extraction.agent.trigger import AmbiguityReason
-from extraction.glyph_bands import FractionBarGeometry
+from extraction.glyph_bands import FractionBarGeometry, FractionLayout
 from extraction.manifest import PageRecord
 from storage.store import ArtifactStore
 from units.measurement import Measurement
@@ -88,6 +89,7 @@ __all__ = [
     "ScorecardPage",
     "build_pages",
     "judge",
+    "key_frame_dpi",
     "load_key",
     "render_markdown",
     "results_json",
@@ -107,6 +109,9 @@ class Kind(StrEnum):
     """Cut off, or unreadable: any value confirmed here is one nobody vouched for."""
 
     COMPOUND = "compound"
+
+    NOT_A_DIMENSION = "not_a_dimension"
+    """The person marked the crop as holding no dimension at all (#867): a symbol, a word."""
 
 
 class Outcome(StrEnum):
@@ -148,6 +153,16 @@ class KeyCrop:
     cut_off: bool
     """The person noted the label is cut off at the crop's edge."""
 
+    stacked: bool = False
+    """The key marks the label as a stacked fraction: a `stacked` tick, or a crop picked into the
+    `stacked_fraction` group. The gate replay scores the stacked-fraction finder against it (#851)."""
+
+    dual_unit: bool = False
+    """The person ticked `dual_unit`: millimetres with their inches (#867)."""
+
+    gv_value_seen: str | None = None
+    """GV's own number as the person saw it in the crop, as typed (#867); never the vendor's."""
+
 
 _SELF_VERIFIED = ("self-verified", "machine-self-verified", "not per-case human-read")
 
@@ -171,8 +186,12 @@ def load_key(case_dir: Path) -> tuple[KeyCrop, ...]:
     crops: list[KeyCrop] = []
     for row in rows:
         crop_id = row["crop_id"]
-        if row.get("unreadable", "").strip():
+        # A cut-off crop is not scored, like one nobody could read (`build` refuses a value on one).
+        cut_off = bool(row.get("cut_off", "").strip()) or "cut off" in row.get("note", "").lower()
+        if row.get("unreadable", "").strip() or row.get("cut_off", "").strip():
             kind = Kind.UNREADABLE
+        elif row.get("not_a_dimension", "").strip():
+            kind = Kind.NOT_A_DIMENSION
         elif row.get("not_a_single_value", "").strip():
             kind = Kind.COMPOUND
         else:
@@ -193,12 +212,39 @@ def load_key(case_dir: Path) -> tuple[KeyCrop, ...]:
                 expected=expected.get(crop_id) if kind is Kind.SCORED else None,
                 stratum=row.get("stratum", "") or "-",
                 rotated=bool(row.get("rotated", "").strip()) or row.get("stratum") == "rotated",
-                cut_off="cut off" in row.get("note", "").lower(),
+                cut_off=cut_off,
+                stacked=bool(row.get("stacked", "").strip())
+                or row.get("stratum") == "stacked_fraction",
+                dual_unit=bool(row.get("dual_unit", "").strip()),
+                gv_value_seen=row.get("gv_value_seen", "").strip() or None,
             )
         )
     if not crops:
         raise ScorecardError(f"the key in {case_dir} has no crops")
     return tuple(crops)
+
+
+def key_frame_dpi(case_dir: Path, *, key_dpi: int | None, margin_pt: Decimal) -> int:
+    """The pixel frame the key's crops are in, refused where the scorecard would misplace them (#835).
+
+    The frame comes from `model_bakeoff.key_polygon_dpi`, the rule every loader of a key applies.
+    **The margin is checked as well**, because `score_crop` finds each region by taking `margin_pt`
+    off the crop: a key cut with a different margin would hand the agent a region that is not the
+    one the crop was cut round. A key that records no frame records no margin either, and is read
+    as cut with `margin_pt`, as it always was.
+    """
+    try:
+        dpi = key_polygon_dpi(case_dir, polygon_dpi=key_dpi)
+        frame = key_frame(case_dir)
+    except ModelBakeoffError as error:
+        raise ScorecardError(str(error)) from error
+    if frame is not None and frame.margin_pt != margin_pt:
+        raise ScorecardError(
+            f"the key in {case_dir} was cut with a {frame.margin_pt} pt margin, and the scorecard "
+            f"takes {margin_pt} pt off each crop to find its region. Recut the key with the stage's "
+            "margin; scored as it is, each crop's region would be the wrong size."
+        )
+    return dpi
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +277,11 @@ class CropReader(Protocol):
     @property
     def vendor(self) -> str: ...
 
-    def read(self, png: bytes, *, stacked_label: bool) -> Reading:
-        """Read the crop. `stacked_label` is what the geometry says it shows (#735)."""
+    def read(
+        self, png: bytes, *, stacked_label: bool, stacked_layouts: tuple[FractionLayout, ...]
+    ) -> Reading:
+        """Read the crop. `stacked_label` is what the geometry says it shows (#735), and
+        `stacked_layouts` where the parts of each stacked label in it were drawn (#834)."""
 
 
 def _candidate(reading: Reading) -> DomainCandidate:
@@ -464,6 +513,13 @@ class ScorecardPage:
             crop_box_px(self.rendered, polygon, margin_pt), self.layers.stacked_fractions
         )
 
+    def layouts(self, polygon: Polygon, margin_pt: Decimal) -> tuple[FractionLayout, ...]:
+        from workflow.stages import stacked_layouts_shown
+
+        return stacked_layouts_shown(
+            crop_box_px(self.rendered, polygon, margin_pt), self.layers.stacked_fractions
+        )
+
     def facts(
         self, box: tuple[int, int, int, int], readings: Sequence[Reading], margin_pt: Decimal
     ) -> tuple[RegionFacts, Polygon | None]:
@@ -527,6 +583,7 @@ class _Reads:
         reading = reader.read(
             self._crops.png(arguments.crop_artifact_id),
             stacked_label=self._crops.shows_stacked_fraction,
+            stacked_layouts=self._crops.stacked_layouts,
         )
         self.readings.append(reading)
         if reading.raw_text is None:
@@ -598,13 +655,19 @@ def score_crop(
         whole_run=whole_run,
         rotation_degrees=facts.rotation_degrees,
         stacked=lambda candidate: page.stacked(candidate, margin_pt),
+        layouts=lambda candidate: page.layouts(candidate, margin_pt),
     )
     first = crops.first()
     if first is None:
         raise ScorecardError(f"crop {crop.crop_id} could not be cut")
     png = crops.png(first)
     readings = tuple(
-        reader.read(png, stacked_label=crops.shows_stacked_fraction) for reader in pair
+        reader.read(
+            png,
+            stacked_label=crops.shows_stacked_fraction,
+            stacked_layouts=crops.stacked_layouts,
+        )
+        for reader in pair
     )
     facts, _ = page.facts(box, readings, margin_pt)
 
@@ -768,8 +831,8 @@ def render_markdown(
         header,
         "",
         (
-            f"{len(results)} crops: {scored} scored, {unvouched} a person could not read or "
-            "marked compound."
+            f"{len(results)} crops: {scored} scored, {unvouched} a person could not read, found "
+            "cut off, marked compound or marked not a dimension."
         ),
         "",
         (
@@ -820,6 +883,9 @@ def render_markdown(
         geometry["sideways, geometry"] += result.facts.rotation_degrees != 0
         geometry["sideways, both"] += result.crop.rotated and result.facts.rotation_degrees != 0
         geometry["stacked, geometry"] += result.facts.stacked_fraction
+        geometry["stacked, person"] += result.crop.stacked
+        geometry["dual, person"] += result.crop.dual_unit
+        geometry["gv seen, person"] += result.crop.gv_value_seen is not None
     lines += [
         "",
         "**What the drawing's own lines saw** (the agent's triggers, against the person's notes):",
@@ -832,7 +898,12 @@ def render_markdown(
             f"- Sideways: the person ticked {geometry['sideways, person']}, the geometry found "
             f"{geometry['sideways, geometry']}, both on {geometry['sideways, both']}."
         ),
-        f"- Stacked fraction: the geometry found {geometry['stacked, geometry']}.",
+        (
+            f"- Stacked fraction: the person marked {geometry['stacked, person']}, the geometry "
+            f"found {geometry['stacked, geometry']}."
+        ),
+        f"- Dual unit: the person ticked {geometry['dual, person']}.",
+        f"- GV's own number in the crop: the person saw it in {geometry['gv seen, person']}.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -944,7 +1015,9 @@ class BedrockCropReader:
                 self._sleep(wait)
         self._last = self._clock()
 
-    def read(self, png: bytes, *, stacked_label: bool) -> Reading:
+    def read(
+        self, png: bytes, *, stacked_label: bool, stacked_layouts: tuple[FractionLayout, ...]
+    ) -> Reading:
         from extraction.agent.observations import value_of
         from extraction.models.context import AssembledContext
         from extraction.models.nova import (
@@ -970,6 +1043,7 @@ class BedrockCropReader:
                         context=AssembledContext(nearby_text=(), nearby_geometry=()),
                         bound_pt=VISION_CONTEXT_BOUND_PT,
                         stacked_label=stacked_label,
+                        stacked_layouts=stacked_layouts,
                     )
                 )
                 refusal = None

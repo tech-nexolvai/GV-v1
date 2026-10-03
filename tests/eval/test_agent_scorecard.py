@@ -35,6 +35,7 @@ from eval.experiments.agent_scorecard import (
     ScorecardError,
     build_pages,
     judge,
+    key_frame_dpi,
     load_key,
     render_markdown,
     score_crop,
@@ -44,6 +45,7 @@ from eval.experiments.agent_scorecard import (
 from evidence.crop import decode_rgb_png
 from extraction.agent.tools import VlmRole
 from extraction.agent.trigger import AmbiguityReason
+from extraction.glyph_bands import FractionLayout
 from storage.local import LocalStore
 from tests.workflow.test_association import SETTINGS
 from tests.workflow.test_reading_agent import LABEL, SHEET, _settings
@@ -285,6 +287,44 @@ def test_a_scored_crop_missing_from_the_answer_key_is_refused(tmp_path: Path) ->
         load_key(folder)
 
 
+def _with_frame(folder: Path, *, polygon_dpi: int, margin_pt: str) -> Path:
+    (folder / "model_bakeoff_metadata.json").write_text(
+        json.dumps({"frame": {"polygon_dpi": polygon_dpi, "margin_pt": margin_pt}, "tags": {}}),
+        encoding="utf-8",
+    )
+    return folder
+
+
+def test_the_key_frame_is_the_one_the_key_records_and_is_refused_where_it_would_misplace_a_region(
+    tmp_path: Path,
+) -> None:
+    """**#835.** The scorecard finds each region by taking the stage's margin off the key's crop, at
+    the key's dpi. A frame the key does not record must be named; a named one that differs from
+    the record is refused; and so is a key cut with another margin, whose regions would come out
+    the wrong size."""
+    margin = VISION_CROP_CONTEXT_MARGIN_PT
+    frameless = _write_key(tmp_path / "frameless", [_row("k0", value='12"', exact="12")])
+    framed = _with_frame(
+        _write_key(tmp_path / "framed", [_row("k0", value='12"', exact="12")]),
+        polygon_dpi=600,
+        margin_pt=str(margin),
+    )
+    tight = _with_frame(
+        _write_key(tmp_path / "tight", [_row("k0", value='12"', exact="12")]),
+        polygon_dpi=600,
+        margin_pt="0",
+    )
+
+    assert key_frame_dpi(frameless, key_dpi=600, margin_pt=margin) == 600
+    assert key_frame_dpi(framed, key_dpi=None, margin_pt=margin) == 600
+    with pytest.raises(ScorecardError, match="does not record the pixel frame"):
+        key_frame_dpi(frameless, key_dpi=None, margin_pt=margin)
+    with pytest.raises(ScorecardError, match="records its polygons at 600 dpi"):
+        key_frame_dpi(framed, key_dpi=300, margin_pt=margin)
+    with pytest.raises(ScorecardError, match="0 pt margin"):
+        key_frame_dpi(tight, key_dpi=None, margin_pt=margin)
+
+
 # ---------------------------------------------------------------------------
 # One crop, end to end
 # ---------------------------------------------------------------------------
@@ -340,8 +380,10 @@ class _Reader:
     vendor: str = "Amazon"
     widths: list[int] = field(default_factory=list)
 
-    def read(self, png: bytes, *, stacked_label: bool) -> Reading:
-        del stacked_label
+    def read(
+        self, png: bytes, *, stacked_label: bool, stacked_layouts: tuple[FractionLayout, ...]
+    ) -> Reading:
+        del stacked_label, stacked_layouts
         width, _, _ = decode_rgb_png(png)
         self.widths.append(width)
         whole = width >= _whole_label_px()
@@ -484,7 +526,7 @@ def test_a_throttle_is_waited_out_and_never_scored_as_a_refusal(
         config, calls_per_minute=60, waits_seconds=(30,), clock=lambda: 0.0, sleep=slept.append
     )
 
-    reading = reader.read(b"png", stacked_label=False)
+    reading = reader.read(b"png", stacked_label=False, stacked_layouts=())
 
     assert reading.raw_text == '12"' and reading.value == _inches(12)
     assert reading.refusal is None

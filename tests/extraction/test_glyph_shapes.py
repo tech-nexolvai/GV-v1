@@ -13,6 +13,7 @@ Every fixture is authored geometry. No client drawing is read here.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from decimal import Decimal
 from fractions import Fraction
 
@@ -50,7 +51,13 @@ def _path(
         PathSegment(kind=kind, point=point, closes=closes_last and index == len(steps) - 1)
         for index, (kind, point) in enumerate(steps)
     )
-    return VectorPath(segments=segments, stroked=True, filled=False)
+    return VectorPath(
+        segments=segments,
+        stroked=True,
+        filled=False,
+        stroke_colour=(0, 0, 0, 255),
+        fill_colour=(0, 0, 0, 255),
+    )
 
 
 MOVE, LINE, BEZIER = SegmentKind.MOVE, SegmentKind.LINE, SegmentKind.BEZIER
@@ -139,7 +146,7 @@ def test_a_filled_outline_is_filled() -> None:
         (LINE, _point(0, 10)),
     )
     stroked = _path(*corners, closes_last=True)
-    filled = VectorPath(segments=stroked.segments, stroked=False, filled=True)
+    filled = replace(stroked, stroked=False, filled=True)
 
     centre = SIZE // 2, SIZE // 2
     assert _draw(filled)[centre] == 255
@@ -158,11 +165,11 @@ def test_a_filled_outline_is_filled() -> None:
             "part-way",
         ),
         (
-            VectorPath(segments=INCH_MARK.segments, stroked=None, filled=False),
+            replace(INCH_MARK, stroked=None, filled=False),
             "line or a filled shape",
         ),
         (
-            VectorPath(segments=INCH_MARK.segments, stroked=False, filled=False),
+            replace(INCH_MARK, stroked=False, filled=False),
             "nothing is drawn",
         ),
         (_path((MOVE, _point(3, 3))), "no extent"),

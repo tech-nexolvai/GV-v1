@@ -15,11 +15,14 @@ import pytest
 from eval.experiments.model_bakeoff import (
     BedrockBakeoffAdapter,
     Crop,
+    KeyFrame,
     ModelBakeoffError,
     ModelRead,
     ModelSpec,
     ReadingParseError,
     _measured_coordinate_mode,
+    key_frame,
+    key_polygon_dpi,
     load_crops,
     load_model_specs,
     parse_dimension_reading,
@@ -325,7 +328,9 @@ def test_gold_case_directory_renders_human_key_and_refuses_self_verified(tmp_pat
     assert len(crops) == 1
     assert crops[0].expected == _inches("51/2", '25 1/2"')
     assert crops[0].tags == frozenset({"fraction", "rotated", "small_glyph"})
-    assert _decode_rgb_png(crops[0].image)[0:2] == (333, 333)
+    # 40 pt square, shown to a model at production's reader resolution (#867): 40 / 72 * 300 is
+    # 166.7, and the renderer drops the part pixel, as it dropped 333.3's at 600.
+    assert _decode_rgb_png(crops[0].image)[0:2] == (166, 166)
 
     self_verified = tmp_path / "self-verified-case"
     _write_answer_key(
@@ -334,6 +339,82 @@ def test_gold_case_directory_renders_human_key_and_refuses_self_verified(tmp_pat
     )
     with pytest.raises(ModelBakeoffError, match="human-read answer key"):
         load_crops(self_verified, polygon_dpi=72)
+
+
+# --- #835: a key says what frame its polygons are in, and a loader believes the key -------------
+
+
+def test_a_key_that_records_no_frame_is_refused_unless_its_frame_is_named(
+    tmp_path: Path,
+) -> None:
+    """**The trap the pilot key set.** Its polygons are at 300 dpi and nothing in it says so; read as
+    600, every crop came from near the page's top-left corner. A frameless key now loads only when
+    the caller names the frame, and so takes responsibility for it."""
+    case_dir = tmp_path / "frameless"
+    _write_answer_key(case_dir)
+
+    with pytest.raises(ModelBakeoffError, match="does not record the pixel frame"):
+        load_crops(case_dir)
+    with pytest.raises(ModelBakeoffError, match="does not record the pixel frame"):
+        key_polygon_dpi(case_dir, polygon_dpi=None)
+
+
+def test_a_key_in_a_300_dpi_frame_loads_when_300_is_named(tmp_path: Path) -> None:
+    """The pilot key's case: no frame recorded, polygons at 300 dpi. Named, it loads, and the
+    polygon `(20, 20, 60, 60)` stands for 4.8..14.4 pt — not the 20..60 pt the default would read.
+    """
+    case_dir = tmp_path / "pilot-like"
+    _write_answer_key(case_dir)
+
+    (crop,) = load_crops(case_dir, polygon_dpi=300)
+
+    # The page is 100 pt tall, so top-left 4.8 pt is PDF bottom-up 95.2.
+    assert crop.pdf_box == (Decimal("4.8"), Decimal("85.6"), Decimal("14.4"), Decimal("95.2"))
+    assert key_polygon_dpi(case_dir, polygon_dpi=300) == 300
+
+
+def test_a_key_is_read_in_the_frame_it_records_and_a_different_one_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A recorded frame needs no caller to name it, and a caller who names another is wrong: read at
+    a frame the key says it is not in, every crop comes from the wrong part of the page."""
+    case_dir = tmp_path / "framed"
+    _write_answer_key(
+        case_dir, metadata={"frame": {"polygon_dpi": 72, "margin_pt": "9"}, "tags": {}}
+    )
+
+    (unnamed,) = load_crops(case_dir)
+    (named,) = load_crops(case_dir, polygon_dpi=72)
+
+    assert unnamed.pdf_box == named.pdf_box == (Decimal(20), Decimal(40), Decimal(60), Decimal(80))
+    assert key_frame(case_dir) == KeyFrame(polygon_dpi=72, margin_pt=Decimal(9))
+    with pytest.raises(ModelBakeoffError, match="records its polygons at 72 dpi, and 300"):
+        load_crops(case_dir, polygon_dpi=300)
+    with pytest.raises(ModelBakeoffError, match="records its polygons at 72 dpi"):
+        key_polygon_dpi(case_dir, polygon_dpi=600)
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        {"polygon_dpi": 600.0, "margin_pt": "9"},
+        {"polygon_dpi": 600, "margin_pt": 9.0},
+        {"polygon_dpi": True, "margin_pt": "9"},
+        {"polygon_dpi": 0, "margin_pt": "9"},
+        {"polygon_dpi": 600, "margin_pt": "-1"},
+        {"polygon_dpi": 600},
+    ],
+)
+def test_a_frame_is_refused_unless_it_is_stated_exactly_and_whole(
+    tmp_path: Path, frame: dict[str, object]
+) -> None:
+    """A frame is two exact numbers. A float, a zero resolution, a negative margin or a missing half
+    is not a frame anything can be placed in, and is refused rather than read as one."""
+    case_dir = tmp_path / "bad-frame"
+    _write_answer_key(case_dir, metadata={"frame": frame})
+
+    with pytest.raises(ModelBakeoffError, match="invalid bake-off metadata"):
+        load_crops(case_dir, polygon_dpi=600)
 
 
 def test_json_manifests_load_without_client_data_or_float_prices(tmp_path: Path) -> None:

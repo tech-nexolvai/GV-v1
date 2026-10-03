@@ -36,6 +36,9 @@
     "src/components/chat/chatReply.ts",
     "src/components/measure/DrawingRolesList.tsx",
     "src/components/measure/drawingRoleChoices.ts",
+    "src/components/measure/SettingCitation.tsx",
+    "src/components/measure/settingPointers.ts",
+    "src/components/measure/settingSources.ts",
     "src/components/settings/CompanySettingsList.tsx",
     "src/components/settings/companySettings.ts"
   ]

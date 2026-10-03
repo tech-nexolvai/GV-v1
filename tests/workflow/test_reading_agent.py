@@ -32,6 +32,7 @@ from evidence.coordinates import ImagePoint, StoredPoint
 from evidence.crop import RenderedPage, decode_rgb_png
 from evidence.polygon import Polygon
 from extraction.agent.tools import RefineCropArguments, Refinement
+from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext
 from extraction.models.nova import (
     NovaConfig,
@@ -42,6 +43,7 @@ from extraction.models.nova import (
 )
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
+from tests.extraction.models.test_validation import THREE_QUARTERS
 from tests.extraction.test_annotations import _appearance, _pdf, _stamp
 from tests.extraction.test_glyph_reader import _row
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
@@ -196,6 +198,7 @@ def _crops(store: LocalStore, **changes: object) -> RegionCrops:
         "whole_run": _polygon("0.1", "0.25", "0.5", "0.5"),
         "rotation_degrees": 90,
         "stacked": lambda _polygon: False,
+        "layouts": lambda _polygon: (),
     }
     values.update(changes)
     return RegionCrops(**values)  # type: ignore[arg-type]
@@ -302,13 +305,20 @@ def test_each_request_says_whether_the_crop_it_sends_shows_a_stacked_fraction(
     """**#735 on the agent's crops.** Outcome: the first crop does not show the fraction; widened to
     the run beside it, it does, and the request for it has to say so."""
     wide = _polygon("0.1", "0.25", "0.5", "0.5")
-    crops = _crops(store, whole_run=wide, stacked=lambda polygon: polygon is wide)
+    crops = _crops(
+        store,
+        whole_run=wide,
+        stacked=lambda polygon: polygon is wide,
+        layouts=lambda polygon: THREE_QUARTERS if polygon is wide else (),
+    )
     crops.first()
     assert not crops.shows_stacked_fraction
+    assert crops.stacked_layouts == ()
 
     _refine(crops, Refinement.WHOLE_RUN)
 
     assert crops.shows_stacked_fraction
+    assert crops.stacked_layouts == THREE_QUARTERS, "the layouts are the widened crop's (#834)"
 
 
 # ---------------------------------------------------------------------------
@@ -382,11 +392,13 @@ class _WholeLabelReader:
     cut_reading: str | None = None
     widths: list[int] = field(default_factory=list)
     stacked: list[bool] = field(default_factory=list)
+    layouts: list[tuple[FractionLayout, ...]] = field(default_factory=list)
 
     def extract(self, request: NovaRequest, recorder: object) -> DomainCandidate:
         width, _, _ = decode_rgb_png(request.crop)
         self.widths.append(width)
         self.stacked.append(request.stacked_label)
+        self.layouts.append(request.stacked_layouts)
         recorder.record(  # type: ignore[attr-defined]
             NovaInvocation(
                 model_id=self.config.model_id,
@@ -562,7 +574,7 @@ def test_a_request_says_whether_the_crop_it_sends_shows_a_stacked_fraction(
     from extraction.agent.tools import VlmReadingArguments, VlmRole
     from workflow.stages import _AgentReads
 
-    crops = _crops(store, stacked=lambda _polygon: True)
+    crops = _crops(store, stacked=lambda _polygon: True, layouts=lambda _polygon: THREE_QUARTERS)
     key = crops.first()
     assert key is not None
     reader = _WholeLabelReader(_config("reader-a"), cut_reading='3/4"')
@@ -577,6 +589,7 @@ def test_a_request_says_whether_the_crop_it_sends_shows_a_stacked_fraction(
     reads.read(VlmReadingArguments("r", key, VlmRole.PRIMARY))
 
     assert reader.stacked == [True]
+    assert reader.layouts == [THREE_QUARTERS], "and where its parts were drawn (#834)"
 
 
 def test_the_641_case_goes_to_a_reviewer_with_the_whole_reading_beside_the_cut_ones(

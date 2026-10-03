@@ -82,6 +82,14 @@ def _reader_configuration() -> tuple[object | None, object | None]:
         "GV_READER_FRACTION_GLYPH_MIN_PT": os.environ.get("GV_READER_FRACTION_GLYPH_MIN_PT"),
         "GV_READER_FRACTION_GLYPH_MAX_PT": os.environ.get("GV_READER_FRACTION_GLYPH_MAX_PT"),
         "GV_READER_FRACTION_PROPORTION_MAX": os.environ.get("GV_READER_FRACTION_PROPORTION_MAX"),
+        # Where each part of a stacked label was drawn (#834), which a reading of it must match.
+        "GV_READER_FRACTION_CHARACTER_GAP_PT": os.environ.get(
+            "GV_READER_FRACTION_CHARACTER_GAP_PT"
+        ),
+        # Which bars across a stamp's baseline are a turned label's fraction (#869).
+        "GV_READER_FRACTION_TURNED_ASPECT_MIN": os.environ.get(
+            "GV_READER_FRACTION_TURNED_ASPECT_MIN"
+        ),
     }
     missing = [name for name, value in required.items() if not value]
     if missing:
@@ -109,6 +117,8 @@ def _reader_configuration() -> tuple[object | None, object | None]:
                 glyph_min_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MIN_PT"] or ""),
                 glyph_max_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MAX_PT"] or ""),
                 proportion_max=Decimal(required["GV_READER_FRACTION_PROPORTION_MAX"] or ""),
+                character_gap_pt=Decimal(required["GV_READER_FRACTION_CHARACTER_GAP_PT"] or ""),
+                turned_aspect_min=Decimal(required["GV_READER_FRACTION_TURNED_ASPECT_MIN"] or ""),
             ),
         ),
         LocalizedOcrSettings(
@@ -136,11 +146,68 @@ def _automatic_typing_configuration() -> AutomaticTypingSettings | None:
     return AutomaticTypingSettings(permitted)
 
 
+#: The phrase index's one setting (#836): how wide a space between two runs on one line may be, in line
+#: heights, and still join them. No default — it is measured on the client's drawings and stated in
+#: the worker's environment by the deployment, and without it no phrases are built.
+PHRASE_GAP_VARIABLE = "GV_PHRASE_GAP_LINE_HEIGHTS"
+
+
+def _phrase_grouping() -> object | None:
+    """The stated phrase gap, or `None` when the deployment has not stated one.
+
+    A value that is not a finite number, or is negative, is refused rather than ignored: a typo that
+    quietly left the index unbuilt would look exactly like a deployment that chose not to build it.
+    """
+    raw = os.environ.get(PHRASE_GAP_VARIABLE, "").strip()
+    if not raw:
+        return None
+    from decimal import InvalidOperation
+
+    from retrieval.package_text import PhraseGrouping
+
+    try:
+        gap = Decimal(raw)
+    except InvalidOperation as error:
+        raise ValueError(
+            f"{PHRASE_GAP_VARIABLE} must be a number of line heights, such as 0.25"
+        ) from error
+    return PhraseGrouping(gap_line_heights=gap)
+
+
+def _build_package_text(session: object, package_revision_id: UUID) -> Mapping[str, object]:
+    """Build the revision's phrase index, and report what happened. Never raises.
+
+    **It cannot fail the extraction.** The drawings were read and the readings are recorded; a
+    search index is built from them and can be built again. So every failure is caught and reported
+    in the worker's log line, and the build runs inside a savepoint, so a failure part-way through
+    takes back its own rows and nothing that extraction wrote.
+
+    A failure is named by its type alone. A database error repeats the row it refused, and a row here
+    is the drawing's own text, which has no place in a log line (`AGENTS.md` §6).
+    """
+    try:
+        grouping = _phrase_grouping()
+    except ValueError as error:
+        return {"built": False, "reason": str(error)}
+    if grouping is None:
+        return {"built": False, "reason": f"{PHRASE_GAP_VARIABLE} is not set"}
+    from retrieval.package_text import build_package_phrases
+
+    try:
+        with session.begin_nested():  # type: ignore[attr-defined]
+            built = build_package_phrases(
+                session, package_revision_id, grouping  # type: ignore[arg-type]
+            )
+    except Exception as error:  # noqa: BLE001 - reported, never fatal to a read drawing
+        return {"built": False, "reason": f"the phrase build failed: {type(error).__name__}"}
+    return built.summary()
+
+
 def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
     from storage.local import LocalStore
     from workflow.findings_bedrock import configured_findings_composer
-    from workflow.stages import DatabaseStages
+    from workflow.stages import DatabaseStages, fraction_parts_from_environment
 
     # A LocalStore needs a signing key to satisfy its interface, but this worker never issues upload
     # tickets.  It only reads already-confirmed objects from the same explicitly configured dev root.
@@ -169,6 +236,9 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         # Off unless named: the vision reader that goes first, the others reading only where it
         # read a value (#787). An unknown name is refused when the stages are built.
         vision_gate=os.environ.get("GV_VISION_GATE_READER", "").strip() or None,
+        # Off unless GV_FRACTION_PARTS is on, and then every drawing setting is required (#848),
+        # and so is the gate reader above: it is the route's second reader (#865).
+        fraction_parts=fraction_parts_from_environment(),
     )
 
 
@@ -334,6 +404,11 @@ def _extract_package(
             stages=stages,  # type: ignore[arg-type]
         )
         results[stage] = dict(outcome.payload)
+    # **Index the package's own words, once they are all recorded** (#836). Built from the stored
+    # rows, so it needs nothing extraction did not already write, and it cannot fail the extraction:
+    # `_build_package_text` reports a failure rather than raising one.
+    results["package_text"] = _build_package_text(session, package_revision_id)
+
     # **Fill the reviewer's form, now, while the facts are in hand.**
     #
     # This is the whole point of doing it here rather than behind a button on the form: a reviewer

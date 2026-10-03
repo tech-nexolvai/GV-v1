@@ -24,6 +24,7 @@ Source: `docs/DESIGN_PLATFORM.md` §4.1 · Verification: `tests/verdict/test_ope
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Final
 
 from verdict.operations import aggregate, alignment, distribution, pairwise, scalar
 from verdict.registry import REGISTRY, OperationSpec, RuleAuthoringError
@@ -47,6 +48,24 @@ _MODULES: tuple[tuple[str, tuple[OperationSpec, ...], Callable[[], None]], ...] 
 
 #: The module names this package knows about. The test compares it against the directory.
 REGISTERED_MODULES: frozenset[str] = frozenset(name for name, _, _ in _MODULES)
+
+#: The operations that compare their lists member by member, so which member is which is part of the
+#: input (#794, #833). An architect's A = 24" and B = 36" against a vendor's A = 36" and B = 24" are
+#: two mismatches; labelled in another order, both lists read 24", 36" and match by position. So a
+#: list whose order nobody stated must never reach one of these.
+#:
+#: - `pairwise_within_tolerance` pairs a mapping by identifier and a list by position.
+#: - `cabinet_run_distribution` compares each filler and cabinet with the one in the same place in
+#:   the expected run, and reads each cabinet's classification by its place.
+#:
+#: Declared here, beside the list of modules, because the members come from more than one of them.
+#: Every other operation with a list operand gives the same answer whatever order its lists arrive
+#: in, and `tests/verdict/test_position_sensitive_operations.py` reverses the lists of each to show
+#: it — so an operation added on neither side fails there rather than taking a run in the order its
+#: readings were labelled.
+POSITION_SENSITIVE_OPERATIONS: Final = frozenset(
+    {"cabinet_run_distribution", "pairwise_within_tolerance"}
+)
 
 
 def declared_specs() -> tuple[OperationSpec, ...]:

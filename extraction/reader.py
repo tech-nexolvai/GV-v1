@@ -106,6 +106,7 @@ _WHOLE_TOKENS: Final = (DUAL_TOKEN_RE, FEET_INCH_TOKEN_RE, MIXED_INCH_TOKEN_RE)
 
 __all__ = [
     "FRAGMENT_REACH",
+    "INCH_DENOMINATORS",
     "STACK_REACH",
     "PageContents",
     "SetAsideLabel",
@@ -720,8 +721,9 @@ def _set_aside_stacked(
 
 
 #: The denominators an inch fraction is written over. A stack whose bottom is anything else is not
-#: read as a fraction of an inch.
-_DENOMINATORS: Final = frozenset({2, 4, 8, 16, 32, 64})
+#: read as a fraction of an inch. Public because the reader that puts a stacked fraction together
+#: from its pieces holds it to the same rule (#848).
+INCH_DENOMINATORS: Final = frozenset({2, 4, 8, 16, 32, 64})
 
 #: The two lines of a dual dimension written one over the other: millimetres, and bracketed inches.
 _MILLIMETRES_RE: Final = re.compile(r"\d+(?:\.\d+)?")
@@ -809,7 +811,7 @@ def _compose_fraction(word: dict[str, Any]) -> str | None:
     if overlap <= 0:
         return None  # the two lines are side by side, not one over the other
     numerator, denominator = int(_text_of(upper)), int(_text_of(lower))
-    if denominator not in _DENOMINATORS or not 0 < numerator < denominator:
+    if denominator not in INCH_DENOMINATORS or not 0 < numerator < denominator:
         return None
 
     stack = {id(char) for char, _ in small}

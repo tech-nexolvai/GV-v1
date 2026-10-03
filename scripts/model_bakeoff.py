@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Run the model-reading bake-off over a human-read crop set: vision readers, the shape reader, or both.
 
-The shape reader (#756) reads the drawing's paths under each crop with a template set a person
-labelled. Add it with `--glyph-templates`; its match settings have no defaults and must be stated.
+    python scripts/model_bakeoff.py MODELS.json --key data/goldset/KEY_A --key data/goldset/KEY_B
+
+Give `--key` once per key — one key per drawing (#867) — and the crops of all of them are scored
+together. The shape reader (#756) reads the drawing's paths under each crop with a template set a
+person labelled. Add it with `--glyph-templates`, for one drawing's keys; its match settings have no
+defaults and must be stated.
 """
 
 from __future__ import annotations
@@ -19,17 +23,34 @@ from eval.experiments.model_bakeoff import (
     BakeoffAdapter,
     ModelBakeoffError,
     adapters_from_specs,
-    load_crops,
+    load_keys,
     load_model_specs,
     render_csv,
     render_markdown,
     run_bakeoff,
 )
 
+#: The shape reader's match settings, each required with `--glyph-templates` and none defaulted.
+GLYPH_SETTINGS = {
+    "--glyph-max-distance": "largest chamfer distance a character may match at, in pixels",
+    "--glyph-margin": "how much nearer than a different character its template must be",
+    "--glyph-size-ratio": "how far a character's size may be from its template's, >= 1",
+    "--glyph-label-gap-pt": "how close a character must be to join a label, in points",
+    "--glyph-max-label-pt": "how large a label may grow, in points",
+}
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("crops", help="gold case directory with PDFs + answer_key.json")
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--key",
+        action="append",
+        required=True,
+        type=Path,
+        help="a gold case directory with its PDF and answer_key.json; repeat for each key",
+    )
     parser.add_argument(
         "models",
         nargs="?",
@@ -38,8 +59,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--polygon-dpi",
         type=int,
-        required=True,
-        help="DPI of the answer-key polygon coordinate frame",
+        help=(
+            "DPI of the answer-key polygon frame, only for a key that does not record one (#835); "
+            "a key that records its frame is refused if this differs"
+        ),
     )
     parser.add_argument("--format", choices=("markdown", "csv"), default="markdown")
     parser.add_argument("--output", type=Path, help="write the scorecard here instead of stdout")
@@ -53,21 +76,19 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="a template set from `glyph_inventory.py build`: add the shape reader (#756)",
     )
-    glyph_settings = {
-        "--glyph-max-distance": "largest chamfer distance a character may match at, in pixels",
-        "--glyph-margin": "how much nearer than a different character its template must be",
-        "--glyph-size-ratio": "how far a character's size may be from its template's, >= 1",
-        "--glyph-label-gap-pt": "how close a character must be to join a label, in points",
-        "--glyph-max-label-pt": "how large a label may grow, in points",
-    }
-    for name, meaning in glyph_settings.items():
+    for name, meaning in GLYPH_SETTINGS.items():
         parser.add_argument(name, type=Decimal, help=f"{meaning} (required with --glyph-templates)")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     if args.models is None and args.glyph_templates is None:
         parser.error("give a model manifest, --glyph-templates, or both")
     missing = [
         name
-        for name in glyph_settings
+        for name in GLYPH_SETTINGS
         if args.glyph_templates is not None
         and getattr(args, name.lstrip("-").replace("-", "_")) is None
     ]
@@ -75,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--glyph-templates needs " + ", ".join(missing) + " (none has a default)")
 
     try:
-        crops = load_crops(args.crops, polygon_dpi=args.polygon_dpi)
+        crops = load_keys(args.key, polygon_dpi=args.polygon_dpi)
         adapters: list[BakeoffAdapter] = []
         if args.models is not None:
             adapters.extend(
@@ -89,11 +110,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.glyph_templates is not None:
             from eval.experiments.glyph_bakeoff import GlyphBakeoffAdapter
 
-            case = json.loads((Path(args.crops) / "answer_key.json").read_text(encoding="utf-8"))
+            drawings = {
+                (
+                    key / json.loads((key / "answer_key.json").read_text(encoding="utf-8"))["shop"]
+                ).read_bytes()
+                for key in args.key
+            }
+            if len(drawings) != 1:
+                raise ModelBakeoffError(
+                    "the shape reader reads one drawing's paths, and these keys are cut from "
+                    f"{len(drawings)} drawings: give --glyph-templates with one drawing's keys"
+                )
             adapters.append(
                 GlyphBakeoffAdapter.from_template_set(
                     args.glyph_templates,
-                    pdf=(Path(args.crops) / case["shop"]).read_bytes(),
+                    pdf=drawings.pop(),
                     maximum_distance=args.glyph_max_distance,
                     minimum_margin=args.glyph_margin,
                     maximum_size_ratio=args.glyph_size_ratio,

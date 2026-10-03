@@ -106,6 +106,7 @@ def test_provenance_is_a_controlled_vocabulary() -> None:
         "G.C / Client",
         "Company standard",
         "Measured",
+        "Fabricator",  # #827: the stone fabricator sets the sink clearance for a job
     }
 
 

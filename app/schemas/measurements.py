@@ -25,6 +25,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from rules.parameters import REFERENCE_MAX_LENGTH, Provenance
+
 
 class ParameterEntry(BaseModel):
     """One setting a reviewer supplies for this job — a cabinet depth, an overhang, a sink interior.
@@ -47,6 +49,35 @@ class ParameterEntry(BaseModel):
         description='The value as typed, carrying its unit: 24", 610 mm.',
     )
     scope: Literal["project", "run"] = "project"
+    source: Provenance | None = Field(
+        default=None,
+        description=(
+            "Where the value came from (#827), one of the setting's `sources` in required-inputs. "
+            "May be left out only when the setting allows a single source."
+        ),
+    )
+    reference: str | None = Field(
+        default=None,
+        max_length=REFERENCE_MAX_LENGTH,
+        description='Where in that source, in the reviewer\'s words: "Architect A-501, section 3".',
+    )
+    citation: UUID | None = Field(
+        default=None,
+        description=(
+            "The passage this value was typed from (#866): the `proposal_id` of the setting's "
+            "`found` pointer in required-inputs. The server reads the passage's number and refuses "
+            "a value that differs; on a match it records the source and the reference itself, so "
+            "neither is sent with a citation."
+        ),
+    )
+
+    @field_validator("reference")
+    @classmethod
+    def _blank_is_none(cls, reference: str | None) -> str | None:
+        """An empty box is no reference, not a blank one — the form sends what the reviewer left."""
+        if reference is None or not reference.strip():
+            return None
+        return reference.strip()
 
 
 class MeasurementEntry(BaseModel):
@@ -163,6 +194,11 @@ class StoredValue(BaseModel):
     denominator: str
     unit: str
     as_typed: str
+    #: Where a setting came from and where in it (#827); absent for a measurement.
+    source: str | None = None
+    reference: str | None = None
+    #: The passage a setting was typed from and matched (#866), as the `proposal_id` that was sent.
+    citation: UUID | None = None
 
 
 class StoredList(BaseModel):
@@ -226,6 +262,34 @@ class ConfirmedReadingOut(BaseModel):
     qualification: Literal["reviewer_confirmed", "exact_vector_tag"]
 
 
+class SourceOut(BaseModel):
+    """One source a setting may come from, and what choosing it means (#827)."""
+
+    value: str
+    guidance: str
+
+
+class SettingPointerOut(BaseModel):
+    """Where the architect's drawing states a setting: a page and a crop, **never the number** (#866).
+
+    The reviewer types the value they see without being shown the one the app found, and the server
+    saves it only if the two match (step 3.3 of #798). So nothing here may carry the number: no
+    value, no text from the drawing, and no id of the runs, which `GET .../candidates` would turn
+    back into a value. `tests/api/test_setting_citations.py` holds this class to that list.
+    """
+
+    #: What to send back as the entry's `citation`, and the key of the crop at
+    #: `GET .../parameter-proposals/{proposal_id}/crop`.
+    proposal_id: UUID
+    #: The page the passage is on, from 0, as every other `page_index` this API sends.
+    page_index: int
+    #: The upload the page belongs to, `architectural` or `shop`: on a combined sheet the
+    #: architect's drawing sits in the vendor's upload, and "page 3" alone would not say which file.
+    document_kind: str
+    #: Whether a crop of the number's runs is stored. Without one, the reviewer reads the page itself.
+    has_crop: bool
+
+
 class ParameterOut(BaseModel):
     """One setting the reviewer supplies or confirms."""
 
@@ -238,6 +302,12 @@ class ParameterOut(BaseModel):
     #: True for a value nobody may supply. Today only `back_offset_minimum`, whose rule states the
     #: vendor has not given it; offering a field would invite an invented safety threshold.
     blocked: bool
+    #: The sources a value may honestly claim, in the order the form offers them (#827). One means the
+    #: form need not ask.
+    sources: tuple[SourceOut, ...] = ()
+    #: Where the architect's drawing states this setting, while a pointer to it still holds (#866).
+    #: `None` when nothing was found, which is every setting until something proposes one.
+    found: SettingPointerOut | None = None
 
 
 class LayoutProposalOut(BaseModel):

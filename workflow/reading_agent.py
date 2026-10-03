@@ -42,6 +42,7 @@ from evidence.polygon import Polygon
 from extraction.agent.geometry import LabelReach
 from extraction.agent.graph import GraphLimits, RefinedCrop, RetryableToolFailure
 from extraction.agent.tools import RefineCropArguments, Refinement
+from extraction.glyph_bands import FractionLayout
 from extraction.vector_first import upright_png
 from storage.hashing import content_key, sha256_stream
 from storage.store import ArtifactStore
@@ -187,8 +188,9 @@ class RegionCrops:
     """The crops one region's run is shown, cut by code. A planner names a refinement; this does it.
 
     `render(dpi)` renders the page, vendor's drawing only, or returns why it could not. `stacked`
-    says whether a crop of a polygon shows a stacked fraction, so every request says so of the
-    crop it actually sends (#735) — a widened crop can show one the first did not.
+    says whether a crop of a polygon shows a stacked fraction, and `layouts` where the parts of each
+    one it shows were drawn, so every request says so of the crop it actually sends (#735, #834) — a
+    widened crop can show one the first did not.
     """
 
     store: ArtifactStore
@@ -202,6 +204,7 @@ class RegionCrops:
 
     rotation_degrees: int
     stacked: Callable[[Polygon], bool]
+    layouts: Callable[[Polygon], tuple[FractionLayout, ...]]
     _dpi: int = field(init=False)
     _polygon: Polygon = field(init=False)
     _turned: bool = field(init=False, default=False)
@@ -219,6 +222,11 @@ class RegionCrops:
     def shows_stacked_fraction(self) -> bool:
         """Whether the crop now being shown shows a stacked fraction."""
         return self.stacked(self._polygon)
+
+    @property
+    def stacked_layouts(self) -> tuple[FractionLayout, ...]:
+        """Where the parts of each stacked fraction the crop now being shown shows were drawn."""
+        return self.layouts(self._polygon)
 
     def first(self) -> str | None:
         """Cut the first crop, round the region as it was read. `None` where it cannot be cut."""

@@ -29,7 +29,6 @@ from uuid import UUID
 
 from eval.experiments.model_bakeoff import Crop, ModelBakeoffError, ModelRead, ModelSpec
 from extraction.annotations import VectorPath, read_annotation_layers
-from extraction.glyph_bands import FractionBarGeometry
 from extraction.glyph_reader import GlyphReading, ReaderSettings, TemplateSet, read_label
 from extraction.glyph_shapes import ShapeSettings
 from units.measurement import Unit
@@ -123,14 +122,10 @@ class GlyphBakeoffAdapter:
                 line_minimum_pt=Decimal(reader["GV_READER_LINE_MINIMUM_PT"]),
                 glyph_maximum_pt=Decimal(reader["GV_READER_GLYPH_MAXIMUM_PT"]),
                 glyph_gap_pt=Decimal(reader["GV_READER_GLYPH_GAP_PT"]),
-                fraction_bar=FractionBarGeometry(
-                    bar_thickness_max_pt=Decimal(reader["GV_READER_FRACTION_BAR_THICKNESS_MAX_PT"]),
-                    bar_length_min_pt=Decimal(reader["GV_READER_FRACTION_BAR_LENGTH_MIN_PT"]),
-                    reach_pt=Decimal(reader["GV_READER_FRACTION_REACH_PT"]),
-                    glyph_min_pt=Decimal(reader["GV_READER_FRACTION_GLYPH_MIN_PT"]),
-                    glyph_max_pt=Decimal(reader["GV_READER_FRACTION_GLYPH_MAX_PT"]),
-                    proportion_max=Decimal(reader["GV_READER_FRACTION_PROPORTION_MAX"]),
-                ),
+                # No fraction detector: only the glyph paths are used, and no fraction setting
+                # changes them. A template set made before #834 does not record the layout's
+                # setting, so the detector could not be rebuilt from its manifest.
+                fraction_bar=None,
             )
             self._pages[page_index] = layers.glyph_paths
         return self._pages[page_index]
