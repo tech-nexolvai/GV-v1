@@ -79,8 +79,23 @@ DRAWING = (
 )
 
 
-def _drawing_appearance(font_object: int) -> bytes:
-    compressed = zlib.compress(DRAWING)
+#: The same drawing with two things the suggester must not count (#868, admin, 2026-10-03): the base
+#: row drawn a second time one point lower down the stamp (`y = 551`, about 0.003 of the page away,
+#: inside `SETTINGS.witness_tolerance`), and a row of wall cabinets above everything at `y = 660`,
+#: crossed by its own 60-point witness lines.
+DRAWING_TWICE_UNDER_WALL_CABINETS = DRAWING + (
+    b"1 w 150 551 m 250 551 l S\n"
+    b"1 w 250 551 m 350 551 l S\n"
+    b"1 w 150 660 m 250 660 l S\n"
+    b"1 w 250 660 m 350 660 l S\n"
+    b"1 w 150 640 m 150 700 l S\n"
+    b"1 w 250 640 m 250 700 l S\n"
+    b"1 w 350 640 m 350 700 l S\n"
+)
+
+
+def _drawing_appearance(font_object: int, drawing: bytes = DRAWING) -> bytes:
+    compressed = zlib.compress(drawing)
     return (
         b"<< /Type /XObject /Subtype /Form /FormType 1 /BBox [100 500 400 700] "
         b"/Matrix [1 0 0 1 -100 -500] /Resources << /Font << /F1 "
@@ -93,16 +108,21 @@ def _drawing_appearance(font_object: int) -> bytes:
     )
 
 
-#: The sheet: the label above the drawing, the reviewer's `XQ30L` over the second cabinet (page
-#: x 220..260), and the stamp. Objects 5, 6 and 7 are the annotations, 8 the appearance, 9 its font.
-SHEET = _pdf(
-    annotations=[
-        _free_text("VENDOR'S SHOP DRAWING ELEVATION ", rect=b"[60 262 340 280]"),
-        _free_text("XQ30L", rect=b"[220 140 260 150]"),
-        _stamp(appearance_object=8),
-    ],
-    extra_objects=[_drawing_appearance(9), HELVETICA],
-)
+def _sheet(drawing: bytes = DRAWING) -> bytes:
+    """The label above the drawing, the reviewer's `XQ30L` over the second cabinet (page x
+    220..260), and the stamp. Objects 5, 6 and 7 are the annotations, 8 the appearance, 9 its font.
+    """
+    return _pdf(
+        annotations=[
+            _free_text("VENDOR'S SHOP DRAWING ELEVATION ", rect=b"[60 262 340 280]"),
+            _free_text("XQ30L", rect=b"[220 140 260 150]"),
+            _stamp(appearance_object=8),
+        ],
+        extra_objects=[_drawing_appearance(9, drawing), HELVETICA],
+    )
+
+
+SHEET = _sheet()
 
 
 def _upgrade(engine: Engine) -> None:
@@ -145,9 +165,13 @@ def _run(
 
 
 def _extract(
-    session: Session, store: LocalStore, *, association: AssociationSettings | None = SETTINGS
+    session: Session,
+    store: LocalStore,
+    *,
+    association: AssociationSettings | None = SETTINGS,
+    data: bytes = SHEET,
 ) -> tuple[PackageRevision, Sequence[PageResult]]:
-    revision = _stored_revision(session, store, data=SHEET)
+    revision = _stored_revision(session, store, data=data)
     session.commit()
     return revision, _run(session, store, revision, association=association)
 
@@ -169,6 +193,12 @@ def _xs(row: PartProposal) -> tuple[Decimal, Decimal]:
 def _ys(row: PartProposal) -> tuple[Decimal, Decimal]:
     ys = [Decimal(y) for _, y in row.extent["points"]]  # type: ignore[union-attr, misc]
     return min(ys), max(ys)
+
+
+def _line_y(row: PartProposal) -> Decimal:
+    """How far down the page the line that defined a part is drawn."""
+    assert row.defining_line is not None
+    return Decimal(row.defining_line["points"][0][1])  # type: ignore[index]
 
 
 def _extractor_of(session: Session, candidate_id: object) -> str:
@@ -198,6 +228,28 @@ def test_the_stage_suggests_the_vendor_drawings_parts_and_writes_no_item(
     assert [page.payload["part_proposals"] for page in result] == [
         {"cabinets": 2, "countertops": 1, "with_code": 1, "nested_views": 0}
     ]
+
+
+def test_a_row_drawn_twice_under_wall_cabinets_gives_the_same_suggestions(
+    session: Session, store: LocalStore
+) -> None:
+    """The base row drawn twice, and a row of wall cabinets above it. Outcome: exactly what the
+    plain sheet gives, two cabinets on the first stroke of the base row and one countertop, with
+    the code still attached: the copy is not a second row and the wall cabinets get nothing."""
+    _, result = _extract(session, store, data=_sheet(DRAWING_TWICE_UNDER_WALL_CABINETS))
+
+    first, second, top = _proposals(session)
+    rows = {_line_y(first), _line_y(second)}
+
+    assert [page.payload["part_proposals"] for page in result] == [
+        {"cabinets": 2, "countertops": 1, "with_code": 1, "nested_views": 0}
+    ]
+    # One row, and it is the base row: lower on the page (larger stored y) than the countertop's
+    # dimension, which is itself below the wall cabinets' row.
+    assert len(rows) == 1 and rows.pop() > _line_y(top)
+    assert first.code_as_printed == "XQ24"
+    assert "Drawn as 2 strokes" in first.reason and "Drawn as 2 strokes" in second.reason
+    assert _count(session, DrawingItem) == 0
 
 
 def test_the_vendors_printed_code_is_kept_with_the_reading_it_came_from(
@@ -253,8 +305,8 @@ def test_the_rows_are_stored_in_stored_space_exactly(session: Session, store: Lo
         assert len(row.extent["points"]) == 4  # type: ignore[arg-type]
         assert row.defining_line is not None and row.defining_line["space"] == "stored"
         assert len(row.defining_line["points"]) == 2  # type: ignore[arg-type]
-        points = row.extent["points"]
-        assert all(isinstance(value, str) for point in points for value in point)  # type: ignore[union-attr, attr-defined]
+        points: list[list[object]] = row.extent["points"]  # type: ignore[assignment]
+        assert all(isinstance(value, str) for point in points for value in point)
 
 
 def test_running_the_stage_twice_suggests_each_part_once(

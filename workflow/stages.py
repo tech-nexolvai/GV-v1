@@ -2594,11 +2594,13 @@ class DatabaseStages:
         the role the sheet's own label suggests (#710). A suggestion is enough to aim a suggestion:
         a person decides on every part before anything is made of it.
 
-        **Cabinets meet each other, and a countertop's ends meet theirs, within the detector's own
-        witness tolerance.** That is the number `detect()` used to decide the cabinets' dimensions
-        run end to end, and a second number for the same question could disagree with it. The call
-        to `detect()` is the one `_associate_page` makes, on the same strokes under the same
-        settings, so where both run they find the same lines.
+        **Its one tolerance is the detector's own witness tolerance.** That is the number `detect()`
+        used to decide which dimensions run end to end, and the suggester asks the same kind of
+        question three times: whether two strokes are one dimension drawn twice, which chained
+        dimensions share the lowest row, and whether a countertop's ends meet its cabinets'. A
+        second number for the same question could disagree with the first. The call to `detect()`
+        is the one `_associate_page` makes, on the same strokes under the same settings, so where
+        both run they find the same lines.
         """
         settings = self._association
         if settings is None:

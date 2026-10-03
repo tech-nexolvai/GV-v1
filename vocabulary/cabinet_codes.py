@@ -8,9 +8,10 @@ or correct. This is the closed list of shapes it accepts as a cabinet code.
 nothing here reads them. A part's width is a reading linked to the part; a width taken out of a code
 would be a second, unchecked source for the very number a check compares (#748 plan).
 
-**Closed, and the admin's to approve.** A shape is matched against the whole text of one reading,
-and text that no shape matches is not a code, however code-like it looks. A new vendor's naming is
-added here on purpose, not caught by a looser pattern.
+**Closed, and approved by the admin.** The three cabinet shapes below were approved as proposed on
+2026-10-03 (#868), with three-letter prefixes kept out. A shape is matched against the whole text of
+one reading, and text that no shape matches is not a code, however code-like it looks. A new
+vendor's naming is added here on purpose, with the admin's approval, not caught by a looser pattern.
 
 **Finish codes are refused by shape, and that is enforced rather than assumed.** A vendor's drawing
 prints finish and material codes on the same faces — letters, a dash, a number — and one taken for a
@@ -69,7 +70,7 @@ class CodeShape:
         return self.compiled.fullmatch(text) is not None
 
 
-#: The cabinet-code shapes, proposed on #868 for the admin's approval.
+#: The cabinet-code shapes, approved by the admin as proposed on 2026-10-03 (#868).
 #:
 #: Each starts with one or two capital letters and then a digit other than zero. A letter and a
 #: single digit with nothing after them is left out, because view and detail marks have that shape;

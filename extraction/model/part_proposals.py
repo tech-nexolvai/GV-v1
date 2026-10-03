@@ -9,12 +9,22 @@ if anything else writes one.
 
 ## What is suggested, and from what
 
-*A cabinet* is suggested for each horizontal dimension that belongs to a chain: two or more
-dimensions drawn end to end at one offset, as `detect()` groups them (#591). That is how a run of
-cabinets is dimensioned. A dimension drawn on its own is not suggested as a cabinet: it could be an
-overall, or a box edge the detector took for a dimension (#748), and nothing here can tell which.
-The part's left and right are the dimension's ends, and its height is how far the dimension's
-extension lines reach.
+*A cabinet* is suggested for each horizontal dimension in the drawing's **lowest chained row**. A
+chain is two or more dimensions drawn end to end at one offset, as `detect()` groups them (#591),
+which is how a run of cabinets is dimensioned. The lowest row is every chained dimension whose
+offset lies within the tolerance of the lowest one. The admin decided on 2026-10-03 (#868) that
+only this row is suggested: it is where a drawing measures its base cabinets, and the rows above it
+measure wall cabinets, doors and drawers. A dimension drawn on its own is not suggested as a
+cabinet either: it could be an overall, or a box edge the detector took for a dimension (#748), and
+nothing here can tell which. The part's left and right are the dimension's ends, and its height is
+how far the dimension's extension lines reach.
+
+**A dimension drawn twice is one dimension.** A vendor's drawing can draw a dimension as two
+strokes a hair apart: on AI_Set_2, about 0.0014 of the page. Two horizontal strokes whose left
+ends, right ends and heights on the page each agree within the tolerance are taken as one, and the
+first of them down and across the page stands for both; it is in a chain if either stroke is.
+Counted twice, every cabinet in such a row was suggested twice and every code over it sat inside
+two spans.
 
 **Every one is suggested as a cabinet, never as a filler.** A filler is drawn and dimensioned the
 same way, and telling the two apart by how narrow the box is would be reading a width off the
@@ -25,10 +35,10 @@ suggestions. Nothing fills the gap or stretches the run to an overall dimension:
 one the person would have to notice was guessed.
 
 *A countertop* is suggested only from a horizontal dimension outside every chain that reaches from
-the left end of one suggested cabinet to the right end of another, with suggested cabinets drawn end
-to end in between. **Its extent is its own dimension's, never the union of the cabinets beneath
-it.** The countertop check asks whether a run reaches both ends of its countertop, and a countertop
-taken from the run would reach them by construction.
+the left end of one suggested base cabinet to the right end of another, with suggested base
+cabinets drawn end to end in between. **Its extent is its own dimension's, never the union of the
+cabinets beneath it.** The countertop check asks whether a run reaches both ends of its countertop,
+and a countertop taken from the run would reach them by construction.
 
 *A code* attaches to a cabinet only when exactly one cabinet code sits inside the cabinet's span
 across the page, and that code sits inside no other suggested cabinet's span. Anything else (no code,
@@ -47,8 +57,10 @@ inside the box around its region.
 
 Whether two ends meet is a question about a tolerance, in stored units: the normalised `0..1` page
 space, where one number is a different physical distance on different sheet sizes. It is required
-and keyword-only so that no call site acquires one by accident. It is used only to decide whether a
-countertop's ends meet its cabinets' ends and whether cabinets meet each other along the way.
+and keyword-only so that no call site acquires one by accident. It decides three things, and only
+these: whether two strokes are one dimension drawn twice, which chained dimensions share the lowest
+row, and whether a countertop's ends meet its cabinets' ends with the cabinets meeting each other in
+between.
 
 Source: issue #868; #748 plan, step 3 · Verification: `tests/extraction/model/test_part_proposals.py`
 """
@@ -145,8 +157,9 @@ def propose_parts(
     """Suggest the cabinets and countertops of each vendor drawing on one page.
 
     `views` are every drawing on the page, `detected` is `detect()`'s result for the page's strokes,
-    and `texts` are the page's readings a code may come from. Returns the suggestions, ordered by
-    drawing as given and then down and across the page, cabinets before countertops.
+    and `texts` are the page's readings a code may come from. Returns the suggestions by drawing,
+    in the order the drawings are given: each drawing's cabinets left to right along their row,
+    then its countertops down and across the page.
 
     Raises `PolygonSpaceMismatchError` if anything comes from another page or document version, and
     `ValueError` if a drawing is listed twice. Both are caller mistakes rather than ambiguity: a part
@@ -193,18 +206,34 @@ def _view_parts(
     texts: Sequence[PrintedText],
     tolerance: Decimal,
 ) -> list[ProposedPart]:
-    """One drawing's suggestions: a cabinet per chained dimension, then the countertops over them."""
-    horizontal = sorted(
-        (
-            line
-            for line in detected.lines
-            if line.axis is Axis.HORIZONTAL
-            and _points_within((line.extent.start, line.extent.end), box)
+    """One drawing's suggestions: a cabinet per dimension in its lowest chained row, then the
+    countertops over that row."""
+    dimensions = _once_each(
+        sorted(
+            (
+                line
+                for line in detected.lines
+                if line.axis is Axis.HORIZONTAL
+                and _points_within((line.extent.start, line.extent.end), box)
+            ),
+            key=_order,
         ),
-        key=_order,
+        chained,
+        tolerance,
     )
-    segments = [line for line in horizontal if line in chained]
-    spans = [_span(line) for line in segments]
+    in_chains = [dimension for dimension in dimensions if dimension.chained]
+    lowest = max((_offset(dimension.line) for dimension in in_chains), default=None)
+    # Left to right: the row is one row, so a stroke a hair higher than its neighbours does not
+    # move it to the front.
+    row = sorted(
+        (
+            dimension
+            for dimension in in_chains
+            if lowest is not None and lowest - _offset(dimension.line) <= tolerance
+        ),
+        key=lambda dimension: _span(dimension.line),
+    )
+    spans = [_span(dimension.line) for dimension in row]
     codes = [
         text
         for text in texts
@@ -213,11 +242,12 @@ def _view_parts(
     over = [[code for code in codes if _inside(code, span)] for span in spans]
 
     parts = [
-        _cabinet(view_id, segment, span, inside, spans)
-        for segment, span, inside in zip(segments, spans, over, strict=True)
+        _cabinet(view_id, dimension, span, inside, spans)
+        for dimension, span, inside in zip(row, spans, over, strict=True)
     ]
-    for line in horizontal:
-        if line not in chained and _spanned_end_to_end(_span(line), spans, tolerance):
+    for dimension in dimensions:
+        line = dimension.line
+        if not dimension.chained and _spanned_end_to_end(_span(line), spans, tolerance):
             parts.append(
                 ProposedPart(
                     view_id=view_id,
@@ -228,25 +258,74 @@ def _view_parts(
                     code=None,
                     reason=(
                         "A horizontal dimension on the vendor's drawing that reaches from the left "
-                        "end of one suggested cabinet to the right end of another, with suggested "
-                        "cabinets drawn end to end in between, which is how a drawing gives the "
-                        "overall of a run. Its left and right are this dimension's own ends and its "
-                        "height is how far its own extension lines reach, not the cabinets' outline. "
-                        "The person confirming it says whether it is the countertop."
+                        "end of one suggested base cabinet to the right end of another, with "
+                        "suggested base cabinets end to end in between: how a drawing gives the "
+                        "overall of a run. Its sides are this dimension's own ends and its height "
+                        "is how far its own extension lines reach, not the cabinets' outline. The "
+                        "person confirming it says whether it is the countertop."
+                        + _drawn_twice(dimension)
                     ),
                 )
             )
     return parts
 
 
+@dataclass(slots=True)
+class _Dimension:
+    """One dimension as the drawing means it, however many strokes it was drawn with."""
+
+    line: DimensionLine
+    """The first of its strokes down and across the page, which stands for all of them."""
+    chained: bool
+    """Whether any of its strokes is in a chain."""
+    copies: int = 1
+
+
+def _once_each(
+    horizontal: Sequence[DimensionLine], chained: frozenset[DimensionLine], tolerance: Decimal
+) -> list[_Dimension]:
+    """The dimensions, in the order given, with a dimension drawn twice counted once.
+
+    Two strokes are one dimension drawn twice when their left ends, their right ends and their
+    heights on the page each agree within the tolerance. Counted twice, every cabinet in such a row
+    would be suggested twice and every code over it would sit inside two spans.
+    """
+    once: list[_Dimension] = []
+    for line in horizontal:
+        for kept in once:
+            if _coincide(kept.line, line, tolerance):
+                kept.copies += 1
+                kept.chained = kept.chained or line in chained
+                break
+        else:
+            once.append(_Dimension(line=line, chained=line in chained))
+    return once
+
+
+def _coincide(first: DimensionLine, second: DimensionLine, tolerance: Decimal) -> bool:
+    (left, right), (other_left, other_right) = _span(first), _span(second)
+    return (
+        abs(left - other_left) <= tolerance
+        and abs(right - other_right) <= tolerance
+        and abs(_offset(first) - _offset(second)) <= tolerance
+    )
+
+
+def _drawn_twice(dimension: _Dimension) -> str:
+    if dimension.copies == 1:
+        return ""
+    return f" Drawn as {dimension.copies} strokes within the tolerance, taken as one."
+
+
 def _cabinet(
     view_id: UUID,
-    segment: DimensionLine,
+    dimension: _Dimension,
     span: _Span,
     inside: list[PrintedText],
     spans: list[_Span],
 ) -> ProposedPart:
-    """A cabinet suggestion for one chained dimension, with its code when exactly one is its own."""
+    """A cabinet suggestion for one dimension in the lowest row, with its code when exactly one is
+    its own."""
     code: PrintedText | None = None
     if not inside:
         said = "No cabinet code sits wholly inside its span."
@@ -275,14 +354,15 @@ def _cabinet(
     return ProposedPart(
         view_id=view_id,
         kind=PartKind.CABINET,
-        extent=_extent(segment),
-        defining_line=segment.extent,
+        extent=_extent(dimension.line),
+        defining_line=dimension.line.extent,
         code=code,
         reason=(
-            "A horizontal dimension on the vendor's drawing, one of a chain drawn end to end. Its "
-            "ends give the part's left and right, and its extension lines its height. Suggested as "
-            "a cabinet, but a filler is drawn the same way, so the person confirming it says which. "
+            "A dimension in the lowest chained row on the vendor's drawing, where base cabinets "
+            "are measured. Its ends give the part's sides, its extension lines its height. A "
+            "filler is drawn the same way, so the person confirming it says which it is. "
             + said
+            + _drawn_twice(dimension)
         ),
     )
 
@@ -345,7 +425,12 @@ def _span(line: DimensionLine) -> _Span:
 def _order(line: DimensionLine) -> tuple[Decimal, Decimal, Decimal]:
     """Down the page, then across it: the order a person reads the dimension rows in."""
     left, right = _span(line)
-    return min(line.extent.start.y, line.extent.end.y), left, right
+    return _offset(line), left, right
+
+
+def _offset(line: DimensionLine) -> Decimal:
+    """How far down the page a horizontal dimension is drawn. Stored `y` grows down the page."""
+    return min(line.extent.start.y, line.extent.end.y)
 
 
 def _inside(text: PrintedText, span: _Span) -> bool:

@@ -3,8 +3,9 @@
 Every suggestion here is only a suggestion: a person confirms each one before it becomes a part, and
 `tests/db/test_drawing_models.py` fails if anything but that confirmation writes a drawing item. So
 these tests are about what is suggested and, mostly, about what is held back: a code two cabinets
-could claim, a drawing nested inside another, a run the chain only partly saw, and a countertop that
-must keep its own ends rather than borrow its cabinets'.
+could claim, a drawing nested inside another, a run the chain only partly saw, a row above the base
+cabinets, a dimension drawn twice, and a countertop that must keep its own ends rather than borrow
+its cabinets'.
 
 The geometry is built from strokes and run through the real `detect()`, so a chain here is a chain
 because the detector made it one. **Every code is invented.** None is a string from a client drawing.
@@ -46,6 +47,9 @@ TOLERANCE = Decimal("0.002")
 #: How far a witness line reaches above and below its dimension unless a test says otherwise.
 ABOVE = Decimal("0.05")
 BELOW = Decimal("0.01")
+
+#: A short reach above, for a row or an overall whose witness lines must not cross another row.
+SHORT = Decimal("0.01")
 
 
 def _d(value: str | Decimal) -> Decimal:
@@ -369,14 +373,15 @@ def test_a_code_inside_exactly_one_span_is_attached_with_its_reading() -> None:
 
 
 def test_a_code_inside_two_spans_gets_no_code() -> None:
-    """**Done when, 2.** Two rows of dimensions measure the same stretch: a code over it sits inside
-    a span in each row. Outcome: neither cabinet takes it, and both say why. A code over the
-    stretch only one row measures still attaches, so the refusal is about the two spans."""
+    """**Done when, 2.** Two chains in the lowest row measure overlapping stretches, neither a copy
+    of the other: a code over the overlap sits inside a span of each. Outcome: neither cabinet takes
+    it, and both say why. A code over a stretch only one of them measures still attaches, so the
+    refusal is about the two spans."""
     shared = _code("XQ24", "0.22", "0.28")
-    single = _code("XQ30L", "0.40", "0.45")
+    single = _code("XQ30L", "0.44", "0.48")
     detected = _detect(
         _chain("0.80", "0.20", "0.35", "0.50"),
-        _chain("0.65", "0.20", "0.35", "0.36", above=Decimal("0.01")),
+        _chain("0.8015", "0.20", "0.30", "0.42"),
     )
 
     result = _propose([_view()], detected, [shared, single])
@@ -520,25 +525,151 @@ def test_an_overall_over_a_gap_is_not_a_countertop() -> None:
     assert PartKind.COUNTERTOP not in _kinds(_propose([_view()], detected))
 
 
-def test_cabinets_from_two_rows_may_meet_end_to_end_under_a_countertop() -> None:
-    """End to end is about where the cabinets' ends are, not which row drew them."""
+def test_a_countertop_is_suggested_only_over_the_lowest_row() -> None:
+    """The countertop rule is applied to the base cabinets' row. An overall over the row above it is
+    not a countertop, even though that row's dimensions are drawn end to end beneath it."""
     detected = _detect(
+        _chain("0.60", "0.20", "0.35", "0.50", above=SHORT),
+        _dimension("0.20", "0.50", "0.52", above=SHORT),
         _chain("0.80", "0.20", "0.30", "0.40"),
-        _chain("0.70", "0.40", "0.50", "0.60", above=Decimal("0.01")),
-        _dimension("0.20", "0.60", "0.88", above=Decimal("0.01")),
+        _dimension("0.20", "0.40", "0.88", above=SHORT),
     )
 
-    assert _kinds(_propose([_view()], detected)).count(PartKind.COUNTERTOP) == 1
+    tops = [
+        part for part in _propose([_view()], detected).parts if part.kind is PartKind.COUNTERTOP
+    ]
+
+    assert [_across(top) for top in tops] == [(Decimal("0.20"), Decimal("0.40"))]
 
 
 def test_a_dimension_in_a_chain_is_never_also_a_countertop() -> None:
-    """One suggestion per dimension: a chained one is a cabinet, even over two smaller ones."""
+    """One suggestion per dimension: a chained one is a cabinet, even over two smaller ones in the
+    same row."""
     detected = _detect(
         _chain("0.80", "0.20", "0.30", "0.40"),
-        _chain("0.88", "0.20", "0.40", "0.50", above=Decimal("0.01")),
+        _chain("0.8015", "0.10", "0.20", "0.40"),
     )
 
-    assert PartKind.COUNTERTOP not in _kinds(_propose([_view()], detected))
+    result = _propose([_view()], detected)
+
+    assert (Decimal("0.20"), Decimal("0.40")) in [_across(part) for part in result.parts]
+    assert _kinds(result) == [PartKind.CABINET] * 4
+
+
+# ---------------------------------------------------------------------------
+# The lowest row only, and a dimension drawn twice counted once (#868, admin, 2026-10-03)
+# ---------------------------------------------------------------------------
+
+
+def test_an_upper_row_gets_nothing() -> None:
+    """Wall cabinets, doors and drawers are dimensioned in rows above the base cabinets, and a wall
+    cabinet often lines up with the base cabinet below it. Outcome: only the lowest chained row is
+    suggested, the base cabinet is not mistaken for a copy of the wall cabinet above it, and a code
+    over an upper cabinet alone attaches to nothing, because no suggested cabinet lies beneath it.
+    """
+    upper_code = _code("XQ30L", "0.42", "0.48", y="0.55")
+    detected = _detect(
+        _chain("0.60", "0.20", "0.30", "0.50", above=SHORT),
+        _chain("0.80", "0.20", "0.30", "0.40"),
+    )
+
+    result = _propose([_view()], detected, [upper_code])
+
+    assert [_across(part) for part in result.parts] == [
+        (Decimal("0.20"), Decimal("0.30")),
+        (Decimal("0.30"), Decimal("0.40")),
+    ]
+    assert {part.defining_line.start.y for part in result.parts} == {Decimal("0.80")}
+    assert all(part.code is None for part in result.parts)
+
+
+def test_chains_level_with_the_lowest_one_share_its_row() -> None:
+    """Two chains a hair apart down the page, within the tolerance, are one row: both are base
+    cabinets. A chain further up than the tolerance is not."""
+    detected = _detect(
+        _chain("0.80", "0.20", "0.30", "0.40"),
+        _chain("0.8015", "0.50", "0.60", "0.70"),
+        _chain("0.7975", "0.75", "0.80", "0.85"),
+    )
+
+    result = _propose([_view()], detected)
+
+    assert [_across(part)[0] for part in result.parts] == [
+        Decimal("0.20"),
+        Decimal("0.30"),
+        Decimal("0.50"),
+        Decimal("0.60"),
+    ]
+
+
+def test_a_dimension_drawn_twice_is_suggested_once() -> None:
+    """The row is drawn as two strokes a hair apart, each end within the tolerance of its copy.
+    Outcome: one cabinet per dimension, standing on the first stroke down the page, and the code
+    over the first cabinet attaches. Counted twice, that code would sit inside two spans."""
+    code = _code("XQ24", "0.22", "0.28")
+    detected = _detect(
+        _chain("0.80", "0.20", "0.35", "0.50"),
+        _chain("0.8014", "0.2015", "0.3515", "0.5015"),
+    )
+
+    result = _propose([_view()], detected, [code])
+
+    assert [_across(part) for part in result.parts] == [
+        (Decimal("0.20"), Decimal("0.35")),
+        (Decimal("0.35"), Decimal("0.50")),
+    ]
+    assert {part.defining_line.start.y for part in result.parts} == {Decimal("0.80")}
+    assert [part.code for part in result.parts] == [code, None]
+    assert all("Drawn as 2 strokes" in part.reason for part in result.parts)
+
+
+def test_a_dimension_is_in_a_chain_if_either_of_its_strokes_is() -> None:
+    """The copy drawn first down the page touches nothing end to end, so the detector leaves it out
+    of every chain, while the copy below is in the row's chain. Outcome: still a cabinet, standing
+    on the first copy."""
+    detected = _detect(
+        _chain("0.80", "0.20", "0.35", "0.50"),
+        [_stroke("0.35", "0.7986", "0.50", "0.7986")],
+    )
+    lone = [
+        line
+        for line in detected.lines
+        if line.extent.start.y == Decimal("0.7986")
+        and all(line not in chain.lines for chain in detected.chains)
+    ]
+    assert lone  # the premise: the first copy is in no chain
+
+    result = _propose([_view()], detected)
+
+    assert [_across(part) for part in result.parts] == [
+        (Decimal("0.20"), Decimal("0.35")),
+        (Decimal("0.35"), Decimal("0.50")),
+    ]
+    assert result.parts[1].defining_line.start.y == Decimal("0.7986")
+
+
+def test_a_countertop_drawn_twice_is_suggested_once() -> None:
+    detected = _detect(
+        _chain("0.80", "0.20", "0.35", "0.50"),
+        _dimension("0.20", "0.50", "0.88", above=SHORT),
+        _dimension("0.2012", "0.4988", "0.8814", above=SHORT),
+    )
+
+    tops = [
+        part for part in _propose([_view()], detected).parts if part.kind is PartKind.COUNTERTOP
+    ]
+
+    assert [_across(top) for top in tops] == [(Decimal("0.20"), Decimal("0.50"))]
+
+
+def test_strokes_further_apart_than_the_tolerance_stay_two_dimensions() -> None:
+    """The tolerance is the boundary: ends three thousandths apart are two dimensions."""
+    detected = _detect(
+        _chain("0.80", "0.20", "0.35", "0.50"),
+        _chain("0.8005", "0.203", "0.353", "0.503"),
+    )
+
+    assert len(_propose([_view()], detected).parts) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -546,18 +677,28 @@ def test_a_dimension_in_a_chain_is_never_also_a_countertop() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_every_reason_fits_its_column_and_says_something() -> None:
-    codes = [_code("XQ22P5R", "0.22", "0.28"), _code("XQ40P250", "0.29", "0.34")]
+def test_the_longest_reasons_still_fit_their_column() -> None:
+    """Every reason is stored in a 500-character column, so each long form is built here: five of
+    the longest code there is over one cabinet, one code over two, and a row and an overall each
+    drawn twice."""
+    longest = "XQ123P4567L"
+    assert is_cabinet_code(longest)
+    many = [_code(longest, f"0.2{index}", f"0.2{index}5") for index in range(1, 6)]
+    shared = _code(longest, "0.37", "0.39")
     detected = _detect(
         _chain("0.80", "0.20", "0.35", "0.50"),
-        _chain("0.65", "0.20", "0.35", above=Decimal("0.01")),
-        _dimension("0.20", "0.50", "0.88", above=Decimal("0.01")),
+        _chain("0.8014", "0.2015", "0.3515", "0.5015"),
+        _chain("0.8018", "0.36", "0.40", "0.42", above=SHORT),
+        _dimension("0.20", "0.50", "0.88", above=SHORT),
+        _dimension("0.2012", "0.4988", "0.8814", above=SHORT),
     )
 
-    result = _propose([_view()], detected, codes)
+    reasons = [part.reason for part in _propose([_view()], detected, [*many, shared]).parts]
 
-    assert result.parts
-    assert all(0 < len(part.reason) <= 500 for part in result.parts)
+    assert any("and 2 more" in reason and "Drawn as 2 strokes" in reason for reason in reasons)
+    assert any("one other suggested cabinet" in reason for reason in reasons)
+    assert any("countertop" in reason and "Drawn as 2 strokes" in reason for reason in reasons)
+    assert all(0 < len(reason) <= 500 for reason in reasons), max(map(len, reasons))
 
 
 @pytest.mark.parametrize(
