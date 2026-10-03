@@ -282,6 +282,9 @@ def record_ocr_candidates(
     less, because the engine returns a line whole where `extract_words` splits at the space — but that
     is a property of the engine, not a guarantee, and the rule does not soften for it.
 
+    **A reading the stage marked `stacked` is flagged**, as the vector route's is (#846): it lies over
+    a stacked fraction, so no agreement and no millimetre figure confirms it (#726).
+
     Idempotent per run and page, for the reason `record_candidates` gives: a redelivery is the same
     work arriving twice, not a second reading.
     """
@@ -306,6 +309,10 @@ def record_ocr_candidates(
     written: list[ObservationCandidate] = []
     for item in items:
         measurement, flags, dual = _parse(item.text)
+        stored_flags = list(flags)
+        # Before `_corroboration` reads the row: the flag is what shuts the dual-unit lane.
+        if item.stacked:
+            stored_flags.append(STACKED_FRACTION_FLAG)
         row = ObservationCandidate(
             document_version_id=document_version_id,
             page_id=page_id,
@@ -319,7 +326,7 @@ def record_ocr_candidates(
             polygon=[[point.x, point.y] for point in item.image_extent],
             coordinate_space="image",
             confidence=item.confidence,
-            ambiguity_flags=list(flags),
+            ambiguity_flags=stored_flags,
         )
         # **Set before the insert, never after.** `observation_candidates` is append-only and 0013
         # enforces it with a trigger, so assigning these once the row exists would be an UPDATE the

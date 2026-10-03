@@ -74,7 +74,7 @@ from app.models.document import (
     PackageRevisionDocument,
     Page,
 )
-from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier, ViewRole
+from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier, ViewRole, ViewRoleProposal
 from app.models.evidence import (
     EvidenceArtifact,
     EvidenceArtifactKind,
@@ -160,6 +160,13 @@ from extraction.layout import (
 )
 from extraction.localized_ocr import read_localized_vendor_regions
 from extraction.manifest import build_manifest
+from extraction.model.part_proposals import (
+    PROPOSER_SOURCE,
+    PROPOSER_VERSION,
+    PrintedText,
+    ViewOutline,
+    propose_parts,
+)
 from extraction.models.context import AssembledContext
 from extraction.models.invocations import InvocationRecord
 from extraction.models.nova import (
@@ -179,7 +186,11 @@ from extraction.models.nova import (
     vision_configs_from_environment,
 )
 from extraction.models.sanitisation import DIGITS_PROMPT_ID
-from extraction.models.validation import STACKED_FRACTION_REASON, ValidationRejection
+from extraction.models.validation import (
+    STACKED_FRACTION_REASON,
+    ValidationRejection,
+    stacked_layout_refusal,
+)
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_reading, read_page
 from extraction.panels import propose_panel_roles
 from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
@@ -216,6 +227,7 @@ from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from verdict.outcomes import Outcome
+from vocabulary.part_kinds import PartKind
 from workflow.association import (
     AssociationSettings,
     LocalizedOcrSettings,
@@ -235,6 +247,7 @@ from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
+from workflow.parts import live_part_item_ids, record_part_proposal
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
@@ -1471,6 +1484,8 @@ class DatabaseStages:
             ocr_items: tuple[OcrItem, ...] = ()
             ocr_rows: list[ObservationCandidate] = []
             ocr_fragments: tuple[OcrItem, ...] = ()
+            # Localized-OCR readings a stacked label's layout ruled out (#846); `None` off that route.
+            ocr_refusals: Counter[str] | None = None
             glyph_rows: list[ObservationCandidate] = []
             glyph_association: tuple[tuple[_LocatedOcrReading, ...], list[ObservationCandidate]] = (
                 (),
@@ -1630,14 +1645,16 @@ class DatabaseStages:
                     )
                     if plan.to_read:
                         route = "localized_ocr"
-                        ocr_items, ocr_rows, ocr_fragments = self._read_page_by_localized_ocr(
-                            session,
-                            version_id=version_id,
-                            data=data,
-                            page=page,
-                            task_run_id=run.task_run_id,
-                            layers=layers,
-                            regions=tuple(entry.region for entry in plan.to_read),
+                        ocr_items, ocr_rows, ocr_fragments, ocr_refusals = (
+                            self._read_page_by_localized_ocr(
+                                session,
+                                version_id=version_id,
+                                data=data,
+                                page=page,
+                                task_run_id=run.task_run_id,
+                                layers=layers,
+                                regions=tuple(entry.region for entry in plan.to_read),
+                            )
                         )
                         if self._glyph_route is not None:
                             glyph_rows, glyph_association, glyph_abstentions = (
@@ -1655,7 +1672,7 @@ class DatabaseStages:
                         # back to full-page OCR would reintroduce the tiny-text failure and could
                         # grab an unrelated number; reviewers can see the geometry set-asides.
                         route = "localized_ocr"
-                        ocr_items, ocr_rows, ocr_fragments = (), [], ()
+                        ocr_items, ocr_rows, ocr_fragments, ocr_refusals = (), [], (), Counter()
                 else:
                     route = "ocr"
                     ocr_items, ocr_rows, ocr_fragments = self._read_page_by_ocr(
@@ -1802,6 +1819,26 @@ class DatabaseStages:
                     + (layers.drawing_segments if layers is not None else ())
                 ),
             )
+            # **What each vendor drawing's parts might be (#868)**, suggested for a person to confirm
+            # and never written as items. The same strokes, and the same readings less the
+            # reviewer's markup: a code is what the vendor printed on a part, and a reviewer's note
+            # beside it is a reviewer's word about the drawing, not part of it.
+            parts = self._propose_page_parts(
+                session,
+                page=page,
+                readings=(
+                    vector_association_inputs,
+                    ocr_association_inputs,
+                    _vision_association_inputs(vision_association_links, association_sources),
+                    ((layers.vendor_text if layers is not None else ()), cad_text_rows),
+                    (stamp_texts, stamp_text_rows),
+                    glyph_association,
+                ),
+                lines=(
+                    (read.segments if read is not None else ())
+                    + (layers.drawing_segments if layers is not None else ())
+                ),
+            )
             results.append(
                 PageResult(
                     index=page.index,
@@ -1848,6 +1885,19 @@ class DatabaseStages:
                         # not a candidate, so without this the page would simply look smaller.
                         # Each box was still offered to the vision readers.
                         "ocr_fragments": len(ocr_fragments),
+                        # Localized-OCR readings a stacked label's layout ruled out (#846), refused
+                        # with no row: `None` off that route. Each reason names the reading.
+                        "localized_ocr_refusals": (
+                            None if ocr_refusals is None else sum(ocr_refusals.values())
+                        ),
+                        "localized_ocr_refusal_reasons": (
+                            None
+                            if ocr_refusals is None
+                            else [
+                                f"{count} × {reason}"
+                                for reason, count in ocr_refusals.most_common(REPORTED_REFUSALS)
+                            ]
+                        ),
                         # The shape reader (#756): `None` when it did not run on this page, which
                         # is not the same fact as its having read nothing.
                         "glyph_readings": None if glyph_abstentions is None else len(glyph_rows),
@@ -1924,6 +1974,9 @@ class DatabaseStages:
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
                         "associations": associated,
+                        # The parts suggested in this page's vendor drawings (#868), counted; `None`
+                        # when no association settings were stated, which is not the same as none.
+                        "part_proposals": parts,
                         "has_vector_text": page.has_vector_text,
                         # Which route read this page. Two readings of the same page by different
                         # routes are the basis of corroboration, so the route has to be visible.
@@ -2653,6 +2706,109 @@ class DatabaseStages:
                 )
             )
 
+    def _propose_page_parts(
+        self,
+        session: Session,
+        *,
+        page: Page,
+        readings: Sequence[tuple[Sequence[ReadItem], Sequence[ObservationCandidate]]],
+        lines: tuple[DimensionExtent, ...],
+    ) -> dict[str, int] | None:
+        """Suggest the parts of each vendor drawing on the page, as `part_proposals` rows (#868).
+
+        Returns counts, or `None` when no association settings were stated. The detector takes its
+        four lengths from them, so without them there are no dimensions to suggest anything from,
+        which is a different fact from a page that has none.
+
+        **Suggestions only.** Every row is written by `record_part_proposal`, and no drawing item is
+        written: only a person's confirmation makes one (#852).
+
+        **Which drawing is the vendor's** is the role a person confirmed, or, where nobody has yet,
+        the role the sheet's own label suggests (#710). A suggestion is enough to aim a suggestion:
+        a person decides on every part before anything is made of it.
+
+        **Its one tolerance is the detector's own witness tolerance.** That is the number `detect()`
+        used to decide which dimensions run end to end, and the suggester asks the same kind of
+        question three times: whether two strokes are one dimension drawn twice, which chained
+        dimensions share the lowest row, and whether a countertop's ends meet its cabinets'. A
+        second number for the same question could disagree with the first. The call to `detect()`
+        is the one `_associate_page` makes, on the same strokes under the same settings, so where
+        both run they find the same lines.
+        """
+        settings = self._association
+        if settings is None:
+            return None
+        counts = {"cabinets": 0, "countertops": 0, "with_code": 0, "nested_views": 0}
+        views = list(
+            session.scalars(
+                select(DrawingView)
+                .where(DrawingView.page_id == page.id)
+                .order_by(DrawingView.tag, DrawingView.id)
+            )
+        )
+        if not views:
+            return counts
+
+        with traced(
+            "extraction.page.part_proposals",
+            document_version_id=str(page.document_version_id),
+            page_index=page.index,
+            extractor_version=PROPOSER_VERSION,
+        ):
+            outlines = [
+                ViewOutline(
+                    view_id=view.id,
+                    region=Polygon(
+                        # Kept as text by `record_panel_view`, so read back exactly.
+                        points=tuple(
+                            StoredPoint(Decimal(x), Decimal(y))
+                            for x, y in cast(list[list[str]], view.region["points"])
+                        ),
+                        space="stored",
+                        document_version_id=page.document_version_id,
+                        page=page.index,
+                    ),
+                    vendor=_view_role(session, view) == ViewRole.SHOP.value,
+                )
+                for view in views
+            ]
+            detected = detect(
+                lines,
+                witness_tolerance=settings.witness_tolerance,
+                minimum_span=settings.minimum_span,
+                straightness=settings.straightness,
+                crossing_margin=settings.crossing_margin,
+            )
+            texts = [
+                PrintedText(candidate_id=row.id, text=row.raw_text, extent=item.extent)
+                for items, rows in readings
+                for item, row in zip(items, rows, strict=True)
+            ]
+            proposed = propose_parts(
+                outlines, detected, texts, edge_tolerance=settings.witness_tolerance
+            )
+            for part in proposed.parts:
+                record_part_proposal(
+                    session,
+                    drawing_view_id=part.view_id,
+                    kind=part.kind,
+                    extent=[(point.x, point.y) for point in part.extent.points],
+                    defining_line=(
+                        (part.defining_line.start.x, part.defining_line.start.y),
+                        (part.defining_line.end.x, part.defining_line.end.y),
+                    ),
+                    code_as_printed=None if part.code is None else part.code.text,
+                    code_candidate_id=None if part.code is None else part.code.candidate_id,
+                    reason=part.reason,
+                    source=PROPOSER_SOURCE,
+                    source_version=PROPOSER_VERSION,
+                )
+                counts["countertops" if part.kind is PartKind.COUNTERTOP else "cabinets"] += 1
+                if part.code is not None:
+                    counts["with_code"] += 1
+            counts["nested_views"] = len(proposed.nested)
+        return counts
+
     def _read_page_markup(
         self,
         session: Session,
@@ -2958,14 +3114,22 @@ class DatabaseStages:
         task_run_id: UUID,
         layers: PageLayers,
         regions: Sequence[OutlinedTextRegion],
-    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate], tuple[OcrItem, ...]]:
+    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate], tuple[OcrItem, ...], Counter[str]]:
         """Read vendor outlined-text regions as bounded, vendor-only high-DPI crops.
 
-        Returns what `_read_page_by_ocr` returns, and splits readings from fragments the same way.
+        Returns what `_read_page_by_ocr` returns, and splits readings from fragments the same way;
+        then why each reading it refused was refused.
 
         ``layers`` was read with the deployment's explicit geometry thresholds. ``region_crop``
         independently strips non-stamp annotations from each rendered crop, so a reviewer
         annotation cannot leak into OCR even when the original upload carries one.
+
+        **Each reading is held to the page's stacked fractions before it is recorded** (#846), by
+        `stacked_reading_check` — the vision readers' rule, on the reading's own box. One over a
+        stacked fraction is recorded with `STACKED_FRACTION_FLAG`, so no agreement and no
+        millimetre figure confirms it (#726). One a laid-out label rules out, as it does a stacked
+        `3/4"` read as `3 3/4"`, gets no row and is counted. `layers.stacked_fractions` holds the
+        fractions set in text too. Where this falls back to full-page OCR, nothing is held to them.
 
         Candidate polygons remain in the shared reader DPI frame. The extraction run configuration
         separately records the 600-DPI crop pixels RapidOCR actually saw, avoiding the provenance
@@ -2974,22 +3138,28 @@ class DatabaseStages:
         if page.media_box is None or page.crop_box is None:
             # A manifest row without transform metadata cannot carry a crop reading back to page
             # coordinates. Full-page OCR is the honest fallback rather than a made-up polygon.
-            return self._read_page_by_ocr(
-                session,
-                version_id=version_id,
-                data=data,
-                page=page,
-                task_run_id=task_run_id,
+            return (
+                *self._read_page_by_ocr(
+                    session,
+                    version_id=version_id,
+                    data=data,
+                    page=page,
+                    task_run_id=task_run_id,
+                ),
+                Counter(),
             )
         media = tuple(Decimal(value) for value in page.media_box)
         crop = tuple(Decimal(value) for value in page.crop_box)
         if len(media) != 4 or len(crop) != 4:
-            return self._read_page_by_ocr(
-                session,
-                version_id=version_id,
-                data=data,
-                page=page,
-                task_run_id=task_run_id,
+            return (
+                *self._read_page_by_ocr(
+                    session,
+                    version_id=version_id,
+                    data=data,
+                    page=page,
+                    task_run_id=task_run_id,
+                ),
+                Counter(),
             )
         transform = PageTransform(
             dpi=self._dpi,
@@ -3017,6 +3187,17 @@ class DatabaseStages:
                 ),
             )
             readings, fragments = _split_ocr_readings(items)
+            held: list[OcrItem] = []
+            refusals: Counter[str] = Counter()
+            for item in readings:
+                stacked, refusal = stacked_reading_check(
+                    item.image_extent, item.text, layers.stacked_fractions
+                )
+                if refusal is not None:
+                    refusals[refusal] += 1
+                    continue
+                held.append(replace(item, stacked=True) if stacked else item)
+            readings = tuple(held)
             ocr_run = open_extraction_run(
                 session,
                 task_run_id=task_run_id,
@@ -3026,6 +3207,17 @@ class DatabaseStages:
                     f"dpi={self._dpi};route=localized_vendor_regions;crop_dpi={VISION_CROP_DPI};"
                     f"{self._localized_ocr.config_hash if self._localized_ocr is not None else ''}"
                     f";{OCR_FRAGMENTS_CONFIG}"
+                    # Which readings are flagged and which refused depends on the detector's
+                    # settings (#846), so a run under other numbers is another run. A fingerprint
+                    # of them, because written out they run past the column's 200 characters.
+                    + (
+                        ""
+                        if self._association is None
+                        else ";stacked="
+                        + hashlib.sha256(
+                            self._association.fraction_bar.config_hash.encode()
+                        ).hexdigest()[:16]
+                    )
                 ),
                 # Candidate polygons use this full-page frame. The actual pixel resolution used by
                 # OCR is separately retained in config_hash above.
@@ -3040,7 +3232,7 @@ class DatabaseStages:
                 page_index=page.index,
                 flush=False,
             )
-            return readings, self._ordered_ocr_rows(readings, rows), fragments
+            return readings, self._ordered_ocr_rows(readings, rows), fragments, refusals
 
     def _read_page_by_glyphs(
         self,
@@ -3067,7 +3259,9 @@ class DatabaseStages:
         Its rows are not given to the bounded agent.
 
         **A stacked fraction is flagged** (#756 D3): read and pre-filled, never confirmed by any
-        number of readers (#726).
+        number of readers (#726). That is a reading the reader composed across a bar, or one lying
+        over a stacked fraction found on the page (`stacked_reading_check`, #846). A reading a
+        laid-out label rules out gets no row: it abstains, under the sentence saying why.
 
         **Its own extraction run**, keyed on the template set's hash, so a reading made with one set
         is never mistaken for a reading made with another. A re-run finds its rows and reads nothing.
@@ -3119,6 +3313,12 @@ class DatabaseStages:
             except (TypeError, ValueError):
                 abstentions["the label lies outside the visible page"] += 1
                 continue
+            stacked, refusal = stacked_reading_check(
+                corners, reading.text, layers.stacked_fractions
+            )
+            if refusal is not None:
+                abstentions[refusal] += 1
+                continue
             row = ObservationCandidate(
                 document_version_id=version_id,
                 page_id=page.id,
@@ -3132,7 +3332,7 @@ class DatabaseStages:
                 polygon=[[corner.x, corner.y] for corner in corners],
                 coordinate_space="image",
                 confidence=None,
-                ambiguity_flags=[STACKED_FRACTION_FLAG] if reading.stacked else [],
+                ambiguity_flags=[STACKED_FRACTION_FLAG] if reading.stacked or stacked else [],
             )
             # Set before the insert: the table is append-only (see `record_candidates`).
             row.corroboration_status, row.corroboration_lane = dual_unit_lane(
@@ -3560,13 +3760,11 @@ class DatabaseStages:
         this writes nothing else — no approved match, no verdict operand. Approval is a separate
         insert that names who decided, and nothing here decides.
 
-        **Today this finds nothing, and says so rather than appearing to work.** Writing a candidate
-        needs two `drawing_items` rows, and an item needs a view and a type from the `CT0xx`
-        vocabulary. Views now exist — one per drawing on a combined sheet, each with a role a person
-        confirms (#710) — but nothing finds the cabinets and their tags on a drawing yet (#748). So
-        this stage is wired to the real matcher and returns an honest zero with the reason, naming
-        how many drawings were found and how many roles are confirmed. The moment items exist, this
-        runs unchanged.
+        **Only parts a person confirmed and has not taken back (#882).** Writing a candidate needs
+        two `drawing_items` rows, and outside tests an item exists only once a person confirms a
+        suggested part (`workflow/parts.py`). A withdrawn or corrected part keeps its row, so both
+        queries this reads keep to `live_part_item_ids`. With none, it returns an honest zero with
+        the reason, naming how many drawings were found and how many roles are confirmed.
         """
         role_summary = _match_role_summary(session, package_revision_id)
         items = _matchable_items(session, package_revision_id)
@@ -3591,9 +3789,9 @@ class DatabaseStages:
                 "items": 0,
                 "candidates": 0,
                 "reason": (
-                    "no drawing items exist for this revision: nothing finds the cabinets and their "
-                    f"tags on a drawing yet (#748). Drawings found: {len(views)}; roles confirmed "
-                    f"by a reviewer: {confirmed.count('arch')} architect, "
+                    "no confirmed parts exist for this revision: an item exists only once a person "
+                    f"confirms a part of a drawing (#748). Drawings found: {len(views)}; roles "
+                    f"confirmed by a reviewer: {confirmed.count('arch')} architect, "
                     f"{confirmed.count('shop')} vendor"
                 ),
             }
@@ -4523,6 +4721,18 @@ def _record_panel_views(session: Session, page: Page, layers: PageLayers) -> dic
     return counts
 
 
+def _view_role(session: Session, view: DrawingView) -> str | None:
+    """The role a person confirmed for a view, or else the latest one its label suggests (#710)."""
+    if view.role is not None:
+        return view.role
+    return session.execute(
+        select(ViewRoleProposal.proposed_role)
+        .where(ViewRoleProposal.drawing_view_id == view.id)
+        .order_by(ViewRoleProposal.created_at.desc(), ViewRoleProposal.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def region_facts(
     candidate: ObservationCandidate,
     candidates: Sequence[ObservationCandidate],
@@ -4631,6 +4841,30 @@ def _vision_pre_call_refusal(
     if crop_shows_a_stacked_fraction(crop_box, fractions):
         return STACKED_FRACTION_REASON
     return None
+
+
+def stacked_reading_check(
+    corners: Sequence[ImagePoint], reading: str, fractions: Sequence[StackedFraction]
+) -> tuple[bool, str | None]:
+    """Whether a reading lies over a stacked fraction, and why the drawing rules it out, if it does.
+
+    For the readers that say where they read — localized OCR and the shape reader (#846) — what
+    `_vision_pre_call_refusal` is for a model's crop. **The same rule, not a copy of it**: the box
+    round `corners` is held to `crop_shows_a_stacked_fraction`, so this finds a stacked fraction in
+    exactly the boxes that check would refuse as a crop, edges included. `corners` are page pixels
+    at the stage's dpi, as a fraction's `image_extent` is.
+
+    Over a laid-out label the reading is also held to its digit counts (`stacked_layout_refusal`,
+    #834): the sentence that comes back says why it cannot be what the drawing shows, and the caller
+    records no row for it. A fraction set in text has no layout to count, so it can flag a reading
+    and never refuse one.
+    """
+    xs = [corner.x for corner in corners]
+    ys = [corner.y for corner in corners]
+    box = (min(xs), min(ys), max(xs), max(ys))
+    if not crop_shows_a_stacked_fraction(box, fractions):
+        return False, None
+    return True, stacked_layout_refusal(reading, stacked_layouts_shown(box, fractions))
 
 
 def stored_polygon(
@@ -4752,6 +4986,7 @@ def _match_role_summary(session: Session, package_revision_id: UUID) -> _MatchRo
             PackageRevisionDocument.document_version_id == DocumentVersion.id,
         )
         .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .where(DrawingItem.id.in_(live_part_item_ids()))
     ).all()
     roles = {
         role
@@ -4783,6 +5018,10 @@ def _matchable_items(
     The role comes from the view when it has been established. For legacy two-PDF packages only, a
     null view role falls back to `Document.kind`; combined sheets must not infer every view from one
     upload kind. Schedules and product specs are filtered out because they have no match role.
+
+    **Only live parts (#882).** An item a person withdrew, or replaced with a correction, keeps its
+    row; reading it would match a part that no longer exists. So only the items
+    `live_part_item_ids` names are read.
     """
     project_id = session.execute(
         select(Package.project_id)
@@ -4805,6 +5044,7 @@ def _matchable_items(
         )
         .outerjoin(ItemIdentifier, ItemIdentifier.drawing_item_id == DrawingItem.id)
         .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .where(DrawingItem.id.in_(live_part_item_ids()))
         .order_by(DrawingItem.created_at)
     ).all()
 

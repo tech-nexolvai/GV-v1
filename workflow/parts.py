@@ -9,20 +9,27 @@ row; withdrawing makes nothing.
 plan on #748 has the countertop checks read it too, so whatever writes it decides what a check is
 about. Keeping that to one function, called for a person's decision, is what "a suggestion is not a
 part" rests on, and `tests/db/test_drawing_models.py` fails if any other module outside `tests/`
-constructs or inserts into either table.
+constructs or inserts into either table. Matching reads only the items `live_part_item_ids` names
+(#882), so a part a person took back stops being read.
 
-**No extraction imports, on purpose**, as in `workflow/view_roles.py`: the decision will be made
-through the API, and `tests/api/test_no_heavy_work.py` keeps `app/api/` away from anything that
-reads a PDF.
+**No extraction imports, on purpose**, as in `workflow/view_roles.py`: the decision is made through
+the API (`app/api/drawing_parts.py`), and `tests/api/test_no_heavy_work.py` keeps `app/api/` away
+from anything that reads a PDF. The stage that suggests parts (#868) passes plain values to
+`record_part_proposal`.
 
-Source: issue #852; #748 plan, step 2. Verification: tests/db/test_drawing_models.py.
+Source: issues #852, #868 and #882; #748 plan, steps 2 to 4. Verification:
+tests/db/test_drawing_models.py, tests/workflow/test_part_proposals_route.py,
+tests/api/test_drawing_parts.py.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from decimal import Decimal
 from typing import Final
+from uuid import UUID
 
-from sqlalchemy import exists, select
+from sqlalchemy import Select, exists, select
 from sqlalchemy.orm import Session, aliased
 
 from app.audit.events import AuditCategory, emit
@@ -35,12 +42,84 @@ from app.models import (
 )
 from vocabulary.part_kinds import PartKind
 
-__all__ = ["CODE_IDENTIFIER_KIND", "confirm_part", "current_decision", "withdraw_part"]
+__all__ = [
+    "CODE_IDENTIFIER_KIND",
+    "confirm_part",
+    "current_decision",
+    "live_part_item_ids",
+    "record_part_proposal",
+    "withdraw_part",
+]
 
 #: The `item_identifiers.kind` a confirmed code is stored under. A cabinet code names a model, and
 #: `catalogue` is the kind that says so: every unit of that model carries it, so two parts sharing a
 #: code is ordinary rather than a contradiction.
 CODE_IDENTIFIER_KIND: Final = "catalogue"
+
+
+def record_part_proposal(
+    session: Session,
+    *,
+    drawing_view_id: UUID,
+    kind: PartKind,
+    extent: Sequence[tuple[Decimal, Decimal]],
+    defining_line: tuple[tuple[Decimal, Decimal], tuple[Decimal, Decimal]],
+    code_as_printed: str | None,
+    code_candidate_id: UUID | None,
+    reason: str,
+    source: str,
+    source_version: str,
+) -> PartProposal:
+    """File one suggested part, or find the same suggestion already filed. **Writes no item.**
+
+    The same suggestion is the same view, kind, extent, defining line, code, reason and suggester. A
+    re-read that suggests it again finds the existing row rather than adding a second one for a
+    person to decide on. Which reading the code came from is not part of that: the same code read
+    again is a different reading, and the earlier suggestion already names one that holds it.
+
+    Coordinates are stored as text, as a view's region is, so they stay exact.
+    """
+    if not isinstance(kind, PartKind):
+        raise TypeError("kind must be a PartKind")
+    stored_extent: dict[str, object] = {
+        "space": "stored",
+        "points": [[str(x), str(y)] for x, y in extent],
+    }
+    stored_line: dict[str, object] = {
+        "space": "stored",
+        "points": [[str(x), str(y)] for x, y in defining_line],
+    }
+    existing = session.execute(
+        select(PartProposal)
+        .where(
+            PartProposal.drawing_view_id == drawing_view_id,
+            PartProposal.kind == kind.value,
+            PartProposal.extent == stored_extent,
+            PartProposal.defining_line == stored_line,
+            PartProposal.code_as_printed.is_not_distinct_from(code_as_printed),
+            PartProposal.reason == reason,
+            PartProposal.source == source,
+            PartProposal.source_version == source_version,
+        )
+        .order_by(PartProposal.created_at, PartProposal.id)
+        .limit(1)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    proposal = PartProposal(
+        drawing_view_id=drawing_view_id,
+        kind=kind.value,
+        extent=stored_extent,
+        code_as_printed=code_as_printed,
+        code_candidate_id=code_candidate_id,
+        defining_line=stored_line,
+        source=source,
+        source_version=source_version,
+        reason=reason,
+    )
+    session.add(proposal)
+    session.flush()
+    return proposal
 
 
 def current_decision(session: Session, proposal: PartProposal) -> PartConfirmation | None:
@@ -56,6 +135,23 @@ def current_decision(session: Session, proposal: PartProposal) -> PartConfirmati
             ~exists().where(later.supersedes_id == PartConfirmation.id),
         )
     ).scalar_one_or_none()
+
+
+def live_part_item_ids() -> Select[tuple[UUID | None]]:
+    """The `drawing_items` ids a reader may treat as parts: each made by a decision still current.
+
+    A correction or a withdrawal replaces the decision that made an item, and the item keeps its row
+    (no role holds `DELETE`), so a reader that took every row would keep reading a part a person had
+    taken back. An item no decision made is not here either: outside tests, only `confirm_part`
+    writes one, so such a row is one no person confirmed.
+
+    Returns a query rather than running one, so the caller filters with it in its own statement.
+    """
+    later = aliased(PartConfirmation)
+    return select(PartConfirmation.drawing_item_id).where(
+        PartConfirmation.decision == PartDecision.CONFIRMED.value,
+        ~exists().where(later.supersedes_id == PartConfirmation.id),
+    )
 
 
 def confirm_part(

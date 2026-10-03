@@ -78,6 +78,46 @@
         "title": "AcceptedOut",
         "type": "object"
       },
+      "AddPartIn": {
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "ends": {
+            "description": "The part's two ends on the drawing, in either order.",
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "$ref": "#/components/schemas/EndIn"
+              },
+              {
+                "$ref": "#/components/schemas/EndIn"
+              }
+            ],
+            "title": "Ends",
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PartKind"
+          }
+        },
+        "required": [
+          "kind",
+          "ends"
+        ],
+        "title": "AddPartIn",
+        "type": "object"
+      },
       "ApplicabilityOut": {
         "additionalProperties": false,
         "description": "What a rule applies to: one discriminator and its branches, or everything of its type.",
@@ -950,6 +990,31 @@
         "title": "ConfirmIn",
         "type": "object"
       },
+      "ConfirmPartIn": {
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The code printed on the part, exactly as it is printed; null when none is printed. Stored as sent: never trimmed, never read as a width.",
+            "title": "Code"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PartKind"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ConfirmPartIn",
+        "type": "object"
+      },
       "ConfirmRoleIn": {
         "properties": {
           "role": {
@@ -1105,6 +1170,54 @@
         "title": "DecidedEvidenceOut",
         "type": "object"
       },
+      "DecisionOut": {
+        "description": "What a person last said about one suggestion.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decided_by": {
+            "title": "Decided By",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PartKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "decision",
+          "kind",
+          "code",
+          "decided_by",
+          "decided_at"
+        ],
+        "title": "DecisionOut",
+        "type": "object"
+      },
       "DiscriminatorOut": {
         "description": "A judgement about the drawing that decides which variant of a rule applies.",
         "properties": {
@@ -1229,6 +1342,89 @@
           "created_at"
         ],
         "title": "DocumentVersionOut",
+        "type": "object"
+      },
+      "DrawingOut": {
+        "description": "One drawing and its suggested parts, left to right.",
+        "properties": {
+          "can_confirm": {
+            "title": "Can Confirm",
+            "type": "boolean"
+          },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/PartOut"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "view_id": {
+            "format": "uuid",
+            "title": "View Id",
+            "type": "string"
+          },
+          "why_not": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Not"
+          }
+        },
+        "required": [
+          "view_id",
+          "page_index",
+          "tag",
+          "role",
+          "can_confirm",
+          "why_not",
+          "parts"
+        ],
+        "title": "DrawingOut",
+        "type": "object"
+      },
+      "EndIn": {
+        "description": "A point in stored page space, sent as exact text, such as one `left_end` from the list.",
+        "properties": {
+          "x": {
+            "maxLength": 64,
+            "title": "X",
+            "type": "string"
+          },
+          "y": {
+            "maxLength": 64,
+            "title": "Y",
+            "type": "string"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "EndIn",
         "type": "object"
       },
       "EvidenceLocation": {
@@ -2528,6 +2724,153 @@
           "blocked"
         ],
         "title": "ParameterOut",
+        "type": "object"
+      },
+      "PartKind": {
+        "description": "The three kinds of part a countertop check is about.",
+        "enum": [
+          "cabinet",
+          "filler",
+          "countertop"
+        ],
+        "title": "PartKind",
+        "type": "string"
+      },
+      "PartOut": {
+        "description": "One suggested part, as a person needs it to decide what it is.",
+        "properties": {
+          "added_by_a_person": {
+            "description": "True when a person added it because the suggestions missed it.",
+            "title": "Added By A Person",
+            "type": "boolean"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The decision nothing has replaced, or null while nobody has decided."
+          },
+          "has_crop": {
+            "description": "Whether a picture is stored for it. Today that is the crop of the reading its code came from, so a suggestion with no code has none.",
+            "title": "Has Crop",
+            "type": "boolean"
+          },
+          "left_end": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PointOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The left end of the line that defines it, or null when no line did."
+          },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "position": {
+            "description": "Its place on its drawing, 1 for the leftmost.",
+            "title": "Position",
+            "type": "integer"
+          },
+          "proposal_id": {
+            "format": "uuid",
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why it was suggested, in plain English.",
+            "title": "Reason",
+            "type": "string"
+          },
+          "right_end": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PointOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suggested_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The code read on the part, as printed, or null when none was read.",
+            "title": "Suggested Code"
+          },
+          "suggested_kind": {
+            "$ref": "#/components/schemas/PartKind"
+          },
+          "view_id": {
+            "format": "uuid",
+            "title": "View Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "view_id",
+          "page_index",
+          "position",
+          "suggested_kind",
+          "suggested_code",
+          "reason",
+          "added_by_a_person",
+          "left_end",
+          "right_end",
+          "has_crop",
+          "decision"
+        ],
+        "title": "PartOut",
+        "type": "object"
+      },
+      "PartsOut": {
+        "properties": {
+          "drawings": {
+            "items": {
+              "$ref": "#/components/schemas/DrawingOut"
+            },
+            "title": "Drawings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "drawings"
+        ],
+        "title": "PartsOut",
+        "type": "object"
+      },
+      "PointOut": {
+        "description": "A point in stored page space, as exact text.",
+        "properties": {
+          "x": {
+            "title": "X",
+            "type": "string"
+          },
+          "y": {
+            "title": "Y",
+            "type": "string"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "PointOut",
         "type": "object"
       },
       "PresignedUpload": {
@@ -5766,6 +6109,263 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts": {
+      "get": {
+        "description": "Read only: listing never makes a part, however many times it is called.",
+        "operationId": "list_parts_api_v1_projects__project_id__packages__package_id__parts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The parts suggested in each drawing, left to right, and what a person said of each",
+        "tags": [
+          "drawing parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/confirm": {
+      "post": {
+        "description": "Record a person's decision, which makes the part. Audited, and correctable by deciding again:\nthe latest decision is the one that counts, and every earlier one is kept.",
+        "operationId": "confirm_part_endpoint_api_v1_projects__project_id__packages__package_id__parts__proposal_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmPartIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Say what one suggested part is: a cabinet, a filler or a countertop",
+        "tags": [
+          "drawing parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/crop": {
+      "get": {
+        "description": "The crop of the reading the part's code came from, checked against its recorded digest.\n\nThe same picture the Measure page shows for that reading, through the same project boundary:\nthe suggestion must be on this package's current revision, and so must the reading.",
+        "operationId": "part_crop_api_v1_projects__project_id__packages__package_id__parts__proposal_id__crop_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The integrity-checked picture stored for this suggestion."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View the picture stored for one suggested part",
+        "tags": [
+          "drawing parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/withdraw": {
+      "post": {
+        "description": "Record that it is not a part. Makes nothing; a part it had made stops being read.",
+        "operationId": "withdraw_part_endpoint_api_v1_projects__project_id__packages__package_id__parts__proposal_id__withdraw_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Say one suggestion is not a part",
+        "tags": [
+          "drawing parts"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/redline.pdf": {
       "get": {
         "description": "The signed-off redline, available only for typed findings with real stored locations.",
@@ -6075,6 +6675,80 @@
         "summary": "The drawings found on this package's pages, and what each one is suggested to be",
         "tags": [
           "drawing views"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/parts": {
+      "post": {
+        "description": "File the person's own suggestion and confirm it, in one transaction.",
+        "operationId": "add_part_endpoint_api_v1_projects__project_id__packages__package_id__views__view_id__parts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "view_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "View Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddPartIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a part the suggestions missed, by its two ends on the drawing",
+        "tags": [
+          "drawing parts"
         ]
       }
     },

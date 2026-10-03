@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import zlib
 from decimal import Decimal
+from fractions import Fraction
 from uuid import UUID
 
 import pytest
 
-from extraction.stamp_text import drawing_ink, read_stamp_text, stamps_only
+from extraction.stamp_text import StampText, drawing_ink, path_ink, read_stamp_text, stamps_only
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
+from units.normalise import normalise_to_inches
+from units.notation import canonical_notation
 
 DOCUMENT = UUID("22222222-2222-4222-8222-222222222222")
 DPI = 150
@@ -192,3 +195,234 @@ def test_millimetres_over_inches_in_a_pasted_drawing_are_one_dual_token() -> Non
     )
 
     assert [(item.text, item.stacked) for item in reading.contents.texts] == [("585 [23]", False)]
+
+
+# ---------------------------------------------------------------------------
+# Stacks the words came apart from (#880)
+# ---------------------------------------------------------------------------
+
+
+def _drawing(stream: bytes) -> bytes:
+    """A sheet whose pasted drawing is exactly `stream`, font text and paths, in the stamp's space."""
+    return _pdf(
+        annotations=[_stamp(appearance_object=6)],
+        extra_objects=[_text_appearance(stream, 7), HELVETICA],
+    )
+
+
+#: The bar of `_split_stack`: a black stroke between its numerator and its denominator.
+BAR = b"0.3 w 112.4 521.2 m 114.4 521.2 l S"
+
+
+def _split_stack(
+    top: bytes = b"1",
+    bottom: bytes = b"2",
+    *,
+    whole: bytes = b"2",
+    mark: bytes = b'"',
+    bar: bytes = BAR,
+    text: bytes = b"",
+) -> bytes:
+    """`whole`, then `top` over the bar over `bottom`, then `mark`, all at 4 points, set so that
+    `extract_words` splits the label into two words: the whole number with the numerator (`21`),
+    and the denominator with the mark (`2"`). `text` is more text in the same drawing."""
+    start = 112.224 - 2.224 * len(whole)  # Helvetica digits are 556/1000 wide: touching the stack
+    stream = b"BT /F1 4 Tf 1 0 0 1 %.3f 520 Tm (%s) Tj " % (start, whole)
+    stream += b"1 0 0 1 112.3 522 Tm (" + top + b") Tj 1 0 0 1 112.3 518 Tm (" + bottom + b") Tj "
+    if mark:
+        stream += b"1 0 0 1 114.6 520 Tm (" + mark + b") Tj "
+    return stream + text + b"ET " + bar
+
+
+def _read(stream: bytes) -> StampText:
+    return read_stamp_text(_drawing(stream), 0, document_version_id=DOCUMENT, dpi=DPI)
+
+
+def _reasons(reading: StampText) -> list[str]:
+    return [label.reason.value for label in reading.contents.set_aside]
+
+
+def _exact(text: str) -> Fraction:
+    return normalise_to_inches(canonical_notation(text)[0]).exact
+
+
+def test_a_stack_split_across_two_words_is_put_back_together_and_marked() -> None:
+    """**The gap this closes (#880).** Measured on `AI_Set_1`: stacks whose two lines fell into
+    different words, such as `152` and `1"` for a sideways `15 1/2"`, each printed over by the
+    other, were set aside, and 21 such labels reached a person blank. Outcome: one `2 1/2"`, worth
+    exactly five halves, marked as stacked so it is only a reviewer's suggestion (#726); nothing
+    left set aside."""
+    reading = _read(_split_stack())
+
+    assert [(item.text, item.stacked) for item in reading.contents.texts] == [('2 1/2"', True)]
+    assert _exact(reading.contents.texts[0].text) == Fraction(5, 2)
+    assert reading.contents.set_aside == ()
+
+
+def test_a_sideways_split_stack_is_put_back_together_as_it_reads() -> None:
+    """The client's split stacks are sideways. Outcome: read up the page, `2 1/2"`, marked stacked."""
+    sideways = (
+        b"BT /F1 4 Tf 0 1 -1 0 120 520 Tm (2) Tj 0 1 -1 0 118 522.3 Tm (1) Tj "
+        b'0 1 -1 0 122 522.3 Tm (2) Tj 0 1 -1 0 120 524.6 Tm (") Tj ET '
+        b"0.3 w 118.8 522.4 m 118.8 524.4 l S"
+    )
+    reading = _read(sideways)
+
+    assert [(item.text, item.stacked) for item in reading.contents.texts] == [('2 1/2"', True)]
+    assert reading.contents.texts[0].rotation_degrees == 90
+    assert reading.contents.set_aside == ()
+
+
+def test_without_its_bar_a_split_stack_stays_set_aside() -> None:
+    """**The bar is what makes two lines a fraction.** Measured: on `AI_Set_2` page 17, two `1"`
+    labels set side by side came back as one word, `1"1"`; on `AI_Set_1` page 3, fifteen pieces of
+    notes set a line apart were set aside the same way. Outcome: with no bar drawn, nothing is read
+    and both words stay with a reviewer."""
+    reading = _read(_split_stack(bar=b""))
+
+    assert reading.contents.texts == ()
+    assert _reasons(reading) == ["stacked_fraction", "stacked_fraction"]
+
+
+@pytest.mark.parametrize(
+    ("top", "bottom"),
+    [(b"1", b"3"), (b"5", b"4"), (b"4", b"4")],
+    ids=["not-an-inch-fraction", "numerator-above", "numerator-equal"],
+)
+def test_a_split_stack_that_is_not_an_inch_fraction_gives_no_row(top: bytes, bottom: bytes) -> None:
+    """Outcome: `1/3`, `5/4` and `4/4` are not composed — the rule `extraction/fraction_parts.py`
+    holds a reading put together from its pieces to — and stay with a reviewer."""
+    reading = _read(_split_stack(top, bottom))
+
+    assert reading.contents.texts == ()
+    assert _reasons(reading) == ["stacked_fraction", "stacked_fraction"]
+
+
+def test_a_stack_without_its_inch_mark_gives_no_row() -> None:
+    """A bare `3/4` says nothing of its unit. Outcome: a `24` and a `3` over a `4` with their bar,
+    all in one word, and no mark: nothing read, the word left with a reviewer."""
+    reading = _read(
+        b"BT /F1 3 Tf 1 0 0 1 110 520 Tm (24) Tj /F1 2 Tf 1 0 0 1 113.6 521.2 Tm (3) Tj "
+        b"1 0 0 1 113.6 519 Tm (4) Tj ET 0.3 w 113.65 520.7 m 114.65 520.7 l S"
+    )
+
+    assert reading.contents.texts == ()
+    assert _reasons(reading) == ["stacked_fraction"]
+
+
+def test_a_split_stack_with_a_leading_zero_gives_no_row() -> None:
+    """Outcome: `02 1/2"` is not read; no label is written with a leading zero (#848's rule)."""
+    reading = _read(_split_stack(whole=b"02"))
+
+    assert not any(item.stacked for item in reading.contents.texts)
+    assert "stacked_fraction" in _reasons(reading)
+
+
+def test_a_stroke_under_the_denominator_is_not_its_bar() -> None:
+    """Outcome: a short stroke drawn below the middle of the denominator, as a tick or the foot of a
+    line is, does not make the two lines a fraction."""
+    reading = _read(_split_stack(bar=b"0.3 w 112.4 518 m 114.4 518 l S"))
+
+    assert reading.contents.texts == ()
+    assert _reasons(reading) == ["stacked_fraction", "stacked_fraction"]
+
+
+def test_a_label_printed_over_a_split_stack_stops_it_being_composed() -> None:
+    """**Overprints are still refused.** Measured on `AI_Set_1`: a sideways `4 3/4"` drawn through a
+    tilted `1 3/8"`. Outcome: a sideways `7` printed over the stack leaves it unread."""
+    reading = _read(_split_stack(text=b"0 1 -1 0 112.5 517 Tm (7) Tj "))
+
+    assert not any(item.stacked for item in reading.contents.texts)
+    assert _reasons(reading) == ["stacked_fraction", "stacked_fraction"]
+
+
+def test_a_label_touching_a_split_stack_stops_it_being_composed() -> None:
+    """Measured on `AI_Set_1`: a sideways `1/8"` with a `4"` right after its mark, in one word.
+    Outcome: a character touching the label that is no part of it may be a piece the label is
+    missing, so the stack is not composed."""
+    reading = _read(_split_stack(text=b'1 0 0 1 116.2 520 Tm (4") Tj '))
+
+    assert not any(item.stacked for item in reading.contents.texts)
+    assert "stacked_fraction" in _reasons(reading)
+
+
+def test_a_split_stack_with_more_label_before_its_whole_number_gives_no_row() -> None:
+    """Outcome: `3-2 1/2"` is not read as `2 1/2"`: the `-` touching the whole number may be the
+    end of a feet part, so the label is left to a reviewer."""
+    stream = (
+        b"BT /F1 4 Tf 1 0 0 1 104.6 520 Tm (3) Tj 1 0 0 1 106.9 520 Tm (-) Tj "
+        b"1 0 0 1 108.3 520 Tm (2) Tj 1 0 0 1 112.3 522 Tm (1) Tj 1 0 0 1 112.3 518 Tm (2) Tj "
+        b'1 0 0 1 114.6 520 Tm (") Tj ET ' + BAR
+    )
+    reading = _read(stream)
+
+    assert reading.contents.texts == ()
+    assert _reasons(reading) == ["stacked_fraction", "stacked_fraction"]
+
+
+def test_a_stack_with_a_piece_in_a_word_that_was_read_gives_no_row() -> None:
+    """Outcome: a `3` over a `16"`, where `extract_words` left the `3` a word of its own and read
+    it, is not composed from the `16"` alone; the `3` stays the bare number it was."""
+    stream = (
+        b"BT /F1 4 Tf 1 0 0 1 110 522 Tm (3) Tj 1 0 0 1 110 518 Tm (16) Tj "
+        b'1 0 0 1 114.6 520 Tm (") Tj ET 0.3 w 110.1 521.2 m 114.3 521.2 l S'
+    )
+    reading = _read(stream)
+
+    assert [(item.text, item.stacked) for item in reading.contents.texts] == [("3", False)]
+    assert _reasons(reading) == ["stacked_fraction"]
+
+
+def test_a_bar_drawn_twice_gives_one_reading() -> None:
+    """A CAD program draws a stroke twice to embolden it (`extraction/glyph_bands.py`). Outcome: the
+    second copy finds the same label, whose characters are already taken, and adds nothing."""
+    reading = _read(_split_stack(bar=BAR + b" " + BAR))
+
+    assert [(item.text, item.stacked) for item in reading.contents.texts] == [('2 1/2"', True)]
+
+
+@pytest.mark.parametrize(
+    "bar",
+    [b"1 0 0 RG " + BAR, b"0.3 w 112.4 521.2 m 130 521.2 l S"],
+    ids=["coloured", "runs-on-past-the-stack"],
+)
+def test_a_stroke_that_is_not_the_vendors_bar_composes_nothing(bar: bytes) -> None:
+    """Outcome: a red stroke — a reviewer's, baked into the snapshot — and a line running on past the
+    stack are not its bar, so the stack stays set aside."""
+    reading = _read(_split_stack(bar=bar))
+
+    assert reading.contents.texts == ()
+    assert _reasons(reading) == ["stacked_fraction", "stacked_fraction"]
+
+
+def test_what_is_left_of_a_word_once_its_label_is_composed_stays_set_aside() -> None:
+    """Measured on `AI_Set_1`: a stack's word also held the mark of the `4"` beside it. Outcome: the
+    label is read, and the character that is no part of it is not, nor is it thrown away: it stays
+    set aside, so a reviewer is still sent to it."""
+    reading = _read(_split_stack(text=b"1 0 0 1 105.6 520 Tm (x) Tj "))
+
+    assert [(item.text, item.stacked) for item in reading.contents.texts] == [('2 1/2"', True)]
+    assert _reasons(reading) == ["stacked_fraction"]
+    (left,) = reading.contents.set_aside
+    (label,) = reading.contents.texts
+    assert max(point.x for point in left.extent.points) < min(
+        point.x for point in label.extent.points
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "ink"),
+    [
+        ({"stroke": True, "fill": False, "stroking_color": (0, 0, 0)}, True),
+        ({"stroke": True, "fill": False, "stroking_color": None}, True),
+        ({"stroke": False, "fill": True, "non_stroking_color": (0.4,)}, True),
+        ({"stroke": True, "fill": False, "stroking_color": (1, 0, 0)}, False),
+        (
+            {"stroke": True, "fill": True, "stroking_color": (0,), "non_stroking_color": (1, 1, 0)},
+            False,
+        ),
+        ({"stroke": False, "fill": False}, False),
+    ],
+)
+def test_path_ink_counts_the_colours_a_path_shows(path: dict[str, object], ink: bool) -> None:
+    assert path_ink(path) is ink
