@@ -41,6 +41,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
+from functools import partial
 from io import BytesIO
 from typing import Final, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
@@ -101,7 +102,7 @@ from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
 from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
-from evidence.canonical import EvidenceStatus
+from evidence.canonical import CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
 from evidence.corroborate import corroborate
 from evidence.crop import CropSpec, CropStatus, RenderedPage, crop_pixel_box, generate_crop
@@ -203,7 +204,7 @@ from extraction.reader import (
     read_page_contents,
     read_pages,
 )
-from extraction.stamp_text import read_stamp_text
+from extraction.stamp_text import coloured_text, read_stamp_text
 from extraction.text_sources import survey_page
 from extraction.vector_first import plan_reads
 from reports.findings_pdf import FINDINGS_PDF_MEDIA_TYPE, FindingsPdfInput, write_findings_pdf
@@ -1732,6 +1733,13 @@ class DatabaseStages:
                     stacked_fractions=page_stacked,
                 )
 
+            # **The agreement gate's GV-mark guard (#901)**, one per page and asked by both passes
+            # below: an agreement whose crop shows markup drawn in colour stays a pre-fill a person
+            # ticks. Nothing is read or rendered for it unless some region's readers agree.
+            gv_mark = _GvMarkGuard(
+                markup=partial(self._coloured_markup, data, page, version_id, layers),
+                render=partial(self._vendor_render, data, page, version_id),
+            )
             self._apply_cross_route_corroboration(
                 session,
                 page_index=page.index,
@@ -1746,6 +1754,7 @@ class DatabaseStages:
                     # Judged with the rest, and its flag keeps every group it is in a raw candidate.
                     + fraction_rows
                 ),
+                gv_mark=gv_mark,
             )
             agent = self._run_bounded_agent_for_ambiguous_regions(
                 session,
@@ -1775,7 +1784,7 @@ class DatabaseStages:
                     + agent_rows
                 )
                 self._apply_cross_route_corroboration(
-                    session, page_index=page.index, candidates=page_rows
+                    session, page_index=page.index, candidates=page_rows, gv_mark=gv_mark
                 )
                 self._mark_regions_the_agent_contradicted(
                     session, page_index=page.index, candidates=page_rows, agent_rows=agent_rows
@@ -1971,6 +1980,12 @@ class DatabaseStages:
                             None if self._vision_gate is None else vision_held_back
                         ),
                         "vision_refusals": vision_refusals[:REPORTED_REFUSALS],
+                        # Regions whose readers agreed and were not confirmed (#901): the crop shows
+                        # markup drawn in colour (a GV mark baked into the vendor's drawing), or could
+                        # not be checked for it. Each stays a pre-fill a person ticks; each reason
+                        # says which.
+                        "agreement_refusals": len(gv_mark.refused),
+                        "agreement_refusal_reasons": gv_mark.reasons(REPORTED_REFUSALS),
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
                         "associations": associated,
@@ -2166,8 +2181,20 @@ class DatabaseStages:
         *,
         page_index: int,
         candidates: Sequence[ObservationCandidate],
+        gv_mark: _GvMarkGuard,
     ) -> None:
-        """Run the second-reader lane across same-region readings before first insert."""
+        """Run the second-reader lane across same-region readings before first insert.
+
+        **This is where two readers' agreement confirms a reading**: the second-reader lane written
+        here is what `app/evidence/automatic_typing.py` and `evidence/gate.py` seal.
+
+        **An agreement whose crop shows a GV mark confirms nothing (#901).** In every scorecard run
+        on the 51-crop key the two readers agreed on GV's own number, baked into the vendor's drawing
+        in colour (#851). Where `gv_mark` holds a region's agreement back, its readings keep no lane
+        — pre-fills a person ticks — and the guard records why. **Only an agreement is held back**:
+        a conflict is still recorded as one, so the guard can take a confirmation away and never
+        make one.
+        """
 
         pending_ids = {row.id for row in candidates if inspect(row).pending}
         if not pending_ids:
@@ -2199,10 +2226,46 @@ class DatabaseStages:
             )
             if result.lane is None:
                 continue
+            if (
+                result.lane is CorroborationLane.SECOND_READER
+                and result.status is not EvidenceStatus.CONFLICTING
+                and gv_mark.holds_back(rows[0])
+            ):
+                continue
             for row in rows:
                 if row.id in pending_ids:
                     row.corroboration_status = result.status.value
                     row.corroboration_lane = result.lane.value
+
+    def _coloured_markup(
+        self, data: bytes, page: Page, version_id: UUID, layers: PageLayers | None
+    ) -> ColouredMarkup | None:
+        """The page's markup drawn in colour (#901), or `None` where its pasted drawings could not
+        be read for it. The glyph paths are the ones the page's layers read, if they read any."""
+        try:
+            text = coloured_text(data, page.index, document_version_id=version_id, dpi=self._dpi)
+        except UnreadablePdf:
+            return None
+        return ColouredMarkup(
+            text=text,
+            paths=() if layers is None else layers.glyph_paths,
+            transform=page_transform(page, self._dpi),
+        )
+
+    def _vendor_render(self, data: bytes, page: Page, version_id: UUID) -> RenderedPage | None:
+        """The page as the vision readers are shown it, or `None` where it cannot be rendered."""
+        try:
+            return render_page(
+                data,
+                page.index,
+                document_version_id=version_id,
+                page_content_hash=page.content_hash,
+                dpi=self._dpi,
+                maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                vendor_only=True,
+            )
+        except (PageTooLarge, UnreadablePdf, ValueError):
+            return None
 
     @staticmethod
     def _mark_regions_the_agent_contradicted(
@@ -4831,6 +4894,170 @@ def stacked_layouts_shown(
         for fraction in fractions
         if fraction.layout is not None and _shows(crop_box, fraction)
     )
+
+
+#: Why the agreement gate did not confirm what two readers agreed on (#901), as the page result says.
+GV_MARK_REASON: Final = (
+    "two readers agreed, but the crop shows markup drawn in colour (a GV mark), so a person "
+    "confirms the reading"
+)
+GV_MARK_UNCHECKED_REASON: Final = (
+    "two readers agreed, but the crop could not be checked for markup drawn in colour, so a "
+    "person confirms the reading"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ColouredMarkup:
+    """Where markup drawn in colour lies on one page: how GV's own marks show when they are baked
+    into the vendor's drawing (#901).
+
+    Two places it can be, each found by the stage's own test of what is the vendor's black or grey
+    ink: text set in colour inside the pasted drawings (`extraction.stamp_text.coloured_text`), and a
+    glyph-sized path drawn in colour (`VectorPath.drawing_ink`, #834). The vision crops leave GV's
+    own notes out (#742); these are what is left for a reader to see.
+    """
+
+    text: tuple[tuple[int, int, int, int], ...]
+    """Each coloured run's `(left, top, right, bottom)`, in the page's pixels at the stage's dpi."""
+
+    paths: tuple[VectorPath, ...]
+    """The page's glyph-sized paths, in PDF points; the ones drawn in colour are marks. Empty where
+    the page's geometry was not read, which is where no association settings were stated."""
+
+    transform: PageTransform | None
+    """The page's recorded transform. A page with none places no path, and its paths then say
+    nothing, as the stage's own geometry says nothing there."""
+
+    @property
+    def shown(self) -> bool:
+        """Whether the page holds any markup in colour that a crop could show."""
+        return bool(self.text) or (
+            self.transform is not None
+            and any(not path.drawing_ink and path.points for path in self.paths)
+        )
+
+
+def _boxes_overlap(first: Sequence[int], second: Sequence[int]) -> bool:
+    return (
+        first[0] <= second[2]
+        and second[0] <= first[2]
+        and first[1] <= second[3]
+        and second[1] <= first[3]
+    )
+
+
+def crop_shows_a_gv_mark(crop_box: tuple[int, int, int, int], markup: ColouredMarkup) -> bool:
+    """Whether markup drawn in colour lies in the crop, wholly or in part (#901).
+
+    **Any part, edges included**, as `crop_shows_a_stacked_fraction` counts a fraction: a reader
+    reads whatever it is shown, and GV's number half inside the crop is still there to be read as the
+    vendor's. `crop_box` is the crop's page pixels at the stage's dpi, as the text boxes are; a path
+    is held to the crop's corners carried into PDF points by the page's transform.
+
+    The test the gate replay measured on the 51-crop key (#851), moved here so the replay and the
+    gate are one function and cannot disagree.
+    """
+    if any(_boxes_overlap(box, crop_box) for box in markup.text):
+        return True
+    if markup.transform is None:
+        return False
+    left, top, right, bottom = crop_box
+    corners = [
+        markup.transform.to_pdf(ImagePoint(x=x, y=y)) for x, y in ((left, top), (right, bottom))
+    ]
+    low_x, high_x = min(c.x for c in corners), max(c.x for c in corners)
+    low_y, high_y = min(c.y for c in corners), max(c.y for c in corners)
+    for path in markup.paths:
+        if path.drawing_ink or not path.points:
+            continue
+        xs = [point[0] for point in path.points]
+        ys = [point[1] for point in path.points]
+        if min(xs) <= high_x and low_x <= max(xs) and min(ys) <= high_y and low_y <= max(ys):
+            return True
+    return False
+
+
+def gv_mark_in_crop(
+    polygon: Polygon | None, rendered: RenderedPage, markup: ColouredMarkup
+) -> bool:
+    """Whether the crop the vision readers are shown round a region shows a GV mark (#901).
+
+    The crop is `VISION_CROP_CONTEXT_MARGIN_PT` round `polygon`, by `crop_box_px`, the one
+    computation of it. `rendered` is the page as the readers see it: vendor's drawing only, at the
+    stage's dpi. **A crop that cannot be cut, on a page holding markup in colour, counts as showing
+    it**: nothing rules the mark out, and the guard can only hold an agreement back.
+    """
+    if not markup.shown:
+        return False
+    if polygon is None:
+        return True
+    try:
+        crop_box = crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT)
+    except ValueError:
+        return True
+    return crop_shows_a_gv_mark(crop_box, markup)
+
+
+class _GvMarkGuard:
+    """The agreement gate's GV-mark guard on one page, and the agreements it refused (#901).
+
+    **Looked up only when asked.** The page's coloured markup is read, and the page rendered, the
+    first time an agreement on it needs checking, so a page whose readers agreed on nothing pays for
+    neither. A page whose pasted drawings cannot be read, or which cannot be rendered, cannot be
+    shown free of a mark, so every agreement on it is held back with a reason saying so.
+    """
+
+    def __init__(
+        self,
+        *,
+        markup: Callable[[], ColouredMarkup | None],
+        render: Callable[[], RenderedPage | None],
+    ) -> None:
+        self._markup_source = markup
+        self._render_source = render
+        self._markup: ColouredMarkup | None = None
+        self._rendered: RenderedPage | None = None
+        self._markup_read = False
+        self._render_tried = False
+        self.refused: dict[tuple[tuple[int, int], ...], str] = {}
+        """Each region an agreement was refused on, by its polygon, and why: counted once."""
+
+    def holds_back(self, region: ObservationCandidate) -> bool:
+        """Whether two readers' agreement on `region` must not confirm it, recording why if so."""
+        key = tuple((int(x), int(y)) for x, y in region.polygon)
+        if key in self.refused:
+            return True
+        reason = self._reason(region)
+        if reason is None:
+            return False
+        self.refused[key] = reason
+        return True
+
+    def reasons(self, limit: int) -> list[str]:
+        """The refusals by reason, most frequent first, as the page result lists every route's."""
+        return [
+            f"{count} × {reason}"
+            for reason, count in Counter(self.refused.values()).most_common(limit)
+        ]
+
+    def _reason(self, region: ObservationCandidate) -> str | None:
+        if not self._markup_read:
+            self._markup = self._markup_source()
+            self._markup_read = True
+        if self._markup is None:
+            return GV_MARK_UNCHECKED_REASON
+        if not self._markup.shown:
+            return None
+        if not self._render_tried:
+            self._rendered = self._render_source()
+            self._render_tried = True
+        if self._rendered is None:
+            return GV_MARK_UNCHECKED_REASON
+        polygon = stored_polygon(region, self._rendered)
+        if polygon is None:
+            return GV_MARK_UNCHECKED_REASON
+        return GV_MARK_REASON if gv_mark_in_crop(polygon, self._rendered, self._markup) else None
 
 
 def _vision_pre_call_refusal(

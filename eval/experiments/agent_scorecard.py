@@ -353,6 +353,11 @@ def judge(
     5. Otherwise nothing is proposed.
 
     Only readings that returned text are rows; a refusal is recorded as a call, not a reading.
+
+    **Not applied here: the GV-mark guard (#901).** The stage does not confirm an agreement whose
+    crop shows markup drawn in colour; this judgement has no crop facts and does, so a scorecard
+    counts such an agreement as confirmed. `scripts/gate_replay.py` replays these files with the
+    guard, by the stage's own function.
     """
     rows = [reading for reading in pair if reading.raw_text is not None]
     added = [reading for reading in looks if reading.raw_text is not None]

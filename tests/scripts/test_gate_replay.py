@@ -15,23 +15,23 @@ from pathlib import Path
 import pytest
 from sqlalchemy import Engine, event, text
 
-from eval.experiments.gate_replay import ReplayError
-from extraction.stamp_text import read_stamp_text
+import scripts.gate_replay as gate_replay_script
+from eval.experiments.gate_replay import Guard, ReplayError
+from extraction import stamp_text
 from scripts.gate_replay import (
     ROWS_SQL,
     VERSIONS_SQL,
-    coloured_text,
     main,
     only_version,
     stored_rows,
 )
 from tests.eval.test_agent_scorecard import _row, _write_key
 from tests.extraction.test_annotations import _appearance, _pdf, _stamp
-from tests.extraction.test_stamp_text import DOCUMENT
 from tests.extraction.test_stamp_text import _sheet as _text_sheet
 from tests.scripts.test_agent_geometry_check import SETTINGS
 from tests.workflow.test_glyph_route import _content
 from tests.workflow.test_reading_agent import LABEL
+from workflow import stages
 
 AGENT = "GV_AGENT_LABEL_GAP_PT=4 \\\nGV_AGENT_MAX_LABEL_PT=40 \\\n"
 
@@ -90,11 +90,11 @@ def test_an_agreed_wrong_pair_is_reported_as_a_count_and_kept_out_of_the_report(
     assert _run(key, settings, scorecard, output) == 0
 
     report = output.read_text(encoding="utf-8")
-    assert "| the gate as it is | 0 | **1** | 0 | 1/1 (100.0%) | not bounded" in report
+    assert f"| {Guard.NONE.value} | 0 | **1** | 0 | 1/1 (100.0%) | not bounded" in report
     assert "9173" not in report, "the readings stay in the working file, which is never committed"
     working = json.loads(output.with_suffix(".json").read_text(encoding="utf-8"))
     (rows,) = working.values()
-    assert rows[0]["outcomes"]["the gate as it is"] == "agreed, wrong"
+    assert rows[0]["outcomes"][Guard.NONE.value] == "agreed, wrong"
 
 
 def test_the_output_must_be_under_data(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -176,16 +176,6 @@ def test_readings_from_two_uploads_of_one_drawing_are_never_mixed() -> None:
         only_version([])
 
 
-def test_coloured_text_in_a_pasted_drawing_is_found_where_it_is() -> None:
-    """A black `36"` with a red `38"` below it: only the red one is found, and below the black."""
-    sheet = _text_sheet(b'(36") Tj 1 0 0 rg 0 -20 Td (38") Tj')
-    (black,) = read_stamp_text(sheet, 0, document_version_id=DOCUMENT, dpi=150).contents.texts
-
-    (red,) = coloured_text(sheet, 0, version_id=DOCUMENT, dpi=150)
-
-    assert red[1] >= max(point.y for point in black.image_extent)
-
-
 #: The sheet's `10192"` drawn as paths, in the vendor's black and in a reviewer's red.
 BLACK_PATHS = _pdf(
     annotations=[_stamp(appearance_object=6)],
@@ -231,5 +221,36 @@ def test_a_gv_mark_drawn_in_colour_holds_its_crops_agreement_back(
             if line.startswith("| held back where a GV mark")
         )
 
-    assert rows["black"].startswith("| held back where a GV mark is in the crop | 1 |")
-    assert rows["red"].startswith("| held back where a GV mark is in the crop | 0 |")
+    assert rows["black"].startswith(f"| {Guard.GV_MARK.value} | 1 |")
+    assert rows["red"].startswith(f"| {Guard.GV_MARK.value} | 0 |")
+
+
+def test_the_replay_asks_the_production_gate_whether_a_crop_shows_a_gv_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**One test, not two copies of it (#901).** The replay's GV-mark fact is the production gate's
+    own `workflow.stages.gv_mark_in_crop`, over the markup the stage's own reader finds: whatever
+    that function says about a crop is what the replay's guard does with it. Here it is made to say
+    "a mark" about the all-black sheet, and the agreement is held back."""
+    assert gate_replay_script.gv_mark_in_crop is stages.gv_mark_in_crop
+    assert gate_replay_script.coloured_text is stamp_text.coloured_text
+    asked: list[bool] = []
+
+    def spy(*arguments: object) -> bool:
+        asked.append(stages.gv_mark_in_crop(*arguments))  # type: ignore[arg-type]
+        return True
+
+    monkeypatch.setattr(gate_replay_script, "gv_mark_in_crop", spy)
+    pair: list[list[str | None]] = [
+        ["bedrock-nova-2-lite", '12"', None],
+        ["bedrock-ministral-3-3b", '12"', None],
+    ]
+    key, settings, scorecard = _setup(tmp_path, pair, sheet=BLACK_TEXT, crop=ROUND_THE_TEXT)
+    output = tmp_path / "data" / "replay.md"
+
+    assert _run(key, settings, scorecard, output) == 0
+
+    assert asked == [False], "asked once, for the key's one crop, which shows no mark"
+    report = output.read_text(encoding="utf-8")
+    assert f"| {Guard.GV_MARK.value} | 0 |" in report
+    assert f"| {Guard.NONE.value} | 1 |" in report
