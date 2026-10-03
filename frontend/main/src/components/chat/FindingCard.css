@@ -175,6 +175,8 @@
   border-left: 2px solid var(--status-review);
   margin: var(--space-3) 0;
   background: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .finding-card--not-found .finding-card__reason { border-left-color: var(--status-missing); }

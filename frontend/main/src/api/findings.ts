@@ -98,6 +98,9 @@ export function withChain(finding: Finding, chain: Chain): Finding {
     ...finding,
     recorded_chain: chain,
     recorded_operands: recordedOperands,
+    // Surface the backend's explanation without composing one from the outcome or cause.
+    // A replacement chain must not retain a reason from an earlier abstention.
+    reason: source.kind === 'abstention' ? source.reason : undefined,
     trace,
     evidence: evidence.map(_toEvidence),
     arch_evidence: _evidenceFor(evidence, 'ARCH'),
