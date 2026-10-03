@@ -18,8 +18,11 @@ import yaml
 
 from rules.parameter_sources import (
     ALLOWED_SOURCES,
+    CITABLE_SIDES,
     SOURCE_GUIDANCE,
     allowed_sources,
+    citable_sides,
+    citable_sources,
     undeclared,
 )
 from rules.parameters import (
@@ -33,6 +36,7 @@ from rules.parameters import (
 )
 from rules.schema import Quantity
 from units.measurement import Unit
+from vocabulary.semantic_types import DocumentRole
 
 RULEBOOK = Path(__file__).resolve().parents[2] / "rules" / "rulebook"
 
@@ -122,6 +126,48 @@ def test_every_source_says_what_choosing_it_means() -> None:
 def test_a_specified_setting_is_never_from_the_vendors_drawing() -> None:
     """Q10 in the one sentence the form shows beside every G.C / Client value."""
     assert "never from the vendor's drawing" in SOURCE_GUIDANCE[Provenance.GC_CLIENT]
+
+
+# ---------------------------------------------------------------------------
+# Which side of a package a source may be cited from (#849)
+# ---------------------------------------------------------------------------
+
+
+def test_every_source_says_which_sides_it_may_cite() -> None:
+    """Exhaustive, so a new source cites nothing until somebody writes down what it may cite."""
+    assert set(CITABLE_SIDES) == set(Provenance)
+
+
+def test_no_source_may_cite_the_vendors_drawing() -> None:
+    """**Q10.** The drawing under review never supplies a number it is then checked against."""
+    for source, sides in CITABLE_SIDES.items():
+        assert DocumentRole.SHOP not in sides, source
+
+
+@pytest.mark.parametrize(
+    ("source", "sides"),
+    [
+        (Provenance.GC_CLIENT, frozenset({DocumentRole.ARCH})),
+        (Provenance.COMPANY_STANDARD, frozenset()),
+        (Provenance.FABRICATOR, frozenset()),
+        (Provenance.MEASURED, frozenset()),
+    ],
+)
+def test_the_sides_are_the_ones_the_plan_gave(
+    source: Provenance, sides: frozenset[DocumentRole]
+) -> None:
+    """Plan step 3.2 on #798: G.C / Client cites the architect's drawings; the rest cite nothing."""
+    assert citable_sides(source) == sides
+
+
+def test_a_setting_may_be_cited_only_through_a_source_that_cites_something() -> None:
+    """The field cut and every company standard can never be read off a package; a setting the
+    reviewer may give either way can be cited only as G.C / Client."""
+    for setting in ("field_cut", "front_offset_required", "filler_min", "sink_cutout_clearance"):
+        assert citable_sources(setting) == (), setting
+    assert citable_sources("countertop_overhang") == (Provenance.GC_CLIENT,)
+    assert citable_sources("single_door_cab_width_min") == (Provenance.GC_CLIENT,)
+    assert citable_sources("cabinet_dpeth") == ()
 
 
 # ---------------------------------------------------------------------------

@@ -168,6 +168,13 @@ API_PID=$!
 # AWS declined to raise it (#716), so Nova reads only the crops Ministral found a value in — about 83
 # of 1,009 on AI_Set_2, which is minutes of Nova's quota instead of 50. Nothing that could be
 # confirmed is lost: a confirmation is two readers' values agreeing (#775).
+#
+# **The phrase index is on (#849).** After extraction the worker joins each line's words into
+# passages (#836), which is what `workflow/parameter_proposals.py` searches when it looks for the
+# passage that states a setting. Words join when the space between them is at most 0.34 of the
+# line's height. Measured on both client drawings in #840: the space between two words of one note
+# is at most 0.333 line heights, and the narrowest space between two separate items is 0.372 on
+# AI_Set_2 and 0.421 on AI_Set_1. The admin's decision of 2026-10-03, on #798. No model is called.
 GV_VISION_GATE_READER=bedrock-ministral-3-3b \
 GV_READING_AGENT=1 \
 GV_AGENT_MAX_STEPS=6 \
@@ -201,6 +208,7 @@ GV_READER_FRACTION_GLYPH_MIN_PT=1 \
 GV_READER_FRACTION_GLYPH_MAX_PT=12 \
 GV_READER_FRACTION_PROPORTION_MAX=2.5 \
 GV_READER_FRACTION_CHARACTER_GAP_PT=4 \
+GV_PHRASE_GAP_LINE_HEIGHTS=0.34 \
   "$PYTHON" scripts/drain_outbox.py --watch &
 WORKER_PID=$!
 

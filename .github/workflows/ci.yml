@@ -256,6 +256,11 @@ jobs:
       - name: Prove database float-column guard
         run: pytest tests/app/test_float_column_guard.py -q
 
+      # The setting proposer may point at a passage, never write a setting (#849). Run here because
+      # this job has semgrep installed; elsewhere the file's semgrep tests skip.
+      - name: Prove the proposer-never-writes-a-setting guard
+        run: pytest tests/workflow/test_proposer_never_writes_a_setting.py -q
+
       - name: Golden rules (semgrep)
         run: |
           semgrep --config .semgrep/gv-rules.yaml --error --quiet
