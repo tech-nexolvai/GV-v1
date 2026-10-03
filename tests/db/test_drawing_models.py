@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -33,6 +34,7 @@ from app.models import (
     Alias,
     CanonicalObservation,
     CountertopRun,
+    CountertopRunDecision,
     Document,
     DocumentKind,
     DocumentVersion,
@@ -406,7 +408,13 @@ def test_an_item_is_stored_uncorroborated(postgres_engine: Engine) -> None:
 # The drawing's parts (#852): a suggestion becomes an item only when a person confirms it
 # ---------------------------------------------------------------------------
 
-PART_TABLES = ("part_proposals", "part_confirmations", "countertop_runs", "reading_parts")
+PART_TABLES = (
+    "part_proposals",
+    "part_confirmations",
+    "countertop_runs",
+    "countertop_run_decisions",
+    "reading_parts",
+)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTOR = "anant"
 STORED_BOX: dict[str, object] = {
@@ -520,10 +528,16 @@ def _count(session: Session, model: type) -> int:
 # -- registration, and what the tables cannot hold — no database needed ------
 
 
-def test_the_four_part_tables_are_registered_and_append_only() -> None:
+def test_the_part_tables_are_registered_and_append_only() -> None:
     """Every decision about a part is a record somebody may need to replay, so none is editable."""
     assert set(PART_TABLES) <= set(Base.metadata.tables)
-    for model in (PartProposal, PartConfirmation, CountertopRun, ReadingPart):
+    for model in (
+        PartProposal,
+        PartConfirmation,
+        CountertopRun,
+        CountertopRunDecision,
+        ReadingPart,
+    ):
         assert issubclass(model, Immutable)
     assert set(PART_TABLES) <= set(immutable_table_names())
 
@@ -551,6 +565,22 @@ ITEM_TABLES = frozenset({"drawing_items", "item_identifiers"})
 ITEM_MODELS = frozenset({"DrawingItem", "ItemIdentifier"})
 ORM_MODULES = frozenset({"app.models", "app.models.drawing"})
 
+
+@dataclass(frozen=True)
+class _Guarded:
+    """Tables only named functions may write, and the models that map them."""
+
+    tables: frozenset[str]
+    models: frozenset[str]
+
+    @property
+    def raw_insert(self) -> re.Pattern[str]:
+        names = "|".join(sorted(self.tables))
+        return re.compile(rf"insert\s+into\s+(?:\S+\.)?\"?(?:{names})\b", re.IGNORECASE)
+
+
+ITEMS = _Guarded(tables=ITEM_TABLES, models=ITEM_MODELS)
+
 #: Where the one writer lives: `(file, function)`.
 THE_WRITER = ("workflow/parts.py", "confirm_part")
 
@@ -558,9 +588,6 @@ THE_WRITER = ("workflow/parts.py", "confirm_part")
 #: tomorrow is covered the day it lands.
 NOT_SOURCE = frozenset({"tests", "frontend", "docs", "node_modules"})
 
-_RAW_INSERT = re.compile(
-    r"insert\s+into\s+(?:\S+\.)?\"?(?:drawing_items|item_identifiers)\b", re.IGNORECASE
-)
 _INSERTING_CALLS = frozenset({"insert", "bulk_insert_mappings"})
 
 
@@ -576,8 +603,8 @@ def _source_files(root: Path) -> list[Path]:
     return sorted(files)
 
 
-def _orm_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """The names a module binds to the two ORM models, and to the modules that define them.
+def _orm_bindings(tree: ast.Module, guarded: _Guarded) -> tuple[set[str], set[str]]:
+    """The names a module binds to the guarded ORM models, and to the modules that define them.
 
     Resolved from the imports, and from the class statements in the module that declares the models,
     so `extraction.model.items.DrawingItem` — a frozen value type with the same name that writes
@@ -589,15 +616,15 @@ def _orm_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.ClassDef)
-            and node.name in ITEM_MODELS
+            and node.name in guarded.models
             and any(isinstance(base, ast.Name) and base.id == "Base" for base in node.bases)
         ):
             models.add(node.name)
         elif isinstance(node, ast.ImportFrom) and node.module in ORM_MODULES:
             for alias in node.names:
                 if alias.name == "*":
-                    models.update(ITEM_MODELS)
-                elif alias.name in ITEM_MODELS:
+                    models.update(guarded.models)
+                elif alias.name in guarded.models:
                     models.add(alias.asname or alias.name)
                 elif alias.name == "drawing":
                     modules.add(alias.asname or alias.name)
@@ -612,37 +639,37 @@ def _orm_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
     return models, modules
 
 
-def _is_model(node: ast.expr, models: set[str], modules: set[str]) -> bool:
+def _is_model(node: ast.expr, models: set[str], modules: set[str], guarded: _Guarded) -> bool:
     if isinstance(node, ast.Name):
         return node.id in models
     if isinstance(node, ast.Attribute):
         if node.attr == "__table__":
-            return _is_model(node.value, models, modules)
-        return node.attr in ITEM_MODELS and ast.unparse(node.value) in modules
+            return _is_model(node.value, models, modules, guarded)
+        return node.attr in guarded.models and ast.unparse(node.value) in modules
     return False
 
 
-def _writes(node: ast.AST, models: set[str], modules: set[str]) -> bool:
-    """Whether one node writes either table, in any of the ways this codebase could write one."""
+def _writes(node: ast.AST, models: set[str], modules: set[str], guarded: _Guarded) -> bool:
+    """Whether one node writes a guarded table, in any of the ways this codebase could write one."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return bool(_RAW_INSERT.search(node.value))
+        return bool(guarded.raw_insert.search(node.value))
     if isinstance(node, ast.JoinedStr):
-        return bool(_RAW_INSERT.search(ast.unparse(node)))
+        return bool(guarded.raw_insert.search(ast.unparse(node)))
     if not isinstance(node, ast.Call):
         return False
     callee = node.func
     called = getattr(callee, "id", None) or getattr(callee, "attr", None)
-    if _is_model(callee, models, modules) and called != "__table__":
+    if _is_model(callee, models, modules, guarded) and called != "__table__":
         return True  # constructing a row
     if called in _INSERTING_CALLS:
-        if isinstance(callee, ast.Attribute) and _is_model(callee.value, models, modules):
+        if isinstance(callee, ast.Attribute) and _is_model(callee.value, models, modules, guarded):
             return True  # `DrawingItem.__table__.insert()`
-        if any(_is_model(argument, models, modules) for argument in node.args):
+        if any(_is_model(argument, models, modules, guarded) for argument in node.args):
             return True  # `insert(DrawingItem)`, `bulk_insert_mappings(DrawingItem, ...)`
     if called in {"table", "Table"} and node.args:
         first = node.args[0]
         # A table named by string is only ever a way round the models, which every reader uses.
-        return isinstance(first, ast.Constant) and first.value in ITEM_TABLES
+        return isinstance(first, ast.Constant) and first.value in guarded.tables
     return False
 
 
@@ -655,18 +682,19 @@ def _nodes_by_function(tree: ast.AST, function: str = "<module>") -> Iterator[tu
         yield from _nodes_by_function(child, inner)
 
 
-def _writers(root: Path) -> list[tuple[str, str, int]]:
-    """Every place outside `tests/` that writes `drawing_items` or `item_identifiers`.
+def _writers(root: Path, guarded: _Guarded = ITEMS) -> list[tuple[str, str, int]]:
+    """Every place outside `tests/` that writes a guarded table: by default `drawing_items` or
+    `item_identifiers`.
 
     As `(file, enclosing function, line)`, so the assertion can say exactly where.
     """
     found: list[tuple[str, str, int]] = []
     for path in _source_files(root):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        models, modules = _orm_bindings(tree)
+        models, modules = _orm_bindings(tree, guarded)
         relative = path.relative_to(root).as_posix()
         for function, node in _nodes_by_function(tree):
-            if _writes(node, models, modules):
+            if _writes(node, models, modules, guarded):
                 found.append((relative, function, getattr(node, "lineno", 0)))
     return found
 
@@ -792,6 +820,158 @@ def test_the_guard_leaves_readers_alone(source: str, tmp_path: Path) -> None:
     (tmp_path / "workflow" / "reader.py").write_text(source, encoding="utf-8")
 
     assert _writers(tmp_path) == []
+
+
+# -- the one writer of a run (#893) -------------------------------------------
+
+#: A confirmed run's members, and the decisions that confirm or withdraw a run.
+RUN_ROWS = _Guarded(tables=frozenset({"countertop_runs"}), models=frozenset({"CountertopRun"}))
+RUN_DECISIONS = _Guarded(
+    tables=frozenset({"countertop_run_decisions"}), models=frozenset({"CountertopRunDecision"})
+)
+
+#: Who may write each: a person's confirmation writes a run and its decision; a person's withdrawal
+#: writes a decision and no run. Nothing else, and the suggestion least of all.
+RUN_WRITERS: dict[_Guarded, set[tuple[str, str]]] = {
+    RUN_ROWS: {("workflow/countertop_runs.py", "confirm_countertop_run")},
+    RUN_DECISIONS: {
+        ("workflow/countertop_runs.py", "confirm_countertop_run"),
+        ("workflow/countertop_runs.py", "withdraw_countertop_run"),
+    },
+}
+
+#: Every form in `WRITING_FORMS`, aimed at the run tables instead of the item tables.
+RUN_WRITING_FORMS: dict[str, str] = {
+    name: source.replace("DrawingItem", "CountertopRun")
+    .replace("ItemIdentifier", "CountertopRunDecision")
+    .replace("drawing_items", "countertop_runs")
+    .replace("item_identifiers", "countertop_run_decisions")
+    for name, source in WRITING_FORMS.items()
+}
+
+#: Reading a run, and suggesting one, write nothing.
+RUN_READING_FORMS: dict[str, str] = {
+    "an-orm-read": (
+        "from app.models import CountertopRun\n"
+        "from sqlalchemy import select\n"
+        "def go(session):\n"
+        "    return session.scalars(select(CountertopRun)).all()\n"
+    ),
+    "the-live-reader": (
+        "from workflow.countertop_runs import live_run_rows\n"
+        "def go(session):\n"
+        "    return session.scalars(live_run_rows()).all()\n"
+    ),
+    "a-raw-read": (
+        "from sqlalchemy import text\n"
+        "def go(session):\n"
+        "    return session.execute(text('SELECT run_id FROM countertop_run_decisions'))\n"
+    ),
+}
+
+
+def test_only_a_persons_decision_writes_a_run() -> None:
+    """**Done when, 1.** A suggested run writes no row: only a person's confirmation writes
+    `countertop_runs`, and only a confirmation or a withdrawal writes `countertop_run_decisions`.
+
+    The suggestion (`propose_run`) and the page that lists it are absent from both sets, so if
+    either ever wrote a row this fails, naming where."""
+    for guarded, expected in RUN_WRITERS.items():
+        writers = {writer[:2] for writer in _writers(REPO_ROOT, guarded)}
+        assert writers == expected, (guarded.tables, sorted(writers))
+
+
+@pytest.mark.parametrize("source", list(RUN_WRITING_FORMS.values()), ids=list(RUN_WRITING_FORMS))
+def test_the_run_guard_catches_every_way_of_writing_one(source: str, tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "elsewhere.py").write_text(source, encoding="utf-8")
+
+    found = [writer[:2] for guarded in RUN_WRITERS for writer in _writers(tmp_path, guarded)]
+
+    assert found == [("workflow/elsewhere.py", "go")]
+
+
+@pytest.mark.parametrize("source", list(RUN_READING_FORMS.values()), ids=list(RUN_READING_FORMS))
+def test_the_run_guard_leaves_readers_alone(source: str, tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "reader.py").write_text(source, encoding="utf-8")
+
+    assert [writer for guarded in RUN_WRITERS for writer in _writers(tmp_path, guarded)] == []
+
+
+#: The only shipped code that may mention a run at all until a rule reads one (#748 step 7): the
+#: models and their migrations, the writer, and the Measure page's listing and endpoints.
+RUN_AWARE: frozenset[str] = frozenset(
+    {
+        "alembic/versions/0058_drawing_parts.py",
+        "alembic/versions/0060_countertop_run_decisions.py",
+        "app/models/__init__.py",
+        "app/models/drawing.py",
+        "workflow/countertop_runs.py",
+        "app/evidence/countertop_runs.py",
+        "app/api/countertop_runs.py",
+        "app/main.py",
+    }
+)
+
+_RUN_WORDS = re.compile(r"countertop_run|CountertopRun|live_run_rows")
+
+
+def _mentions_a_run(root: Path) -> set[str]:
+    """Every shipped file whose code, as opposed to its prose, names a run: an import, a model, a
+    reader or a table. Docstrings and comments are not code, so they are skipped."""
+    found: set[str] = set()
+    for path in _source_files(root):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        prose = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                text = "" if id(node) in prose else node.value
+            elif isinstance(node, ast.Name):
+                text = node.id
+            elif isinstance(node, ast.Attribute):
+                text = node.attr
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                text = " ".join(
+                    [getattr(node, "module", None) or ""]
+                    + [f"{alias.name} {alias.asname or ''}" for alias in node.names]
+                )
+            else:
+                continue
+            if _RUN_WORDS.search(text):
+                found.add(path.relative_to(root).as_posix())
+                break
+    return found
+
+
+def test_no_rule_input_reads_a_run_yet() -> None:
+    """**Done when, 4.** No rule reads runs until step 7, so nothing that builds a rule's inputs —
+    `rules/`, `verdict/`, `evidence/`, the evidence stage, matching — may name one. A file that
+    starts to is either step 7, which updates this list on purpose, or a leak."""
+    assert _mentions_a_run(REPO_ROOT) == RUN_AWARE
+
+
+def test_the_run_reader_guard_sees_a_reader(tmp_path: Path) -> None:
+    """And it is not blind: an import of the reader, in a module about rule inputs, is caught; the
+    same words in a docstring are not."""
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "operands.py").write_text(
+        '"""Mentions countertop_runs in prose only."""\n'
+        "from workflow.countertop_runs import live_run_rows as rows\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "workflow" / "prose.py").write_text(
+        '"""Mentions countertop_runs in prose only."""\n', encoding="utf-8"
+    )
+
+    assert _mentions_a_run(tmp_path) == {"workflow/operands.py"}
 
 
 # -- against a real database --------------------------------------------------
@@ -1009,6 +1189,32 @@ def _member(
     )
 
 
+def _run_decision(
+    countertop: UUID,
+    *,
+    run: UUID | None,
+    supersedes: UUID | None = None,
+    decision: PartDecision | None = None,
+) -> CountertopRunDecision:
+    """A person's decision on a countertop's run, made directly: confirming `run`, or withdrawing
+    when `run` is `None`."""
+    chosen = decision or (PartDecision.WITHDRAWN if run is None else PartDecision.CONFIRMED)
+    return CountertopRunDecision(
+        countertop_item_id=countertop,
+        supersedes_id=supersedes,
+        decision=chosen.value,
+        run_id=run,
+        confirmed_by=ACTOR,
+    )
+
+
+def _decided(session: Session, countertop: UUID, run: UUID) -> None:
+    """The decision a run's rows must belong to, so a test of the rows fails only for its own
+    reason."""
+    session.add(_run_decision(countertop, run=run))
+    session.flush()
+
+
 def _decision(proposal: PartProposal, *, supersedes: UUID | None = None) -> PartConfirmation:
     return PartConfirmation(
         part_proposal_id=proposal.id,
@@ -1114,9 +1320,11 @@ def _one_of_each(session: Session) -> None:
     view = _view(session, page)
     countertop = _confirmed(session, view, PartKind.COUNTERTOP)
     cabinet = _confirmed(session, view)
+    run = uuid4()
+    _decided(session, countertop.id, run)
     session.add(
         CountertopRun(
-            run_id=uuid4(),
+            run_id=run,
             countertop_item_id=countertop.id,
             position=0,
             member_item_id=cabinet.id,
@@ -1157,7 +1365,10 @@ def test_each_part_table_is_append_only(
 
 
 @pytest.mark.parametrize("actor", ["", " ", "\t\n"], ids=["empty", "space", "whitespace"])
-@pytest.mark.parametrize("table", ["part_confirmations", "countertop_runs", "reading_parts"])
+@pytest.mark.parametrize(
+    "table",
+    ["part_confirmations", "countertop_runs", "countertop_run_decisions", "reading_parts"],
+)
 def test_a_blank_actor_is_refused(postgres_engine: Engine, table: str, actor: str) -> None:
     """Every decision about a part names who made it. A blank name is a decision nobody owns.
 
@@ -1168,12 +1379,15 @@ def test_a_blank_actor_is_refused(postgres_engine: Engine, table: str, actor: st
     with pytest.raises(IntegrityError, match="actor_not_blank"), unit_of_work(factory) as session:
         page = _page(session)
         view = _view(session, page)
-        row: PartConfirmation | CountertopRun | ReadingPart
+        row: PartConfirmation | CountertopRun | CountertopRunDecision | ReadingPart
         if table == "part_confirmations":
             row = _decision(_proposal(session, view))
         elif table == "countertop_runs":
-            countertop = _confirmed(session, view, PartKind.COUNTERTOP).id
-            row = _member(countertop, _confirmed(session, view).id, run=uuid4(), position=0)
+            countertop, run = _confirmed(session, view, PartKind.COUNTERTOP).id, uuid4()
+            _decided(session, countertop, run)
+            row = _member(countertop, _confirmed(session, view).id, run=run, position=0)
+        elif table == "countertop_run_decisions":
+            row = _run_decision(_confirmed(session, view, PartKind.COUNTERTOP).id, run=uuid4())
         else:
             row = _link(_observation(session, page).id, _confirmed(session, view).id)
         row.confirmed_by = actor
@@ -1293,6 +1507,7 @@ def test_a_countertop_run_keeps_its_members_in_order(postgres_engine: Engine) ->
     with unit_of_work(factory) as session:
         view = _view(session, _page(session))
         countertop = _confirmed(session, view, PartKind.COUNTERTOP)
+        _decided(session, countertop.id, run)
         members = [
             _confirmed(session, view, PartKind.FILLER),
             _confirmed(session, view),
@@ -1332,6 +1547,7 @@ def test_a_malformed_run_is_refused(postgres_engine: Engine, case: str, constrai
     with pytest.raises(IntegrityError, match=constraint), unit_of_work(factory) as session:
         view = _view(session, _page(session))
         countertop = _confirmed(session, view, PartKind.COUNTERTOP).id
+        _decided(session, countertop, run)
         first, second = _confirmed(session, view).id, _confirmed(session, view).id
         rows = {
             "a-suggestion-as-a-member": [_proposal(session, view).id],
@@ -1362,7 +1578,106 @@ def test_an_edge_tolerance_that_removes_the_checks_is_refused(
         unit_of_work(factory) as session,
     ):
         view = _view(session, _page(session))
-        countertop = _confirmed(session, view, PartKind.COUNTERTOP).id
+        countertop, run = _confirmed(session, view, PartKind.COUNTERTOP).id, uuid4()
+        _decided(session, countertop, run)
         member = _confirmed(session, view).id
-        session.add(_member(countertop, member, run=uuid4(), position=0, tolerance=tolerance))
+        session.add(_member(countertop, member, run=run, position=0, tolerance=tolerance))
+        session.flush()
+
+
+# -- a person's decision on a run (#893) ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("case", "constraint"),
+    [
+        ("two-first-decisions", "ix_countertop_run_decisions_first_decision"),
+        ("one-decision-replaced-twice", "uq_countertop_run_decisions_supersedes_id"),
+        ("replacing-another-countertop-s-decision", "fk_countertop_run_decisions_supersedes_id"),
+    ],
+)
+def test_a_countertop_has_at_most_one_current_run_decision(
+    postgres_engine: Engine, case: str, constraint: str
+) -> None:
+    """Two people deciding at once cannot both become current, and a correction cannot end the
+    history of another countertop's run. Inserted directly, so it is the database refusing."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        view = _view(session, _page(session))
+        countertop = _confirmed(session, view, PartKind.COUNTERTOP).id
+        other = _confirmed(session, view, PartKind.COUNTERTOP).id
+        first, others = _run_decision(countertop, run=uuid4()), _run_decision(other, run=None)
+        session.add_all((first, others))
+        session.flush()
+        ids = (countertop, first.id, others.id)
+
+    with pytest.raises(IntegrityError, match=constraint), unit_of_work(factory) as session:
+        countertop, first_id, others_id = ids
+        if case == "two-first-decisions":
+            session.add(_run_decision(countertop, run=None))
+        elif case == "one-decision-replaced-twice":
+            session.add(_run_decision(countertop, run=None, supersedes=first_id))
+            session.flush()
+            session.add(_run_decision(countertop, run=uuid4(), supersedes=first_id))
+        else:
+            session.add(_run_decision(countertop, run=None, supersedes=others_id))
+        session.flush()
+
+
+@pytest.mark.parametrize(
+    ("case", "constraint"),
+    [
+        ("a-confirmation-naming-no-run", "run_decision_shape"),
+        ("a-withdrawal-naming-a-run", "run_decision_shape"),
+        ("an-unknown-decision", "run_decision_value"),
+        ("one-run-confirmed-twice", "uq_countertop_run_decisions_run_id"),
+    ],
+)
+def test_a_run_decision_is_one_thing_or_the_other(
+    postgres_engine: Engine, case: str, constraint: str
+) -> None:
+    """A confirmation names the run it confirmed; a withdrawal names none; and a run belongs to one
+    decision only, so one confirmation can never be read as two."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError, match=constraint), unit_of_work(factory) as session:
+        view = _view(session, _page(session))
+        countertop = _confirmed(session, view, PartKind.COUNTERTOP).id
+        if case == "a-confirmation-naming-no-run":
+            row = _run_decision(countertop, run=None, decision=PartDecision.CONFIRMED)
+        elif case == "a-withdrawal-naming-a-run":
+            row = _run_decision(countertop, run=uuid4(), decision=PartDecision.WITHDRAWN)
+        elif case == "an-unknown-decision":
+            # Naming no run, so only the decision's value is wrong.
+            row = _run_decision(countertop, run=None)
+            row.decision = "probably"
+        else:
+            run = uuid4()
+            other = _confirmed(session, view, PartKind.COUNTERTOP).id
+            session.add(_run_decision(countertop, run=run))
+            session.flush()
+            row = _run_decision(other, run=run)
+        session.add(row)
+        session.flush()
+
+
+@pytest.mark.parametrize("case", ["no-decision", "another-countertop-s-decision"])
+def test_a_run_row_belongs_to_a_decision_about_its_own_countertop(
+    postgres_engine: Engine, case: str
+) -> None:
+    """A member row with no person's decision behind it, or filed under a decision about another
+    countertop, is refused: the database, not only the writer, says a run is a person's."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with (
+        pytest.raises(IntegrityError, match="fk_countertop_runs_run_id"),
+        unit_of_work(factory) as session,
+    ):
+        view = _view(session, _page(session))
+        countertop = _confirmed(session, view, PartKind.COUNTERTOP).id
+        run = uuid4()
+        if case == "another-countertop-s-decision":
+            _decided(session, _confirmed(session, view, PartKind.COUNTERTOP).id, run)
+        session.add(_member(countertop, _confirmed(session, view).id, run=run, position=0))
         session.flush()

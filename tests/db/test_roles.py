@@ -112,11 +112,18 @@ def test_the_verdict_role_cannot_read_a_retrieval_table(migrated: Engine) -> Non
 def test_the_verdict_role_cannot_read_the_drawing_parts(migrated: Engine) -> None:
     """Which parts a drawing has, and which part a reading measures, are decided before anything is
     checked (#852). A verdict takes its operands from `verdict_inputs`, which the evidence gate
-    writes, so it holds no privilege on the suggestions, the confirmations, the runs or the links.
+    writes, so it holds no privilege on the suggestions, the confirmations, the runs, the decisions
+    on them (#893) or the links.
     """
     schema = _schema(migrated)
 
-    for table in ("part_proposals", "part_confirmations", "countertop_runs", "reading_parts"):
+    for table in (
+        "part_proposals",
+        "part_confirmations",
+        "countertop_runs",
+        "countertop_run_decisions",
+        "reading_parts",
+    ):
         with pytest.raises(ProgrammingError, match="permission denied"):
             _as_role(migrated, Role.VERDICT, f'SELECT 1 FROM "{schema}"."{table}" LIMIT 1')
 

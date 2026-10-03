@@ -285,3 +285,37 @@ Tests cover site width, cabinet widths/types/order, filler changes, every limit,
 exact restoration, unknown provenance, collapsed input details, and no request mutation.
 Browser checks cover late arrival, refusal, manual retry and classification edits. This is
 synthetic frontend verification, not a live calculation or OCR accuracy claim.
+
+## Countertop-run recovery and independent decisions
+
+Run `GV_QA_PORT=5209 node tests/browser-qa-server.mjs` and open
+`http://127.0.0.1:5209/?runs=decisions&reset=1#/review/00000000-0000-4000-8000-000000000101`.
+This is an isolated, visibly labelled synthetic fixture; its tolerance is not a production default.
+
+1. Open Measurements. Initial run-list GETs return 503 (twice for StrictMode). Retry countertop
+   runs must recover the list without submitting a decision. There is one run section only.
+2. For countertop part 4, untick part 2 and confirm the ticked parts. While this request is
+   pending, choose Not this countertop's run for part 5. Both rows show their own pending state.
+3. Part 5 acknowledges after 1.5 seconds; part 4 refuses after 12 seconds with a synthetic 409.
+   The follow-up GET also fails with 503. Keep the previous list visible, explicitly label it
+   as previous, and disable its decisions until a successful retry. Show the exact refusal beside
+   part 4; its corrected checkbox selection must survive. Part 5 retains its saved receipt.
+4. Retry the list: it must read, not resubmit. Part 5 now shows the server's withdrawal, while
+   part 4 still has only part 1 ticked. Explicitly confirm part 4 again; it now acknowledges and
+   displays the server's confirmed members. The error clears only for that row.
+5. `/__qa/state` must show exactly three decision POSTs: withdrawal of 605 → 201, confirmation
+   of 604 → 409, confirmation of 604 → 201. Both confirmation bodies contain only part ID 601;
+   withdrawal has no submitted selection. There are zero measurement writes and zero check runs.
+
+Browser verification on 2026-10-04 completed all five steps. The fixture validates against the
+upstream `RunsOut` schema; the committed OpenAPI matches all 55 current backend paths. Component
+tests retain the upstream role/tolerance restrictions, ordered members, warnings and explicit
+human confirmation, and add exact escaped errors, row-specific locks, retry and stale-list gates.
+
+Evaluation: the acknowledgement/refusal sits beside the affected countertop, selections survive
+failure, and a stale list cannot silently accept another decision. Existing suggestions, excluded
+parts and warnings remain visible; no backend data is removed or replaced. This verifies frontend
+behaviour, not live OCR or database persistence. Upstream grouping is not yet consumed by rules;
+confirming a run does not itself perform a dimensional check. No backend source was authored or
+database migrated in this phase. Live deployment still requires the upstream API/migration and
+an explicitly configured run-edge tolerance; the frontend does not invent one.

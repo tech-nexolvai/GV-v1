@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import pathlib
 from decimal import Decimal
+from fractions import Fraction
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -634,3 +636,679 @@ def test_a_path_keep_path_refuses_is_no_bar_and_no_segment() -> None:
     assert not any(item.stacked for item in contents.texts)
     assert _set_aside(contents) == ["stacked_fraction", "stacked_fraction"]
     assert contents.segments == ()
+
+
+# ---------------------------------------------------------------------------
+# Every character is read into one label at most (#894)
+# ---------------------------------------------------------------------------
+
+#: A line of large text running past a label on both sides, as a note runs across the labels of a
+#: drawing. `extract_text_lines` gives a line the box round all its characters, so this line's box
+#: encloses the label although none of the label's characters is on it.
+ENCLOSING_LINE = (
+    b"BT /F1 20 Tf 1 0 0 1 2 40 Tm (A) Tj ET\n" b"BT /F1 20 Tf 1 0 0 1 180 40 Tm (B) Tj ET\n"
+)
+
+#: A taller line round the first. Measured on `AI_Set_1`, five labels sat inside two lines besides
+#: their own and came back three times each.
+TALLER_LINE = (
+    b"BT /F1 40 Tf 1 0 0 1 0 30 Tm (I) Tj ET\n" b"BT /F1 40 Tf 1 0 0 1 188 30 Tm (I) Tj ET\n"
+)
+
+#: What the two lines read as themselves.
+_ENCLOSING_TEXT = frozenset({"A", "B", "I"})
+
+#: Every kind of label measured coming back more than once on `AI_Set_1` and `AI_Set_2`, and the one
+#: other kind the join reads whole, each set small where the lines above enclose it, with what it
+#: reads as on a page of its own: `(text, stacked)` for each text, and the reason for each label set
+#: aside.
+DOUBLED_SHAPES: dict[str, tuple[bytes, list[tuple[str, bool]], list[str]]] = {
+    # Split at the space by `extract_words` and joined back (AI_Set_1 p5, AI_Set_2 p8).
+    "feet and inches": (
+        b"BT /F1 4 Tf 1 0 0 1 80 45 Tm (2' -5\") Tj ET\n",
+        [('2’ -5"', False)],
+        [],
+    ),
+    # Split at its spaces and joined back (AI_Set_2 p7 and p8).
+    "dual token": (
+        b"BT /F1 4 Tf 1 0 0 1 80 45 Tm (984 [38 3/4]) Tj ET\n",
+        [("984 [38 3/4]", False)],
+        [],
+    ),
+    # Set large enough for its space to split it: the shape `MIXED_INCH_TOKEN_RE` joins. Not
+    # measured doubled; held to the same rule.
+    "inches and a fraction": (
+        b'BT /F1 4 Tf 1 0 0 1 80 45 Tm (24 3/4") Tj ET\n',
+        [('24 3/4"', False)],
+        [],
+    ),
+    # Millimetres over their bracketed inches, composed from one word (AI_Set_1 p3, seven labels).
+    "millimetres over inches": (
+        (
+            b"BT /F1 3 Tf 1 0 0 1 80 50 Tm (585) Tj ET\n"
+            b"BT /F1 3 Tf 1 0 0 1 80.4 47 Tm ([23]) Tj ET\n"
+        ),
+        [("585 [23]", False)],
+        [],
+    ),
+    # A stacked fraction composed from its word (AI_Set_1 p1, three labels).
+    "stacked fraction": (
+        (
+            b"BT /F1 3 Tf 1 0 0 1 80 50 Tm (24) Tj ET\n"
+            b"BT /F1 2 Tf 1 0 0 1 83.6 51.2 Tm (3) Tj ET\n"
+            b"BT /F1 2 Tf 1 0 0 1 83.6 49 Tm (4) Tj ET\n"
+            b'BT /F1 3 Tf 1 0 0 1 84.8 50 Tm (") Tj ET\n'
+        ),
+        [('24 3/4"', True)],
+        [],
+    ),
+    # The same, sideways (AI_Set_1 p1, three labels).
+    "sideways stacked fraction": (
+        (
+            b"BT /F1 3 Tf 0 1 -1 0 80 40 Tm (24) Tj ET\n"
+            b"BT /F1 2 Tf 0 1 -1 0 78.8 43.6 Tm (3) Tj ET\n"
+            b"BT /F1 2 Tf 0 1 -1 0 81 43.6 Tm (4) Tj ET\n"
+            b'BT /F1 3 Tf 0 1 -1 0 80 44.8 Tm (") Tj ET\n'
+        ),
+        [('24 3/4"', True)],
+        [],
+    ),
+    # A stack the words came apart from, composed round its bar (#880; AI_Set_1 p1, two labels).
+    "stack composed round its bar": (
+        (
+            b"BT /F1 4 Tf 1 0 0 1 80 50 Tm (2) Tj 1 0 0 1 82.3 52 Tm (1) Tj "
+            b'1 0 0 1 82.3 48 Tm (2) Tj 1 0 0 1 84.6 50 Tm (") Tj ET\n'
+            b"0.3 w 82.4 51.2 m 84.4 51.2 l S\n"
+        ),
+        [('2 1/2"', True)],
+        [],
+    ),
+    # A joined label set aside as a piece of a longer one, a digit standing inside its span: the
+    # label was set aside twice (AI_Set_1 p4).
+    "piece of a longer label": (
+        (
+            b"BT /F1 4 Tf 1 0 0 1 80 45 Tm (1' -0\") Tj ET\n"
+            b"BT /F1 4 Tf 1 0 0 1 85 48.2 Tm (3) Tj ET\n"
+        ),
+        [("3", False)],
+        ["fragment"],
+    ),
+}
+
+
+def _readings(contents: PageContents) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
+    """`(texts, set_aside)`, every field of each, leaving out the enclosing lines' own letters."""
+    texts = [
+        (
+            item.text,
+            item.stacked,
+            item.extent,
+            item.image_extent,
+            item.rotation_degrees,
+            item.upright,
+        )
+        for item in contents.texts
+        if item.text not in _ENCLOSING_TEXT
+    ]
+    labels = [(label.reason, label.extent, label.image_extent) for label in contents.set_aside]
+    return texts, labels
+
+
+@pytest.mark.parametrize("shape", sorted(DOUBLED_SHAPES))
+def test_a_label_inside_another_lines_box_is_read_once(shape: str) -> None:
+    """**The failure this prevents** (#894). The dual-token join put a word on every line whose box
+    holds it, and a line's box can hold words that are not on it: measured on `AI_Set_1`, a note
+    running across a drawing enclosed a stacked fraction none of whose characters it has. The label
+    was joined on its own line and again on the note's, and read twice from the same characters,
+    each copy with the same text, mark and place: 26 extra readings and two extra labels set aside
+    on the two client sets. Outcome: inside two such lines, each shape reads exactly as it does on
+    a page of its own — same text, same mark, same place — and once."""
+    label, texts, reasons = DOUBLED_SHAPES[shape]
+    alone = _contents(_pdf(label))
+    enclosed = _contents(_pdf(label + ENCLOSING_LINE + TALLER_LINE))
+
+    assert [(item.text, item.stacked) for item in alone.texts] == texts
+    assert _set_aside(alone) == reasons
+    assert _readings(enclosed) == _readings(alone)
+
+
+def _characters_read_twice(data: bytes, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The characters of the page that more than one of its readings is made of, texts and labels
+    set aside alike, each as its text.
+
+    `TextItem` does not carry its characters, so they are taken from the runs the reader turns into
+    readings: every run `_text_item` makes a reading of is a text or a set-aside label of the page.
+    The runs are counted against the readings, so a reading made some other way fails here rather
+    than going unchecked.
+    """
+    from extraction import reader
+
+    runs: dict[int, dict[str, Any]] = {}  # each run held, so no other run can be given its `id`
+    original = reader._text_item
+
+    def recording(word: dict[str, Any], *args: Any) -> TextItem | None:
+        item = original(word, *args)
+        if item is not None:
+            runs[id(word)] = word
+        return item
+
+    monkeypatch.setattr(reader, "_text_item", recording)
+    contents = read_page_contents(data, 0, document_version_id=DOCUMENT, dpi=DPI)
+
+    assert len(runs) == len(contents.texts) + len(contents.set_aside)
+    readings: dict[int, int] = {}
+    texts: dict[int, str] = {}
+    for run in runs.values():
+        for char in run.get("chars") or ():
+            readings[id(char)] = readings.get(id(char), 0) + 1
+            texts[id(char)] = str(char["text"])
+    return sorted(texts[key] for key, count in readings.items() if count > 1)
+
+
+#: Every page this module builds, and each doubled shape inside its enclosing lines.
+_EVERY_PAGE = {
+    "drawing": DRAWING,
+    "feet and inches": FEET_AND_INCHES,
+    "stacked": STACKED,
+    "split stack": SPLIT_STACK,
+    "tight note": TIGHT_NOTE,
+    "two-line dual": TWO_LINE_DUAL,
+    "sideways feet and inches": SIDEWAYS_FEET_AND_INCHES,
+    "half a label": HALF_A_LABEL,
+    "cut number": CUT_NUMBER,
+    "chain": CHAIN,
+    "printed twice": PRINTED_TWICE,
+    "large mixed": LARGE_MIXED,
+    "split stack with bar": SPLIT_STACK_WITH_BAR,
+    **{
+        f"{shape}, enclosed": _pdf(label + ENCLOSING_LINE + TALLER_LINE)
+        for shape, (label, _, _) in DOUBLED_SHAPES.items()
+    },
+}
+
+
+@pytest.mark.parametrize("page", sorted(_EVERY_PAGE))
+def test_no_character_is_read_into_two_labels(page: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**The invariant #894 restores.** A character drawn once is part of one reading at most: a
+    text, or a label set aside. Two readings of one character are one label counted twice — a second
+    row for a person to tick, and a second vote in every count readers are scored by."""
+    assert _characters_read_twice(_EVERY_PAGE[page], monkeypatch) == []
+
+
+def test_the_check_finds_a_character_read_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check above, run where the join hands every label over twice as #894 found it doing,
+    names that label's characters: so it cannot pass by finding nothing."""
+    from extraction import reader
+
+    original = reader._dual_tokens
+
+    def twice(*args: Any) -> tuple[tuple[TextItem, Any, dict[str, Any]], ...]:
+        found = original(*args)
+        return found + tuple((item, box, dict(run)) for item, box, run in found)
+
+    monkeypatch.setattr(reader, "_dual_tokens", twice)
+
+    assert _characters_read_twice(FEET_AND_INCHES, monkeypatch) == sorted('2’-5"')
+
+
+def test_a_token_already_found_keeps_its_characters() -> None:
+    """`_join_lines` joins no character a token already in `found` holds, whichever call found it:
+    the sideways lines are joined after the upright ones, into the same list. Outcome: the same two
+    words on a second line, in the same call or in a later one, add nothing."""
+    from evidence.coordinates import PageTransform
+    from extraction import reader
+
+    def word(text: str, x0: float) -> dict[str, Any]:
+        return {
+            "text": text,
+            "chars": [{"text": char} for char in text],
+            "x0": x0,
+            "top": 40,
+            "x1": x0 + 5,
+            "bottom": 45,
+            "upright": True,
+        }
+
+    feet, inches = word("2'", 20), word('-5"', 27)
+    sheet = (Decimal(0), Decimal(0), Decimal(200), Decimal(100))
+    transform = PageTransform(dpi=DPI, rotation=0, media_box=sheet, crop_box=sheet)
+    found: list[tuple[TextItem, Any, dict[str, Any]]] = []
+
+    def join(lines: list[list[dict[str, Any]]]) -> None:
+        reader._join_lines(lines, found, transform, Decimal(100), DOCUMENT, 0)
+
+    join([[feet, inches], [feet, inches]])
+    assert [run["text"] for _, _, run in found] == ["2' -5\""]
+
+    join([[feet, inches]])
+    assert len(found) == 1
+
+    # Nor any run with one such character in it: `7' -5"` would share the inches.
+    join([[word("7'", 20), inches]])
+    assert len(found) == 1
+
+
+#: The same label drawn twice, well apart on one line: two labels.
+ALIKE = _pdf(
+    b"BT /F1 10 Tf 1 0 0 1 20 70 Tm (2' -5\") Tj ET\n"
+    b"BT /F1 10 Tf 1 0 0 1 120 70 Tm (2' -5\") Tj ET\n"
+)
+
+
+def test_two_labels_alike_are_each_read() -> None:
+    """**No false merge.** Read once means once for each label drawn, not once for each value: what
+    keeps a character to one label is the character itself. Outcome: both labels are read."""
+    contents = _contents(ALIKE)
+
+    assert [item.text for item in contents.texts] == ['2’ -5"', '2’ -5"']
+    assert len({item.image_extent for item in contents.texts}) == 2
+
+
+# ---------------------------------------------------------------------------
+# Neighbouring labels are read apart, and none is dropped (#904)
+#
+# Each page puts every character where the client's drawing puts the label of the same shape; the
+# labels themselves are invented, so no drawing's values are in this file.
+# ---------------------------------------------------------------------------
+
+
+def _glyphs(
+    size: float, items: list[tuple[float, float, bytes]], *, sideways: bool = False
+) -> bytes:
+    """Each `(x, y, text)` set at exactly that point, upright or reading up the page."""
+    matrix = b"0 1 -1 0" if sideways else b"1 0 0 1"
+    return b"".join(
+        b"BT /F1 %.3f Tf %s %.3f %.3f Tm (%s) Tj ET\n" % (size, matrix, x, y, text)
+        for x, y, text in items
+    )
+
+
+def _value(text: str) -> Fraction:
+    from units.normalise import normalise_to_inches
+    from units.notation import canonical_notation
+
+    return normalise_to_inches(canonical_notation(text)[0]).exact
+
+
+#: A word of a note far along the page, set between two rows of labels. Drawn after a sideways mark,
+#: so `extract_words` reads it apart from them, while the text line `extract_text_lines` builds runs
+#: through it and so holds both rows: the measured reason one line held both rows of #904's labels.
+_NOTE_BETWEEN_ROWS = b"BT /F1 4 Tf 0 1 -1 0 190 10 Tm (A) Tj ET\n" + _glyphs(
+    4.345, [(150, 58.35, b"note")]
+)
+
+
+def _two_labels_on_a_line(inches: bytes) -> bytes:
+    """`813` over `[32]` and, 47 points along, `44` over `inches`, set as `AI_Set_2` page 7 sets
+    its millimetres over bracketed inches: each bracket starts a hair before its number, and a
+    note's line runs through both rows."""
+    return _pdf(
+        _glyphs(
+            4.345,
+            [
+                (12.932, 60.652, b"813"),
+                (12.837, 56.101, b"[32]"),
+                (70.861, 60.652, b"44"),
+                (66.974, 56.101, inches),
+            ],
+        )
+        + _NOTE_BETWEEN_ROWS
+    )
+
+
+#: AI_Set_2 page 7's shape (#904): two labels, millimetres over bracketed inches, on one text line.
+TWO_LABELS_ON_A_LINE = _two_labels_on_a_line(b"[1 3/4]")
+
+
+def _labels(contents: PageContents) -> list[str]:
+    return sorted(item.text for item in contents.texts if item.text not in {"A", "note"})
+
+
+def test_two_labels_on_one_text_line_are_each_read_and_never_glued() -> None:
+    """**The failure this prevents** (#904). The join read an upright line's words in order of
+    their left edges. A line holding millimetres over bracketed inches holds two rows, so that order
+    interleaves them: `[32]` came before `813`, and `813` was joined to the next label's `[1`, `44`
+    and `3/4]`, 47 points along, into `813 [1 44 3/4]`. That was set aside unread, and so both labels
+    reached a person blank. Outcome: `813 [32]` and `44 [1 3/4]`, each with its own value."""
+    contents = _contents(TWO_LABELS_ON_A_LINE)
+
+    assert _labels(contents) == ["44 [1 3/4]", "813 [32]"]
+    assert [_value(text) for text in _labels(contents)] == [Fraction(7, 4), Fraction(32)]
+    assert not any(item.stacked for item in contents.texts)
+    assert contents.set_aside == ()
+
+
+def test_millimetres_are_never_joined_to_the_next_labels_inches() -> None:
+    """The same line with `44 [2]` beside `813 [32]`. In left-edge order the words run `[32]`,
+    `813`, `[2]`, `44`, and the join made `813 [2]`: well formed, 2 inches for a label that says 32.
+    Only the test for pieces of longer labels set it aside, because `[32]` stands inside it. Outcome:
+    each label read with its own inches."""
+    contents = _contents(_two_labels_on_a_line(b"[2]"))
+
+    assert _labels(contents) == ["44 [2]", "813 [32]"]
+    assert [_value(text) for text in _labels(contents)] == [Fraction(2), Fraction(32)]
+    assert contents.set_aside == ()
+
+
+def test_two_rows_that_are_not_one_label_are_never_joined_across() -> None:
+    """**No false merge.** `46` over `[2]` and `97` over `[4]`, close enough along their line to be
+    read together, far enough apart to be words of their own. In left-edge order the words run
+    `[2]`, `46`, `[4]`, `97`, and `46 [4]` is well formed and wrong. The two rows hold two labels,
+    not one, so no word of one row is joined to the other. Outcome: no dual dimension, no value."""
+    contents = _contents(
+        _pdf(
+            _glyphs(
+                4.345,
+                [
+                    (12.932, 60.652, b"46"),
+                    (12.837, 56.101, b"[2]"),
+                    (21.5, 60.652, b"97"),
+                    (21.405, 56.101, b"[4]"),
+                ],
+            )
+            + _NOTE_BETWEEN_ROWS
+        )
+    )
+
+    assert _labels(contents) == ["46", "97", "[2]", "[4]"]
+    assert _valued(contents) == []
+
+
+def test_a_number_beside_inches_on_the_next_row_is_not_joined_to_them() -> None:
+    """**No false merge.** Measured on `AI_Set_2` page 8: a number was joined to the bracketed
+    inches set beside it, a row away: the inches of the next label, raised on its leader. The value
+    was the same by luck; the pairing was wrong. Outcome: millimetres and inches that are not one
+    over the other are not joined."""
+    contents = _contents(
+        _pdf(
+            _glyphs(4.345, [(12.932, 60.652, b"813"), (21.0, 56.101, b"[32]")]) + _NOTE_BETWEEN_ROWS
+        )
+    )
+
+    assert _labels(contents) == ["813", "[32]"]
+    assert _valued(contents) == []
+
+
+def test_each_row_of_two_that_are_not_one_label_is_joined_on_its_own() -> None:
+    """A row is still read as a line of its own. Measured on `AI_Set_1` page 3: a label written
+    with a space before its inch mark, set over a row of other text, came back in pieces, because
+    in left-edge order a word of the other row fell between its fraction and its mark. Outcome:
+    `20 3/4 "` read whole above `X 7`."""
+    contents = _contents(
+        _pdf(
+            _glyphs(4.345, [(12.0, 60.652, b'20 3/4 "'), (22.0, 56.101, b"X 7")])
+            + _NOTE_BETWEEN_ROWS
+        )
+    )
+
+    assert _labels(contents) == ['20 3/4 "', "7", "X"]
+    assert _valued(contents) == ['20 3/4 "']
+
+
+def _side_by_side(items: list[tuple[float, float, bytes]]) -> bytes:
+    return _pdf(_glyphs(3.25, items, sideways=True))
+
+
+#: AI_Set_1 pages 4 and 5's shape (#904): `46` over `[2]` and `97` over `[4]`, reading up the page,
+#: so close along their line that `extract_words` runs each row into one word: `4697` and `[2][4]`.
+SIDE_BY_SIDE = _side_by_side(
+    [(52.4, 20.0, b"46"), (52.4, 24.48, b"97"), (56.9, 19.86, b"[2]"), (56.9, 24.34, b"[4]")]
+)
+
+
+def test_two_labels_side_by_side_in_one_word_are_read_apart() -> None:
+    """**The failure this prevents** (#904). At the client's size the space between two sideways
+    labels is about a point, narrower than `extract_words`' word gap, so their rows came back as
+    `4697` and `[2][4]`: neither a label, both lost. The brackets say where one label ends: `[2][4]`
+    is two bracketed inches back to back, and each millimetre digit stands over one of them.
+    Outcome: `46 [2]` and `97 [4]`, sideways, each with its own value, and not marked stacked."""
+    contents = _contents(SIDE_BY_SIDE)
+
+    assert sorted((item.text, item.rotation_degrees) for item in contents.texts) == [
+        ("46 [2]", 90),
+        ("97 [4]", 90),
+    ]
+    assert {item.text: _value(item.text) for item in contents.texts} == {
+        "46 [2]": Fraction(2),
+        "97 [4]": Fraction(4),
+    }
+    first, second = contents.texts
+    assert first.image_extent != second.image_extent
+    assert not any(item.stacked for item in contents.texts)
+    assert contents.set_aside == ()
+
+
+#: The pair of rows `SIDE_BY_SIDE` reads apart, with one thing changed in each case below.
+_PAIR = [(52.4, 20.0, b"46"), (52.4, 24.48, b"97"), (56.9, 19.86, b"[2]"), (56.9, 24.34, b"[4]")]
+
+#: Marks that turn the other way from the text round them. `extract_words` groups characters that
+#: follow one another in the file and turn the same way, so sideways text drawn after the upright
+#: mark, or upright text after the sideways one, is read as a word of its own wherever it sits.
+_UPRIGHT_MARK = b"BT /F1 3 Tf 1 0 0 1 150 80 Tm (B) Tj ET\n"
+_SIDEWAYS_MARK = b"BT /F1 4 Tf 0 1 -1 0 190 10 Tm (A) Tj ET\n"
+
+
+@pytest.mark.parametrize(
+    ("page", "words"),
+    [
+        # A millimetre digit standing over neither bracket: no telling whose it is.
+        (_side_by_side([*_PAIR[:1], (52.4, 24.48, b"970"), *_PAIR[2:]]), ["46970", "[2][4]"]),
+        # Brackets that overlap along the line, as two labels' do on AI_Set_1 page 4.
+        (
+            _side_by_side([*_PAIR[:1], (52.4, 23.9, b"97"), _PAIR[2], (56.9, 23.3, b"[4]")]),
+            ["4697", "[2][4]"],
+        ),
+        # A split that leaves a millimetre number starting with a zero.
+        (_side_by_side([*_PAIR[:1], (52.4, 24.48, b"07"), *_PAIR[2:]]), ["4607", "[2][4]"]),
+        # Inches that are not an inch fraction.
+        (_side_by_side([*_PAIR[:3], (56.9, 24.34, b"[5/3]")]), ["4697", "[2][5/3]"]),
+        # A digit touching the pair in a word of its own: a piece the pair may be missing.
+        (
+            _pdf(
+                _glyphs(3.25, _PAIR, sideways=True)
+                + _UPRIGHT_MARK
+                + _glyphs(3.25, [(52.4, 28.5, b"5")], sideways=True)
+            ),
+            ["4697", "5", "B", "[2][4]"],
+        ),
+        # A gap in one label's millimetres, wider than a touch, though each digit is over its own
+        # bracket: two numbers' text, or one with a character missing.
+        (
+            _side_by_side(
+                [
+                    (52.4, 20.0, b"4"),
+                    (52.4, 23.5, b"6"),
+                    (52.4, 26.0, b"97"),
+                    (56.9, 19.86, b"[12]"),
+                    (56.9, 25.6, b"[4]"),
+                ]
+            ),
+            ["4697", "[12][4]"],
+        ),
+        # The number row a line away from the brackets, not touching them.
+        (
+            _side_by_side([(50.0, 20.0, b"46"), (50.0, 24.48, b"97"), *_PAIR[2:]]),
+            ["4697", "[2][4]"],
+        ),
+        # A second row of digits on the brackets' other side: no telling which row is theirs.
+        (
+            _side_by_side([*_PAIR, (60.6, 20.0, b"13"), (60.6, 24.48, b"85")]),
+            ["1385", "4697", "[2][4]"],
+        ),
+    ],
+    ids=[
+        "digit over no bracket",
+        "brackets overlap",
+        "leading zero",
+        "not an inch fraction",
+        "a neighbour touching",
+        "gap in the millimetres",
+        "rows apart",
+        "two rows of digits",
+    ],
+)
+def test_side_by_side_labels_that_do_not_split_cleanly_are_left_as_they_were(
+    page: bytes, words: list[str]
+) -> None:
+    """**Refuse rather than guess.** Outcome: every word comes back exactly as `extract_words` made
+    it, nothing is set aside, and nothing carries a value."""
+    contents = _contents(page)
+
+    assert sorted(item.text for item in contents.texts) == words
+    assert contents.set_aside == ()
+    assert _valued(contents) == []
+
+
+#: Where `AI_Set_1` page 3 sets each character of a label written as four digits over bracketed
+#: inches holding a space, `[ddd d/d]`.
+_UPPER_X = (22.703, 23.666, 24.59, 25.515)
+_LOWER_X = (21.14, 21.691, 22.615, 23.578, 24.502, 24.983, 25.907, 26.57, 27.494)
+
+
+def _two_lines_with_a_space(
+    upper: bytes = b"3048",
+    lower: bytes = b"[120 1/4]",
+    *,
+    along: float = 0,
+    upper_x: tuple[float, ...] = _UPPER_X,
+) -> bytes:
+    """`upper` over `lower`, each character where the client's drawing sets that shape."""
+    return _glyphs(
+        1.66,
+        [(x + along, 57.381, bytes([c])) for x, c in zip(upper_x, upper, strict=True)]
+        + [(x + along, 55.551, bytes([c])) for x, c in zip(_LOWER_X, lower, strict=True)],
+    )
+
+
+#: AI_Set_1 page 3's shape (#904): millimetres over bracketed inches that hold a space.
+TWO_LINES_WITH_A_SPACE = _pdf(_two_lines_with_a_space())
+
+
+def test_millimetres_over_inches_split_at_a_space_are_read_whole() -> None:
+    """**The failure this prevents** (#904). `extract_words` reads `3048` over `[120 1/4]` as one
+    word, the two rows interleaved, and breaks it at the space in the inches into two words, each
+    holding pieces of both rows. Each half was set aside, so a clearly printed label was never
+    read. Outcome: `3048 [120 1/4]`, with the space where the drawing has it, worth exactly
+    120 1/4 inches; nothing set aside."""
+    contents = _contents(TWO_LINES_WITH_A_SPACE)
+
+    assert [(item.text, item.stacked) for item in contents.texts] == [("3048 [120 1/4]", False)]
+    assert _value(contents.texts[0].text) == Fraction(481, 4)
+    assert contents.set_aside == ()
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        # A space in the millimetres: two labels' text, not one number.
+        _two_lines_with_a_space(b"30 8"),
+        # Room for two characters missing from the middle of the millimetres.
+        _two_lines_with_a_space(b"38", upper_x=(_UPPER_X[0], _UPPER_X[3])),
+        # Inches that are not an inch fraction.
+        _two_lines_with_a_space(lower=b"[120 5/3]"),
+        # A digit in a word of its own inside the label: printed over it.
+        _two_lines_with_a_space()
+        + _SIDEWAYS_MARK
+        + _glyphs(1.66, [(_UPPER_X[3] + 1.1, 57.381, b"6")]),
+        # A digit in a word of its own touching the label's end: a piece the halves may be missing.
+        _two_lines_with_a_space()
+        + _SIDEWAYS_MARK
+        + _glyphs(1.66, [(_LOWER_X[-1] + 0.7, 55.551, b"7")]),
+    ],
+    ids=[
+        "space in the millimetres",
+        "gap in the millimetres",
+        "not an inch fraction",
+        "a neighbour inside",
+        "a neighbour touching",
+    ],
+)
+def test_halves_that_do_not_make_one_label_stay_set_aside(page: bytes) -> None:
+    """**Refuse rather than guess.** Measured on `AI_Set_1`: the gap refuses millimetres with two
+    characters' room missing from them, and the millimetres of two labels run together. Outcome:
+    no dual dimension read, and both halves still set aside."""
+    contents = _contents(_pdf(page))
+
+    assert not any("[" in item.text for item in contents.texts)
+    assert _set_aside(contents) == ["two_lines", "two_lines"]
+
+
+def test_halves_of_two_labels_apart_are_not_put_together() -> None:
+    """**No false merge.** The halves of two such labels well apart along one line: each label is
+    put back together from its own halves only."""
+    contents = _contents(
+        _pdf(_two_lines_with_a_space() + _two_lines_with_a_space(b"4763", b"[187 1/2]", along=20))
+    )
+
+    assert sorted(item.text for item in contents.texts) == ["3048 [120 1/4]", "4763 [187 1/2]"]
+    assert contents.set_aside == ()
+
+
+@pytest.mark.parametrize(
+    "inches", ["[1201/4]", "[3/2]", "[1 3/5]", "[01]", "[1 01/2]", "[1 1/2 1]", "[1.5]", "[]"]
+)
+def test_inches_put_together_from_pieces_must_be_an_inch_value(inches: str) -> None:
+    """**The guard on every join this issue adds.** A space the reader missed turns `[120 1/4]`
+    into `[1201/4]`, 300 1/4 inches, exact and wrong. Outcome: refused, as are fractions that are
+    not an inch fraction, pieces with a leading zero, and anything that is not a whole number, a
+    fraction or both."""
+    from extraction import reader
+
+    assert reader._checked_dual("3048", inches) is None
+
+
+@pytest.mark.parametrize(
+    ("millimetres", "inches"),
+    [("3048", "[120 1/4]"), ("813", "[32]"), ("19", "[3/4]"), ("44", "[1 3/4]")],
+)
+def test_inches_that_are_an_inch_value_make_the_dual_dimension(
+    millimetres: str, inches: str
+) -> None:
+    from extraction import reader
+
+    assert reader._checked_dual(millimetres, inches) == f"{millimetres} {inches}"
+
+
+@pytest.mark.parametrize("millimetres", ["0813", "81 3", "[813]", ""])
+def test_millimetres_put_together_from_pieces_must_be_one_number(millimetres: str) -> None:
+    from extraction import reader
+
+    assert reader._checked_dual(millimetres, "[32]") is None
+
+
+def _at(
+    text: str, along: float, across: float
+) -> tuple[dict[str, Any], tuple[float, float, float, float, tuple[float, float]]]:
+    """A character `text` one unit tall and 0.6 wide, upright, at `(along, across)`."""
+    return {"text": text}, (along, along + 0.6, across, across + 1.0, (0.0, 1.0))
+
+
+@pytest.mark.parametrize(("across", "text"), [(1.3, "3 0"), (0.9, None)])
+def test_a_space_either_row_could_own_is_not_given_to_one(across: float, text: str | None) -> None:
+    """The space read into a row is the page's own space character, and only where it sits on that
+    row. Rows set close overlap; a space centred where both rows reach could be either's. Outcome:
+    a space on the row is read; a space either row could own refuses the row."""
+    from extraction import reader
+
+    upper = [_at("3", 0.0, 0.8), _at("0", 1.0, 0.8)]
+    lower = [_at("[", 0.0, 0.0), _at("1", 0.6, 0.0)]
+    space = _at(" ", 0.5, across - 0.5)
+
+    assert reader._row_text(upper, lower, [space]) == text
+
+
+#: Every page this section builds that reads a label apart or puts one back together.
+_NEIGHBOURS = {
+    "two labels on a line": TWO_LABELS_ON_A_LINE,
+    "two labels on a line, whole inches": _two_labels_on_a_line(b"[2]"),
+    "side by side": SIDE_BY_SIDE,
+    "two lines with a space": TWO_LINES_WITH_A_SPACE,
+}
+
+
+@pytest.mark.parametrize("page", sorted(_NEIGHBOURS))
+def test_no_character_of_neighbouring_labels_is_read_twice(
+    page: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#894's invariant holds for every label this section reads apart or puts back together."""
+    assert _characters_read_twice(_NEIGHBOURS[page], monkeypatch) == []

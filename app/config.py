@@ -13,6 +13,8 @@ Source: `docs/DESIGN_PLATFORM.md` §4.1 · Verification: `tests/api/test_app.py`
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -125,6 +127,27 @@ class Settings(BaseSettings):
     and that is when rendering and OCR become the resident cost this number is meant to hold down. Until
     then the name describes the intent and this docstring describes the effect. Worth renaming if #163
     moves further out — that is Anant's call, not a silent change."""
+
+    run_edge_tolerance: Decimal | None = None
+    """`GV_RUN_EDGE_TOLERANCE`: how far, in stored page units, a part may stray past a countertop's
+    ends and top and still be suggested as part of the run beneath it (#893).
+
+    **Unset means no run is suggested and none can be confirmed**, and the Measure page says so.
+    There is no default number: whether a part a hair past the countertop's end belongs to its run
+    is a question about the drawings, and a guessed tolerance would decide it for every package. It
+    is recorded on every run a person confirms, so a run can be read again under the number it was
+    decided with. Stored units are the normalised `0..1` page space, not a distance: the same number
+    is a different physical size on different sheets."""
+
+    @field_validator("run_edge_tolerance")
+    @classmethod
+    def _finite_tolerance(cls, value: Decimal | None) -> Decimal | None:
+        """Refuse a tolerance that would remove the tests rather than loosen them: NaN fails every
+        comparison, infinity passes every one, and a negative one refuses a part that meets the
+        countertop exactly."""
+        if value is not None and (not value.is_finite() or value < 0):
+            raise ValueError("run_edge_tolerance must be a finite number, zero or more")
+        return value
 
     @field_validator("database_url")
     @classmethod
