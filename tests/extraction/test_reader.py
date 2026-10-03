@@ -606,3 +606,31 @@ def test_a_label_printed_over_a_stack_stops_it_being_composed() -> None:
 
     assert not any(item.stacked for item in contents.texts)
     assert "stacked_fraction" in _set_aside(contents)
+
+
+#: `2 1/2"` at 4 points with its bar, split by `extract_words` into `21` and `2"` (#880).
+SPLIT_STACK_WITH_BAR = _pdf(
+    b"BT /F1 4 Tf 1 0 0 1 20 50 Tm (2) Tj 1 0 0 1 22.3 52 Tm (1) Tj "
+    b'1 0 0 1 22.3 48 Tm (2) Tj 1 0 0 1 24.6 50 Tm (") Tj ET\n'
+    b"0.3 w 22.4 51.2 m 24.4 51.2 l S\n"
+)
+
+
+def test_a_stack_the_words_came_apart_from_is_composed_round_its_bar() -> None:
+    """Outcome: `2 1/2"`, marked stacked, on a page read as text as much as inside a pasted drawing."""
+    contents = _contents(SPLIT_STACK_WITH_BAR)
+
+    assert [(item.text, item.stacked) for item in contents.texts] == [('2 1/2"', True)]
+    assert contents.set_aside == ()
+
+
+def test_a_path_keep_path_refuses_is_no_bar_and_no_segment() -> None:
+    """Outcome: with its only path refused, the same stack stays set aside and the page has no
+    segments."""
+    contents = read_page_contents(
+        SPLIT_STACK_WITH_BAR, 0, document_version_id=DOCUMENT, dpi=DPI, keep_path=lambda _: False
+    )
+
+    assert not any(item.stacked for item in contents.texts)
+    assert _set_aside(contents) == ["stacked_fraction", "stacked_fraction"]
+    assert contents.segments == ()

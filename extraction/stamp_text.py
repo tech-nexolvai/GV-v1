@@ -33,7 +33,10 @@ would be the answer read as the question (the vendor-layer rule). Colour is the 
 them apart, so coloured text is not read and is counted instead; drawings are plotted in black. This
 gives up any vendor text set in colour, which goes to the shape and model readers like any other
 unread label. It cannot catch a reviewer who writes in black — in production there is no reviewer's
-markup to catch, because vendors send drawings nobody has reviewed yet.
+markup to catch, because vendors send drawings nobody has reviewed yet. The same rule decides which
+paths count (`path_ink`): the reader puts a stacked fraction whose words came apart back together
+round the bar drawn between its numerator and denominator (#880), and only a black or grey path is
+taken for that bar.
 
 Source: formats phase 1 · Verification: `tests/extraction/test_stamp_text.py`
 """
@@ -54,6 +57,7 @@ __all__ = [
     "StampCharacters",
     "StampText",
     "drawing_ink",
+    "path_ink",
     "read_stamp_text",
     "stamp_character_counts",
     "stamps_only",
@@ -92,6 +96,23 @@ def drawing_ink(char: dict[str, Any]) -> bool:
     if len(parts) == 4:
         return max(parts[:3]) - min(parts[:3]) <= _GREY
     return False
+
+
+def path_ink(path: dict[str, Any]) -> bool:
+    """Whether a line, rectangle or curve is drawn in black or grey, by `drawing_ink`'s rule (#880).
+
+    The colours it shows are the ones that count: its line's if it is stroked, its fill's if it is
+    filled, both where it is both, as `annotations.VectorPath.drawing_ink` counts a path's. A path
+    drawn neither way shows no ink. `read_stamp_text` hands it to the reader, which then takes a
+    stacked fraction's bar only from such a path, so a reviewer's coloured line baked into the
+    snapshot never stands in for the vendor's bar.
+    """
+    shown: list[object] = []
+    if path.get("stroke"):
+        shown.append(path.get("stroking_color"))
+    if path.get("fill"):
+        shown.append(path.get("non_stroking_color"))
+    return bool(shown) and all(drawing_ink({"non_stroking_color": colour}) for colour in shown)
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +209,7 @@ def read_stamp_text(
         document_version_id=document_version_id,
         dpi=dpi,
         keep_char=drawing_ink,
+        keep_path=path_ink,
     )
     texts = tuple(item for item in contents.texts if _UNMAPPED not in item.text)
     return StampText(
