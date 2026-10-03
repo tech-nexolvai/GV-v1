@@ -4,7 +4,7 @@
 database rows, or the reader pair's in an agent scorecard's working file — and the gate judges those
 readings again. Where the gate agrees, the agreed value is held against the person's: **agreed and
 right**, **agreed and wrong**, or **agreed on a crop the person could not vouch for** — cut off,
-unreadable, or two dimensions and an operator. The bake-off's pair score
+unreadable, two dimensions and an operator, or no dimension at all (#867). The bake-off's pair score
 (`model_bakeoff.PairwiseScore`) never counts the middle one, and it is the failure the gate exists
 to prevent.
 
@@ -715,7 +715,8 @@ def render_markdown(
         "",
         (
             f"{len(crops)} crops: {scored} a person read a value for, {len(crops) - scored} they "
-            "could not vouch for (cut off, unreadable, or two values and an operator)."
+            "could not vouch for (cut off, unreadable, two values and an operator, or not a "
+            "dimension)."
         ),
         "",
         (
