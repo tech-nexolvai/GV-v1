@@ -467,6 +467,111 @@ def test_millimetres_over_inches_on_two_lines_are_read_as_one_dual_token() -> No
     assert contents.set_aside == ()
 
 
+def _two_line_word(upper: bytes, lower: bytes) -> bytes:
+    """`upper` over `lower`, set as `TWO_LINE_DUAL` is: close enough that `extract_words` reads both
+    rows as one word, their characters interleaved. `lower` is the operand of a `TJ`, so a number in
+    it moves the next character along without printing one."""
+    return _pdf(
+        b"BT /F1 3 Tf 1 0 0 1 22.5 50 Tm (" + upper + b") Tj ET\n"
+        b"BT /F1 3 Tf 1 0 0 1 20 47 Tm [" + lower + b"] TJ ET\n"
+    )
+
+
+def _composer_given(data: bytes) -> tuple[list[str], list[str]]:
+    """`(rows, characters)`: the two rows of the page's one word as the single-word two-line
+    composer reads them, each its characters in order, and every character the page prints. So each
+    page below is checked to be the shape it claims before the reader is asked about it."""
+    import io
+
+    import pdfplumber
+
+    from extraction import reader
+
+    with pdfplumber.open(io.BytesIO(data)) as document:
+        page = document.pages[0]
+        (word,) = page.extract_words(return_chars=True)
+        characters = [str(char["text"]) for char in page.chars]
+    framed = reader._framed(word)
+    rows = None if framed is None else reader._two_rows(framed)
+    assert rows is not None
+    return [reader._text_of(row) for row in rows], characters
+
+
+#: `3048` over `[120 1/4]`, written by a file that sets the space in the inches as a gap: the `TJ`
+#: moves the `1/4]` along by a space's width (278 thousandths of the size, as Helvetica's space is)
+#: and no space character is printed (#909).
+SPACE_AS_A_GAP = _two_line_word(b"3048", b"([120) -278 (1/4])")
+
+
+def test_inches_whose_space_is_a_gap_are_not_read_without_it() -> None:
+    """**The failure this prevents** (#909). The single-word two-line composer read each row's
+    characters in order and accepted any bracketed inches, so `[120 1/4]` with its space set as a
+    gap read `[1201/4]`: 300 1/4 inches, exact and wrong, from the file's own text. A space the page
+    does not print is nowhere among the characters, so the row cannot be read with it. Outcome: no
+    reading and no value; the label stays set aside as two lines, for a person to read."""
+    rows, characters = _composer_given(SPACE_AS_A_GAP)
+    assert rows == ["3048", "[1201/4]"]
+    assert not any(character.isspace() for character in characters)
+
+    contents = _contents(SPACE_AS_A_GAP)
+
+    assert contents.texts == ()
+    assert _set_aside(contents) == ["two_lines"]
+
+
+@pytest.mark.parametrize(
+    ("upper", "lower"),
+    [
+        (b"585", b"[023]"),
+        (b"0585", b"[23]"),
+        (b"19", b"[2/3]"),
+        (b"19", b"[4/4]"),
+        (b"19", b"[5/4]"),
+        (b"19", b"[1.5]"),
+    ],
+    ids=[
+        "leading zero in the inches",
+        "leading zero in the millimetres",
+        "not an inch denominator",
+        "numerator at the denominator",
+        "numerator above the denominator",
+        "not a whole number or a fraction",
+    ],
+)
+def test_two_lines_in_one_word_are_read_only_as_an_inch_value(upper: bytes, lower: bytes) -> None:
+    """**Refuse rather than guess** (#909). The composer holds its inches to the rule every dual
+    dimension put together from pieces is held to (#904): a whole number or a proper inch fraction,
+    with no leading zeros. Outcome: nothing read, and the word still set aside as two lines."""
+    page = _two_line_word(upper, b"(" + lower + b")")
+    assert _composer_given(page)[0] == [upper.decode(), lower.decode()]
+
+    contents = _contents(page)
+
+    assert contents.texts == ()
+    assert _set_aside(contents) == ["two_lines"]
+
+
+#: Millimetres over bracketed inches that are a fraction alone, as one word: what the composer reads.
+TWO_LINE_FRACTION = _two_line_word(b"19", b"([3/4])")
+
+
+@pytest.mark.parametrize(
+    "page",
+    [TWO_LINE_FRACTION, _two_line_word(b"[3/4]", b"(19)")],
+    ids=["millimetres over inches", "inches over millimetres"],
+)
+def test_a_proper_inch_fraction_on_two_lines_is_still_read(page: bytes) -> None:
+    """**No false refusal.** The guard reads what is an inch value, whichever row is on top.
+    Outcome: `19 [3/4]`, worth exactly 3/4 inch, not marked stacked, nothing set aside."""
+    assert sorted(_composer_given(page)[0]) == ["19", "[3/4]"]
+
+    contents = _contents(page)
+
+    assert [(item.text, item.stacked) for item in contents.texts] == [("19 [3/4]", False)]
+    assert _value(contents.texts[0].text) == Fraction(3, 4)
+    assert contents.set_aside == ()
+
+
 #: A sideways `2' - 0"`, as the client's elevations write their heights.
 SIDEWAYS_FEET_AND_INCHES = _pdf(
     b"BT /F1 10 Tf 0 1 -1 0 150 10 Tm (2' - 0\") Tj ET\n", box=b"[0 0 200 100]"
@@ -813,6 +918,7 @@ _EVERY_PAGE = {
     "split stack": SPLIT_STACK,
     "tight note": TIGHT_NOTE,
     "two-line dual": TWO_LINE_DUAL,
+    "two-line dual, a fraction": TWO_LINE_FRACTION,
     "sideways feet and inches": SIDEWAYS_FEET_AND_INCHES,
     "half a label": HALF_A_LABEL,
     "cut number": CUT_NUMBER,

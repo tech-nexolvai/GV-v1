@@ -748,12 +748,11 @@ def _set_aside_stacked(
 #: from its pieces holds it to the same rule (#848).
 INCH_DENOMINATORS: Final = frozenset({2, 4, 8, 16, 32, 64})
 
-#: The two lines of a dual dimension written one over the other: millimetres, and bracketed inches.
+#: The millimetres line of a dual dimension written one over the other.
 _MILLIMETRES_RE: Final = re.compile(r"\d+(?:\.\d+)?")
-_BRACKETED_RE: Final = re.compile(r"\[[^\[\]]+\]")
 
-#: Bracketed inches as a dual dimension put together from its pieces may hold them (#904): a whole
-#: number, a fraction, or a whole number and a fraction — `[32]`, `[3/4]`, `[120 1/4]`.
+#: Bracketed inches as a dual dimension put together from its pieces may hold them (#904, #909): a
+#: whole number, a fraction, or a whole number and a fraction — `[32]`, `[3/4]`, `[120 1/4]`.
 _PIECED_INCHES_RE: Final = re.compile(r"\[(?:(\d+)|(?:(\d+) )?(\d+)/(\d+))\]")
 
 #: Two or more bracketed groups set back to back: the inches of labels side by side that
@@ -875,7 +874,15 @@ def _compose_fraction(word: dict[str, Any]) -> str | None:
 
 def _compose_two_lines(word: dict[str, Any]) -> str | None:
     """Millimetres written over their bracketed inches, as the one dual token they are — `610 [24]`
-    — or `None`. Either line may be the upper one; the token is written millimetres first."""
+    — or `None`. Either line may be the upper one; the token is written millimetres first.
+
+    **Held to `_checked_dual`, as every dual dimension put together from pieces is** (#909). Each
+    row is read as its characters in order, and a space is not a character the word holds
+    (`extract_words` breaks a word at one). So a file that sets the space in `[120 1/4]` as a gap
+    rather than a space character gives the row `[1201/4]`: 300 1/4 inches, exact and wrong. The
+    guard refuses it, because 1201 is not below 4. The rows' text is otherwise read as it was;
+    anything the guard refuses stays set aside as two lines.
+    """
     framed = _framed(word)
     if framed is None:
         return None
@@ -883,23 +890,20 @@ def _compose_two_lines(word: dict[str, Any]) -> str | None:
     if rows is None:
         return None
     first, second = (_text_of(row) for row in rows)
-    for millimetres, inches in ((first, second), (second, first)):
-        if _MILLIMETRES_RE.fullmatch(millimetres) and _BRACKETED_RE.fullmatch(inches):
-            token = f"{millimetres} {inches}"
-            return token if DUAL_TOKEN_RE.fullmatch(token) else None
-    return None
+    return _checked_dual(first, second) or _checked_dual(second, first)
 
 
 def _checked_dual(millimetres: str, inches: str) -> str | None:
     """`millimetres` and `inches` as one dual token, `3048 [120 1/4]`, or `None`.
 
-    **The guard on every dual dimension put together from pieces** (#904). Such a token is built
-    from where its characters sit, and where a space or a split was misjudged the result can still
-    parse: `[120 1/4]` read without its space is `[1201/4]`, 300 1/4 inches, exact and wrong. So the
-    rules a stacked fraction put together from its pieces is held to (#848) are applied: the
-    millimetres are one number; the inches are a whole number, a fraction or both; a fraction's
-    denominator is in `INCH_DENOMINATORS` with the numerator below it; and no piece of more than one
-    digit starts with a zero.
+    **The guard on every dual dimension put together from pieces**: the joins #904 added, and the
+    single-word two-line composer (`_compose_two_lines`, #909). Such a token is built from where its
+    characters sit, and where a space or a split was misjudged the result can still parse:
+    `[120 1/4]` read without its space is `[1201/4]`, 300 1/4 inches, exact and wrong. So the rules
+    a stacked fraction put together from its pieces is held to (#848) are applied: the millimetres
+    are one number; the inches are a whole number, a fraction or both; a fraction's denominator is
+    in `INCH_DENOMINATORS` with the numerator below it; and no piece of more than one digit starts
+    with a zero.
     """
     match = _PIECED_INCHES_RE.fullmatch(inches)
     if not _MILLIMETRES_RE.fullmatch(millimetres) or match is None:
