@@ -106,3 +106,8 @@
 .drawing-parts__add h4 {
   font-size: var(--text-sm);
 }
+
+.drawing-parts__feedback {
+  flex-basis: 100%;
+  margin: 0;
+}

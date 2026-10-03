@@ -201,3 +201,25 @@ The fixture's image is a synthetic placeholder, not a claim that the reader foun
 part writes are refused by this isolated server. Successful live part confirmation is not tested.
 At verification time the real app's parts GET returned 404; this UI phase does not claim the running
 backend has deployed the new route. Backend services and customer data were left untouched.
+
+## Drawing-part decisions: independent saves and inline refusal
+
+Run `GV_QA_PORT=5206 node tests/browser-qa-server.mjs` and open
+`http://127.0.0.1:5206/?parts=decisions#/review/00000000-0000-4000-8000-000000000101`.
+
+1. In Measurements → Parts of each drawing, edit the first code to `  REVIEWER-CODE  `.
+   Click Cabinet on part 1, then Not a part on part 2 while the first is pending.
+2. Each pending row disables its own code/actions and says Saving this decision. The first
+   fixture response takes 12 seconds and rejects with 503; the second acknowledges after 1.5s.
+   Only the acknowledged decision may change the recorded list/count. A completed second save
+   must not release the first row's lock or erase its later error.
+3. Part 1 keeps its draft and reports the exact refusal beside that part. Part 2 stays withdrawn.
+   Explicitly click Cabinet again. After 201, part 1 becomes confirmed, both receipts say saved,
+   and the list reports nothing left to decide. No background retry is allowed.
+4. `/__qa/state` must show exactly one withdrawal plus the refused and retried confirmation,
+   with the code's surrounding spaces retained in both requests. No checks are requested.
+
+This is in-memory synthetic QA only. The harness accepts only its two known part IDs in this
+explicit mode; other writes remain refused. Controller tests exercise both completion orders,
+duplicate-submit prevention, exact error/code preservation and the independent add-form key.
+Part decisions retain the backend's role restrictions and per-person confirmation requirement.

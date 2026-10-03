@@ -61,7 +61,7 @@ const crops: string[] = [];
 const html = renderToStaticMarkup(
   <DrawingPartsList
     drawings={[vendors]}
-    saving={null}
+    decisions={{}}
     renderCrop={(_drawing, shown) => {
       crops.push(shown.proposal_id);
       return <img className="test-crop" data-part={shown.proposal_id} alt="" />;
@@ -138,7 +138,7 @@ const decided = renderToStaticMarkup(
         ],
       },
     ]}
-    saving="p-top"
+    decisions={{ 'p-top': { kind: 'saving' } }}
     renderCrop={() => <img alt="" />}
     onConfirm={() => undefined}
     onWithdraw={() => undefined}
@@ -171,7 +171,7 @@ const unconfirmed = renderToStaticMarkup(
         why_not: "Nobody has confirmed whose drawing this is yet. Confirm it is the vendor's drawing first.",
       },
     ]}
-    saving={null}
+    decisions={{}}
     renderCrop={() => <img alt="" />}
     onConfirm={() => undefined}
     onWithdraw={() => undefined}
