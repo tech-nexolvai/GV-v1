@@ -444,6 +444,20 @@
   border-top: 1px solid var(--border-subtle);
 }
 
+.distribution-result__notice {
+  border-left: 3px solid var(--text-primary);
+  padding: var(--space-3);
+  background: var(--bg-hover);
+  margin-bottom: var(--space-3);
+}
+
+.distribution-result__notice p { margin: var(--space-2) 0 0; }
+.distribution-result__inputs { margin-bottom: var(--space-3); }
+.distribution-result__inputs summary { cursor: pointer; }
+.distribution-result__inputs dl { font-size: var(--text-sm); }
+.distribution-result__inputs dt { color: var(--text-muted); }
+.distribution-result__inputs dd { margin: 0 0 var(--space-2); overflow-wrap: anywhere; }
+
 .distribution-result__status {
   display: flex;
   flex-wrap: wrap;
