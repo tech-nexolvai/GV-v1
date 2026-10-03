@@ -55,7 +55,7 @@ from tests.extraction.test_annotations import (
     _pdf,
     _stamp,
 )
-from tests.extraction.test_stamp_text import CLIENT_SIZE_STACK, _sheet
+from tests.extraction.test_stamp_text import CLIENT_SIZE_STACK, _drawing, _sheet, _split_stack
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import (
@@ -561,6 +561,28 @@ def test_a_stacked_fraction_read_whole_is_a_suggestion_never_evidence(
     (row,) = _route_rows(session, STAMP_TEXT_EXTRACTOR)
     assert row.raw_text == '24 3/4"'
     assert Fraction(row.value_numerator, row.value_denominator) == Fraction(99, 4)
+    assert STACKED_FRACTION_FLAG in row.ambiguity_flags
+    assert row.corroboration_lane is None
+    assert result.payload["stacked_fractions_read"] == 1
+    assert result.payload["text_set_aside"] == {}
+
+
+def test_a_stack_the_words_came_apart_from_is_recorded_as_a_suggestion_never_evidence(
+    session: Session, store: LocalStore
+) -> None:
+    """**#880.** A stacked `2 1/2"` whose two lines fell into different words, put back together
+    round its bar. Outcome: one row valued at exactly five halves and flagged as stacked, so it is a
+    reviewer's suggestion with no corroboration lane, and counted as a stacked fraction read."""
+    from evidence.candidate import STACKED_FRACTION_FLAG
+
+    revision = _revision(session, store, data=_drawing(_split_stack()))
+    session.commit()
+    (result,) = _stages(store).extract_pages(session, revision.id)
+    session.commit()
+
+    (row,) = _route_rows(session, STAMP_TEXT_EXTRACTOR)
+    assert row.raw_text == '2 1/2"'
+    assert Fraction(row.value_numerator, row.value_denominator) == Fraction(5, 2)
     assert STACKED_FRACTION_FLAG in row.ambiguity_flags
     assert row.corroboration_lane is None
     assert result.payload["stacked_fractions_read"] == 1

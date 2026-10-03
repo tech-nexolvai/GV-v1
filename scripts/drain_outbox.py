@@ -203,6 +203,34 @@ def _build_package_text(session: object, package_revision_id: UUID) -> Mapping[s
     return built.summary()
 
 
+def _hunt_values(
+    session: object, package_revision_id: UUID, package_text: Mapping[str, object]
+) -> Mapping[str, object]:
+    """Point at the passages that state the settings the rules still need, if switched on (#881).
+
+    Off unless `GV_VALUE_HUNTER` is on, and run only once the phrase index was built in this pass,
+    because the index is what it searches. **It cannot fail the extraction**, for the reason the
+    phrase build cannot: every failure is caught and reported, and the hunt runs inside a savepoint,
+    so a failure part-way through takes back the pointers it filed and nothing that extraction wrote.
+    A failure is named by its type alone, as the phrase build's is.
+    """
+    from workflow.value_hunter import VALUE_HUNTER_ENV, hunt_values, value_hunter_enabled
+
+    if not value_hunter_enabled():
+        return {"ran": False, "reason": f"{VALUE_HUNTER_ENV} is off"}
+    if package_text.get("built") is not True:
+        return {
+            "ran": False,
+            "reason": "the phrase index was not built, so there is nothing to search",
+        }
+    try:
+        with session.begin_nested():  # type: ignore[attr-defined]
+            hunt = hunt_values(session, package_revision_id)  # type: ignore[arg-type]
+    except Exception as error:  # noqa: BLE001 - reported, never fatal to a read drawing
+        return {"ran": False, "reason": f"the value hunter failed: {type(error).__name__}"}
+    return hunt.summary()
+
+
 def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
     from storage.local import LocalStore
@@ -407,7 +435,12 @@ def _extract_package(
     # **Index the package's own words, once they are all recorded** (#836). Built from the stored
     # rows, so it needs nothing extraction did not already write, and it cannot fail the extraction:
     # `_build_package_text` reports a failure rather than raising one.
-    results["package_text"] = _build_package_text(session, package_revision_id)
+    package_text = _build_package_text(session, package_revision_id)
+    results["package_text"] = package_text
+    # **Then look in it for the settings the rules still need** (#881), off unless switched on. It
+    # files pointers a person confirms by typing the number blind, never a setting, and it cannot
+    # fail the extraction either.
+    results["value_hunter"] = _hunt_values(session, package_revision_id, package_text)
 
     # **Fill the reviewer's form, now, while the facts are in hand.**
     #
