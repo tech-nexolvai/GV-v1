@@ -502,7 +502,7 @@ def test_a_wired_stage_without_a_store_says_so_rather_than_claiming_it_ran(
 def test_match_runs_and_reports_nothing_to_match_rather_than_claiming_success(
     session: Session,
 ) -> None:
-    """`match` needs no store, so it runs — and finds no items, because nothing detects them.
+    """`match` needs no store, so it runs — and finds no items, as nobody has confirmed a part.
 
     This is the honest zero the stage exists to report. It is asserted rather than left to a
     reviewer's assumption: a stage that returned `{"candidates": 0}` with no reason would be
@@ -514,7 +514,7 @@ def test_match_runs_and_reports_nothing_to_match_rather_than_claiming_success(
     assert result["ran"] is True
     assert result["items"] == 0
     assert result["candidates"] == 0
-    assert "nothing finds the cabinets and their tags" in str(result["reason"])
+    assert "no confirmed parts exist" in str(result["reason"])
     # It names what is missing, not a client deliverable that already arrived (#710).
     assert "#274" not in str(result["reason"])
 

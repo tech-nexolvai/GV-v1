@@ -1,0 +1,108 @@
+/* ============================================================
+   PARTS OF EACH DRAWING (#882)
+   The computer's suggested parts, one row each, for a person to decide one at a time.
+
+   Laid out like "Which drawing is which?" above it on the Measure page, with the stored picture
+   first in each row: a decision about a part is a person looking at it.
+   ============================================================ */
+
+.drawing-parts__drawing {
+  margin-top: var(--space-4);
+}
+
+.drawing-parts__drawing h3 {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.drawing-parts__why-not {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.drawing-parts__list {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.drawing-parts__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.drawing-parts__picture {
+  flex: 0 0 10rem;
+}
+
+.drawing-parts__crop {
+  display: block;
+  width: 10rem;
+  max-height: 6rem;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid var(--border-default);
+}
+
+.drawing-parts__no-picture {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.drawing-parts__facts {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+
+.drawing-parts__facts span {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.drawing-parts__item[data-decided='true'] .drawing-parts__decision {
+  color: var(--text-primary);
+}
+
+.drawing-parts__code,
+.drawing-parts__add label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.drawing-parts__choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.drawing-parts__add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.drawing-parts__add h4,
+.drawing-parts__add p {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.drawing-parts__add h4 {
+  font-size: var(--text-sm);
+}

@@ -54,6 +54,8 @@ from storage.hashing import ArtifactCorrupt
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import _pdf
+from tests.workflow.test_view_roles import _confirmed_part
+from vocabulary.part_kinds import PartKind
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import DatabaseStages
@@ -430,18 +432,17 @@ def _drawn_item(
     *,
     kind: str,
     tag: str,
-    item_type: str,
+    part: PartKind,
     mark: str | None,
     identifier_kind: str = "mark",
 ) -> DrawingItem:
-    """One drawing item on its own document, with an optional printed identifier.
+    """One confirmed part on its own document, with an optional printed identifier.
 
-    Seeded rather than extracted, because nothing extracts one: detecting a view and typing an item
-    are both semantic and both wait on #274 and Q20. That is precisely why this test exists — it
-    proves the wiring downstream of detection is real, so that when detection lands the stage does
-    not also need writing.
+    Seeded rather than extracted: an item exists only once a person confirms a part (#852), and
+    matching reads only those (#882). That is precisely why this test exists — it proves the wiring
+    downstream of the confirmation is real.
     """
-    data = _pdf(f"BT /F1 10 Tf 1 0 0 1 20 70 Tm ({tag} {item_type} {mark}) Tj ET\n".encode())
+    data = _pdf(f"BT /F1 10 Tf 1 0 0 1 20 70 Tm ({tag} {part.value} {mark}) Tj ET\n".encode())
     digest = hashlib.sha256(data).hexdigest()
     package_id = session.execute(
         select(PackageRevision.package_id).where(PackageRevision.id == revision.id)
@@ -484,9 +485,7 @@ def _drawn_item(
     view = DrawingView(page_id=page.id, tag=tag, region=BOX)
     session.add(view)
     session.flush()
-    item = DrawingItem(drawing_view_id=view.id, item_type=item_type, extent=BOX)
-    session.add(item)
-    session.flush()
+    item = _confirmed_part(session, view, part)
     if mark is not None:
         session.add(
             ItemIdentifier(drawing_item_id=item.id, kind=identifier_kind, value_as_printed=mark)
@@ -505,9 +504,9 @@ def test_match_writes_real_candidates_when_items_exist(session: Session, store: 
     """
     revision = _revision(session, store, data=_pdf(b"BT /F1 10 Tf 1 0 0 1 20 70 Tm (base) Tj ET\n"))
     left = _drawn_item(
-        session, revision, kind="architectural", tag="D", item_type="CT001", mark="C-12"
+        session, revision, kind="architectural", tag="D", part=PartKind.CABINET, mark="C-12"
     )
-    right = _drawn_item(session, revision, kind="shop", tag="E", item_type="CT001", mark="C-12")
+    right = _drawn_item(session, revision, kind="shop", tag="E", part=PartKind.CABINET, mark="C-12")
 
     result = DatabaseStages(store).match(session, revision.id)
 
@@ -529,8 +528,10 @@ def test_match_does_not_pair_items_of_different_types(session: Session, store: L
     an invisible one to a test that only counted candidates.
     """
     revision = _revision(session, store, data=_pdf(b"BT /F1 10 Tf 1 0 0 1 20 70 Tm (base) Tj ET\n"))
-    _drawn_item(session, revision, kind="architectural", tag="D", item_type="CT001", mark="C-12")
-    _drawn_item(session, revision, kind="shop", tag="E", item_type="CT002", mark="C-12")
+    _drawn_item(
+        session, revision, kind="architectural", tag="D", part=PartKind.COUNTERTOP, mark="C-12"
+    )
+    _drawn_item(session, revision, kind="shop", tag="E", part=PartKind.CABINET, mark="C-12")
 
     result = DatabaseStages(store).match(session, revision.id)
 
@@ -554,11 +555,11 @@ def test_an_item_whose_only_identifier_is_a_catalogue_number_is_still_reported(
         revision,
         kind="architectural",
         tag="D",
-        item_type="CT001",
+        part=PartKind.CABINET,
         mark="SKU-9",
         identifier_kind="catalogue",
     )
-    _drawn_item(session, revision, kind="shop", tag="E", item_type="CT001", mark="SKU-9")
+    _drawn_item(session, revision, kind="shop", tag="E", part=PartKind.CABINET, mark="SKU-9")
 
     result = DatabaseStages(store).match(session, revision.id)
 

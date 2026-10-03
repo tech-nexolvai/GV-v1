@@ -44,6 +44,12 @@ aside, with their place on the page and no text (`SetAsideReason`): a stacked fr
 written on two lines, and a piece of a longer label. The stacked fractions are what the admin's rule
 sends to a reviewer (#726).
 
+**A stacked fraction is put back together only from where its own characters sit** (#786, #880):
+from its word, where `extract_words` kept the stack in one, and otherwise from the characters of the
+stacks set aside, round the bar the page draws between numerator and denominator. Either way it is
+marked as stacked, so it is a reviewer's suggestion and never evidence; anything that does not fit
+the shape exactly stays set aside.
+
 What this module deliberately does not do: rasterise a page, run OCR, merge fragmented dimensions, or
 associate text with lines. The last two need thresholds, and thresholds need real drawings (#274) —
 `AGENTS.md` §9, *"a fixture invented today encodes today's guess as ground truth"*.
@@ -432,11 +438,15 @@ def read_page_contents(
     document_version_id: UUID,
     dpi: int,
     keep_char: Callable[[dict[str, Any]], bool] | None = None,
+    keep_path: Callable[[dict[str, Any]], bool] | None = None,
 ) -> PageContents:
     """The text runs and straight segments on one page, in stored coordinates.
 
     `keep_char`, where given, is asked of every character before any word is formed, and a character
     it refuses is not read at all. `extraction/stamp_text.py` uses it to leave out coloured text.
+    `keep_path`, where given, is asked the same of every line, rectangle and curve: a path it refuses
+    is neither a segment nor a fraction's bar (#880). `extraction/stamp_text.py` uses it to leave out
+    coloured paths.
 
     `dpi` has no default. Stored coordinates are normalised against the visible crop box and reached
     through integer image space, so the resolution decides how much precision survives the trip — a
@@ -471,9 +481,8 @@ def read_page_contents(
                 crop_box=crop_box,
             )
             height = _decimal(page.height)
-            if keep_char is not None:
-                test = keep_char
-                page = page.filter(lambda obj: obj.get("object_type") != "char" or test(obj))
+            if keep_char is not None or keep_path is not None:
+                page = page.filter(lambda obj: _kept(obj, keep_char, keep_path))
             # **Text printed twice in one place is read once.** Measured on `AI_Set_2`: a label drawn
             # twice over itself came back as `22''`, 22 inches, for a `2' - 6"`. pdfplumber's own
             # de-duplication removes a character only where an identical one, same font and size,
@@ -490,6 +499,13 @@ def read_page_contents(
             # marked as stacked; millimetres written over their bracketed inches become `610 [24]`.
             # Anything that does not fit those shapes exactly stays set aside.
             words, set_aside = _read_what_composes(words, set_aside, digits)
+            # **Then the stacks the words came apart from are put back together** (#880), from where
+            # their characters sit around the bar the page draws between numerator and denominator:
+            # `152` and `1"` for a sideways `15 1/2"`. Held to the rules a reading put together from
+            # its pieces is held to (#848), and still marked as stacked.
+            words, set_aside = _compose_split_stacks(
+                words, set_aside, digits, page.chars, (*page.lines, *page.rects, *page.curves)
+            )
             # **Dual tokens are read whole, before the words they are made of.** `984 [38 3/4]` is
             # one reading of one dimension, and `extract_words` splits it at the spaces into `984`,
             # `[38` and `3/4]` — three fragments, none of which is a dimension. That splitting is the
@@ -883,6 +899,264 @@ def _read_what_composes(
             {**word, "text": composed, "stacked": reason is SetAsideReason.STACKED_FRACTION}
         )
     return kept, still
+
+
+#: An inch mark, as fonts set it: the one character a stack put back together from its characters
+#: may end with (#880), as `extraction/fraction_parts.py` requires an inch mark drawn after the
+#: fraction. A label in feet is left to a reviewer.
+_INCH_MARK_RE: Final = re.compile(r"[\"”″]")
+
+
+def _kept(
+    obj: dict[str, Any],
+    keep_char: Callable[[dict[str, Any]], bool] | None,
+    keep_path: Callable[[dict[str, Any]], bool] | None,
+) -> bool:
+    """Whether a page object is read: a character `keep_char` keeps, a line, rectangle or curve
+    `keep_path` keeps, and anything else. A test that was not given keeps everything."""
+    kind = obj.get("object_type")
+    if kind == "char":
+        return keep_char is None or keep_char(obj)
+    if kind in ("line", "rect", "curve"):
+        return keep_path is None or keep_path(obj)
+    return True
+
+
+def _along_middle(frame: _Frame) -> float:
+    return (frame[0] + frame[1]) / 2
+
+
+def _across_middle(frame: _Frame) -> float:
+    return (frame[2] + frame[3]) / 2
+
+
+def _height(frame: _Frame) -> float:
+    return frame[3] - frame[2]
+
+
+def _path_span(path: dict[str, Any], up: tuple[float, float]) -> tuple[float, float, float, float]:
+    """A path's box as `(along_low, along_high, across_low, across_high)` on a line read the way
+    `up` names, its corners projected as `_frame` projects a character's."""
+    up_x, up_y = up
+    corners = [(float(path[x]), float(path[y])) for x in ("x0", "x1") for y in ("y0", "y1")]
+    across = [x * up_x + y * up_y for x, y in corners]
+    along = [x * up_y - y * up_x for x, y in corners]
+    return min(along), max(along), min(across), max(across)
+
+
+def _run_of(chars: list[dict[str, Any]]) -> dict[str, Any]:
+    """Characters as one run, with the box round them, as `extract_words` gives a word."""
+    return {
+        "text": "".join(str(char["text"]) for char in chars),
+        "chars": chars,
+        "x0": min(char["x0"] for char in chars),
+        "top": min(char["top"] for char in chars),
+        "x1": max(char["x1"] for char in chars),
+        "bottom": max(char["bottom"] for char in chars),
+        "upright": bool(chars[0].get("upright", True)),
+    }
+
+
+def _stack_on_bar(
+    path: dict[str, Any],
+    up: tuple[float, float],
+    nearby: list[_Framed],
+    pool: list[_Framed],
+    printed: list[_Framed],
+    digits: _DigitGrid,
+) -> dict[str, Any] | None:
+    """The label a stacked fraction makes with `path` as its bar, read the way `up` names, as one
+    run marked as stacked; or `None`.
+
+    `nearby` is the set-aside digits round the path that read that way, `pool` every character of
+    the stacks set aside, and `printed` every character on the page. The label is the layout of a
+    stacked fraction (`extraction/glyph_bands.py`, #834), found among exact characters:
+
+    - **the bar**: the path is longer along the line than it is thick across it, lies across it
+      between the middles of the numerator and the denominator, and along it within their span;
+    - **the numerator and the denominator**: the set-aside digits whose middles lie along the bar
+      and within `STACK_REACH` of it, on exactly two lines (`_two_rows`), one either side of it,
+      `_SAME_LINE` to `STACK_REACH` text heights apart;
+    - **the whole number**: set-aside digits running back from the stack, centred across within
+      it, each touching the label as far as it has been followed (`_TOUCHING` of the label's
+      tallest digit, or of its own height where that is taller);
+    - **the inch mark**: the one set-aside character touching the stack after it, and an inch mark.
+
+    Refused, as `extraction/fraction_parts.py` refuses a reading put together from its pieces,
+    unless the numerator is below the denominator, the denominator is in `INCH_DENOMINATORS`, and no
+    piece of more than one digit starts with a zero. Refused too where any other character on the
+    page reads the same way, is centred across within the stack, and touches the label or stands
+    inside it (a neighbour, which may be a piece the count is missing), and where a digit that is
+    not its own is printed over it (`_DigitGrid.printed_over`).
+    """
+    a0, a1, c0, c1 = _path_span(path, up)
+    if a1 - a0 <= c1 - c0:
+        return None  # thicker across the line than it is long along it: not a bar
+    bar = (c0 + c1) / 2
+    stack = [
+        (char, frame)
+        for char, frame in nearby
+        if a0 <= _along_middle(frame) <= a1
+        and abs(_across_middle(frame) - bar) <= STACK_REACH * _height(frame)
+    ]
+    rows = _two_rows(stack)
+    if rows is None:
+        return None
+    upper, lower = rows
+    if not max(_across_middle(frame) for _, frame in lower) < c0:
+        return None  # the path is not above the denominator
+    if not c1 < min(_across_middle(frame) for _, frame in upper):
+        return None  # nor below the numerator
+    start = min(frame[0] for _, frame in stack)
+    end = max(frame[1] for _, frame in stack)
+    if a0 < start or end < a1:
+        return None  # it runs on past the stack: a line drawn through it, not its bar
+    tallest = max(_height(frame) for _, frame in stack)
+    offset = sum(_across_middle(frame) for _, frame in upper) / len(upper) - sum(
+        _across_middle(frame) for _, frame in lower
+    ) / len(lower)
+    if not _SAME_LINE * tallest <= offset <= STACK_REACH * tallest:
+        return None
+
+    foot = min(frame[2] for _, frame in stack)
+    head = max(frame[3] for _, frame in stack)
+    stacked = {id(char) for char, _ in stack}
+    line = [
+        (char, frame)
+        for char, frame in pool
+        if id(char) not in stacked and frame[4] == up and foot <= _across_middle(frame) <= head
+    ]
+    # **The whole number, followed back from the stack** one touching digit at a time. Each one
+    # taken can only bring more within reach, so the digits found do not depend on their order.
+    whole: list[_Framed] = []
+    taken: set[int] = set()
+    grew = True
+    while grew:
+        grew = False
+        for char, frame in line:
+            if id(char) in taken or not str(char["text"]).isdigit():
+                continue
+            touching = start - frame[1] <= _TOUCHING * max(tallest, _height(frame))
+            if _along_middle(frame) < start and touching:
+                whole.append((char, frame))
+                taken.add(id(char))
+                start = min(start, frame[0])
+                tallest = max(tallest, _height(frame))
+                grew = True
+    after = [
+        (char, frame)
+        for char, frame in line
+        if _along_middle(frame) > end and frame[0] - end <= _TOUCHING * tallest
+    ]
+    if len(after) != 1 or not _INCH_MARK_RE.fullmatch(str(after[0][0]["text"])):
+        return None  # no inch mark, or more than one character, after the fraction
+    mark = after[0]
+    end = max(end, mark[1][1])
+
+    whole.sort(key=lambda entry: entry[1][0])
+    label = [*whole, *upper, *lower, mark]
+    own = {id(char) for char, _ in label}
+    for char, frame in printed:
+        if id(char) in own or frame[4] != up or not foot <= _across_middle(frame) <= head:
+            continue
+        # Heights are digits' heights, as everywhere in this module: a mark's box says nothing of
+        # a label's size. Measured on `AI_Set_1`, an inch mark's box is 2.95 points across the
+        # line beside stacked digits of 2.10; counted, it made the mark of a `1/8"` touch the
+        # `3/4"` after it, 1.37 points away, and the `3/4"` was refused.
+        reach = _TOUCHING * max(tallest, _height(frame) if str(char["text"]).isdigit() else 0)
+        if frame[1] >= start - reach and frame[0] <= end + reach:
+            return None  # a character touching the label, or inside it, that is no part of it
+    chars = [char for char, _ in label]
+    if digits.printed_over({"chars": chars}):
+        return None
+
+    pieces = (_text_of(whole), _text_of(upper), _text_of(lower))
+    if any(len(piece) > 1 and piece.startswith("0") for piece in pieces):
+        return None
+    numerator, denominator = int(pieces[1]), int(pieces[2])
+    if denominator not in INCH_DENOMINATORS or not 0 < numerator < denominator:
+        return None
+    text = f"{pieces[0]} {numerator}/{denominator}{mark[0]['text']}".strip()
+    return {**_run_of(chars), "text": text, "stacked": True}
+
+
+def _compose_split_stacks(
+    words: list[dict[str, Any]],
+    set_aside: list[tuple[dict[str, Any], SetAsideReason]],
+    digits: _DigitGrid,
+    chars: list[dict[str, Any]],
+    paths: tuple[dict[str, Any], ...],
+) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], SetAsideReason]]]:
+    """`(words, set_aside)` with every stacked label that composes from the characters of the
+    stacks still set aside added to the words, and what is left of those stacks still set aside.
+
+    **Why words are not enough** (#880). `extract_words` groups characters by where they fall in
+    reading order, and a stack's two lines can fall into different words or into a neighbour's:
+    measured on `AI_Set_1`, a sideways `15 1/2"` came back as `152` and `1"`, each printed over by
+    the other, and a chain of sideways labels as one word `"81"738"81"…` holding eight labels and the
+    mark of a ninth. No word of those is a label, so each was set aside whole.
+
+    **So the labels are found again from the characters**, anchored on what sets a stacked fraction
+    apart from two lines of text set close together: the bar drawn between numerator and
+    denominator, a path on the page (`_stack_on_bar`). Every character of a label comes from a stack
+    set aside; where one it needs is in a word read or set aside for another reason, the label is not
+    composed: its stack is incomplete, or that character touches the label or stands inside it
+    without being part of it.
+    A character two bars would both claim is given to the first, in page order, and the second label is
+    not composed. What composes is marked as stacked, like every stacked fraction read whole, so it
+    is a reviewer's suggestion and never evidence (#726). What is left of a word once its characters
+    have gone into labels stays set aside, as its own run; a word none of whose characters composed
+    stays as it was.
+
+    Every number here is one the reader already holds (`STACK_REACH`, `_SAME_LINE`, `_TOUCHING`) or
+    a comparison with no number in it; nothing is fitted to a drawing.
+    """
+    pool: list[_Framed] = []
+    for word, reason in set_aside:
+        if reason is not SetAsideReason.STACKED_FRACTION:
+            continue
+        for char in word.get("chars") or ():
+            if str(char.get("text", "")).strip() and (frame := _frame(char)) is not None:
+                pool.append((char, frame))
+    if not pool:
+        return words, set_aside
+    by_id = {id(char): (char, frame) for char, frame in pool}
+    stack_digits = _DigitGrid([char for char, _ in pool])
+    printed = [
+        (char, frame)
+        for char in chars
+        if str(char.get("text", "")).strip() and (frame := _frame(char)) is not None
+    ]
+
+    used: set[int] = set()
+    composed: list[dict[str, Any]] = []
+    for path in paths:
+        nearby = [by_id[key] for key, _ in stack_digits.near(path)]
+        for up in sorted({frame[4] for _, frame in nearby}):
+            label = _stack_on_bar(
+                path,
+                up,
+                [entry for entry in nearby if entry[1][4] == up],
+                pool,
+                printed,
+                digits,
+            )
+            if label is None or any(id(char) in used for char in label["chars"]):
+                continue
+            used.update(id(char) for char in label["chars"])
+            composed.append(label)
+    if not composed:
+        return words, set_aside
+
+    still: list[tuple[dict[str, Any], SetAsideReason]] = []
+    for word, reason in set_aside:
+        own = list(word.get("chars") or ())
+        left = [char for char in own if id(char) not in used]
+        if len(left) == len(own):
+            still.append((word, reason))
+        elif any(str(char.get("text", "")).strip() for char in left):
+            still.append((_run_of(left), reason))
+    return [*words, *composed], still
 
 
 def _is_fragment(run: dict[str, Any], digits: _DigitGrid, partners: set[int]) -> bool:
