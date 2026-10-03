@@ -9,7 +9,7 @@ architect's right number.
 **One rule, for every place a side is decided.** A reviewer's label (`app/evidence/confirm.py`), the
 exact-tag lane (`app/evidence/automatic_typing.py`), the fields the Measure page offers a reading
 for (`app/api/confirmations.py`), the readings the form-filler may use (`workflow/propose.py`) and
-the passages a setting may be cited from (`workflow/parameter_proposals.py`) all ask
+the passages a setting may be cited from (`workflow/parameter_citations.py`) all ask
 `ReadingSides.of`. A second rule anywhere would be the hole the first one closed.
 
 - **A reviewer's markup has no side at all** (#802). The markup route records the reviewer's

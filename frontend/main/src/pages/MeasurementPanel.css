@@ -795,6 +795,45 @@
   color: var(--text-muted);
 }
 
+/* A setting found in the architect's drawing (#866): where it is and a crop, never the number. The
+   reviewer types what they see in the box, and it is saved only if it matches. */
+.setting-citation {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-left: 2px solid var(--gv-crimson-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+}
+
+.setting-citation__title {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.setting-citation__note {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: var(--text-muted);
+}
+
+.setting-citation__crop {
+  display: block;
+  max-width: 100%;
+  max-height: 10rem;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid var(--border-default);
+}
+
+.setting-citation__decline {
+  justify-self: start;
+  margin-top: var(--space-2);
+}
+
 /* A value nobody may supply. Marked rather than hidden: a reviewer should be able to see that the
    check will abstain, and why, instead of hunting for a field that was never there. */
 .value-blocked {

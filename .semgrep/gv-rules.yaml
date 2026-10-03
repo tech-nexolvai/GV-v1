@@ -217,6 +217,7 @@ rules:
     paths:
       include:
         - workflow/parameter_proposals.py
+        - workflow/parameter_citations.py
         - workflow/value_hunter*
         - retrieval/
     pattern-either:
