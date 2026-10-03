@@ -150,6 +150,10 @@ class KeyCrop:
     cut_off: bool
     """The person noted the label is cut off at the crop's edge."""
 
+    stacked: bool = False
+    """The key marks the label as a stacked fraction: a `stacked` tick, or a crop picked into the
+    `stacked_fraction` group. The gate replay scores the stacked-fraction finder against it (#851)."""
+
 
 _SELF_VERIFIED = ("self-verified", "machine-self-verified", "not per-case human-read")
 
@@ -196,6 +200,8 @@ def load_key(case_dir: Path) -> tuple[KeyCrop, ...]:
                 stratum=row.get("stratum", "") or "-",
                 rotated=bool(row.get("rotated", "").strip()) or row.get("stratum") == "rotated",
                 cut_off="cut off" in row.get("note", "").lower(),
+                stacked=bool(row.get("stacked", "").strip())
+                or row.get("stratum") == "stacked_fraction",
             )
         )
     if not crops:
