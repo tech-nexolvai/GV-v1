@@ -91,3 +91,21 @@ without an observation must likewise keep the draft and report the refusal.
 
 Automated state tests: `npm run test:decision-save` (rejection, refusal, concurrency, retry and success).
 Draft retention applies while the finding card stays mounted; it is not cross-refresh persistence.
+
+## Confirm/dismiss acknowledgement and concurrent failure
+
+Use a fresh isolated server and the `action-save` scenario:
+
+`http://127.0.0.1:5199/?scenario=action-save&reset=1#/review/00000000-0000-4000-8000-000000000101`
+
+1. Open CT-SINK-CUTOUT-WIDTH-001 and CAB-FILLER-001 details. Dismiss the missing-value fixture and,
+   while it is pending, confirm the filler fixture. These are test decisions, not real approvals.
+2. Both cards show Saving; counts must remain unchanged until acknowledgement. The harness delays
+   dismiss by 12 seconds and confirm by 1.5 seconds to expose the ordering reliably.
+3. Confirm succeeds; reviewed count becomes one. Dismiss then rejects with an intentional 503.
+   Its inline error must not erase the saved confirmation, change a verdict or mark dismissal saved.
+4. Explicitly retry Dismiss. After acknowledgement the count becomes two. Refresh results and check
+   that the two saved actions remain. `/__qa` must show one rejection and two successful action writes.
+
+No optimistic reviewed count, stale whole-list rollback or automatic retry is allowed. The pending
+lock is per mounted card. This fixture does not establish production concurrency or network reliability.

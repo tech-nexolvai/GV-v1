@@ -19,7 +19,8 @@ const flowFindings = findings.map((finding, i) => ({ ...finding,
 
 export function createScenarioState(name = null) {
   return {
-    name: ['partial-upload', 'approval', 'review-flow', 'decision-save'].includes(name) ? name : null,
+    name: ['partial-upload', 'approval', 'review-flow', 'decision-save', 'action-save'].includes(name) ? name : null,
+    dismissAttempts: 0,
     decisionAttempts: { correction: 0, exception: 0 },
     packageCreates: 0, createdPackage: null, documents: [], sessions: [], actions: [], approved: false,
     storageAttempts: 0, storageFailures: 0, extractionRequests: 0, events: [],
@@ -53,6 +54,7 @@ export function scenarioSnapshot(state) {
     findingCount: state.name === 'review-flow' && !state.resultsReady ? 0 : findings.length,
     approved: state.approved, events: state.events,
     decisionAttempts: state.decisionAttempts,
+    dismissAttempts: state.dismissAttempts,
     extracted: state.extracted, storedMeasurements: state.storedMeasurements,
     checksRequests: state.checksRequests, resultsReady: state.resultsReady,
   };
@@ -155,7 +157,7 @@ function respondToScenario(state, method, path, body = {}) {
     }
   }
 
-  if (state.name === 'approval' || flow || state.name === 'decision-save') {
+  if (state.name === 'approval' || flow || state.name === 'decision-save' || state.name === 'action-save') {
     if (method === 'POST' && path === `${prefix}/packages/${targetPackage}/review-sessions`) {
       if (flow && !state.extracted) return refuse('Upload the fixture pair before opening a sitting.');
       if (body.package_revision_id !== targetRevision) return refuse('Wrong synthetic revision.', 422);
@@ -182,6 +184,10 @@ function respondToScenario(state, method, path, body = {}) {
     if (session && method === 'POST' && path.endsWith('/actions')) {
       if (state.approved) return refuse('The synthetic review is already signed off.');
       if (!scenarioFindings(state, targetPackage).some((finding) => finding.id === body.finding_id) || !['confirm', 'dismiss'].includes(body.action)) return refuse('Only confirm/dismiss of existing synthetic findings is implemented.', 422);
+      if (state.name === 'action-save' && body.action === 'dismiss') {
+        state.dismissAttempts += 1;
+        if (state.dismissAttempts === 1) return refuse('Synthetic dismissal rejected once. No dismissal was recorded.', 503);
+      }
       const action = { finding_id: body.finding_id, action: body.action, actor: 'Synthetic QA reviewer', note: body.note ?? '', created_at: timestamp };
       state.actions.push(action);
       return response(action, 201);

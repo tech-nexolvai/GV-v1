@@ -61,6 +61,20 @@ const prefix = `/api/v1/projects/${project}`;
 }
 assert.equal(handleScenario(createScenarioState(), 'POST', `${prefix}/packages`, {}), null, 'no scenario delegates to baseline refusal');
 {
+  const state = createScenarioState('action-save');
+  const session = handleScenario(state, 'POST', `${prefix}/packages/${populated}/review-sessions`, { package_revision_id: revision }).body;
+  const path = `${prefix}/review-sessions/${session.id}/actions`;
+  const dismissed = { finding_id: findings[3].id, action: 'dismiss' };
+  assert.equal(handleScenario(state, 'POST', path, dismissed).status, 503);
+  assert.equal(state.actions.length, 0);
+  assert.equal(handleScenario(state, 'POST', path, { finding_id: findings[2].id, action: 'confirm' }).status, 201);
+  assert.equal(scenarioSnapshot(state).reviewedCount, 1);
+  assert.equal(handleScenario(state, 'POST', path, dismissed).status, 201);
+  assert.equal(scenarioSnapshot(state).reviewedCount, 2);
+  assert.deepEqual(scenarioFindings(state).map(f => f.outcome), findings.map(f => f.outcome));
+  assert.equal(state.dismissAttempts, 2);
+}
+{
   const state = createScenarioState('decision-save');
   const session = handleScenario(state, 'POST', `${prefix}/packages/${populated}/review-sessions`, { package_revision_id: revision }).body;
   const scoped = `${prefix}/review-sessions/${session.id}`;

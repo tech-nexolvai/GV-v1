@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ChatThread } from '../components/chat/ChatThread';
-import type { DecisionSaveResult } from '../components/chat/decisionSave';
+import type { DecisionSaveResult, SimpleReviewAction } from '../components/chat/decisionSave';
+import { recordReviewDecision } from './recordReviewDecision';
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { StatusBadge } from '../components/ui/Badge';
@@ -388,27 +389,18 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * dismissal was discarded on refresh and nothing was ever written down. "A reviewer signs off" is
    * the fourth clause of the invariant, and it was the one clause with no persistence behind it.
    *
-   * Shown immediately and rolled back if the write fails. A reviewer works down a list, and waiting
-   * on a round trip per row makes that unusable — but a decision that silently did not save is worse
-   * than a slow one, so a failure puts the row back and says so rather than leaving the tick.
+   * Count only acknowledged saves. Restoring a captured list on failure would erase unrelated
+   * decisions saved while this request was in flight. Other findings can still be reviewed.
    */
   async function handleAction(
     findingId: string,
-    action: 'confirm' | 'correct' | 'except' | 'dismiss',
-  ) {
-    const previous = findings;
+    action: SimpleReviewAction,
+  ): Promise<DecisionSaveResult> {
     setActionError(null);
-    setFindings(prev => prev.map(f => (f.id === findingId ? { ...f, reviewer_action: action } : f)));
-
-    try {
+    return recordReviewDecision(findingId, action, async () => {
       const current = await ensureSession();
       await recordReviewAction(projectId(), current.id, { finding_id: findingId, action });
-    } catch (error) {
-      setFindings(previous);
-      setActionError(
-        `That decision was not recorded — ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    }, setFindings);
   }
 
   /**
