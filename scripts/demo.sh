@@ -96,7 +96,9 @@ say "6/6  the API, review worker, and UI"
 # suggested and no run can be confirmed. The demo states the reader's own `GV_READER_WITNESS_TOLERANCE`
 # below, not a new number: it is the tolerance the part suggester already used to decide that a
 # countertop's ends meet its cabinets' (#868), and a second number for that question could disagree
-# with the first. `tests/api/test_countertop_runs.py` holds the two equal.
+# with the first. `tests/api/test_countertop_runs.py` holds the two equal. The same number decides
+# which reading is suggested as each confirmed part's width (#913): whether a reading's ends meet the
+# part's is the same question about two ends drawn on the page.
 GV_DATABASE_URL="$BARE_URL" \
 GV_MODEL_RATES_FILE="deploy/model_rates.us-east-1.json" \
 GV_DEV_PRINCIPAL="demo reviewer" \

@@ -146,6 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         measurements,
         operations,
         packages,
+        reading_parts,
         review,
         reviewer_chat,
         rules,
@@ -168,6 +169,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Which confirmed parts sit beneath each confirmed countertop: suggested by the computer,
     # confirmed, corrected or withdrawn by a person, one countertop at a time (#893).
     app.include_router(countertop_runs.router, prefix=API_PREFIX)
+    # Which confirmed reading is each confirmed part's width: suggested by the computer, confirmed,
+    # corrected or taken back by a person, one part at a time (#913).
+    app.include_router(reading_parts.router, prefix=API_PREFIX)
     app.include_router(approvals.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(finding_chain.router, prefix=API_PREFIX)

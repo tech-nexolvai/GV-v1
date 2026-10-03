@@ -7,7 +7,8 @@ that lets any of these through is one that answers `same_assembly` confidently a
 * an item created already corroborated, becoming a second route into the verdict;
 * an alias edited in place, silently changing how every past match should have been read;
 * a suggested part becoming an item without a person confirming it (#852);
-* a reading measuring two parts at once, or a run whose members are not confirmed parts.
+* a reading measuring two parts at once, or a run whose members are not confirmed parts;
+* a reading linked to a part by anything but a person's decision, or read by a rule (#913).
 """
 
 from __future__ import annotations
@@ -917,9 +918,9 @@ RUN_AWARE: frozenset[str] = frozenset(
 _RUN_WORDS = re.compile(r"countertop_run|CountertopRun|live_run_rows")
 
 
-def _mentions_a_run(root: Path) -> set[str]:
-    """Every shipped file whose code, as opposed to its prose, names a run: an import, a model, a
-    reader or a table. Docstrings and comments are not code, so they are skipped."""
+def _mentions(root: Path, words: re.Pattern[str]) -> set[str]:
+    """Every shipped file whose code, as opposed to its prose, says one of `words`: an import, a
+    model, a reader or a table. Docstrings and comments are not code, so they are skipped."""
     found: set[str] = set()
     for path in _source_files(root):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -945,10 +946,14 @@ def _mentions_a_run(root: Path) -> set[str]:
                 )
             else:
                 continue
-            if _RUN_WORDS.search(text):
+            if words.search(text):
                 found.add(path.relative_to(root).as_posix())
                 break
     return found
+
+
+def _mentions_a_run(root: Path) -> set[str]:
+    return _mentions(root, _RUN_WORDS)
 
 
 def test_no_rule_input_reads_a_run_yet() -> None:
@@ -972,6 +977,159 @@ def test_the_run_reader_guard_sees_a_reader(tmp_path: Path) -> None:
     )
 
     assert _mentions_a_run(tmp_path) == {"workflow/operands.py"}
+
+
+# -- the one writer of a reading's link to its part (#913) ----------------------
+
+#: Which reading is each confirmed part's width.
+LINK_ROWS = _Guarded(tables=frozenset({"reading_parts"}), models=frozenset({"ReadingPart"}))
+
+#: The one function that constructs a link row, and the only two that may call it: a person
+#: confirming a link and a person taking one back. Nothing else, and the suggestion least of all.
+LINK_WRITER = ("workflow/reading_parts.py", "_write_link")
+LINK_DECISIONS = frozenset(
+    {
+        ("workflow/reading_parts.py", "confirm_reading_part"),
+        ("workflow/reading_parts.py", "withdraw_reading_part"),
+    }
+)
+
+#: Every form in `WRITING_FORMS`, aimed at the link table instead of the item tables.
+LINK_WRITING_FORMS: dict[str, str] = {
+    name: source.replace("DrawingItem", "ReadingPart")
+    .replace("ItemIdentifier", "ReadingPart")
+    .replace("drawing_items", "reading_parts")
+    .replace("item_identifiers", "reading_parts")
+    for name, source in WRITING_FORMS.items()
+}
+
+#: Reading a link, and suggesting one, write nothing.
+LINK_READING_FORMS: dict[str, str] = {
+    "an-orm-read": (
+        "from app.models import ReadingPart\n"
+        "from sqlalchemy import select\n"
+        "def go(session):\n"
+        "    return session.scalars(select(ReadingPart)).all()\n"
+    ),
+    "the-live-reader": (
+        "from workflow.reading_parts import live_reading_parts\n"
+        "def go(session):\n"
+        "    return session.scalars(live_reading_parts()).all()\n"
+    ),
+    "the-suggestion": (
+        "from workflow.reading_parts import suggest_links\n"
+        "def go(parts, readings, tolerance):\n"
+        "    return suggest_links(parts, readings, edge_tolerance=tolerance)\n"
+    ),
+    "a-raw-read": (
+        "from sqlalchemy import text\n"
+        "def go(session):\n"
+        "    return session.execute(text('SELECT drawing_item_id FROM reading_parts'))\n"
+    ),
+}
+
+
+def _callers(root: Path, function: str) -> set[tuple[str, str]]:
+    """Every `(file, enclosing function)` outside `tests/` that calls `function`, by its name or as
+    an attribute, so `reading_parts._write_link(...)` is caught as well as `_write_link(...)`."""
+    found: set[tuple[str, str]] = set()
+    for path in _source_files(root):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for enclosing, node in _nodes_by_function(tree):
+            if isinstance(node, ast.Call):
+                called = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                if called == function:
+                    found.add((path.relative_to(root).as_posix(), enclosing))
+    return found
+
+
+def test_only_a_persons_decision_writes_a_link() -> None:
+    """**Done when, 1.** A suggested link writes nothing: one function constructs a `reading_parts`
+    row, and only a person's confirmation or withdrawal calls it.
+
+    The suggestion (`suggest_links`), the listing and the endpoints are absent from both sets, so if
+    any of them ever wrote a row, or called the writer, this fails naming where."""
+    writers = {writer[:2] for writer in _writers(REPO_ROOT, LINK_ROWS)}
+    assert writers == {LINK_WRITER}, sorted(writers)
+    assert _callers(REPO_ROOT, LINK_WRITER[1]) == LINK_DECISIONS
+
+
+@pytest.mark.parametrize("source", list(LINK_WRITING_FORMS.values()), ids=list(LINK_WRITING_FORMS))
+def test_the_link_guard_catches_every_way_of_writing_one(source: str, tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "elsewhere.py").write_text(source, encoding="utf-8")
+
+    assert [writer[:2] for writer in _writers(tmp_path, LINK_ROWS)] == [
+        ("workflow/elsewhere.py", "go")
+    ]
+
+
+@pytest.mark.parametrize("source", list(LINK_READING_FORMS.values()), ids=list(LINK_READING_FORMS))
+def test_the_link_guard_leaves_readers_alone(source: str, tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "reader.py").write_text(source, encoding="utf-8")
+
+    assert _writers(tmp_path, LINK_ROWS) == []
+    assert _callers(tmp_path, LINK_WRITER[1]) == set()
+
+
+@pytest.mark.parametrize(
+    "call",
+    ["_write_link(session)", "reading_parts._write_link(session)"],
+    ids=["by-name", "as-an-attribute"],
+)
+def test_the_link_guard_sees_a_new_caller_of_the_writer(call: str, tmp_path: Path) -> None:
+    """A suggestion that reached the writer would write a link no person decided, without
+    constructing a row itself; the caller check is what sees it."""
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "suggest.py").write_text(
+        "from workflow import reading_parts\n"
+        "from workflow.reading_parts import _write_link\n"
+        f"def suggest(session):\n    {call}\n",
+        encoding="utf-8",
+    )
+
+    assert _callers(tmp_path, LINK_WRITER[1]) == {("workflow/suggest.py", "suggest")}
+
+
+#: The only shipped code that may mention a link at all until a rule reads one (#748 step 7): the
+#: models and their migration, the writer, and the Measure page's listing and endpoints.
+LINK_AWARE: frozenset[str] = frozenset(
+    {
+        "alembic/versions/0058_drawing_parts.py",
+        "app/models/__init__.py",
+        "app/models/drawing.py",
+        "workflow/reading_parts.py",
+        "app/evidence/reading_parts.py",
+        "app/api/reading_parts.py",
+        "app/main.py",
+    }
+)
+
+_LINK_WORDS = re.compile(r"reading_part|ReadingPart")
+
+
+def test_no_rule_input_reads_a_link_yet() -> None:
+    """**Done when, 3.** No rule reads a reading's part until step 7, so nothing that builds a
+    rule's inputs — `rules/`, `verdict/`, `evidence/`, the evidence stage, matching — may name a
+    link. A file that starts to is either step 7, which updates this list on purpose, or a leak."""
+    assert _mentions(REPO_ROOT, _LINK_WORDS) == LINK_AWARE
+
+
+def test_the_link_reader_guard_sees_a_reader(tmp_path: Path) -> None:
+    """And it is not blind: an import of the reader, in a module about rule inputs, is caught; the
+    same words in a docstring are not."""
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "operands.py").write_text(
+        '"""Mentions reading_parts in prose only."""\n'
+        "from workflow.reading_parts import live_reading_parts as links\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "workflow" / "prose.py").write_text(
+        '"""Mentions reading_parts in prose only."""\n', encoding="utf-8"
+    )
+
+    assert _mentions(tmp_path, _LINK_WORDS) == {"workflow/operands.py"}
 
 
 # -- against a real database --------------------------------------------------
