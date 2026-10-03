@@ -122,3 +122,50 @@ def test_a_failed_phrase_build_is_reported_never_raised(monkeypatch: pytest.Monk
     result = worker._build_package_text(_Session(), uuid4())
 
     assert result == {"built": False, "reason": "the phrase build failed: RuntimeError"}
+
+
+# ---------------------------------------------------------------------------
+# The stacked-fraction detector's turned labels (#869)
+# ---------------------------------------------------------------------------
+
+
+def _demo_reader_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reader settings the demo's worker block states, set as the worker's environment."""
+    demo = (Path(__file__).resolve().parents[2] / "scripts" / "demo.sh").read_text(encoding="utf-8")
+    worker_block = demo[: demo.index("scripts/drain_outbox.py --watch")]
+    stated = re.findall(
+        r"^(GV_READER_[A-Z0-9_]+|GV_LOCALIZED_OCR_ENABLED)=(\S+) \\$",
+        worker_block,
+        flags=re.MULTILINE,
+    )
+    assert stated, "the demo's worker block states no reader settings"
+    for name, value in stated:
+        monkeypatch.setenv(name, value)
+
+
+def test_the_demo_worker_looks_for_turned_labels_at_the_measured_aspect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**Sideways stacked fractions are looked for in the demo (#869)**, at the 1.1 measured on
+    `AI_Set 2`. Built the way the worker builds it, from what the demo's worker block states."""
+    import scripts.drain_outbox as worker
+    from workflow.association import AssociationSettings
+
+    _demo_reader_environment(monkeypatch)
+
+    association, _ = worker._reader_configuration()
+
+    assert isinstance(association, AssociationSettings)
+    assert association.fraction_bar.turned_aspect_min == Decimal("1.1")
+
+
+def test_the_worker_refuses_to_guess_the_turned_aspect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**No default.** A worker not told which bars across a stamp's baseline count refuses to start
+    rather than choosing a number for every deployment."""
+    import scripts.drain_outbox as worker
+
+    _demo_reader_environment(monkeypatch)
+    monkeypatch.delenv("GV_READER_FRACTION_TURNED_ASPECT_MIN")
+
+    with pytest.raises(ValueError, match="GV_READER_FRACTION_TURNED_ASPECT_MIN"):
+        worker._reader_configuration()

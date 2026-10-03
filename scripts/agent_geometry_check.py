@@ -152,6 +152,7 @@ def _geometry(reader: dict[str, str]) -> PageGeometry:
             glyph_max_pt=Decimal(reader["GV_READER_FRACTION_GLYPH_MAX_PT"]),
             proportion_max=Decimal(reader["GV_READER_FRACTION_PROPORTION_MAX"]),
             character_gap_pt=Decimal(reader["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
+            turned_aspect_min=Decimal(reader["GV_READER_FRACTION_TURNED_ASPECT_MIN"]),
         ),
     )
 
