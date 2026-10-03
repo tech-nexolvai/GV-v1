@@ -43,13 +43,18 @@ the guard and the package still states one value for that setting. The form offe
 number is held to, the pointers `workflow.parameter_citations.live_parameter_proposals` reads: the
 same, without the search for a second value.
 
+**One passage at a time, for a caller that found it.** `propose_passage` files a pointer to the
+passage its caller names, the value-hunter's way in (#881), and only where `propose_setting` would
+cite the same value: the setting's own words must find the passage, the passage must pass the guard,
+and every other passage that states the setting must agree with it.
+
 **It can never write a setting.** The semgrep rule `gv-proposer-never-writes-a-setting` forbids this
 module, the value-hunter and `retrieval/` from building a `ParameterValue` or calling the functions
 that store one, and a test keeps all three from importing `app.api`.
 
-Source: issue #849, plan step 3.2 on #798; the guard moved out by #866.
+Source: issue #849, plan step 3.2 on #798; the guard moved out by #866; `propose_passage` by #881.
 Verification: `tests/workflow/test_parameter_proposals.py`,
-`tests/workflow/test_proposer_never_writes_a_setting.py`.
+`tests/workflow/test_proposer_never_writes_a_setting.py`, `tests/workflow/test_value_hunter.py`.
 """
 
 from __future__ import annotations
@@ -87,6 +92,7 @@ __all__ = [
     "ProposalOutcome",
     "SettingProposal",
     "current_parameter_proposals",
+    "propose_passage",
     "propose_setting",
 ]
 
@@ -303,6 +309,115 @@ def propose_setting(session: Session, package_revision_id: UUID, setting: str) -
         proposal_id=row.id,
         phrase_ids=decision.phrase_ids,
         refusals=decision.refusals,
+    )
+
+
+def _not_filed(setting: str, refusal: CitationRefusal, phrase_id: UUID) -> SettingProposal:
+    return SettingProposal(
+        setting=setting,
+        outcome=ProposalOutcome.NOT_FOUND,
+        note=refusal.detail,
+        phrase_ids=(phrase_id,),
+        refusals=(refusal,),
+    )
+
+
+def propose_passage(
+    session: Session, package_revision_id: UUID, setting: str, phrase_id: UUID
+) -> SettingProposal:
+    """File a pointer to this one passage for `setting`, if `propose_setting` would cite its value.
+
+    For a caller that names the passage itself: the value-hunter (`workflow/value_hunter.py`, #881)
+    tries the passages its searches found one at a time. Naming a passage gets it nothing
+    `propose_setting` would not give it:
+
+    - a setting no passage may propose is refused, and one with no search words is not found, as
+      `propose_setting` says of them;
+    - the passage must be one the setting's own search words find in the revision's current phrases;
+    - its span is chosen by `_span`, and it must pass the guard, `_check`;
+    - every passage those words find is then decided as `propose_setting` decides them, so a second
+      value anywhere in the package gives REVIEW and no pointer, whichever passage was named.
+
+    PROPOSED files the pointer through `_record`, so an unchanged one is not filed twice. Anything
+    else files nothing and says why in `note`; where the span or the guard refused this passage,
+    that refusal is in `refusals`.
+    """
+    if not isinstance(package_revision_id, UUID):
+        raise TypeError("package_revision_id must be a UUID")
+    if not isinstance(phrase_id, UUID):
+        raise TypeError("phrase_id must be a UUID")
+    if session.get(PackageRevision, package_revision_id) is None:
+        raise ValueError(f"no package revision {package_revision_id}")
+    sides = ReadingSides(session)
+    sources = citable_sources(setting)
+    terms = search_terms(setting)
+    if len(sources) != 1 or not terms:
+        # `_decide` answers these before it searches anything.
+        decision = _decide(session, sides, package_revision_id, setting)
+        return SettingProposal(setting=setting, outcome=decision.outcome, note=decision.note)
+    (source,) = sources
+
+    if not any(
+        hit.phrase_id == phrase_id
+        for term in terms
+        for hit in search_package_text(session, package_revision_id, term)
+    ):
+        return SettingProposal(
+            setting=setting,
+            outcome=ProposalOutcome.NOT_FOUND,
+            note=f"this passage is not one the search words for {setting} find in this package's "
+            "current phrases",
+            phrase_ids=(phrase_id,),
+        )
+    runs = _runs(session, phrase_id)
+    span = None if runs is None else _span([run.raw_text for run in runs])
+    if span is None:
+        return _not_filed(
+            setting,
+            CitationRefusal(CitationRefusalReason.NO_NUMBER, "this passage states no number"),
+            phrase_id,
+        )
+    checked = _check(
+        session,
+        sides,
+        package_revision_id=package_revision_id,
+        setting=setting,
+        phrase_id=phrase_id,
+        first_member=span[0],
+        last_member=span[1],
+        claimed_source=source,
+    )
+    if isinstance(checked, CitationRefusal):
+        return _not_filed(setting, checked, phrase_id)
+    citation, value = checked
+
+    decision = _decide(session, sides, package_revision_id, setting)
+    if decision.outcome is ProposalOutcome.PROPOSED and decision.value == value:
+        row = _record(session, package_revision_id, citation)
+        return SettingProposal(
+            setting=setting,
+            outcome=ProposalOutcome.PROPOSED,
+            note=decision.note,
+            proposal_id=row.id,
+            phrase_ids=(phrase_id,),
+            refusals=decision.refusals,
+        )
+    if decision.outcome is ProposalOutcome.REVIEW:
+        return SettingProposal(
+            setting=setting,
+            outcome=ProposalOutcome.REVIEW,
+            note=decision.note,
+            phrase_ids=decision.phrase_ids,
+            refusals=decision.refusals,
+        )
+    # The passage passed and the search finds it, so its own value is among those decided. Anything
+    # else means the package changed between the two reads, a rebuild of its phrases or a drawing's
+    # role confirmed, and nothing is filed.
+    return SettingProposal(
+        setting=setting,
+        outcome=ProposalOutcome.NOT_FOUND,
+        note=f"this package changed while the passage was checked; nothing is filed for {setting}",
+        phrase_ids=(phrase_id,),
     )
 
 
