@@ -107,7 +107,7 @@ from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
 from evidence.corroborate import corroborate
 from evidence.crop import CropSpec, CropStatus, RenderedPage, crop_pixel_box, generate_crop
 from evidence.polygon import Polygon
-from extraction.agent.geometry import Box, LabelReach, label_geometry
+from extraction.agent.geometry import Box, LabelGeometry, LabelReach, label_geometry
 from extraction.agent.graph import (
     AbstentionTerminal,
     BoundedAgentGraph,
@@ -183,10 +183,11 @@ from extraction.models.nova import (
     NovaRequest,
     NovaRetryExhaustedError,
     NovaTimeoutError,
+    ReaderPicture,
+    digits_prompt_id,
     vision_config_for_extractor,
     vision_configs_from_environment,
 )
-from extraction.models.sanitisation import DIGITS_PROMPT_ID
 from extraction.models.validation import (
     STACKED_FRACTION_REASON,
     ValidationRejection,
@@ -194,7 +195,7 @@ from extraction.models.validation import (
 )
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_reading, read_page
 from extraction.panels import propose_panel_roles
-from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
+from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page, render_region
 from extraction.reader import (
     PageContents,
     SetAsideLabel,
@@ -249,6 +250,13 @@ from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
 from workflow.parts import live_part_item_ids, record_part_proposal
+from workflow.reader_pictures import (
+    PictureSettings,
+    PrintedRun,
+    label_turn,
+    printed_runs,
+    reader_picture,
+)
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
@@ -667,6 +675,10 @@ CROP_CONTEXT_MARGIN_PT = Decimal(9)
 #: margin so the model sees a region, not a full page, and no model chooses its own context.
 VISION_CROP_CONTEXT_MARGIN_PT = CROP_CONTEXT_MARGIN_PT
 VISION_CONTEXT_BOUND_PT = CROP_CONTEXT_MARGIN_PT
+
+#: The most characters a run's identity holds: `extraction_runs.config_hash` is `String(200)`, and
+#: `tests/scripts/test_drain_outbox_config.py` holds the two equal.
+RUN_IDENTITY_CHARACTERS: Final = 200
 
 #: Explicit opt-in for paid/network vision reads in the local worker path. Tests and local extraction
 #: stay deterministic unless a caller injects readers or a deployment opts in.
@@ -1132,6 +1144,7 @@ class DatabaseStages:
         vision_gate: str | None = None,
         ai_budget_usd: Decimal | None = None,
         fraction_parts: PieceDrawing | None = None,
+        reader_pictures: PictureSettings | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -1184,6 +1197,25 @@ class DatabaseStages:
                 "reader"
             )
         self._vision_gate = vision_gate
+        # **What each vision reader is shown (#907).** A reader measured on an upright, sharper
+        # picture is shown one, rendered at the deployment's stated dpi; with none stated it could
+        # only be shown a picture nobody measured it on, so the stages refuse to start.
+        sharper = sorted(
+            reader.config.extractor
+            for reader in self._vision_readers
+            if reader.config.picture is ReaderPicture.UPRIGHT_SHARPER
+        )
+        if sharper and reader_pictures is None:
+            raise ValueError(
+                f"the vision reader(s) {sharper} are shown an upright, sharper picture, and the dpi "
+                "it is rendered at (GV_VISION_SHARPER_PICTURE_DPI) is not stated; it has no default"
+            )
+        if reader_pictures is not None and reader_pictures.sharper_dpi <= dpi:
+            raise ValueError(
+                f"a sharper picture must be rendered above the stage's {dpi} dpi; "
+                f"{reader_pictures.sharper_dpi} is not"
+            )
+        self._reader_pictures = reader_pictures
         # **What the AI readers may spend on one drawing set (#757)**: the admin's $3 unless the
         # deployment states its own. Metered per `extract_pages`, from the set's recorded calls.
         budget = ai_budget_from_environment() if ai_budget_usd is None else ai_budget_usd
@@ -1732,6 +1764,10 @@ class DatabaseStages:
                         + fragment_regions
                     ),
                     stacked_fractions=page_stacked,
+                    # Which way each label runs, for a reader shown it upright (#907): the file's
+                    # own text, the page's and its pasted drawings'.
+                    printed=printed_runs((read.texts if read is not None else ()) + stamp_texts),
+                    layers=layers,
                 )
 
             # **The agreement gate's GV-mark guard (#901)**, one per page and asked by both passes
@@ -3431,7 +3467,7 @@ class DatabaseStages:
         everything = (
             f"dpi={self._dpi};{drawing.config_hash};engine={engine.name}/{engine.version}"
             f";second={second.config.extractor}/{second.config.model_id}"
-            f";prompt={DIGITS_PROMPT_ID}"
+            f";prompt={digits_prompt_id(second.config)}"
             + (
                 ""
                 if self._association is None
@@ -3575,6 +3611,8 @@ class DatabaseStages:
         task_run_id: UUID,
         regions: Sequence[_VisionRegion],
         stacked_fractions: Sequence[StackedFraction],
+        printed: Sequence[PrintedRun],
+        layers: PageLayers | None,
     ) -> tuple[list[ObservationCandidate], int, list[str], tuple[_VisionAssociationLink, ...], int]:
         """Read each region with every configured vision reader.
 
@@ -3597,6 +3635,12 @@ class DatabaseStages:
         model row, it may reuse only the fixed-reader region that caused this exact crop to be sent.
         Before #698 the vision rows were left out of association entirely, so a real run could have
         model-read numbers and detected line-work but zero `observation_associations` rows.
+
+        **Each reader is shown its own measured picture (#907)**: the crop as cut, or the same page
+        area rendered at the stated sharper dpi and turned upright where the drawing's own facts
+        say the label runs sideways — the text the file prints there (`printed`), else its glyph
+        paths (`layers`), by `workflow.reader_pictures.label_turn`. Every check of what a crop
+        shows is made on the crop as cut, whose page area the sharper picture covers.
         """
         if not regions or self._store is None:
             return [], 0, [], (), 0
@@ -3629,6 +3673,45 @@ class DatabaseStages:
         def place(polygon: Sequence[Sequence[int]]) -> tuple[tuple[int, ...], ...]:
             return tuple(tuple(int(value) for value in point) for point in polygon)
 
+        transform = page_transform(page, self._dpi)
+        reach = (
+            self._reading_agent.reach(self._association.glyph_gap_pt)
+            if self._reading_agent is not None and self._association is not None
+            else None
+        )
+        page_glyphs = () if layers is None else layers.glyph_paths
+        turns: dict[UUID, int] = {}
+
+        def turn_of(region: _VisionRegion) -> int:
+            """Which way the region's label runs, from the drawing's own facts."""
+            if region.id not in turns:
+                found = region_label_geometry(
+                    region.polygon,
+                    rendered=rendered,
+                    polygon=stored_polygon(region, rendered),
+                    transform=transform,
+                    reach=reach,
+                    page_glyphs=page_glyphs,
+                )
+                xs = [int(point[0]) for point in region.polygon]
+                ys = [int(point[1]) for point in region.polygon]
+                turns[region.id] = label_turn(
+                    (min(xs), min(ys), max(xs), max(ys)),
+                    printed,
+                    geometry_degrees=0 if found is None else found[0].rotation_degrees,
+                )
+            return turns[region.id]
+
+        def render(box: tuple[int, int, int, int], dpi: int) -> bytes:
+            return render_region(
+                data,
+                page.index,
+                box_px=box,
+                dpi=dpi,
+                maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                vendor_only=True,
+            )
+
         for reader in readers:
             gated = gate is not None and reader.config.extractor != gate
             run = open_extraction_run(
@@ -3636,20 +3719,7 @@ class DatabaseStages:
                 task_run_id=task_run_id,
                 extractor=reader.config.extractor,
                 extractor_version=reader.config.model_id,
-                config_hash=(
-                    f"dpi={self._dpi};route=vision;layers=vendor;"
-                    f"crop_margin_pt={VISION_CROP_CONTEXT_MARGIN_PT};"
-                    f"context_bound_pt={VISION_CONTEXT_BOUND_PT}"
-                    # Which readings are accepted depends on it, so a run under other numbers is
-                    # another run, not this one reused.
-                    + (
-                        ""
-                        if self._association is None
-                        else f";fraction_bar={self._association.fraction_bar.config_hash}"
-                    )
-                    # A gated reader read only what the gate found a value in: another run.
-                    + (f";gate={gate}" if gated else "")
-                ),
+                config_hash=self._vision_run_config(reader, gate=gate if gated else None),
                 dpi=self._dpi,
             )
             with session.no_autoflush:
@@ -3693,6 +3763,26 @@ class DatabaseStages:
                         f"page {page.index}: {reader.config.extractor}: {self._meter.reason}"
                     )
                     continue
+                try:
+                    shown = reader_picture(
+                        reader.config.picture,
+                        as_cut=crop,
+                        crop_box=crop_box,
+                        base_dpi=self._dpi,
+                        settings=self._reader_pictures,
+                        turn=(
+                            turn_of(region)
+                            if reader.config.picture is ReaderPicture.UPRIGHT_SHARPER
+                            else 0
+                        ),
+                        render=render,
+                    )
+                except (PageTooLarge, UnreadablePdf, ValueError) as error:
+                    refusals.append(
+                        f"page {page.index}: {reader.config.extractor}: its picture could not "
+                        f"be made, so it was not asked: {error}"
+                    )
+                    continue
                 request_candidate_id = uuid4()
                 recorder = _BufferedVisionRecorder(
                     session=session,
@@ -3703,7 +3793,7 @@ class DatabaseStages:
                 request = NovaRequest(
                     candidate_id=str(request_candidate_id),
                     page=page.index,
-                    crop=crop,
+                    crop=shown,
                     image_format="png",
                     context=AssembledContext(nearby_text=(), nearby_geometry=()),
                     bound_pt=VISION_CONTEXT_BOUND_PT,
@@ -3735,6 +3825,55 @@ class DatabaseStages:
                     _VisionAssociationLink(row=row, source_candidate_id=region.id)
                 )
         return rows, invocations, refusals, tuple(association_links), held_back
+
+    def _vision_run_config(self, reader: _VisionReader, *, gate: str | None) -> str:
+        """A vision reader's run identity on a page: every setting its readings depend on.
+
+        `gate` is the gate reader's name where this reader read only what the gate found a value in
+        — another run (#787). **A reader shown the crop as cut keeps the identity it always had**,
+        written out, so a re-run of an unchanged deployment finds its runs — unless written out it
+        would not fit the column's 200 characters, which a long gate reader's name can now make it
+        do, and then the same fingerprint stands for it. **A reader shown an upright, sharper
+        picture (#907)** depends on more — the dpi, and the reach the turn reads glyph paths by —
+        and written out that runs past the column on the demo's settings (262 characters), so its
+        identity names the picture and the dpi readably and the rest by a fingerprint of all of it,
+        as the reading agent's does (`ReadingAgentSettings.config_hash`).
+        """
+        written = (
+            f"dpi={self._dpi};route=vision;layers=vendor;"
+            f"crop_margin_pt={VISION_CROP_CONTEXT_MARGIN_PT};"
+            f"context_bound_pt={VISION_CONTEXT_BOUND_PT}"
+            # Which readings are accepted depends on it, so a run under other numbers is another
+            # run, not this one reused.
+            + (
+                ""
+                if self._association is None
+                else f";fraction_bar={self._association.fraction_bar.config_hash}"
+            )
+            + (f";gate={gate}" if gate is not None else "")
+        )
+        if reader.config.picture is ReaderPicture.AS_CUT:
+            if len(written) <= RUN_IDENTITY_CHARACTERS:
+                return written
+            digest = hashlib.sha256(written.encode()).hexdigest()[:16]
+            return f"dpi={self._dpi};route=vision;run={digest}"
+        settings = self._reader_pictures
+        assert settings is not None  # the constructor refuses a sharper reader without them
+        # The turn reads the glyph paths by the agent's reach where it is configured.
+        reach = (
+            self._reading_agent.reach(self._association.glyph_gap_pt).config_hash
+            if self._reading_agent is not None and self._association is not None
+            else "-"
+        )
+        everything = (
+            f"{written};picture={reader.config.picture.value};{settings.config_text};"
+            f"turn=text+paths;reach={reach}"
+        )
+        digest = hashlib.sha256(everything.encode()).hexdigest()[:16]
+        return (
+            f"dpi={self._dpi};route=vision;picture={reader.config.picture.value};"
+            f"{settings.config_text};run={digest}"
+        )
 
     def _vision_crop(
         self, rendered: RenderedPage, candidate: _VisionRegion
@@ -4844,11 +4983,16 @@ def region_facts(
     cut_at_edge = False
     rotation_degrees = 0
     whole_run: Polygon | None = None
-    if reach is not None and transform is not None and polygon is not None:
-        region_box = _pdf_box(transform, [(point[0], point[1]) for point in candidate.polygon])
-        left, top, right, bottom = crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT)
-        crop_box = _pdf_box(transform, [(left, top), (right, bottom)])
-        geometry = label_geometry(region_box, crop_box, page_glyphs, reach)
+    found = region_label_geometry(
+        candidate.polygon,
+        rendered=rendered,
+        polygon=polygon,
+        transform=transform,
+        reach=reach,
+        page_glyphs=page_glyphs,
+    )
+    if found is not None and transform is not None:
+        geometry, region_box = found
         cut_at_edge = geometry.cut_at_edge
         rotation_degrees = geometry.rotation_degrees
         if geometry.label_box is not None and geometry.closed:
@@ -4872,6 +5016,30 @@ def region_facts(
         other_route_values=witnesses,
     )
     return facts, whole_run
+
+
+def region_label_geometry(
+    polygon_px: Sequence[Sequence[int]],
+    *,
+    rendered: RenderedPage,
+    polygon: Polygon | None,
+    transform: PageTransform | None,
+    reach: LabelReach | None,
+    page_glyphs: Sequence[VectorPath],
+) -> tuple[LabelGeometry, Box] | None:
+    """What the vendor's paths say about the label in one region, and the region in PDF points.
+
+    The region is `polygon_px`, page pixels at `rendered`'s dpi; `polygon` is the same region as a
+    crop is cut round it. `None` where the paths were not read — no reach, no recorded transform,
+    no polygon — which is where the geometry says nothing (`region_facts`). One computation, for the
+    reading agent's facts and the vision readers' upright turn (#907) alike.
+    """
+    if reach is None or transform is None or polygon is None:
+        return None
+    region_box = _pdf_box(transform, [(point[0], point[1]) for point in polygon_px])
+    left, top, right, bottom = crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT)
+    crop_box = _pdf_box(transform, [(left, top), (right, bottom)])
+    return label_geometry(region_box, crop_box, page_glyphs, reach), region_box
 
 
 def _shows(crop_box: tuple[int, int, int, int], fraction: StackedFraction) -> bool:

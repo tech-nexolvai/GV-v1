@@ -247,6 +247,7 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
     automatic_typing = _automatic_typing_configuration()
     from app.config import Settings
     from workflow.glyph_route import glyph_route_from_environment
+    from workflow.reader_pictures import picture_settings_from_environment
     from workflow.reading_agent import reading_agent_from_environment
 
     return DatabaseStages(
@@ -267,6 +268,9 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         # Off unless GV_FRACTION_PARTS is on, and then every drawing setting is required (#848),
         # and so is the gate reader above: it is the route's second reader (#865).
         fraction_parts=fraction_parts_from_environment(),
+        # The dpi an upright, sharper picture is rendered at (#907). No default: a stage with a
+        # reader shown one refuses to start without it.
+        reader_pictures=picture_settings_from_environment(),
     )
 
 

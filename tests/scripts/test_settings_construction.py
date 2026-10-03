@@ -18,9 +18,11 @@ import pytest
 
 from extraction.glyph_bands import FractionBarGeometry
 from workflow.association import AssociationSettings, LocalizedOcrSettings
+from workflow.reader_pictures import PictureSettings
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
-GUARDED = (FractionBarGeometry, AssociationSettings, LocalizedOcrSettings)
+#: `PictureSettings` since #907: the dpi a reader's upright, sharper picture is rendered at.
+GUARDED = (FractionBarGeometry, AssociationSettings, LocalizedOcrSettings, PictureSettings)
 
 
 def _required(cls: type) -> frozenset[str]:

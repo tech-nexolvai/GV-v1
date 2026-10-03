@@ -3,7 +3,8 @@
 **What is compared.** Every crop of the key is read three ways, and each way ends in what a reviewer
 would be handed for it:
 
-- **Pair alone** — today's two readers, Nova 2 Lite and Ministral 3B, on the crop production cuts.
+- **Pair alone** — the two vision readers named for the run, on the crop production cuts (since
+  #907 Qwen3-VL and Nova 2 Lite as the trial measured it; before, Nova 2 Lite and Ministral 3B).
 - **Pair + agent, as built** — the agent runs where production's trigger lets it: a reading the
   parser refused, or the file's geometry (cut off, sideways, a stacked fraction). Never on a
   disagreement: whether one may start the agent is decision D-A1, still open.
@@ -24,7 +25,13 @@ a reviewer has to catch. Both are reported before anything read right.
 region's own OCR reading can also start the agent (a number with no unit on it), and can block an
 agreement between the two readers. The full-pipeline re-run on the 17-page set (#716) measures that.
 
-Source: issue #757 · Verification: `tests/eval/test_agent_scorecard.py`
+**Each pair reader is shown its own picture (#907)**, made by the stage's own code
+(`workflow.reader_pictures`): the crop as cut, or the same page area rendered at the stated sharper
+dpi and turned upright by the drawing's own facts — never by the key's sideways tick. Each reader is
+also scored alone — right, wrong, or no value — and a run stops before any call once its stated
+spending cap is reached (`SpendCap`).
+
+Source: issues #757, #907 · Verification: `tests/eval/test_agent_scorecard.py`
 """
 
 from __future__ import annotations
@@ -71,9 +78,11 @@ from extraction.agent.tools import (
 from extraction.agent.trigger import AmbiguityReason
 from extraction.glyph_bands import FractionBarGeometry, FractionLayout
 from extraction.manifest import PageRecord
+from extraction.models.nova import ReaderPicture
 from storage.store import ArtifactStore
 from units.measurement import Measurement
 from units.notation import is_compound
+from workflow.reader_pictures import PictureSettings, PrintedRun, label_turn, reader_picture
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 
 __all__ = [
@@ -87,6 +96,8 @@ __all__ = [
     "Reading",
     "ScorecardError",
     "ScorecardPage",
+    "SpendCap",
+    "SpendCapReached",
     "build_pages",
     "judge",
     "key_frame_dpi",
@@ -277,6 +288,10 @@ class CropReader(Protocol):
     @property
     def vendor(self) -> str: ...
 
+    @property
+    def picture(self) -> ReaderPicture:
+        """What this reader is shown (#907): its definition's measured picture."""
+
     def read(
         self, png: bytes, *, stacked_label: bool, stacked_layouts: tuple[FractionLayout, ...]
     ) -> Reading:
@@ -409,6 +424,8 @@ class CropResult:
     agent: AgentRun | None
     judgements: Mapping[Arm, Judgement]
     agent_ran: Mapping[Arm, bool]
+    turn: int = 0
+    """How far the label was turned for a reader shown it upright (#907), by the drawing's facts."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,6 +486,43 @@ class ScorecardPage:
             glyph_maximum_pt=geometry.glyph_maximum_pt,
             glyph_gap_pt=geometry.glyph_gap_pt,
             fraction_bar=geometry.fraction_bar,
+        )
+        self.printed = self._printed(dpi)
+
+    def _printed(self, dpi: int) -> tuple[PrintedRun, ...]:
+        """The page's own text and its pasted drawings' font text, as the stage reads both (#907)."""
+        from extraction.reader import UnreadablePdf, read_page_contents
+        from extraction.stamp_text import read_stamp_text
+        from workflow.reader_pictures import printed_runs
+
+        texts: list[object] = []
+        try:
+            texts += read_page_contents(
+                self._data, self._record.index, document_version_id=self._version_id, dpi=dpi
+            ).texts
+        except UnreadablePdf:
+            pass
+        if self.layers.vendor_stamps:
+            try:
+                texts += read_stamp_text(
+                    self._data, self._record.index, document_version_id=self._version_id, dpi=dpi
+                ).contents.texts
+            except UnreadablePdf:
+                pass
+        return printed_runs(texts)  # type: ignore[arg-type]
+
+    def render_region(self, box: tuple[int, int, int, int], dpi: int) -> bytes:
+        """One area of the page at `dpi`, vendor's drawing only, as the stage renders it (#907)."""
+        from extraction.rasterise import render_region
+        from workflow.stages import MAXIMUM_RENDER_PIXELS
+
+        return render_region(
+            self._data,
+            self._record.index,
+            box_px=box,
+            dpi=dpi,
+            maximum_pixels=MAXIMUM_RENDER_PIXELS,
+            vendor_only=True,
         )
 
     def render(self, dpi: int) -> RenderedPage | str:
@@ -637,8 +691,15 @@ def score_crop(
     settings: ReadingAgentSettings,
     key_dpi: int,
     margin_pt: Decimal,
+    pictures: PictureSettings | None,
+    run_agent: bool = True,
 ) -> CropResult:
-    """Read one crop with the pair, run the agent where either agent arm would, and judge each arm."""
+    """Read one crop with the pair, run the agent where either agent arm would, and judge each arm.
+
+    Each pair reader is shown its own picture (#907); `pictures` is how a sharper one is made, and
+    `None` where no pair reader is shown one. `run_agent` `False` scores the pair alone: both agent
+    arms are then the pair's judgement, and no agent call is made.
+    """
     dpi = page.rendered.dpi
     region = _region_px(crop, key_dpi=key_dpi, dpi=dpi, margin_pt=margin_pt)
     if region[2] <= region[0] or region[3] <= region[1]:
@@ -666,9 +727,19 @@ def score_crop(
     if first is None:
         raise ScorecardError(f"crop {crop.crop_id} could not be cut")
     png = crops.png(first)
+    crop_box = crop_box_px(page.rendered, polygon, margin_pt)
+    turn = label_turn(box, page.printed, geometry_degrees=facts.rotation_degrees)
     readings = tuple(
         reader.read(
-            png,
+            reader_picture(
+                reader.picture,
+                as_cut=png,
+                crop_box=crop_box,
+                base_dpi=dpi,
+                settings=pictures,
+                turn=turn,
+                render=page.render_region,
+            ),
             stacked_label=crops.shows_stacked_fraction,
             stacked_layouts=crops.stacked_layouts,
         )
@@ -680,8 +751,10 @@ def score_crop(
         {AmbiguityReason.UNREADABLE_TEXT} if any(_unparsed(r) for r in readings) else set()
     )
     alone = judge(readings)
-    as_built = not alone.conflict and bool(reasons)
-    everywhere = alone.outcome is not Outcome.CONFIRMED or bool(trigger_reasons(facts))
+    as_built = run_agent and not alone.conflict and bool(reasons)
+    everywhere = run_agent and (
+        alone.outcome is not Outcome.CONFIRMED or bool(trigger_reasons(facts))
+    )
 
     agent: AgentRun | None = None
     if as_built or everywhere:
@@ -732,6 +805,7 @@ def score_crop(
             Arm.AGENT_EVERYWHERE: with_agent(everywhere),
         },
         agent_ran={Arm.PAIR: False, Arm.AGENT: as_built, Arm.AGENT_EVERYWHERE: everywhere},
+        turn=turn,
     )
 
 
@@ -816,6 +890,39 @@ def tally(results: Sequence[CropResult], arm: Arm) -> ArmTally:
     return counts
 
 
+@dataclass
+class ReaderTally:
+    """One pair reader alone, on the crops it was shown (#907)."""
+
+    right: int = 0
+    wrong: int = 0
+    no_value: int = 0
+    """A scored crop it gave no value for: it abstained, was refused, or wrote what does not parse."""
+
+    valued_unvouched: int = 0
+    """Crops a person could not vouch for on which it gave a value anyway."""
+
+
+def reader_tallies(results: Sequence[CropResult]) -> dict[str, ReaderTally]:
+    """Each pair reader's own right, wrong and no-value counts, by extractor, in pair order."""
+    tallies: dict[str, ReaderTally] = {}
+    for result in results:
+        for reading in result.pair:
+            counts = tallies.setdefault(reading.extractor, ReaderTally())
+            if result.crop.kind is not Kind.SCORED:
+                counts.valued_unvouched += reading.value is not None
+            elif reading.value is None:
+                counts.no_value += 1
+            elif result.crop.expected is not None and (
+                reading.value.exact,
+                reading.value.unit,
+            ) == (result.crop.expected.exact, result.crop.expected.unit):
+                counts.right += 1
+            else:
+                counts.wrong += 1
+    return tallies
+
+
 def cost_usd(counts: ArmTally, rates: Callable[[str, int, int], int]) -> Decimal:
     """The arm's model cost, from recorded tokens and the shipped price file (in millionths)."""
     micros = sum(
@@ -866,6 +973,18 @@ def render_markdown(
             f"| {arm.value} | {counts.agent_runs} | {counts.calls} | "
             f"{per_crop.quantize(Decimal('0.00001'))} | {counts.same_vendor_confirmations} |"
         )
+    lines += [
+        "",
+        "**Each pair reader alone** (scored crops, then crops nobody could vouch for):",
+        "",
+        "| Reader | Right | Wrong | No value | Gave a value where nobody could vouch |",
+        "|---|---|---|---|---|",
+    ]
+    for extractor, alone in reader_tallies(results).items():
+        lines.append(
+            f"| {extractor} | {alone.right} | **{alone.wrong}** | {alone.no_value} | "
+            f"{alone.valued_unvouched} |"
+        )
     strata = sorted({result.crop.stratum for result in results if result.crop.kind is Kind.SCORED})
     lines += ["", "**Scored crops by kind** (right / wrong / to a reviewer):", ""]
     lines.append("| Kind | " + " | ".join(arm.value for arm in Arm) + " |")
@@ -891,6 +1010,8 @@ def render_markdown(
         geometry["stacked, person"] += result.crop.stacked
         geometry["dual, person"] += result.crop.dual_unit
         geometry["gv seen, person"] += result.crop.gv_value_seen is not None
+        geometry["turned"] += result.turn != 0
+        geometry["turned, person"] += result.crop.rotated and result.turn != 0
     lines += [
         "",
         "**What the drawing's own lines saw** (the agent's triggers, against the person's notes):",
@@ -909,6 +1030,11 @@ def render_markdown(
         ),
         f"- Dual unit: the person ticked {geometry['dual, person']}.",
         f"- GV's own number in the crop: the person saw it in {geometry['gv seen, person']}.",
+        (
+            f"- Turned upright for a reader shown the label upright (#907), by the drawing's own "
+            f"text and paths: {geometry['turned']}, of which the person ticked "
+            f"{geometry['turned, person']} sideways."
+        ),
     ]
     return "\n".join(lines) + "\n"
 
@@ -930,6 +1056,7 @@ def results_json(results: Sequence[CropResult]) -> list[dict[str, object]]:
                 "cut": result.facts.cut_at_edge,
                 "rotation": result.facts.rotation_degrees,
                 "stacked": result.facts.stacked_fraction,
+                "turn": result.turn,
             },
             "reasons": sorted(reason.value for reason in result.reasons),
             "agent": (
@@ -958,7 +1085,71 @@ _VENDORS: Mapping[str, str] = {
     "amazon.": "Amazon",
     "mistral.": "Mistral",
     "anthropic.": "Anthropic",
+    "qwen.": "Qwen",
 }
+
+
+class SpendCapReached(ScorecardError):
+    """The run's stated spending cap was reached: no further call is made (#907)."""
+
+
+@dataclass
+class SpendCap:
+    """What a scorecard run may spend on model calls, in millionths of a dollar (#907).
+
+    Checked before every call and added to after it, from each attempt's recorded tokens and the
+    stated price file. A model the file does not price cannot be counted, so it is refused before
+    the run rather than spent unseen.
+    """
+
+    cap_micros: int
+    price: Callable[[str, int, int], int | None]
+    spent_micros: int = 0
+    calls: int = 0
+
+    tripped: bool = False
+    """Whether a call was refused for the cap — inside the agent's graph too, which turns any
+    tool's failure into an abstention, so the run must look here to know its last crop was cut."""
+
+    def check(self) -> None:
+        if self.spent_micros >= self.cap_micros:
+            self.tripped = True
+            raise SpendCapReached(
+                f"the run spent ${Decimal(self.spent_micros) / 1_000_000} of its "
+                f"${Decimal(self.cap_micros) / 1_000_000} cap, so no further call is made"
+            )
+
+    def add(self, model_id: str, input_tokens: int, output_tokens: int) -> None:
+        micros = self.price(model_id, input_tokens, output_tokens)
+        if micros is None:
+            raise ScorecardError(f"{model_id} has no price, so what it cost cannot be counted")
+        self.spent_micros += micros
+        self.calls += 1
+
+
+class Pacer:
+    """Calls to one model, spaced under its quota — shared by every reader of that model."""
+
+    def __init__(
+        self,
+        calls_per_minute: int,
+        *,
+        clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
+        import time
+
+        self._interval = 60 / calls_per_minute
+        self._clock = clock or time.monotonic
+        self.sleep = sleep or time.sleep
+        self._last: float | None = None
+
+    def wait(self) -> None:
+        if self._last is not None:
+            wait = self._interval - (self._clock() - self._last)
+            if wait > 0:
+                self.sleep(wait)
+        self._last = self._clock()
 
 
 def vendor_of(model_id: str) -> str:
@@ -987,19 +1178,18 @@ class BedrockCropReader:
         waits_seconds: Sequence[float] = (30, 60, 120),
         clock: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
+        pacer: Pacer | None = None,
+        cap: SpendCap | None = None,
     ) -> None:
-        import time
-
         from extraction.models.nova import NovaAdapter
 
         self._config = config
         self._sink = _Invocations()
         self._adapter = NovaAdapter.from_environment(config, self._sink)  # type: ignore[arg-type]
-        self._interval = 60 / calls_per_minute
+        self._pacer = pacer or Pacer(calls_per_minute, clock=clock, sleep=sleep)
         self._waits = tuple(waits_seconds)
-        self._clock = clock or time.monotonic
-        self._sleep = sleep or time.sleep
-        self._last: float | None = None
+        self._sleep = sleep or self._pacer.sleep
+        self._cap = cap
 
     @property
     def extractor(self) -> str:
@@ -1013,12 +1203,15 @@ class BedrockCropReader:
     def vendor(self) -> str:
         return vendor_of(self.model_id)
 
+    @property
+    def picture(self) -> ReaderPicture:
+        picture: ReaderPicture = self._config.picture  # type: ignore[attr-defined]
+        return picture
+
     def _pace(self) -> None:
-        if self._last is not None:
-            wait = self._interval - (self._clock() - self._last)
-            if wait > 0:
-                self._sleep(wait)
-        self._last = self._clock()
+        if self._cap is not None:
+            self._cap.check()
+        self._pacer.wait()
 
     def read(
         self, png: bytes, *, stacked_label: bool, stacked_layouts: tuple[FractionLayout, ...]
@@ -1062,6 +1255,13 @@ class BedrockCropReader:
                 refusal = f"{type(error).__name__}: {str(error)[:160]}"
                 break
         attempts = self._sink.invocations[before:]
+        if self._cap is not None:
+            for attempt in attempts:
+                self._cap.add(
+                    getattr(attempt, "model_id", self.model_id),
+                    attempt.input_tokens,
+                    attempt.output_tokens,
+                )
         return Reading(
             extractor=self.extractor,
             vendor=self.vendor,

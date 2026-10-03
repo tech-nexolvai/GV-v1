@@ -187,10 +187,22 @@ API_PID=$!
 # two wrong values for a person to catch, and read nothing the pair had missed — so it is on here to
 # be tried on real drawings, and nowhere else. About 40% more model cost per crop. Every setting is
 # required; `workflow/reading_agent.py` says what each one is.
-# **Ministral reads first (#787).** Nova 2 Lite is held to 20 requests a minute on this account and
-# AWS declined to raise it (#716), so Nova reads only the crops Ministral found a value in — about 83
-# of 1,009 on AI_Set_2, which is minutes of Nova's quota instead of 50. Nothing that could be
-# confirmed is lost: a confirmation is two readers' values agreeing (#775).
+# **The reader pair is Qwen3-VL + Nova 2 Lite (#907)** — the admin's decision of 2026-10-04, after
+# the trial on both new answer keys (#728). Qwen3-VL (a third vendor) refuses forced tool use with a
+# picture, so it answers one JSON object that Bedrock holds to a schema, taught how these drawings
+# write a dimension, on the crop as cut. Nova 2 Lite is read the way the trial measured it: taught,
+# answering JSON in words, and shown the label turned upright where the drawing's own text, or the
+# way its drawn characters run, says it is sideways, and rendered from the vector page at 900 dpi —
+# the size the trial measured (300 dpi × 3), drawn rather than enlarged. Measured through the production path before this was switched on: of the
+# 47 labels a person read on the two keys, the pair agreed right on 25 — 24 that can be confirmed,
+# one stacked fraction that stays a pre-fill — and wrong on none; today's Nova 2 Lite + Ministral 3B,
+# measured the same way, agreed on 2. All three agreements on GV's own red number were held back by
+# the GV-mark guard (#901). Ministral 3B leaves the pair and stays defined. The pair cost about
+# $0.0005 a label there.
+#
+# **Qwen reads first (#787).** Nova 2 Lite is held to 20 requests a minute on this account and AWS
+# declined to raise it (#716), so Nova reads only the crops the gate reader found a value in.
+# Nothing that could be confirmed is lost: a confirmation is two readers' values agreeing (#775).
 #
 # **The phrase index is on (#849).** After extraction the worker joins each line's words into
 # passages (#836), which is what `workflow/parameter_proposals.py` searches when it looks for the
@@ -205,10 +217,13 @@ API_PID=$!
 # a different vendor's model asked for the digits alone. Only where the two agree on every piece is
 # the value written, and only as a pre-fill a person ticks: it keeps the stacked-fraction flag, so no
 # agreement ever seals it (#726). On `AI_Set 2` it pre-filled 11 labels, all right, and refused 2;
-# 28 Ministral calls, $0.0007. The four drawing sizes were measured in #848: every piece read at a
+# 28 Ministral calls, $0.0007. Since #907 the gate reader is Qwen3-VL, so Qwen reads the digits, in
+# plain JSON. The four drawing sizes were measured in #848: every piece read at a
 # height of 30–56 px, a stroke of 2–8 px and a margin of 16–96 px; the vendor's labels have no
 # curves, so the Bezier step count changes nothing. The route refuses to start without a gate reader.
-GV_VISION_GATE_READER=bedrock-ministral-3-3b \
+GV_BEDROCK_VISION_READERS=qwen3-vl-235b,nova-2-lite-taught \
+GV_VISION_GATE_READER=bedrock-qwen3-vl-235b \
+GV_VISION_SHARPER_PICTURE_DPI=900 \
 GV_READING_AGENT=1 \
 GV_AGENT_MAX_STEPS=6 \
 GV_AGENT_MAX_ESCALATIONS=1 \
