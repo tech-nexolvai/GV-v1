@@ -143,3 +143,25 @@ Open Measurements, expand the shop readings under Vendor depth, and click use.
   success message says it was kept rather than falsely claiming that the AI value replaced it.
 - `/__qa` exposes the synthetic request log. This is frontend QA only, not live OCR, server
   persistence or gold-set accuracy. Customer confirmation endpoints are not exercised by this test.
+
+## Reading-list failure must not hide the measurement form
+
+Run `GV_QA_PORT=5204 node tests/browser-qa-server.mjs` and open
+`http://127.0.0.1:5204/?readings=retry#/review/00000000-0000-4000-8000-000000000101`.
+
+1. Open Measurements. The first two candidate requests deliberately fail with 503 (initial
+   StrictMode load). Required fields and recorded confirmations must remain visible.
+2. Reading counts must say unavailable, not zero; do not show "Nothing was read".
+3. Enter `19 in` in Vendor depth, then choose Retry readings. The candidate reappears; the typed
+   entry stays `19 in`. Retry must not confirm, save measurements or run checks.
+4. Use `?readings=limit` for a persistent synthetic 413. The same form stays available with the
+   exact refusal and an explicit retry. No truncated reading list is invented.
+
+The real package was also inspected read-only: required-inputs returned 200 while candidates
+returned 413 due to the backend's 500-reading cap. The form previously disappeared because the
+three requests were combined with Promise.all. Required fields now remain usable when candidates
+or the vocabulary fail. A required-inputs failure still blocks the form rather than inventing fields.
+
+This is partial-load recovery, not a solution for browsing large candidate lists. Backend filtering
+or pagination is still required for those packages. No backend, stored value, drawing, rule, verdict,
+or schema was changed. The synthetic retry proves UI draft retention, not live server persistence.

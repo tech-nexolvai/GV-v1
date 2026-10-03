@@ -18,6 +18,8 @@ let approvedMode = false;
 let pageMode = 'populated';
 let reportErrorMode = false;
 let settingMode = false;
+let readingsMode = '';
+let readingsAttempts = 0;
 let scenario = createScenarioState();
 const port = Number(process.env.GV_QA_PORT ?? '5193');
 const qa = {
@@ -36,6 +38,8 @@ const qa = {
         pageMode = url.searchParams.get('pages') ?? 'populated';
         reportErrorMode = url.searchParams.get('report-error') === '1';
         settingMode = url.searchParams.get('settings') === '1';
+        readingsMode = url.searchParams.get('readings') ?? '';
+        readingsAttempts = 0;
         failCropOnce.clear();
         settingCropAttempts.clear();
         const requestedScenario = url.searchParams.get('scenario');
@@ -106,7 +110,12 @@ const qa = {
           sources: [{ value: 'G.C / Client', guidance: 'Synthetic source guidance.' }],
           found: { proposal_id: 'synthetic-setting-passage', page_index: 0, document_kind: 'architectural', has_crop: true } },
       ] } : needed);
-      if (path.endsWith('/candidates')) return json({ candidates, total: candidates.length });
+      if (path.endsWith('/candidates')) {
+        readingsAttempts++;
+        if (readingsMode === 'limit') return refusal('This synthetic package has more than 500 readings with values. Nothing is returned rather than a partial list.', 413);
+        if (readingsMode === 'retry' && readingsAttempts <= 2) return refusal('Synthetic reading-list service unavailable. Try again.', 503);
+        return json({ candidates, total: candidates.length });
+      }
       if (path.endsWith('/views')) return json({ views: [], total: 0 });
       if (path.endsWith('/findings/summary')) return json({ total: rows.length, failed: rows.length ? 1 : 0, passed: rows.length ? 1 : 0, review_required: rows.length ? 1 : 0, not_found: rows.length ? 1 : 0, no_applicable_rule: 0, critical_failed: 0 });
       if (path.endsWith('/findings')) return json({ items: rows, next_cursor: null, limit: 50, ordering: 'synthetic-test-order' });
