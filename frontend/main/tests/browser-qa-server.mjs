@@ -72,6 +72,7 @@ const qa = {
       }
       const localResponse = handleScenario(scenario, req.method, path, requestBody);
       if (localResponse) {
+        if (scenario.name === 'action-save' && req.method === 'POST' && path.endsWith('/actions')) await new Promise(resolve => setTimeout(resolve, requestBody.action === 'dismiss' ? 12000 : 1500));
         // Deliberate delay only in isolated QA: makes the pending/disabled state inspectable.
         if (scenario.name === 'decision-save' && req.method === 'POST' && /\/(evidence|exceptions)$/.test(path)) await new Promise(resolve => setTimeout(resolve, 1500));
         return json(localResponse.body, localResponse.status);

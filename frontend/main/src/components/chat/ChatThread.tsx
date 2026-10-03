@@ -4,7 +4,7 @@ import { OutcomeIcon } from '../ui/OutcomeIcon';
 import { OUTCOME_LABELS } from '../../data/outcomeLabels.js';
 import type { ChatMessage, Finding } from '../../data/types';
 import { FindingCard } from './FindingCard';
-import type { DecisionSaveResult } from './decisionSave';
+import type { DecisionSaveResult, SimpleReviewAction } from './decisionSave';
 import { GVMark } from '../brand/GVMark';
 import { ThinkingStream } from './ThinkingStream';
 import { ChatMarkdown } from './ChatMarkdown';
@@ -15,7 +15,7 @@ interface ChatThreadProps {
   messages: ChatMessage[];
   selectedFinding: string | null;
   onViewEvidence: (finding: Finding) => void;
-  onAction: (findingId: string, action: 'confirm' | 'correct' | 'except' | 'dismiss', note?: string) => void;
+  onAction: (findingId: string, action: SimpleReviewAction) => Promise<DecisionSaveResult>;
   onCorrect: (findingId: string, correctedValue: string) => Promise<DecisionSaveResult>;
   onExcept: (findingId: string, reason: string, expiresAt: string) => Promise<DecisionSaveResult>;
 }

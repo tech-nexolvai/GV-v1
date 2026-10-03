@@ -1,5 +1,6 @@
 /** A resolved request is not necessarily a saved decision (the parent can refuse a correction). */
 export type DecisionSaveResult = { saved: true } | { saved: false; error: string };
+export type SimpleReviewAction = 'confirm' | 'dismiss';
 
 /** One in-flight submission per mounted finding card. No retries or payload transformations. */
 export function createDecisionSaver() {

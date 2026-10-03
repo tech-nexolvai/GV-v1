@@ -3,7 +3,7 @@ import { ChevronRight, FileSearch, ExternalLink, CheckCircle, TriangleAlert } fr
 import type { Finding } from '../../data/types';
 import { OutcomeBadge, SeverityDot } from '../ui/Badge';
 import { OutcomeIcon } from '../ui/OutcomeIcon';
-import { createDecisionSaver, type DecisionSaveResult } from './decisionSave';
+import { createDecisionSaver, type DecisionSaveResult, type SimpleReviewAction } from './decisionSave';
 import './FindingCard.css';
 
 function readableLabel(value: string): string {
@@ -27,7 +27,7 @@ interface FindingCardProps {
   /** A table row already has a disclosure; reveal its actions on the first opening. */
   defaultExpanded?: boolean;
   onViewEvidence: (finding: Finding) => void;
-  onAction: (findingId: string, action: 'confirm' | 'correct' | 'except' | 'dismiss', note?: string) => void;
+  onAction: (findingId: string, action: SimpleReviewAction) => Promise<DecisionSaveResult>;
   /**
    * Correct a reading, with what it should say.
    *
@@ -63,6 +63,15 @@ export function FindingCard({
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const hasAction = finding.reviewer_action !== null;
+
+  function submitAction(action: SimpleReviewAction) {
+    // Hide payload forms without clearing their drafts; the same lock covers all card decisions.
+    if (isSaving) return;
+    setPending(null);
+    void saveDecision(() => onAction(finding.id, action), {
+      busy: setIsSaving, error: setSaveError, saved: () => {},
+    });
+  }
 
   return (
     <div
@@ -235,12 +244,12 @@ export function FindingCard({
               </button>
 
               {!hasAction && finding.outcome !== 'PASS' && finding.outcome !== 'NO_APPLICABLE_RULE' && (
-                <div className="finding-card__reviewer-actions">
+                <div className="finding-card__reviewer-actions" aria-busy={isSaving}>
                   {finding.outcome !== 'NOT_FOUND' && (
                     <button
                       className="btn btn--reviewer"
                       disabled={isSaving}
-                      onClick={() => onAction(finding.id, 'confirm')}
+                      onClick={() => submitAction('confirm')}
                     >Confirm</button>
                   )}
                   <button
@@ -258,10 +267,13 @@ export function FindingCard({
                   <button
                     className="btn btn--reviewer btn--reviewer--dismiss"
                     disabled={isSaving}
-                    onClick={() => onAction(finding.id, 'dismiss')}
+                    onClick={() => submitAction('dismiss')}
                   >Dismiss</button>
                 </div>
               )}
+
+              {!pending && isSaving && <p role="status">Saving decision…</p>}
+              {!pending && saveError && <p className="finding-card__save-error" role="alert">{saveError}</p>}
 
               {pending === 'correct' && (
                 <form
