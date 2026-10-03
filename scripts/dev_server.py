@@ -27,6 +27,8 @@ Environment:
     GV_DEV_PROJECTS     the project UUIDs you belong to, comma-separated
     GV_DEV_STORAGE      where uploaded drawings go (default ./.dev-storage)
     GV_DEV_PORT         default 8000
+    GV_RUN_EDGE_TOLERANCE  how far a part may stray past a countertop and still be suggested as
+                        part of its run (#893). No default: unset, no run is suggested or confirmed.
 
 Verification: `tests/test_dev_server.py`
 """

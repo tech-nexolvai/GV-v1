@@ -135,6 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         background,
         company_settings,
         confirmations,
+        countertop_runs,
         distribution,
         documents,
         drawing_parts,
@@ -164,6 +165,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # The parts of each vendor drawing: suggested by the computer, each one confirmed, corrected,
     # withdrawn or added by a person, never all at once (#882).
     app.include_router(drawing_parts.router, prefix=API_PREFIX)
+    # Which confirmed parts sit beneath each confirmed countertop: suggested by the computer,
+    # confirmed, corrected or withdrawn by a person, one countertop at a time (#893).
+    app.include_router(countertop_runs.router, prefix=API_PREFIX)
     app.include_router(approvals.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(finding_chain.router, prefix=API_PREFIX)

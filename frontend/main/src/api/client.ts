@@ -729,6 +729,43 @@ export async function downloadPartCrop(
   return response.blob();
 }
 
+/**
+ * Each confirmed countertop of this package, the run of parts the computer suggests beneath it, and
+ * what a person decided (#893). Listing writes nothing: a suggested run is worked out on each call.
+ */
+export function listCountertopRuns(projectId: string, packageId: string) {
+  return request<CountertopRunsOut>(`/projects/${projectId}/packages/${packageId}/countertop-runs`);
+}
+
+/**
+ * Say which parts make up the run beneath one countertop (#893): the suggestion as it stands, or a
+ * person's correction. The order the ids are sent in does not matter: the server orders the run
+ * across the drawing. There is deliberately no call that decides more than one countertop's run.
+ */
+export function confirmCountertopRun(
+  projectId: string,
+  packageId: string,
+  countertopItemId: string,
+  partIds: string[],
+) {
+  return request<CountertopRunOut>(
+    `/projects/${projectId}/packages/${packageId}/countertop-runs/${countertopItemId}/confirm`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ part_ids: partIds }),
+    },
+  );
+}
+
+/** Say the run suggested or confirmed beneath one countertop is wrong (#893). Writes no run. */
+export function withdrawCountertopRun(projectId: string, packageId: string, countertopItemId: string) {
+  return request<CountertopRunOut>(
+    `/projects/${projectId}/packages/${packageId}/countertop-runs/${countertopItemId}/withdraw`,
+    { method: 'POST' },
+  );
+}
+
 /** GV's standard numbers, which every project starts from (#812). */
 export function getCompanySettings() {
   return request<CompanySettings>('/company-settings');
@@ -765,6 +802,8 @@ export type DrawingViewOut = DrawingViewsOut['views'][number];
 export type DrawingPartsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/parts'>;
 export type DrawingPartOut = DrawingPartsOut['drawings'][number]['parts'][number];
 export type PartKind = components['schemas']['PartKind'];
+export type CountertopRunsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/countertop-runs'>;
+export type CountertopRunOut = CountertopRunsOut['drawings'][number]['countertops'][number];
 export type PartPoint = components['schemas']['PointOut'];
 export type CompanySettings = Get<'/api/v1/company-settings'>;
 export type ConfirmedOut =

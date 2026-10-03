@@ -606,6 +606,11 @@ class CountertopRun(Base, TimestampedUUID, Immutable):
     order.
 
     Append-only: a correction is a new run under a new `run_id`.
+
+    **Every row belongs to a person's decision (#893).** `run_id` and the countertop together name a
+    `countertop_run_decisions` row that confirmed this run, so a member row with no decision behind
+    it, or under a decision about another countertop, is refused by the database. Which run is read
+    is that table's to say: only the run its countertop's current decision confirmed.
     """
 
     __tablename__ = "countertop_runs"
@@ -657,6 +662,86 @@ class CountertopRun(Base, TimestampedUUID, Immutable):
         CheckConstraint("confirmed_by !~ '^[[:space:]]*$'", name="countertop_run_actor_not_blank"),
         UniqueConstraint("run_id", "position", name="uq_countertop_runs_slot"),
         UniqueConstraint("run_id", "member_item_id", name="uq_countertop_runs_member"),
+        # The decision that confirmed the run, about the same countertop (#893).
+        ForeignKeyConstraint(
+            ["run_id", "countertop_item_id"],
+            ["countertop_run_decisions.run_id", "countertop_run_decisions.countertop_item_id"],
+            ondelete="RESTRICT",
+        ),
+    )
+
+
+class CountertopRunDecision(Base, TimestampedUUID, Immutable):
+    """A person's decision on the run beneath one confirmed countertop: this run, or none (#893).
+
+    **The computer only suggests a run; this is the record that a person decided one.** Confirming
+    names the `run_id` whose `countertop_runs` rows hold the members, in order; withdrawing names
+    none, and says the suggested or earlier run is not the one beneath this countertop.
+
+    **One current decision per countertop, held by the database**, exactly as `PartConfirmation`
+    holds one per suggestion. A correction or a withdrawal names the decision it replaces in
+    `supersedes_id`; only a countertop's first decision may replace nothing, and each decision can be
+    replaced once and only by one about the same countertop. So at most one decision per countertop
+    is replaced by nothing, and only the run that decision confirmed is read. Two people deciding at
+    once cannot both become current.
+
+    Keyed by the countertop's item, not its suggestion: a person correcting the countertop part makes
+    a new item, and a run confirmed beneath the old one is not carried over to it unseen.
+    """
+
+    __tablename__ = "countertop_run_decisions"
+
+    countertop_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("drawing_items.id", ondelete="RESTRICT"), index=True
+    )
+    """The countertop part the decision is about."""
+
+    supersedes_id: Mapped[UUID | None] = mapped_column(default=None)
+    """The decision this one replaces, or `NULL` for the countertop's first decision."""
+
+    decision: Mapped[str] = mapped_column(String(16))
+    """`confirmed` or `withdrawn` (`PartDecision`)."""
+
+    run_id: Mapped[UUID | None] = mapped_column(default=None)
+    """The run a confirmation confirmed, whose members are the `countertop_runs` rows sharing it.
+    `NULL` on a withdrawal, which confirms no run."""
+
+    confirmed_by: Mapped[str] = mapped_column(String(200))
+    """Who decided, on a withdrawal too."""
+
+    __table_args__ = (
+        CheckConstraint(f"decision IN ({PART_DECISION_VALUES})", name="run_decision_value"),
+        # A confirmation names its run; a withdrawal names none.
+        CheckConstraint(
+            "(decision = 'confirmed') = (run_id IS NOT NULL)",
+            name="run_decision_shape",
+        ),
+        CheckConstraint("confirmed_by !~ '^[[:space:]]*$'", name="run_decision_actor_not_blank"),
+        UniqueConstraint("run_id", name="uq_countertop_run_decisions_run_id"),
+        # What `countertop_runs` points at, so a member row can only belong to a run confirmed for
+        # its own countertop.
+        UniqueConstraint(
+            "run_id", "countertop_item_id", name="uq_countertop_run_decisions_run_countertop"
+        ),
+        # What the self-reference below points at, so a decision can only replace one about the same
+        # countertop.
+        UniqueConstraint(
+            "id", "countertop_item_id", name="uq_countertop_run_decisions_id_countertop"
+        ),
+        ForeignKeyConstraint(
+            ["supersedes_id", "countertop_item_id"],
+            ["countertop_run_decisions.id", "countertop_run_decisions.countertop_item_id"],
+            ondelete="RESTRICT",
+            # Named here: the conventional name runs past PostgreSQL's 63 characters.
+            name="fk_countertop_run_decisions_supersedes_id",
+        ),
+        UniqueConstraint("supersedes_id", name="uq_countertop_run_decisions_supersedes_id"),
+        Index(
+            "ix_countertop_run_decisions_first_decision",
+            "countertop_item_id",
+            unique=True,
+            postgresql_where=text("supersedes_id IS NULL"),
+        ),
     )
 
 
