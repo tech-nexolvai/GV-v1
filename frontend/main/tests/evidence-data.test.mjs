@@ -44,6 +44,32 @@ try {
     assert.ok(standalone.includes(`class="finding-card__header" aria-expanded="${outcome === 'FAIL'}"`), 'standalone default is unchanged');
   }
   assert.equal(actions, 0, 'opening details never records a decision');
+  // The backend's own reason should be visible without opening its raw trace. Never derive an
+  // explanation from a rule id, normalize its numbers, or render drawing/model text as HTML.
+  for (const outcome of ['NOT_FOUND', 'REVIEW_REQUIRED', 'NO_APPLICABLE_RULE']) {
+    const reason = 'Recorded fixture reason: missing width <shop> & 9007199254740993/7 in.\nReview the source.';
+    const abstention = { ...chain, outcome, operands: [], trace: { kind: 'abstention', cause: 'missing_input', reason } };
+    const displayed = withChain(toFinding({ ...row(outcome), outcome }), abstention);
+    assert.equal(displayed.reason, reason, 'reason is verbatim, including exact numeric text and line breaks');
+    assert.equal(displayed.outcome, outcome);
+    assert.strictEqual(displayed.recorded_chain, abstention, 'the original chain remains intact');
+    assert.equal(displayed.trace.comparison, reason, 'raw trace is retained, not replaced');
+    const html = renderToStaticMarkup(createElement(FindingCard, { ...cardProps, finding: displayed, defaultExpanded: true }));
+    assert.ok(html.indexOf('finding-card__reason') < html.indexOf('finding-card__trace-section'), 'reason precedes the collapsed raw trace');
+    assert.match(html, /missing width &lt;shop&gt; &amp; 9007199254740993\/7 in\./);
+    assert.doesNotMatch(html, /<shop>/);
+    assert.match(html, />Recorded trace<\/span>/);
+    assert.match(html, /class="finding-card__trace-toggle" aria-expanded="false"/, 'trace disclosure announces its state');
+    assert.doesNotMatch(html, />Calculation trace<\/span>/, 'an abstention is not arithmetic');
+    const cleared = withChain(displayed, chain);
+    assert.equal(cleared.reason, undefined, 'calculation refresh cannot keep an old abstention reason');
+    const emptyReason = withChain(displayed, { ...abstention, trace: { kind: 'abstention', cause: 'missing_input', reason: '' } });
+    assert.equal(emptyReason.reason, '', 'no fallback reason invented for an empty server field');
+    assert.doesNotMatch(renderToStaticMarkup(createElement(FindingCard, { ...cardProps, finding: emptyReason, defaultExpanded: true })), /class="finding-card__reason"/);
+    const opaque = withChain(displayed, { ...abstention, trace: { kind: 'unrecognised', content: { reason: 'Do not promote an unknown shape' } } });
+    assert.equal(opaque.reason, undefined, 'unknown trace content is not guessed into a reason');
+  }
+  assert.equal(finding.reason, undefined, 'calculation does not acquire a generated explanation');
   assert.equal(finding.recorded_operands[0].value, '25 1/4 in');
   assert.equal(finding.recorded_operands[1].value, '9007199254740993 in');
   assert.equal(finding.recorded_operands[2].value, '2/3 in');

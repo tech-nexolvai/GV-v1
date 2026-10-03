@@ -177,8 +177,10 @@ export function FindingCard({
               <button
                 className="finding-card__trace-toggle"
                 onClick={() => setShowTrace(t => !t)}
+                aria-expanded={showTrace}
               >
-                <span>Calculation trace</span>
+                <span>{finding.recorded_chain && finding.recorded_chain.trace.kind !== 'calculation'
+                  ? 'Recorded trace' : 'Calculation trace'}</span>
                 <ChevronRight size={11} className="collapsible-chevron" data-open={showTrace} />
               </button>
               <div className="collapsible" data-open={showTrace} inert={!showTrace}>
