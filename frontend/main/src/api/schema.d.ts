@@ -650,6 +650,9 @@ export interface paths {
          *
          *     Nothing is run here. A submission records values; asking for the checks is a separate call, so a
          *     reviewer can correct a typo without a verdict being computed from the first attempt.
+         *
+         *     A setting sent with a `citation` is held to the passage it names before anything is stored, and
+         *     a number that differs from the passage's stores nothing at all (#866).
          */
         post: operations["enter_measurements_api_v1_projects__project_id__packages__package_id__measurements_post"];
         delete?: never;
@@ -685,6 +688,32 @@ export interface paths {
          *     The database work is done before the stream opens, so the session is not held across it.
          */
         post: operations["propose_measurements_api_v1_projects__project_id__packages__package_id__measurements_propose_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/parameter-proposals/{proposal_id}/crop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the passage in the architect's drawing that states a setting
+         * @description The picture a reviewer reads a setting off before typing it, while the form offers it.
+         *
+         *     **The pixels, never the number** (#866). The reviewer must read the value themselves, so this
+         *     returns a stored crop of the number's runs and nothing parsed from them. Only a pointer
+         *     `GET .../required-inputs` would offer is served, so a pointer withdrawn since, because its
+         *     drawing turned out to be the vendor's, shows nothing. The digest is checked before bytes leave,
+         *     as for every other crop.
+         */
+        get: operations["setting_passage_crop_api_v1_projects__project_id__packages__package_id__parameter_proposals__proposal_id__crop_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2516,6 +2545,11 @@ export interface components {
          *     `GET .../required-inputs` reported rather than choosing.
          */
         ParameterEntry: {
+            /**
+             * Citation
+             * @description The passage this value was typed from (#866): the `proposal_id` of the setting's `found` pointer in required-inputs. The server reads the passage's number and refuses a value that differs; on a match it records the source and the reference itself, so neither is sent with a citation.
+             */
+            citation?: string | null;
             /** Name */
             name: string;
             /**
@@ -2546,6 +2580,7 @@ export interface components {
             blocked: boolean;
             /** Declared Default */
             declared_default: string | null;
+            found?: components["schemas"]["SettingPointerOut"] | null;
             /** Name */
             name: string;
             /** Rule Ids */
@@ -3124,6 +3159,28 @@ export interface components {
             version: string;
         };
         /**
+         * SettingPointerOut
+         * @description Where the architect's drawing states a setting: a page and a crop, **never the number** (#866).
+         *
+         *     The reviewer types the value they see without being shown the one the app found, and the server
+         *     saves it only if the two match (step 3.3 of #798). So nothing here may carry the number: no
+         *     value, no text from the drawing, and no id of the runs, which `GET .../candidates` would turn
+         *     back into a value. `tests/api/test_setting_citations.py` holds this class to that list.
+         */
+        SettingPointerOut: {
+            /** Document Kind */
+            document_kind: string;
+            /** Has Crop */
+            has_crop: boolean;
+            /** Page Index */
+            page_index: number;
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
+        };
+        /**
          * Severity
          * @description How a finding is presented to the reviewer.
          *
@@ -3160,6 +3217,8 @@ export interface components {
         StoredValue: {
             /** As Typed */
             as_typed: string;
+            /** Citation */
+            citation?: string | null;
             /** Denominator */
             denominator: string;
             /** Name */
@@ -4228,6 +4287,39 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["AssignmentEvent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    setting_passage_crop_api_v1_projects__project_id__packages__package_id__parameter_proposals__proposal_id__crop_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The integrity-checked crop of the passage a setting was found in. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
                 };
             };
             /** @description Validation Error */

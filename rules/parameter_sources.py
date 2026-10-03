@@ -19,12 +19,12 @@ the same thing and could say different things.
 
 **Which side of a package each source may be cited from** is `CITABLE_SIDES` (#849): a G.C / Client
 value from the architect's drawings only, and a company standard, a fabricator's number or a site
-measurement from nothing in the package at all. `workflow/parameter_proposals.py` holds every
-passage it points at to that table.
+measurement from nothing in the package at all. `workflow/parameter_citations.py` holds every
+passage the app points at, and every passage a typed value cites, to that table.
 
-**What this cannot do yet:** prove a typed number did not come from the vendor's drawing under
-review. A free-text reference is the reviewer's word. Holding a typed value to the passage it cites
-is step 3.3 of #798.
+**What this cannot do:** prove a number typed with a free-text reference did not come from the
+vendor's drawing under review; that reference is the reviewer's word. A number typed from a passage
+the app found is held to the passage instead (#866).
 """
 
 from __future__ import annotations

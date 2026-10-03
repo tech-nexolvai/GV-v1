@@ -3,12 +3,14 @@
 A setting the rules need, such as an overhang or a backsplash thickness, could only be typed. This
 searches the package's own words (`retrieval.package_text`) for a passage that states it, checks the
 passage, and files a pointer in `parameter_proposals`: the phrase, the runs within it that hold the
-number, and the source the passage would make the value. A person confirms the number, by typing it
-without seeing it, in step 3.3 of #798, which is still to be built. Nothing here can save a setting.
+number, and the source the passage would make the value. A person confirms the number by typing it
+without seeing it (step 3.3 of #798, #866), and the API saves it only if it matches. Nothing here can
+save a setting.
 
 **Q10, in code: no setting is ever read off the vendor's drawing under review**
-(`rules/overrides.py`). One guard, `_check`, runs when a pointer is made and again whenever one is
-read back:
+(`rules/overrides.py`). One guard, `workflow.parameter_citations._check`, runs when a pointer is made
+and again whenever one is read back. It lives there because the API runs it too, and the API may
+never reach `retrieval/`, which this module searches through:
 
 - the setting must allow a source that may cite a package at all. GV's company standards, the field
   cut and the fabricator's clearance may cite nothing (`rules.parameter_sources.CITABLE_SIDES`), so
@@ -22,9 +24,9 @@ read back:
   Millimetres are refused because inches are authoritative (Q12), and so are a number with no inch
   mark and two numbers in one span.
 
-**The number is read, compared and dropped.** Code reads it exactly, as a `Fraction`, to check it is
-one dimension and to compare it with every other passage that states the same setting. It is never
-stored and never returned: no public result here carries it.
+**The number is read, compared and dropped.** The guard reads it exactly, as a `Fraction`, to check
+it is one dimension, and this module compares it with every other passage that states the same
+setting. It is never stored and never returned: no public result here carries it.
 
 **Two passages, two values: no proposal, and a REVIEW note.** Which one the architect meant is a
 person's question, and choosing either would be the system answering it.
@@ -37,13 +39,15 @@ the word belongs to.
 
 **The newest proposal wins.** A proposal that differs from the setting's newest one is appended;
 `current_parameter_proposals` reads the newest pointer per setting, and only while it still passes
-the guard and the package still states one value for that setting.
+the guard and the package still states one value for that setting. The form offers, and a typed
+number is held to, the pointers `workflow.parameter_citations.live_parameter_proposals` reads: the
+same, without the search for a second value.
 
 **It can never write a setting.** The semgrep rule `gv-proposer-never-writes-a-setting` forbids this
 module, the value-hunter and `retrieval/` from building a `ParameterValue` or calling the functions
 that store one, and a test keeps all three from importing `app.api`.
 
-Source: issue #849, plan step 3.2 on #798.
+Source: issue #849, plan step 3.2 on #798; the guard moved out by #866.
 Verification: `tests/workflow/test_parameter_proposals.py`,
 `tests/workflow/test_proposer_never_writes_a_setting.py`.
 """
@@ -58,30 +62,30 @@ from fractions import Fraction
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.evidence.sides import ReadingSides, SideRefusal, SideRefusalReason
-from app.models.evidence import ObservationCandidate
+from app.evidence.sides import ReadingSides
 from app.models.package import PackageRevision
-from app.models.package_text import TextPhrase, TextPhraseMember
 from app.models.parameter_proposals import ParameterProposal
 from retrieval.package_text import search_package_text
-from rules.parameter_sources import ALLOWED_SOURCES, citable_sides, citable_sources
-from rules.parameters import Provenance
-from units.normalise import UnitNormalisationError, normalise_to_inches
+from rules.parameter_sources import ALLOWED_SOURCES, citable_sources
 from vocabulary.parameter_terms import search_terms
-from vocabulary.semantic_types import DocumentRole
+from workflow.parameter_citations import (
+    Citation,
+    CitationRefusal,
+    CitationRefusalReason,
+    _check,
+    _check_row,
+    _newest,
+    _newest_by_setting,
+    _runs,
+)
 
 __all__ = [
     "PROPOSER",
     "PROPOSER_VERSION",
-    "Citation",
-    "CitationRefusal",
-    "CitationRefusalReason",
     "ProposalOutcome",
     "SettingProposal",
-    "check_proposal",
     "current_parameter_proposals",
     "propose_setting",
 ]
@@ -95,62 +99,8 @@ PROPOSER_VERSION: Final = "1"
 
 _DIGIT: Final = re.compile(r"[0-9]")
 
-#: One number as a drawing writes it: a whole and a fraction (`1 1/2`), a fraction, or a whole or
-#: decimal. `2 4` is two numbers, and so is the `3` and `6` of `3'-6"`.
-_NUMBER: Final = re.compile(r"[0-9]+\s+[0-9]+/[0-9]+|[0-9]+/[0-9]+|[0-9]+(?:\.[0-9]+)?")
-
-_MILLIMETRES: Final = re.compile(r"[0-9]\s*mm\b", re.IGNORECASE)
-
-#: The inch marks `units.normalise` reads.
-_INCH_MARK: Final = re.compile(r'"|\bin\b|\binch(?:es)?\b', re.IGNORECASE)
-
 #: A run that is only a unit, taken into the span when it follows the last number.
 _UNIT_ONLY: Final = re.compile(r'"|in|inch|inches|mm', re.IGNORECASE)
-
-
-class CitationRefusalReason(StrEnum):
-    """Why a passage cannot be cited for a setting: a fact about the passage or the setting."""
-
-    NOT_CITABLE = "not_citable"
-    """The setting may not come from a package as the claimed source: a company standard, say."""
-
-    OUTSIDE_REVISION = "outside_revision"
-    NO_SUCH_RUNS = "no_such_runs"
-
-    NO_SIDE = "no_side"
-    """A run has no side: a reviewer's markup, a drawing nobody confirmed, a reading between two
-    drawings. `CitationRefusal.side_refusal` says which."""
-
-    WRONG_SIDE = "wrong_side"
-    """A run is on a side the source may not cite: the vendor's drawing under review."""
-
-    NO_NUMBER = "no_number"
-    MILLIMETRES = "millimetres"
-    NOT_ONE_NUMBER = "not_one_number"
-    NO_INCH_MARK = "no_inch_mark"
-    UNREADABLE = "unreadable"
-
-
-@dataclass(frozen=True, slots=True)
-class CitationRefusal:
-    """A passage that may not be cited, and why, in words that quote nothing from the drawing."""
-
-    reason: CitationRefusalReason
-    detail: str
-    side_refusal: SideRefusalReason | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class Citation:
-    """A passage that passed the guard: where it is and what it would be, never what it says."""
-
-    setting: str
-    phrase_id: UUID
-    first_member: int
-    last_member: int
-    claimed_source: Provenance
-    candidate_ids: tuple[UUID, ...]
-    """The runs from `first_member` to `last_member`, in order: the number's own runs."""
 
 
 class ProposalOutcome(StrEnum):
@@ -194,22 +144,6 @@ class _Decision:
     refusals: tuple[CitationRefusal, ...] = ()
 
 
-def _runs(session: Session, phrase_id: UUID) -> tuple[ObservationCandidate, ...] | None:
-    """The phrase's runs in order, or `None` unless their positions are exactly 0, 1, 2 and so on.
-
-    `build_package_phrases` numbers them so, and a gap would be a row no span can be placed in.
-    """
-    rows = session.execute(
-        select(TextPhraseMember.position, ObservationCandidate)
-        .join(ObservationCandidate, ObservationCandidate.id == TextPhraseMember.candidate_id)
-        .where(TextPhraseMember.phrase_id == phrase_id)
-        .order_by(TextPhraseMember.position)
-    ).all()
-    if not rows or [position for position, _ in rows] != list(range(len(rows))):
-        return None
-    return tuple(candidate for _, candidate in rows)
-
-
 def _span(texts: Sequence[str]) -> tuple[int, int] | None:
     """Where the passage's number is, as run positions, or `None` if no run holds a digit."""
     digits = [position for position, text in enumerate(texts) if _DIGIT.search(text)]
@@ -219,110 +153,6 @@ def _span(texts: Sequence[str]) -> tuple[int, int] | None:
     if last + 1 < len(texts) and _UNIT_ONLY.fullmatch(texts[last + 1].strip()):
         last += 1
     return first, last
-
-
-def _read_inch_dimension(text: str) -> Fraction | CitationRefusal:
-    """The span's one inch dimension, exactly, or why it is not one.
-
-    Millimetres first, because `normalise_to_inches` would convert them, and a converted number is
-    not what the architect wrote.
-    """
-    if _MILLIMETRES.search(text):
-        return CitationRefusal(
-            CitationRefusalReason.MILLIMETRES,
-            "this number is in millimetres; inches are authoritative, and a millimetre value is "
-            "never read as a setting",
-        )
-    numbers = len(_NUMBER.findall(text))
-    if numbers == 0:
-        return CitationRefusal(CitationRefusalReason.NO_NUMBER, "this passage states no number")
-    if numbers > 1:
-        return CitationRefusal(
-            CitationRefusalReason.NOT_ONE_NUMBER,
-            "this passage holds more than one number where one is expected, so which is the "
-            "setting is unknown",
-        )
-    if not _INCH_MARK.search(text):
-        return CitationRefusal(
-            CitationRefusalReason.NO_INCH_MARK,
-            "this number has no inch mark, so its unit is unknown",
-        )
-    try:
-        return normalise_to_inches(text).exact
-    except UnitNormalisationError:
-        return CitationRefusal(
-            CitationRefusalReason.UNREADABLE,
-            "this number cannot be read as one dimension in inches",
-        )
-
-
-def _wrong_side(side: DocumentRole, source: Provenance) -> str:
-    if side is DocumentRole.SHOP:
-        return (
-            "this passage is on the vendor's drawing under review, and no setting is ever read off "
-            "the drawing being checked"
-        )
-    allowed = ", ".join(sorted(role.value for role in citable_sides(source)))
-    return f"a {source.value} value is cited only from {allowed}, and this passage is {side.value}"
-
-
-def _check(
-    session: Session,
-    sides: ReadingSides,
-    *,
-    package_revision_id: UUID,
-    setting: str,
-    phrase_id: UUID,
-    first_member: int,
-    last_member: int,
-    claimed_source: Provenance,
-) -> tuple[Citation, Fraction] | CitationRefusal:
-    """The guard: the pointer, checked, with the number it names — or why it may not be cited.
-
-    The number goes back only to this module's callers, to be compared (see the module docstring).
-    """
-    if claimed_source not in citable_sources(setting):
-        return CitationRefusal(
-            CitationRefusalReason.NOT_CITABLE,
-            f"{setting} may not be cited from a package as {claimed_source.value}",
-        )
-    phrase = session.get(TextPhrase, phrase_id)
-    if phrase is None or phrase.package_revision_id != package_revision_id:
-        return CitationRefusal(
-            CitationRefusalReason.OUTSIDE_REVISION,
-            "this passage is not one of this package revision's",
-        )
-    runs = _runs(session, phrase_id)
-    if runs is None or not 0 <= first_member <= last_member < len(runs):
-        return CitationRefusal(
-            CitationRefusalReason.NO_SUCH_RUNS, "the passage has no runs at those positions"
-        )
-
-    allowed = citable_sides(claimed_source)
-    # Every run of the passage, not only the number's: a label on the vendor's drawing beside a
-    # number on the architect's is not the architect saying what the number is.
-    for run in runs:
-        side = sides.of(run, confirmed_views_only=True)
-        if isinstance(side, SideRefusal):
-            return CitationRefusal(CitationRefusalReason.NO_SIDE, side.detail, side.reason)
-        if side not in allowed:
-            return CitationRefusal(
-                CitationRefusalReason.WRONG_SIDE, _wrong_side(side, claimed_source)
-            )
-
-    span = runs[first_member : last_member + 1]
-    value = _read_inch_dimension(" ".join(run.raw_text for run in span))
-    if isinstance(value, CitationRefusal):
-        return value
-    citation = Citation(
-        setting=setting,
-        phrase_id=phrase_id,
-        first_member=first_member,
-        last_member=last_member,
-        claimed_source=claimed_source,
-        candidate_ids=tuple(run.id for run in span),
-    )
-    return citation, value
 
 
 def _decide(
@@ -412,19 +242,6 @@ def _decide(
     )
 
 
-def _newest(session: Session, package_revision_id: UUID, setting: str) -> ParameterProposal | None:
-    """The setting's newest pointer: by `created_at`, then by id, so a tie orders the same way."""
-    return session.execute(
-        select(ParameterProposal)
-        .where(
-            ParameterProposal.package_revision_id == package_revision_id,
-            ParameterProposal.setting_name == setting,
-        )
-        .order_by(ParameterProposal.created_at.desc(), ParameterProposal.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-
-
 def _record(session: Session, package_revision_id: UUID, citation: Citation) -> ParameterProposal:
     """File the pointer, unless the setting's newest pointer already says exactly this."""
     newest = _newest(session, package_revision_id, citation.setting)
@@ -489,23 +306,6 @@ def propose_setting(session: Session, package_revision_id: UUID, setting: str) -
     )
 
 
-def check_proposal(
-    session: Session, row: ParameterProposal, *, sides: ReadingSides | None = None
-) -> Citation | CitationRefusal:
-    """A stored pointer, put through the guard again now: the sides as they stand today."""
-    checked = _check(
-        session,
-        ReadingSides(session) if sides is None else sides,
-        package_revision_id=row.package_revision_id,
-        setting=row.setting_name,
-        phrase_id=row.phrase_id,
-        first_member=row.first_member,
-        last_member=row.last_member,
-        claimed_source=Provenance(row.claimed_source),
-    )
-    return checked if isinstance(checked, CitationRefusal) else checked[0]
-
-
 def current_parameter_proposals(
     session: Session, package_revision_id: UUID
 ) -> Mapping[str, ParameterProposal]:
@@ -516,32 +316,10 @@ def current_parameter_proposals(
     pointer was filed, or a second passage that disagrees, withdraws it. An older pointer never
     takes its place: the newest is what the proposer last found.
     """
-    rows = session.execute(
-        select(ParameterProposal)
-        .where(ParameterProposal.package_revision_id == package_revision_id)
-        .order_by(
-            ParameterProposal.setting_name,
-            ParameterProposal.created_at.desc(),
-            ParameterProposal.id.desc(),
-        )
-    ).scalars()
-    newest: dict[str, ParameterProposal] = {}
-    for row in rows:
-        newest.setdefault(row.setting_name, row)
-
     sides = ReadingSides(session)
     current: dict[str, ParameterProposal] = {}
-    for setting, row in sorted(newest.items()):
-        checked = _check(
-            session,
-            sides,
-            package_revision_id=package_revision_id,
-            setting=setting,
-            phrase_id=row.phrase_id,
-            first_member=row.first_member,
-            last_member=row.last_member,
-            claimed_source=Provenance(row.claimed_source),
-        )
+    for setting, row in sorted(_newest_by_setting(session, package_revision_id).items()):
+        checked = _check_row(session, sides, row)
         if isinstance(checked, CitationRefusal):
             continue
         decision = _decide(session, sides, package_revision_id, setting)

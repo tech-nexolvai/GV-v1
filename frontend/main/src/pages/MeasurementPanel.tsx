@@ -14,6 +14,7 @@ import {
   confirmCandidate,
   downloadCandidateCrop,
   downloadLayoutProposalCrop,
+  downloadSettingPassageCrop,
   enterMeasurements,
   getRequiredInputs,
   listCandidates,
@@ -35,7 +36,14 @@ import {
   isCategorical,
 } from './classificationFields';
 import { layoutChoiceDefaults } from './layoutChoices';
-import { settingMissingASource, sourceToSend, type SettingSource } from '../components/measure/settingSources';
+import { settingMissingASource, type SettingSource } from '../components/measure/settingSources';
+import { SettingCitation } from '../components/measure/SettingCitation';
+import {
+  citingPointer,
+  settingEntry,
+  uploadLabel,
+  type SettingPointer,
+} from '../components/measure/settingPointers';
 import './MeasurementPanel.css';
 
 /**
@@ -81,6 +89,8 @@ type Parameter = {
   blocked: boolean;
   /** Where a value may come from (#827), in the order Raj's checklist gives them. */
   sources?: SettingSource[];
+  /** Where the architect's drawing states it (#866): a page and a crop, never the number. */
+  found?: SettingPointer | null;
 };
 type LayoutProposal = {
   value: string;
@@ -272,6 +282,8 @@ export function MeasurementPanel({
   /** Per setting: the source the reviewer chose, and where in it (#827). */
   const [sourceChoices, setSourceChoices] = useState<Record<string, string>>({});
   const [references, setReferences] = useState<Record<string, string>>({});
+  /** Settings the app found a passage for, which the reviewer chose to enter another way (#866). */
+  const [declinedCitations, setDeclinedCitations] = useState<Record<string, boolean>>({});
   const [stored, setStored] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -316,6 +328,7 @@ export function MeasurementPanel({
     setChoices({});
     setSourceChoices({});
     setReferences({});
+    setDeclinedCitations({});
     setCandidates([]);
     setSemanticTypes([]);
     setCandidateError(null);
@@ -591,8 +604,9 @@ export function MeasurementPanel({
 
   async function saveVisibleValues(): Promise<boolean> {
     if (!packageId || !needed) return false;
+    // A setting typed from the passage the app found takes its source from that passage (#866).
     const unsourced = settingMissingASource(
-      needed.parameters.filter((p) => !p.blocked),
+      needed.parameters.filter((p) => !p.blocked && !citingPointer(p, declinedCitations)),
       singles,
       sourceChoices,
     );
@@ -633,19 +647,17 @@ export function MeasurementPanel({
 
       const classifications = classificationEntries(needed.quantities, runs);
 
+      // A setting typed from a found passage sends that passage as its citation, and the server
+      // holds the number to it (#866); any other setting goes exactly as it always has.
       const parameters = needed.parameters
         .filter((p) => !p.blocked && (singles[p.name] ?? '').trim())
-        .map((p) => {
-          const source = sourceToSend(p, sourceChoices[p.name]);
-          const reference = (references[p.name] ?? '').trim();
-          return {
-            name: p.name,
-            value: (singles[p.name] ?? '').trim(),
-            scope: (p.scope === 'run' ? 'run' : 'project') as 'run' | 'project',
-            ...(source ? { source } : {}),
-            ...(reference ? { reference } : {}),
-          };
-        });
+        .map((p) =>
+          settingEntry(p, singles[p.name] ?? '', {
+            declined: declinedCitations,
+            source: sourceChoices[p.name],
+            reference: references[p.name],
+          }),
+        );
 
       const result = await enterMeasurements(projectId(), packageId, {
         parameters,
@@ -1328,55 +1340,96 @@ export function MeasurementPanel({
         <h2>Settings</h2>
         <p className="enter-values__hint">
           Values for this job rather than dimensions off a drawing. Where the rulebook suggests one it
-          is shown — a rule author&apos;s stand-in, not a number the client has confirmed.
+          is shown — a rule author&apos;s stand-in, not a number the client has confirmed. Where the
+          architect&apos;s drawing states one, the page is shown but the number is not: type what you
+          see, and it is saved only if it matches.
         </p>
-        {needed.parameters.map((parameter) => (
-          <div className="value-field" key={parameter.name}>
-            <label className="value-label" htmlFor={`p-${parameter.name}`}>
-              {parameter.name}
-              <span className="value-source">
-                {parameter.scope === 'run' ? 'this review only' : 'this project'}
-              </span>
-              <span className="value-feeds">{parameter.rule_ids.join(', ')}</span>
-            </label>
-            {parameter.blocked ? (
-              <p className="value-blocked" role="note">
-                <AlertTriangle size={14} aria-hidden="true" /> Waiting on the vendor. This check will
-                report that it could not decide, which is the correct answer until the value arrives —
-                it is not a field to fill in.
-              </p>
-            ) : (
-              <>
-                <input
-                  className="value-input value-input--wide"
-                  id={`p-${parameter.name}`}
-                  placeholder=""
+        {needed.parameters.map((parameter) => {
+          const pointer = citingPointer(parameter, declinedCitations);
+          return (
+            <div className="value-field" key={parameter.name}>
+              <label className="value-label" htmlFor={`p-${parameter.name}`}>
+                {parameter.name}
+                <span className="value-source">
+                  {parameter.scope === 'run' ? 'this review only' : 'this project'}
+                </span>
+                <span className="value-feeds">{parameter.rule_ids.join(', ')}</span>
+              </label>
+              {parameter.blocked ? (
+                <p className="value-blocked" role="note">
+                  <AlertTriangle size={14} aria-hidden="true" /> Waiting on the vendor. This check will
+                  report that it could not decide, which is the correct answer until the value arrives —
+                  it is not a field to fill in.
+                </p>
+              ) : pointer ? (
+                /* **Blind entry (#866).** The box shows where the architect's drawing states this
+                   setting and starts empty; the app's own reading of the number never reaches the
+                   page. Save sends the passage as the citation, and a number that differs from the
+                   drawing's is refused with the server's sentence below. */
+                <SettingCitation
+                  name={parameter.name}
+                  pointer={pointer}
                   value={singles[parameter.name] ?? ''}
-                  onChange={(e) =>
-                    setSingles((prior) => ({ ...prior, [parameter.name]: e.target.value }))
+                  crop={
+                    packageId ? (
+                      <SettingPassageCrop
+                        packageId={packageId}
+                        pointer={pointer}
+                        name={parameter.name}
+                      />
+                    ) : null
+                  }
+                  onChange={(value) =>
+                    setSingles((prior) => ({ ...prior, [parameter.name]: value }))
+                  }
+                  onDecline={() =>
+                    setDeclinedCitations((prior) => ({ ...prior, [parameter.name]: true }))
                   }
                 />
-                {parameter.declared_default && (
-                  <p className="enter-values__hint enter-values__hint--tight">
-                    The rulebook suggests <code>{parameter.declared_default}</code>. Leave blank to use
-                    it, or type the value this job actually uses.
-                  </p>
-                )}
-                <SettingSourceFields
-                  parameter={parameter}
-                  chosen={sourceChoices[parameter.name] ?? ''}
-                  reference={references[parameter.name] ?? ''}
-                  onChoose={(value) =>
-                    setSourceChoices((prior) => ({ ...prior, [parameter.name]: value }))
-                  }
-                  onReference={(value) =>
-                    setReferences((prior) => ({ ...prior, [parameter.name]: value }))
-                  }
-                />
-              </>
-            )}
-          </div>
-        ))}
+              ) : (
+                <>
+                  <input
+                    className="value-input value-input--wide"
+                    id={`p-${parameter.name}`}
+                    placeholder=""
+                    value={singles[parameter.name] ?? ''}
+                    onChange={(e) =>
+                      setSingles((prior) => ({ ...prior, [parameter.name]: e.target.value }))
+                    }
+                  />
+                  {parameter.declared_default && (
+                    <p className="enter-values__hint enter-values__hint--tight">
+                      The rulebook suggests <code>{parameter.declared_default}</code>. Leave blank to use
+                      it, or type the value this job actually uses.
+                    </p>
+                  )}
+                  <SettingSourceFields
+                    parameter={parameter}
+                    chosen={sourceChoices[parameter.name] ?? ''}
+                    reference={references[parameter.name] ?? ''}
+                    onChoose={(value) =>
+                      setSourceChoices((prior) => ({ ...prior, [parameter.name]: value }))
+                    }
+                    onReference={(value) =>
+                      setReferences((prior) => ({ ...prior, [parameter.name]: value }))
+                    }
+                  />
+                  {parameter.found && (
+                    <button
+                      type="button"
+                      className="value-secondary setting-citation__decline"
+                      onClick={() =>
+                        setDeclinedCitations((prior) => ({ ...prior, [parameter.name]: false }))
+                      }
+                    >
+                      Type it from the architect&apos;s drawing, page {parameter.found.page_index + 1}
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
       </section>
 
       {needed.discriminators.length > 0 && (
@@ -1643,6 +1696,67 @@ function LayoutProposalCrop({
         alt={`Plan-view crop for ${discriminatorName}: ${proposal.value}`}
       />
       <figcaption>Read from the plan view</figcaption>
+    </figure>
+  );
+}
+
+/**
+ * The crop of the passage that states a setting (#866): pixels only, for the reviewer to read the
+ * number off. Nothing parsed from it is fetched or shown.
+ */
+function SettingPassageCrop({
+  packageId,
+  pointer,
+  name,
+}: {
+  packageId: string;
+  pointer: SettingPointer;
+  name: string;
+}) {
+  const [state, setState] = useState<{ url: string } | { error: string } | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    let objectUrl: string | null = null;
+    void downloadSettingPassageCrop(projectId(), packageId, pointer.proposal_id).then(
+      (blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (live) setState({ url: objectUrl });
+        else URL.revokeObjectURL(objectUrl);
+      },
+      () => {
+        if (live) setState({ error: 'The picture of this passage could not be loaded.' });
+      },
+    );
+    return () => {
+      live = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [packageId, pointer.proposal_id]);
+
+  const page = pointer.page_index + 1;
+  if (state && 'error' in state) {
+    return (
+      <p className="setting-citation__note">
+        {state.error} Open page {page} of the {uploadLabel(pointer.document_kind)} and read it there.
+      </p>
+    );
+  }
+  if (!state || !('url' in state)) {
+    return (
+      <span className="ai-proposal__crop-loading">
+        <ScanLine size={14} aria-hidden="true" /> Loading the passage…
+      </span>
+    );
+  }
+  return (
+    <figure className="layout-crop">
+      <img
+        className="setting-citation__crop"
+        src={state.url}
+        alt={`The passage on page ${page} where the architect's drawing states ${name}`}
+      />
+      <figcaption>Page {page} of the {uploadLabel(pointer.document_kind)}</figcaption>
     </figure>
   );
 }

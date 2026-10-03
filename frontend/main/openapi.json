@@ -2401,6 +2401,19 @@
         "additionalProperties": false,
         "description": "One setting a reviewer supplies for this job \u2014 a cabinet depth, an overhang, a sink interior.\n\n**`scope` decides which layer it lands in and it is not cosmetic.** A `project` setting applies to\nevery review of the job; a `run` setting was true for this one \u2014 the sink on this cut sheet, the\nroom as measured today. `rules/parameters.py` draws the same line, and filing a run value as a\nproject setting would make a stale sink dimension look authoritative on the next review.\n\nThe rulebook says which each parameter is, so a caller should send back what\n`GET .../required-inputs` reported rather than choosing.",
         "properties": {
+          "citation": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The passage this value was typed from (#866): the `proposal_id` of the setting's `found` pointer in required-inputs. The server reads the passage's number and refuses a value that differs; on a match it records the source and the reference itself, so neither is sent with a citation.",
+            "title": "Citation"
+          },
           "name": {
             "maxLength": 200,
             "minLength": 1,
@@ -2472,6 +2485,16 @@
               }
             ],
             "title": "Declared Default"
+          },
+          "found": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SettingPointerOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "title": "Name",
@@ -3494,6 +3517,36 @@
         "title": "RuleSnapshotRecord",
         "type": "object"
       },
+      "SettingPointerOut": {
+        "description": "Where the architect's drawing states a setting: a page and a crop, **never the number** (#866).\n\nThe reviewer types the value they see without being shown the one the app found, and the server\nsaves it only if the two match (step 3.3 of #798). So nothing here may carry the number: no\nvalue, no text from the drawing, and no id of the runs, which `GET .../candidates` would turn\nback into a value. `tests/api/test_setting_citations.py` holds this class to that list.",
+        "properties": {
+          "document_kind": {
+            "title": "Document Kind",
+            "type": "string"
+          },
+          "has_crop": {
+            "title": "Has Crop",
+            "type": "boolean"
+          },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "proposal_id": {
+            "format": "uuid",
+            "title": "Proposal Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "page_index",
+          "document_kind",
+          "has_crop"
+        ],
+        "title": "SettingPointerOut",
+        "type": "object"
+      },
       "Severity": {
         "description": "How a finding is presented to the reviewer.\n\nV1 uses one uniform reviewer flag.  The later tiers remain part of the persisted contract for\nthe release where GV and its reviewers deliberately classify them; they must not be used to\ninvent that judgement in V1.",
         "enum": [
@@ -3553,6 +3606,18 @@
           "as_typed": {
             "title": "As Typed",
             "type": "string"
+          },
+          "citation": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Citation"
           },
           "denominator": {
             "title": "Denominator",
@@ -5519,7 +5584,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/measurements": {
       "post": {
-        "description": "Store what the reviewer typed, exactly, and say back what the system understood.\n\nTwo checks for two questions, as `create_package` does: `require_project_access` says the caller\nmay see this project, `require_action` says entering values is something their role may do.\n\nNothing is run here. A submission records values; asking for the checks is a separate call, so a\nreviewer can correct a typo without a verdict being computed from the first attempt.",
+        "description": "Store what the reviewer typed, exactly, and say back what the system understood.\n\nTwo checks for two questions, as `create_package` does: `require_project_access` says the caller\nmay see this project, `require_action` says entering values is something their role may do.\n\nNothing is run here. A submission records values; asking for the checks is a separate call, so a\nreviewer can correct a typo without a verdict being computed from the first attempt.\n\nA setting sent with a `citation` is held to the passage it names before anything is stored, and\na number that differs from the passage's stores nothing at all (#866).",
         "operationId": "enter_measurements_api_v1_projects__project_id__packages__package_id__measurements_post",
         "parameters": [
           {
@@ -5631,6 +5696,71 @@
           }
         },
         "summary": "Ask a model which reading fills which field, and check every answer",
+        "tags": [
+          "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/parameter-proposals/{proposal_id}/crop": {
+      "get": {
+        "description": "The picture a reviewer reads a setting off before typing it, while the form offers it.\n\n**The pixels, never the number** (#866). The reviewer must read the value themselves, so this\nreturns a stored crop of the number's runs and nothing parsed from them. Only a pointer\n`GET .../required-inputs` would offer is served, so a pointer withdrawn since, because its\ndrawing turned out to be the vendor's, shows nothing. The digest is checked before bytes leave,\nas for every other crop.",
+        "operationId": "setting_passage_crop_api_v1_projects__project_id__packages__package_id__parameter_proposals__proposal_id__crop_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The integrity-checked crop of the passage a setting was found in."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View the passage in the architect's drawing that states a setting",
         "tags": [
           "measurements"
         ]
