@@ -990,6 +990,21 @@
         "title": "ConfirmIn",
         "type": "object"
       },
+      "ConfirmLinkIn": {
+        "properties": {
+          "reading_id": {
+            "description": "The confirmed reading that is this part's width: the suggestion or another.",
+            "format": "uuid",
+            "title": "Reading Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reading_id"
+        ],
+        "title": "ConfirmLinkIn",
+        "type": "object"
+      },
       "ConfirmPartIn": {
         "properties": {
           "code": {
@@ -2470,6 +2485,218 @@
         "title": "LeftOutOut",
         "type": "object"
       },
+      "LinkDrawingOut": {
+        "properties": {
+          "can_confirm": {
+            "title": "Can Confirm",
+            "type": "boolean"
+          },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/PartLinkOut"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "readings": {
+            "description": "The confirmed readings on the drawing, which a link may name, left to right.",
+            "items": {
+              "$ref": "#/components/schemas/LinkReadingOut"
+            },
+            "title": "Readings",
+            "type": "array"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "view_id": {
+            "format": "uuid",
+            "title": "View Id",
+            "type": "string"
+          },
+          "why_not": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Not"
+          }
+        },
+        "required": [
+          "view_id",
+          "page_index",
+          "tag",
+          "can_confirm",
+          "why_not",
+          "parts",
+          "readings"
+        ],
+        "title": "LinkDrawingOut",
+        "type": "object"
+      },
+      "LinkOut": {
+        "description": "A reading a person linked to the part.",
+        "properties": {
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decided_by": {
+            "title": "Decided By",
+            "type": "string"
+          },
+          "read": {
+            "description": "Whether a reader reads this link.",
+            "title": "Read",
+            "type": "boolean"
+          },
+          "reading_id": {
+            "format": "uuid",
+            "title": "Reading Id",
+            "type": "string"
+          },
+          "signal": {
+            "description": "Why the reading belongs to the part, in plain English.",
+            "title": "Signal",
+            "type": "string"
+          },
+          "why_not_read": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Not Read"
+          }
+        },
+        "required": [
+          "reading_id",
+          "decided_by",
+          "decided_at",
+          "signal",
+          "read",
+          "why_not_read"
+        ],
+        "title": "LinkOut",
+        "type": "object"
+      },
+      "LinkReadingOut": {
+        "description": "A confirmed reading on the drawing, which a person may pick as a part's width.",
+        "properties": {
+          "left": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its span across the page, exact; null with no span.",
+            "title": "Left"
+          },
+          "linked_to": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The part it is linked to now, while that part still stands.",
+            "title": "Linked To"
+          },
+          "linked_to_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linked To Number"
+          },
+          "placed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`line` when a reading behind it was attached to a dimension line, `region` when none was and the box it is printed in places it; null when neither places it.",
+            "title": "Placed By"
+          },
+          "reading_id": {
+            "format": "uuid",
+            "title": "Reading Id",
+            "type": "string"
+          },
+          "right": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Right"
+          },
+          "semantic_type": {
+            "description": "What a person confirmed the reading is.",
+            "title": "Semantic Type",
+            "type": "string"
+          },
+          "unplaced": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it spans no part, in plain English, or null.",
+            "title": "Unplaced"
+          },
+          "value": {
+            "description": "The reading's exact value, as `25 1/2 in`.",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reading_id",
+          "value",
+          "semantic_type",
+          "placed_by",
+          "left",
+          "right",
+          "unplaced",
+          "linked_to",
+          "linked_to_number"
+        ],
+        "title": "LinkReadingOut",
+        "type": "object"
+      },
       "MeasurementEntry": {
         "additionalProperties": false,
         "description": "One dimension a reviewer read off a drawing, and which check input it is.\n\n**Keyed by rule and input name rather than by semantic type**, deliberately. The engine looks an\noperand up by the input name the rule declares, and the semantic vocabulary is still provisional\n(`CLIENT_FACTS` Q20) \u2014 so keying on a tag nobody has settled would bake a guess into the wire\nformat. This asks for what the rulebook already names.",
@@ -2905,6 +3132,82 @@
         ],
         "title": "PartKind",
         "type": "string"
+      },
+      "PartLinkOut": {
+        "description": "One confirmed part: the reading suggested as its width, and what a person decided.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PartKind"
+          },
+          "left": {
+            "description": "Its left end across the page, exact.",
+            "title": "Left",
+            "type": "string"
+          },
+          "links": {
+            "description": "The readings linked to this part now: one, or none. Two only when two people linked different readings at the same moment, and then neither is read.",
+            "items": {
+              "$ref": "#/components/schemas/LinkOut"
+            },
+            "title": "Links",
+            "type": "array"
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its number in 'Parts of each drawing', 1 for the leftmost; null if not listed.",
+            "title": "Number"
+          },
+          "right": {
+            "title": "Right",
+            "type": "string"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuggestedLinkOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no tolerance is stated, so nothing can be suggested."
+          }
+        },
+        "required": [
+          "item_id",
+          "number",
+          "kind",
+          "code",
+          "left",
+          "right",
+          "suggestion",
+          "links"
+        ],
+        "title": "PartLinkOut",
+        "type": "object"
       },
       "PartOut": {
         "description": "One suggested part, as a person needs it to decide what it is.",
@@ -3347,6 +3650,39 @@
         ],
         "title": "PublicationTarget",
         "type": "string"
+      },
+      "ReadingPartsOut": {
+        "properties": {
+          "can_suggest": {
+            "title": "Can Suggest",
+            "type": "boolean"
+          },
+          "drawings": {
+            "items": {
+              "$ref": "#/components/schemas/LinkDrawingOut"
+            },
+            "title": "Drawings",
+            "type": "array"
+          },
+          "why_not": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Not"
+          }
+        },
+        "required": [
+          "can_suggest",
+          "why_not",
+          "drawings"
+        ],
+        "title": "ReadingPartsOut",
+        "type": "object"
       },
       "RecordAction": {
         "additionalProperties": false,
@@ -4376,6 +4712,50 @@
           "as_typed"
         ],
         "title": "StoredValue",
+        "type": "object"
+      },
+      "SuggestedLinkOut": {
+        "description": "The reading the computer suggests is a part's width. Nothing is written until a person\nconfirms it.",
+        "properties": {
+          "edge_tolerance": {
+            "title": "Edge Tolerance",
+            "type": "string"
+          },
+          "reading_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no single reading spans this part alone; `said` says why.",
+            "title": "Reading Id"
+          },
+          "said": {
+            "description": "Why this reading, or why none, in plain English.",
+            "title": "Said",
+            "type": "string"
+          },
+          "spanning": {
+            "description": "Every confirmed reading on the drawing whose line or region spans the part.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Spanning",
+            "type": "array"
+          }
+        },
+        "required": [
+          "reading_id",
+          "said",
+          "spanning",
+          "edge_tolerance"
+        ],
+        "title": "SuggestedLinkOut",
         "type": "object"
       },
       "SuggestedMemberOut": {
@@ -7004,6 +7384,198 @@
         "summary": "Say one suggestion is not a part",
         "tags": [
           "drawing parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts": {
+      "get": {
+        "description": "Read only: a suggestion is worked out on each call and never stored.",
+        "operationId": "list_reading_parts_api_v1_projects__project_id__packages__package_id__reading_parts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadingPartsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Each confirmed part, the reading suggested as its width, and what a person decided",
+        "tags": [
+          "reading parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts/{item_id}/confirm": {
+      "post": {
+        "description": "Record a person's link, as suggested or corrected. Audited, and correctable by confirming\nanother reading: the latest decision is the one that counts, and every earlier one is kept.",
+        "operationId": "confirm_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmLinkIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartLinkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Say which confirmed reading is one part's width",
+        "tags": [
+          "reading parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts/{item_id}/withdraw": {
+      "post": {
+        "description": "Record that the reading is not the part's width. Links nothing; the link stops being read.",
+        "operationId": "withdraw_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__withdraw_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartLinkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Take back the link between one part and its reading",
+        "tags": [
+          "reading parts"
         ]
       }
     },

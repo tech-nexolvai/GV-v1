@@ -766,6 +766,44 @@ export function withdrawCountertopRun(projectId: string, packageId: string, coun
   );
 }
 
+/**
+ * Each confirmed part of this package, the confirmed reading the computer suggests is its width,
+ * the readings a person may pick instead, and what a person decided (#913). Listing writes nothing:
+ * a suggestion is worked out on each call.
+ */
+export function listReadingParts(projectId: string, packageId: string) {
+  return request<ReadingPartsOut>(`/projects/${projectId}/packages/${packageId}/reading-parts`);
+}
+
+/**
+ * Say which confirmed reading is one part's width (#913): the suggestion, or another reading on the
+ * same drawing as a correction. Any other reading linked to the part is taken back by the server.
+ * There is deliberately no call that decides more than one part's link.
+ */
+export function confirmReadingPart(
+  projectId: string,
+  packageId: string,
+  itemId: string,
+  readingId: string,
+) {
+  return request<ReadingPartOut>(
+    `/projects/${projectId}/packages/${packageId}/reading-parts/${itemId}/confirm`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reading_id: readingId }),
+    },
+  );
+}
+
+/** Take back the link between one part and its reading (#913). Links nothing. */
+export function withdrawReadingPart(projectId: string, packageId: string, itemId: string) {
+  return request<ReadingPartOut>(
+    `/projects/${projectId}/packages/${packageId}/reading-parts/${itemId}/withdraw`,
+    { method: 'POST' },
+  );
+}
+
 /** GV's standard numbers, which every project starts from (#812). */
 export function getCompanySettings() {
   return request<CompanySettings>('/company-settings');
@@ -804,6 +842,8 @@ export type DrawingPartOut = DrawingPartsOut['drawings'][number]['parts'][number
 export type PartKind = components['schemas']['PartKind'];
 export type CountertopRunsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/countertop-runs'>;
 export type CountertopRunOut = CountertopRunsOut['drawings'][number]['countertops'][number];
+export type ReadingPartsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/reading-parts'>;
+export type ReadingPartOut = ReadingPartsOut['drawings'][number]['parts'][number];
 export type PartPoint = components['schemas']['PointOut'];
 export type CompanySettings = Get<'/api/v1/company-settings'>;
 export type ConfirmedOut =
