@@ -91,3 +91,26 @@ def test_the_guard_finds_calls_to_check() -> None:
         assert any(
             _calls(path.read_text(), cls.__name__) for path in SCRIPTS.glob("*.py")
         ), cls.__name__
+
+
+def test_the_fraction_scorecard_reads_every_setting_it_uses() -> None:
+    """Passing the field is half of it: the setting must also be one the script reads (#902).
+
+    `fraction_parts_scorecard.py` reads only the names in `READER_SETTINGS` from the settings
+    file, so a `stated["…"]` lookup of any other name fails on the first run, as the first fix for
+    #902 did with `GV_READER_FRACTION_TURNED_ASPECT_MIN`.
+    """
+    from scripts.fraction_parts_scorecard import READER_SETTINGS
+
+    tree = ast.parse((SCRIPTS / "fraction_parts_scorecard.py").read_text())
+    looked_up = {
+        node.slice.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "stated"
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    }
+    assert looked_up, "the check found no settings lookups to compare"
+    assert looked_up <= set(READER_SETTINGS), sorted(looked_up - set(READER_SETTINGS))
