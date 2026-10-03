@@ -10,6 +10,7 @@ import { project, populated, empty, packages, findings, chains, needed, candidat
 import { createScenarioState, handleScenario, scenarioSnapshot, scenarioPackages, scenarioFindings, fixturePdf, prepareUploadedFixture } from './browser-qa-scenarios.mjs';
 import { pageFixture } from './browser-qa-pages.mjs';
 import { fixtureParts, decisionPartsFixture } from './browser-qa-parts.mjs';
+import { roleViewsFixture } from './browser-qa-roles.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const failCropOnce = new Set();
@@ -27,6 +28,10 @@ let partCropAttempts = 0;
 let decisionParts = decisionPartsFixture();
 const partDecisionAttempts = new Map();
 let scenario = createScenarioState();
+let rolesMode = '';
+let roleListAttempts = 0;
+let roleViews = roleViewsFixture();
+const roleSaveAttempts = new Map();
 const port = Number(process.env.GV_QA_PORT ?? '5193');
 const qa = {
   name: 'isolated-synthetic-ui-qa',
@@ -51,6 +56,10 @@ const qa = {
         partCropAttempts = 0;
         decisionParts = decisionPartsFixture();
         partDecisionAttempts.clear();
+        rolesMode = url.searchParams.get('roles') ?? '';
+        roleListAttempts = 0;
+        roleViews = roleViewsFixture();
+        roleSaveAttempts.clear();
         failCropOnce.clear();
         settingCropAttempts.clear();
         const requestedScenario = url.searchParams.get('scenario');
@@ -96,6 +105,22 @@ const qa = {
         // Deliberate delay only in isolated QA: makes the pending/disabled state inspectable.
         if (scenario.name === 'decision-save' && req.method === 'POST' && /\/(evidence|exceptions)$/.test(path)) await new Promise(resolve => setTimeout(resolve, 1500));
         return json(localResponse.body, localResponse.status);
+      }
+      if (rolesMode === 'decisions' && req.method === 'POST' &&
+          path.startsWith(`/api/v1/projects/${project}/packages/${populated}/views/`)) {
+        const match = path.match(/\/views\/([^/]+)\/role$/);
+        const view = match && roleViews.find(item => item.view_id === match[1]);
+        if (!view) return refusal('Unknown synthetic drawing. No write was made.', 404);
+        if (!['arch', 'shop'].includes(requestBody.role)) return refusal('Invalid synthetic role.', 422);
+        const attempts = (roleSaveAttempts.get(view.view_id) ?? 0) + 1;
+        roleSaveAttempts.set(view.view_id, attempts);
+        const fails = view === roleViews[0] && attempts === 1;
+        await new Promise(resolve => setTimeout(resolve, fails ? 12000 : 1500));
+        scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path,
+          status: fails ? 503 : 201, result: 'Synthetic drawing role only', body: requestBody });
+        if (fails) return refusal('Synthetic role save refused. Choose again to retry.', 503);
+        view.role = requestBody.role;
+        return json(view, 201);
       }
       if (partsMode === 'decisions' && req.method === 'POST' &&
           path.startsWith(`/api/v1/projects/${project}/packages/${populated}/parts/`)) {
@@ -149,7 +174,14 @@ const qa = {
         if (readingsMode === 'retry' && readingsAttempts <= 2) return refusal('Synthetic reading-list service unavailable. Try again.', 503);
         return json({ candidates, total: candidates.length });
       }
-      if (path.endsWith('/views')) return json({ views: [], total: 0 });
+      if (path.endsWith('/views')) {
+        roleListAttempts++;
+        const fails = rolesMode === 'decisions' && roleListAttempts <= 2;
+        if (rolesMode) scenario.events.push({ sequence: scenario.events.length + 1, method: req.method,
+          path, status: fails ? 503 : 200, result: 'Synthetic drawing list only' });
+        if (fails) return refusal('Synthetic drawing list temporarily unavailable.', 503);
+        return json({ views: rolesMode ? roleViews : [] });
+      }
       if (path.endsWith('/parts')) {
         partsAttempts++;
         if (partsMode === 'retry' && partsAttempts <= 2) return refusal('Synthetic parts list temporarily unavailable.', 503);

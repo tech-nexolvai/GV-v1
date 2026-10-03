@@ -1,13 +1,13 @@
-export type PartDecisionState =
+export type MeasurementDecisionState =
   | { kind: 'saving' }
   | { kind: 'saved' }
   | { kind: 'error'; message: string };
 
-/** Each part (or add form) owns its request. No retries, optimistic decisions or payload edits. */
-export function createPartDecisionSaver() {
+/** Each drawing, part or add form owns its request. No retries or payload edits. */
+export function createMeasurementDecisionSaver() {
   const pending = new Set<string>();
   return async (key: string, submit: () => Promise<unknown>, ui: {
-    state: (key: string, state: PartDecisionState) => void;
+    state: (key: string, state: MeasurementDecisionState) => void;
     saved: () => void;
   }): Promise<void> => {
     if (pending.has(key)) return;
