@@ -278,12 +278,18 @@ source:  Call 2026-08-25. Raj: "I might have contradicted myself somewhere… ju
 status:  ANSWERED
 blocks:  formula
 issue:   #16
-answer:  No issue — Raj checked it live and confirmed it is the COUNTERTOP depth check, correctly
-         (not a sink dimension). Our confusion, not his error. He also confirmed his own variable
-         naming: CT012 = width, CT008 = depth.
+answer:  Meaning confirmed — CT-2 is the COUNTERTOP depth check (not a sink dimension), as Raj
+         checked live. He also confirmed his own variable naming: CT012 = width, CT008 = depth.
+         **But the I3 header is still a label slip** (corrected 2026-10-03; this entry previously said
+         "No issue — our confusion"): I3 reads "CT-2 : Countertop Width Verification" while the same
+         column's rule name (I9 "Countertop Depth Verification") and purpose (I11 "To calculate Depth
+         of the countertop") say depth. On the call Raj answered sink-vs-countertop depth, not the
+         header word. The meaning is settled; only the wording is Raj's to correct, so I3 goes in the
+         highlighted list for him with Q16/Q18/Q19.
 source:  Call 2026-08-25. Raj (reading SYNC010): "it says countertop depth only, it's not sink depth.
          No issues." Anant: "we just got confused, I guess." Raj: "my CT012 is width, and CT008 is
-         the depth."
+         the depth." Header vs rule name re-checked in `Countertop_Checks_Updated.xlsx`, Sheet1,
+         2026-10-03.
 
 ## Q18 — Three different checks all labelled CT-3
 status:  ANSWERED
