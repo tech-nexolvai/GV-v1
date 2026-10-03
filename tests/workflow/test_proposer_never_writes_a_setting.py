@@ -4,8 +4,9 @@ Two guards, each proven to fire before it is trusted:
 
 - **`gv-proposer-never-writes-a-setting`**, the semgrep rule. It forbids building a
   `ParameterValue`, a user input or a company-standard set, and calling a settings store, in
-  `workflow/parameter_proposals.py`, the value-hunter (`workflow/value_hunter*`, not written yet)
-  and `retrieval/`. Planted violations must be caught, and the shipped files must pass.
+  `workflow/parameter_proposals.py`, the guard it shares with the API
+  (`workflow/parameter_citations.py`, #866), the value-hunter (`workflow/value_hunter*`, not written
+  yet) and `retrieval/`. Planted violations must be caught, and the shipped files must pass.
 - **No import of `app.api`**, where the settings are stored (`_store` in `app/api/measurements.py`
   and `app/api/company_settings.py`). Walked transitively, module by module, from every file the
   rule covers.
@@ -52,6 +53,7 @@ PROJECT_PACKAGES = frozenset(
 #: One file per place the rule covers, the value-hunter's two possible shapes included.
 COVERED = (
     "workflow/parameter_proposals.py",
+    "workflow/parameter_citations.py",
     "workflow/value_hunter.py",
     "workflow/value_hunter/plan.py",
     "retrieval/package_text.py",
@@ -136,6 +138,7 @@ def test_the_shipped_files_pass_the_rule(tmp_path: Path) -> None:
     """The real proposer and the real `retrieval/`, scanned as shipped. Outcome: no finding."""
     shipped = [
         REPO_ROOT / "workflow" / "parameter_proposals.py",
+        REPO_ROOT / "workflow" / "parameter_citations.py",
         *sorted((REPO_ROOT / "workflow").glob("value_hunter*")),
         REPO_ROOT / "retrieval",
     ]
@@ -208,6 +211,7 @@ def _reachable(files: Iterable[Path], root: Path) -> dict[str, list[str]]:
 def _covered_files(root: Path) -> list[Path]:
     files = [
         root / "workflow" / "parameter_proposals.py",
+        root / "workflow" / "parameter_citations.py",
         *sorted((root / "retrieval").rglob("*.py")),
     ]
     for hunter in sorted((root / "workflow").glob("value_hunter*")):

@@ -712,6 +712,7 @@ FRACTION_BAR = FractionBarGeometry(
     glyph_max_pt=Decimal(12),
     proportion_max=Decimal("2.5"),
     character_gap_pt=Decimal(4),
+    turned_aspect_min=Decimal("1.1"),
 )
 
 
@@ -780,6 +781,32 @@ def test_each_stacked_fraction_carries_its_layout_from_the_reader_itself() -> No
     left, bottom, right, top = layout.bar
     assert (left, bottom, top) == (Decimal(70), Decimal("75.5"), Decimal("75.5"))
     assert abs(right - Decimal("73.8")) < Decimal("0.0001")
+
+
+#: The same `28 3/4"` turned a quarter anticlockwise inside a stamp that reads upright, which is how
+#: the vendor draws a vertical dimension (#869). `0 1 -1 0 645 405 cm` turns it about (120, 525),
+#: where it sits, so only the paths are turned, never the stamp's placement.
+TURNED_APPEARANCE = b"q 0 1 -1 0 645 405 cm\n" + STACKED_APPEARANCE + b"Q\n"
+
+
+def test_a_label_turned_inside_an_upright_stamp_is_found_through_the_reader_itself() -> None:
+    """**#869 on a real stamp.** The stamp's placement says its text reads upright; only the label
+    is turned, by the matrix its paths are drawn under. It is found, laid out reading up the page
+    with every part counted, keeps the paths its pieces are drawn from, and the region the reader
+    forms round it is marked stacked, as every stacked label's is."""
+    layers = _stacked_layers(
+        FRACTION_BAR, glyph_maximum_pt=Decimal(12), appearance=TURNED_APPEARANCE
+    )
+
+    (fraction,) = layers.stacked_fractions
+    layout = fraction.layout
+    assert layout is not None
+    assert layout.rotation_degrees == 90
+    assert (len(layout.whole), len(layout.numerator), len(layout.denominator)) == (2, 1, 1)
+    assert len(layout.inch_mark) == 2
+    assert len(fraction.paths) == 5, "the 28, the 3, and the 4's body and stem"
+    assert any(region.stacked_glyphs for region in layers.outlined_regions)
+    assert {region.baseline_rotation_degrees for region in layers.outlined_regions} == {0}
 
 
 #: A stroke as tall as the digits, drawn just before the `2` — in red, as a reviewer's mark baked

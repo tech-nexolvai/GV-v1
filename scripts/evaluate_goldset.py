@@ -339,6 +339,7 @@ class Arguments(BaseModel):
     fraction_glyph_max_pt: Decimal | None
     fraction_proportion_max: Decimal | None
     fraction_character_gap_pt: Decimal | None
+    fraction_turned_aspect_min: Decimal | None
 
 
 def _arguments() -> Arguments:
@@ -499,6 +500,11 @@ def _arguments() -> Arguments:
         type=Decimal,
         help="required: how far apart along the baseline one stacked label's characters may be, in PDF points (the stacked-fraction layout, #834)",
     )
+    parser.add_argument(
+        "--fraction-turned-aspect-min",
+        type=Decimal,
+        help="required: how many times taller than wide each character beside a bar across the stamp's baseline must stand, read the way the label would, for the bar to be a turned label's fraction, as a ratio (the stacked-fraction detector, #869)",
+    )
     return Arguments.model_validate(vars(parser.parse_args()))
 
 
@@ -526,6 +532,7 @@ def _association_settings(arguments: Arguments) -> AssociationSettings:
         "fraction-glyph-max-pt": arguments.fraction_glyph_max_pt,
         "fraction-proportion-max": arguments.fraction_proportion_max,
         "fraction-character-gap-pt": arguments.fraction_character_gap_pt,
+        "fraction-turned-aspect-min": arguments.fraction_turned_aspect_min,
     }
     missing = [name for name, value in supplied.items() if value is None]
     if missing:
@@ -549,6 +556,7 @@ def _association_settings(arguments: Arguments) -> AssociationSettings:
     assert arguments.fraction_glyph_max_pt is not None
     assert arguments.fraction_proportion_max is not None
     assert arguments.fraction_character_gap_pt is not None
+    assert arguments.fraction_turned_aspect_min is not None
     return AssociationSettings(
         line_minimum_pt=arguments.line_minimum_pt,
         glyph_maximum_pt=arguments.glyph_maximum_pt,
@@ -567,6 +575,7 @@ def _association_settings(arguments: Arguments) -> AssociationSettings:
             glyph_max_pt=arguments.fraction_glyph_max_pt,
             proportion_max=arguments.fraction_proportion_max,
             character_gap_pt=arguments.fraction_character_gap_pt,
+            turned_aspect_min=arguments.fraction_turned_aspect_min,
         ),
     )
 

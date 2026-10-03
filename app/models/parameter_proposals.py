@@ -7,9 +7,10 @@ source that passage would make the value, and the code that proposed it.
 
 **There is no value column, and that is the design.** It follows `measurement_proposals` (0045): a
 pointer cannot be mistaken for a setting, cannot reach a check, and cannot drift from a number it
-copied. The number stays on the runs. `workflow/parameter_proposals.py` reads it only to check that
-it is one inch dimension and to compare it with any other passage, and keeps it nowhere.
-Confirming it is a person's job: step 3.3 of #798 has them type it without seeing it.
+copied. The number stays on the runs. The guard in `workflow/parameter_citations.py` reads it only
+to check that it is one inch dimension, to compare it with any other passage, and to compare it with
+the number a person typed, and keeps it nowhere. Confirming it is a person's job: step 3.3 of #798
+(#866) has them type it without seeing it.
 
 **No side column either.** Whether a passage is the architect's is decided each time a pointer is
 made or read back, by `app.evidence.sides.ReadingSides`. A drawing's confirmed role can change after

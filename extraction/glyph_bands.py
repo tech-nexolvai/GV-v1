@@ -41,7 +41,15 @@ is still not a reading — it counts characters and never says which digit one i
 reading of the label be checked against the drawing: a stacked `3/4"` read as `3 3/4"` has a whole
 number the drawing does not, and `extraction/models/validation.py` refuses it on that count.
 
-Source: issues #541, #735, #834. Verification: tests/extraction/test_glyph_bands.py.
+**A label turned inside its stamp is found by its own direction** (#869). A stamp says which way
+its text reads, and a label drawn turned a quarter inside it does not follow: on `AI_Set 2` the
+vendor draws its vertical dimensions that way inside stamps that read upright, so their bars run up
+the page and a search along the stamp's baseline never sees them. So bars across the baseline are
+looked for too, kept only where the characters either side stand upright when read across it, and
+laid out the way the label reads. Like every stacked fraction, each goes to a reviewer, and
+`extraction/fraction_parts.py` does not read a turned label piece by piece.
+
+Source: issues #541, #735, #834, #869. Verification: tests/extraction/test_glyph_bands.py.
 """
 
 from __future__ import annotations
@@ -69,7 +77,7 @@ type GlyphCharacter = tuple[GlyphBox, ...]
 
 @dataclass(frozen=True, slots=True)
 class FractionBarGeometry:
-    """The seven lengths and ratios the bar detector and its layout run under. Stated by a deployment,
+    """The eight lengths and ratios the bar detector and its layout run under. Stated by a deployment,
     never defaulted.
 
     All lengths are in **PDF points** (72 to the inch), measured along and across the text baseline
@@ -118,6 +126,19 @@ class FractionBarGeometry:
     first digit is left out, so a reading that drops it — `9 1/2"` for `39 1/2"` — would match the
     count. Too large, and a neighbouring label's character is counted as part of this one."""
 
+    turned_aspect_min: Decimal
+    """How many times taller than wide each character either side of a bar must stand, measured the
+    way the label would read, for a bar across the stamp's baseline to be a fraction's (#869).
+
+    A label can be drawn turned a quarter inside a stamp that reads upright, as the vendor's
+    vertical dimensions are, and then its bar runs across the stamp's baseline. So does an upright
+    `l` or `I` between two letters. Which way the characters either side stand tells the two apart:
+    a digit is taller than it is wide, so a turned label's digits stand upright when read up or down
+    the page, and the letters beside an upright `l` lie on their side when read that way. Each
+    character is measured on its own, so a two-digit numerator such as the `15` of `15/16` stands
+    as its digits do. It decides only whether a bar across the baseline is a fraction's; a bar along
+    it is found as before."""
+
     def __post_init__(self) -> None:
         for name in (
             "bar_thickness_max_pt",
@@ -127,6 +148,7 @@ class FractionBarGeometry:
             "glyph_max_pt",
             "proportion_max",
             "character_gap_pt",
+            "turned_aspect_min",
         ):
             value = getattr(self, name)
             if isinstance(value, float):
@@ -138,6 +160,11 @@ class FractionBarGeometry:
                 f"proportion_max must be at least 1, got {self.proportion_max}: it is a ratio of "
                 "the larger part to the smaller, so below 1 nothing could match"
             )
+        if self.turned_aspect_min < 1:
+            raise ValueError(
+                f"turned_aspect_min must be at least 1, got {self.turned_aspect_min}: below 1 a "
+                "character wider than it is tall would count as standing upright"
+            )
         if self.glyph_min_pt >= self.glyph_max_pt:
             raise ValueError("glyph_min_pt must be smaller than glyph_max_pt")
 
@@ -147,7 +174,8 @@ class FractionBarGeometry:
         return (
             f"bar<={self.bar_thickness_max_pt}x>={self.bar_length_min_pt};"
             f"reach<={self.reach_pt};glyph={self.glyph_min_pt}..{self.glyph_max_pt};"
-            f"proportion<={self.proportion_max};character_gap<={self.character_gap_pt}"
+            f"proportion<={self.proportion_max};character_gap<={self.character_gap_pt};"
+            f"turned_aspect>={self.turned_aspect_min}"
         )
 
 
@@ -196,7 +224,8 @@ class FractionLayout:
     rotation_degrees: int
     """How far the label's baseline is turned on the page, anticlockwise: 0 for a label that reads
     upright, else 90, 180 or 270 (#848). Every box above is in the page's own axes whatever it is;
-    this says which way the characters in them face."""
+    this says which way the characters in them face. It is the label's own direction, which since
+    #869 need not be its stamp's: a label turned inside a stamp that reads upright says 90 or 270."""
 
 
 #: `(along_low, across_low, along_high, across_high)` — a box on the baseline's own axes, with
@@ -427,55 +456,12 @@ def _layout(
     )
 
 
-def stacked_fractions(
-    boxes: Sequence[GlyphBox],
-    *,
-    geometry: FractionBarGeometry,
-    ink: Sequence[bool],
-    rotation_degrees: int = 0,
-) -> tuple[FractionLayout, ...]:
-    """Every stacked fraction drawn among these paths, each with where its parts were drawn.
-
-    `boxes` is every path's bounding box in one stamp, **not only the glyph runs**. The runs have
-    already lost the denominator and the bar (see the module docstring); this has to be handed what
-    was drawn, not what survived clustering.
-
-    `ink` says, box for box, whether that path is drawn in black or grey. It has no default: a caller
-    that cannot say must say so in its own code. It decides only which paths are counted in a
-    layout; finding the fraction looks at every path, so a bar is not missed for its colour.
-
-    A bar is a flat stroke (`bar_thickness_max_pt`, `bar_length_min_pt`). It is a fraction's bar when:
-
-    1. shapes start within `reach_pt` above it and below it, overlapping it along the baseline;
-       each side together is at least `glyph_min_pt` tall, and at least one path on one side is at
-       least `glyph_min_pt` in both directions — a glyph, not a scatter of arc pieces;
-    2. both sides are centred on it — each side's middle within one bar length of the bar's;
-    3. the two sides are within `proportion_max` of each other in height, and the bar within it of the
-       wider side's width;
-    4. no other stroke on the bar's line comes within `reach_pt` of it (`_is_isolated`).
-
-    Each side is taken as a whole rather than glyph by glyph, so a numerator drawn as several strokes
-    — or a `1` that is one vertical stroke with no width at all — still counts as one shape. The
-    layout then splits each side into its characters (`FractionLayout`).
-
-    Only multiples of 90° are handled, because those are the only baseline rotations
-    `annotations.py` reads from a stamp; any other is refused. Text turned inside a stamp that does
-    not say so is not detected: its bar is vertical, and a vertical flat stroke between two shapes is
-    also what a stroke-font `1` looks like beside its neighbours.
-    """
-    if len(ink) != len(boxes):
-        raise ValueError(
-            f"ink must say for each of the {len(boxes)} boxes whether its path is drawn in black "
-            f"or grey; it has {len(ink)} entries"
-        )
-    spans = [_frame(box, rotation_degrees) for box in boxes]
-    small = [
-        index
-        for index, span in enumerate(spans)
-        if _along(span) < geometry.glyph_max_pt and _across(span) < geometry.glyph_max_pt
-    ]
-
-    found: list[FractionLayout] = []
+def _bars(
+    spans: list[_Span], small: list[int], geometry: FractionBarGeometry
+) -> list[tuple[int, list[int], list[int]]]:
+    """Every bar the rules in `stacked_fractions` find on these spans, in drawing order, each with
+    the paths above it and the paths below it."""
+    found: list[tuple[int, list[int], list[int]]] = []
     for bar_index in small:
         bar = spans[bar_index]
         if _across(bar) > geometry.bar_thickness_max_pt or _along(bar) < geometry.bar_length_min_pt:
@@ -527,18 +513,169 @@ def stacked_fractions(
             continue
         if not _is_isolated(bar, spans, geometry):
             continue
+        found.append((bar_index, above, below))
+    return found
 
-        layout = _layout(
-            bar_index,
+
+def _stands(indices: list[int], spans: list[_Span], geometry: FractionBarGeometry) -> bool:
+    """Whether every character these paths draw is at least `turned_aspect_min` times as tall across
+    the baseline as it is wide along it: upright, read the way these spans are framed.
+
+    Every path counts, whatever its colour, as it does in finding the bar.
+    """
+    for group in _characters(indices, spans):
+        character = _union([spans[member] for member in group])
+        if _across(character) < _along(character) * geometry.turned_aspect_min:
+            return False
+    return True
+
+
+def _turned_layout(
+    bar: int,
+    above: list[int],
+    below: list[int],
+    small: list[int],
+    boxes: Sequence[GlyphBox],
+    turned: list[_Span],
+    ink: Sequence[bool],
+    *,
+    geometry: FractionBarGeometry,
+    rotation_degrees: int,
+) -> FractionLayout:
+    """A fraction found across the stamp's baseline, laid out the way its label reads (#869).
+
+    `turned` is every box framed `rotation_degrees` from the page, and `above` and `below` are the
+    detection's sides in that frame. Turned the other way round, the bar and the shapes either side
+    of it are the same, with numerator and denominator swapped, so the shapes cannot say which of
+    the two ways the label reads. So it is laid out both ways, and it reads the way in which an inch
+    mark is found after the fraction: laid out the other way round, the same paths sit before the
+    fraction and below its bar, where an inch mark is never looked for. Where that does not settle
+    it, because an inch mark is found both ways or neither, it is laid out reading up the page or
+    across it, the way a drawing is read and the way `extraction/glyph_reader.py` tries first.
+    """
+    opposite = (rotation_degrees + 180) % 360
+    ways = (
+        _layout(
+            bar,
             above,
             below,
             small,
-            spans,
+            turned,
             ink,
             geometry=geometry,
             rotation_degrees=rotation_degrees,
+        ),
+        _layout(
+            bar,
+            below,
+            above,
+            small,
+            [_frame(box, opposite) for box in boxes],
+            ink,
+            geometry=geometry,
+            rotation_degrees=opposite,
+        ),
+    )
+    marked = [layout for layout in ways if layout.inch_mark]
+    if len(marked) == 1:
+        return marked[0]
+    return next(layout for layout in ways if layout.rotation_degrees in (0, 90))
+
+
+def stacked_fractions(
+    boxes: Sequence[GlyphBox],
+    *,
+    geometry: FractionBarGeometry,
+    ink: Sequence[bool],
+    rotation_degrees: int = 0,
+) -> tuple[FractionLayout, ...]:
+    """Every stacked fraction drawn among these paths, each with where its parts were drawn.
+
+    `boxes` is every path's bounding box in one stamp, **not only the glyph runs**. The runs have
+    already lost the denominator and the bar (see the module docstring); this has to be handed what
+    was drawn, not what survived clustering.
+
+    `ink` says, box for box, whether that path is drawn in black or grey. It has no default: a caller
+    that cannot say must say so in its own code. It decides only which paths are counted in a
+    layout; finding the fraction looks at every path, so a bar is not missed for its colour.
+
+    `rotation_degrees` is how the stamp turns its baseline on the page. A bar is a flat stroke
+    (`bar_thickness_max_pt`, `bar_length_min_pt`). It is a fraction's bar when:
+
+    1. shapes start within `reach_pt` above it and below it, overlapping it along the baseline;
+       each side together is at least `glyph_min_pt` tall, and at least one path on one side is at
+       least `glyph_min_pt` in both directions — a glyph, not a scatter of arc pieces;
+    2. both sides are centred on it — each side's middle within one bar length of the bar's;
+    3. the two sides are within `proportion_max` of each other in height, and the bar within it of the
+       wider side's width;
+    4. no other stroke on the bar's line comes within `reach_pt` of it (`_is_isolated`).
+
+    Each side is taken as a whole rather than glyph by glyph, so a numerator drawn as several strokes
+    — or a `1` that is one vertical stroke with no width at all — still counts as one shape. The
+    layout then splits each side into its characters (`FractionLayout`).
+
+    **A label turned a quarter inside the stamp is found by its own direction (#869).** The same
+    four rules are applied to the stamp's baseline turned a quarter, which finds bars lying across
+    it, such as the bar of a vertical dimension in a stamp that reads upright. Such a bar is a
+    fraction's only where, in addition, every character on each side stands upright read that way
+    (`turned_aspect_min`): the neighbours of an upright `l` or `I` meet the four rules but lie on
+    their side. It is then laid out the way its label reads (`_turned_layout`), and its
+    `FractionLayout.rotation_degrees` is that direction, not the stamp's. Every fraction along the
+    stamp's baseline comes first, in the order it always did.
+
+    Only multiples of 90° are handled, because those are the only baseline rotations
+    `annotations.py` reads from a stamp; any other is refused.
+    """
+    if len(ink) != len(boxes):
+        raise ValueError(
+            f"ink must say for each of the {len(boxes)} boxes whether its path is drawn in black "
+            f"or grey; it has {len(ink)} entries"
         )
+    spans = [_frame(box, rotation_degrees) for box in boxes]
+    # A box is as large whichever way it is framed, so these are the small paths both ways.
+    small = [
+        index
+        for index, span in enumerate(spans)
+        if _along(span) < geometry.glyph_max_pt and _across(span) < geometry.glyph_max_pt
+    ]
+
+    found: list[FractionLayout] = []
+
+    def keep(layout: FractionLayout) -> None:
         # The same stroke drawn twice finds the same fraction twice; it is one label.
         if all(earlier.box != layout.box for earlier in found):
             found.append(layout)
+
+    for bar, above, below in _bars(spans, small, geometry):
+        keep(
+            _layout(
+                bar,
+                above,
+                below,
+                small,
+                spans,
+                ink,
+                geometry=geometry,
+                rotation_degrees=rotation_degrees,
+            )
+        )
+
+    across = (rotation_degrees + 90) % 360
+    turned = [_frame(box, across) for box in boxes]
+    for bar, above, below in _bars(turned, small, geometry):
+        if not (_stands(above, turned, geometry) and _stands(below, turned, geometry)):
+            continue
+        keep(
+            _turned_layout(
+                bar,
+                above,
+                below,
+                small,
+                boxes,
+                turned,
+                ink,
+                geometry=geometry,
+                rotation_degrees=across,
+            )
+        )
     return tuple(found)
