@@ -99,6 +99,10 @@ class OcrItem:
     #: A crop-local de-rotation applied before this reader saw the image. Diagnostic only: it lets a
     #: reviewer reconstruct why the candidate's rectangle needed an inverse map back to the page.
     crop_rotation_degrees: int = 0
+    #: The reading's box overlaps a stacked fraction the page's geometry found (#846). Never set by an
+    #: engine, which sees pixels and not the vendor's paths: the localized-OCR stage sets it, and
+    #: `record_ocr_candidates` then records the reading with `STACKED_FRACTION_FLAG`.
+    stacked: bool = False
 
     def __post_init__(self) -> None:
         if not self.text.strip():
