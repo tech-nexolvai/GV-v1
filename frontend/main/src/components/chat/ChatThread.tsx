@@ -129,6 +129,7 @@ export function ChatThread({
                   renderDetail={(finding) => (
                     <FindingCard
                       finding={finding}
+                      defaultExpanded
                       isSelected={selectedFinding === finding.id}
                       onViewEvidence={onViewEvidence}
                       onAction={onAction}

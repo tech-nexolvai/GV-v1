@@ -23,6 +23,8 @@ function readableStatus(value: string): string {
 interface FindingCardProps {
   finding: Finding;
   isSelected: boolean;
+  /** A table row already has a disclosure; reveal its actions on the first opening. */
+  defaultExpanded?: boolean;
   onViewEvidence: (finding: Finding) => void;
   onAction: (findingId: string, action: 'confirm' | 'correct' | 'except' | 'dismiss', note?: string) => void;
   /**
@@ -45,8 +47,9 @@ export function FindingCard({
   onAction,
   onCorrect,
   onExcept,
+  defaultExpanded,
 }: FindingCardProps) {
-  const [expanded, setExpanded] = useState(finding.outcome === 'FAIL');
+  const [expanded, setExpanded] = useState(defaultExpanded ?? finding.outcome === 'FAIL');
   const [showTrace, setShowTrace] = useState(false);
   // Which payload the reviewer is filling in, if either. `null` is the ordinary state: the buttons
   // that need nothing more still act on one click.
