@@ -1,31 +1,41 @@
 /** In-memory scenarios for browser QA only. No imports from backend, storage or model code. */
 import { createHash } from 'node:crypto';
-import { project, populated, empty, packages, findings, revision, samplePdf } from './browser-qa-fixtures.mjs';
+import { project, populated, empty, packages, findings, chains, needed, revision, samplePdf } from './browser-qa-fixtures.mjs';
 
 export const uploadPackage = '00000000-0000-4000-8000-000000000103';
 const uploadRevision = '00000000-0000-4000-8000-000000000203';
 const timestamp = '2026-10-03T10:00:00Z';
 const response = (body, status = 200) => ({ body, status });
 const refuse = (message, status = 409) => response({ error: 'synthetic_qa_only', message, request_id: 'SYNTHETIC_UI_QA' }, status);
+// Fixed fixture answers, NOT an implementation of the engine or an exact-value parser.
+export const flowMeasurements = [
+  { rule_id: 'CT-DEPTH-001', name: 'vendor_depth', value: '25 1/4 in' },
+  { rule_id: 'CT-DEPTH-001', name: 'approved_depth', value: '25 1/2 in' },
+];
+const flowFindings = findings.map((finding, i) => ({ ...finding,
+  id: `00000000-0000-4000-8000-00000000040${i + 1}`,
+  package_revision_id: uploadRevision, check_run_id: 'synthetic-flow-run',
+}));
 
 export function createScenarioState(name = null) {
   return {
-    name: ['partial-upload', 'approval'].includes(name) ? name : null,
+    name: ['partial-upload', 'approval', 'review-flow'].includes(name) ? name : null,
     packageCreates: 0, createdPackage: null, documents: [], sessions: [], actions: [], approved: false,
     storageAttempts: 0, storageFailures: 0, extractionRequests: 0, events: [],
+    extracted: false, storedMeasurements: null, checksRequests: 0, resultsReady: false,
   };
 }
 
 export function scenarioPackages(state) {
   return [
-    ...packages.map((pkg) => state.approved && pkg.id === populated ? { ...pkg, state: 'APPROVED' } : pkg),
+    ...packages.map((pkg) => state.name === 'approval' && state.approved && pkg.id === populated ? { ...pkg, state: 'APPROVED' } : pkg),
     ...(state.createdPackage ? [state.createdPackage] : []),
   ];
 }
 
 export function scenarioFindings(state, packageId = populated) {
-  if (packageId === empty || packageId === uploadPackage) return [];
-  return findings.map((finding) => ({
+  if (packageId === empty || (packageId === uploadPackage && !state.resultsReady)) return [];
+  return (packageId === uploadPackage ? flowFindings : findings).map((finding) => ({
     ...finding,
     reviewer_action: state.actions.findLast((action) => action.finding_id === finding.id) ?? null,
   }));
@@ -39,7 +49,10 @@ export function scenarioSnapshot(state) {
     confirmedDocuments: state.documents.filter((document) => document.confirmed).length,
     storageAttempts: state.storageAttempts, storageFailures: state.storageFailures, extractionRequests: state.extractionRequests,
     sessions: state.sessions, actions: state.actions, reviewedCount: new Set(state.actions.map((action) => action.finding_id)).size,
-    findingCount: findings.length, approved: state.approved, events: state.events,
+    findingCount: state.name === 'review-flow' && !state.resultsReady ? 0 : findings.length,
+    approved: state.approved, events: state.events,
+    extracted: state.extracted, storedMeasurements: state.storedMeasurements,
+    checksRequests: state.checksRequests, resultsReady: state.resultsReady,
   };
 }
 
@@ -47,6 +60,9 @@ export function scenarioSnapshot(state) {
 function respondToScenario(state, method, path, body = {}) {
   if (!state.name) return null;
   const prefix = `/api/v1/projects/${project}`;
+  const flow = state.name === 'review-flow';
+  const targetPackage = flow ? uploadPackage : populated;
+  const targetRevision = flow ? uploadRevision : revision;
   if (path.startsWith('/api/') && !path.startsWith(`${prefix}/`)) {
     // The semantic vocabulary is global, read-only and served by the baseline harness.
     return method === 'GET' && path === '/api/v1/semantic-types' ? null : refuse('Unknown synthetic project.', 404);
@@ -58,11 +74,17 @@ function respondToScenario(state, method, path, body = {}) {
     if (pkg) return response(pkg);
     const findingPackage = scenarioPackages(state).find((item) => path === `${prefix}/packages/${item.id}/findings`);
     if (findingPackage) return response({ items: scenarioFindings(state, findingPackage.id), next_cursor: null, limit: 50, ordering: 'synthetic-test-order' });
-    if (/\/(?:report(?:\.pdf)?|redline\.pdf)$/.test(path) && !state.approved) return refuse('Synthetic sign-off is required before downloads.');
+    if (flow && path === `${prefix}/packages/${uploadPackage}/required-inputs`) return response({ ...needed, confirmed_readings: [], revision_state: state.createdPackage?.state ?? 'CREATED' });
+    if (flow && path.endsWith('/chain')) {
+      const i = flowFindings.findIndex((finding) => path === `${prefix}/packages/${uploadPackage}/findings/${finding.id}/chain`);
+      if (i >= 0) return state.resultsReady ? response({ ...chains[findings[i].id], finding_id: flowFindings[i].id }) : refuse('Fixture checks have not run.');
+    }
+    if (/\/(?:report(?:\.pdf)?|redline\.pdf)$/.test(path)
+      && (!state.approved || !path.startsWith(`${prefix}/packages/${targetPackage}/`))) return refuse('Synthetic sign-off is required for this package before downloads.');
     return null;
   }
 
-  if (state.name === 'partial-upload') {
+  if (state.name === 'partial-upload' || flow) {
     if (method === 'POST' && path === `${prefix}/packages`) {
       if (state.createdPackage) return refuse('The synthetic package already exists. Open the saved review instead of replacing it.');
       state.createdPackage = { id: uploadPackage, project_id: project, current_revision_id: uploadRevision, current_revision_number: 1,
@@ -82,7 +104,7 @@ function respondToScenario(state, method, path, body = {}) {
       const document = state.documents.find((item) => path === `/_dev/upload/${item.id}`);
       if (!document) return refuse('Unknown synthetic storage registration.', 404);
       state.storageAttempts += 1;
-      if (document.kind === 'shop') { state.storageFailures += 1; return refuse('Synthetic storage outage after the architect PDF was saved.', 503); }
+      if (!flow && document.kind === 'shop') { state.storageFailures += 1; return refuse('Synthetic storage outage after the architect PDF was saved.', 503); }
       if (!Buffer.isBuffer(body) || !body.subarray(0, 5).equals(Buffer.from('%PDF-'))) return refuse('Expected a synthetic PDF payload.', 422);
       document.bytes = body;
       document.uploaded = true;
@@ -98,32 +120,58 @@ function respondToScenario(state, method, path, body = {}) {
     }
     if (method === 'POST' && path === `${prefix}/packages/${uploadPackage}/extract`) {
       state.extractionRequests += 1;
-      return refuse('The synthetic vendor PDF is missing. This scenario never runs extraction.');
+      if (flow && state.documents.filter((document) => document.confirmed).length === 2) {
+        state.extracted = true;
+        state.createdPackage.state = 'AWAITING_REVIEW';
+        return response({ accepted_id: 'synthetic-extraction', package_revision_id: uploadRevision }, 202);
+      }
+      return refuse(flow ? 'Fixture extraction requires both confirmed PDFs.' : 'The synthetic vendor PDF is missing. This scenario never runs extraction.');
+    }
+    if (flow && method === 'POST' && path === `${prefix}/packages/${uploadPackage}/measurements`) {
+      if (!state.extracted || state.approved) return refuse('Fixture values require a complete PDF pair and an open review.');
+      if (body.parameters?.length || body.classifications?.length || body.measurements?.length !== 2
+        || !flowMeasurements.every((expected) => body.measurements.some((actual) => actual.rule_id === expected.rule_id && actual.name === expected.name && actual.value === expected.value && !actual.values))) {
+        return refuse('This fixture only accepts the two documented synthetic depths, with units. No value parser or engine runs here.', 422);
+      }
+      state.storedMeasurements = structuredClone(body.measurements);
+      return response({ parameter_set_version: null, measurement_set_version: 1, parameters: [], lists: [], measurements: [
+        { name: 'vendor_depth', numerator: '101', denominator: '4', unit: 'in', as_typed: '25 1/4 in' },
+        { name: 'approved_depth', numerator: '51', denominator: '2', unit: 'in', as_typed: '25 1/2 in' },
+      ] }, 201);
+    }
+    if (flow && method === 'POST' && path === `${prefix}/packages/${uploadPackage}/checks`) {
+      if (!state.storedMeasurements || state.approved) return refuse('Save fixture values before checks; signed-off fixtures are read-only.');
+      state.checksRequests += 1;
+      state.resultsReady = true; // Preauthored outcomes only; no real extraction or verdict calculation.
+      return response({ accepted_id: 'synthetic-checks', package_revision_id: uploadRevision }, 202);
     }
   }
 
-  if (state.name === 'approval') {
-    if (method === 'POST' && path === `${prefix}/packages/${populated}/review-sessions`) {
-      if (body.package_revision_id !== revision) return refuse('Wrong synthetic revision.', 422);
+  if (state.name === 'approval' || flow) {
+    if (method === 'POST' && path === `${prefix}/packages/${targetPackage}/review-sessions`) {
+      if (flow && !state.extracted) return refuse('Upload the fixture pair before opening a sitting.');
+      if (body.package_revision_id !== targetRevision) return refuse('Wrong synthetic revision.', 422);
       if (state.sessions[0]) return response(state.sessions[0], 201);
-      const session = { id: '00000000-0000-4000-8000-000000000501', package_revision_id: revision, reviewer: 'Synthetic QA reviewer', created_at: timestamp, completed_at: null };
+      const session = { id: '00000000-0000-4000-8000-000000000501', package_revision_id: targetRevision, reviewer: 'Synthetic QA reviewer', created_at: timestamp, completed_at: null };
       state.sessions.push(session);
       return response(session, 201);
     }
     const session = state.sessions.find((item) => path.startsWith(`${prefix}/review-sessions/${item.id}/`));
     if (session && method === 'POST' && path.endsWith('/actions')) {
       if (state.approved) return refuse('The synthetic review is already signed off.');
-      if (!findings.some((finding) => finding.id === body.finding_id) || !['confirm', 'dismiss'].includes(body.action)) return refuse('Only confirm/dismiss of existing synthetic findings is implemented.', 422);
+      if (!scenarioFindings(state, targetPackage).some((finding) => finding.id === body.finding_id) || !['confirm', 'dismiss'].includes(body.action)) return refuse('Only confirm/dismiss of existing synthetic findings is implemented.', 422);
       const action = { finding_id: body.finding_id, action: body.action, actor: 'Synthetic QA reviewer', note: body.note ?? '', created_at: timestamp };
       state.actions.push(action);
       return response(action, 201);
     }
     if (session && method === 'POST' && path.endsWith('/approve')) {
-      const unresolved = scenarioFindings(state).filter((finding) => finding.outcome === 'REVIEW_REQUIRED' && !finding.reviewer_action);
+      if (flow && !state.resultsReady) return refuse('Run fixture checks before sign-off.');
+      const unresolved = scenarioFindings(state, targetPackage).filter((finding) => finding.outcome === 'REVIEW_REQUIRED' && !finding.reviewer_action);
       if (unresolved.length) return refuse('Synthetic sign-off refused: a REVIEW_REQUIRED finding still needs a recorded action.');
       state.approved = true;
+      if (flow) state.createdPackage.state = 'APPROVED';
       session.completed_at = timestamp;
-      return response({ approval_id: '00000000-0000-4000-8000-000000000601', package_revision_id: revision, approved_by: 'Synthetic QA reviewer', findings_approved: findings.length, state: 'APPROVED' }, 201);
+      return response({ approval_id: '00000000-0000-4000-8000-000000000601', package_revision_id: targetRevision, approved_by: 'Synthetic QA reviewer', findings_approved: findings.length, state: 'APPROVED' }, 201);
     }
   }
   if (method === 'POST' && /\/chat(?:\/stream)?$/.test(path)) return null;
@@ -131,6 +179,22 @@ function respondToScenario(state, method, path, body = {}) {
 }
 
 export function fixturePdf(role) { return samplePdf(role === 'shop'); }
+
+/** Explicit browser starting point when file-picker automation is unavailable. Upload contracts
+ * are exercised by the real client in review-flow.test.mjs, not claimed as browser interactions. */
+export function prepareUploadedFixture(state) {
+  if (state.name !== 'review-flow' || state.createdPackage) throw new Error('Expected a fresh review-flow fixture.');
+  const prefix = `/api/v1/projects/${project}`;
+  handleScenario(state, 'POST', `${prefix}/packages`, { vendor: 'Connected flow fixture' });
+  for (const kind of ['architectural', 'shop']) {
+    const bytes = fixturePdf(kind), sha256 = createHash('sha256').update(bytes).digest('hex');
+    const ticket = handleScenario(state, 'POST', `${prefix}/packages/${uploadPackage}/documents`, { kind, sha256 });
+    handleScenario(state, 'PUT', ticket.body.upload_url, bytes);
+    handleScenario(state, 'POST', `${prefix}/documents/${ticket.body.document_id}/confirm`, { sha256, page_count: 1 });
+  }
+  handleScenario(state, 'POST', `${prefix}/packages/${uploadPackage}/extract`);
+  handleScenario(state, 'POST', `${prefix}/packages/${uploadPackage}/review-sessions`, { package_revision_id: uploadRevision });
+}
 
 export function handleScenario(state, method, path, body = {}) {
   const result = respondToScenario(state, method, path, body);

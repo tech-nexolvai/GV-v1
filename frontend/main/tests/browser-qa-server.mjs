@@ -7,7 +7,7 @@ import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 import { project, populated, empty, packages, findings, chains, needed, candidates, cropPng, samplePdf, sampleWorkbook } from './browser-qa-fixtures.mjs';
-import { createScenarioState, handleScenario, scenarioSnapshot, scenarioPackages, scenarioFindings, fixturePdf } from './browser-qa-scenarios.mjs';
+import { createScenarioState, handleScenario, scenarioSnapshot, scenarioPackages, scenarioFindings, fixturePdf, prepareUploadedFixture } from './browser-qa-scenarios.mjs';
 import { pageFixture } from './browser-qa-pages.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -35,7 +35,10 @@ const qa = {
         reportErrorMode = url.searchParams.get('report-error') === '1';
         failCropOnce.clear();
         const requestedScenario = url.searchParams.get('scenario');
-        if (requestedScenario !== scenario.name || url.searchParams.get('reset') === '1') scenario = createScenarioState(requestedScenario);
+        if (requestedScenario !== scenario.name || url.searchParams.get('reset') === '1') {
+          scenario = createScenarioState(requestedScenario);
+          if (scenario.name === 'review-flow' && url.searchParams.get('fixture-uploaded') === '1') prepareUploadedFixture(scenario);
+        }
       }
       if (url.pathname === '/__qa') {
         res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
@@ -71,6 +74,7 @@ const qa = {
       if (localResponse) return json(localResponse.body, localResponse.status);
       if (req.method === 'POST' && /\/chat(?:\/stream)?$/.test(path)) {
         const { question = '' } = requestBody;
+        scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path, status: 200, result: 'Synthetic structured fallback; no model connection', question });
         const selected = /fail/i.test(question) ? rows.filter((row) => row.outcome === 'FAIL') : rows;
         const answer = `Synthetic UI QA: showing ${selected.length} of ${rows.length} fixture findings. This is a frontend test, not a drawing review.`;
         const reply = { mode: 'structured_fallback', model_id: null, fallback_reason: 'Synthetic QA provider deliberately disabled', answer, summary: null, total: rows.length,
@@ -96,11 +100,18 @@ const qa = {
       if (path.endsWith('/crop')) {
         // Optional query enables an isolated retry check without changing the actual app.
         if (cropRetryMode && !failCropOnce.has(path)) { failCropOnce.add(path); return refusal('Synthetic QA: temporary crop failure. Retry is safe.', 503); }
+        scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path, status: 200, result: 'Synthetic PNG served' });
         res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' }); res.end(cropPng(path.includes('shop'))); return;
       }
       if (reportErrorMode && /\/(report(?:\.pdf)?|redline\.pdf)$/.test(path)) return refusal('Synthetic report unavailable. Sign-off and findings are unchanged.', 503);
-      if (/\/(report|redline)\.pdf$/.test(path)) { res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="synthetic-ui-qa.pdf"' }); res.end(samplePdf(path.endsWith('redline.pdf'))); return; }
-      if (path.endsWith('/report')) { res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="synthetic-ui-qa.xlsx"' }); res.end(sampleWorkbook()); return; }
+      if (/\/(report|redline)\.pdf$/.test(path)) {
+        scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path, status: 200, result: 'Synthetic PDF served; not a backend export' });
+        res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="synthetic-ui-qa.pdf"' }); res.end(samplePdf(path.endsWith('redline.pdf'))); return;
+      }
+      if (path.endsWith('/report')) {
+        scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path, status: 200, result: 'Synthetic workbook served; not a backend export' });
+        res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="synthetic-ui-qa.xlsx"' }); res.end(sampleWorkbook()); return;
+      }
       if (pkg && path.endsWith(`/packages/${pkg.id}`)) return json(pkg);
       return refusal(`No synthetic fixture for ${req.method} ${path}. No live backend was contacted.`);
     });

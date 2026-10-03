@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
 
 // Use Vite's real module loader (including import.meta.env and CSS) without listening on a port.
 // Every request is intercepted: no live package, stored evidence or backend data is changed.
@@ -10,6 +11,9 @@ const originalFetch = globalThis.fetch;
 try {
   const { toFinding, withChain, loadFindings } = await server.ssrLoadModule('/src/api/findings.ts');
   const { EvidencePanel } = await server.ssrLoadModule('/src/components/chat/EvidencePanel.tsx');
+  const { FindingCard } = await server.ssrLoadModule('/src/components/chat/FindingCard.tsx');
+  assert.match(readFileSync(new URL('../src/components/chat/ChatThread.tsx', import.meta.url), 'utf8'),
+    /<FindingCard\s[^>]*\bdefaultExpanded\b/, 'chat table explicitly opens embedded detail cards');
   const row = (id) => ({ id, rule_id: `RULE-${id}`, outcome: 'FAIL', severity: 'FLAG', reviewer_action: null, rule_version: '1' });
   const location = (id, role = 'SHOP') => ({
     canonical_observation_id: id, document_version_id: 'doc', document_role: role,
@@ -27,6 +31,19 @@ try {
     trace: { kind: 'calculation', operation: 'equals', operands: [{ name: 'first_width', value: '101/4 in', source: 'SHOP' }], comparison: '101/4 != 51/2' },
   };
   const finding = withChain(toFinding(row('one')), chain);
+  let actions = 0;
+  const cardProps = { isSelected: false, onViewEvidence() {}, onAction() { actions += 1; }, onCorrect() {}, onExcept() {} };
+  for (const outcome of ['PASS', 'FAIL', 'REVIEW_REQUIRED', 'NOT_FOUND', 'NO_APPLICABLE_RULE']) {
+    const props = { ...cardProps, finding: { ...finding, outcome } };
+    const detail = renderToStaticMarkup(createElement(FindingCard, { ...props, defaultExpanded: true }));
+    assert.match(detail, /class="finding-card__header" aria-expanded="true"/, `${outcome}: table details do not require a second disclosure`);
+    assert.match(detail, /class="collapsible" data-open="true"><div class="finding-card__body"/, 'review body is open and not inert');
+    if (outcome === 'NOT_FOUND') assert.doesNotMatch(detail, />Confirm<\/button>/, 'missing readings still cannot be confirmed');
+    if (outcome === 'PASS' || outcome === 'NO_APPLICABLE_RULE') assert.doesNotMatch(detail, /finding-card__reviewer-actions/);
+    const standalone = renderToStaticMarkup(createElement(FindingCard, props));
+    assert.ok(standalone.includes(`class="finding-card__header" aria-expanded="${outcome === 'FAIL'}"`), 'standalone default is unchanged');
+  }
+  assert.equal(actions, 0, 'opening details never records a decision');
   assert.equal(finding.recorded_operands[0].value, '25 1/4 in');
   assert.equal(finding.recorded_operands[1].value, '9007199254740993 in');
   assert.equal(finding.recorded_operands[2].value, '2/3 in');

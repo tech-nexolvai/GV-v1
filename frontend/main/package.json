@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test:outcomes": "node tests/outcome-presentation.test.mjs",
-    "test:browser-scenarios": "node tests/browser-qa-scenarios.test.mjs",
+    "test:browser-scenarios": "node tests/browser-qa-scenarios.test.mjs && node tests/review-flow.test.mjs",
     "test:pages": "tsc -p tsconfig.test.json && node node_modules/.tmp/chat-render-test/tests/page-frame.test.js && node tests/browser-qa-pages.test.mjs",
     "test:handoff": "tsc -p tsconfig.test.json && node node_modules/.tmp/chat-render-test/tests/review-handoff.test.js",
     "test:documents": "tsc -p tsconfig.test.json && node node_modules/.tmp/chat-render-test/tests/document-resilience.test.js && node node_modules/.tmp/chat-render-test/tests/document-pagination.test.js && node node_modules/.tmp/chat-render-test/tests/document-position.test.js && node node_modules/.tmp/chat-render-test/tests/document-record.test.js && node node_modules/.tmp/chat-render-test/tests/document-guidance.test.js",
