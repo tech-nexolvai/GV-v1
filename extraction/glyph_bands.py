@@ -111,6 +111,8 @@ class FractionBarGeometry:
     character_gap_pt: Decimal
     """How far apart along the baseline two characters of one label may be (#834): the whole
     number's digits from each other and from the fraction, and the inch mark from the fraction.
+    Also how near either end of the label a path the layout counts as nothing must come to be its
+    neighbour (`FractionLayout.neighbours`, #848).
 
     It decides only the layout, never whether a fraction is found. Too small, and a whole number's
     first digit is left out, so a reading that drops it — `9 1/2"` for `39 1/2"` — would match the
@@ -179,6 +181,22 @@ class FractionLayout:
     inch_mark: GlyphCharacter
     """The paths drawn after the fraction and wholly above its bar, as the inch mark is: one path
     with two ticks, or two paths of one tick each. Empty where nothing like that follows."""
+
+    neighbours: tuple[GlyphBox, ...]
+    """Black or grey paths the layout counts as no part of the label, though they are centred across
+    its digit band and lie within `character_gap_pt` of either end of it (#848). Empty where there
+    are none.
+
+    **Each one may be a character the count is missing.** A whole number's first digit drawn a
+    little taller than the band is not taken into it, and then `39 1/2"` lays out as `9 1/2"`; a
+    `+` after the inch mark is the start of more label, as in `39 1/2"+6"`. A reading of the label
+    put together from its parts is refused while any is here. A dimension tick below a label is not
+    one: it is centred below the band, though it may reach into it."""
+
+    rotation_degrees: int
+    """How far the label's baseline is turned on the page, anticlockwise: 0 for a label that reads
+    upright, else 90, 180 or 270 (#848). Every box above is in the page's own axes whatever it is;
+    this says which way the characters in them face."""
 
 
 #: `(along_low, across_low, along_high, across_high)` — a box on the baseline's own axes, with
@@ -343,13 +361,15 @@ def _layout(
     `above` and `below` are every path the detector took for the numerator and denominator, and the
     detection's box is theirs whatever their colour, as it always was. The characters are drawn from
     ink paths only. Beside the fraction, an ink path is a character only inside the digit band and
-    only where `_chain` reaches it.
+    only where `_chain` reaches it; an ink path centred in the band within the gap of either end,
+    and counted as nothing, is a neighbour.
     """
     detected = _union([spans[bar], *(spans[index] for index in (*above, *below))])
     numerator = [index for index in above if ink[index]]
     denominator = [index for index in below if ink[index]]
     whole: list[int] = []
     mark: list[int] = []
+    neighbours: list[int] = []
     stacked = [spans[index] for index in (*numerator, *denominator)]
     if stacked:
         foot = min(span[1] for span in stacked)
@@ -369,6 +389,19 @@ def _layout(
         # does: a digit beside a stacked fraction is centred on its bar.
         over_bar = [index for index in band if spans[index][1] > spans[bar][3]]
         mark = _chain(detected[2], over_bar, spans, gap, before=False)
+        # **Compared by place, not by path**, because the same stroke drawn twice to embolden it is
+        # two paths: the bar's twin is no neighbour of the bar.
+        counted = {spans[index] for index in (*taken, *whole, *mark)}
+        label = _union([detected, *(spans[index] for index in (*whole, *mark))])
+        neighbours = [
+            index
+            for index in small
+            if ink[index]
+            and spans[index] not in counted
+            and foot <= (spans[index][1] + spans[index][3]) / 2 <= head
+            and spans[index][0] <= label[2] + gap
+            and label[0] - gap <= spans[index][2]
+        ]
 
     def characters(indices: list[int]) -> tuple[GlyphCharacter, ...]:
         return tuple(
@@ -386,6 +419,11 @@ def _layout(
             _unframe(spans[index], rotation_degrees)
             for index in sorted(mark, key=lambda position: (spans[position], position))
         ),
+        neighbours=tuple(
+            _unframe(spans[index], rotation_degrees)
+            for index in sorted(neighbours, key=lambda position: (spans[position], position))
+        ),
+        rotation_degrees=rotation_degrees % 360,
     )
 
 

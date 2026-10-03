@@ -137,6 +137,13 @@ from extraction.annotations import (
     read_annotation_layers,
     read_markup_layer,
 )
+from extraction.fraction_parts import (
+    FRACTION_PARTS_EXTRACTOR,
+    FRACTION_PARTS_VERSION,
+    FractionPartsRefusal,
+    PieceDrawing,
+    read_fraction_parts,
+)
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import DetectedDimensions, detect
 from extraction.geometry.text_association import DimensionText, associate
@@ -433,6 +440,43 @@ def ai_budget_from_environment(environ: Mapping[str, str] = os.environ) -> Decim
     if not value.is_finite() or value <= 0:
         raise ValueError(f"{AI_BUDGET_ENV} must be more than zero dollars, not {raw!r}")
     return value
+
+
+#: The switch for reading each stacked fraction piece by piece (#848). Off unless a deployment turns
+#: it on, and `scripts/demo.sh` does not.
+FRACTION_PARTS_ENV: Final = "GV_FRACTION_PARTS"
+
+#: How each piece is drawn for the reader (`extraction.fraction_parts.PieceDrawing`). Required once
+#: the route is on, and none has a default: each changes what the reader is shown.
+FRACTION_PARTS_SETTINGS: Final = {
+    "GV_FRACTION_PARTS_HEIGHT_PX": "height_px",
+    "GV_FRACTION_PARTS_STROKE_PX": "stroke_px",
+    "GV_FRACTION_PARTS_BEZIER_STEPS": "bezier_steps",
+    "GV_FRACTION_PARTS_MARGIN_PX": "margin_px",
+}
+
+
+def fraction_parts_from_environment(environ: Mapping[str, str] = os.environ) -> PieceDrawing | None:
+    """How the deployment draws the pieces of a stacked fraction, or `None` where the route is off.
+
+    A switch that is on with a setting missing or not a whole number is refused, not filled in: a
+    guessed size would decide what the reader is shown on every drawing anybody runs.
+    """
+    if environ.get(FRACTION_PARTS_ENV, "").strip().lower() not in {"1", "true", "yes"}:
+        return None
+    missing = [name for name in FRACTION_PARTS_SETTINGS if not environ.get(name, "").strip()]
+    if missing:
+        raise ValueError(
+            f"{FRACTION_PARTS_ENV} is on and these are not stated: {', '.join(missing)}. None of "
+            "them has a default"
+        )
+    stated: dict[str, int] = {}
+    for name, field_name in FRACTION_PARTS_SETTINGS.items():
+        raw = environ[name].strip()
+        if not raw.isascii() or not raw.isdigit():
+            raise ValueError(f"{name} must be a whole number, not {raw!r}")
+        stated[field_name] = int(raw)
+    return PieceDrawing(**stated)
 
 
 @dataclass(slots=True)
@@ -978,6 +1022,7 @@ class DatabaseStages:
         reading_agent: ReadingAgentSettings | None = None,
         vision_gate: str | None = None,
         ai_budget_usd: Decimal | None = None,
+        fraction_parts: PieceDrawing | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -1054,6 +1099,16 @@ class DatabaseStages:
         # **The shape reader (#756), off unless a deployment points it at a template set.** Its
         # readings are confirmed only by a second witness (#756 D2); see `workflow/glyph_route`.
         self._glyph_route = glyph_route
+        # **Stacked fractions read piece by piece (#848), off unless a deployment turns it on.** It
+        # reads the layouts the stacked-fraction detector draws, and the detector runs only with the
+        # association settings, so without them the route could never read anything: refused here
+        # rather than left on and silent.
+        if fraction_parts is not None and association is None:
+            raise ValueError(
+                "the fraction-parts route reads stacked fractions the detector has laid out, and "
+                "the detector runs only with association settings, which these stages do not have"
+            )
+        self._fraction_parts = fraction_parts
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
             if (bounded_agent is not None or reading_agent is not None)
@@ -1420,6 +1475,19 @@ class DatabaseStages:
             if layers is not None and text_stacked:
                 layers = replace(layers, stacked_fractions=layers.stacked_fractions + text_stacked)
             page_stacked = layers.stacked_fractions if layers is not None else text_stacked
+            # **Each laid-out stacked label read piece by piece (#848)**, where a deployment turned the
+            # route on. What it reads pre-fills the form for a person to tick; it is never agreed into
+            # evidence (#726), and the whole label is still never shown to a vision reader (#762).
+            fraction_rows: list[ObservationCandidate] = []
+            fraction_refusals: Counter[str] | None = None
+            if self._fraction_parts is not None:
+                fraction_rows, fraction_refusals = self._read_page_by_fraction_parts(
+                    session,
+                    version_id=version_id,
+                    page=page,
+                    task_run_id=run.task_run_id,
+                    fractions=page_stacked,
+                )
             # **Which forms this page's text arrived in, and which of them nothing reads yet.** A
             # vendor does not choose how its PDF stores numbers; the page result says, so a page whose
             # text sits in a form no route reads is reported as that, not as a page with no numbers.
@@ -1549,6 +1617,8 @@ class DatabaseStages:
                     + stamp_text_rows
                     + vision_rows
                     + glyph_rows
+                    # Judged with the rest, and its flag keeps every group it is in a raw candidate.
+                    + fraction_rows
                 ),
             )
             agent = self._run_bounded_agent_for_ambiguous_regions(
@@ -1630,7 +1700,8 @@ class DatabaseStages:
                         "candidates": written
                         + len(vision_rows)
                         + len(agent_rows)
-                        + len(glyph_rows),
+                        + len(glyph_rows)
+                        + len(fraction_rows),
                         "markup_candidates": len(markup_rows),
                         # The reviewer's measurement lines (#805): read as markup when they carry
                         # text, set aside when they carry none. `None` when the annotations could
@@ -1678,6 +1749,25 @@ class DatabaseStages:
                             else sum(
                                 STACKED_FRACTION_FLAG in row.ambiguity_flags for row in glyph_rows
                             )
+                        ),
+                        # Stacked fractions read piece by piece (#848), each pre-filled for a
+                        # person: `None` when the route is off, which is not the same fact as its
+                        # having read nothing. The reasons are this route's own sentences.
+                        "fraction_parts_readings": (
+                            None if fraction_refusals is None else len(fraction_rows)
+                        ),
+                        "fraction_parts_refusals": (
+                            None if fraction_refusals is None else sum(fraction_refusals.values())
+                        ),
+                        "fraction_parts_refusal_reasons": (
+                            None
+                            if fraction_refusals is None
+                            else [
+                                f"{count} × {reason}"
+                                for reason, count in fraction_refusals.most_common(
+                                    REPORTED_REFUSALS
+                                )
+                            ]
                         ),
                         # What the AI readers have spent on this drawing set so far, against its
                         # cap (#757): once reached, labels go to a reviewer without a model reading.
@@ -2940,6 +3030,117 @@ class DatabaseStages:
             rows.append(row)
             items.append(_LocatedOcrReading(extent, reading.rotation_degrees))
         return rows, (tuple(items), rows), abstentions
+
+    def _read_page_by_fraction_parts(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        page: Page,
+        task_run_id: UUID,
+        fractions: Sequence[StackedFraction],
+    ) -> tuple[list[ObservationCandidate], Counter[str]]:
+        """Read each laid-out stacked label piece by piece; record each reading; count the rest.
+
+        `extraction/fraction_parts.py` draws the whole number, numerator and denominator from their
+        own paths, reads each with the OCR engine, and puts the value together in code. A label set
+        in text has no paths and no layout, and is not looked at.
+
+        **Every row carries `STACKED_FRACTION_FLAG`** (#726): however exactly it was read, a stacked
+        fraction goes to a person. `corroborate` keeps any group it is in a raw candidate with no
+        lane, automatic typing refuses it, and the form shows it filled in for a person to tick. Its
+        rows are not handed to the vision readers or the agent.
+
+        **Its own extraction run**, keyed on how the pieces are drawn, which engine read them and the
+        detector's settings, so a reading made under other numbers is another run. A re-run finds its
+        rows and reads nothing. A page with no laid-out label opens no run.
+
+        Returns the rows, and why each label that was not read was not.
+        """
+        drawing = self._fraction_parts
+        assert drawing is not None
+        refusals: Counter[str] = Counter()
+        laid_out = [fraction for fraction in fractions if fraction.layout is not None]
+        if not laid_out:
+            return [], refusals
+        engine = self._ocr()
+        run = open_extraction_run(
+            session,
+            task_run_id=task_run_id,
+            extractor=FRACTION_PARTS_EXTRACTOR,
+            extractor_version=FRACTION_PARTS_VERSION,
+            config_hash=(
+                f"dpi={self._dpi};{drawing.config_hash};engine={engine.name}/{engine.version}"
+                + (
+                    ""
+                    if self._association is None
+                    else f";fraction_bar={self._association.fraction_bar.config_hash}"
+                )
+            ),
+            dpi=self._dpi,
+        )
+        with session.no_autoflush:
+            existing = list(
+                session.execute(
+                    select(ObservationCandidate).where(
+                        ObservationCandidate.extraction_run_id == run.id,
+                        ObservationCandidate.page_id == page.id,
+                    )
+                ).scalars()
+            )
+        if existing:
+            return existing, refusals
+        if page.media_box is None or page.crop_box is None:
+            refusals["the page has no recorded transform, so no reading could be placed"] += len(
+                laid_out
+            )
+            return [], refusals
+        media = tuple(Decimal(value) for value in page.media_box)
+        crop = tuple(Decimal(value) for value in page.crop_box)
+        transform = PageTransform(
+            dpi=self._dpi,
+            rotation=page.rotation,
+            media_box=(media[0], media[1], media[2], media[3]),
+            crop_box=(crop[0], crop[1], crop[2], crop[3]),
+        )
+        rows: list[ObservationCandidate] = []
+        with traced(
+            "extraction.page.fraction_parts",
+            document_version_id=str(version_id),
+            page_index=page.index,
+            extractor_version=FRACTION_PARTS_VERSION,
+        ):
+            for fraction in laid_out:
+                result = read_fraction_parts(fraction, engine=engine, drawing=drawing)
+                if isinstance(result, FractionPartsRefusal):
+                    refusals[result.reason] += 1
+                    continue
+                try:
+                    _extent, corners = page_box_polygon(
+                        result.box, transform, version_id, page.index
+                    )
+                except (TypeError, ValueError):
+                    refusals["the label lies outside the visible page"] += 1
+                    continue
+                row = ObservationCandidate(
+                    document_version_id=version_id,
+                    page_id=page.id,
+                    extraction_run_id=run.id,
+                    raw_text=result.text,
+                    value_numerator=result.value.exact.numerator,
+                    value_denominator=result.value.exact.denominator,
+                    unit=result.value.unit.value,
+                    unit_guess=result.value.unit.value,
+                    semantic_guess=None,
+                    polygon=[[corner.x, corner.y] for corner in corners],
+                    coordinate_space="image",
+                    # Put together in code from the pieces' readings: it has no confidence of its own.
+                    confidence=None,
+                    ambiguity_flags=[STACKED_FRACTION_FLAG],
+                )
+                session.add(row)
+                rows.append(row)
+        return rows, refusals
 
     def _read_page_by_vision(
         self,

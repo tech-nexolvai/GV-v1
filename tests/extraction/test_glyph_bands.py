@@ -297,6 +297,7 @@ def test_a_whole_number_and_a_fraction_are_laid_out_part_by_part() -> None:
     assert layout.bar == LONG_BAR
     assert layout.inch_mark == tuple(TICKS)
     assert layout.box == _d("0", "-0.74", "3.72", "11.86"), "the detection's box is unchanged"
+    assert layout.rotation_degrees == 0, "read upright"
 
 
 def test_a_bare_fraction_has_no_whole_number_and_a_two_stroke_four_counts_once() -> None:
@@ -400,6 +401,7 @@ def test_a_turned_label_is_laid_out_the_way_it_reads(degrees: int) -> None:
     layout = _layout(turned, rotation_degrees=degrees)
 
     assert _counts(layout) == (2, 1, 1, 2)
+    assert layout.rotation_degrees == degrees, "and it says which way it is turned (#848)"
     assert layout.numerator == ((_turned(ONE, degrees),),)
     assert layout.whole == ((_turned(WHOLE_THREE, degrees),), (_turned(WHOLE_NINE, degrees),))
 
@@ -415,3 +417,69 @@ def test_ink_must_be_said_for_every_box() -> None:
         stacked_fractions(FRACTION, geometry=GEOMETRY, ink=[True])
     with pytest.raises(TypeError, match="ink"):
         stacked_fractions(FRACTION, geometry=GEOMETRY)  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# What lies beside a label and is counted as none of it (#848)
+# ---------------------------------------------------------------------------
+
+#: A `+` after the inch mark, centred on the bar as a character beside a fraction is: the start of
+#: more label, as in `39 1/2"+6"`.
+PLUS_AFTER = _d("8.5", "3.0", "11.5", "6.0")
+
+
+def test_a_label_with_nothing_beside_it_has_no_neighbours() -> None:
+    assert _layout(THIRTY_NINE_AND_A_HALF).neighbours == ()
+    assert _layout(FRACTION).neighbours == ()
+
+
+def test_a_character_after_the_inch_mark_within_the_gap_is_a_neighbour() -> None:
+    """**More label than the layout counts.** The `+` is not wholly above the bar, so it is not the
+    inch mark, and it is after the fraction, so it is not the whole number: counted as nothing, it
+    is named, so a reading put together from the parts is not taken for the whole label."""
+    layout = _layout([*FRACTION, PLUS_AFTER])
+
+    assert _counts(layout) == (0, 1, 1, 2), "the parts are counted as before"
+    assert layout.neighbours == (PLUS_AFTER,)
+
+
+def test_a_first_digit_drawn_taller_than_the_band_is_a_neighbour() -> None:
+    """**The miscount that would make `39 1/2"` read as `9 1/2"`.** A `3` reaching below the
+    denominator's foot is not wholly in the digit band, so the whole number is taken as the `9`
+    alone; it is centred in the band, so it is a neighbour, and the label is not read in parts."""
+    tall_three = _d("-9.48", "-1.0", "-5.88", "8.26")
+    layout = _layout([tall_three, WHOLE_NINE, LONG_BAR, ONE, TWO, *TICKS])
+
+    assert layout.whole == ((WHOLE_NINE,),)
+    assert layout.neighbours == (tall_three,)
+
+
+def test_a_tick_centred_below_the_band_is_not_a_neighbour_though_it_reaches_in() -> None:
+    """A dimension's tick sits below the label. Measured on the client's drawing, ticks reach a
+    quarter of a point into the band from below; centred below it, they are no character."""
+    tick = _d("-3.0", "-3.8", "-0.2", "-0.56")
+
+    assert _layout([tick, *FRACTION]).neighbours == ()
+
+
+def test_beyond_the_gap_or_out_of_ink_a_path_is_not_a_neighbour() -> None:
+    """Further than `character_gap_pt` from the label it is another label's; in a reviewer's colour it
+    is nobody's character. Neither stops the label being read."""
+    beyond = _shifted([PLUS_AFTER], "3.5")[0]  # starts 4.3 pt after the mark ends, the gap is 4
+
+    assert _layout([*FRACTION, beyond]).neighbours == ()
+    coloured = _layout([*FRACTION, PLUS_AFTER], ink=[True] * len(FRACTION) + [False])
+    assert coloured.neighbours == ()
+
+
+def test_the_bar_drawn_twice_is_not_its_own_neighbour() -> None:
+    """PDFs embolden by drawing a stroke twice. The second bar lies on the first, in the band and
+    inside the label, and is the same stroke, not a character beside it."""
+    assert _layout([BAR, *FRACTION]).neighbours == ()
+
+
+@pytest.mark.parametrize("degrees", [90, 180, 270])
+def test_a_turned_label_names_its_neighbour_in_page_space(degrees: int) -> None:
+    turned = [_turned(box, degrees) for box in [*FRACTION, PLUS_AFTER]]
+
+    assert _layout(turned, rotation_degrees=degrees).neighbours == (_turned(PLUS_AFTER, degrees),)
