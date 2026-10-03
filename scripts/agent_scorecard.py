@@ -6,10 +6,13 @@ Every threshold is stated on the command line or read from a `scripts/demo.sh`-s
 adapter, paced under each reader's quota. The per-crop working file holds the client's values: write
 it under `data/`, which is never committed.
 
-    python scripts/agent_scorecard.py data/goldset/reading-key-2026-09-30 \\
-        --reader-settings scripts/demo.sh --key-dpi 600 --stage-dpi 300 --sharper-dpi 450 \\
+    python scripts/agent_scorecard.py --key data/goldset/reading-key-2026-09-30 \\
+        --reader-settings scripts/demo.sh --stage-dpi 300 --sharper-dpi 450 \\
         --label-gap-pt 4 --max-label-pt 40 --max-steps 6 \\
         --output data/goldset/reading-key-2026-09-30/agent_scorecard.md
+
+Give `--key` once per key — one key per drawing (#867) — and every key's crops are scored into one
+scorecard, each on its own drawing. A crop id two keys share is refused.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import datetime
 import json
 import sys
 import tempfile
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
@@ -27,9 +31,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eval.experiments.agent_scorecard import (
     BedrockCropReader,
+    KeyCrop,
     PageGeometry,
     ScorecardError,
+    ScorecardPage,
     build_pages,
+    key_frame_dpi,
     load_key,
     render_markdown,
     results_json,
@@ -46,11 +53,33 @@ CALLS_PER_MINUTE = {
 }
 
 
-def main(argv: list[str] | None = None) -> int:
+@dataclass(frozen=True, slots=True)
+class LoadedKey:
+    """One key's crops, the frame they are in, and its drawing's pages as the stage reads them."""
+
+    crops: tuple[KeyCrop, ...]
+    key_dpi: int
+    pages: dict[int, ScorecardPage]
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("key", type=Path, help="a key directory: answer_key.json, crops.csv, PDF")
+    parser.add_argument(
+        "--key",
+        type=Path,
+        action="append",
+        required=True,
+        help="a key directory — answer_key.json, crops.csv, its PDF; repeat for each key",
+    )
     parser.add_argument("--reader-settings", type=Path, required=True)
-    parser.add_argument("--key-dpi", type=int, required=True, help="the frame crops.csv is in")
+    parser.add_argument(
+        "--key-dpi",
+        type=int,
+        help=(
+            "the frame crops.csv is in, only for a key that does not record one (#835); a key "
+            "that records its frame is refused if this differs"
+        ),
+    )
     parser.add_argument("--stage-dpi", type=int, required=True, help="the stage's render")
     parser.add_argument("--sharper-dpi", type=int, required=True)
     parser.add_argument("--label-gap-pt", type=Decimal, required=True)
@@ -62,7 +91,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rates", type=Path, default=Path("deploy/model_rates.us-east-1.json"))
     parser.add_argument("--only", help="comma-separated crop ids, for a dry run")
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     from app.runs.rates import call_cost_micros, load_model_rates
     from extraction.glyph_bands import FractionBarGeometry
@@ -72,13 +105,6 @@ def main(argv: list[str] | None = None) -> int:
     from workflow.stages import VISION_CROP_CONTEXT_MARGIN_PT
 
     try:
-        crops = load_key(args.key)
-        if args.only:
-            wanted = {crop_id.strip() for crop_id in args.only.split(",")}
-            crops = tuple(crop for crop in crops if crop.crop_id in wanted)
-        case = json.loads((args.key / "answer_key.json").read_text(encoding="utf-8"))
-        pdf = (args.key / case["shop"]).read_bytes()
-        version_id = UUID(case["provenance"]["documents"][0]["document_version_id"])
         reader = read_reader_settings(args.reader_settings)
         geometry = PageGeometry(
             line_minimum_pt=Decimal(reader["GV_READER_LINE_MINIMUM_PT"]),
@@ -91,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
                 glyph_min_pt=Decimal(reader["GV_READER_FRACTION_GLYPH_MIN_PT"]),
                 glyph_max_pt=Decimal(reader["GV_READER_FRACTION_GLYPH_MAX_PT"]),
                 proportion_max=Decimal(reader["GV_READER_FRACTION_PROPORTION_MAX"]),
+                character_gap_pt=Decimal(reader["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
+                turned_aspect_min=Decimal(reader["GV_READER_FRACTION_TURNED_ASPECT_MIN"]),
             ),
         )
         settings = ReadingAgentSettings(
@@ -109,14 +137,38 @@ def main(argv: list[str] | None = None) -> int:
                 raise ScorecardError(f"{name} is not a defined reader with a measured space")
             readers[name] = BedrockCropReader(config, calls_per_minute=CALLS_PER_MINUTE[name])
         first, second = args.pair.split(",")
-        pages = build_pages(
-            pdf,
-            [crop.page_index for crop in crops],
-            version_id=version_id,
-            dpi=args.stage_dpi,
-            geometry=geometry,
-            reach=settings.reach(geometry.glyph_gap_pt),
-        )
+        keys: list[LoadedKey] = []
+        seen: dict[str, Path] = {}
+        for directory in args.key:
+            crops = load_key(directory)
+            for crop in crops:
+                if crop.crop_id in seen:
+                    raise ScorecardError(
+                        f"crop {crop.crop_id} is in both {seen[crop.crop_id]} and {directory}; "
+                        "every crop of the keys scored together needs its own id"
+                    )
+                seen[crop.crop_id] = directory
+            key_dpi = key_frame_dpi(
+                directory, key_dpi=args.key_dpi, margin_pt=VISION_CROP_CONTEXT_MARGIN_PT
+            )
+            if args.only:
+                wanted = {crop_id.strip() for crop_id in args.only.split(",")}
+                crops = tuple(crop for crop in crops if crop.crop_id in wanted)
+            case = json.loads((directory / "answer_key.json").read_text(encoding="utf-8"))
+            keys.append(
+                LoadedKey(
+                    crops=crops,
+                    key_dpi=key_dpi,
+                    pages=build_pages(
+                        (directory / case["shop"]).read_bytes(),
+                        [crop.page_index for crop in crops],
+                        version_id=UUID(case["provenance"]["documents"][0]["document_version_id"]),
+                        dpi=args.stage_dpi,
+                        geometry=geometry,
+                        reach=settings.reach(geometry.glyph_gap_pt),
+                    ),
+                )
+            )
         rates = load_model_rates(args.rates)
     except (ScorecardError, OSError, KeyError, ValueError) as error:
         print(error, file=sys.stderr)
@@ -125,31 +177,34 @@ def main(argv: list[str] | None = None) -> int:
     from storage.local import LocalStore
 
     results = []
+    total = sum(len(key.crops) for key in keys)
     with tempfile.TemporaryDirectory() as directory:
         store = LocalStore(root=Path(directory), ticket_secret=b"scorecard crops are never served")
-        for number, crop in enumerate(crops, start=1):
-            result = score_crop(
-                crop,
-                pages[crop.page_index],
-                store=store,
-                pair=(readers[first], readers[second]),
-                readers={
-                    VlmRole.PRIMARY: readers[args.primary],
-                    VlmRole.ESCALATION: readers[args.escalation],
-                },
-                settings=settings,
-                key_dpi=args.key_dpi,
-                margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
-            )
-            results.append(result)
-            print(f"{number}/{len(crops)} {crop.crop_id}", file=sys.stderr, flush=True)
+        for key in keys:
+            for crop in key.crops:
+                result = score_crop(
+                    crop,
+                    key.pages[crop.page_index],
+                    store=store,
+                    pair=(readers[first], readers[second]),
+                    readers={
+                        VlmRole.PRIMARY: readers[args.primary],
+                        VlmRole.ESCALATION: readers[args.escalation],
+                    },
+                    settings=settings,
+                    key_dpi=key.key_dpi,
+                    margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
+                )
+                results.append(result)
+                print(f"{len(results)}/{total} {crop.crop_id}", file=sys.stderr, flush=True)
 
     header = (
         f"## Reading agent scorecard — {datetime.datetime.now().astimezone().date().isoformat()}\n\n"
         f"Pair: {first} + {second}. Agent: primary {args.primary}, escalation {args.escalation}; "
         f"{args.max_steps} steps; sharper look at {args.sharper_dpi} dpi; whole label gathered "
         f"within {args.label_gap_pt} pt, at most {args.max_label_pt} pt. Crops cut as the stage "
-        f"cuts them, at {args.stage_dpi} dpi. Reader thresholds: {args.reader_settings}."
+        f"cuts them, at {args.stage_dpi} dpi. Reader thresholds: {args.reader_settings}. "
+        f"Keys: {', '.join(directory.name for directory in args.key)}."
     )
 
     def cost(model: str, tokens_in: int, tokens_out: int) -> int:

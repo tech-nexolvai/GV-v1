@@ -362,6 +362,8 @@ def _turned(path: VectorPath, turn: Turn) -> VectorPath:
         ),
         stroked=path.stroked,
         filled=path.filled,
+        stroke_colour=path.stroke_colour,
+        fill_colour=path.fill_colour,
     )
 
 

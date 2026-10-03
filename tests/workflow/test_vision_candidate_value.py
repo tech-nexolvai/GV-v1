@@ -54,6 +54,7 @@ def _shape_check_accepts(reading: str) -> bool:
         coordinate_mode=CoordinateMode.PIXELS,
         recorder=_Discard(),
         stacked_label=False,
+        stacked_layouts=(),
     )
     return isinstance(outcome, ObservationCandidate)
 

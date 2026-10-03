@@ -422,7 +422,18 @@ export function enterMeasurements(
   projectId: string,
   packageId: string,
   entry: {
-    parameters?: { name: string; value: string; scope?: 'project' | 'run' }[];
+    parameters?: {
+      name: string;
+      value: string;
+      scope?: 'project' | 'run';
+      /** Where it came from (#827): one of the setting's `sources` from required-inputs. */
+      source?: string;
+      /** Where in that source, in the reviewer's words. */
+      reference?: string;
+      /** The passage it was typed from (#866): the `proposal_id` of the setting's `found` pointer.
+       * The server refuses a number that differs from the passage's, and nothing is saved. */
+      citation?: string;
+    }[];
     measurements?: {
       rule_id: string;
       name: string;
@@ -816,6 +827,37 @@ export async function downloadCandidateCrop(
       envelope = {
         error: 'unreadable_response',
         message: `The proposal crop could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
+/**
+ * The crop of the passage where the architect's drawing states a setting (#866).
+ *
+ * Pixels only: the reviewer reads the number off this picture and types it, and the app's own
+ * reading of it is never sent.
+ */
+export async function downloadSettingPassageCrop(
+  projectId: string,
+  packageId: string,
+  proposalId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/parameter-proposals/${proposalId}/crop`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The passage crop could not be loaded (HTTP ${response.status}).`,
         request_id: response.headers.get('x-request-id') ?? 'unknown',
       };
     }

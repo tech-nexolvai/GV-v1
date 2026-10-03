@@ -157,6 +157,12 @@ jobs:
       - name: Types
         run: ./node_modules/.bin/tsc --noEmit -p tsconfig.app.json
 
+      # What a reviewer sees — the elevation drawing, the cabinet dropdown, the findings table —
+      # rendered and asserted, on captured server responses rather than a running server (#823).
+      # Unrun, they broke in #807 and nothing noticed, because nothing ran them.
+      - name: Component tests
+        run: npm run test:components
+
       - name: Build
         run: ./node_modules/.bin/vite build
 
@@ -249,6 +255,11 @@ jobs:
 
       - name: Prove database float-column guard
         run: pytest tests/app/test_float_column_guard.py -q
+
+      # The setting proposer may point at a passage, never write a setting (#849). Run here because
+      # this job has semgrep installed; elsewhere the file's semgrep tests skip.
+      - name: Prove the proposer-never-writes-a-setting guard
+        run: pytest tests/workflow/test_proposer_never_writes_a_setting.py -q
 
       - name: Golden rules (semgrep)
         run: |

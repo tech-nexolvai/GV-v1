@@ -4,7 +4,12 @@ Validation is fail-closed: an output is either a complete ``ObservationCandidate
 an explicitly recorded rejection. Unknown fields and binary floating-point values are
 never silently coerced or discarded.
 
-Source: ``docs/DESIGN_AI.md`` section 4.1 and issue #250.
+**A second request kind, digits (#865).** A piece of a stacked label — its whole number, its
+numerator or its denominator — drawn alone is shown to a model, which answers one plain number.
+`validate_digits_payload` holds that answer to the same rule the local reader of the same piece is
+held to: one to three ASCII digits, exactly as many as the drawing has characters in the piece.
+
+Source: ``docs/DESIGN_AI.md`` section 4.1 and issues #250, #834, #865.
 Verification: ``tests/extraction/models/test_validation.py``.
 """
 
@@ -12,16 +17,17 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from typing import Final, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
 
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
+from extraction.glyph_bands import FractionLayout
 from units.measurement import Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation, is_compound
@@ -75,6 +81,40 @@ class NovaToolPayload(BaseModel):
     y1: StrictInt = Field(description=_BOX_DESCRIPTION)
     x2: StrictInt = Field(description=_BOX_DESCRIPTION)
     y2: StrictInt = Field(description=_BOX_DESCRIPTION)
+
+
+#: The most digits one piece of a stacked label is read as (#848). A whole number of inches on a
+#: cabinet or countertop drawing runs to three digits; a numerator or a denominator to two.
+MAXIMUM_PIECE_DIGITS: Final = 3
+
+#: One to three ASCII digits and nothing else. Not `str.isdigit`, which is true of `²` and of other
+#: scripts' digits — none of them a number this drawing wrote. The one rule for a piece's reading,
+#: whichever reader made it: `extraction/fraction_parts.py` holds local OCR to it too.
+PIECE_DIGITS_RE: Final = re.compile(rf"[0-9]{{1,{MAXIMUM_PIECE_DIGITS}}}")
+
+#: Why a digits answer was refused: not one to three ASCII digits, or not as many as the piece has.
+DIGITS_NOT_A_NUMBER: Final = "digits_not_a_number"
+DIGITS_WRONG_COUNT: Final = "digits_wrong_count"
+
+
+class DigitsToolPayload(BaseModel):
+    """What a model may answer about one piece of a stacked label: its digits, and nothing else.
+
+    **One field, a string.** Not an integer: `08` and `8` are different readings of a drawing, and a
+    number type would make them the same answer. `StrictStr`, so a JSON number is refused rather than
+    turned into text the model did not write. The description is the contract, as it is for
+    `NovaToolPayload`: it says what `validate_digits_payload` accepts.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    digits: StrictStr = Field(
+        min_length=1,
+        description=(
+            "The number drawn in the picture, written as its digits only, such as 28, 3 or 16: one "
+            "to three digits, with no unit, no fraction, no spaces and no words."
+        ),
+    )
 
 
 class CoordinateMode(StrEnum):
@@ -227,6 +267,80 @@ def _stacked_fraction_refusal(reading: str, *, stacked: bool) -> str | None:
     )
 
 
+#: The reason a reading of a stacked label is recorded under when the drawing contradicts it (#834).
+#: Its own reason, because it says more than `STACKED_FRACTION_REASON`: not only that the label goes
+#: to a reviewer, but that this reading cannot be what the label shows.
+STACKED_LAYOUT_REASON: Final = "reading_contradicts_stacked_layout"
+
+#: A reading written the way a stacked label is drawn: a whole number or none, a fraction, and an inch
+#: mark or none. Matched on the canonical form, where `39-1/2"` is already `39 1/2"`.
+_STACKED_READING_RE = re.compile(
+    r'^\s*(?:(?P<whole>\d+)\s+)?(?P<numerator>\d+)\s*/\s*(?P<denominator>\d+)\s*"?\s*$'
+)
+
+
+def _counted(count: int, word: str) -> str:
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def stacked_layout_refusal(reading: str, layouts: Sequence[FractionLayout]) -> str | None:
+    """Why a reading cannot be any of the stacked labels these layouts describe, or `None` (#834).
+
+    **The false PASS this exists for.** Two readers from different vendors read a stacked `3/4"` as
+    `3 3/4"` and agreed (#726). Nothing in the string shows it — it has its `/` and parses — but the
+    drawing does: the label has no whole number. So a reading is checked against where the label's
+    parts were drawn (`extraction/glyph_bands.py`): as many whole-number digits as the drawing has
+    characters before the fraction, as many above the bar and as many below. `9 1/2"` read from a
+    `39 1/2"` is refused the same way.
+
+    **It reads the string and the layout and nothing else**, so a reading from any lane — a model,
+    OCR, the shape reader — can be held to it; `validate_payload` holds the model readers' to it.
+    A reading shaped otherwise is refused too: no fraction (`284` for `28 3/4"`), feet and inches,
+    or a millimetre number beside the inches, since a stacked label is drawn as one number with a
+    fraction. Where a crop shows more than one stacked label, matching any one of them is enough,
+    because the reading may be of any of them.
+
+    **What it does not do.** It counts; it does not read. `3/8"` for a `3/4"` has the right count and
+    passes, so this never makes a reading right — it only refuses one the drawing rules out. The
+    inch mark is not compared: it is not a digit, and readers drop it and add it. With no layouts —
+    no stacked label in the crop, or one set in text, which has no paths to count — it says nothing.
+    """
+    if not layouts:
+        return None
+    canonical, millimetres = canonical_notation(reading)
+    shaped = _STACKED_READING_RE.match(canonical) if millimetres is None else None
+    drawn = "; ".join(
+        f"{_counted(len(layout.whole), 'whole-number character')} and "
+        f"{len(layout.numerator)} over {len(layout.denominator)}"
+        for layout in layouts
+    )
+    label = (
+        "the stacked label this crop shows is"
+        if len(layouts) == 1
+        else f"the {len(layouts)} stacked labels this crop shows are"
+    )
+    if shaped is None:
+        return (
+            f"reading {reading!r} is not one number with a fraction, and {label} drawn as one "
+            f"({drawn})"
+        )
+    counts = (
+        len(shaped["whole"] or ""),
+        len(shaped["numerator"]),
+        len(shaped["denominator"]),
+    )
+    if any(
+        counts == (len(layout.whole), len(layout.numerator), len(layout.denominator))
+        for layout in layouts
+    ):
+        return None
+    return (
+        f"reading {reading!r} has {_counted(counts[0], 'whole-number digit')} and "
+        f"{counts[1]} over {counts[2]}, but {label} drawn with {drawn}, so it cannot be what the "
+        "drawing says"
+    )
+
+
 def _reading_refusal(reading: str) -> str | None:
     """Why this reading is not usable as a dimension, or `None` if it is.
 
@@ -354,6 +468,7 @@ def validate_payload(
     coordinate_mode: CoordinateMode,
     recorder: RejectionRecorder,
     stacked_label: bool,
+    stacked_layouts: Sequence[FractionLayout],
 ) -> ValidationOutcome:
     """Return a complete candidate or a recorded abstention, never a partial result.
 
@@ -362,7 +477,17 @@ def validate_payload(
     had one, `False`, and both production callers relied on it — so the guard it gates was tested,
     worked when called, and never ran (#735). Every caller now states what it knows; a caller with
     no geometry says `False` in its own code, where a reader can see the gap.
+
+    `stacked_layouts` is where those labels' parts were drawn (#834), and has no default for the
+    same reason: empty where the crop shows no stacked label, or only ones set in text. A reading
+    they contradict is refused under `STACKED_LAYOUT_REASON` (`stacked_layout_refusal`). Layouts
+    with `stacked_label` `False` contradict each other; that is the caller's mistake, not the
+    model's, so it raises `ValueError` rather than recording a refusal of the reading.
     """
+    if stacked_layouts and not stacked_label:
+        raise ValueError(
+            "stacked_layouts describe stacked labels in this crop, so stacked_label must be True"
+        )
 
     try:
         _reject_floats(payload)
@@ -421,6 +546,23 @@ def validate_payload(
 
     # Before the candidate exists, because a candidate is a reading somebody may act on.
     refusal = _reading_refusal(validated.reading)
+    # A dimension, or a bare fraction — which on a stacked crop may be the right reading (see below).
+    dimension_shaped = refusal is None or bool(
+        _BARE_FRACTION_RE.match(canonical_notation(validated.reading)[0])
+    )
+
+    # **Before the general stacked refusal, because it says more** (#834): this reading is not only
+    # sent to a reviewer, the drawing rules it out. Only for a dimension-shaped reading, for the
+    # reason given below: a reading that is not a dimension at all keeps that, truer, reason.
+    layout_refusal = stacked_layout_refusal(validated.reading, stacked_layouts)
+    if layout_refusal is not None and dimension_shaped:
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason=STACKED_LAYOUT_REASON,
+            errors=(layout_refusal,),
+        )
 
     # **On a stacked crop, the layout is the reason** — recorded under its own reason so a reviewer
     # knows the drawing sent it, not a bad reading (#735). That holds for every dimension-shaped
@@ -429,9 +571,7 @@ def validate_payload(
     # not a dimension at all keeps that reason: it is the truer one, and most of the detector's false
     # alarms — hatching beside a label — land there.
     stacked_refusal = _stacked_fraction_refusal(validated.reading, stacked=stacked_label)
-    if stacked_refusal is not None and (
-        refusal is None or _BARE_FRACTION_RE.match(canonical_notation(validated.reading)[0])
-    ):
+    if stacked_refusal is not None and dimension_shaped:
         return _record_rejection(
             payload=payload,
             context=context,
@@ -469,3 +609,75 @@ def validate_payload(
             f"{context.extractor}_rectangle_polygon_derived",
         ),
     )
+
+
+def validate_digits_payload(
+    payload: object,
+    *,
+    context: CandidateContext,
+    digit_count: int,
+    recorder: RejectionRecorder,
+) -> str | ValidationRejection:
+    """The digits a model read in one piece of a stacked label, or a recorded refusal (#865).
+
+    `digit_count` is how many characters the drawing has in the piece (`FractionLayout`): the
+    answer must be exactly that many ASCII digits, one to three. **The count is the drawing's, never
+    the model's**, so a piece read with a digit the drawing does not have — `33` for a `3` — is
+    refused here, before anything compares it with another reader.
+
+    **Fails closed and never corrects**, like `validate_payload`: a float anywhere, a field that is
+    not asked for, a number where a string belongs, anything but digits, or the wrong number of them
+    is a recorded refusal. Nothing here turns the digits into a value; the caller puts the label
+    together in code.
+    """
+    if (
+        isinstance(digit_count, bool)
+        or not isinstance(digit_count, int)
+        or not 1 <= digit_count <= MAXIMUM_PIECE_DIGITS
+    ):
+        raise ValueError(f"digit_count must be a whole number from 1 to {MAXIMUM_PIECE_DIGITS}")
+    try:
+        _reject_floats(payload)
+    except _FloatFound as error:
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason="float_not_allowed",
+            errors=(str(error),),
+        )
+    try:
+        validated = DigitsToolPayload.model_validate(payload)
+    except ValidationError as error:
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason="schema_validation_failed",
+            errors=_validation_errors(error),
+        )
+    if not PIECE_DIGITS_RE.fullmatch(validated.digits):
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason=DIGITS_NOT_A_NUMBER,
+            errors=(
+                f"digits {validated.digits!r} are not one to {MAXIMUM_PIECE_DIGITS} ASCII digits",
+            ),
+        )
+    if len(validated.digits) != digit_count:
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason=DIGITS_WRONG_COUNT,
+            errors=(
+                (
+                    f"digits {validated.digits!r} are "
+                    f"{_counted(len(validated.digits), 'digit')}, and the drawing has "
+                    f"{_counted(digit_count, 'character')} in this piece"
+                ),
+            ),
+        )
+    return validated.digits

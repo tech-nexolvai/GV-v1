@@ -209,3 +209,31 @@ rules:
       AGPL dependency. AGENTS.md section 2.8 forbids PyMuPDF and Ultralytics YOLO — this is
       a commercial product and AGPL would force disclosure. Use pdfplumber (MIT),
       pypdfium2, or pikepdf (MPL-2.0) instead.
+
+  # -------------------------------------------------------------------------
+  - id: gv-proposer-never-writes-a-setting
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - workflow/parameter_proposals.py
+        - workflow/parameter_citations.py
+        - workflow/value_hunter*
+        - retrieval/
+    pattern-either:
+      - pattern: ParameterValue(...)
+      - pattern: $MODULE.ParameterValue(...)
+      - pattern: user_input(...)
+      - pattern: $MODULE.user_input(...)
+      - pattern: user_input_set(...)
+      - pattern: $MODULE.user_input_set(...)
+      - pattern: seed_company_standards(...)
+      - pattern: $MODULE.seed_company_standards(...)
+      - pattern: _store(...)
+      - pattern: $MODULE._store(...)
+    message: >
+      Code that finds or proposes a setting is writing one. Q10 (CLIENT_FACTS) and plan step 3.2
+      on issue 798: a search may point at the passage that states a setting, and a person confirms
+      the number; the proposer never supplies it. Building a ParameterValue, a user input, a
+      company-standard set, or calling a settings store here would let a passage the search found
+      become a setting with nobody having typed it. File a pointer in parameter_proposals instead.

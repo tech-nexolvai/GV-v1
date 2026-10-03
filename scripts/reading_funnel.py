@@ -176,14 +176,22 @@ QUERIES: Final[tuple[tuple[str, str], ...]] = (
     ),
 )
 
+#: The route that reads a stacked fraction piece by piece (#848), named as
+#: `extraction.fraction_parts.FRACTION_PARTS_EXTRACTOR` names it. Written out rather than imported so
+#: this script stays free of the extraction stack; a test holds the two to the same string.
+FRACTION_PARTS_EXTRACTOR: Final = "extraction.fraction_parts"
+
 #: The headline the rest is evidence for. Separate from `QUERIES` because it is one row, not a
 #: breakdown, and because it is the line a person actually reads.
-FUNNEL_SQL: Final = """
+FUNNEL_SQL: Final = f"""
 SELECT
   (SELECT count(*) FROM observation_candidates)                                  AS found,
   (SELECT count(value_numerator) FROM observation_candidates)                    AS with_a_value,
   (SELECT count(*) FROM observation_associations WHERE refusal_reason IS NULL)   AS associated,
   (SELECT count(*) FROM canonical_observations)                                  AS sealed,
+  (SELECT count(*) FROM observation_candidates oc
+     JOIN extraction_runs er ON er.id = oc.extraction_run_id
+    WHERE er.extractor = '{FRACTION_PARTS_EXTRACTOR}')                  AS read_in_parts,
   (SELECT count(*) FROM findings)                                                AS findings,
   (SELECT count(*) FROM findings WHERE outcome = 'PASS')                         AS passes
 """
@@ -268,6 +276,15 @@ def _percent(part: int, whole: int) -> str:
     if whole <= 0:
         return "—"
     return f"{100 * part / whole:.1f}%"
+
+
+def _read_in_parts(funnel: dict[str, Any]) -> str:
+    """The stacked fractions read piece by piece (#848): their own line, because every one is a
+    reading a person must still tick, never evidence. A count, not a share of what was found, and a
+    dash where the report was put together without it."""
+    value = funnel.get("read_in_parts")
+    shown = "—" if value is None else str(int(value))
+    return f"  {'stacked fractions read in parts':<34}{shown:>8}"
 
 
 def _minutes(milliseconds: int | Decimal) -> Decimal:
@@ -395,6 +412,7 @@ def render(report: dict[str, Any]) -> str:
         step("...that parse to a number", "with_a_value"),
         step("...attached to a dimension line", "associated"),
         step("...sealed as usable evidence", "sealed"),
+        _read_in_parts(funnel),
         "",
         f"  {'findings':<34}{int(funnel['findings']):>8}",
         f"  {'...of which PASS':<34}{int(funnel['passes']):>8}",
@@ -474,6 +492,7 @@ def render_markdown(
             f"  {'...sealed as usable evidence':<34}{int(funnel['sealed']):>8}   "
             f"{_percent(int(funnel['sealed']), found)}"
         ),
+        _read_in_parts(funnel),
         "",
         f"  {'findings':<34}{int(funnel['findings']):>8}",
         f"  {'...of which PASS':<34}{int(funnel['passes']):>8}",

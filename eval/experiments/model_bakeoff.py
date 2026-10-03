@@ -23,7 +23,7 @@ from fractions import Fraction
 from importlib import import_module
 from itertools import combinations
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -35,8 +35,25 @@ from units.imperial import ImperialParseError
 from units.measurement import Measurement, Unit, to_exact_fraction
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation, is_compound
+from workflow.config import READER_RASTER_DPI
 
-HARD_CASE_TAGS = ("fraction", "rotated", "small_glyph")
+HardCaseTag = Literal["fraction", "rotated", "small_glyph", "stacked", "dual_unit", "gv_seen"]
+"""What makes a crop hard. `fraction` is read off the person's value and `small_glyph` comes from a
+key's metadata; the rest are the person's own marks on the sheet (#867): `rotated`, `stacked` for a
+fraction set one number over the other, `dual_unit` for millimetres with inches, and `gv_seen`
+where the person saw GV's own number in the crop."""
+
+HARD_CASE_TAGS: tuple[str, ...] = get_args(HardCaseTag)
+
+#: Each tag's column heading in the Markdown scorecard.
+_TAG_HEADINGS = {
+    "fraction": "Fractions",
+    "rotated": "Rotated",
+    "small_glyph": "Small glyphs",
+    "stacked": "Stacked",
+    "dual_unit": "Dual unit",
+    "gv_seen": "GV's number seen",
+}
 DEFAULT_PAIRINGS = (
     ("nova-pro", "claude-haiku-4.5"),
     ("nova-pro", "qwen3-vl-235b"),
@@ -452,14 +469,15 @@ def recommend(scorecard: BakeoffScorecard) -> str:
 def render_markdown(scorecard: BakeoffScorecard) -> str:
     """Render a human-readable Markdown scorecard."""
 
+    headings = " | ".join(_TAG_HEADINGS[tag] for tag in HARD_CASE_TAGS)
     lines = [
         "# Model Dimension-Read Bake-Off",
         "",
         (
-            "| Model | Exact read rate | Wrong | Abstained | Fractions | Rotated | Small glyphs | "
+            f"| Model | Exact read rate | Wrong | Abstained | {headings} | "
             "Input tokens | Output tokens | Avg latency ms | Cost USD | Errors |"
         ),
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "|---|---:|---:|---:|" + "---:|" * len(HARD_CASE_TAGS) + "---:|---:|---:|---:|---:|",
     ]
     for score in scorecard.models:
         lines.append(
@@ -470,9 +488,7 @@ def render_markdown(scorecard: BakeoffScorecard) -> str:
                     _format_rate(score.exact_rate),
                     str(score.wrong_count),
                     str(score.abstained_count),
-                    _format_rate(score.tag_rate("fraction")),
-                    _format_rate(score.tag_rate("rotated")),
-                    _format_rate(score.tag_rate("small_glyph")),
+                    *(_format_rate(score.tag_rate(tag)) for tag in HARD_CASE_TAGS),
                     str(score.input_tokens),
                     str(score.output_tokens),
                     _format_decimal(score.average_latency_ms),
@@ -625,8 +641,10 @@ class BedrockBakeoffAdapter:
                     bound_pt=crop.bound_pt,
                     # **The bake-off measures the reader, not the gate.** A stacked crop must come
                     # back with what the model read, or the misreadings the gate exists for could
-                    # never be counted — `3 3/4"` for `3/4"` was found this way (#726).
+                    # never be counted — `3 3/4"` for `3/4"` was found this way (#726). No
+                    # layouts for the same reason: the digit-count check is part of the gate.
                     stacked_label=False,
+                    stacked_layouts=(),
                 )
             )
             attempts = self._sink.invocations[before:]
@@ -708,7 +726,7 @@ class _CropInput(BaseModel):
     image: Path
     image_format: Literal["jpeg", "png"] = "png"
     expected: _MeasurementInput
-    tags: tuple[Literal["fraction", "rotated", "small_glyph"], ...] = ()
+    tags: tuple[HardCaseTag, ...] = ()
     page: int = Field(default=0, ge=0)
     bound_pt: Decimal = Decimal(0)
     nearby_text: tuple[str, ...] = ()
@@ -720,11 +738,38 @@ class _CropManifest(BaseModel):
     crops: tuple[_CropInput, ...] = Field(min_length=1)
 
 
+class KeyFrame(BaseModel):
+    """The pixel frame a key's polygons are written in, as the key itself records it (#835).
+
+    **Recorded because the polygons cannot say it.** A box at 300 dpi and a box at 600 dpi are both
+    four integers. The pilot key's polygons are at 300; read as 600, every crop came from near the
+    page's top-left corner, and the models were shown fragments of heading letters to read.
+
+    `margin_pt` is how much page each polygon holds round the region it was cut for: production's
+    vision margin for a key the scaffold cut, so a reader can take it off again to find the region.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    polygon_dpi: int = Field(gt=0)
+    margin_pt: Decimal = Field(ge=0)
+
+    @field_validator("polygon_dpi", "margin_pt", mode="before")
+    @classmethod
+    def _authored_exactly(cls, value: object) -> object:
+        if isinstance(value, (bool, float)):
+            raise ValueError(  # noqa: TRY004 - Pydantic must attach the field path.
+                "a key's frame must be authored as exact text or integers"
+            )
+        return value
+
+
 class _BakeoffMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provenance: str | None = None
-    tags: Mapping[str, tuple[Literal["fraction", "rotated", "small_glyph"], ...]] = {}
+    frame: KeyFrame | None = None
+    tags: Mapping[str, tuple[HardCaseTag, ...]] = {}
 
 
 class _ModelInput(BaseModel):
@@ -842,8 +887,24 @@ def pdf_box(
     return left, bottom, right, top
 
 
-def load_crops(path: str | Path, *, polygon_dpi: int) -> tuple[Crop, ...]:
-    """Load and render crops from a human-read gold-case directory."""
+def load_crops(path: str | Path, *, polygon_dpi: int | None = None) -> tuple[Crop, ...]:
+    """Load and render crops from a human-read gold-case directory.
+
+    **The polygons are read in the frame the key records (#835)**, so `polygon_dpi` is left out for
+    any key the scaffold wrote. It is for a key that records no frame, which is refused unless the
+    caller names one — the 25-crop pilot key of 2026-09-29 loads with `polygon_dpi=300`. A named
+    frame that differs from the one the key records is refused too. See `key_polygon_dpi`.
+
+    **A model is shown each crop at production's reader resolution (#867)**, `READER_RASTER_DPI`:
+    production renders a page at it and cuts its vision readers' crops from that render. The person
+    read the same polygon at the key's own resolution, which is the better picture for establishing
+    the truth; scoring a model on that sharper picture would score a reading production never asks
+    for. The polygon is rendered at that resolution on its own, not cut from a whole page, so its
+    edges can fall a pixel from production's; the page area and the resolution are production's.
+
+    A synthetic crop manifest carries its crops as image files, not polygons, so it has no frame and
+    `polygon_dpi` is not used for it.
+    """
 
     case_dir = Path(path)
     if case_dir.is_dir():
@@ -852,6 +913,72 @@ def load_crops(path: str | Path, *, polygon_dpi: int) -> tuple[Crop, ...]:
     # Backward-compatible synthetic manifest support for local tests and ad-hoc dry runs. The
     # issue path uses a case directory with PDFs + answer_key.json.
     return _load_crop_manifest(case_dir)
+
+
+def load_keys(paths: Sequence[str | Path], *, polygon_dpi: int | None = None) -> tuple[Crop, ...]:
+    """Every crop of several keys — one per drawing — in the order the keys are given (#867).
+
+    Each key is loaded by `load_crops`, in its own frame. **A crop id two keys share is refused**: the
+    scorecard is kept by crop id, and two crops under one id would be scored as one. A key's ids
+    carry its case id, so two keys built with the same `--case-id` collide here.
+    """
+    if not paths:
+        raise ModelBakeoffError("name at least one key")
+    crops: list[Crop] = []
+    seen: dict[str, Path] = {}
+    for path in paths:
+        for crop in load_crops(path, polygon_dpi=polygon_dpi):
+            if crop.crop_id in seen:
+                raise ModelBakeoffError(
+                    f"crop {crop.crop_id!r} is in both {seen[crop.crop_id]} and {path}. Build each "
+                    "key with its own --case-id, so every crop id is the key's own."
+                )
+            seen[crop.crop_id] = Path(path)
+            crops.append(crop)
+    return tuple(crops)
+
+
+def key_frame(case_dir: str | Path) -> KeyFrame | None:
+    """The frame a key directory records, or `None` for a key written before frames were (#835)."""
+    metadata = _load_bakeoff_metadata(Path(case_dir) / _BAKEOFF_METADATA)
+    return None if metadata is None else metadata.frame
+
+
+def key_polygon_dpi(case_dir: str | Path, *, polygon_dpi: int | None) -> int:
+    """The dpi to read a key's polygons at: the one it records, or the one its caller names.
+
+    **One rule for every loader of a key** — `load_crops`, the agent scorecard and the geometry
+    check — so none of them trusts its caller about the frame again. A key that records no frame is
+    refused unless the caller names one, and a named frame that differs from the recorded one is
+    refused outright: read at a frame it says it is not in, a key renders the wrong regions.
+    """
+    metadata = _load_bakeoff_metadata(Path(case_dir) / _BAKEOFF_METADATA)
+    return _frame_dpi(
+        None if metadata is None else metadata.frame, polygon_dpi=polygon_dpi, where=Path(case_dir)
+    )
+
+
+def _frame_dpi(recorded: KeyFrame | None, *, polygon_dpi: int | None, where: Path) -> int:
+    if polygon_dpi is not None and (
+        isinstance(polygon_dpi, bool) or not isinstance(polygon_dpi, int) or polygon_dpi <= 0
+    ):
+        raise ModelBakeoffError("polygon_dpi must be a positive integer")
+    if recorded is None:
+        if polygon_dpi is None:
+            raise ModelBakeoffError(
+                f"the key in {where} does not record the pixel frame its polygons are in, so the "
+                "crops cannot be placed on the page. A key written before #835 records none; name "
+                "its frame (`polygon_dpi`, or the script's --polygon-dpi or --key-dpi) only if you "
+                "know it, because a wrong one renders every crop from the wrong part of the page."
+            )
+        return polygon_dpi
+    if polygon_dpi is not None and polygon_dpi != recorded.polygon_dpi:
+        raise ModelBakeoffError(
+            f"the key in {where} records its polygons at {recorded.polygon_dpi} dpi, and "
+            f"{polygon_dpi} was named. Leave the frame out to use the key's own; read at "
+            f"{polygon_dpi}, every crop would come from the wrong part of the page."
+        )
+    return recorded.polygon_dpi
 
 
 def _load_crop_manifest(path: Path) -> tuple[Crop, ...]:
@@ -865,7 +992,7 @@ def _load_crop_manifest(path: Path) -> tuple[Crop, ...]:
     return tuple(_crop_from_input(item, base=base) for item in manifest.crops)
 
 
-def _load_case_directory(case_dir: Path, *, polygon_dpi: int) -> tuple[Crop, ...]:
+def _load_case_directory(case_dir: Path, *, polygon_dpi: int | None) -> tuple[Crop, ...]:
     answer_key = case_dir / _ANSWER_KEY
     try:
         case = GoldCase.model_validate(json.loads(answer_key.read_text(encoding="utf-8")))
@@ -874,6 +1001,9 @@ def _load_case_directory(case_dir: Path, *, polygon_dpi: int) -> tuple[Crop, ...
 
     metadata = _load_bakeoff_metadata(case_dir / _BAKEOFF_METADATA)
     _refuse_machine_self_verified(case, metadata)
+    frame_dpi = _frame_dpi(
+        None if metadata is None else metadata.frame, polygon_dpi=polygon_dpi, where=case_dir
+    )
 
     pdf_cache: dict[OperandSource, bytes] = {}
     crops: list[Crop] = []
@@ -900,13 +1030,14 @@ def _load_case_directory(case_dir: Path, *, polygon_dpi: int) -> tuple[Crop, ...
                     pdf,
                     page=observation.page,
                     polygon=observation.polygon,
-                    polygon_dpi=polygon_dpi,
+                    polygon_dpi=frame_dpi,
+                    output_dpi=READER_RASTER_DPI,
                 ),
                 tags=_tags_for(crop_id, index, observation.value, metadata),
                 image_format="png",
                 page=observation.page - 1,
                 pdf_box=pdf_box(
-                    pdf, page=observation.page, polygon=observation.polygon, polygon_dpi=polygon_dpi
+                    pdf, page=observation.page, polygon=observation.polygon, polygon_dpi=frame_dpi
                 ),
             )
         )

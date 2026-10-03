@@ -12,7 +12,8 @@ what the boundary exists to prevent.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+import json
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -23,7 +24,11 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.dependencies.utils import get_dependant
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from sqlalchemy import Engine, select
+from sqlalchemy.orm import Session
 
+from alembic import command
+from app.api.dependencies import get_session
 from app.auth import (
     AUTHORISATION_MARKER,
     PERMISSIONS,
@@ -38,7 +43,15 @@ from app.auth import (
     require_role,
 )
 from app.config import Settings
+from app.db.session import session_factory
 from app.main import create_app
+from app.models import OutboxEntry, Package, PackageRevision, PackageState, Project
+from app.models.evidence import ItemClassification
+from app.models.parameters import ParameterValue
+from tests.app.postgres_fixture import alembic_config
+from tests.workflow.test_stages import _publish_rulebook
+
+pytest_plugins = ("tests.app.postgres_fixture",)
 
 DATABASE_URL = "postgresql+psycopg://gv:gv@localhost:5433/gv"
 PROJECT_A = uuid4()
@@ -110,6 +123,18 @@ def test_a_reviewer_cannot_approve_a_project_they_do_not_belong_to() -> None:
     reviewer = _principal(Role.REVIEWER, projects=frozenset({PROJECT_A}))
     assert reviewer.may(Action.APPROVE_PACKAGE)
     assert not reviewer.belongs_to(PROJECT_B)
+
+
+def test_a_reviewer_enters_a_projects_values_but_does_not_run_the_project() -> None:
+    """#824, the admin's decision: the person who fills the form is usually the reviewer. Creating
+    packages, uploading drawings and setting GV's standards stay the admin's, and a rule admin, who
+    decides what the rules say, does not fill in a job's numbers."""
+    reviewer, rule_admin = _principal(Role.REVIEWER), _principal(Role.RULE_ADMIN)
+
+    assert reviewer.may(Action.ENTER_VALUES)
+    assert not reviewer.may(Action.MANAGE_PROJECT)
+    assert not reviewer.may(Action.MANAGE_COMPANY_STANDARDS)
+    assert not rule_admin.may(Action.ENTER_VALUES)
 
 
 def test_admin_is_listed_explicitly_rather_than_short_circuited() -> None:
@@ -648,3 +673,163 @@ def test_the_wired_api_is_audited_not_merely_present() -> None:
     assert any(
         m.path.startswith("/api/v1/") for m in project_routes
     ), "a route audited without its prefix is audited under a path nobody serves"
+
+
+# ---------------------------------------------------------------------------
+# A reviewer enters a project's values, through the real routes (#824)
+# ---------------------------------------------------------------------------
+
+#: Not "anant", which every other principal in this file is: the point of one test is that the
+#: stored rows name *this* person.
+REVIEWER_ID = "a reviewer"
+
+
+def _reviewer(*, projects: frozenset | None = None) -> Principal:
+    return Principal(
+        id=REVIEWER_ID,
+        roles=frozenset({Role.REVIEWER}),
+        projects=projects if projects is not None else frozenset({PROJECT_A}),
+    )
+
+
+@pytest.fixture
+def session(postgres_engine: Engine) -> Iterator[Session]:
+    config = alembic_config()
+    config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+    command.upgrade(config, "head")
+    opened = session_factory(postgres_engine)()
+    _publish_rulebook(opened)
+    opened.commit()
+    try:
+        yield opened
+    finally:
+        opened.close()
+
+
+def _calling_as(session: Session, principal: Principal) -> TestClient:
+    app = _app_with(principal)
+    app.dependency_overrides[get_session] = lambda: session
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _package(session: Session) -> str:
+    if session.get(Project, PROJECT_A) is None:
+        session.add(Project(id=PROJECT_A, name="authorisation tests"))
+        session.flush()
+    package = Package(project_id=PROJECT_A, vendor="Apex Glass & Stone")
+    session.add(package)
+    session.flush()
+    session.add(
+        PackageRevision(package_id=package.id, revision_number=1, state=PackageState.RUNNING_CHECKS)
+    )
+    session.commit()
+    return f"/api/v1/projects/{PROJECT_A}/packages/{package.id}"
+
+
+VALUES = {
+    "parameters": [{"name": "countertop_overhang", "value": '1 1/2"'}],
+    "classifications": [
+        {
+            "rule_id": "CAB-FILLER-001",
+            "name": "cabinet_type",
+            "categories": ["double_door", "sink_cabinet", "double_door"],
+        }
+    ],
+}
+
+
+def test_a_reviewer_saves_a_projects_values_and_is_named_as_who_did(session: Session) -> None:
+    """Outcome: 201, and the overhang and the cabinet kinds are stored under the reviewer's name,
+    so "who typed 1 1/2 inches?" has an answer."""
+    package = _package(session)
+
+    response = _calling_as(session, _reviewer()).post(f"{package}/measurements", json=VALUES)
+
+    assert response.status_code == 201, response.text
+    set_by = session.execute(
+        select(ParameterValue.set_by).where(ParameterValue.name == "countertop_overhang")
+    ).scalars()
+    assert list(set_by) == [REVIEWER_ID]
+    confirmed_by = set(session.execute(select(ItemClassification.confirmed_by)).scalars())
+    assert confirmed_by == {REVIEWER_ID}
+
+
+def test_a_reviewer_asks_for_the_checks(session: Session) -> None:
+    """Outcome: 202 and one queued run. Running decides nothing on its own; the reviewer still signs
+    off on every finding."""
+    package = _package(session)
+
+    response = _calling_as(session, _reviewer()).post(f"{package}/checks")
+
+    assert response.status_code == 202, response.text
+    queued = [entry.workflow for entry in session.execute(select(OutboxEntry)).scalars()]
+    assert queued == ["run_checks"]
+
+
+def test_a_reviewer_asks_the_ai_to_fill_the_form(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outcome: 200 and a stream that ends in a result. With no model configured nothing is filled,
+    which is the product working as designed, not a refusal."""
+    import app.api.measurements as endpoint
+
+    monkeypatch.setattr(endpoint, "configured_assignment_model", lambda _settings: None)
+    package = _package(session)
+
+    response = _calling_as(session, _reviewer()).post(f"{package}/measurements/propose")
+
+    assert response.status_code == 200, response.text
+    frames = [
+        json.loads(block.split("data:", 1)[1])
+        for block in response.text.split("\n\n")
+        if block.strip().startswith("data:")
+    ]
+    assert frames, response.text
+    assert frames[-1]["event"] == "result", frames[-1]
+
+
+@pytest.mark.parametrize(
+    ("who", "why"),
+    [
+        (_reviewer(projects=frozenset({PROJECT_B})), "a reviewer on another project"),
+        (_principal(Role.RULE_ADMIN), "a rule admin"),
+    ],
+    ids=["other-project", "rule-admin"],
+)
+def test_entering_values_is_still_refused_to_who_may_not(
+    session: Session, who: Principal, why: str
+) -> None:
+    """Outcome: 404 on all three routes, in the same words as absent, and nothing stored or queued."""
+    package = _package(session)
+    client = _calling_as(session, who)
+
+    statuses = [
+        client.post(f"{package}/measurements", json=VALUES).status_code,
+        client.post(f"{package}/checks").status_code,
+        client.post(f"{package}/measurements/propose").status_code,
+    ]
+
+    assert statuses == [404, 404, 404], why
+    assert list(session.execute(select(ParameterValue.id)).scalars()) == [], why
+    assert list(session.execute(select(OutboxEntry.id)).scalars()) == [], why
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (f"/api/v1/projects/{PROJECT_A}/packages", {}),
+        ("{package}/documents", {}),
+        ("/api/v1/company-settings", {"values": []}),
+    ],
+    ids=["create-package", "upload-document", "company-standard"],
+)
+def test_a_reviewer_still_cannot_create_upload_or_set_a_standard(
+    session: Session, path: str, body: dict
+) -> None:
+    """Outcome: 404 for the reviewer. **And not 404 for an admin sending the same request**, or the
+    refusal could be a missing package rather than the role, and this test would prove nothing."""
+    url = path.format(package=_package(session))
+    admin = Principal(id="an admin", roles=frozenset({Role.ADMIN}), projects=frozenset({PROJECT_A}))
+
+    assert _calling_as(session, _reviewer()).post(url, json=body).status_code == 404
+    assert _calling_as(session, admin).post(url, json=body).status_code != 404

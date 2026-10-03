@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from fractions import Fraction
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -325,14 +326,21 @@ def test_the_constraint_vocabularies_still_match_the_code(session: Session) -> N
     import importlib.util
     from pathlib import Path
 
-    path = Path(__file__).resolve().parents[2] / "alembic/versions/0027_parameter_sets.py"
-    spec = importlib.util.spec_from_file_location("migration_0027", path)
-    assert spec is not None and spec.loader is not None
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
+    def load(name: str) -> Any:
+        path = Path(__file__).resolve().parents[2] / f"alembic/versions/{name}.py"
+        spec = importlib.util.spec_from_file_location(f"migration_{name}", path)
+        assert spec is not None and spec.loader is not None
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        return migration
 
-    assert set(migration._LAYERS) == {layer.value for layer in ParameterLayer}
-    assert set(migration._PROVENANCES) == {p.value for p in Provenance}
+    created, widened = load("0027_parameter_sets"), load("0055_setting_source_reference")
+
+    assert set(created._LAYERS) == {layer.value for layer in ParameterLayer}
+    # 0055 (#827) replaced the provenance constraint to admit `Fabricator`: what it replaced must be
+    # what 0027 wrote, and what it wrote must be what the code now holds.
+    assert set(widened._BEFORE) == set(created._PROVENANCES)
+    assert set(widened._AFTER) == {p.value for p in Provenance}
 
 
 # ---------------------------------------------------------------------------

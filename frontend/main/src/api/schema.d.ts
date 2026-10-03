@@ -650,6 +650,9 @@ export interface paths {
          *
          *     Nothing is run here. A submission records values; asking for the checks is a separate call, so a
          *     reviewer can correct a typo without a verdict being computed from the first attempt.
+         *
+         *     A setting sent with a `citation` is held to the passage it names before anything is stored, and
+         *     a number that differs from the passage's stores nothing at all (#866).
          */
         post: operations["enter_measurements_api_v1_projects__project_id__packages__package_id__measurements_post"];
         delete?: never;
@@ -685,6 +688,32 @@ export interface paths {
          *     The database work is done before the stream opens, so the session is not held across it.
          */
         post: operations["propose_measurements_api_v1_projects__project_id__packages__package_id__measurements_propose_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/parameter-proposals/{proposal_id}/crop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the passage in the architect's drawing that states a setting
+         * @description The picture a reviewer reads a setting off before typing it, while the form offers it.
+         *
+         *     **The pixels, never the number** (#866). The reviewer must read the value themselves, so this
+         *     returns a stored crop of the number's runs and nothing parsed from them. Only a pointer
+         *     `GET .../required-inputs` would offer is served, so a pointer withdrawn since, because its
+         *     drawing turned out to be the vendor's, shows nothing. The digest is checked before bytes leave,
+         *     as for every other crop.
+         */
+        get: operations["setting_passage_crop_api_v1_projects__project_id__packages__package_id__parameter_proposals__proposal_id__crop_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2516,14 +2545,26 @@ export interface components {
          *     `GET .../required-inputs` reported rather than choosing.
          */
         ParameterEntry: {
+            /**
+             * Citation
+             * @description The passage this value was typed from (#866): the `proposal_id` of the setting's `found` pointer in required-inputs. The server reads the passage's number and refuses a value that differs; on a match it records the source and the reference itself, so neither is sent with a citation.
+             */
+            citation?: string | null;
             /** Name */
             name: string;
+            /**
+             * Reference
+             * @description Where in that source, in the reviewer's words: "Architect A-501, section 3".
+             */
+            reference?: string | null;
             /**
              * Scope
              * @default project
              * @enum {string}
              */
             scope: "project" | "run";
+            /** @description Where the value came from (#827), one of the setting's `sources` in required-inputs. May be left out only when the setting allows a single source. */
+            source?: components["schemas"]["Provenance"] | null;
             /**
              * Value
              * @description The value as typed, carrying its unit: 24", 610 mm.
@@ -2539,12 +2580,18 @@ export interface components {
             blocked: boolean;
             /** Declared Default */
             declared_default: string | null;
+            found?: components["schemas"]["SettingPointerOut"] | null;
             /** Name */
             name: string;
             /** Rule Ids */
             rule_ids: string[];
             /** Scope */
             scope: string;
+            /**
+             * Sources
+             * @default []
+             */
+            sources: components["schemas"]["SourceOut"][];
         };
         /**
          * PresignedUpload
@@ -2640,6 +2687,21 @@ export interface components {
             /** Value */
             value: string;
         };
+        /**
+         * Provenance
+         * @description Where a parameter's value came from.
+         *
+         *     A controlled vocabulary rather than a free string, for the reason ADR-0007 gave for
+         *     `ProductType`: a typo'd or improvised source publishes cleanly and then misleads a reviewer
+         *     about the authority behind a number. Provenance is the field a reviewer reads when deciding
+         *     whether to trust a value, so it is the last one that should be free text.
+         *
+         *     These are the three sources #64 names. `docs/V1_RESEARCH_AND_PLAN.md` §F5 records the
+         *     client's own phrasing in six variants; mapping the remaining three onto these is a client
+         *     vocabulary question, raised on the issue rather than guessed at here.
+         * @enum {string}
+         */
+        Provenance: "G.C / Client" | "Company standard" | "Measured" | "Fabricator";
         /**
          * PublicationOut
          * @description What was published, by whom, and on what basis.
@@ -3097,6 +3159,28 @@ export interface components {
             version: string;
         };
         /**
+         * SettingPointerOut
+         * @description Where the architect's drawing states a setting: a page and a crop, **never the number** (#866).
+         *
+         *     The reviewer types the value they see without being shown the one the app found, and the server
+         *     saves it only if the two match (step 3.3 of #798). So nothing here may carry the number: no
+         *     value, no text from the drawing, and no id of the runs, which `GET .../candidates` would turn
+         *     back into a value. `tests/api/test_setting_citations.py` holds this class to that list.
+         */
+        SettingPointerOut: {
+            /** Document Kind */
+            document_kind: string;
+            /** Has Crop */
+            has_crop: boolean;
+            /** Page Index */
+            page_index: number;
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
+        };
+        /**
          * Severity
          * @description How a finding is presented to the reviewer.
          *
@@ -3106,6 +3190,16 @@ export interface components {
          * @enum {string}
          */
         Severity: "FLAG" | "CRITICAL" | "MAJOR" | "MINOR" | "ADVISORY";
+        /**
+         * SourceOut
+         * @description One source a setting may come from, and what choosing it means (#827).
+         */
+        SourceOut: {
+            /** Guidance */
+            guidance: string;
+            /** Value */
+            value: string;
+        };
         /**
          * StoredList
          * @description One many-valued input as stored, in layout order.
@@ -3123,12 +3217,18 @@ export interface components {
         StoredValue: {
             /** As Typed */
             as_typed: string;
+            /** Citation */
+            citation?: string | null;
             /** Denominator */
             denominator: string;
             /** Name */
             name: string;
             /** Numerator */
             numerator: string;
+            /** Reference */
+            reference?: string | null;
+            /** Source */
+            source?: string | null;
             /** Unit */
             unit: string;
         };
@@ -4187,6 +4287,39 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["AssignmentEvent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    setting_passage_crop_api_v1_projects__project_id__packages__package_id__parameter_proposals__proposal_id__crop_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The integrity-checked crop of the passage a setting was found in. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
                 };
             };
             /** @description Validation Error */

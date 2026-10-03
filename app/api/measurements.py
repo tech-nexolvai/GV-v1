@@ -32,36 +32,53 @@ that merely accepts a drawing cannot reach the code that reads it. So the row an
 together in one transaction, and something outside this process does the work —
 `scripts/drain_outbox.py` today, a registered worker when Phase 6 lands.
 
+## A setting typed from the passage the app found, without seeing its number (#866)
+
+Where the architect's drawing states a setting, `GET .../required-inputs` points at the passage: a
+page and a crop, never the number (`SettingPointerOut`). The reviewer types what they see and sends
+the pointer back as the entry's `citation`. The server holds the typed number to the passage's
+(`workflow.parameter_citations.confirm_typed_value`, which re-runs #849's guard first) and refuses
+the whole request on any difference, so nothing is stored. A match is stored as `G.C / Client` with
+a reference naming the page and the document, and the passage is kept beside the stored value in
+`parameter_value_citations`. An entry with no citation is stored exactly as before.
+
 Source: `CLIENT_FACTS` Q7 · Design: `docs/DESIGN_PLATFORM.md` §4.2 ·
-Verification: `tests/api/test_measurements.py`
+Verification: `tests/api/test_measurements.py`, `tests/api/test_setting_citations.py`
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from fractions import Fraction
 from typing import Annotated, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_session
+from app.api.confirmations import _candidate_crop_artifact, _verified_crop_content
+from app.api.dependencies import get_artifact_store, get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Package, PackageRevision, PackageState
 from app.models.document import (
+    Document,
     DocumentVersion,
     PackageRevisionDocument,
     Page,
 )
 from app.models.evidence import (
     CanonicalObservation,
+    EvidenceArtifact,
     EvidenceSupportingCandidate,
     ObservationCandidate,
 )
+from app.models.package_text import TextPhrase
+from app.models.parameter_proposals import ParameterProposal
+from app.models.parameter_value_citations import ParameterValueCitation, ParameterValueCitationRun
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import ParameterValue as StoredParameterValue
 from app.models.parameters import from_rows, to_rows
@@ -72,6 +89,7 @@ from app.schemas.measurements import (
     ConfirmedReadingOut,
     DiscriminatorOut,
     LayoutProposalOut,
+    ParameterEntry,
     ParameterOut,
     ProposedFieldOut,
     ProposedMeasurementsOut,
@@ -80,13 +98,17 @@ from app.schemas.measurements import (
     RequiredInputsOut,
     ReviewerEntry,
     ReviewerEntryOut,
+    SettingPointerOut,
+    SourceOut,
     StoredList,
     StoredValue,
 )
 from app.verdicts.rulebook import snapshot_store
+from rules.parameter_sources import SOURCE_GUIDANCE, allowed_sources
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
 from rules.required_inputs import allowed_categories_for, required_inputs
 from rules.schema import Quantity, Rule
+from storage.store import ArtifactStore
 from units.imperial import format_inches
 from units.measurement import Measurement
 from units.normalise import UnitNormalisationError, normalise_to_inches
@@ -104,6 +126,13 @@ from workflow.layout_proposals import (
 )
 from workflow.measurements import LIST_MARKER
 from workflow.outbox import enqueue
+from workflow.parameter_citations import (
+    CitationRefusal,
+    CitationRefusalReason,
+    check_proposal,
+    confirm_typed_value,
+    live_parameter_proposals,
+)
 from workflow.propose import (
     MAX_ASSIGNMENT_READINGS,
     assignment_context,
@@ -168,6 +197,232 @@ def _revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRe
     return revision
 
 
+def _source(name: str, given: Provenance | None) -> Provenance:
+    """The source a setting is recorded with, or a 422 saying what the setting takes (#827).
+
+    **Refused rather than defaulted.** A setting the table does not know has no honest source, so
+    recording it as `Measured` — what every setting got before #827 — would be a guess dressed as a
+    fact. A setting that allows one source needs no answer; one that allows several needs the
+    reviewer's, because which of them is true is a fact about this job the system cannot know.
+    """
+    allowed = allowed_sources(name)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{name!r} is not a setting any published check uses, so it has no source to "
+                "record. Check the name against the form."
+            ),
+        )
+    choices = " or ".join(f"{source.value!r}" for source in allowed)
+    if given is None:
+        if len(allowed) == 1:
+            return allowed[0]
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Say where {name!r} came from: {choices}.",
+        )
+    if given not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{name!r} cannot come from {given.value!r}; it takes {choices}. "
+                f"{' '.join(SOURCE_GUIDANCE[source] for source in allowed)}"
+            ),
+        )
+    return given
+
+
+@dataclass(frozen=True, slots=True)
+class _CitedPassage:
+    """The passage a stored value was typed from and matched, as `parameter_value_citations`
+    records it (#866)."""
+
+    proposal_id: UUID
+    document_version_id: UUID
+    document_sha256: str
+    page_id: UUID
+    candidate_ids: tuple[UUID, ...]
+
+
+def _passage_page(session: Session, phrase_id: UUID) -> tuple[Page, DocumentVersion, Document]:
+    """The page a passage is on, the document version it belongs to, and that version's upload.
+
+    A phrase holds runs from one page only, so its page is the passage's.
+    """
+    phrase = session.get(TextPhrase, phrase_id)
+    page = None if phrase is None else session.get(Page, phrase.page_id)
+    version = None if page is None else session.get(DocumentVersion, page.document_version_id)
+    document = None if version is None else session.get(Document, version.document_id)
+    if page is None or version is None or document is None:  # pragma: no cover - foreign keys
+        raise LookupError(f"passage {phrase_id} has no page, version or document")
+    return page, version, document
+
+
+def _cited(
+    session: Session, revision: PackageRevision, entry: ParameterEntry, typed: Measurement
+) -> tuple[tuple[Provenance, str], _CitedPassage]:
+    """A setting typed from the passage the form showed, held to it — or a 422 saying why (#866).
+
+    **Enforced here, not trusted to the form.** A hand-crafted request can cite any pointer id, so
+    `confirm_typed_value` checks no newer pointer has replaced it, puts it through #849's guard
+    again (the architect's confirmed drawing, no markup, one inch number), and compares the typed
+    number with the passage's exactly. Any refusal stops the whole request before anything
+    is stored. No sentence here states the passage's number.
+
+    The source is the one the passage gives and the reference is written from the passage itself, so
+    a request that sends either differently is refused rather than half-believed.
+    """
+    assert entry.citation is not None
+    if entry.reference is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{entry.name}: a value typed from the passage the form found takes its reference "
+                "from that passage. Leave the reference out, or enter the value without the "
+                "citation and say where it came from."
+            ),
+        )
+    checked = confirm_typed_value(
+        session,
+        package_revision_id=revision.id,
+        proposal_id=entry.citation,
+        setting=entry.name,
+        typed=typed,
+    )
+    if isinstance(checked, CitationRefusal):
+        if checked.reason is CitationRefusalReason.MISMATCH:
+            proposal = session.get(ParameterProposal, entry.citation)
+            assert proposal is not None  # a mismatch is reached only after the pointer was found
+            page, _, _ = _passage_page(session, proposal.phrase_id)
+            detail = (
+                f"{entry.name}: the number typed is not the one in the architect's drawing on page "
+                f"{page.index + 1}, so nothing was saved. Look at the passage again and type the "
+                "number exactly as it is written."
+            )
+        else:
+            detail = (
+                f"{entry.name} cannot be saved from that passage: {checked.detail}. "
+                "Nothing was saved."
+            )
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+    if entry.source is not None and entry.source is not checked.claimed_source:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{entry.name}: a value typed from the architect's drawing comes from "
+                f"{checked.claimed_source.value!r}, not {entry.source.value!r}."
+            ),
+        )
+    page, version, document = _passage_page(session, checked.phrase_id)
+    reference = (
+        f"Architect's drawing, page {page.index + 1} of the {document.kind} document "
+        f"{version.sha256[:12]}: typed without being shown the number, and it matched"
+    )
+    return (_source(entry.name, checked.claimed_source), reference), _CitedPassage(
+        proposal_id=entry.citation,
+        document_version_id=version.id,
+        document_sha256=version.sha256,
+        page_id=page.id,
+        candidate_ids=checked.candidate_ids,
+    )
+
+
+def _record_citations(
+    session: Session,
+    rows: list[StoredParameterValue],
+    *,
+    fresh: Mapping[str, _CitedPassage],
+    carried_from: Mapping[str, UUID],
+) -> None:
+    """Store each new value's passage beside it, and copy an earlier value's with it when carried.
+
+    `carried_from` names the earlier row each carried value was copied from (#799). Its citation is
+    copied too, so the version the checks read still says where the number came from.
+    """
+    earlier: dict[UUID, _CitedPassage] = {}
+    if carried_from:
+        for citation in session.scalars(
+            select(ParameterValueCitation).where(
+                ParameterValueCitation.parameter_value_id.in_(list(carried_from.values()))
+            )
+        ):
+            earlier[citation.parameter_value_id] = _CitedPassage(
+                proposal_id=citation.parameter_proposal_id,
+                document_version_id=citation.document_version_id,
+                document_sha256=citation.document_sha256,
+                page_id=citation.page_id,
+                candidate_ids=tuple(
+                    session.scalars(
+                        select(ParameterValueCitationRun.candidate_id)
+                        .where(ParameterValueCitationRun.citation_id == citation.id)
+                        .order_by(ParameterValueCitationRun.position)
+                    )
+                ),
+            )
+    pending: list[tuple[ParameterValueCitation, tuple[UUID, ...]]] = []
+    for row in rows:
+        if row.name in fresh:
+            passage = fresh[row.name]
+        elif row.name in carried_from and carried_from[row.name] in earlier:
+            passage = earlier[carried_from[row.name]]
+        else:
+            continue
+        citation = ParameterValueCitation(
+            parameter_value_id=row.id,
+            parameter_proposal_id=passage.proposal_id,
+            document_version_id=passage.document_version_id,
+            document_sha256=passage.document_sha256,
+            page_id=passage.page_id,
+        )
+        pending.append((citation, passage.candidate_ids))
+    if not pending:
+        return
+    # No relationship ties these tables to `parameter_values`, so the unit of work does not order
+    # their inserts by foreign key: each row is flushed before the rows that point at it.
+    session.flush()
+    session.add_all(citation for citation, _ in pending)
+    session.flush()
+    session.add_all(
+        ParameterValueCitationRun(citation_id=citation.id, candidate_id=candidate_id, position=at)
+        for citation, candidate_ids in pending
+        for at, candidate_id in enumerate(candidate_ids)
+    )
+
+
+def _passage_crop(
+    session: Session, revision: PackageRevision, proposal: ParameterProposal
+) -> EvidenceArtifact | None:
+    """The stored crop of the first of the number's runs that has one, or `None`.
+
+    The number's runs only, as `parameter_proposals` stores the span "so a reviewer is shown the
+    number's own runs, not the whole line"; each crop shows a margin of the page around its run.
+    """
+    citation = check_proposal(session, proposal)
+    if isinstance(citation, CitationRefusal):
+        return None
+    for candidate_id in citation.candidate_ids:
+        artifact = _candidate_crop_artifact(session, revision, candidate_id)
+        if artifact is not None:
+            return artifact
+    return None
+
+
+def _setting_pointers(session: Session, revision: PackageRevision) -> dict[str, SettingPointerOut]:
+    """Each setting whose newest pointer passes the guard now, as a page and a crop: never the
+    number (#866)."""
+    pointers: dict[str, SettingPointerOut] = {}
+    for setting, proposal in live_parameter_proposals(session, revision.id).items():
+        page, _, document = _passage_page(session, proposal.phrase_id)
+        pointers[setting] = SettingPointerOut(
+            proposal_id=proposal.id,
+            page_index=page.index,
+            document_kind=document.kind,
+            has_crop=_passage_crop(session, revision, proposal) is not None,
+        )
+    return pointers
+
+
 def _store(
     session: Session,
     *,
@@ -179,6 +434,8 @@ def _store(
     carry_forward: bool,
     package_revision_id: UUID | None = None,
     provenance: Provenance = Provenance.MEASURED,
+    sources: Mapping[str, tuple[Provenance, str | None]] | None = None,
+    citations: Mapping[str, _CitedPassage] | None = None,
 ) -> tuple[int | None, tuple[StoredValue, ...]]:
     """Persist one layer's values, reusing an identical set rather than minting a second.
 
@@ -202,6 +459,9 @@ def _store(
     that lands within the same recorded instant, which a fast client retry can produce. Saying so
     plainly because a comment claiming it deduplicates ordinary re-submissions would be false — they
     are supposed to become new versions.
+
+    **`citations` are the passages values were typed from and matched (#866)**, stored beside them.
+    A carried value takes its earlier citation with it.
     """
     if not values:
         return None, ()
@@ -217,6 +477,7 @@ def _store(
         + 1
     )
     carried: dict[str, ParameterValue] = {}
+    carried_from: dict[str, UUID] = {}
     if carry_forward:
         previous = session.execute(
             select(StoredParameterSet)
@@ -246,7 +507,10 @@ def _store(
                 for name, value in from_rows(previous, rows).parameters.items()
                 if name not in values
             }
+            carried_from = {row.name: row.id for row in rows if row.name in carried}
 
+    chosen = dict(sources or {})
+    cited = dict(citations or {})
     parameters = ParameterSet(
         # `None` for the company layer (#812), which belongs to no project.
         project_id=None if project_id is None else str(project_id),
@@ -257,13 +521,16 @@ def _store(
             **{
                 name: ParameterValue(
                     value=Quantity(value=measurement.exact, unit=measurement.unit),
-                    # MEASURED: a person measured or read it — or COMPANY_STANDARD for the company
-                    # layer (#812). Every member of `Provenance` is a person's or the rulebook's;
-                    # none is one a model could claim, which is what keeps a model's number out of
-                    # here — not a check in this module.
-                    provenance=provenance,
+                    # The source the reviewer named for a setting (#827), checked against what the
+                    # setting allows before it reached here; otherwise `provenance` — MEASURED for a
+                    # dimension a person read, COMPANY_STANDARD for the company layer (#812). Every
+                    # member of `Provenance` is a person's or the rulebook's; none is one a model could
+                    # claim, which is what keeps a model's number out of here — not a check in this
+                    # module.
+                    provenance=chosen.get(name, (provenance, None))[0],
                     set_by=actor,
                     set_at=now,
+                    reference=chosen.get(name, (provenance, None))[1],
                 )
                 for name, measurement in values.items()
             },
@@ -280,6 +547,7 @@ def _store(
         session.add(stored)
         for row in rows:
             session.add(row)
+        _record_citations(session, rows, fresh=cited, carried_from=carried_from)
         version = next_version
 
     return version, tuple(
@@ -289,6 +557,9 @@ def _store(
             denominator=str(measurement.exact.denominator),
             unit=measurement.unit.value,
             as_typed=typed[name],
+            source=chosen[name][0].value if name in chosen else None,
+            reference=chosen[name][1] if name in chosen else None,
+            citation=cited[name].proposal_id if name in cited else None,
         )
         for name, measurement in sorted(values.items())
     )
@@ -421,6 +692,7 @@ def read_required_inputs(
     rules = _published_rules(session)
     needs = required_inputs(rules)
     layout_proposals = _stored_layout_proposal_out(session, revision)
+    found = _setting_pointers(session, revision)
 
     # The Confirm screen is the human gate.  Once a reviewer has confirmed both what the drawing
     # says and what it means, asking them to type that exact value again is pure transcription risk.
@@ -500,6 +772,12 @@ def read_required_inputs(
                 rule_ids=parameter.rule_ids,
                 declared_default=parameter.declared_default,
                 blocked=parameter.blocked,
+                sources=tuple(
+                    SourceOut(value=source.value, guidance=SOURCE_GUIDANCE[source])
+                    for source in allowed_sources(parameter.name)
+                ),
+                # A blocked setting is one nobody may supply, so it is offered no passage either.
+                found=None if parameter.blocked else found.get(parameter.name),
             )
             for parameter in needs.parameters
         ),
@@ -518,6 +796,59 @@ def read_required_inputs(
     )
 
 
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/parameter-proposals/{proposal_id}/crop",
+    response_class=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "The integrity-checked crop of the passage a setting was found in.",
+        }
+    },
+    summary="View the passage in the architect's drawing that states a setting",
+)
+def setting_passage_crop(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+    project_id: UUID,
+    package_id: UUID,
+    proposal_id: UUID,
+) -> Response:
+    """The picture a reviewer reads a setting off before typing it, while the form offers it.
+
+    **The pixels, never the number** (#866). The reviewer must read the value themselves, so this
+    returns a stored crop of the number's runs and nothing parsed from them. Only a pointer
+    `GET .../required-inputs` would offer is served, so a pointer withdrawn since, because its
+    drawing turned out to be the vendor's, shows nothing. The digest is checked before bytes leave,
+    as for every other crop.
+    """
+    revision = _revision(session, project_id, package_id)
+    proposal = next(
+        (
+            row
+            for row in live_parameter_proposals(session, revision.id).values()
+            if row.id == proposal_id
+        ),
+        None,
+    )
+    if proposal is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no passage stating a setting is pointed to under that id in this package",
+        )
+    artifact = _passage_crop(session, revision, proposal)
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no crop is stored for this passage; read it on the page instead",
+        )
+    content = _verified_crop_content(store, artifact)
+    return Response(
+        content=content, media_type=artifact.media_type, headers={"Cache-Control": "no-store"}
+    )
+
+
 @router.post(
     "/projects/{project_id}/packages/{package_id}/measurements",
     response_model=ReviewerEntryOut,
@@ -526,7 +857,7 @@ def read_required_inputs(
 )
 def enter_measurements(
     principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _: Annotated[Principal, Depends(require_action(Action.ENTER_VALUES))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
@@ -539,6 +870,9 @@ def enter_measurements(
 
     Nothing is run here. A submission records values; asking for the checks is a separate call, so a
     reviewer can correct a typo without a verdict being computed from the first attempt.
+
+    A setting sent with a `citation` is held to the passage it names before anything is stored, and
+    a number that differs from the passage's stores nothing at all (#866).
     """
     revision = _revision(session, project_id, package_id)
 
@@ -549,14 +883,33 @@ def enter_measurements(
     project_typed: dict[str, str] = {}
     run_values: dict[str, Measurement] = {}
     run_typed: dict[str, str] = {}
+    project_sources: dict[str, tuple[Provenance, str | None]] = {}
+    run_sources: dict[str, tuple[Provenance, str | None]] = {}
+    project_citations: dict[str, _CitedPassage] = {}
+    run_citations: dict[str, _CitedPassage] = {}
     for entry in body.parameters:
         parsed = _parse(entry.value, field=entry.name)
+        # A value typed from a passage is held to it before anything is stored, and a mismatch
+        # refuses the whole request (#866). An entry with no citation is recorded as it always was.
+        source: tuple[Provenance, str | None]
+        citation: _CitedPassage | None = None
+        if entry.citation is None:
+            source = (_source(entry.name, entry.source), entry.reference)
+        else:
+            source, citation = _cited(session, revision, entry, parsed)
         if entry.scope == "run":
             run_values[entry.name] = parsed
             run_typed[entry.name] = entry.value
+            run_sources[entry.name] = source
         else:
             project_values[entry.name] = parsed
             project_typed[entry.name] = entry.value
+            project_sources[entry.name] = source
+        # A setting sent twice keeps its last entry, as it always has, and only that entry's passage.
+        citations = run_citations if entry.scope == "run" else project_citations
+        citations.pop(entry.name, None)
+        if citation is not None:
+            citations[entry.name] = citation
 
     # Keyed `rule_id:name`, because two rules may each declare an input called `width` and they are
     # not the same reading. A many-valued input becomes one row per measurement, `#0` upward, in the
@@ -624,6 +977,8 @@ def enter_measurements(
         typed=project_typed,
         actor=principal.id,
         carry_forward=True,
+        sources=project_sources,
+        citations=project_citations,
     )
     # **Run parameters and measurements share one stored set.** `rules/parameters.py` refuses two sets
     # in one layer, so they cannot be stored separately — and they belong together anyway, being the
@@ -640,6 +995,8 @@ def enter_measurements(
         # package's reviewer typed, never another package's.
         carry_forward=True,
         package_revision_id=revision.id,
+        sources=run_sources,
+        citations=run_citations,
     )
     stored_measurements = tuple(v for v in stored_run if v.name in measurement_keys)
     stored_parameters = (
@@ -726,7 +1083,7 @@ def _check_discriminators(session: Session, stated: dict[str, str]) -> None:
 )
 def request_checks(
     principal: Annotated[Principal, Depends(require_project_access)],
-    _action: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _action: Annotated[Principal, Depends(require_action(Action.ENTER_VALUES))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
@@ -841,7 +1198,7 @@ def _phase_event(name: str, detail: str, *, attempt: int = 1) -> AssignmentEvent
 def propose_measurements(
     request: Request,
     _access: Annotated[Principal, Depends(require_project_access)],
-    _action: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _action: Annotated[Principal, Depends(require_action(Action.ENTER_VALUES))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,

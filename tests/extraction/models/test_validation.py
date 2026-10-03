@@ -1,4 +1,4 @@
-"""Fail-closed payload validation tests for issue #250."""
+"""Fail-closed payload validation tests for issues #250, #834 and #865."""
 
 from __future__ import annotations
 
@@ -8,14 +8,21 @@ import pytest
 
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
+from extraction.glyph_bands import FractionLayout
 from extraction.models.validation import (
+    DIGITS_NOT_A_NUMBER,
+    DIGITS_WRONG_COUNT,
     STACKED_FRACTION_REASON,
+    STACKED_LAYOUT_REASON,
     CandidateContext,
     CoordinateMode,
     CropSize,
     ValidationRejection,
+    stacked_layout_refusal,
+    validate_digits_payload,
     validate_payload,
 )
+from tests.extraction.test_glyph_bands import FRACTION, THIRTY_NINE_AND_A_HALF, _found, _shifted
 from units.measurement import Unit
 
 
@@ -57,6 +64,7 @@ def _validate(
     # Defaulted in this helper only, so the tests of everything else stay about everything else.
     # `validate_payload` itself has no default — see the test that pins it.
     stacked_label: bool = False,
+    stacked_layouts: tuple[FractionLayout, ...] = (),
 ) -> ObservationCandidate | ValidationRejection:
     return validate_payload(
         payload,
@@ -65,6 +73,7 @@ def _validate(
         coordinate_mode=coordinate_mode,
         recorder=recorder,
         stacked_label=stacked_label,
+        stacked_layouts=stacked_layouts,
     )
 
 
@@ -470,6 +479,148 @@ def test_every_caller_must_say_whether_its_crop_is_stacked() -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# A reading the drawing's layout contradicts (#834)
+# ---------------------------------------------------------------------------
+
+#: The layouts the bar detector gives the synthetic `3/4"` and `39 1/2"` of the detector's own tests:
+#: no whole number and one over one, and two whole-number characters and one over one.
+THREE_QUARTERS = _found(FRACTION)
+THIRTY_NINE_AND_A_HALF_LAYOUT = _found(THIRTY_NINE_AND_A_HALF)
+
+
+def _stacked_reading(reading: str, layouts: tuple[FractionLayout, ...]) -> object:
+    recorder = RecordingRejections()
+    outcome = _validate(
+        {**_valid_payload(), "reading": reading, "unit_guess": "in"},
+        recorder=recorder,
+        stacked_label=True,
+        stacked_layouts=layouts,
+    )
+    assert recorder.items == ([outcome] if isinstance(outcome, ValidationRejection) else [])
+    return outcome
+
+
+@pytest.mark.parametrize(
+    ("reading", "layouts"),
+    [
+        # **The false PASS.** Two readers of different vendors agreed on this for a `3/4"` (#726).
+        ('3 3/4"', THREE_QUARTERS),
+        # The other way round: a digit of the whole number dropped.
+        ('9 1/2"', THIRTY_NINE_AND_A_HALF_LAYOUT),
+        ('3/4"', THIRTY_NINE_AND_A_HALF_LAYOUT),
+        # The numerator run into the whole number, and the fraction absorbed into it (#541).
+        ('391/2"', THIRTY_NINE_AND_A_HALF_LAYOUT),
+        ("392", THIRTY_NINE_AND_A_HALF_LAYOUT),
+        # A millimetre number the label does not have.
+        ("991 [39 1/2]", THIRTY_NINE_AND_A_HALF_LAYOUT),
+    ],
+)
+def test_a_reading_whose_digit_counts_the_layout_contradicts_is_refused(
+    reading: str, layouts: tuple[FractionLayout, ...]
+) -> None:
+    """**The false-PASS guard (#834).** The string cannot show that `3 3/4"` is wrong; the drawing
+    can — the label has no whole number. Refused under its own reason, before any lane sees it, and
+    recorded."""
+    outcome = _stacked_reading(reading, layouts)
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == STACKED_LAYOUT_REASON == "reading_contradicts_stacked_layout"
+    assert stacked_layout_refusal(reading, layouts) == outcome.errors[0]
+
+
+@pytest.mark.parametrize(
+    ("reading", "layouts"),
+    [
+        ('39 1/2"', THIRTY_NINE_AND_A_HALF_LAYOUT),
+        ('39-1/2"', THIRTY_NINE_AND_A_HALF_LAYOUT),  # the trade's hyphen, read as the space
+        ("39 1/2", THIRTY_NINE_AND_A_HALF_LAYOUT),  # the inch mark is not a digit
+        ('3/4"', THREE_QUARTERS),
+    ],
+)
+def test_a_reading_that_matches_its_layout_still_goes_to_a_reviewer(
+    reading: str, layouts: tuple[FractionLayout, ...]
+) -> None:
+    """Matching the layout clears this check only. A stacked fraction always goes to a reviewer
+    (#726), so the reading is refused as it was before, under the stacked-fraction reason."""
+    assert stacked_layout_refusal(reading, layouts) is None
+
+    outcome = _stacked_reading(reading, layouts)
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == STACKED_FRACTION_REASON
+
+
+def test_the_check_counts_and_does_not_read() -> None:
+    """What it cannot do, pinned so nobody claims otherwise: the right count with a wrong digit
+    passes. `3/8"` for a `3/4"` is still refused — by the stacked-fraction rule, not this one."""
+    assert stacked_layout_refusal('3/8"', THREE_QUARTERS) is None
+
+
+def test_with_two_stacked_labels_in_the_crop_a_reading_may_match_either() -> None:
+    both = THREE_QUARTERS + THIRTY_NINE_AND_A_HALF_LAYOUT
+
+    assert stacked_layout_refusal('3/4"', both) is None
+    assert stacked_layout_refusal('39 1/2"', both) is None
+    refusal = stacked_layout_refusal('3 3/4"', both)
+    assert refusal is not None and "2 stacked labels" in refusal
+
+
+def test_with_no_layout_there_is_nothing_to_check_against() -> None:
+    """A crop with no stacked label, or only one set in text, which has no paths to count."""
+    assert stacked_layout_refusal('3 3/4"', ()) is None
+    outcome = _stacked_reading('3 3/4"', ())
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == STACKED_FRACTION_REASON
+
+
+def test_a_reading_that_is_not_a_dimension_keeps_its_reason_beside_a_layout() -> None:
+    outcome = _validate(
+        {**_valid_payload(), "reading": "GFI", "unit_guess": None},
+        recorder=RecordingRejections(),
+        stacked_label=True,
+        stacked_layouts=THREE_QUARTERS,
+    )
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == "reading_not_a_dimension"
+
+
+def test_layouts_on_a_crop_said_to_show_no_stacked_label_are_a_contradiction() -> None:
+    with pytest.raises(ValueError, match="stacked_label must be True"):
+        _validate(
+            _valid_payload(),
+            recorder=RecordingRejections(),
+            stacked_label=False,
+            stacked_layouts=THREE_QUARTERS,
+        )
+
+
+def test_every_caller_must_state_the_layouts() -> None:
+    """**No default**, for the reason `stacked_label` has none: a guard nobody hands its input to
+    never runs."""
+    with pytest.raises(TypeError, match="stacked_layouts"):
+        validate_payload(  # type: ignore[call-arg]
+            _valid_payload(),
+            context=_context(),
+            crop_size=CropSize(100, 80),
+            coordinate_mode=CoordinateMode.PIXELS,
+            recorder=RecordingRejections(),
+            stacked_label=True,
+        )
+
+
+def test_the_layouts_used_here_are_the_ones_the_detector_draws() -> None:
+    """The guard is only as good as the counts, so the fixtures are pinned: `3/4"` has no whole
+    number, `39 1/2"` two digits of one, and a layout moved along the sheet is laid out the same."""
+    (quarters,), (half,) = THREE_QUARTERS, THIRTY_NINE_AND_A_HALF_LAYOUT
+    (moved,) = _found(_shifted(THIRTY_NINE_AND_A_HALF, "200"))
+
+    assert (len(quarters.whole), len(quarters.numerator), len(quarters.denominator)) == (0, 1, 1)
+    assert (len(half.whole), len(half.numerator), len(half.denominator)) == (2, 1, 1)
+    assert len(moved.whole) == len(half.whole)
+
+
 def test_every_tool_schema_property_tells_the_model_the_contract() -> None:
     """**Input: the generated Bedrock tool schema. Outcome: every property is described.**
 
@@ -549,3 +700,84 @@ def test_a_dual_token_cannot_carry_a_bare_fraction_past_the_guard() -> None:
 
     assert isinstance(outcome, ValidationRejection)
     assert [r.reason for r in recorder.items] == ["reading_not_a_dimension"]
+
+
+# ---------------------------------------------------------------------------
+# The digits request kind (#865): one piece of a stacked label, read as its digits
+# ---------------------------------------------------------------------------
+
+
+def _digits(payload: object, *, count: int, recorder: RecordingRejections) -> object:
+    return validate_digits_payload(
+        payload, context=_context(), digit_count=count, recorder=recorder
+    )
+
+
+@pytest.mark.parametrize(("digits", "count"), [("28", 2), ("3", 1), ("16", 2), ("101", 3)])
+def test_digits_as_many_as_the_drawing_has_are_the_answer(digits: str, count: int) -> None:
+    """The answer is the digits as written — a string, never turned into a number here."""
+    recorder = RecordingRejections()
+
+    assert _digits({"digits": digits}, count=count, recorder=recorder) == digits
+    assert recorder.items == []
+
+
+@pytest.mark.parametrize(
+    ("digits", "count"),
+    [
+        # A numerator answered with a digit the drawing does not have, and a whole number short of one.
+        ("33", 1),
+        ("8", 2),
+        ("283", 2),
+    ],
+)
+def test_digits_of_another_count_than_the_drawing_has_are_refused(digits: str, count: int) -> None:
+    """**The count is the drawing's.** A reading that is right in every other way but has a digit
+    more or fewer than the piece has characters is refused, and recorded with its reason."""
+    recorder = RecordingRejections()
+
+    outcome = _digits({"digits": digits}, count=count, recorder=recorder)
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == DIGITS_WRONG_COUNT
+    assert recorder.items == [outcome]
+
+
+@pytest.mark.parametrize("digits", ["２８", "2 8", '28"', "3/4", "²", "1028", "-3", "", "twenty"])
+def test_anything_but_one_to_three_ascii_digits_is_refused(digits: str) -> None:
+    """Not `str.isdigit`: full-width digits and a superscript two are digits to Python, and not a
+    number this drawing wrote. An empty answer is refused by the schema before that."""
+    recorder = RecordingRejections()
+
+    outcome = _digits({"digits": digits}, count=2, recorder=recorder)
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason in {DIGITS_NOT_A_NUMBER, "schema_validation_failed"}
+    assert recorder.items == [outcome]
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        ({"digits": 28}, "schema_validation_failed"),
+        ({"digits": 28.0}, "float_not_allowed"),
+        ({"digits": "28", "unit_guess": "in"}, "schema_validation_failed"),
+        ({}, "schema_validation_failed"),
+        ("28", "schema_validation_failed"),
+    ],
+)
+def test_a_digits_answer_of_any_other_shape_is_refused(payload: object, reason: str) -> None:
+    """A number where the string belongs, a float, a field not asked for, or no answer at all: each
+    is a recorded refusal, never coerced into the digits the model did not write."""
+    recorder = RecordingRejections()
+
+    outcome = _digits(payload, count=2, recorder=recorder)
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == reason
+
+
+@pytest.mark.parametrize("count", [0, 4, True, "2"])
+def test_a_digit_count_no_piece_can_have_is_the_callers_mistake(count: object) -> None:
+    with pytest.raises(ValueError, match="digit_count"):
+        _digits({"digits": "28"}, count=count, recorder=RecordingRejections())  # type: ignore[arg-type]

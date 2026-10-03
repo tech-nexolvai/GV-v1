@@ -65,7 +65,6 @@ from numpy.typing import NDArray
 
 from evidence.coordinates import PageTransform, PdfPoint
 from extraction.annotations import OutlinedTextRegion, read_annotation_layers
-from extraction.glyph_bands import FractionBarGeometry
 from extraction.glyph_shapes import (
     GlyphShape,
     ShapeSettings,
@@ -104,7 +103,9 @@ WORDS: Final = frozenset({NOT_A_CHARACTER, SIDEWAYS})
 ALPHABET: Final = frozenset(set("0123456789\"'/-.[]()") | set(string.ascii_letters) | WORDS)
 
 #: The reader settings this script plans regions with, read from a `scripts/demo.sh`-style file so
-#: the inventory sees the regions production sees. Required: no default is supplied for any.
+#: the inventory sees the regions production sees, and the stacked-fraction detector's, which
+#: `scripts/agent_scorecard.py` and `scripts/agent_geometry_check.py` read through
+#: `read_reader_settings` too. Required: no default is supplied for any.
 READER_SETTINGS: Final = (
     "GV_READER_LINE_MINIMUM_PT",
     "GV_READER_GLYPH_MAXIMUM_PT",
@@ -118,6 +119,8 @@ READER_SETTINGS: Final = (
     "GV_READER_FRACTION_GLYPH_MIN_PT",
     "GV_READER_FRACTION_GLYPH_MAX_PT",
     "GV_READER_FRACTION_PROPORTION_MAX",
+    "GV_READER_FRACTION_CHARACTER_GAP_PT",
+    "GV_READER_FRACTION_TURNED_ASPECT_MIN",
 )
 
 _HERSHEY: Final = {
@@ -155,17 +158,6 @@ def read_reader_settings(path: Path) -> dict[str, str]:
             raise InventoryError(f"{path} does not state {name}, and it has no default")
         found[name] = match.group(1).rstrip("\\").strip()
     return found
-
-
-def _fraction_bar(settings: dict[str, str]) -> FractionBarGeometry:
-    return FractionBarGeometry(
-        bar_thickness_max_pt=Decimal(settings["GV_READER_FRACTION_BAR_THICKNESS_MAX_PT"]),
-        bar_length_min_pt=Decimal(settings["GV_READER_FRACTION_BAR_LENGTH_MIN_PT"]),
-        reach_pt=Decimal(settings["GV_READER_FRACTION_REACH_PT"]),
-        glyph_min_pt=Decimal(settings["GV_READER_FRACTION_GLYPH_MIN_PT"]),
-        glyph_max_pt=Decimal(settings["GV_READER_FRACTION_GLYPH_MAX_PT"]),
-        proportion_max=Decimal(settings["GV_READER_FRACTION_PROPORTION_MAX"]),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +249,10 @@ def collect(
             line_minimum_pt=Decimal(reader["GV_READER_LINE_MINIMUM_PT"]),
             glyph_maximum_pt=Decimal(reader["GV_READER_GLYPH_MAXIMUM_PT"]),
             glyph_gap_pt=Decimal(reader["GV_READER_GLYPH_GAP_PT"]),
-            fraction_bar=_fraction_bar(reader),
+            # No fraction detector: nothing here uses what it finds, and no fraction setting
+            # changes a region or a glyph path. An inventory made before #834 does not record the
+            # layout's setting either, so one could not be rebuilt from its manifest.
+            fraction_bar=None,
         )
         plan = plan_reads(
             layers,
@@ -772,7 +767,10 @@ def _write_label_page(
             line_minimum_pt=Decimal(reader["GV_READER_LINE_MINIMUM_PT"]),
             glyph_maximum_pt=Decimal(reader["GV_READER_GLYPH_MAXIMUM_PT"]),
             glyph_gap_pt=Decimal(reader["GV_READER_GLYPH_GAP_PT"]),
-            fraction_bar=_fraction_bar(reader),
+            # No fraction detector: nothing here uses what it finds, and no fraction setting
+            # changes a region or a glyph path. An inventory made before #834 does not record the
+            # layout's setting either, so one could not be rebuilt from its manifest.
+            fraction_bar=None,
         )
         plan = plan_reads(
             layers,

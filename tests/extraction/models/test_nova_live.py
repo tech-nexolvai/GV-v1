@@ -231,6 +231,7 @@ def _request(crop: bytes) -> NovaRequest:
         bound_pt=Decimal(120),
         # A live smoke test of the transport; its crop is synthetic and has no geometry read.
         stacked_label=False,
+        stacked_layouts=(),
     )
 
 

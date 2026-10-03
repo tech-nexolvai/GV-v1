@@ -170,12 +170,20 @@ class ParameterValue(Base, TimestampedUUID, Immutable):
     `rules/parameters.py` explains why: here the timestamp is authored data, so two sets recording the same
     number measured on different days are genuinely different records."""
 
+    source_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    """Where in its source the number is, in the reviewer's words (#827) — "Architect A-501, section 3".
+    Null for every value stored before #827, and for one whose source needs no citation."""
+
     __table_args__ = (
         UniqueConstraint("parameter_set_id", "name", name="uq_parameter_values_set_name"),
         CheckConstraint("denominator > 0", name="denominator_positive"),
         CheckConstraint("name <> ''", name="name_present"),
         CheckConstraint("set_by <> ''", name="set_by_present"),
         CheckConstraint(f"provenance IN ({_PROVENANCE_SQL})", name="provenance_in_vocabulary"),
+        CheckConstraint(
+            "source_reference IS NULL OR source_reference !~ '^[[:space:]]*$'",
+            name="source_reference_not_blank",
+        ),
     )
 
     @property
@@ -222,6 +230,7 @@ def to_rows(
             provenance=value.provenance.value,
             set_by=value.set_by,
             set_at=value.set_at,
+            source_reference=value.reference,
         )
         # Sorted so two runs insert in one order. The hash does not depend on it — `canonical_json`
         # sorts — but a diff of two migrations' output should not depend on dictionary order either.
@@ -249,6 +258,7 @@ def from_rows(stored: ParameterSet, values: list[ParameterValue]) -> InMemoryPar
                 provenance=Provenance(value.provenance),
                 set_by=value.set_by,
                 set_at=value.set_at,
+                reference=value.source_reference,
             )
             for value in values
         },

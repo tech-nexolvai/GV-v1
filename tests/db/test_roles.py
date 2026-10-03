@@ -101,6 +101,25 @@ def test_the_verdict_role_cannot_read_a_retrieval_table(migrated: Engine) -> Non
     with pytest.raises(ProgrammingError, match="permission denied"):
         _as_role(migrated, Role.VERDICT, f'SELECT 1 FROM "{schema}"."match_candidates" LIMIT 1')
 
+    # The package's own words, as passages (#836). Their text holds the drawing's numbers, and a
+    # verdict that could read them would have a number with no reading behind it. The pointers into
+    # them that propose a setting (#849) are retrieval output too.
+    for table in ("text_phrases", "text_phrase_members", "parameter_proposals"):
+        with pytest.raises(ProgrammingError, match="permission denied"):
+            _as_role(migrated, Role.VERDICT, f'SELECT 1 FROM "{schema}"."{table}" LIMIT 1')
+
+
+def test_the_verdict_role_cannot_read_the_drawing_parts(migrated: Engine) -> None:
+    """Which parts a drawing has, and which part a reading measures, are decided before anything is
+    checked (#852). A verdict takes its operands from `verdict_inputs`, which the evidence gate
+    writes, so it holds no privilege on the suggestions, the confirmations, the runs or the links.
+    """
+    schema = _schema(migrated)
+
+    for table in ("part_proposals", "part_confirmations", "countertop_runs", "reading_parts"):
+        with pytest.raises(ProgrammingError, match="permission denied"):
+            _as_role(migrated, Role.VERDICT, f'SELECT 1 FROM "{schema}"."{table}" LIMIT 1')
+
 
 def test_the_verdict_role_cannot_read_the_model_invocation_record(migrated: Engine) -> None:
     """ "No model credentials" has to mean it cannot read what the models did either."""
@@ -355,9 +374,18 @@ def test_the_verdict_role_holds_no_grant_on_any_retrieval_or_model_table() -> No
     """Stated by name as well as by subtraction.
 
     The derived check above covers more, but it would also pass if the allowlist grew to include one
-    of these by accident. These four are the ones the issue names.
+    of these by accident. The first four are the ones the roles issue named; the next two are the
+    package text index (#836), and the last the pointers into it that propose a setting (#849).
     """
     verdict_tables = set(ROLE_GRANTS[Role.VERDICT].tables())
 
-    for table in ("dense_embeddings", "match_candidates", "approved_matches", "model_invocations"):
+    for table in (
+        "dense_embeddings",
+        "match_candidates",
+        "approved_matches",
+        "model_invocations",
+        "text_phrases",
+        "text_phrase_members",
+        "parameter_proposals",
+    ):
         assert table not in verdict_tables

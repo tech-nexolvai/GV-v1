@@ -27,10 +27,15 @@ from app.models.document import (
 )
 from app.models.drawing import (
     Alias,
+    CountertopRun,
     DenseEmbedding,
     DrawingItem,
     DrawingView,
     ItemIdentifier,
+    PartConfirmation,
+    PartDecision,
+    PartProposal,
+    ReadingPart,
     ViewRole,
     ViewRoleConfirmation,
     ViewRoleProposal,
@@ -64,6 +69,9 @@ from app.models.matching import (
 )
 from app.models.outbox import OutboxEntry
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent, Project
+from app.models.package_text import PhraseTag, TextPhrase, TextPhraseMember
+from app.models.parameter_proposals import ParameterProposal
+from app.models.parameter_value_citations import ParameterValueCitation, ParameterValueCitationRun
 from app.models.parameters import ParameterSet, ParameterValue
 from app.models.retention import LegalHold
 from app.models.review import (
@@ -113,6 +121,7 @@ __all__ = [
     "CaseResult",
     "CheckRun",
     "CorrectionLedgerEntry",
+    "CountertopRun",
     "DenseEmbedding",
     "Document",
     "DocumentKind",
@@ -154,9 +163,17 @@ __all__ = [
     "PackageStateEvent",
     "Page",
     "PageType",
+    "ParameterProposal",
     "ParameterSet",
     "ParameterValue",
+    "ParameterValueCitation",
+    "ParameterValueCitationRun",
+    "PartConfirmation",
+    "PartDecision",
+    "PartProposal",
+    "PhraseTag",
     "Project",
+    "ReadingPart",
     "ReviewAction",
     "ReviewActionKind",
     "ReviewException",
@@ -166,6 +183,8 @@ __all__ = [
     "RuleSnapshot",
     "SourceArtifact",
     "TaskRun",
+    "TextPhrase",
+    "TextPhraseMember",
     "VerdictInput",
     "ViewRole",
     "ViewRoleConfirmation",

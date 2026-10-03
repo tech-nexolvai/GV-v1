@@ -15,6 +15,7 @@ import {
   confirmCandidate,
   downloadCandidateCrop,
   downloadLayoutProposalCrop,
+  downloadSettingPassageCrop,
   enterMeasurements,
   getRequiredInputs,
   listCandidates,
@@ -41,6 +42,15 @@ import { MeasurementSectionNav } from './MeasurementSectionNav';
 import { jumpToMeasurementSection, measurementSections } from './measurementNavigation';
 import { prefillReadingValues } from './measurementDraft';
 import { appendConfirmedRunValue, confirmCandidateOnce, confirmProposalFields, newConfirmationLedger } from './measurementConfirmation';
+import { settingMissingASource, type SettingSource } from '../components/measure/settingSources';
+import { SettingCitation } from '../components/measure/SettingCitation';
+import { SettingPassage, type PassageImage } from '../components/measure/SettingPassage';
+import { loadPassageImage } from '../components/measure/passageImage';
+import {
+  citingPointer,
+  settingEntry,
+  type SettingPointer,
+} from '../components/measure/settingPointers';
 import './MeasurementPanel.css';
 
 /**
@@ -84,6 +94,10 @@ type Parameter = {
   rule_ids: string[];
   declared_default: string | null;
   blocked: boolean;
+  /** Where a value may come from (#827), in the order Raj's checklist gives them. */
+  sources?: SettingSource[];
+  /** Where the architect's drawing states it (#866): a page and a crop, never the number. */
+  found?: SettingPointer | null;
 };
 type LayoutProposal = {
   value: string;
@@ -287,6 +301,11 @@ export function MeasurementPanel({
   }
   const [reviewerEditedSingles, setReviewerEditedSingles] = useState<Set<string>>(() => new Set());
   const [choices, setChoices] = useState<Record<string, string>>({});
+  /** Per setting: the source the reviewer chose, and where in it (#827). */
+  const [sourceChoices, setSourceChoices] = useState<Record<string, string>>({});
+  const [references, setReferences] = useState<Record<string, string>>({});
+  /** Settings the app found a passage for, which the reviewer chose to enter another way (#866). */
+  const [declinedCitations, setDeclinedCitations] = useState<Record<string, boolean>>({});
   const [stored, setStored] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -334,6 +353,9 @@ export function MeasurementPanel({
       reviewerEditedSinglesRef.current = freshEdits;
       setReviewerEditedSingles(freshEdits);
       setChoices({});
+      setSourceChoices({});
+      setReferences({});
+      setDeclinedCitations({});
       setCandidates([]);
       setSemanticTypes([]);
       setCandidateError(null);
@@ -556,6 +578,16 @@ export function MeasurementPanel({
 
   async function saveVisibleValues(): Promise<boolean> {
     if (!packageId || !needed) return false;
+    // A setting typed from the passage the app found takes its source from that passage (#866).
+    const unsourced = settingMissingASource(
+      needed.parameters.filter((p) => !p.blocked && !citingPointer(p, declinedCitations)),
+      singles,
+      sourceChoices,
+    );
+    if (unsourced) {
+      setError(`Say where ${unsourced} came from before saving.`);
+      return false;
+    }
     try {
       const confirmedFromDrawing = await confirmAcceptedProposals();
 
@@ -589,13 +621,17 @@ export function MeasurementPanel({
 
       const classifications = classificationEntries(needed.quantities, runs);
 
+      // A setting typed from a found passage sends that passage as its citation, and the server
+      // holds the number to it (#866); any other setting goes exactly as it always has.
       const parameters = needed.parameters
         .filter((p) => !p.blocked && (singles[p.name] ?? '').trim())
-        .map((p) => ({
-          name: p.name,
-          value: (singles[p.name] ?? '').trim(),
-          scope: (p.scope === 'run' ? 'run' : 'project') as 'run' | 'project',
-        }));
+        .map((p) =>
+          settingEntry(p, singles[p.name] ?? '', {
+            declined: declinedCitations,
+            source: sourceChoices[p.name],
+            reference: references[p.name],
+          }),
+        );
 
       const result = await enterMeasurements(projectId(), packageId, {
         parameters,
@@ -1243,44 +1279,97 @@ export function MeasurementPanel({
         <h2 data-measure-section="settings" tabIndex={-1}>Settings</h2>
         <p className="enter-values__hint">
           Values for this job rather than dimensions off a drawing. Where the rulebook suggests one it
-          is shown — a rule author&apos;s stand-in, not a number the client has confirmed.
+          is shown — a rule author&apos;s stand-in, not a number the client has confirmed. Where the
+          architect&apos;s drawing states one, the page is shown but the number is not: type what you
+          see, and it is saved only if it matches.
         </p>
-        {needed.parameters.map((parameter) => (
-          <div className="value-field" key={parameter.name}>
-            <label className="value-label" htmlFor={`p-${parameter.name}`}>
-              {parameter.name}
-              <span className="value-source">
-                {parameter.scope === 'run' ? 'this review only' : 'this project'}
-              </span>
-              <span className="value-feeds">{parameter.rule_ids.join(', ')}</span>
-            </label>
-            {parameter.blocked ? (
-              <p className="value-blocked" role="note">
-                <AlertTriangle size={14} aria-hidden="true" /> Waiting on the vendor. This check will
-                report that it could not decide, which is the correct answer until the value arrives —
-                it is not a field to fill in.
-              </p>
-            ) : (
-              <>
-                <input
-                  className="value-input value-input--wide"
-                  id={`p-${parameter.name}`}
-                  placeholder=""
+        {needed.parameters.map((parameter) => {
+          const pointer = citingPointer(parameter, declinedCitations);
+          return (
+            <div className="value-field" key={parameter.name}>
+              <label className="value-label" htmlFor={`p-${parameter.name}`}>
+                {parameter.name}
+                <span className="value-source">
+                  {parameter.scope === 'run' ? 'this review only' : 'this project'}
+                </span>
+                <span className="value-feeds">{parameter.rule_ids.join(', ')}</span>
+              </label>
+              {parameter.blocked ? (
+                <p className="value-blocked" role="note">
+                  <AlertTriangle size={14} aria-hidden="true" /> Waiting on the vendor. This check will
+                  report that it could not decide, which is the correct answer until the value arrives —
+                  it is not a field to fill in.
+                </p>
+              ) : pointer ? (
+                /* **Blind entry (#866).** The box shows where the architect's drawing states this
+                   setting and starts empty; the app's own reading of the number never reaches the
+                   page. Save sends the passage as the citation, and a number that differs from the
+                   drawing's is refused with the server's sentence below. */
+                <SettingCitation
+                  name={parameter.name}
+                  pointer={pointer}
                   value={singles[parameter.name] ?? ''}
-                  onChange={(e) =>
-                    setSingles((prior) => ({ ...prior, [parameter.name]: e.target.value }))
+                  crop={
+                    packageId ? (
+                      <SettingPassageCrop
+                        key={`${packageId}:${pointer.proposal_id}`}
+                        packageId={packageId}
+                        pointer={pointer}
+                        name={parameter.name}
+                      />
+                    ) : null
+                  }
+                  onChange={(value) =>
+                    setSingles((prior) => ({ ...prior, [parameter.name]: value }))
+                  }
+                  onDecline={() =>
+                    setDeclinedCitations((prior) => ({ ...prior, [parameter.name]: true }))
                   }
                 />
-                {parameter.declared_default && (
-                  <p className="enter-values__hint enter-values__hint--tight">
-                    The rulebook suggests <code>{parameter.declared_default}</code>. Leave blank to use
-                    it, or type the value this job actually uses.
-                  </p>
-                )}
-              </>
-            )}
-          </div>
-        ))}
+              ) : (
+                <>
+                  <input
+                    className="value-input value-input--wide"
+                    id={`p-${parameter.name}`}
+                    placeholder=""
+                    value={singles[parameter.name] ?? ''}
+                    onChange={(e) =>
+                      setSingles((prior) => ({ ...prior, [parameter.name]: e.target.value }))
+                    }
+                  />
+                  {parameter.declared_default && (
+                    <p className="enter-values__hint enter-values__hint--tight">
+                      The rulebook suggests <code>{parameter.declared_default}</code>. Leave blank to use
+                      it, or type the value this job actually uses.
+                    </p>
+                  )}
+                  <SettingSourceFields
+                    parameter={parameter}
+                    chosen={sourceChoices[parameter.name] ?? ''}
+                    reference={references[parameter.name] ?? ''}
+                    onChoose={(value) =>
+                      setSourceChoices((prior) => ({ ...prior, [parameter.name]: value }))
+                    }
+                    onReference={(value) =>
+                      setReferences((prior) => ({ ...prior, [parameter.name]: value }))
+                    }
+                  />
+                  {parameter.found && (
+                    <button
+                      type="button"
+                      className="value-secondary setting-citation__decline"
+                      onClick={() =>
+                        setDeclinedCitations((prior) => ({ ...prior, [parameter.name]: false }))
+                      }
+                    >
+                      Type it from the architect&apos;s drawing, page {parameter.found.page_index + 1}
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
       </section>
 
       {/* The calculator follows the measurements and limits it depends on. Its request and
@@ -1566,5 +1655,90 @@ function LayoutProposalCrop({
       />
       <figcaption>Read from the plan view</figcaption>
     </figure>
+  );
+}
+
+/**
+ * The crop of the passage that states a setting (#866): pixels only, for the reviewer to read the
+ * number off. Nothing parsed from it is fetched or shown.
+ */
+function SettingPassageCrop({
+  packageId,
+  pointer,
+  name,
+}: {
+  packageId: string;
+  pointer: SettingPointer;
+  name: string;
+}) {
+  const [image, setImage] = useState<PassageImage>(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => loadPassageImage(
+    () => downloadSettingPassageCrop(projectId(), packageId, pointer.proposal_id),
+    (url) => setImage({ url }),
+    () => setImage({ error: true }),
+  ), [packageId, pointer.proposal_id, attempt]);
+
+  return <SettingPassage pointer={pointer} name={name} image={image}
+    onImageError={() => setImage({ error: true })}
+    onRetry={() => { setImage(null); setAttempt((prior) => prior + 1); }} />;
+}
+
+/**
+ * Where a setting came from (#827). One allowed source is stated, not asked; several are a choice.
+ * The guidance line carries Q10 for the G.C / Client source: never copied from the vendor's drawing.
+ */
+function SettingSourceFields({
+  parameter,
+  chosen,
+  reference,
+  onChoose,
+  onReference,
+}: {
+  parameter: Parameter;
+  chosen: string;
+  reference: string;
+  onChoose: (value: string) => void;
+  onReference: (value: string) => void;
+}) {
+  const sources = parameter.sources ?? [];
+  if (sources.length === 0) return null;
+  const current = sources.length === 1 ? sources[0].value : chosen;
+  const selected = sources.find((source) => source.value === current);
+  return (
+    <div className="setting-source">
+      {sources.length === 1 ? (
+        <p className="enter-values__hint enter-values__hint--tight">
+          Source: <strong>{sources[0].value}</strong>
+        </p>
+      ) : (
+        <label className="setting-source__choice" htmlFor={`p-${parameter.name}-source`}>
+          Where from?
+          <select
+            className="value-input"
+            id={`p-${parameter.name}-source`}
+            value={chosen}
+            onChange={(e) => onChoose(e.target.value)}
+          >
+            <option value="">Choose…</option>
+            {sources.map((source) => (
+              <option key={source.value} value={source.value}>
+                {source.value}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {selected && <p className="enter-values__hint enter-values__hint--tight">{selected.guidance}</p>}
+      <input
+        className="value-input value-input--wide"
+        id={`p-${parameter.name}-reference`}
+        aria-label={`Where in the source ${parameter.name} is`}
+        placeholder="Reference (optional), e.g. Architect A-501, section 3"
+        maxLength={200}
+        value={reference}
+        onChange={(e) => onReference(e.target.value)}
+      />
+    </div>
   );
 }

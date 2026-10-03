@@ -1,4 +1,4 @@
-"""Strict tool-call and bounded-failure tests for issue #249."""
+"""Strict tool-call and bounded-failure tests for issue #249, and the digits request of #865."""
 
 from __future__ import annotations
 
@@ -13,21 +13,25 @@ import pytest
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
 from evidence.crop import encode_png
+from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.nova import (
     CLAUDE_HAIKU_4_5_EXTRACTOR,
     CLAUDE_HAIKU_4_5_MODEL_ID,
     DEFAULT_MODEL_ID,
     DEFAULT_REGION,
+    DIGITS_TOOL_NAME,
     MINISTRAL_3_3B_MODEL_ID,
     NOVA_2_LITE_MODEL_ID,
     NOVA_PRO_MODEL_ID,
     TOOL_NAME,
     VISION_READERS,
     BedrockRuntimeClient,
+    InferenceProfileRoutes,
     NovaAdapter,
     NovaAdapterError,
     NovaConfig,
+    NovaDigitsRequest,
     NovaInvocation,
     NovaInvocationOutcome,
     NovaPayloadRejectedError,
@@ -38,7 +42,14 @@ from extraction.models.nova import (
     config_from_environment,
     vision_configs_from_environment,
 )
+from extraction.models.sanitisation import (
+    DIGITS_PROMPT_ID,
+    DIGITS_SYSTEM_INSTRUCTION,
+    DIGITS_TEMPLATE_ID,
+    DIGITS_USER_TASK,
+)
 from extraction.models.validation import CoordinateMode, ValidationRejection
+from tests.extraction.models.test_validation import THREE_QUARTERS
 from units.measurement import Unit
 
 
@@ -90,7 +101,9 @@ def _config(*, max_attempts: int = 2) -> NovaConfig:
     )
 
 
-def _request(*, stacked_label: bool = False) -> NovaRequest:
+def _request(
+    *, stacked_label: bool = False, stacked_layouts: tuple[FractionLayout, ...] = ()
+) -> NovaRequest:
     return NovaRequest(
         candidate_id="candidate-249",
         page=3,
@@ -102,6 +115,7 @@ def _request(*, stacked_label: bool = False) -> NovaRequest:
         ),
         bound_pt=Decimal(12),
         stacked_label=stacked_label,
+        stacked_layouts=stacked_layouts,
     )
 
 
@@ -234,6 +248,7 @@ def test_drawing_text_is_sent_as_data_and_never_changes_instructions() -> None:
         ),
         bound_pt=Decimal(8),
         stacked_label=False,
+        stacked_layouts=(),
     )
     client = FakeBedrock(_tool_response(_valid_payload()))
     adapter, sink = _adapter(client)
@@ -261,6 +276,7 @@ def test_request_refuses_an_inexact_or_unsafe_context_bound(bound: object) -> No
             context=AssembledContext(nearby_text=(), nearby_geometry=()),
             bound_pt=bound,  # type: ignore[arg-type]
             stacked_label=False,
+            stacked_layouts=(),
         )
 
 
@@ -389,7 +405,28 @@ def test_request_refuses_a_stacked_label_that_is_not_a_bool() -> None:
             context=AssembledContext(nearby_text=(), nearby_geometry=()),
             bound_pt=Decimal(8),
             stacked_label=None,  # type: ignore[arg-type]
+            stacked_layouts=(),
         )
+
+
+def test_the_adapter_hands_the_requests_layouts_to_the_validator() -> None:
+    """**The link #834 adds, held as #735's was.** `28 3/4"` on a crop whose only stacked label is
+    drawn as a bare `3/4"` has a whole number the drawing does not, and is refused for it."""
+    client = FakeBedrock(_tool_response(_valid_payload(reading='28 3/4"', unit_guess="in")))
+    adapter, sink = _adapter(client)
+
+    with pytest.raises(NovaPayloadRejectedError):
+        adapter.extract(_request(stacked_label=True, stacked_layouts=THREE_QUARTERS))
+
+    assert sink.items[0].rejection_reason == "reading_contradicts_stacked_layout"
+
+
+def test_request_refuses_layouts_it_cannot_check_by() -> None:
+    """A tuple of layouts or nothing; and layouts only on a crop that says it shows a stacked label."""
+    with pytest.raises(TypeError, match="stacked_layouts"):
+        _request(stacked_label=True, stacked_layouts=[THREE_QUARTERS[0]])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="stacked label"):
+        _request(stacked_label=False, stacked_layouts=THREE_QUARTERS)
 
 
 def test_timeout_retries_within_bound_and_records_every_attempt() -> None:
@@ -971,3 +1008,145 @@ def test_a_reader_with_no_measured_space_cannot_be_named() -> None:
 
     assert vision_config_for_extractor(CLAUDE_HAIKU_4_5_EXTRACTOR) is None
     assert vision_config_for_extractor("bedrock-nobody") is None
+
+
+# ---------------------------------------------------------------------------
+# The digits request (#865): one drawn piece of a stacked label, read as its digits
+# ---------------------------------------------------------------------------
+
+
+def _digits_request(*, digit_count: int = 2) -> NovaDigitsRequest:
+    return NovaDigitsRequest(
+        request_id="piece-865", page=1, picture=_crop(60, 40), digit_count=digit_count
+    )
+
+
+def _digits_response(digits: object, *, tool: str | None = None) -> dict[str, Any]:
+    return {
+        "stopReason": "tool_use",
+        "output": {
+            "message": {
+                "content": [
+                    {
+                        "toolUse": {
+                            "name": DIGITS_TOOL_NAME if tool is None else tool,
+                            "toolUseId": "call-1",
+                            "input": {"digits": digits},
+                        }
+                    }
+                ]
+            }
+        },
+        "usage": {"inputTokens": 90, "outputTokens": 9},
+        "ResponseMetadata": {"RequestId": "aws-request-865"},
+    }
+
+
+def test_a_digits_request_returns_the_validated_digits_under_its_own_identity() -> None:
+    """**Its own prompt id, template and tool**, whatever the configuration's dimension prompt is,
+    so `model_invocations` tells the two kinds apart. Recorded with no context: none was sent."""
+    client = FakeBedrock(_digits_response("28"))
+    adapter, sink = _adapter(client)
+
+    assert adapter.read_digits(_digits_request()) == "28"
+
+    (record,) = sink.items
+    assert record.outcome is NovaInvocationOutcome.OK
+    assert (record.prompt_id, record.template_id) == (DIGITS_PROMPT_ID, DIGITS_TEMPLATE_ID)
+    assert record.context == AssembledContext(nearby_text=(), nearby_geometry=())
+    assert record.bound_pt == Decimal(0)
+    assert record.injection_attempts == ()
+    submitted = client.requests[0]
+    assert submitted["toolConfig"]["toolChoice"] == {"tool": {"name": DIGITS_TOOL_NAME}}
+    schema = submitted["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"]["json"]
+    assert schema["required"] == ["digits"]
+    assert {"title", "description", "additionalProperties"}.isdisjoint(schema)
+    assert submitted["system"] == [{"text": DIGITS_SYSTEM_INSTRUCTION}]
+    content = submitted["messages"][0]["content"]
+    assert content == [
+        {"image": {"format": "png", "source": {"bytes": _digits_request().picture}}},
+        {"text": DIGITS_USER_TASK},
+    ]
+    assert submitted["inferenceConfig"] == {"temperature": 0, "maxTokens": 256}
+
+
+def test_the_digits_request_tells_the_model_nothing_about_the_piece() -> None:
+    """**The count is checked against the drawing, so it is not told to the reader.** Nor what kind
+    of piece it is: a reader told would answer to it, and the check would only measure that."""
+    for count in (1, 2, 3):
+        client = FakeBedrock(_digits_response("1" * count))
+        adapter, _sink = _adapter(client)
+        adapter.read_digits(_digits_request(digit_count=count))
+        sent = repr(client.requests[0]["messages"]) + repr(client.requests[0]["system"])
+        assert "numerator" not in sent and "denominator" not in sent and "fraction bar" not in sent
+        assert f"{count} digit" not in sent
+
+
+@pytest.mark.parametrize(
+    ("digits", "reason"),
+    [("8", "digits_wrong_count"), ("283", "digits_wrong_count"), ("2 8", "digits_not_a_number")],
+)
+def test_a_digits_answer_the_drawing_rules_out_is_refused_once_and_recorded(
+    digits: str, reason: str
+) -> None:
+    """A deterministic refusal is not retried at a cost; its reason is kept on the record."""
+    client = FakeBedrock(_digits_response(digits), _digits_response("28"))
+    adapter, sink = _adapter(client)
+
+    with pytest.raises(NovaPayloadRejectedError):
+        adapter.read_digits(_digits_request())
+
+    assert len(client.requests) == 1
+    assert sink.items[0].outcome is NovaInvocationOutcome.REJECTED
+    assert sink.items[0].rejection_reason == reason
+
+
+def test_an_answer_to_the_other_request_kind_is_not_read_as_digits() -> None:
+    """The dimension reader's tool, called on a digits request, is a protocol error: the two kinds'
+    answers can never be mistaken for each other."""
+    client = FakeBedrock(_digits_response("28", tool=TOOL_NAME))
+    adapter, _sink = _adapter(client)
+
+    with pytest.raises(NovaProtocolError, match="unexpected tool"):
+        adapter.read_digits(_digits_request())
+
+
+def test_a_digits_request_takes_the_same_profile_fallback() -> None:
+    """One route for both kinds: the plain id refused, the profile answers, and both are recorded."""
+    client = FakeBedrock(
+        _client_error("AccessDeniedException", "Your account is currently being verified."),
+        _digits_response("28"),
+    )
+    sink = RecordingSink()
+    adapter = NovaAdapter(_config(), client, sink, InferenceProfileRoutes())
+
+    assert adapter.read_digits(_digits_request()) == "28"
+    assert [request["modelId"] for request in client.requests] == [
+        "amazon.nova-pro-v1:0",
+        "us.amazon.nova-pro-v1:0",
+    ]
+    assert [record.prompt_id for record in sink.items] == [DIGITS_PROMPT_ID, DIGITS_PROMPT_ID]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("request_id", " "),
+        ("page", -1),
+        ("picture", b"not a png"),
+        ("digit_count", 0),
+        ("digit_count", 4),
+        ("digit_count", True),
+    ],
+)
+def test_a_digits_request_states_everything_exactly(field: str, value: object) -> None:
+    values: dict[str, object] = {
+        "request_id": "piece-865",
+        "page": 1,
+        "picture": _crop(60, 40),
+        "digit_count": 2,
+    }
+    values[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        NovaDigitsRequest(**values)  # type: ignore[arg-type]

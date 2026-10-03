@@ -137,9 +137,18 @@ from extraction.annotations import (
     read_annotation_layers,
     read_markup_layer,
 )
+from extraction.fraction_parts import (
+    FRACTION_PARTS_EXTRACTOR,
+    FRACTION_PARTS_VERSION,
+    DrawnPiece,
+    FractionPartsRefusal,
+    PieceDrawing,
+    read_fraction_parts,
+)
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import DetectedDimensions, detect
 from extraction.geometry.text_association import DimensionText, associate
+from extraction.glyph_bands import FractionLayout
 from extraction.layout import (
     BedrockClosedQuestionConfig,
     BedrockClosedQuestionReader,
@@ -157,12 +166,19 @@ from extraction.models.nova import (
     NovaAdapter,
     NovaAdapterError,
     NovaConfig,
+    NovaDigitsRequest,
     NovaInvocation,
     NovaInvocationOutcome,
+    NovaPayloadRejectedError,
+    NovaProtocolError,
+    NovaRefusalError,
     NovaRequest,
+    NovaRetryExhaustedError,
+    NovaTimeoutError,
     vision_config_for_extractor,
     vision_configs_from_environment,
 )
+from extraction.models.sanitisation import DIGITS_PROMPT_ID
 from extraction.models.validation import STACKED_FRACTION_REASON, ValidationRejection
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_reading, read_page
 from extraction.panels import propose_panel_roles
@@ -207,11 +223,7 @@ from workflow.association import (
     dimension_texts,
 )
 from workflow.config import READER_RASTER_DPI
-from workflow.evidence_operands import (
-    IDENTIFIER_PAIRING_WITHHELD,
-    identifier_paired_inputs,
-    operands_from_evidence,
-)
+from workflow.evidence_operands import evidence_operands, position_sensitive_inputs
 from workflow.findings_composer import (
     ComposerFinding,
     ComposerOperand,
@@ -299,6 +311,9 @@ class _VisionReader(Protocol):
     def extract(self, request: NovaRequest, recorder: _BufferedVisionRecorder) -> DomainCandidate:
         """Return one raw model candidate or raise an adapter error."""
 
+    def read_digits(self, request: NovaDigitsRequest, recorder: _BufferedVisionRecorder) -> str:
+        """Return the validated digits of one drawn piece, or raise an adapter error (#865)."""
+
 
 @dataclass(frozen=True, slots=True)
 class _LayoutReaderRoute:
@@ -317,6 +332,9 @@ class BedrockVisionReader:
 
     def extract(self, request: NovaRequest, recorder: _BufferedVisionRecorder) -> DomainCandidate:
         return NovaAdapter.from_environment(self.config, recorder).extract(request)
+
+    def read_digits(self, request: NovaDigitsRequest, recorder: _BufferedVisionRecorder) -> str:
+        return NovaAdapter.from_environment(self.config, recorder).read_digits(request)
 
 
 def configured_vision_readers_from_environment() -> tuple[BedrockVisionReader, ...]:
@@ -436,6 +454,43 @@ def ai_budget_from_environment(environ: Mapping[str, str] = os.environ) -> Decim
     if not value.is_finite() or value <= 0:
         raise ValueError(f"{AI_BUDGET_ENV} must be more than zero dollars, not {raw!r}")
     return value
+
+
+#: The switch for reading each stacked fraction piece by piece (#848). Off unless a deployment turns
+#: it on, and `scripts/demo.sh` does not.
+FRACTION_PARTS_ENV: Final = "GV_FRACTION_PARTS"
+
+#: How each piece is drawn for the reader (`extraction.fraction_parts.PieceDrawing`). Required once
+#: the route is on, and none has a default: each changes what the reader is shown.
+FRACTION_PARTS_SETTINGS: Final = {
+    "GV_FRACTION_PARTS_HEIGHT_PX": "height_px",
+    "GV_FRACTION_PARTS_STROKE_PX": "stroke_px",
+    "GV_FRACTION_PARTS_BEZIER_STEPS": "bezier_steps",
+    "GV_FRACTION_PARTS_MARGIN_PX": "margin_px",
+}
+
+
+def fraction_parts_from_environment(environ: Mapping[str, str] = os.environ) -> PieceDrawing | None:
+    """How the deployment draws the pieces of a stacked fraction, or `None` where the route is off.
+
+    A switch that is on with a setting missing or not a whole number is refused, not filled in: a
+    guessed size would decide what the reader is shown on every drawing anybody runs.
+    """
+    if environ.get(FRACTION_PARTS_ENV, "").strip().lower() not in {"1", "true", "yes"}:
+        return None
+    missing = [name for name in FRACTION_PARTS_SETTINGS if not environ.get(name, "").strip()]
+    if missing:
+        raise ValueError(
+            f"{FRACTION_PARTS_ENV} is on and these are not stated: {', '.join(missing)}. None of "
+            "them has a default"
+        )
+    stated: dict[str, int] = {}
+    for name, field_name in FRACTION_PARTS_SETTINGS.items():
+        raw = environ[name].strip()
+        if not raw.isascii() or not raw.isdigit():
+            raise ValueError(f"{name} must be a whole number, not {raw!r}")
+        stated[field_name] = int(raw)
+    return PieceDrawing(**stated)
 
 
 @dataclass(slots=True)
@@ -683,6 +738,7 @@ __all__ = [
     "crop_shows_a_stacked_fraction",
     "page_transform",
     "region_facts",
+    "stacked_layouts_shown",
     "stored_polygon",
 ]
 
@@ -849,6 +905,7 @@ class _AgentReads:
             context=AssembledContext(nearby_text=(), nearby_geometry=()),
             bound_pt=VISION_CONTEXT_BOUND_PT,
             stacked_label=self.crops.shows_stacked_fraction,
+            stacked_layouts=self.crops.stacked_layouts,
         )
         try:
             candidate = reader.extract(request, recorder)
@@ -856,6 +913,87 @@ class _AgentReads:
             return RetryableToolFailure(f"{reader.config.extractor} gave no reading: {error}")
         produced.append(candidate)
         return candidate
+
+
+def _second_reader_refusal(error: NovaAdapterError) -> str:
+    """Why the second reader gave no digits for a piece, in this module's words (#865).
+
+    One sentence per kind of failure, never one for all of them: a single sentence for every failure
+    once hid that a model had answered, too long for its limit (#712). A refused answer names the
+    validator's reason code and a failed call its AWS error code; neither is the model's text, and
+    the exact error stays in `model_invocations`.
+    """
+    if isinstance(error, NovaPayloadRejectedError):
+        return f"the second reader's answer was refused: {error.rejection.reason}"
+    if isinstance(error, NovaProtocolError):
+        return "the second reader did not answer with exactly one call to its tool"
+    if isinstance(error, NovaRefusalError):
+        return "the second reader's provider stopped the request"
+    if isinstance(error, NovaTimeoutError):
+        return "the second reader did not answer in time"
+    if isinstance(error, NovaRetryExhaustedError):
+        return "the second reader's call failed on every attempt"
+    cause = error.__cause__
+    response = getattr(cause, "response", None)
+    details = response.get("Error") if isinstance(response, Mapping) else None
+    code = details.get("Code") if isinstance(details, Mapping) else None
+    named = code if isinstance(code, str) else type(cause).__name__
+    return f"the second reader's call failed: {named}"
+
+
+@dataclass(slots=True)
+class _PieceReads:
+    """The fraction-parts route's second reader on one page (#865): the vision gate reader, asked for
+    the digits of each drawn piece (`extraction.fraction_parts.SecondReader`).
+
+    **Every call is on the budget and on the record.** Before each one the drawing set's meter is
+    read, and a spent budget is a refusal with the meter's own reason, so no call is made. After each
+    one, every attempt is written to `model_invocations` under the route's run and added to the
+    meter, whether or not it answered, before the next piece is asked about.
+    """
+
+    session: Session
+    run_id: UUID
+    page_index: int
+    reader: _VisionReader
+    meter: _SpendMeter | None
+    invocations: int = 0
+    """Model calls made and recorded on this page, retries included."""
+
+    @property
+    def extractor(self) -> str:
+        return self.reader.config.extractor
+
+    @property
+    def extractor_version(self) -> str:
+        return self.reader.config.model_id
+
+    def read_digits(self, piece: DrawnPiece) -> str | FractionPartsRefusal:
+        if self.meter is not None and self.meter.reached:
+            return FractionPartsRefusal(self.meter.reason)
+        request_id = uuid4()
+        recorder = _BufferedVisionRecorder(
+            session=self.session,
+            extraction_run_id=self.run_id,
+            request_candidate_id=request_id,
+            meter=self.meter,
+        )
+        try:
+            return self.reader.read_digits(
+                NovaDigitsRequest(
+                    request_id=str(request_id),
+                    page=self.page_index,
+                    picture=piece.png,
+                    digit_count=piece.digit_count,
+                ),
+                recorder,
+            )
+        except NovaAdapterError as error:
+            return FractionPartsRefusal(_second_reader_refusal(error))
+        finally:
+            # No call is linked to the row it helped read: the column holds one call per row, and a
+            # row is read from up to three. They belong to the route's run, as the row does.
+            self.invocations += recorder.persist(candidate_id=None, flush=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -979,6 +1117,7 @@ class DatabaseStages:
         reading_agent: ReadingAgentSettings | None = None,
         vision_gate: str | None = None,
         ai_budget_usd: Decimal | None = None,
+        fraction_parts: PieceDrawing | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -1055,6 +1194,25 @@ class DatabaseStages:
         # **The shape reader (#756), off unless a deployment points it at a template set.** Its
         # readings are confirmed only by a second witness (#756 D2); see `workflow/glyph_route`.
         self._glyph_route = glyph_route
+        # **Stacked fractions read piece by piece (#848), off unless a deployment turns it on.** It
+        # reads the layouts the stacked-fraction detector draws, and the detector runs only with the
+        # association settings, so without them the route could never read anything: refused here
+        # rather than left on and silent.
+        if fraction_parts is not None and association is None:
+            raise ValueError(
+                "the fraction-parts route reads stacked fractions the detector has laid out, and "
+                "the detector runs only with association settings, which these stages do not have"
+            )
+        # **And it needs its second reader (#865)**: a label is pre-filled only where two readers
+        # of different vendors agree on every piece, and the second is the vision gate reader. On
+        # without one, the route could never pre-fill anything: refused here, for the same reason.
+        if fraction_parts is not None and vision_gate is None:
+            raise ValueError(
+                "the fraction-parts route pre-fills a label only where a second reader agrees on "
+                "every piece, and its second reader is the vision gate reader "
+                "(GV_VISION_GATE_READER), which these stages do not have"
+            )
+        self._fraction_parts = fraction_parts
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
             if (bounded_agent is not None or reading_agent is not None)
@@ -1409,17 +1567,36 @@ class DatabaseStages:
                 for item in (read.texts if read is not None else ()) + stamp_texts
                 if item.stacked
             )
+            # Set in text, so no paths to lay out (#834): `layout` is `None`.
             text_stacked = tuple(
-                StackedFraction(extent=label.extent, image_extent=label.image_extent)
+                StackedFraction(extent=label.extent, image_extent=label.image_extent, layout=None)
                 for label in text_set_aside
                 if label.reason is SetAsideReason.STACKED_FRACTION
             ) + tuple(
-                StackedFraction(extent=item.extent, image_extent=item.image_extent)
+                StackedFraction(extent=item.extent, image_extent=item.image_extent, layout=None)
                 for item in stacked_read
             )
             if layers is not None and text_stacked:
                 layers = replace(layers, stacked_fractions=layers.stacked_fractions + text_stacked)
             page_stacked = layers.stacked_fractions if layers is not None else text_stacked
+            # **Each laid-out stacked label read piece by piece (#848)**, where a deployment turned the
+            # route on. What it reads pre-fills the form for a person to tick; it is never agreed into
+            # evidence (#726), and the whole label is still never shown to a vision reader (#762).
+            fraction_rows: list[ObservationCandidate] = []
+            fraction_refusals: Counter[str] | None = None
+            fraction_invocations: int | None = None
+            if self._fraction_parts is not None:
+                (
+                    fraction_rows,
+                    fraction_refusals,
+                    fraction_invocations,
+                ) = self._read_page_by_fraction_parts(
+                    session,
+                    version_id=version_id,
+                    page=page,
+                    task_run_id=run.task_run_id,
+                    fractions=page_stacked,
+                )
             # **Which forms this page's text arrived in, and which of them nothing reads yet.** A
             # vendor does not choose how its PDF stores numbers; the page result says, so a page whose
             # text sits in a form no route reads is reported as that, not as a page with no numbers.
@@ -1549,6 +1726,8 @@ class DatabaseStages:
                     + stamp_text_rows
                     + vision_rows
                     + glyph_rows
+                    # Judged with the rest, and its flag keeps every group it is in a raw candidate.
+                    + fraction_rows
                 ),
             )
             agent = self._run_bounded_agent_for_ambiguous_regions(
@@ -1630,7 +1809,8 @@ class DatabaseStages:
                         "candidates": written
                         + len(vision_rows)
                         + len(agent_rows)
-                        + len(glyph_rows),
+                        + len(glyph_rows)
+                        + len(fraction_rows),
                         "markup_candidates": len(markup_rows),
                         # The reviewer's measurement lines (#805): read as markup when they carry
                         # text, set aside when they carry none. `None` when the annotations could
@@ -1679,6 +1859,28 @@ class DatabaseStages:
                                 STACKED_FRACTION_FLAG in row.ambiguity_flags for row in glyph_rows
                             )
                         ),
+                        # Stacked fractions read piece by piece (#848), each pre-filled for a
+                        # person: `None` when the route is off, which is not the same fact as its
+                        # having read nothing. The reasons are this route's own sentences.
+                        "fraction_parts_readings": (
+                            None if fraction_refusals is None else len(fraction_rows)
+                        ),
+                        "fraction_parts_refusals": (
+                            None if fraction_refusals is None else sum(fraction_refusals.values())
+                        ),
+                        "fraction_parts_refusal_reasons": (
+                            None
+                            if fraction_refusals is None
+                            else [
+                                f"{count} × {reason}"
+                                for reason, count in fraction_refusals.most_common(
+                                    REPORTED_REFUSALS
+                                )
+                            ]
+                        ),
+                        # The second reader's calls for those pieces (#865), each in
+                        # `model_invocations` and on the drawing set's budget.
+                        "fraction_parts_invocations": fraction_invocations,
                         # What the AI readers have spent on this drawing set so far, against its
                         # cap (#757): once reached, labels go to a reviewer without a model reading.
                         "ai_budget": None if self._meter is None else self._meter.as_payload(),
@@ -2094,6 +2296,11 @@ class DatabaseStages:
                 crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT), fractions
             )
 
+        def layouts(polygon: Polygon) -> tuple[FractionLayout, ...]:
+            return stacked_layouts_shown(
+                crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT), fractions
+            )
+
         def region_of(row: ObservationCandidate) -> tuple[tuple[int, ...], ...]:
             return tuple(tuple(int(value) for value in point) for point in row.polygon)
 
@@ -2161,6 +2368,7 @@ class DatabaseStages:
                     whole_run=whole_run,
                     rotation_degrees=facts.rotation_degrees,
                     stacked=stacked,
+                    layouts=layouts,
                 )
             )
             crop_artifact_id = None if crops is None else crops.first()
@@ -2935,6 +3143,153 @@ class DatabaseStages:
             items.append(_LocatedOcrReading(extent, reading.rotation_degrees))
         return rows, (tuple(items), rows), abstentions
 
+    def _fraction_parts_config_hash(
+        self, drawing: PieceDrawing, engine: OcrEngine, second: _VisionReader
+    ) -> str:
+        """The fraction-parts run's identity: every setting its readings depend on.
+
+        The resolution, how a piece is drawn and the second reader's model are kept readable; the
+        rest — both readers' names and versions, the digits prompt, the detector's settings — goes
+        into a fingerprint beside them, because a run's identity column holds 200 characters and
+        all of it written out runs past that, as the reading agent's did (`ReadingAgentSettings`).
+        """
+        everything = (
+            f"dpi={self._dpi};{drawing.config_hash};engine={engine.name}/{engine.version}"
+            f";second={second.config.extractor}/{second.config.model_id}"
+            f";prompt={DIGITS_PROMPT_ID}"
+            + (
+                ""
+                if self._association is None
+                else f";fraction_bar={self._association.fraction_bar.config_hash}"
+            )
+        )
+        digest = hashlib.sha256(everything.encode()).hexdigest()[:16]
+        return (
+            f"dpi={self._dpi};{drawing.config_hash};second={second.config.model_id};"
+            f"readers={digest}"
+        )
+
+    def _read_page_by_fraction_parts(
+        self,
+        session: Session,
+        *,
+        version_id: UUID,
+        page: Page,
+        task_run_id: UUID,
+        fractions: Sequence[StackedFraction],
+    ) -> tuple[list[ObservationCandidate], Counter[str], int]:
+        """Read each laid-out stacked label piece by piece; record each reading; count the rest.
+
+        `extraction/fraction_parts.py` draws the whole number, numerator and denominator from their
+        own paths, reads each with the OCR engine, and puts the value together in code. A label set
+        in text has no paths and no layout, and is not looked at.
+
+        **A row only where two readers agree on every piece (#865).** The second reader is the vision
+        gate reader, asked for each piece's digits once the OCR engine has read them all
+        (`_PieceReads`); a piece they read differently, or that it does not read, leaves no row and
+        a counted reason, and a person types the value. Its calls are on the drawing set's budget:
+        once that is spent it is asked nothing more, and a label it has not seconded gets no row.
+
+        **Every row carries `STACKED_FRACTION_FLAG`** (#726): however exactly it was read, a stacked
+        fraction goes to a person. `corroborate` keeps any group it is in a raw candidate with no
+        lane, automatic typing refuses it, and the form shows it filled in for a person to tick. Its
+        rows are not handed to the vision readers or the agent.
+
+        **Its own extraction run**, keyed on how the pieces are drawn, which engine and which second
+        reader read them, the second reader's prompt, and the detector's settings, so a reading made
+        under other numbers is another run. A re-run finds its rows and reads nothing; a page where
+        no label was read has no rows to find, so a re-run reads it again and pays the second reader
+        again, under the same budget. A page with no laid-out label opens no run.
+
+        Returns the rows, why each label that was not read was not, and how many calls the second
+        reader made.
+        """
+        drawing = self._fraction_parts
+        assert drawing is not None
+        refusals: Counter[str] = Counter()
+        laid_out = [fraction for fraction in fractions if fraction.layout is not None]
+        if not laid_out:
+            return [], refusals, 0
+        engine = self._ocr()
+        second = next(
+            reader
+            for reader in self._vision_readers
+            if reader.config.extractor == self._vision_gate
+        )
+        run = open_extraction_run(
+            session,
+            task_run_id=task_run_id,
+            extractor=FRACTION_PARTS_EXTRACTOR,
+            extractor_version=FRACTION_PARTS_VERSION,
+            config_hash=self._fraction_parts_config_hash(drawing, engine, second),
+            dpi=self._dpi,
+        )
+        with session.no_autoflush:
+            existing = list(
+                session.execute(
+                    select(ObservationCandidate).where(
+                        ObservationCandidate.extraction_run_id == run.id,
+                        ObservationCandidate.page_id == page.id,
+                    )
+                ).scalars()
+            )
+        if existing:
+            return existing, refusals, 0
+        if page.media_box is None or page.crop_box is None:
+            refusals["the page has no recorded transform, so no reading could be placed"] += len(
+                laid_out
+            )
+            return [], refusals, 0
+        media = tuple(Decimal(value) for value in page.media_box)
+        crop = tuple(Decimal(value) for value in page.crop_box)
+        transform = PageTransform(
+            dpi=self._dpi,
+            rotation=page.rotation,
+            media_box=(media[0], media[1], media[2], media[3]),
+            crop_box=(crop[0], crop[1], crop[2], crop[3]),
+        )
+        rows: list[ObservationCandidate] = []
+        reads = _PieceReads(
+            session=session, run_id=run.id, page_index=page.index, reader=second, meter=self._meter
+        )
+        with traced(
+            "extraction.page.fraction_parts",
+            document_version_id=str(version_id),
+            page_index=page.index,
+            extractor_version=FRACTION_PARTS_VERSION,
+        ):
+            for fraction in laid_out:
+                result = read_fraction_parts(fraction, engine=engine, drawing=drawing, second=reads)
+                if isinstance(result, FractionPartsRefusal):
+                    refusals[result.reason] += 1
+                    continue
+                try:
+                    _extent, corners = page_box_polygon(
+                        result.box, transform, version_id, page.index
+                    )
+                except (TypeError, ValueError):
+                    refusals["the label lies outside the visible page"] += 1
+                    continue
+                row = ObservationCandidate(
+                    document_version_id=version_id,
+                    page_id=page.id,
+                    extraction_run_id=run.id,
+                    raw_text=result.text,
+                    value_numerator=result.value.exact.numerator,
+                    value_denominator=result.value.exact.denominator,
+                    unit=result.value.unit.value,
+                    unit_guess=result.value.unit.value,
+                    semantic_guess=None,
+                    polygon=[[corner.x, corner.y] for corner in corners],
+                    coordinate_space="image",
+                    # Put together in code from the pieces' readings: it has no confidence of its own.
+                    confidence=None,
+                    ambiguity_flags=[STACKED_FRACTION_FLAG],
+                )
+                session.add(row)
+                rows.append(row)
+        return rows, refusals, reads.invocations
+
     def _read_page_by_vision(
         self,
         session: Session,
@@ -3077,9 +3432,10 @@ class DatabaseStages:
                     image_format="png",
                     context=AssembledContext(nearby_text=(), nearby_geometry=()),
                     bound_pt=VISION_CONTEXT_BOUND_PT,
-                    # Still computed, though `_vision_pre_call_refusal` has already kept every
-                    # crop that shows one from this call: the validator's guard stays behind it.
+                    # Both still computed, though `_vision_pre_call_refusal` has already kept every
+                    # crop that shows one from this call: the validator's guards stay behind it.
                     stacked_label=crop_shows_a_stacked_fraction(crop_box, stacked_fractions),
+                    stacked_layouts=stacked_layouts_shown(crop_box, stacked_fractions),
                 )
                 try:
                     candidate = reader.extract(request, recorder)
@@ -3835,11 +4191,12 @@ class DatabaseStages:
             # reviewer entered that number for this run — and evidence is derived, so overriding the
             # explicit thing with the derived one would take an answer away from the person who gave
             # it. It also keeps the Q7 form path behaving exactly as it did.
-            from_evidence = operands_from_evidence(
+            evidence = evidence_operands(
                 session,
                 package_revision_id,
                 [applicable.snapshot.rule for applicable in resolution.applicable],
             )
+            from_evidence = evidence.operands
 
             for applicable in resolution.applicable:
                 rule_id = applicable.snapshot.rule.id
@@ -3852,16 +4209,24 @@ class DatabaseStages:
                     supplied,
                     resolved,
                     discriminators=self._discriminators,
+                    # Readings found on more than one drawing (#826). A value typed for the same
+                    # input still wins, as it does over evidence: the engine ignores an ambiguous
+                    # input it was given an operand for.
+                    ambiguous=evidence.ambiguous.get(rule_id, {}),
                 )
-                # A pairing input evidence was not allowed to fill (#794), named in the reviewer's
-                # sentence — otherwise "could not resolve 'architectural_cabinets'" reads as though
-                # labelling a cabinet would fix it, when it is the tag that is missing.
-                if finding.outcome is Outcome.NOT_FOUND and (
-                    identifier_paired_inputs(applicable.snapshot.rule) - supplied.keys()
-                ):
-                    finding = replace(
-                        finding, reason=f"{IDENTIFIER_PAIRING_WITHHELD} ({finding.reason})"
-                    )
+                # A run evidence was not allowed to fill (#794, #833), named in its check's own
+                # sentence — otherwise "could not resolve 'shop_cabinets'" reads as though labelling
+                # a cabinet would fix it, when it is the tag, or the order along the wall, that is
+                # missing. Sorted so that a rule with two such sentences reads the same every run.
+                unfilled = sorted(
+                    {
+                        why
+                        for name, why in position_sensitive_inputs(applicable.snapshot.rule).items()
+                        if name not in supplied
+                    }
+                )
+                if finding.outcome is Outcome.NOT_FOUND and unfilled:
+                    finding = replace(finding, reason=f"{' '.join(unfilled)} ({finding.reason})")
                 record_finding(
                     session,
                     package_revision_id=package_revision_id,
@@ -4224,6 +4589,13 @@ def region_facts(
     return facts, whole_run
 
 
+def _shows(crop_box: tuple[int, int, int, int], fraction: StackedFraction) -> bool:
+    left, top, right, bottom = crop_box
+    xs = [point.x for point in fraction.image_extent]
+    ys = [point.y for point in fraction.image_extent]
+    return min(xs) <= right and left <= max(xs) and min(ys) <= bottom and top <= max(ys)
+
+
 def crop_shows_a_stacked_fraction(
     crop_box: tuple[int, int, int, int], fractions: Sequence[StackedFraction]
 ) -> bool:
@@ -4233,13 +4605,22 @@ def crop_shows_a_stacked_fraction(
     edge is still there to be promoted into a whole number. The crop's own `(left, top, right,
     bottom)` and the fraction's corners are both page pixels at the reader's dpi.
     """
-    left, top, right, bottom = crop_box
-    for fraction in fractions:
-        xs = [point.x for point in fraction.image_extent]
-        ys = [point.y for point in fraction.image_extent]
-        if min(xs) <= right and left <= max(xs) and min(ys) <= bottom and top <= max(ys):
-            return True
-    return False
+    return any(_shows(crop_box, fraction) for fraction in fractions)
+
+
+def stacked_layouts_shown(
+    crop_box: tuple[int, int, int, int], fractions: Sequence[StackedFraction]
+) -> tuple[FractionLayout, ...]:
+    """The layouts of the stacked fractions a crop shows, by the rule above (#834).
+
+    A fraction set in text has no layout and adds none, so a crop showing only such fractions shows
+    a stacked fraction (`crop_shows_a_stacked_fraction`) and has no layouts to check a reading by.
+    """
+    return tuple(
+        fraction.layout
+        for fraction in fractions
+        if fraction.layout is not None and _shows(crop_box, fraction)
+    )
 
 
 def _vision_pre_call_refusal(

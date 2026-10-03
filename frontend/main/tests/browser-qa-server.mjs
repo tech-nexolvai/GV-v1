@@ -12,10 +12,12 @@ import { pageFixture } from './browser-qa-pages.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const failCropOnce = new Set();
+const settingCropAttempts = new Map();
 let cropRetryMode = false;
 let approvedMode = false;
 let pageMode = 'populated';
 let reportErrorMode = false;
+let settingMode = false;
 let scenario = createScenarioState();
 const port = Number(process.env.GV_QA_PORT ?? '5193');
 const qa = {
@@ -33,7 +35,9 @@ const qa = {
         approvedMode = url.searchParams.get('approved') === '1';
         pageMode = url.searchParams.get('pages') ?? 'populated';
         reportErrorMode = url.searchParams.get('report-error') === '1';
+        settingMode = url.searchParams.get('settings') === '1';
         failCropOnce.clear();
+        settingCropAttempts.clear();
         const requestedScenario = url.searchParams.get('scenario');
         if (requestedScenario !== scenario.name || url.searchParams.get('reset') === '1') {
           scenario = createScenarioState(requestedScenario);
@@ -96,15 +100,25 @@ const qa = {
       if (path.endsWith('/packages')) return json({ items: visiblePackages, next_cursor: null, limit: 50, ordering: 'created_at' });
       if (path.endsWith('/chat/models')) return json({ models: [], default: null });
       if (path.endsWith('/semantic-types')) return json(['countertop_depth', 'filler_width']);
-      if (path.endsWith('/required-inputs')) return json(needed);
+      if (path.endsWith('/required-inputs')) return json(settingMode ? { ...needed, parameters: [
+        { name: 'countertop_overhang', scope: 'project', rule_ids: ['CT-WIDTH-001'], blocked: false, declared_default: null,
+          sources: [{ value: 'G.C / Client', guidance: 'Synthetic source guidance.' }],
+          found: { proposal_id: 'synthetic-setting-passage', page_index: 0, document_kind: 'architectural', has_crop: true } },
+      ] } : needed);
       if (path.endsWith('/candidates')) return json({ candidates, total: candidates.length });
       if (path.endsWith('/views')) return json({ views: [], total: 0 });
       if (path.endsWith('/findings/summary')) return json({ total: rows.length, failed: rows.length ? 1 : 0, passed: rows.length ? 1 : 0, review_required: rows.length ? 1 : 0, not_found: rows.length ? 1 : 0, no_applicable_rule: 0, critical_failed: 0 });
       if (path.endsWith('/findings')) return json({ items: rows, next_cursor: null, limit: 50, ordering: 'synthetic-test-order' });
       if (path.endsWith('/chain')) { const id = path.split('/').at(-2); return chains[id] ? json(chains[id]) : refusal('Unknown synthetic finding.'); }
       if (path.endsWith('/crop')) {
+        if (settingMode && cropRetryMode && path.includes('/parameter-proposals/')) {
+          const attempts = (settingCropAttempts.get(path) ?? 0) + 1;
+          settingCropAttempts.set(path, attempts);
+          // React StrictMode mounts twice; keep the initial failure visible until manual retry.
+          if (attempts <= 2) return refusal('Synthetic passage crop temporarily unavailable.', 503);
+        }
         // Optional query enables an isolated retry check without changing the actual app.
-        if (cropRetryMode && !failCropOnce.has(path)) { failCropOnce.add(path); return refusal('Synthetic QA: temporary crop failure. Retry is safe.', 503); }
+        if (cropRetryMode && !path.includes('/parameter-proposals/') && !failCropOnce.has(path)) { failCropOnce.add(path); return refusal('Synthetic QA: temporary crop failure. Retry is safe.', 503); }
         scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path, status: 200, result: 'Synthetic PNG served' });
         res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' }); res.end(cropPng(path.includes('shop'))); return;
       }

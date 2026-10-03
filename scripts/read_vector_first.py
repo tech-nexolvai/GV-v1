@@ -195,6 +195,9 @@ def _read_regions(
             # The region's own flag: the region touches a detected fraction. Only when the layers
             # were read with a detector; otherwise `False` and the readout says nothing about it.
             stacked_label=entry.region.stacked_glyphs,
+            # None stated: the region says only that it touches a fraction, not which one, and a
+            # layout is for checking a reading of a crop that shows it. The readout accepts nothing.
+            stacked_layouts=(),
         )
         started = time.monotonic()
         row: dict[str, Any] = {
