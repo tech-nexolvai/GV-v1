@@ -67,3 +67,27 @@ does not establish new mobile coverage. Prior mobile checks are separate evidenc
 
 Backend processing, production report generation, OCR, provider behavior, screen readers,
 physical devices and native file-picker interaction are not proven by this fixture run.
+
+## Correction and exception save recovery
+
+The `decision-save` scenario is separate from the connected flow and the original evidence fixtures:
+
+`http://127.0.0.1:5199/?scenario=decision-save&reset=1#/review/00000000-0000-4000-8000-000000000101`
+
+1. Open CT-DEPTH-001 details → Correct. Enter `25 1/2 in`. Submit.
+   The fixture deliberately delays, then rejects the first save with 503. Inputs/actions should be
+   disabled during saving. On rejection the draft stays open and its error is beside the input.
+2. Close and reopen the details. The unsent draft should remain. Explicitly submit again. Only after
+   201 should the form close and the recorded reviewer action appear. The FAIL verdict stays FAIL.
+3. Open CAB-FILLER-001 → Exception. Enter `Synthetic QA exception` and date `2030-01-01`.
+   Repeat the reject/retry check. Both fields remain after rejection; one action is recorded on success.
+4. Inspect `/__qa` for two attempts per decision, two actions, and unchanged findings.
+
+This fixture limits its accepted payloads to the exact examples above. It does not parse values,
+calculate verdicts or persist anything to a backend. Its depth chain deliberately has only one
+correctable observation; other scenarios retain the original two observations. In the `approval`
+scenario the two-observation correction must still be refused without clearing the draft. Findings
+without an observation must likewise keep the draft and report the refusal.
+
+Automated state tests: `npm run test:decision-save` (rejection, refusal, concurrency, retry and success).
+Draft retention applies while the finding card stays mounted; it is not cross-refresh persistence.

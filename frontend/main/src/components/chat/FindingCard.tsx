@@ -3,6 +3,7 @@ import { ChevronRight, FileSearch, ExternalLink, CheckCircle, TriangleAlert } fr
 import type { Finding } from '../../data/types';
 import { OutcomeBadge, SeverityDot } from '../ui/Badge';
 import { OutcomeIcon } from '../ui/OutcomeIcon';
+import { createDecisionSaver, type DecisionSaveResult } from './decisionSave';
 import './FindingCard.css';
 
 function readableLabel(value: string): string {
@@ -34,10 +35,10 @@ interface FindingCardProps {
    * the two go to a different endpoint. Sending `correct` as a bare kind recorded that something had
    * been corrected without saying to what, and the ledger stayed empty.
    */
-  onCorrect: (findingId: string, correctedValue: string) => void;
+  onCorrect: (findingId: string, correctedValue: string) => Promise<DecisionSaveResult>;
   /** Grant an exception, with the reason and the date it runs out. Both required — a permanent
    *  silent exception is how a check gets switched off and nobody remembers. */
-  onExcept: (findingId: string, reason: string, expiresAt: string) => void;
+  onExcept: (findingId: string, reason: string, expiresAt: string) => Promise<DecisionSaveResult>;
 }
 
 export function FindingCard({
@@ -57,6 +58,9 @@ export function FindingCard({
   const [correctedValue, setCorrectedValue] = useState('');
   const [reason, setReason] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
+  const [saveDecision] = useState(createDecisionSaver);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const hasAction = finding.reviewer_action !== null;
 
@@ -235,21 +239,25 @@ export function FindingCard({
                   {finding.outcome !== 'NOT_FOUND' && (
                     <button
                       className="btn btn--reviewer"
+                      disabled={isSaving}
                       onClick={() => onAction(finding.id, 'confirm')}
                     >Confirm</button>
                   )}
                   <button
                     className="btn btn--reviewer"
-                    onClick={() => setPending(pending === 'correct' ? null : 'correct')}
+                    disabled={isSaving}
+                    onClick={() => { setSaveError(null); setPending(pending === 'correct' ? null : 'correct'); }}
                     aria-expanded={pending === 'correct'}
                   >Correct</button>
                   <button
                     className="btn btn--reviewer"
-                    onClick={() => setPending(pending === 'except' ? null : 'except')}
+                    disabled={isSaving}
+                    onClick={() => { setSaveError(null); setPending(pending === 'except' ? null : 'except'); }}
                     aria-expanded={pending === 'except'}
                   >Exception</button>
                   <button
                     className="btn btn--reviewer btn--reviewer--dismiss"
+                    disabled={isSaving}
                     onClick={() => onAction(finding.id, 'dismiss')}
                   >Dismiss</button>
                 </div>
@@ -258,12 +266,14 @@ export function FindingCard({
               {pending === 'correct' && (
                 <form
                   className="finding-card__decision"
+                  aria-busy={isSaving}
                   onSubmit={(event) => {
                     event.preventDefault();
                     if (!correctedValue.trim()) return;
-                    onCorrect(finding.id, correctedValue.trim());
-                    setPending(null);
-                    setCorrectedValue('');
+                    void saveDecision(() => onCorrect(finding.id, correctedValue.trim()), {
+                      busy: setIsSaving, error: setSaveError,
+                      saved: () => { setPending(null); setCorrectedValue(''); },
+                    });
                   }}
                 >
                   <label className="finding-card__decision-label" htmlFor={`c-${finding.id}`}>
@@ -276,27 +286,31 @@ export function FindingCard({
                        correction. A bare number is refused rather than assumed to be inches. */
                     placeholder={'e.g. 25 1/2"'}
                     value={correctedValue}
+                    disabled={isSaving}
+                    aria-describedby={saveError ? `save-error-${finding.id}` : undefined}
                     onChange={(e) => setCorrectedValue(e.target.value)}
                     autoFocus
                   />
-                  <button className="btn btn--reviewer" type="submit" disabled={!correctedValue.trim()}>
-                    Record correction
+                  <button className="btn btn--reviewer" type="submit" disabled={isSaving || !correctedValue.trim()}>
+                    {isSaving ? 'Saving…' : 'Record correction'}
                   </button>
+                  {saveError && <p id={`save-error-${finding.id}`} className="finding-card__save-error" role="alert">{saveError}</p>}
                 </form>
               )}
 
               {pending === 'except' && (
                 <form
                   className="finding-card__decision"
+                  aria-busy={isSaving}
                   onSubmit={(event) => {
                     event.preventDefault();
                     if (!reason.trim() || !expiresAt) return;
                     // Midday rather than midnight: a date input gives no time, and an exception
                     // stamped 00:00 in a browser east of UTC expires the day before it was granted.
-                    onExcept(finding.id, reason.trim(), new Date(`${expiresAt}T12:00:00Z`).toISOString());
-                    setPending(null);
-                    setReason('');
-                    setExpiresAt('');
+                    void saveDecision(() => onExcept(finding.id, reason.trim(), new Date(`${expiresAt}T12:00:00Z`).toISOString()), {
+                      busy: setIsSaving, error: setSaveError,
+                      saved: () => { setPending(null); setReason(''); setExpiresAt(''); },
+                    });
                   }}
                 >
                   <label className="finding-card__decision-label" htmlFor={`r-${finding.id}`}>
@@ -307,6 +321,8 @@ export function FindingCard({
                     className="value-input"
                     placeholder="e.g. the vendor confirmed the site dimension by phone"
                     value={reason}
+                    disabled={isSaving}
+                    aria-describedby={saveError ? `save-error-${finding.id}` : undefined}
                     onChange={(e) => setReason(e.target.value)}
                     autoFocus
                   />
@@ -321,15 +337,18 @@ export function FindingCard({
                        somebody to look again, and the person who looks again is usually not the
                        person who granted it. */
                     value={expiresAt}
+                    disabled={isSaving}
+                    aria-describedby={saveError ? `save-error-${finding.id}` : undefined}
                     onChange={(e) => setExpiresAt(e.target.value)}
                   />
                   <button
                     className="btn btn--reviewer"
                     type="submit"
-                    disabled={!reason.trim() || !expiresAt}
+                    disabled={isSaving || !reason.trim() || !expiresAt}
                   >
-                    Grant until this date
+                    {isSaving ? 'Saving…' : 'Grant until this date'}
                   </button>
+                  {saveError && <p id={`save-error-${finding.id}`} className="finding-card__save-error" role="alert">{saveError}</p>}
                 </form>
               )}
 

@@ -19,7 +19,8 @@ const flowFindings = findings.map((finding, i) => ({ ...finding,
 
 export function createScenarioState(name = null) {
   return {
-    name: ['partial-upload', 'approval', 'review-flow'].includes(name) ? name : null,
+    name: ['partial-upload', 'approval', 'review-flow', 'decision-save'].includes(name) ? name : null,
+    decisionAttempts: { correction: 0, exception: 0 },
     packageCreates: 0, createdPackage: null, documents: [], sessions: [], actions: [], approved: false,
     storageAttempts: 0, storageFailures: 0, extractionRequests: 0, events: [],
     extracted: false, storedMeasurements: null, checksRequests: 0, resultsReady: false,
@@ -51,6 +52,7 @@ export function scenarioSnapshot(state) {
     sessions: state.sessions, actions: state.actions, reviewedCount: new Set(state.actions.map((action) => action.finding_id)).size,
     findingCount: state.name === 'review-flow' && !state.resultsReady ? 0 : findings.length,
     approved: state.approved, events: state.events,
+    decisionAttempts: state.decisionAttempts,
     extracted: state.extracted, storedMeasurements: state.storedMeasurements,
     checksRequests: state.checksRequests, resultsReady: state.resultsReady,
   };
@@ -74,6 +76,12 @@ function respondToScenario(state, method, path, body = {}) {
     if (pkg) return response(pkg);
     const findingPackage = scenarioPackages(state).find((item) => path === `${prefix}/packages/${item.id}/findings`);
     if (findingPackage) return response({ items: scenarioFindings(state, findingPackage.id), next_cursor: null, limit: 50, ordering: 'synthetic-test-order' });
+    if (state.name === 'decision-save' && path === `${prefix}/packages/${populated}/findings/${findings[0].id}/chain`) {
+      // This explicit fixture has one correctable drawing operand; the original two-crop fixture
+      // remains unchanged for all other scenarios. Approved numeric facts remain in the trace.
+      const chain = chains[findings[0].id];
+      return response({ ...chain, operands: chain.operands.map(op => op.name === 'approved_depth' ? { ...op, evidence: null } : op) });
+    }
     if (flow && path === `${prefix}/packages/${uploadPackage}/required-inputs`) return response({ ...needed, confirmed_readings: [], revision_state: state.createdPackage?.state ?? 'CREATED' });
     if (flow && path.endsWith('/chain')) {
       const i = flowFindings.findIndex((finding) => path === `${prefix}/packages/${uploadPackage}/findings/${finding.id}/chain`);
@@ -147,7 +155,7 @@ function respondToScenario(state, method, path, body = {}) {
     }
   }
 
-  if (state.name === 'approval' || flow) {
+  if (state.name === 'approval' || flow || state.name === 'decision-save') {
     if (method === 'POST' && path === `${prefix}/packages/${targetPackage}/review-sessions`) {
       if (flow && !state.extracted) return refuse('Upload the fixture pair before opening a sitting.');
       if (body.package_revision_id !== targetRevision) return refuse('Wrong synthetic revision.', 422);
@@ -157,6 +165,20 @@ function respondToScenario(state, method, path, body = {}) {
       return response(session, 201);
     }
     const session = state.sessions.find((item) => path.startsWith(`${prefix}/review-sessions/${item.id}/`));
+    if (state.name === 'decision-save' && session && method === 'POST' && /\/(evidence|exceptions)$/.test(path)) {
+      const correction = path.endsWith('/evidence');
+      const kind = correction ? 'correction' : 'exception';
+      if (body.finding_id !== findings[correction ? 0 : 2].id) return refuse('Wrong synthetic finding.', 422);
+      if (correction ? (body.observation_id !== 'synthetic-shop-crop' || body.action !== 'correct' || body.corrected_value !== '25 1/2 in')
+        : (body.scope !== 'finding' || body.scope_id !== body.finding_id || body.reason !== 'Synthetic QA exception' || body.expires_at !== '2030-01-01T12:00:00.000Z')) return refuse('Use only the documented synthetic decision payload.', 422);
+      state.decisionAttempts[kind] += 1;
+      if (state.decisionAttempts[kind] === 1) return refuse(`Synthetic ${kind} save rejected once. Your input can be retried.`, 503);
+      if (state.actions.some(item => item.finding_id === body.finding_id)) return refuse('Synthetic decision already recorded.');
+      const action = { id: `synthetic-${kind}-action`, finding_id: body.finding_id, action: correction ? 'correct' : 'except', actor: 'Synthetic QA reviewer', note: '', created_at: timestamp };
+      state.actions.push(action);
+      return response(correction ? { action, original_observation_id: 'synthetic-shop-crop', resulting_observation_id: 'synthetic-corrected-reading', original_value: '101/4 in', resulting_value: '51/2 in' }
+        : { id: 'synthetic-exception', review_action_id: action.id, scope: body.scope, scope_id: body.scope_id, reason: body.reason, expires_at: body.expires_at, approved_by: action.actor, created_at: timestamp }, 201);
+    }
     if (session && method === 'POST' && path.endsWith('/actions')) {
       if (state.approved) return refuse('The synthetic review is already signed off.');
       if (!scenarioFindings(state, targetPackage).some((finding) => finding.id === body.finding_id) || !['confirm', 'dismiss'].includes(body.action)) return refuse('Only confirm/dismiss of existing synthetic findings is implemented.', 422);
