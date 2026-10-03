@@ -178,3 +178,92 @@ def test_a_failed_phrase_build_takes_back_its_own_rows_and_nothing_else(
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# The value-hunter (#881)
+# ---------------------------------------------------------------------------
+
+
+def test_the_value_hunter_is_off_unless_switched_on(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Off by default. Outcome: the extraction says so, with the phrase index built all the same."""
+    import scripts.drain_outbox as worker
+    from workflow.value_hunter import VALUE_HUNTER_ENV
+
+    revision = _uploaded_revision(session, "value hunter off")
+    monkeypatch.delenv(VALUE_HUNTER_ENV, raising=False)
+    monkeypatch.setenv(worker.PHRASE_GAP_VARIABLE, "0.3")
+    monkeypatch.setattr(worker, "_stages", lambda **_: _NoCandidatesStages())
+
+    results = worker._extract_package(session, revision.id, str(uuid4()))
+
+    assert results["package_text"]["built"] is True  # type: ignore[index]
+    assert results["value_hunter"] == {"ran": False, "reason": "GV_VALUE_HUNTER is off"}
+
+
+def test_the_value_hunter_runs_once_the_phrase_index_is_built(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Switched on, it runs after the index and reports its endings; with no index built in this
+    pass it does not run, because the index is what it searches. Nothing is published here, so
+    nothing is outstanding."""
+    import scripts.drain_outbox as worker
+    from workflow.value_hunter import VALUE_HUNTER_ENV
+
+    monkeypatch.setenv(VALUE_HUNTER_ENV, "1")
+    monkeypatch.setattr(worker, "_stages", lambda **_: _NoCandidatesStages())
+
+    monkeypatch.setenv(worker.PHRASE_GAP_VARIABLE, "0.3")
+    built = _uploaded_revision(session, "value hunter on")
+    results = worker._extract_package(session, built.id, str(uuid4()))
+    assert results["value_hunter"] == {
+        "ran": True,
+        "outstanding": 0,
+        "proposed": [],
+        "not_found": {},
+    }
+
+    monkeypatch.delenv(worker.PHRASE_GAP_VARIABLE)
+    unbuilt = _uploaded_revision(session, "value hunter with no index")
+    results = worker._extract_package(session, unbuilt.id, str(uuid4()))
+    assert results["value_hunter"] == {
+        "ran": False,
+        "reason": "the phrase index was not built, so there is nothing to search",
+    }
+
+
+def test_a_failed_hunt_takes_back_its_own_rows_and_nothing_else(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**It never fails the extraction.** A hunt that writes and then fails leaves no row behind,
+    and the revision still reaches the reviewer exactly as it would have without it."""
+    import scripts.drain_outbox as worker
+    from workflow import value_hunter
+
+    revision = _uploaded_revision(session, "value hunter failed")
+
+    def _writes_then_fails(hunt_session: Session, *_: object) -> object:
+        hunt_session.add(Project(name="written by a failing hunt"))
+        hunt_session.flush()
+        raise RuntimeError("the hunt failed part-way through")
+
+    monkeypatch.setenv(value_hunter.VALUE_HUNTER_ENV, "1")
+    monkeypatch.setenv(worker.PHRASE_GAP_VARIABLE, "0.3")
+    monkeypatch.setattr(worker, "_stages", lambda **_: _NoCandidatesStages())
+    monkeypatch.setattr(value_hunter, "hunt_values", _writes_then_fails)
+
+    results = worker._extract_package(session, revision.id, str(uuid4()))
+    session.commit()
+
+    assert results["value_hunter"] == {
+        "ran": False,
+        "reason": "the value hunter failed: RuntimeError",
+    }
+    state = session.scalar(select(PackageRevision.state).where(PackageRevision.id == revision.id))
+    assert state == PackageState.NEEDS_INPUT.value
+    assert (
+        session.scalar(select(Project.id).where(Project.name == "written by a failing hunt"))
+        is None
+    )
