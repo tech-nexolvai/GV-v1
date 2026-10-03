@@ -443,3 +443,192 @@ def test_the_caller_must_say_who_will_look() -> None:
         render_page(DRAWING, 0, **arguments)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="vendor_only"):
         render_page(DRAWING, 0, **arguments, vendor_only=None)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# One region at a higher dpi, without the whole sheet (#907)
+# ---------------------------------------------------------------------------
+
+#: Filled squares whose edges fall on whole points, so at a multiple of 72 dpi every edge is on a
+#: pixel boundary and no pixel is partly covered: nothing for anti-aliasing to round.
+_ON_THE_GRID = b"0 0 0 rg 20 30 40 25 re f 1 0 0 rg 90 10 5 70 re f 0 0 1 rg 150 60 30 30 re f\n"
+
+#: Thin strokes and a diagonal: edges that cover pixels partly, which anti-aliasing shades.
+_STROKES = (
+    b"0.3 w 21 40 m 127 47 l S 1 0 0 RG 0.7 w 60 10 m 64 90 l S 0 0 0 RG 2 w 140 15 m 185 85 l S\n"
+)
+
+_VARIANTS = [
+    {},
+    {"rotate": b" /Rotate 90"},
+    {"rotate": b" /Rotate 270"},
+    {"rotate": b" /Rotate 180"},
+    {"crop": b"[30 15 190 95]"},
+    {"crop": b"[30 15 190 95]", "rotate": b" /Rotate 90"},
+    # A crop box reaching past the media box: the one case where PDFium's bitmap is shifted from
+    # the declared frame, and `render_page` reframes it (`_reframe_offset`).
+    {"crop": b"[-20 -10 180 90]"},
+]
+_VARIANT_IDS = [
+    "plain",
+    "rotate-90",
+    "rotate-270",
+    "rotate-180",
+    "crop-box",
+    "crop-box-rotate-90",
+    "crop-box-past-the-media",
+]
+
+
+def _variant_pdf(content: bytes, variant: dict[str, bytes]) -> bytes:
+    data = _pdf(content, box=b"[0 0 200 100]", rotate=variant.get("rotate", b""))
+    if "crop" in variant:
+        data = data.replace(b" /Resources", b" /CropBox " + variant["crop"] + b" /Resources")
+    return data
+
+
+def _boxes(width: int, height: int) -> list[tuple[int, int, int, int]]:
+    return [
+        (0, 0, width, height),
+        (width // 7, height // 5, width // 7 + width // 3, height // 5 + height // 2),
+        (width - width // 4, height - height // 3, width, height),
+        (1, 2, 3, 5),
+    ]
+
+
+def _pixels(png: bytes) -> list[tuple[int, ...]]:
+    from evidence.crop import decode_rgb_png
+
+    _w, _h, rgb = decode_rgb_png(png)
+    return [tuple(rgb[index : index + 3]) for index in range(0, len(rgb), 3)]
+
+
+def _largest_difference(first: bytes, second: bytes) -> int:
+    return max(
+        max(abs(a - b) for a, b in zip(one, two, strict=True))
+        for one, two in zip(_pixels(first), _pixels(second), strict=True)
+    )
+
+
+def _region_of(rendered: RenderedPage, box: tuple[int, int, int, int]) -> bytes:
+    from evidence.crop import encode_png
+
+    left, top, right, bottom = box
+    stride = rendered.width_px * 3
+    rows = b"".join(
+        rendered.rgb_bytes[y * stride + left * 3 : y * stride + right * 3]
+        for y in range(top, bottom)
+    )
+    return encode_png(right - left, bottom - top, rows)
+
+
+@pytest.mark.parametrize("variant", _VARIANTS, ids=_VARIANT_IDS)
+@pytest.mark.parametrize("dpi", [72, 216, 432])
+def test_a_region_on_the_pixel_grid_is_exactly_those_pixels_of_the_whole_page(
+    variant: dict[str, bytes], dpi: int
+) -> None:
+    """**The same place, at the same scale.** Where no pixel is partly covered, every region of
+    `render_region` equals the same rectangle cut from `render_page` at that dpi, byte for byte —
+    on a plain page, a turned page and a page with a non-zero crop box."""
+    from extraction.rasterise import render_region
+
+    data = _variant_pdf(_ON_THE_GRID, variant)
+    whole = _render(data, dpi=dpi, maximum_pixels=50_000_000)
+    for box in _boxes(whole.width_px, whole.height_px):
+        region = render_region(
+            data, 0, box_px=box, dpi=dpi, maximum_pixels=50_000_000, vendor_only=True
+        )
+        assert region == _region_of(whole, box), (variant, dpi, box)
+
+
+@pytest.mark.parametrize("variant", _VARIANTS, ids=_VARIANT_IDS)
+@pytest.mark.parametrize("dpi", [150, 517])
+def test_a_shaded_edge_differs_by_two_levels_at_most_and_a_moved_region_by_far_more(
+    variant: dict[str, bytes], dpi: int
+) -> None:
+    """**Where an edge is shaded, pdfium may round it a level or two differently** when it draws a
+    region rather than the page: measured, never more than two levels of 255 on these strokes and
+    one on every `AI_Set_2` key crop. The comparison can see a misplaced region: the same region
+    one pixel over differs by far more than that."""
+    from extraction.rasterise import render_region
+
+    data = _variant_pdf(_STROKES, variant)
+    whole = _render(data, dpi=dpi, maximum_pixels=50_000_000)
+    width, height = whole.width_px, whole.height_px
+    for box in _boxes(width, height)[:3]:
+        region = render_region(
+            data, 0, box_px=box, dpi=dpi, maximum_pixels=50_000_000, vendor_only=True
+        )
+        assert _largest_difference(region, _region_of(whole, box)) <= 2, (variant, dpi, box)
+    inner = (width // 8, height // 8, width - width // 8, height - height // 8)
+    moved = (inner[0] + 1, inner[1], inner[2] + 1, inner[3])
+    region = render_region(
+        data, 0, box_px=inner, dpi=dpi, maximum_pixels=50_000_000, vendor_only=True
+    )
+    assert _largest_difference(region, _region_of(whole, moved)) > 100
+
+
+def test_a_region_past_the_page_edge_is_page_background() -> None:
+    """Nothing is drawn beyond the page; the part of a box past its edge is white, as the whole
+    page's reframing fills it."""
+    from evidence.crop import decode_rgb_png
+    from extraction.rasterise import render_region
+
+    whole = _render(RED_PAGE, dpi=72)
+    png = render_region(
+        RED_PAGE,
+        0,
+        box_px=(whole.width_px - 2, 0, whole.width_px + 3, 1),
+        dpi=72,
+        maximum_pixels=100,
+        vendor_only=True,
+    )
+    width, height, rgb = decode_rgb_png(png)
+    assert (width, height) == (5, 1)
+    pixels = [tuple(rgb[index : index + 3]) for index in range(0, len(rgb), 3)]
+    assert pixels[:2] == [(255, 0, 0), (255, 0, 0)]
+    assert pixels[2:] == [(255, 255, 255)] * 3
+
+
+def test_a_region_is_shown_the_vendor_drawing_only() -> None:
+    """**#742 holds here too.** The reviewer's red note is removed before a region is drawn."""
+    from evidence.crop import decode_rgb_png
+    from extraction.rasterise import render_region
+
+    sheet = _reviewed_sheet()
+    png = render_region(
+        sheet, 0, box_px=(215, 340, 285, 410), dpi=150, maximum_pixels=10_000, vendor_only=True
+    )
+    _w, _h, rgb = decode_rgb_png(png)
+    pixels = [rgb[index : index + 3] for index in range(0, len(rgb), 3)]
+    assert not any(r > 200 and g < 60 and b < 60 for r, g, b in pixels)
+    assert any(r < 60 and g < 60 and b < 60 for r, g, b in pixels)
+
+
+@pytest.mark.parametrize(
+    ("box", "error"),
+    [
+        ((10, 10, 10, 20), ValueError),
+        ((10, 20, 30, 10), ValueError),
+        ((-1, 0, 10, 10), ValueError),
+        ((0, 0, 10), TypeError),
+        ((0, 0, 10.0, 10), TypeError),
+        ((0, 0, True, 10), TypeError),
+    ],
+)
+def test_a_region_must_be_a_rectangle_of_whole_pixels(box: object, error: type) -> None:
+    from extraction.rasterise import render_region
+
+    with pytest.raises(error):
+        render_region(DRAWING, 0, box_px=box, dpi=150, maximum_pixels=10_000, vendor_only=True)  # type: ignore[arg-type]
+
+
+def test_a_region_over_its_budget_is_refused_before_it_is_drawn() -> None:
+    from extraction.rasterise import render_region
+
+    with pytest.raises(PageTooLarge, match="budget"):
+        render_region(
+            DRAWING, 0, box_px=(0, 0, 101, 100), dpi=150, maximum_pixels=10_000, vendor_only=True
+        )
+    with pytest.raises(TypeError, match="vendor_only"):
+        render_region(DRAWING, 0, box_px=(0, 0, 10, 10), dpi=150, maximum_pixels=10_000, vendor_only=None)  # type: ignore[arg-type]

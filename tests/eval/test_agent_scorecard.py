@@ -46,6 +46,7 @@ from evidence.crop import decode_rgb_png
 from extraction.agent.tools import VlmRole
 from extraction.agent.trigger import AmbiguityReason
 from extraction.glyph_bands import FractionLayout
+from extraction.models.nova import ReaderPicture
 from storage.local import LocalStore
 from tests.workflow.test_association import SETTINGS
 from tests.workflow.test_reading_agent import LABEL, SHEET, _settings
@@ -379,6 +380,7 @@ class _Reader:
     extractor: str
     vendor: str = "Amazon"
     widths: list[int] = field(default_factory=list)
+    picture: ReaderPicture = ReaderPicture.AS_CUT
 
     def read(
         self, png: bytes, *, stacked_label: bool, stacked_layouts: tuple[FractionLayout, ...]
@@ -438,6 +440,7 @@ def test_a_cut_crop_the_pair_refuses_is_widened_by_the_agent_and_proposed_whole(
         settings=settings,
         key_dpi=KEY_DPI,
         margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
+        pictures=None,
     )
 
     assert result.facts.cut_at_edge

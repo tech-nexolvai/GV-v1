@@ -256,6 +256,28 @@ def test_two_models_of_different_vendors_agreeing_still_confirm() -> None:
     assert result.lane is CorroborationLane.SECOND_READER
 
 
+QWEN3_VL = ("bedrock-qwen3-vl-235b", "qwen.qwen3-vl-235b-a22b")
+NOVA_2_LITE_TAUGHT = ("bedrock-nova-2-lite-taught", "us.amazon.nova-2-lite-v1:0")
+
+
+def test_the_new_pair_agreeing_confirms_it_two_vendors() -> None:
+    """**#907's pair.** Input: Qwen3-VL and Nova 2 Lite (as the trial measured it, through its
+    profile) agree. Outcome: CORROBORATED on the second-reader lane — Qwen and Amazon are two
+    vendors (#775)."""
+    result = corroborate((_model("a", QWEN3_VL), _model("b", NOVA_2_LITE_TAUGHT)))
+
+    assert result.status is EvidenceStatus.CORROBORATED
+    assert result.lane is CorroborationLane.SECOND_READER
+
+
+def test_nova_2_lite_asked_two_ways_is_still_one_vendor() -> None:
+    """Input: Nova 2 Lite on the tool path and Nova 2 Lite taught agree. Outcome: RAW with no lane:
+    one model asked twice is one witness, whatever the words or the picture."""
+    result = corroborate((_model("a", NOVA_2_LITE), _model("b", NOVA_2_LITE_TAUGHT)))
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None)
+
+
 def test_a_disagreement_is_a_conflict_whatever_vendor_the_readers_are() -> None:
     """**The vendor rule makes agreement harder, and nothing else.** Input: two Mistral models
     disagree. Outcome: CONFLICTING. Why: a disagreement is a reviewer's to decide, however alike

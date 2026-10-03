@@ -47,7 +47,7 @@ from evidence.polygon import Polygon
 from extraction.annotations import PathSegment, SegmentKind, VectorPath
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.workflow.test_cross_route_corroboration import _reader
+from tests.workflow.test_cross_route_corroboration import _Reader, _reader
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import (
@@ -501,3 +501,63 @@ def test_a_disagreement_in_a_marked_crop_is_still_a_conflict(
         "bedrock-ministral-3-3b": ("CONFLICTING", "SECOND_READER"),
     }
     assert payload["agreement_refusals"] == 0
+
+
+# ---------------------------------------------------------------------------
+# The new pair, Qwen3-VL + Nova 2 Lite (#907)
+# ---------------------------------------------------------------------------
+
+
+def _new_pair(reading: str) -> tuple[_Reader, _Reader]:
+    """The two readers #907 makes the pair, as they are configured: Qwen on the crop as cut, Nova 2
+    Lite on the label upright and sharper."""
+    from extraction.models.nova import (
+        NOVA_2_LITE_TAUGHT_EXTRACTOR,
+        QWEN3_VL_235B_EXTRACTOR,
+        vision_config_for_extractor,
+    )
+
+    configs = [
+        vision_config_for_extractor(extractor)
+        for extractor in (QWEN3_VL_235B_EXTRACTOR, NOVA_2_LITE_TAUGHT_EXTRACTOR)
+    ]
+    assert all(config is not None for config in configs)
+    return _Reader(configs[0], reading=reading), _Reader(configs[1], reading=reading)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("mark", "confirmed"),
+    [(OVER_THE_LABEL, False), (BLACK_OVER_THE_LABEL, True), (FAR_AWAY, True)],
+    ids=["gv-mark-over-the-label", "black-over-the-label", "gv-mark-far-away"],
+)
+def test_the_new_pair_agreeing_on_a_gv_mark_s_number_is_held_back(
+    session: Session, store: LocalStore, mark: bytes, confirmed: bool
+) -> None:
+    """**#901 holds for the new pair.** In the trial Qwen3-VL and Nova 2 Lite agreed on GV's own
+    red number in three crops whose vendor number was hidden (#728, 2026-10-04). The same agreement
+    here — both readers say what GV wrote — confirms nothing where the crop shows GV's mark, and is
+    confirmed as before where the mark is the vendor's black or lies outside the crop. Two vendors,
+    so without the mark the pair would confirm it (#775)."""
+    from workflow.reader_pictures import PictureSettings
+
+    revision = _revision(session, store, _sheet(mark))
+    stages = DatabaseStages(
+        store,
+        vision_readers=_new_pair('24"'),
+        reader_pictures=PictureSettings(sharper_dpi=900),
+    )
+
+    (result,) = stages.extract_pages(session, revision.id)
+
+    lanes = {
+        extractor: (row.corroboration_status, row.corroboration_lane)
+        for row, extractor in session.execute(
+            select(ObservationCandidate, ExtractionRun.extractor).join(
+                ExtractionRun, ObservationCandidate.extraction_run_id == ExtractionRun.id
+            )
+        ).all()
+        if row.raw_text == '24"' and extractor != "pdfplumber"
+    }
+    lane = ("RAW_CANDIDATE", "SECOND_READER") if confirmed else (None, None)
+    assert lanes == {"bedrock-qwen3-vl-235b": lane, "bedrock-nova-2-lite-taught": lane}
+    assert result.payload["agreement_refusals"] == (0 if confirmed else 1)

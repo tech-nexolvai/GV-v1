@@ -8,13 +8,23 @@ crop of the drawing. `read_digits` asks for the digits of one piece of a stacked
 (#865). Both go through the same profile fallback, the same bounded retries and the same record of
 every attempt; they differ only in what is sent and how the answer is checked.
 
-Source: ``docs/DESIGN_AI.md`` section 4.1 and issues #249, #865.
+**Two answer paths, one validator (#907).** A reader answers either by one forced tool call
+(`AnswerFormat.TOOL`), or — for a model that refuses forced tool use with an image, as Qwen3-VL
+does — with one JSON object as its whole reply (`AnswerFormat.JSON_SCHEMA`, where Bedrock holds the
+reply to a schema through `outputConfig.textFormat`, or `AnswerFormat.JSON_TEXT`, where the model
+refuses that field too). Either way the answer ends in `validate_payload` or
+`validate_digits_payload`, and every attempt is recorded and priced the same way (ADR-0019). Prose
+is never read as an answer on either path.
+
+Source: ``docs/DESIGN_AI.md`` section 4.1 and issues #249, #865, #907.
 Verification: ``tests/extraction/models/test_nova.py``.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import struct
 import threading
 from collections.abc import Callable, Mapping
@@ -30,12 +40,15 @@ from evidence.candidate import ObservationCandidate
 from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext
 from extraction.models.sanitisation import (
+    DIGITS_JSON_PROMPT,
     DIGITS_PROMPT_ID,
     DIGITS_SYSTEM_INSTRUCTION,
     DIGITS_TEMPLATE_ID,
     DIGITS_USER_TASK,
+    TEACHING_READING_PROMPT,
     CoordinateInstruction,
     InjectionAttempt,
+    ReadingPrompt,
     prepare_prompt,
 )
 from extraction.models.validation import (
@@ -93,11 +106,48 @@ NOVA_2_LITE_MODEL_ID = "amazon.nova-2-lite-v1:0"
 MINISTRAL_3_3B_MODEL_ID = "mistral.ministral-3-3b-instruct"
 MISTRAL_LARGE_3_MODEL_ID = "mistral.mistral-large-3-675b-instruct"
 CLAUDE_HAIKU_4_5_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"
+QWEN3_VL_235B_MODEL_ID = "qwen.qwen3-vl-235b-a22b"
 NOVA_PRO_EXTRACTOR = "bedrock-nova-pro"
 NOVA_2_LITE_EXTRACTOR = "bedrock-nova-2-lite"
 MINISTRAL_3_3B_EXTRACTOR = "bedrock-ministral-3-3b"
 MISTRAL_LARGE_3_EXTRACTOR = "bedrock-mistral-large-3"
 CLAUDE_HAIKU_4_5_EXTRACTOR = "bedrock-claude-haiku-4-5"
+QWEN3_VL_235B_EXTRACTOR = "bedrock-qwen3-vl-235b"
+NOVA_2_LITE_TAUGHT_EXTRACTOR = "bedrock-nova-2-lite-taught"
+
+#: The template a reader shown the label upright and sharper (`ReaderPicture`) is recorded under, in
+#: place of the caller's crop template, so `model_invocations` says which picture a reading came from.
+UPRIGHT_SHARPER_TEMPLATE_ID = "bounded-crop-upright-sharper-v1"
+
+
+class AnswerFormat(StrEnum):
+    """How a reader is made to answer in a shape the validator can read (#907)."""
+
+    TOOL = "tool"
+    """One forced call to the reading tool, with a rectangle. What every reader did before #907."""
+
+    JSON_SCHEMA = "json_schema"
+    """One JSON object as the whole reply, held to a schema by Bedrock (`outputConfig.textFormat`).
+    For a model that refuses forced tool use with an image and accepts that field: Qwen3-VL."""
+
+    JSON_TEXT = "json_text"
+    """One JSON object as the whole reply, asked for in words. For a model that refuses the
+    `outputConfig` field as well: Nova 2 Lite ("This model doesn't support the outputConfig field",
+    measured on this account on 2026-10-04)."""
+
+
+class ReaderPicture(StrEnum):
+    """What the stage shows a reader (#907). The adapter sends whatever bytes it is handed."""
+
+    AS_CUT = "as_cut"
+    """The crop as the stage cuts it, from the page rendered at the stage's dpi."""
+
+    UPRIGHT_SHARPER = "upright_sharper"
+    """The same page area rendered from the vector page at the deployment's stated higher dpi —
+    never upscaled — and turned upright where the drawing's own facts say the label runs sideways
+    (`workflow.reader_pictures`). Measured to help Nova 2 Lite and to slightly hurt Qwen3-VL
+    (Reading upgrade v2, §3b), so it is a property of the reader."""
+
 
 #: What turns a foundation-model id into a cross-region inference profile id.
 #:
@@ -151,7 +201,19 @@ class NovaConfig:
 
     So it is a field, supplied per reader from a measured run, and a model's name says nothing about
     it. `docs/NEXT_BUILD_PLAN.md` records where the current values came from.
+
+    A reader on a JSON answer path is asked for no rectangle, and states `CoordinateMode.CROP`.
     """
+
+    answer_format: AnswerFormat = AnswerFormat.TOOL
+    """How the reader answers (#907). The tool, unless its definition says it refuses one."""
+
+    reading_prompt: ReadingPrompt | None = None
+    """The words a JSON-answer reader is asked with; `None` on the tool path, whose words are
+    `prepare_prompt`'s. `prompt_id` must be this prompt's own id, so a record names what was sent."""
+
+    picture: ReaderPicture = ReaderPicture.AS_CUT
+    """What the stage shows this reader (#907)."""
 
     def __post_init__(self) -> None:
         for name in ("model_id", "prompt_id", "template_id", "extractor"):
@@ -168,6 +230,34 @@ class NovaConfig:
             raise ValueError("region_name must be a non-empty string or None")
         if not isinstance(self.coordinate_mode, CoordinateMode):
             raise TypeError("coordinate_mode must be a CoordinateMode")
+        if not isinstance(self.answer_format, AnswerFormat):
+            raise TypeError("answer_format must be an AnswerFormat")
+        if not isinstance(self.picture, ReaderPicture):
+            raise TypeError("picture must be a ReaderPicture")
+        if self.answer_format is AnswerFormat.TOOL:
+            if self.reading_prompt is not None:
+                raise ValueError(
+                    "a tool-path reader is asked in prepare_prompt's words; a reading prompt is for "
+                    "a JSON answer path"
+                )
+            if self.coordinate_mode is CoordinateMode.CROP:
+                raise ValueError(
+                    "a tool-path reader answers with a rectangle, so it needs its measured space, "
+                    "not CoordinateMode.CROP"
+                )
+            return
+        if not isinstance(self.reading_prompt, ReadingPrompt):
+            raise TypeError("a JSON-answer reader needs the ReadingPrompt it is asked with")
+        if self.prompt_id != self.reading_prompt.prompt_id:
+            raise ValueError(
+                f"prompt_id {self.prompt_id!r} is not the id of the words sent "
+                f"({self.reading_prompt.prompt_id!r}); a record must name what was asked"
+            )
+        if self.coordinate_mode is not CoordinateMode.CROP:
+            raise ValueError(
+                "a JSON-answer reader is asked for no rectangle, so its coordinate mode is "
+                "CoordinateMode.CROP"
+            )
 
 
 def config_from_environment(
@@ -223,7 +313,24 @@ class _ReaderDefinition:
 
     Separate from `enabled` because the two answer different questions: Nova Pro is switched off for
     accuracy (#751) but its space was measured, so the bake-off can still test it; Claude Haiku's has
-    never been measured (#665), so nothing may read its coordinates as though it had."""
+    never been measured (#665), so nothing may read its coordinates as though it had.
+
+    A reader on a JSON answer path is asked for no rectangle (`CoordinateMode.CROP`), so it has no
+    space for anything to read, and this is `False` for it."""
+
+    answer: AnswerFormat = AnswerFormat.TOOL
+    """How it answers (#907): the forced tool, or one JSON object for a model that refuses it."""
+
+    prompt: ReadingPrompt | None = None
+    """The words a JSON-answer reader is asked with; `None` on the tool path."""
+
+    picture: ReaderPicture = ReaderPicture.AS_CUT
+    """What the stage shows it (#907)."""
+
+    setup_measurement: str | None = None
+    """Where its answer path, prompt and picture were measured — required wherever any of them
+    departs from the tool, today's words and the crop as cut. A setup is a measurement, like a
+    coordinate space, never a preference."""
 
     def __post_init__(self) -> None:
         for name in ("key", "model_id", "extractor", "coordinate_measurement"):
@@ -242,11 +349,41 @@ class _ReaderDefinition:
             raise ValueError("disabled readers must say why they are disabled")
         if not isinstance(self.coordinate_measured, bool):
             raise TypeError("coordinate_measured must be True or False")
-        if self.enabled and not self.coordinate_measured:
+        if not isinstance(self.answer, AnswerFormat):
+            raise TypeError("answer must be an AnswerFormat")
+        if not isinstance(self.picture, ReaderPicture):
+            raise TypeError("picture must be a ReaderPicture")
+        if self.answer is AnswerFormat.TOOL:
+            if self.prompt is not None:
+                raise ValueError("a tool-path reader is asked in prepare_prompt's words")
+            if self.coordinate_mode is CoordinateMode.CROP:
+                raise ValueError("a tool-path reader answers with a rectangle, in a measured space")
+        else:
+            if not isinstance(self.prompt, ReadingPrompt):
+                raise TypeError("a JSON-answer reader needs the ReadingPrompt it is asked with")
+            if self.coordinate_mode is not CoordinateMode.CROP or self.coordinate_measured:
+                raise ValueError(
+                    "a JSON-answer reader is asked for no rectangle: CoordinateMode.CROP, with no "
+                    "measured space"
+                )
+        departs = self.answer is not AnswerFormat.TOOL or self.picture is not ReaderPicture.AS_CUT
+        if departs and (
+            not isinstance(self.setup_measurement, str) or "#" not in self.setup_measurement
+        ):
+            raise ValueError(
+                "a reader whose answer path or picture departs from the tool and the crop as cut "
+                "must cite where that setup was measured"
+            )
+        if self.enabled and not self.answers_readably:
             raise ValueError(
                 "an enabled reader must have a measured coordinate space: a guessed one reads a "
                 "rectangle in the wrong units and can still pass the bounds check (#664)"
             )
+
+    @property
+    def answers_readably(self) -> bool:
+        """Whether its answer can be read: a measured space for its rectangle, or no rectangle asked."""
+        return self.coordinate_measured or self.answer is not AnswerFormat.TOOL
 
     @property
     def model_env(self) -> str:
@@ -266,9 +403,10 @@ class _ReaderDefinition:
 #: space; issue #668 records the original coordinate-mode table, and issue #699 records the Nova Pro
 #: recheck after it returned coordinate-shaped values instead of dimensions on the demo run.
 #:
-#: **Only two vendors answer at all.** Google, Meta, Moonshot, Qwen, xAI, Writer and Nvidia all
-#: refuse forced tool use with an image, so the independence available to the agreement lane is
-#: narrower than we would like. Widening it is what #665 buys: Claude would be a third vendor.
+#: **Only two vendors answer the forced tool.** Google, Meta, Moonshot, Qwen, xAI, Writer and Nvidia
+#: all refuse forced tool use with an image (#668). **The plain-JSON answer path (#907) is how one of
+#: them reads anyway**: Qwen3-VL answers one JSON object, held to a schema by Bedrock, and was the
+#: best reader on both human-read keys (Reading upgrade v2, §3b; #728 trial, 2026-10-04).
 VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
     _ReaderDefinition(
         key="nova-pro",
@@ -291,23 +429,36 @@ VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
     ),
     # A different vendor, which is the strongest independence on offer here. Also the cheapest and
     # fastest of the seven that conform — 1,430 tokens and 3.0s against Nova Pro's 5,374 and 4.7s.
+    # **Left the pair with #907** (the admin's decision of 2026-10-04): on the two new keys it and
+    # Nova 2 Lite as asked today agreed on 2 of 47 labels. Defined still, for a deployment that names
+    # it and for the bake-off.
     _ReaderDefinition(
         key="ministral-3-3b",
         model_id=MINISTRAL_3_3B_MODEL_ID,
         extractor=MINISTRAL_3_3B_EXTRACTOR,
         coordinate_mode=CoordinateMode.PIXELS,
         coordinate_measurement="#668 recorded Ministral 3 3B as pixel coordinates.",
-        enabled=True,
+        enabled=False,
+        disabled_reason=(
+            "#907: left the reader pair; Qwen3-VL + Nova 2 Lite read the way the trial measured "
+            "agreed on 24 of 31 confirmable labels on the two new keys, this pair on 2."
+        ),
     ),
     # Same vendor as Nova Pro and a different answer space, which is the clearest evidence available
-    # that the two were trained separately rather than sharing a lineage.
+    # that the two were trained separately rather than sharing a lineage. **The reading agent's
+    # primary reader (#757)**, asked by name; the vision pair reads the same model as
+    # `nova-2-lite-taught` since #907.
     _ReaderDefinition(
         key="nova-2-lite",
         model_id=NOVA_2_LITE_MODEL_ID,
         extractor=NOVA_2_LITE_EXTRACTOR,
         coordinate_mode=CoordinateMode.PIXELS,
         coordinate_measurement="#668 recorded Nova 2 Lite as pixel coordinates.",
-        enabled=True,
+        enabled=False,
+        disabled_reason=(
+            "#907: the vision pair reads Nova 2 Lite as the trial measured it "
+            "(nova-2-lite-taught); this tool reader stays the reading agent's primary (#757)."
+        ),
     ),
     # **The reading agent's escalation reader (#757 D-A2, the admin's decision of 2026-10-01)**, the
     # best single reader on the human-read key (#641: 16 of 35). Off for the vision route, which reads
@@ -340,6 +491,57 @@ VISION_READERS: Final[tuple[_ReaderDefinition, ...]] = (
         enabled=False,
         disabled_reason="#665: Anthropic first-time-use form has not been submitted for this account.",
         coordinate_measured=False,
+    ),
+    # **The pair's first reader (#907, the admin's decision of 2026-10-04).** A third vendor, Qwen,
+    # and the best single reader on both human-read keys. It refuses forced tool use with an image,
+    # so it answers on the plain-JSON path, taught, on the picture as cut. Measured through the
+    # production path before it was switched on: with Nova 2 Lite below, 24 of the 31 confirmable
+    # labels on the two new keys agreed right and none agreed wrong.
+    _ReaderDefinition(
+        key="qwen3-vl-235b",
+        model_id=QWEN3_VL_235B_MODEL_ID,
+        extractor=QWEN3_VL_235B_EXTRACTOR,
+        coordinate_mode=CoordinateMode.CROP,
+        coordinate_measurement=(
+            "Never asked for a rectangle: it answers on the plain-JSON path, which places a reading "
+            "at the crop it was shown (#907). Its own answer space is unmeasured (#664)."
+        ),
+        enabled=True,
+        coordinate_measured=False,
+        answer=AnswerFormat.JSON_SCHEMA,
+        prompt=TEACHING_READING_PROMPT,
+        picture=ReaderPicture.AS_CUT,
+        setup_measurement=(
+            "Reading upgrade v2 §3b: best taught on the normal picture (30 of 35 right, 3 wrong, on "
+            "the 51-crop key); turning and upscaling slightly hurt it. #728 trial, 2026-10-04: 41 "
+            "right, 6 wrong of 47 on the two new keys. It refuses forced tool use with an image and "
+            "accepted outputConfig.textFormat on this account on 2026-10-04 (#907)."
+        ),
+    ),
+    # **The pair's second reader (#907): Nova 2 Lite as the trial measured it** — taught, on the
+    # plain-JSON path, shown the label upright and rendered sharper. Its own key, so the tool reader
+    # above keeps exactly the behaviour #641 and the reading agent (#757) were measured with. Same
+    # model, same vendor: the two can never confirm each other (#775).
+    _ReaderDefinition(
+        key="nova-2-lite-taught",
+        model_id=NOVA_2_LITE_MODEL_ID,
+        extractor=NOVA_2_LITE_TAUGHT_EXTRACTOR,
+        coordinate_mode=CoordinateMode.CROP,
+        coordinate_measurement=(
+            "Never asked for a rectangle on the plain-JSON path (#907); the same model answers in "
+            "pixels when the tool asks (#668)."
+        ),
+        enabled=True,
+        coordinate_measured=False,
+        answer=AnswerFormat.JSON_TEXT,
+        prompt=TEACHING_READING_PROMPT,
+        picture=ReaderPicture.UPRIGHT_SHARPER,
+        setup_measurement=(
+            "Reading upgrade v2 §3b: 9 of 35 right as asked today, 23 taught with the picture upright "
+            "and sharper, which cut its wrong readings; #728 trial, 2026-10-04: 39 right, 2 wrong, 6 "
+            "blank of 47 on the two new keys. It refused outputConfig on this account on 2026-10-04, "
+            "so it answers JSON in words (#907)."
+        ),
     ),
 )
 
@@ -402,16 +604,25 @@ def _config_for(
 ) -> NovaConfig:
     import os
 
+    # A JSON-answer reader is recorded under the id of its own words, never the caller's tool
+    # prompt; its picture under its own template (#907).
     return NovaConfig(
         model_id=os.environ.get(reader.model_env, reader.model_id),
-        prompt_id=prompt_id,
-        template_id=template_id,
+        prompt_id=prompt_id if reader.prompt is None else reader.prompt.prompt_id,
+        template_id=(
+            UPRIGHT_SHARPER_TEMPLATE_ID
+            if reader.picture is ReaderPicture.UPRIGHT_SHARPER
+            else template_id
+        ),
         connect_timeout_seconds=connect_timeout_seconds,
         read_timeout_seconds=read_timeout_seconds,
         max_attempts=1,
         region_name=region_name,
         extractor=reader.extractor,
         coordinate_mode=reader.coordinate_mode,
+        answer_format=reader.answer,
+        reading_prompt=reader.prompt,
+        picture=reader.picture,
     )
 
 
@@ -424,13 +635,14 @@ def vision_config_for_extractor(
     """The configuration of the defined reader named `extractor`, enabled or not; `None` if none is.
 
     For a reader asked **by name** rather than run on every region — the reading agent's escalation
-    reader (#757 D-A2). Only a reader with a measured coordinate space is returned: one without
-    would read a rectangle in units nobody has confirmed (#664).
+    reader (#757 D-A2). Only a reader whose answer can be read is returned: a measured coordinate
+    space, or no rectangle asked (#907). One that answers a rectangle in an unmeasured space would
+    read it in units nobody has confirmed (#664).
     """
     import os
 
     for reader in VISION_READERS:
-        if reader.extractor == extractor and reader.coordinate_measured:
+        if reader.extractor == extractor and reader.answers_readably:
             return _config_for(
                 reader,
                 prompt_id=prompt_id,
@@ -822,7 +1034,8 @@ class _Call[AnswerT]:
 
 
 class NovaAdapter:
-    """Invoke Nova through one forced tool and return only an uncertain candidate."""
+    """Invoke a Bedrock reader — one forced tool, or one JSON object (#907) — and return only an
+    uncertain candidate."""
 
     def __init__(
         self,
@@ -888,7 +1101,7 @@ class NovaAdapter:
         """
         return self._invoke(
             _Call(
-                prompt_id=DIGITS_PROMPT_ID,
+                prompt_id=digits_prompt_id(self._config),
                 template_id=DIGITS_TEMPLATE_ID,
                 context=_NO_CONTEXT,
                 bound_pt=_NO_BOUND,
@@ -1009,6 +1222,8 @@ class NovaAdapter:
         raise NovaRetryExhaustedError("Nova retry loop ended unexpectedly") from last_error
 
     def _request(self, request: NovaRequest, model_id: str) -> dict[str, object]:
+        if self._config.answer_format is not AnswerFormat.TOOL:
+            return self._json_request(request, model_id)
         coordinate_mode = _coordinate_mode(self._config)
         prepared = prepare_prompt(
             request.context,
@@ -1048,8 +1263,76 @@ class NovaAdapter:
             },
         }
 
+    def _json_request(self, request: NovaRequest, model_id: str) -> dict[str, object]:
+        """A dimension request on the plain-JSON path (#907): the reader's own words and the crop.
+
+        **The words are identical for every crop**, and no drawing text joins them: a request's
+        drawing data goes in its own block after the task, exactly as on the tool path, and only
+        where the request carries some — the vision route and the reading agent send none, so their
+        requests are the trial's, word for word. No tool is offered, so none can be called.
+        """
+        prompt = self._config.reading_prompt
+        assert prompt is not None  # NovaConfig refuses a JSON-answer reader without its words
+        prepared = prepare_prompt(request.context)
+        content: list[dict[str, object]] = [
+            {"image": {"format": request.image_format, "source": {"bytes": request.crop}}},
+            {"text": prompt.task},
+        ]
+        if request.context.nearby_text or request.context.nearby_geometry:
+            content.append({"text": prepared.drawing_data})
+        return self._json_body(
+            model_id,
+            prompt.system,
+            content,
+            max_tokens=DIMENSION_READER_MAX_TOKENS,
+            schema=READING_ANSWER_SCHEMA,
+            schema_name="dimension_reading",
+        )
+
+    def _json_body(
+        self,
+        model_id: str,
+        system: str,
+        content: list[dict[str, object]],
+        *,
+        max_tokens: int,
+        schema: Mapping[str, object],
+        schema_name: str,
+    ) -> dict[str, object]:
+        body: dict[str, object] = {
+            "modelId": model_id,
+            "system": [{"text": system}],
+            "messages": [{"role": "user", "content": content}],
+            "inferenceConfig": {"temperature": 0, "maxTokens": max_tokens},
+        }
+        if self._config.answer_format is AnswerFormat.JSON_SCHEMA:
+            body["outputConfig"] = {
+                "textFormat": {
+                    "type": "json_schema",
+                    "structure": {
+                        "jsonSchema": {
+                            "schema": json.dumps(schema, sort_keys=True),
+                            "name": schema_name,
+                        }
+                    },
+                }
+            }
+        return body
+
     def _digits_request(self, request: NovaDigitsRequest, model_id: str) -> dict[str, object]:
         """The digits request: the picture and the fixed task, and no drawing data beside them."""
+        if self._config.answer_format is not AnswerFormat.TOOL:
+            return self._json_body(
+                model_id,
+                DIGITS_JSON_PROMPT.system,
+                [
+                    {"image": {"format": "png", "source": {"bytes": request.picture}}},
+                    {"text": DIGITS_JSON_PROMPT.task},
+                ],
+                max_tokens=DIGITS_READER_MAX_TOKENS,
+                schema=DIGITS_ANSWER_SCHEMA,
+                schema_name="piece_digits",
+            )
         return {
             "modelId": model_id,
             "system": [{"text": DIGITS_SYSTEM_INSTRUCTION}],
@@ -1078,10 +1361,16 @@ class NovaAdapter:
             },
         }
 
+    def _answer(self, response: Mapping[str, Any], tool_name: str) -> object:
+        """The answer a response carries, by the reader's own path: its tool's input, or its JSON."""
+        if self._config.answer_format is AnswerFormat.TOOL:
+            return _tool_input(response, tool_name)
+        return _json_input(response)
+
     def _candidate(self, response: Mapping[str, Any], request: NovaRequest) -> ObservationCandidate:
         coordinate_mode = _coordinate_mode(self._config)
         outcome = validate_payload(
-            _tool_input(response, TOOL_NAME),
+            self._answer(response, TOOL_NAME),
             context=CandidateContext(
                 candidate_id=request.candidate_id,
                 extractor_version=self._config.model_id,
@@ -1100,7 +1389,7 @@ class NovaAdapter:
 
     def _digits(self, response: Mapping[str, Any], request: NovaDigitsRequest) -> str:
         outcome = validate_digits_payload(
-            _tool_input(response, DIGITS_TOOL_NAME),
+            self._answer(response, DIGITS_TOOL_NAME),
             context=CandidateContext(
                 candidate_id=request.request_id,
                 extractor_version=self._config.model_id,
@@ -1151,3 +1440,102 @@ def _tool_input(response: Mapping[str, Any], tool_name: str) -> object:
     if tool_call.get("name") != tool_name:
         raise NovaProtocolError(f"Bedrock called an unexpected tool: {tool_call.get('name')!r}")
     return tool_call.get("input")
+
+
+#: What a JSON answer's schema is, where Bedrock holds the reply to one (`AnswerFormat.JSON_SCHEMA`).
+#: The validator's own models say the same — `ReadingOnlyPayload` and `DigitsToolPayload` — and
+#: `tests/extraction/models/test_json_answer.py` holds the two together. Written out rather than
+#: generated, because this is the shape measured accepted on this account (2026-10-04).
+READING_ANSWER_SCHEMA: Final[Mapping[str, object]] = {
+    "type": "object",
+    "properties": {"reading": {"type": ["string", "null"]}},
+    "required": ["reading"],
+    "additionalProperties": False,
+}
+DIGITS_ANSWER_SCHEMA: Final[Mapping[str, object]] = {
+    "type": "object",
+    "properties": {"digits": {"type": "string"}},
+    "required": ["digits"],
+    "additionalProperties": False,
+}
+
+#: One JSON object inside a single Markdown code fence, the one wrapping a reply may have. A fence is
+#: formatting, not content; anything else beside the object is model text, and is refused.
+_FENCED: Final = re.compile(r"```(?:json)?\s*(?P<body>.*?)\s*```", re.DOTALL | re.IGNORECASE)
+
+
+class _NotStrictJson(ValueError):
+    """A JSON reply that is not one plain object: a repeated key, or a non-finite number."""
+
+
+def _object_without_repeats(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise _NotStrictJson("a key is repeated, so which value was meant cannot be told")
+    return dict(pairs)
+
+
+def _refuse_constant(name: str) -> object:
+    raise _NotStrictJson(f"{name} is not a number")
+
+
+def digits_prompt_id(config: NovaConfig) -> str:
+    """The id of the words a digits request is asked with, on this reader's answer path (#907)."""
+    return (
+        DIGITS_PROMPT_ID
+        if config.answer_format is AnswerFormat.TOOL
+        else DIGITS_JSON_PROMPT.prompt_id
+    )
+
+
+def _json_input(response: Mapping[str, Any]) -> object:
+    """The one JSON object a reply on the plain-JSON path is, or an adapter error saying why not (#907).
+
+    **Strict.** The reply is text and nothing else — no tool call, no other block — and the text is
+    one JSON object, at most inside one code fence. Prose around it, two objects, a repeated key or a
+    number that is not finite is a protocol error: reading a value out of a sentence is the guess this
+    layer exists to refuse (#534). A reply stopped at its token limit is not a whole object. Numbers
+    are parsed as JSON parses them, so a float reaches `validate_payload` and is refused there as a
+    float, by the check every path shares.
+    """
+    stop_reason = response.get("stopReason")
+    if stop_reason in {"content_filtered", "guardrail_intervened"}:
+        raise NovaRefusalError(f"Bedrock stopped the request: {stop_reason}")
+    if stop_reason == "max_tokens":
+        raise NovaProtocolError("the reply reached its token limit, so it is not one whole object")
+    output = response.get("output")
+    message = output.get("message") if isinstance(output, Mapping) else None
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if not isinstance(content, list) or not content:
+        raise NovaProtocolError("Bedrock response has no answer text")
+    texts: list[str] = []
+    for block in content:
+        if (
+            not isinstance(block, Mapping)
+            or set(block) != {"text"}
+            or not isinstance(block.get("text"), str)
+        ):
+            returned = (
+                "a tool call"
+                if isinstance(block, Mapping) and "toolUse" in block
+                else "a block that is not text"
+            )
+            raise NovaProtocolError(f"a JSON answer must be text alone; it returned {returned}")
+        texts.append(block["text"])
+    text = "".join(texts).strip()
+    fenced = _FENCED.fullmatch(text)
+    if fenced is not None:
+        text = fenced.group("body")
+    try:
+        payload = json.loads(
+            text, object_pairs_hook=_object_without_repeats, parse_constant=_refuse_constant
+        )
+    except _NotStrictJson as error:
+        raise NovaProtocolError(f"the answer is not plain JSON: {error}") from error
+    except json.JSONDecodeError as error:
+        raise NovaProtocolError(
+            "the answer is not one JSON object: model text beside it, or none"
+        ) from error
+    if not isinstance(payload, dict):
+        raise NovaProtocolError("the answer is JSON but not one object")
+    return payload
