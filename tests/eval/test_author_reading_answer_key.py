@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import pytest
 
-from eval.experiments.model_bakeoff import load_crops
+from eval.experiments.model_bakeoff import load_crops, render_crop
 from evidence.crop import decode_rgb_png
 from extraction.annotations import OutlinedTextRegion, read_annotation_layers
 from extraction.glyph_bands import FractionBarGeometry
@@ -27,6 +27,7 @@ from extraction.vector_first import plan_reads, region_crop
 from scripts.author_reading_answer_key import (
     BAKEOFF_METADATA,
     CROPS_CSV,
+    PERSON_COLUMNS,
     Candidate,
     NotASingleValue,
     ScaffoldError,
@@ -38,6 +39,7 @@ from scripts.author_reading_answer_key import (
     main,
 )
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
+from workflow.config import READER_RASTER_DPI
 from workflow.stages import VISION_CROP_CONTEXT_MARGIN_PT
 
 
@@ -240,7 +242,7 @@ def _fill(
     unreadable: frozenset[str] | set[str] = frozenset(),
     rotate: frozenset[str] | set[str] = frozenset(),
 ) -> None:
-    """Stand in for the person: type a value per row, tick the odd box."""
+    """Stand in for the person: type the vendor's number per row, tick the odd box."""
     with (out / CROPS_CSV).open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
         fields = list(rows[0])
@@ -248,7 +250,7 @@ def _fill(
         if row["crop_id"] in unreadable:
             row["unreadable"] = "x"
             continue
-        row["value"] = value
+        row["vendor_value"] = value
         if row["crop_id"] in rotate:
             row["rotated"] = "x"
     with (out / CROPS_CSV).open("w", encoding="utf-8", newline="") as handle:
@@ -325,9 +327,8 @@ def test_scaffold_writes_crops_and_an_empty_sheet(drawing: Path, tmp_path: Path)
     assert rows, "no crops were planned on the synthetic page"
     assert all((out / row["image"]).exists() for row in rows)
     assert all((out / row["image"]).read_bytes()[:4] == b"\x89PNG" for row in rows)
-    # The two columns a person fills, and nothing pre-filled in either.
-    assert all(row["value"] == "" for row in rows)
-    assert all(row["unreadable"] == "" for row in rows)
+    # The columns a person fills, and nothing pre-filled in any of them (#867).
+    assert all(row[column] == "" for row in rows for column in PERSON_COLUMNS)
     assert (out / "HOW_TO_READ_THESE.md").exists()
     assert (out / "contact_sheet.html").exists()
     assert "Contact Sheet" in (out / "contact_sheet.html").read_text(encoding="utf-8")
@@ -530,21 +531,41 @@ def test_a_crop_is_the_pixels_production_cuts_round_the_same_region(tmp_path: Pa
         assert decode_rgb_png(scaffolded) == decode_rgb_png(production), row["crop_id"]
 
 
-def test_the_bakeoff_shows_a_model_the_very_bytes_the_person_read(
+def test_the_bakeoff_shows_a_model_the_persons_polygon_at_the_readers_resolution(
     drawing: Path, tmp_path: Path
 ) -> None:
     """The bake-off renders each crop again from the PDF, so the two images could drift apart in
     frame, extent or layers — and three times in one run they did. Rendered by one function from
-    one polygon in one frame, they cannot."""
+    one polygon in one frame, they cannot. **Only the resolution differs, on purpose (#867)**: the
+    person reads at the key's 600 dpi, and a model is shown production's 300."""
     out = tmp_path / "key"
     _scaffold(drawing, out)
     rows = _rows(out)
     _fill(out, ['24"'] * len(rows))
     assert _build(out, drawing) == 0
+    pdf = drawing.read_bytes()
 
     crops = load_crops(out)
 
-    assert [crop.image for crop in crops] == [(out / row["image"]).read_bytes() for row in rows]
+    def polygon(row: dict[str, str]) -> tuple[int, int, int, int]:
+        left, top, right, bottom = (
+            int(row[name]) for name in ("left_px", "top_px", "right_px", "bottom_px")
+        )
+        return (left, top, right, bottom)
+
+    assert [(out / row["image"]).read_bytes() for row in rows] == [
+        render_crop(pdf, page=1, polygon=polygon(row), polygon_dpi=VISION_CROP_DPI) for row in rows
+    ]
+    assert [crop.image for crop in crops] == [
+        render_crop(
+            pdf,
+            page=1,
+            polygon=polygon(row),
+            polygon_dpi=VISION_CROP_DPI,
+            output_dpi=READER_RASTER_DPI,
+        )
+        for row in rows
+    ]
 
 
 def test_a_crop_and_its_wide_view_show_the_vendor_drawing_and_not_the_reviewer_note(
@@ -712,7 +733,7 @@ def test_every_notation_on_the_client_sheets_is_accepted(typed: str, inches: str
     """
     from fractions import Fraction
 
-    assert _parsed(typed, crop_id="probe").exact == Fraction(inches)  # type: ignore[attr-defined]
+    assert _parsed(typed, crop_id="probe").exact == Fraction(inches)
 
 
 @pytest.mark.parametrize("typed", ['39 1/4"+6"', '48"+3"'])

@@ -110,6 +110,9 @@ class Kind(StrEnum):
 
     COMPOUND = "compound"
 
+    NOT_A_DIMENSION = "not_a_dimension"
+    """The person marked the crop as holding no dimension at all (#867): a symbol, a word."""
+
 
 class Outcome(StrEnum):
     """What a reviewer is handed for a crop."""
@@ -154,6 +157,12 @@ class KeyCrop:
     """The key marks the label as a stacked fraction: a `stacked` tick, or a crop picked into the
     `stacked_fraction` group. The gate replay scores the stacked-fraction finder against it (#851)."""
 
+    dual_unit: bool = False
+    """The person ticked `dual_unit`: millimetres with their inches (#867)."""
+
+    gv_value_seen: str | None = None
+    """GV's own number as the person saw it in the crop, as typed (#867); never the vendor's."""
+
 
 _SELF_VERIFIED = ("self-verified", "machine-self-verified", "not per-case human-read")
 
@@ -177,8 +186,12 @@ def load_key(case_dir: Path) -> tuple[KeyCrop, ...]:
     crops: list[KeyCrop] = []
     for row in rows:
         crop_id = row["crop_id"]
-        if row.get("unreadable", "").strip():
+        # A cut-off crop is not scored, like one nobody could read (`build` refuses a value on one).
+        cut_off = bool(row.get("cut_off", "").strip()) or "cut off" in row.get("note", "").lower()
+        if row.get("unreadable", "").strip() or row.get("cut_off", "").strip():
             kind = Kind.UNREADABLE
+        elif row.get("not_a_dimension", "").strip():
+            kind = Kind.NOT_A_DIMENSION
         elif row.get("not_a_single_value", "").strip():
             kind = Kind.COMPOUND
         else:
@@ -199,9 +212,11 @@ def load_key(case_dir: Path) -> tuple[KeyCrop, ...]:
                 expected=expected.get(crop_id) if kind is Kind.SCORED else None,
                 stratum=row.get("stratum", "") or "-",
                 rotated=bool(row.get("rotated", "").strip()) or row.get("stratum") == "rotated",
-                cut_off="cut off" in row.get("note", "").lower(),
+                cut_off=cut_off,
                 stacked=bool(row.get("stacked", "").strip())
                 or row.get("stratum") == "stacked_fraction",
+                dual_unit=bool(row.get("dual_unit", "").strip()),
+                gv_value_seen=row.get("gv_value_seen", "").strip() or None,
             )
         )
     if not crops:
@@ -816,8 +831,8 @@ def render_markdown(
         header,
         "",
         (
-            f"{len(results)} crops: {scored} scored, {unvouched} a person could not read or "
-            "marked compound."
+            f"{len(results)} crops: {scored} scored, {unvouched} a person could not read, found "
+            "cut off, marked compound or marked not a dimension."
         ),
         "",
         (
@@ -868,6 +883,9 @@ def render_markdown(
         geometry["sideways, geometry"] += result.facts.rotation_degrees != 0
         geometry["sideways, both"] += result.crop.rotated and result.facts.rotation_degrees != 0
         geometry["stacked, geometry"] += result.facts.stacked_fraction
+        geometry["stacked, person"] += result.crop.stacked
+        geometry["dual, person"] += result.crop.dual_unit
+        geometry["gv seen, person"] += result.crop.gv_value_seen is not None
     lines += [
         "",
         "**What the drawing's own lines saw** (the agent's triggers, against the person's notes):",
@@ -880,7 +898,12 @@ def render_markdown(
             f"- Sideways: the person ticked {geometry['sideways, person']}, the geometry found "
             f"{geometry['sideways, geometry']}, both on {geometry['sideways, both']}."
         ),
-        f"- Stacked fraction: the geometry found {geometry['stacked, geometry']}.",
+        (
+            f"- Stacked fraction: the person marked {geometry['stacked, person']}, the geometry "
+            f"found {geometry['stacked, geometry']}."
+        ),
+        f"- Dual unit: the person ticked {geometry['dual, person']}.",
+        f"- GV's own number in the crop: the person saw it in {geometry['gv seen, person']}.",
     ]
     return "\n".join(lines) + "\n"
 

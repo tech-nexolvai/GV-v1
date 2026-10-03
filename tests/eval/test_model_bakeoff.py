@@ -328,7 +328,9 @@ def test_gold_case_directory_renders_human_key_and_refuses_self_verified(tmp_pat
     assert len(crops) == 1
     assert crops[0].expected == _inches("51/2", '25 1/2"')
     assert crops[0].tags == frozenset({"fraction", "rotated", "small_glyph"})
-    assert _decode_rgb_png(crops[0].image)[0:2] == (333, 333)
+    # 40 pt square, shown to a model at production's reader resolution (#867): 40 / 72 * 300 is
+    # 166.7, and the renderer drops the part pixel, as it dropped 333.3's at 600.
+    assert _decode_rgb_png(crops[0].image)[0:2] == (166, 166)
 
     self_verified = tmp_path / "self-verified-case"
     _write_answer_key(
