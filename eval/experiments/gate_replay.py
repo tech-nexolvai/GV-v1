@@ -16,11 +16,13 @@ the reading agent has added its looks; here a region's readings, the agent's amo
 in the one call. A second-reader agreement is what counts, because it is the only lane
 `evidence/gate.py` seals.
 
-**Candidate guards are measured here and wired in nowhere.** Each is a pure pre-filter, decided
-from the region's geometry and readings before the gate is asked. Four can only hold an agreement
-back; the fifth asks what a label's own millimetres would add if they could confirm its inches, on
-the file's own text only (#691). The admin decided on 2026-10-03, before any of this was counted,
-that a kind of reading whose readers agree on a wrong value always goes to a person.
+**Candidate guards are measured here.** Each is a pure pre-filter, decided from the region's
+geometry and readings before the gate is asked. Four can only hold an agreement back; the fifth asks
+what a label's own millimetres would add if they could confirm its inches, on the file's own text
+only (#691). The admin decided on 2026-10-03, before any of this was counted, that a kind of reading
+whose readers agree on a wrong value always goes to a person. **One guard is now the production
+gate's: a GV mark in the crop** (#901). Its test is the stage's own `workflow.stages.gv_mark_in_crop`,
+which `scripts/gate_replay.py` calls for `Facts.gv_mark`; the other four are wired in nowhere.
 
 **Zero wrong is not safe.** With no wrong agreement among n, the true rate is only known to be
 below about 3/n, with about 95% confidence (the rule of three): nine agreements bound it below a
@@ -212,7 +214,8 @@ class Facts:
 
     gv_mark: bool
     """The crop shows a GV mark. Production's crops leave GV's own notes out (#742), so what is left
-    to see is markup baked into the vendor's drawing, drawn in colour."""
+    to see is markup baked into the vendor's drawing, drawn in colour. Decided by the production
+    gate's own test, `workflow.stages.gv_mark_in_crop` (#901)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,11 +486,12 @@ def gate(
 
 
 class Guard(StrEnum):
-    """A candidate pre-filter on the gate. Only `NONE` is what production does today."""
+    """A candidate pre-filter on the gate. **`GV_MARK` is what production does since #901**;
+    `NONE` is the readers' agreement alone, which is what it did before."""
 
-    NONE = "the gate as it is"
+    NONE = "agreement alone (the gate before #901)"
     CUT = "held back where the crop cuts the label"
-    GV_MARK = "held back where a GV mark is in the crop"
+    GV_MARK = "held back where a GV mark is in the crop (the gate since #901)"
     PROMOTED_NUMERATOR = "held back where a reading is `n n/d`"
     SIDEWAYS = "a sideways label needs a third reader"
     MM_ON_FILE_TEXT = "a label's mm confirms its inches, on the file's own text only"

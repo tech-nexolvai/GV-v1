@@ -65,7 +65,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
-from itertools import pairwise
+from itertools import combinations, pairwise
 from typing import Any, Final
 from uuid import UUID
 
@@ -499,6 +499,9 @@ def read_page_contents(
             # marked as stacked; millimetres written over their bracketed inches become `610 [24]`.
             # Anything that does not fit those shapes exactly stays set aside.
             words, set_aside = _read_what_composes(words, set_aside, digits)
+            # **Then millimetres over inches that a space broke in two are read as one** (#904):
+            # both halves of `3048` over `[120 1/4]`, with the space where the page has it.
+            words, set_aside = _rejoin_two_lines(words, set_aside, digits, page.chars)
             # **Then the stacks the words came apart from are put back together** (#880), from where
             # their characters sit around the bar the page draws between numerator and denominator:
             # `152` and `1"` for a sideways `15 1/2"`. Held to the rules a reading put together from
@@ -506,6 +509,10 @@ def read_page_contents(
             words, set_aside = _compose_split_stacks(
                 words, set_aside, digits, page.chars, (*page.lines, *page.rects, *page.curves)
             )
+            # **Then labels side by side that `extract_words` ran together are read apart** (#904):
+            # `4697` over `[2][4]` is `46 [2]` and `97 [4]`, each digit going with the bracket it
+            # stands over.
+            words = _read_side_by_side(words, digits, page.chars)
             # **Dual tokens are read whole, before the words they are made of.** `984 [38 3/4]` is
             # one reading of one dimension, and `extract_words` splits it at the spaces into `984`,
             # `[38` and `3/4]` — three fragments, none of which is a dimension. That splitting is the
@@ -745,6 +752,17 @@ INCH_DENOMINATORS: Final = frozenset({2, 4, 8, 16, 32, 64})
 _MILLIMETRES_RE: Final = re.compile(r"\d+(?:\.\d+)?")
 _BRACKETED_RE: Final = re.compile(r"\[[^\[\]]+\]")
 
+#: Bracketed inches as a dual dimension put together from its pieces may hold them (#904): a whole
+#: number, a fraction, or a whole number and a fraction — `[32]`, `[3/4]`, `[120 1/4]`.
+_PIECED_INCHES_RE: Final = re.compile(r"\[(?:(\d+)|(?:(\d+) )?(\d+)/(\d+))\]")
+
+#: Two or more bracketed groups set back to back: the inches of labels side by side that
+#: `extract_words` ran into one word, `[2][4]` (#904).
+_BRACKET_GROUPS_RE: Final = re.compile(r"(?:\[[^\[\]]+\])(?:\[[^\[\]]+\])+")
+
+#: A run of digits and nothing else: millimetres as a word holds them.
+_DIGITS_RE: Final = re.compile(r"\d+")
+
 #: An inch or foot mark, as fonts set them.
 _UNIT_MARK_RE: Final = re.compile(r"['’′\"”″]")
 
@@ -872,6 +890,31 @@ def _compose_two_lines(word: dict[str, Any]) -> str | None:
     return None
 
 
+def _checked_dual(millimetres: str, inches: str) -> str | None:
+    """`millimetres` and `inches` as one dual token, `3048 [120 1/4]`, or `None`.
+
+    **The guard on every dual dimension put together from pieces** (#904). Such a token is built
+    from where its characters sit, and where a space or a split was misjudged the result can still
+    parse: `[120 1/4]` read without its space is `[1201/4]`, 300 1/4 inches, exact and wrong. So the
+    rules a stacked fraction put together from its pieces is held to (#848) are applied: the
+    millimetres are one number; the inches are a whole number, a fraction or both; a fraction's
+    denominator is in `INCH_DENOMINATORS` with the numerator below it; and no piece of more than one
+    digit starts with a zero.
+    """
+    match = _PIECED_INCHES_RE.fullmatch(inches)
+    if not _MILLIMETRES_RE.fullmatch(millimetres) or match is None:
+        return None
+    pieces = [millimetres, *(piece for piece in match.groups() if piece is not None)]
+    if any(len(piece) > 1 and piece.startswith("0") for piece in pieces):
+        return None
+    if match.group(4) is not None:
+        numerator, denominator = int(match.group(3)), int(match.group(4))
+        if denominator not in INCH_DENOMINATORS or not 0 < numerator < denominator:
+            return None
+    token = f"{millimetres} {inches}"
+    return token if DUAL_TOKEN_RE.fullmatch(token) else None
+
+
 def _read_what_composes(
     words: list[dict[str, Any]],
     set_aside: list[tuple[dict[str, Any], SetAsideReason]],
@@ -899,6 +942,176 @@ def _read_what_composes(
             {**word, "text": composed, "stacked": reason is SetAsideReason.STACKED_FRACTION}
         )
     return kept, still
+
+
+def _tallest_digit(entries: list[_Framed]) -> float:
+    return max(
+        (_height(frame) for char, frame in entries if str(char["text"]).isdigit()), default=0.0
+    )
+
+
+def _touching_run(row: list[_Framed], tallest: float) -> bool:
+    """Whether a row's characters run along their line with no gap wider than `_TOUCHING` of
+    `tallest`: one label's characters, not two labels' (a space between words of one label is
+    narrower than that in the client's text)."""
+    ordered = sorted(row, key=lambda entry: entry[1][0])
+    reached = ordered[0][1][1]
+    for _, frame in ordered[1:]:
+        if frame[0] - reached > _TOUCHING * tallest:
+            return False
+        reached = max(reached, frame[1])
+    return True
+
+
+def _alone(label: list[_Framed], printed: list[_Framed]) -> bool:
+    """Whether no character of the page outside `label` reads its way, is centred across within it,
+    and touches it along the line or stands inside it: the refusal `_stack_on_bar` makes of a
+    neighbour, which may be a piece of the label the pieces found are missing."""
+    own = {id(char) for char, _ in label}
+    up = label[0][1][4]
+    foot, head = min(frame[2] for _, frame in label), max(frame[3] for _, frame in label)
+    start, end = min(frame[0] for _, frame in label), max(frame[1] for _, frame in label)
+    tallest = _tallest_digit(label)
+    for char, frame in printed:
+        if id(char) in own or frame[4] != up or not foot <= _across_middle(frame) <= head:
+            continue
+        reach = _TOUCHING * max(tallest, _height(frame) if str(char["text"]).isdigit() else 0)
+        if frame[1] >= start - reach and frame[0] <= end + reach:
+            return False
+    return True
+
+
+def _printed(chars: list[dict[str, Any]]) -> list[_Framed]:
+    """Every character of the page that prints, with where it sits."""
+    return [
+        (char, frame)
+        for char in chars
+        if str(char.get("text", "")).strip() and (frame := _frame(char)) is not None
+    ]
+
+
+def _row_text(row: list[_Framed], other: list[_Framed], spaces: list[_Framed]) -> str | None:
+    """One row's characters in reading order, with a space wherever the page sets a space
+    character between two of them on this row; or `None` where a space between them sits where
+    either row could own it.
+
+    The space is the page's own character, never a gap judged by its width: in the client's text a
+    space is narrower than `_TOUCHING`, so no width tells it from two characters set close.
+    """
+    low, high = min(frame[2] for _, frame in row), max(frame[3] for _, frame in row)
+    other_low, other_high = min(frame[2] for _, frame in other), max(frame[3] for _, frame in other)
+    text = str(row[0][0]["text"])
+    for (_, before), (char, after) in pairwise(row):
+        between = [
+            frame
+            for _, frame in spaces
+            if frame[4] == before[4]
+            and _along_middle(before) < _along_middle(frame) < _along_middle(after)
+            and low <= _across_middle(frame) <= high
+        ]
+        if any(other_low <= _across_middle(frame) <= other_high for frame in between):
+            return None
+        text += (" " if between else "") + str(char["text"])
+    return text
+
+
+def _one_run_split(first: list[_Framed], second: list[_Framed]) -> bool:
+    """Whether two words set aside as two lines are pieces of one run: reading the same way,
+    touching along their line (`_TOUCHING`), and on the same two rows (`_two_rows`)."""
+    if first[0][1][4] != second[0][1][4]:
+        return False
+    tallest = _tallest_digit([*first, *second])
+    gap = max(min(frame[0] for _, frame in first), min(frame[0] for _, frame in second)) - min(
+        max(frame[1] for _, frame in first), max(frame[1] for _, frame in second)
+    )
+    return gap <= _TOUCHING * tallest and _two_rows([*first, *second]) is not None
+
+
+def _rejoin_two_lines(
+    words: list[dict[str, Any]],
+    set_aside: list[tuple[dict[str, Any], SetAsideReason]],
+    digits: _DigitGrid,
+    chars: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], SetAsideReason]]]:
+    """`(words, set_aside)` with each label written as millimetres over bracketed inches that
+    `extract_words` broke at a space put back together, as the one dual token it is (#904).
+
+    **Why it was never read.** `extract_words` reads two rows set close as one word, their
+    characters interleaved, and breaks a word at a space. Measured on `AI_Set_1` page 3, labels
+    written as four digits over bracketed inches with a space in them, such as `3048` over
+    `[120 1/4]`, came back as two words, each holding pieces of both rows: the space in the inches
+    broke both rows in two. Neither half composes (`_compose_two_lines`), so both were set aside,
+    and a label printed clearly reached a person blank.
+
+    **So the halves are read as one.** Words still set aside as two lines that touch along their
+    line and lie on the same two rows (`_one_run_split`) are pieces of one run. Each holds
+    characters of both rows on its own side of the break, so the two rows stand one over the
+    other. Each row is read
+    from all their characters, with the space where the page sets its space character
+    (`_row_text`), and the run is read as millimetres over bracketed inches only if it passes
+    `_checked_dual`. Anything else leaves every piece set aside, as before: a space in the
+    millimetres; a space either row could own; a row with a gap in it wider than `_TOUCHING`
+    (`_touching_run`), which is two labels' text, or one with characters missing; a character of
+    the page touching the run that is not part of it (`_alone`), which may be a piece of it the
+    halves are missing; a run another label is printed over; inches that are not an inch value.
+    Measured on `AI_Set_1`, the gap refuses two runs: millimetres with two characters' room missing
+    from the middle of them, and the millimetres of two labels read as one six-digit number.
+    The token is not marked stacked: it is not a fraction set as a stack.
+    """
+    pieces = [
+        (index, framed)
+        for index, (word, reason) in enumerate(set_aside)
+        if reason is SetAsideReason.TWO_LINES and (framed := _framed(word)) is not None
+    ]
+    if len(pieces) < 2:
+        return words, set_aside
+    group = list(range(len(pieces)))
+
+    def root(member: int) -> int:
+        while group[member] != member:
+            member = group[member]
+        return member
+
+    for first, second in combinations(range(len(pieces)), 2):
+        if _one_run_split(pieces[first][1], pieces[second][1]):
+            group[root(second)] = root(first)
+    runs: dict[int, list[int]] = defaultdict(list)
+    for member in range(len(pieces)):
+        runs[root(member)].append(member)
+
+    spaces = [
+        (char, frame)
+        for char in chars
+        if str(char.get("text", "")).isspace() and (frame := _frame(char)) is not None
+    ]
+    printed = _printed(chars)
+    kept = list(words)
+    joined: set[int] = set()
+    for members in runs.values():
+        if len(members) < 2:
+            continue
+        framed = [entry for member in members for entry in pieces[member][1]]
+        own = [char for char, _ in framed]
+        rows = _two_rows(framed)
+        if rows is None or digits.printed_over({"chars": own}):
+            continue
+        upper, lower = rows
+        tallest = _tallest_digit(framed)
+        if not (
+            _touching_run(upper, tallest)
+            and _touching_run(lower, tallest)
+            and _alone(framed, printed)
+        ):
+            continue
+        above, below = _row_text(upper, lower, spaces), _row_text(lower, upper, spaces)
+        if above is None or below is None:
+            continue
+        token = _checked_dual(above, below) or _checked_dual(below, above)
+        if token is None:
+            continue
+        kept.append({**_run_of(own), "text": token, "stacked": False})
+        joined.update(pieces[member][0] for member in members)
+    return kept, [entry for index, entry in enumerate(set_aside) if index not in joined]
 
 
 #: An inch mark, as fonts set it: the one character a stack put back together from its characters
@@ -1159,6 +1372,145 @@ def _compose_split_stacks(
     return [*words, *composed], still
 
 
+def _bracket_groups(framed: list[_Framed]) -> list[list[_Framed]] | None:
+    """A row of bracketed groups set back to back, `[2][4]`, as its groups in reading order; or
+    `None` unless every character is in a group and no group reaches into the next along the line.
+    """
+    groups: list[list[_Framed]] = []
+    for entry in sorted(framed, key=lambda entry: entry[1][0]):
+        if str(entry[0]["text"]) == "[":
+            groups.append([entry])
+        elif groups and str(groups[-1][-1][0]["text"]) != "]":
+            groups[-1].append(entry)
+        else:
+            return None
+    if not all(str(group[-1][0]["text"]) == "]" for group in groups):
+        return None
+    spans = [(min(f[0] for _, f in group), max(f[1] for _, f in group)) for group in groups]
+    if any(later[0] <= earlier[1] for earlier, later in pairwise(spans)):
+        return None  # brackets that overlap along the line: no telling which a digit stands over
+    return groups
+
+
+def _number_over(number: list[_Framed], groups: list[list[_Framed]]) -> list[list[_Framed]] | None:
+    """`number`'s digits shared out among `groups`, each to the group whose span along the line its
+    middle lies in; or `None` unless every digit lies over exactly one group and every group has a
+    digit over it."""
+    spans = [(min(f[0] for _, f in group), max(f[1] for _, f in group)) for group in groups]
+    parts: list[list[_Framed]] = [[] for _ in groups]
+    for entry in sorted(number, key=lambda entry: entry[1][0]):
+        over = [
+            index
+            for index, (low, high) in enumerate(spans)
+            if low <= _along_middle(entry[1]) <= high
+        ]
+        if len(over) != 1:
+            return None
+        parts[over[0]].append(entry)
+    return parts if all(parts) else None
+
+
+def _rows_touch(number: list[_Framed], brackets: list[_Framed]) -> bool:
+    """Whether `number` and `brackets` are two rows one directly over the other: each on a row of
+    its own (`_two_rows`), and the gap between the rows, across the line, a touch (`_TOUCHING` of
+    the tallest digit), as the two lines of one label are."""
+    rows = _two_rows([*number, *brackets])
+    if rows is None:
+        return False
+    number_ids = {id(char) for char, _ in number}
+    if {id(char) for char, _ in rows[0]} == number_ids:
+        upper, lower = number, brackets
+    elif {id(char) for char, _ in rows[1]} == number_ids:
+        upper, lower = brackets, number
+    else:
+        return False
+    tallest = max(
+        _height(frame) for char, frame in rows[0] + rows[1] if str(char["text"]).isdigit()
+    )
+    gap = min(frame[2] for _, frame in upper) - max(frame[3] for _, frame in lower)
+    return gap <= _TOUCHING * tallest
+
+
+def _read_side_by_side(
+    words: list[dict[str, Any]], digits: _DigitGrid, chars: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """`words` with each pair of rows that holds labels side by side read as those labels (#904).
+
+    **Why they were lost.** `extract_words` starts a new word only where the gap between two
+    characters is wider than three points. Measured on `AI_Set_1` pages 4 and 5, two sideways labels
+    of two digits over one-digit inches, set with digits 3 1/4 points tall, stand about a point
+    apart, so each row came back as one word: as if `46` over `[2]` and `97` over `[4]` read
+    `4697` and `[2][4]`. No join reads either, and both reached a person blank.
+
+    **The brackets say where each label is.** A word of bracketed groups set back to back
+    (`_BRACKET_GROUPS_RE`) holds the inches of as many labels, each group whole between its own
+    brackets. A word of digits on the row directly over or under it (`_rows_touch`) holds their
+    millimetres, and each digit goes with the group it stands over (`_number_over`), as a numerator
+    is read with the bar it stands over (`_stack_on_bar`). Each label is then held to
+    `_checked_dual`. The inches come only from their own brackets, and millimetres are never a
+    verdict's operand, so a digit given to the wrong label could change no value.
+
+    **Refused, and left as they were**, unless there is exactly one such number word, every digit of
+    it stands over exactly one group and every group has a digit over it, the groups do not overlap
+    along the line, each label's millimetres and inches run with no gap wider than `_TOUCHING`
+    (`_touching_run`), no character of the page outside the pair touches it (`_alone`), no digit of
+    another label is printed over it, and every label passes. The labels are not marked stacked:
+    neither row is a fraction set as a stack.
+    """
+    printed: list[_Framed] | None = None
+    owner = {
+        id(char): index for index, word in enumerate(words) for char in word.get("chars") or ()
+    }
+    replaced: dict[int, list[dict[str, Any]]] = {}
+    for index, word in enumerate(words):
+        if not _BRACKET_GROUPS_RE.fullmatch(str(word.get("text", ""))):
+            continue
+        brackets = _framed(word)
+        groups = None if brackets is None else _bracket_groups(brackets)
+        if brackets is None or groups is None:
+            continue
+        found: list[tuple[int, list[_Framed], list[list[_Framed]]]] = []
+        for other in sorted(
+            {owner[key] for char, _ in brackets for key, _ in digits.near(char) if key in owner}
+        ):
+            if other == index or other in replaced:
+                continue
+            number = _framed(words[other])
+            if (
+                number is None
+                or not _DIGITS_RE.fullmatch(str(words[other].get("text", "")))
+                or number[0][1][4] != brackets[0][1][4]
+                or not _rows_touch(number, brackets)
+            ):
+                continue
+            parts = _number_over(number, groups)
+            if parts is not None:
+                found.append((other, number, parts))
+        if len(found) != 1:
+            continue
+        other, number, parts = found[0]
+        pair = [*number, *brackets]
+        printed = _printed(chars) if printed is None else printed
+        if digits.printed_over({"chars": [char for char, _ in pair]}) or not _alone(pair, printed):
+            continue
+        tallest = _tallest_digit(pair)
+        labels = []
+        for part, group in zip(parts, groups, strict=True):
+            token = _checked_dual(_text_of(part), _text_of(group))
+            if token is None or not (
+                _touching_run(part, tallest) and _touching_run(group, tallest)
+            ):
+                break
+            chars = [char for char, _ in (*part, *group)]
+            labels.append({**_run_of(chars), "text": token, "stacked": False})
+        else:
+            replaced[other] = []
+            replaced[index] = labels
+    if not replaced:
+        return words
+    return [run for index, word in enumerate(words) for run in replaced.get(index, [word])]
+
+
 def _is_fragment(run: dict[str, Any], digits: _DigitGrid, partners: set[int]) -> bool:
     """Whether a run is a piece of a longer label. Three shapes, each measured on the client's sets:
 
@@ -1259,7 +1611,12 @@ def _dual_tokens(
 
     So the line is used only to say which words share it, by exact box containment, and the token is
     found by joining consecutive words back together. The box that comes out is the union of real
-    word boxes, which is what the drawing actually says.
+    word boxes, which is what the drawing actually says. A line's box can enclose a word that is not
+    on it, so one word can be on two lines; `_join_lines` joins each character into one token at
+    most, so the label it is part of is still read once (#894).
+
+    **An upright line is read as the runs of it that can be one label** (#904, `_upright_runs`):
+    broken where the gap along it is wider than `FRAGMENT_REACH`, and two rows read row by row.
 
     **Sideways labels are joined too** (#738). `extract_text_lines` groups only upright text, so a
     sideways `2' - 0"` stayed three words, and `2'` alone is 24 inches while `0"` alone is none.
@@ -1270,8 +1627,13 @@ def _dual_tokens(
     upright_lines = []
     for line in page.extract_text_lines(return_chars=True):
         line_box = (line["x0"], line["top"], line["x1"], line["bottom"])
-        upright_lines.append(
-            sorted((word for word in words if _inside(word, line_box)), key=lambda word: word["x0"])
+        upright_lines.extend(
+            _upright_runs(
+                sorted(
+                    (word for word in words if _inside(word, line_box)),
+                    key=lambda word: word["x0"],
+                )
+            )
         )
     _join_lines(upright_lines, found, transform, height, document_version_id, page_index)
     sideways = [
@@ -1293,7 +1655,24 @@ def _join_lines(
     document_version_id: UUID,
     page_index: int,
 ) -> None:
-    """Join consecutive words of each line that together make one `_WHOLE_TOKENS` dimension."""
+    """Join consecutive words of each line that together make one `_WHOLE_TOKENS` dimension.
+
+    **Each character is joined into one token at most** (#894). An upright line holds the words
+    whose boxes lie inside its box (`_dual_tokens`), and the box `extract_text_lines` gives a line is
+    the one round all of its characters, so it can enclose words that are not on it. Measured on
+    `AI_Set_1`, a line of a note running across a drawing enclosed a stacked fraction none of whose
+    characters it has, and the label was joined on its own line and again on the note's: one label
+    read twice, from the same characters. So a run that holds a character a token already found
+    holds — in this call or in `found` before it — is passed over as a run that does not match is,
+    and the next smaller run is tried. The first token found keeps the characters, in the order the
+    lines are joined; on both client sets every run passed over was a copy of that token.
+
+    Which words a line holds is left as it was. Holding only the words with a character on the line
+    was tried, and it changes real readings: measured on `AI_Set_2`, it lost a dual dimension whose
+    pieces `extract_text_lines` puts on two lines, joined only because one line's box encloses them
+    all, and changed the readings round it.
+    """
+    taken = {id(char) for _, _, merged in found for char in merged["chars"]}
     for members in lines:
         index = 0
         while index < len(members):
@@ -1301,6 +1680,9 @@ def _join_lines(
                 run = members[index : index + size]
                 joined = " ".join(str(word["text"]) for word in run)
                 if not any(pattern.fullmatch(joined) for pattern in _WHOLE_TOKENS):
+                    continue
+                chars = [char for word in run for char in (word.get("chars") or ())]
+                if any(id(char) in taken for char in chars):
                     continue
                 box = (
                     min(word["x0"] for word in run),
@@ -1310,7 +1692,7 @@ def _join_lines(
                 )
                 merged = {
                     "text": " ".join(str(word["text"]) for word in run),
-                    "chars": [char for word in run for char in (word.get("chars") or ())],
+                    "chars": chars,
                     "x0": box[0],
                     "top": box[1],
                     "x1": box[2],
@@ -1323,10 +1705,94 @@ def _join_lines(
                 item = _text_item(merged, transform, height, document_version_id, page_index)
                 if item is not None:
                     found.append((item, box, merged))
+                    taken.update(id(char) for char in chars)
                 index += size
                 break
             else:
                 index += 1
+
+
+#: Which way is up for upright text, as `_frame` names it.
+_UPRIGHT: Final = (0.0, 1.0)
+
+
+def _upright_runs(members: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """The words of an upright line, in order of their left edges, as the runs a token may be
+    joined from, each in reading order (#904).
+
+    **Why the line alone is not enough.** `extract_text_lines` puts words on one line wherever their
+    tops chain within three points, so a line runs on past any one label, and a line of a note set
+    between two rows holds both rows. Measured on `AI_Set_2` page 7: one line held a chain of labels
+    written as millimetres over bracketed inches, both rows of each. In order of left edges the words
+    of two rows interleave, and each bracket starts a hair before its number: as if `[32]` came
+    before `813`, and `813` was joined to `[1`, `44` and `3/4]` of the next label, 47 points along,
+    into `813 [1 44 3/4]`. Set aside as a piece of a longer label, it left both labels unread. Had
+    the next label's inches been one word, the join would have made a well-formed `813 [2]`, 2
+    inches for a label that says 32, which only the test for pieces of longer labels
+    (`_is_fragment`) set aside.
+
+    **So the line is read as runs.** It is broken wherever the gap along it, from the furthest any
+    word so far reaches, is wider than `FRAGMENT_REACH` of the text's height, as `_sideways_lines`
+    breaks a sideways line: labels further apart than that are never joined into one. A run whose
+    words lie on two rows (`_two_rows`), each word on one of them, is read row by row: as one label,
+    the millimetres row then the inches row, where the two rows are one number over (or under) one
+    bracketed inches that `_checked_dual` passes, and the two overlap along the line; and otherwise
+    as each row on its own, so no token is joined across two rows that are not one label. Measured
+    on `AI_Set_2` page 8, the overlap refuses a number joined to the bracketed inches of the next
+    label, raised beside it on its leader. Every other run is read in order of left edges, as the
+    whole line was before: a run on one row, on more than two rows, or with a word on both rows or
+    not upright, and every run of a line that holds a sideways word, which is not broken at all.
+    """
+    if not members or not all(word.get("upright", True) for word in members):
+        return [members]
+    runs = [[members[0]]]
+    furthest = members[0]
+    for word in members[1:]:
+        reach = FRAGMENT_REACH * max(
+            word["bottom"] - word["top"], furthest["bottom"] - furthest["top"]
+        )
+        if word["x0"] - furthest["x1"] > reach:
+            runs.append([word])
+            furthest = word
+            continue
+        runs[-1].append(word)
+        if word["x1"] > furthest["x1"]:
+            furthest = word
+    return [line for run in runs for line in _by_rows(run)]
+
+
+def _by_rows(run: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """One run of an upright line, as `_upright_runs` reads it: one label over two rows, each row
+    alone, or as it was."""
+    if len(run) < 2:
+        return [run]
+    framed = [_framed(word) for word in run]
+    if any(entries is None or entries[0][1][4] != _UPRIGHT for entries in framed):
+        return [run]
+    rows = _two_rows([entry for entries in framed if entries is not None for entry in entries])
+    if rows is None:
+        return [run]
+    upper_ids = {id(char) for char, _ in rows[0]}
+    upper: list[dict[str, Any]] = []
+    lower: list[dict[str, Any]] = []
+    for word, entries in zip(run, framed, strict=True):
+        on_upper = {id(char) in upper_ids for char, _ in entries or ()}
+        if on_upper == {True}:
+            upper.append(word)
+        elif on_upper == {False}:
+            lower.append(word)
+        else:
+            return [run]  # a word on both rows
+    for millimetres, inches in ((upper, lower), (lower, upper)):
+        token = _checked_dual(
+            " ".join(str(word["text"]) for word in millimetres),
+            " ".join(str(word["text"]) for word in inches),
+        )
+        overlap = min(max(word["x1"] for word in millimetres), max(word["x1"] for word in inches))
+        overlap -= max(min(word["x0"] for word in millimetres), min(word["x0"] for word in inches))
+        if token is not None and overlap > 0:
+            return [[*millimetres, *inches]]
+    return [upper, lower]
 
 
 #: A sideways word as `_sideways_lines` places it: `(up, across_centre, height, start, end, word)`.

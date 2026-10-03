@@ -5,8 +5,10 @@
 from runs' databases, each read inside a read-only transaction, and from agent scorecard working
 files; `--database` and `--scorecard` may each be given more than once. The drawing is read for its
 geometry and its coloured markup only, by the stage's own code
-(`eval.experiments.agent_scorecard.ScorecardPage`, `extraction.stamp_text`), with every threshold
-taken from a `scripts/demo.sh`-style file — none has a default.
+(`eval.experiments.agent_scorecard.ScorecardPage`, `extraction.stamp_text.coloured_text`), with
+every threshold taken from a `scripts/demo.sh`-style file — none has a default. **Whether a crop
+shows a GV mark is the production gate's own function** (`workflow.stages.gv_mark_in_crop`, #901),
+so the replay and the gate cannot disagree about it.
 
     python scripts/gate_replay.py data/goldset/reading-key-2026-09-30 \\
         --key-dpi 600 --key-margin-pt 9 --reader-settings scripts/demo.sh --stage-dpi 300 \\
@@ -61,16 +63,13 @@ from eval.experiments.gate_replay import (
     results_json,
     stacked_catch,
 )
-from evidence.coordinates import ImagePoint
 from extraction.agent.geometry import LabelReach
 from extraction.glyph_bands import FractionBarGeometry
-from extraction.reader import read_page_contents
+from extraction.stamp_text import coloured_text
+from workflow.stages import ColouredMarkup, gv_mark_in_crop
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine
-
-Pixels = tuple[int, int, int, int]
-"""left, top, right, bottom, in a page's pixels at the stage's dpi."""
 
 #: The reading agent's label lengths, which `scripts/glyph_inventory.READER_SETTINGS` does not read.
 #: Required like the rest: they decide where a label ends, so whether a crop cut it.
@@ -130,87 +129,30 @@ def _geometry(reader: dict[str, str]) -> PageGeometry:
     )
 
 
-def coloured_text(pdf: bytes, page_index: int, *, version_id: UUID, dpi: int) -> tuple[Pixels, ...]:
-    """Where the page's pasted drawings set text in colour, in its pixels at `dpi`.
-
-    Read by the stamp-text route's own reader, keeping only the characters `stamp_text.drawing_ink`
-    refuses. That module never reads them as values, because coloured text inside a snapshot is
-    somebody's markup (measured on the client's first set); a vision reader is still shown it.
-    """
-    from extraction.stamp_text import drawing_ink, stamps_only
-
-    contents = read_page_contents(
-        stamps_only(pdf, page_index),
-        page_index,
-        document_version_id=version_id,
-        dpi=dpi,
-        keep_char=lambda char: not drawing_ink(char),
+def markup_of(pdf: bytes, page: ScorecardPage, *, version_id: UUID, dpi: int) -> ColouredMarkup:
+    """The page's markup drawn in colour, gathered as the stage gathers it (`_coloured_markup`):
+    the coloured text in its pasted drawings, and the glyph paths its layers read."""
+    return ColouredMarkup(
+        text=coloured_text(pdf, page.page.index, document_version_id=version_id, dpi=dpi),
+        paths=page.layers.glyph_paths,
+        transform=page.transform,
     )
-    extents = [item.image_extent for item in contents.texts] + [
-        label.image_extent for label in contents.set_aside
-    ]
-    return tuple(
-        (
-            min(point.x for point in extent),
-            min(point.y for point in extent),
-            max(point.x for point in extent),
-            max(point.y for point in extent),
-        )
-        for extent in extents
-        if extent
-    )
-
-
-def _overlaps(first: Sequence[int], second: Sequence[int]) -> bool:
-    return (
-        first[0] <= second[2]
-        and second[0] <= first[2]
-        and first[1] <= second[3]
-        and second[1] <= first[3]
-    )
-
-
-def _shows_colour(page: ScorecardPage, text: Sequence[Pixels], crop_px: Pixels) -> bool:
-    """Whether markup drawn in colour lies in the crop, wholly or in part.
-
-    Two places it can be, each found by the stage's own test of what is the vendor's black or grey:
-    text set in colour (`coloured_text`), and a glyph-sized path drawn in colour
-    (`VectorPath.drawing_ink`, #834). A page with no transform places no path, and its paths then
-    say nothing, as the stage's own geometry says nothing there.
-    """
-    if any(_overlaps(box, crop_px) for box in text):
-        return True
-    if page.transform is None:
-        return False
-    left, top, right, bottom = crop_px
-    corners = [page.transform.to_pdf(ImagePoint(x, y)) for x, y in ((left, top), (right, bottom))]
-    low_x, high_x = min(c.x for c in corners), max(c.x for c in corners)
-    low_y, high_y = min(c.y for c in corners), max(c.y for c in corners)
-    for path in page.layers.glyph_paths:
-        if path.drawing_ink or not path.points:
-            continue
-        xs = [point[0] for point in path.points]
-        ys = [point[1] for point in path.points]
-        if min(xs) <= high_x and low_x <= max(xs) and min(ys) <= high_y and low_y <= max(ys):
-            return True
-    return False
 
 
 def facts_of(
-    page: ScorecardPage, text: Sequence[Pixels], box_px: Pixels, margin_pt: Decimal
+    page: ScorecardPage,
+    markup: ColouredMarkup,
+    box_px: tuple[int, int, int, int],
+    margin_pt: Decimal,
 ) -> Facts:
     """A region's geometry, by `workflow.stages.region_facts` through the scorecard's page, and
-    whether the crop production cuts round it shows markup in colour."""
-    from workflow.reading_agent import crop_box_px
-
+    whether the crop production cuts round it shows a GV mark, by the gate's own function."""
     found, _ = page.facts(box_px, (), margin_pt)
-    polygon = page.polygon(box_px)
     return Facts(
         cut_at_edge=found.cut_at_edge,
         sideways=found.rotation_degrees != 0,
         stacked=found.stacked_fraction,
-        gv_mark=polygon is not None
-        and _shows_colour(page, text, crop_box_px(page.rendered, polygon, margin_pt)),
+        gv_mark=gv_mark_in_crop(page.polygon(box_px), page.rendered, markup),
     )
 
 
@@ -327,14 +269,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             geometry=geometry,
             reach=reach,
         )
-        colour = {
-            index: coloured_text(pdf, index, version_id=version_id, dpi=args.stage_dpi)
-            for index in pages
+        markup = {
+            index: markup_of(pdf, page, version_id=version_id, dpi=args.stage_dpi)
+            for index, page in pages.items()
         }
 
         def geometry_of(page_index: int, box: Box) -> Facts:
             return facts_of(
-                pages[page_index], colour[page_index], pixels(box, args.stage_dpi), margin
+                pages[page_index], markup[page_index], pixels(box, args.stage_dpi), margin
             )
 
         key_facts = {

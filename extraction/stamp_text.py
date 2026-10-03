@@ -56,6 +56,7 @@ from extraction.reader import PageContents, UnreadablePdf, read_page_contents
 __all__ = [
     "StampCharacters",
     "StampText",
+    "coloured_text",
     "drawing_ink",
     "path_ink",
     "read_stamp_text",
@@ -221,6 +222,39 @@ def read_stamp_text(
             set_aside=contents.set_aside,
         ),
         characters,
+    )
+
+
+def coloured_text(
+    data: bytes, page_index: int, *, document_version_id: UUID, dpi: int
+) -> tuple[tuple[int, int, int, int], ...]:
+    """Where the page's pasted drawings set text in colour: `(left, top, right, bottom)` of each run,
+    in the page's pixels at `dpi`.
+
+    The characters `read_stamp_text` refuses, read by the same reader on the same copy of the page.
+    This module never reads them as values, because coloured text inside a snapshot is somebody's
+    markup; a vision reader is still shown it, so the agreement gate asks where it is (#901). Runs
+    set aside unread (#738) are places too, and are included.
+    """
+    contents = read_page_contents(
+        stamps_only(data, page_index),
+        page_index,
+        document_version_id=document_version_id,
+        dpi=dpi,
+        keep_char=lambda char: not drawing_ink(char),
+    )
+    extents = [item.image_extent for item in contents.texts] + [
+        label.image_extent for label in contents.set_aside
+    ]
+    return tuple(
+        (
+            min(point.x for point in extent),
+            min(point.y for point in extent),
+            max(point.x for point in extent),
+            max(point.y for point in extent),
+        )
+        for extent in extents
+        if extent
     )
 
 

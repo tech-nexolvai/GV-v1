@@ -399,7 +399,7 @@ def test_the_report_states_a_wrong_agreement_unbounded() -> None:
     )
 
     assert (
-        "| the gate as it is | 0 | **1** | 0 | 1/1 (100.0%) | not bounded: 1 of 1 agreed wrong |"
+        f"| {Guard.NONE.value} | 0 | **1** | 0 | 1/1 (100.0%) | not bounded: 1 of 1 agreed wrong |"
         in report
     )
 

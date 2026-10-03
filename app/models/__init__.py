@@ -28,6 +28,7 @@ from app.models.document import (
 from app.models.drawing import (
     Alias,
     CountertopRun,
+    CountertopRunDecision,
     DenseEmbedding,
     DrawingItem,
     DrawingView,
@@ -122,6 +123,7 @@ __all__ = [
     "CheckRun",
     "CorrectionLedgerEntry",
     "CountertopRun",
+    "CountertopRunDecision",
     "DenseEmbedding",
     "Document",
     "DocumentKind",

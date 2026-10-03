@@ -46,6 +46,7 @@ from tests.extraction.models.test_validation import THIRTY_NINE_AND_A_HALF_LAYOU
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from tests.workflow.test_fraction_parts_route import _copy, _second_reader
 from tests.workflow.test_glyph_route import _glyph_rows, _settings, _templates
+from tests.workflow.test_gv_mark_guard import unmarked_page
 from tests.workflow.test_markup_route import _SilentOcr
 from tests.workflow.test_stacked_fraction_route import PLAIN_SHEET, STACKED_SHEET, _fraction
 from units.normalise import normalise_to_inches
@@ -240,7 +241,7 @@ def test_two_readers_agreeing_on_the_flagged_reading_confirm_nothing(
     agreeing = _copy(reading, run_id=second.id, flags=[])
     session.add_all([flagged, agreeing])
     DatabaseStages._apply_cross_route_corroboration(
-        session, page_index=0, candidates=(flagged, agreeing)
+        session, page_index=0, candidates=(flagged, agreeing), gv_mark=unmarked_page()
     )
     for row in (flagged, agreeing):
         assert (row.corroboration_status, row.corroboration_lane) == (None, None)
@@ -249,7 +250,7 @@ def test_two_readers_agreeing_on_the_flagged_reading_confirm_nothing(
     control = _copy(reading, run_id=second.id, flags=[])
     session.add_all([unflagged, control])
     DatabaseStages._apply_cross_route_corroboration(
-        session, page_index=0, candidates=(unflagged, control)
+        session, page_index=0, candidates=(unflagged, control), gv_mark=unmarked_page()
     )
     for row in (unflagged, control):
         assert row.corroboration_lane == "SECOND_READER"

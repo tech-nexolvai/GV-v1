@@ -18,7 +18,14 @@ from uuid import UUID
 
 import pytest
 
-from extraction.stamp_text import StampText, drawing_ink, path_ink, read_stamp_text, stamps_only
+from extraction.stamp_text import (
+    StampText,
+    coloured_text,
+    drawing_ink,
+    path_ink,
+    read_stamp_text,
+    stamps_only,
+)
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
 from units.normalise import normalise_to_inches
 from units.notation import canonical_notation
@@ -139,6 +146,20 @@ def test_coloured_text_in_a_pasted_drawing_is_not_read() -> None:
     assert [item.text for item in reading.contents.texts] == ['36"']
     assert reading.characters.coloured == 3
     assert reading.characters.readable == 3
+
+
+def test_coloured_text_in_a_pasted_drawing_is_found_where_it_is() -> None:
+    """**Where the agreement gate looks for a GV mark (#901).** A black `36"` with a red `38"` below
+    it: only the red one is found, and it is found below the black one, in the page's pixels. The
+    same sheet all in black holds none."""
+    sheet = _sheet(b'(36") Tj 1 0 0 rg 0 -20 Td (38") Tj')
+    (black,) = read_stamp_text(sheet, 0, document_version_id=DOCUMENT, dpi=DPI).contents.texts
+
+    (red,) = coloured_text(sheet, 0, document_version_id=DOCUMENT, dpi=DPI)
+
+    assert red[1] >= max(point.y for point in black.image_extent)
+    all_black = _sheet(b'(36") Tj 0 -20 Td (38") Tj')
+    assert coloured_text(all_black, 0, document_version_id=DOCUMENT, dpi=DPI) == ()
 
 
 @pytest.mark.parametrize(
@@ -426,3 +447,40 @@ def test_what_is_left_of_a_word_once_its_label_is_composed_stays_set_aside() -> 
 )
 def test_path_ink_counts_the_colours_a_path_shows(path: dict[str, object], ink: bool) -> None:
     assert path_ink(path) is ink
+
+
+# ---------------------------------------------------------------------------
+# Neighbouring labels are read apart (#904)
+# ---------------------------------------------------------------------------
+
+#: Two labels side by side, millimetres over bracketed inches, reading up the page, set as
+#: AI_Set_1 pages 4 and 5 set theirs in their pasted drawings: so close along their line that each
+#: row comes back as one word. The labels are invented.
+SIDE_BY_SIDE_LABELS = b"".join(
+    b"BT /F1 3.25 Tf 0 1 -1 0 %.2f %.2f Tm (%s) Tj ET " % (x, y, text)
+    for x, y, text in (
+        (152.4, 520.0, b"46"),
+        (152.4, 524.48, b"97"),
+        (156.9, 519.86, b"[2]"),
+        (156.9, 524.34, b"[4]"),
+    )
+)
+
+
+def test_two_labels_side_by_side_in_a_pasted_drawing_each_read_their_own_value() -> None:
+    """**The gap this closes** (#904). Measured on `AI_Set_1` pages 4 and 5: two sideways labels
+    came back as one word of millimetres and one of bracketed inches, and both reached a person
+    blank. Outcome: two readings, each exactly its own inches, neither marked stacked."""
+    reading = _read(SIDE_BY_SIDE_LABELS)
+
+    assert sorted((item.text, item.stacked) for item in reading.contents.texts) == [
+        ("46 [2]", False),
+        ("97 [4]", False),
+    ]
+    assert {item.text: _exact(item.text) for item in reading.contents.texts} == {
+        "46 [2]": Fraction(2),
+        "97 [4]": Fraction(4),
+    }
+    first, second = reading.contents.texts
+    assert first.image_extent != second.image_extent
+    assert reading.contents.set_aside == ()
