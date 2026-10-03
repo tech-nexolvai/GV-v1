@@ -3,7 +3,12 @@
 The model may report only a raw observation candidate. It cannot produce evidence or
 a verdict, and ordinary model text is never treated as structured output.
 
-Source: ``docs/DESIGN_AI.md`` section 4.1 and issue #249.
+**Two request kinds, one route.** `extract` asks for a dimension reading and its rectangle in a
+crop of the drawing. `read_digits` asks for the digits of one piece of a stacked label, drawn alone
+(#865). Both go through the same profile fallback, the same bounded retries and the same record of
+every attempt; they differ only in what is sent and how the answer is checked.
+
+Source: ``docs/DESIGN_AI.md`` section 4.1 and issues #249, #865.
 Verification: ``tests/extraction/models/test_nova.py``.
 """
 
@@ -12,30 +17,58 @@ from __future__ import annotations
 import logging
 import struct
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from time import monotonic_ns
 from typing import Any, Final, Literal, Protocol, cast
 
+from pydantic import BaseModel
+
 from evidence.candidate import ObservationCandidate
 from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext
-from extraction.models.sanitisation import CoordinateInstruction, InjectionAttempt, prepare_prompt
+from extraction.models.sanitisation import (
+    DIGITS_PROMPT_ID,
+    DIGITS_SYSTEM_INSTRUCTION,
+    DIGITS_TEMPLATE_ID,
+    DIGITS_USER_TASK,
+    CoordinateInstruction,
+    InjectionAttempt,
+    prepare_prompt,
+)
 from extraction.models.validation import (
+    MAXIMUM_PIECE_DIGITS,
     CandidateContext,
     CoordinateMode,
     CropSize,
+    DigitsToolPayload,
     NovaToolPayload,
     RejectionRecorder,
     ValidationRejection,
+    validate_digits_payload,
     validate_payload,
 )
 
 TOOL_NAME = "report_drawing_reading"
 DIMENSION_READER_MAX_TOKENS = 1024
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+#: The one function a digits request may call (#865). Its own name, so an answer to one request
+#: kind can never be read as an answer to the other.
+DIGITS_TOOL_NAME = "report_piece_digits"
+
+#: The answer is one string of at most three digits, and the call that carries it is short: Ministral
+#: 3B averaged 15 output tokens a call on the #865 scorecard. Room to spare, because Nova abandons a
+#: tool call that runs past its limit rather than cutting it off (#712), and a limit is a ceiling,
+#: not a charge.
+DIGITS_READER_MAX_TOKENS = 256
+
+#: What a digits request records as its context: no drawing text, and no page around the piece.
+_NO_CONTEXT: Final = AssembledContext(nearby_text=(), nearby_geometry=())
+_NO_BOUND: Final = Decimal(0)
+
 
 #: The region Nova is invoked in unless a deployment says otherwise.
 #:
@@ -514,6 +547,39 @@ class NovaRequest:
             raise ValueError("bound_pt must be a finite, non-negative Decimal")
 
 
+@dataclass(frozen=True, slots=True)
+class NovaDigitsRequest:
+    """One piece of a stacked label, drawn alone, and how many characters the drawing has in it.
+
+    The digits request kind (#865). The picture is the piece and nothing else, so no context is
+    sent with it and none is recorded: its invocation records an empty context at a bound of zero.
+    """
+
+    request_id: str
+    """Names this request in a recorded refusal, as `candidate_id` names a crop's."""
+
+    page: int
+    picture: bytes
+    """The piece as PNG bytes."""
+
+    digit_count: int
+    """How many characters the drawing has in the piece, which the answer must match."""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request_id, str) or not self.request_id.strip():
+            raise ValueError("request_id must be a non-empty string")
+        if isinstance(self.page, bool) or not isinstance(self.page, int) or self.page < 0:
+            raise ValueError("page must be a non-negative integer")
+        if not isinstance(self.picture, bytes) or not self.picture.startswith(_PNG_SIGNATURE):
+            raise ValueError("picture must be PNG bytes")
+        if (
+            isinstance(self.digit_count, bool)
+            or not isinstance(self.digit_count, int)
+            or not 1 <= self.digit_count <= MAXIMUM_PIECE_DIGITS
+        ):
+            raise ValueError(f"digit_count must be a whole number from 1 to {MAXIMUM_PIECE_DIGITS}")
+
+
 class NovaInvocationOutcome(StrEnum):
     """Closed outcomes recorded for every attempted Bedrock call."""
 
@@ -726,11 +792,33 @@ def _coordinate_instruction(mode: CoordinateMode) -> CoordinateInstruction:
     )
 
 
-def _bedrock_tool_schema() -> dict[str, object]:
-    schema = dict(NovaToolPayload.model_json_schema())
+def _bedrock_tool_schema(payload: type[BaseModel] = NovaToolPayload) -> dict[str, object]:
+    schema = dict(payload.model_json_schema())
     for unsupported in ("title", "description", "additionalProperties"):
         schema.pop(unsupported, None)
     return schema
+
+
+@dataclass(frozen=True, slots=True)
+class _Call[AnswerT]:
+    """One request kind's call: what is sent, how the answer is read, and what is recorded with it.
+
+    What lets the two request kinds share one route. Everything that decides *whether* and *where* a
+    call is made — the profile fallback, the retries, the record of every attempt — lives in
+    `_invoke` and `_attempt` once; a kind supplies only its own body, its own reading of the answer,
+    and the identity its attempts are recorded under.
+    """
+
+    prompt_id: str
+    template_id: str
+    context: AssembledContext
+    bound_pt: Decimal
+    injection_attempts: tuple[InjectionAttempt, ...]
+    body: Callable[[str], dict[str, object]]
+    """The Converse request for one model id."""
+
+    answer: Callable[[Mapping[str, Any]], AnswerT]
+    """The validated answer from one response, or an adapter error saying why there is none."""
 
 
 class NovaAdapter:
@@ -770,6 +858,49 @@ class NovaAdapter:
     def extract(self, request: NovaRequest) -> ObservationCandidate:
         """Call the required tool, validating locally and failing explicitly.
 
+        Recorded under the configuration's prompt and template ids, with the request's own context.
+        The route — the one fallback, the retries, the records — is `_invoke`'s.
+        """
+        prepared = prepare_prompt(
+            request.context,
+            coordinate_instruction=_coordinate_instruction(_coordinate_mode(self._config)),
+        )
+        return self._invoke(
+            _Call(
+                prompt_id=self._config.prompt_id,
+                template_id=self._config.template_id,
+                context=request.context,
+                bound_pt=request.bound_pt,
+                injection_attempts=prepared.injection_attempts,
+                body=lambda model_id: self._request(request, model_id),
+                answer=lambda response: self._candidate(response, request),
+            )
+        )
+
+    def read_digits(self, request: NovaDigitsRequest) -> str:
+        """The digits of one drawn piece of a stacked label, validated, or an explicit failure (#865).
+
+        **Its own words and its own identity**: recorded under `DIGITS_PROMPT_ID` and
+        `DIGITS_TEMPLATE_ID` whatever the configuration's dimension prompt is, so a reader of
+        `model_invocations` can tell the two kinds apart. The answer is held to
+        `validate_digits_payload`: exactly as many ASCII digits as the drawing has in the piece.
+        It never becomes a candidate here; the caller compares it with another reader's.
+        """
+        return self._invoke(
+            _Call(
+                prompt_id=DIGITS_PROMPT_ID,
+                template_id=DIGITS_TEMPLATE_ID,
+                context=_NO_CONTEXT,
+                bound_pt=_NO_BOUND,
+                injection_attempts=(),
+                body=lambda model_id: self._digits_request(request, model_id),
+                answer=lambda response: self._digits(response, request),
+            )
+        )
+
+    def _invoke[AnswerT](self, call: _Call[AnswerT]) -> AnswerT:
+        """One call of either kind, through the inference profile where the plain id is refused.
+
         One fallback, and only for the case AWS reports two different ways: a model id that cannot be
         invoked directly and must be reached through its cross-region inference profile. See
         `INFERENCE_PROFILE_PREFIX` for the two errors and why the retry exists — measured on this
@@ -791,21 +922,21 @@ class NovaAdapter:
         if not model_id.startswith(INFERENCE_PROFILE_PREFIX) and self._routes.knows(
             region, model_id
         ):
-            return self._attempt(request, profile_id)
+            return self._attempt(call, profile_id)
         try:
-            return self._attempt(request, model_id)
+            return self._attempt(call, model_id)
         except NovaServiceError as error:
             cause = error.__cause__
             if cause is None or not needs_inference_profile(cause, model_id):
                 raise
         try:
-            candidate = self._attempt(request, profile_id)
+            answer = self._attempt(call, profile_id)
         except (NovaPayloadRejectedError, NovaProtocolError, NovaRefusalError):
             # The profile answered — its answer was refused, which says nothing against the route.
             self._remember_profile(region, model_id)
             raise
         self._remember_profile(region, model_id)
-        return candidate
+        return answer
 
     def _remember_profile(self, region: str, model_id: str) -> None:
         if self._routes.learn(region, model_id):
@@ -815,25 +946,20 @@ class NovaAdapter:
                 extra={"model_id": model_id, "region": region, "profile": INFERENCE_PROFILE_PREFIX},
             )
 
-    def _attempt(self, request: NovaRequest, model_id: str) -> ObservationCandidate:
+    def _attempt[AnswerT](self, call: _Call[AnswerT], model_id: str) -> AnswerT:
         """One model id, with its own bounded retry loop and its own records."""
 
         last_error: Exception | None = None
-        coordinate_mode = _coordinate_mode(self._config)
-        prepared = prepare_prompt(
-            request.context,
-            coordinate_instruction=_coordinate_instruction(coordinate_mode),
-        )
         for attempt in range(1, self._config.max_attempts + 1):
             started_ns = monotonic_ns()
             response: Mapping[str, Any] | None = None
             outcome = NovaInvocationOutcome.ERROR
             rejection_reason: str | None = None
             try:
-                response = self._client.converse(**self._request(request, model_id))
-                candidate = self._candidate(response, request)
+                response = self._client.converse(**call.body(model_id))
+                answer = call.answer(response)
                 outcome = NovaInvocationOutcome.OK
-                return candidate
+                return answer
             except NovaRefusalError:
                 outcome = NovaInvocationOutcome.REFUSED
                 raise
@@ -866,17 +992,17 @@ class NovaAdapter:
                         # The id actually invoked, not the one configured. When the fallback fires
                         # these differ, and the record has to say which model answered.
                         model_id=model_id,
-                        prompt_id=self._config.prompt_id,
-                        template_id=self._config.template_id,
+                        prompt_id=call.prompt_id,
+                        template_id=call.template_id,
                         attempt=attempt,
                         latency_ms=_milliseconds_since(started_ns),
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                         outcome=outcome,
                         request_id=_request_id(response),
-                        context=request.context,
-                        bound_pt=request.bound_pt,
-                        injection_attempts=prepared.injection_attempts,
+                        context=call.context,
+                        bound_pt=call.bound_pt,
+                        injection_attempts=call.injection_attempts,
                         rejection_reason=rejection_reason,
                     )
                 )
@@ -922,39 +1048,40 @@ class NovaAdapter:
             },
         }
 
+    def _digits_request(self, request: NovaDigitsRequest, model_id: str) -> dict[str, object]:
+        """The digits request: the picture and the fixed task, and no drawing data beside them."""
+        return {
+            "modelId": model_id,
+            "system": [{"text": DIGITS_SYSTEM_INSTRUCTION}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"image": {"format": "png", "source": {"bytes": request.picture}}},
+                        {"text": DIGITS_USER_TASK},
+                    ],
+                }
+            ],
+            "inferenceConfig": {"temperature": 0, "maxTokens": DIGITS_READER_MAX_TOKENS},
+            "additionalModelRequestFields": {"inferenceConfig": {"topK": 1}},
+            "toolConfig": {
+                "tools": [
+                    {
+                        "toolSpec": {
+                            "name": DIGITS_TOOL_NAME,
+                            "description": "Report the digits of the one number in the picture.",
+                            "inputSchema": {"json": _bedrock_tool_schema(DigitsToolPayload)},
+                        }
+                    }
+                ],
+                "toolChoice": {"tool": {"name": DIGITS_TOOL_NAME}},
+            },
+        }
+
     def _candidate(self, response: Mapping[str, Any], request: NovaRequest) -> ObservationCandidate:
-        stop_reason = response.get("stopReason")
-        if stop_reason in {"content_filtered", "guardrail_intervened"}:
-            raise NovaRefusalError(f"Bedrock stopped the request: {stop_reason}")
-        output = response.get("output")
-        message = output.get("message") if isinstance(output, Mapping) else None
-        content = message.get("content") if isinstance(message, Mapping) else None
-        if not isinstance(content, list):
-            raise NovaProtocolError("Bedrock response has no tool content")
-        tool_calls = [
-            block.get("toolUse")
-            for block in content
-            if isinstance(block, Mapping) and isinstance(block.get("toolUse"), Mapping)
-        ]
-        if len(tool_calls) != 1 or len(content) != 1:
-            # Which of three things came back, so a run can count them apart (#792). On AI_Set_2 one
-            # shared sentence covered 383 of Mistral Large 3's refusals; replayed, they were two or
-            # three tool calls for a crop holding two labels, not the prose the sentence implied.
-            if not tool_calls:
-                returned = "no tool call"
-            elif len(tool_calls) > 1:
-                returned = f"{len(tool_calls)} tool calls"
-            else:
-                returned = "model text beside its tool call"
-            raise NovaProtocolError(
-                f"Bedrock must return exactly one tool call and no model text; it returned {returned}"
-            )
-        tool_call = cast(Mapping[str, Any], tool_calls[0])
-        if tool_call.get("name") != TOOL_NAME:
-            raise NovaProtocolError(f"Bedrock called an unexpected tool: {tool_call.get('name')!r}")
         coordinate_mode = _coordinate_mode(self._config)
         outcome = validate_payload(
-            tool_call.get("input"),
+            _tool_input(response, TOOL_NAME),
             context=CandidateContext(
                 candidate_id=request.candidate_id,
                 extractor_version=self._config.model_id,
@@ -970,3 +1097,57 @@ class NovaAdapter:
         if isinstance(outcome, ValidationRejection):
             raise NovaPayloadRejectedError(outcome)
         return outcome
+
+    def _digits(self, response: Mapping[str, Any], request: NovaDigitsRequest) -> str:
+        outcome = validate_digits_payload(
+            _tool_input(response, DIGITS_TOOL_NAME),
+            context=CandidateContext(
+                candidate_id=request.request_id,
+                extractor_version=self._config.model_id,
+                page=request.page,
+                extractor=self._config.extractor,
+            ),
+            digit_count=request.digit_count,
+            recorder=self._recorder,
+        )
+        if isinstance(outcome, ValidationRejection):
+            raise NovaPayloadRejectedError(outcome)
+        return outcome
+
+
+def _tool_input(response: Mapping[str, Any], tool_name: str) -> object:
+    """The input of the one call to `tool_name` a response carries, or an adapter error.
+
+    Shared by both request kinds, so "exactly one tool call and no model text" has one wording and
+    one test, whichever was asked.
+    """
+    stop_reason = response.get("stopReason")
+    if stop_reason in {"content_filtered", "guardrail_intervened"}:
+        raise NovaRefusalError(f"Bedrock stopped the request: {stop_reason}")
+    output = response.get("output")
+    message = output.get("message") if isinstance(output, Mapping) else None
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if not isinstance(content, list):
+        raise NovaProtocolError("Bedrock response has no tool content")
+    tool_calls = [
+        block.get("toolUse")
+        for block in content
+        if isinstance(block, Mapping) and isinstance(block.get("toolUse"), Mapping)
+    ]
+    if len(tool_calls) != 1 or len(content) != 1:
+        # Which of three things came back, so a run can count them apart (#792). On AI_Set_2 one
+        # shared sentence covered 383 of Mistral Large 3's refusals; replayed, they were two or
+        # three tool calls for a crop holding two labels, not the prose the sentence implied.
+        if not tool_calls:
+            returned = "no tool call"
+        elif len(tool_calls) > 1:
+            returned = f"{len(tool_calls)} tool calls"
+        else:
+            returned = "model text beside its tool call"
+        raise NovaProtocolError(
+            f"Bedrock must return exactly one tool call and no model text; it returned {returned}"
+        )
+    tool_call = cast(Mapping[str, Any], tool_calls[0])
+    if tool_call.get("name") != tool_name:
+        raise NovaProtocolError(f"Bedrock called an unexpected tool: {tool_call.get('name')!r}")
+    return tool_call.get("input")
