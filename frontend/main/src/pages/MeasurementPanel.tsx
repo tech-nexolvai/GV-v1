@@ -41,6 +41,8 @@ import { MeasurementGuidance, StoredProposalGuidance } from './MeasurementGuidan
 import { MeasurementSectionNav } from './MeasurementSectionNav';
 import { jumpToMeasurementSection, measurementSections } from './measurementNavigation';
 import { prefillReadingValues } from './measurementDraft';
+import { loadMeasurementResources } from './measurementResources';
+import { ReadingAvailability } from './ReadingAvailability';
 import { appendConfirmedRunValue, confirmCandidateOnce, confirmProposalFields, newConfirmationLedger } from './measurementConfirmation';
 import { settingMissingASource, type SettingSource } from '../components/measure/settingSources';
 import { SettingCitation } from '../components/measure/SettingCitation';
@@ -315,6 +317,9 @@ export function MeasurementPanel({
   const [semanticTypes, setSemanticTypes] = useState<string[]>([]);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [candidateError, setCandidateError] = useState<string | null>(null);
+  const [readingsError, setReadingsError] = useState<string | null>(null);
+  const [vocabularyError, setVocabularyError] = useState<string | null>(null);
+  const [loadingReadings, setLoadingReadings] = useState(false);
   const [confirmationFeedback, setConfirmationFeedback] = useState<Record<string, ReadingConfirmationState>>({});
   /** The phases of an assignment in flight, in arrival order. Empty until one is asked for. */
   const [proposalSteps, setProposalSteps] = useState<AssignmentStep[]>([]);
@@ -361,6 +366,8 @@ export function MeasurementPanel({
       setCandidates([]);
       setSemanticTypes([]);
       setCandidateError(null);
+      setReadingsError(null);
+      setVocabularyError(null);
       setConfirmationFeedback({});
       setConfirming(null);
       setLoadError(null);
@@ -405,21 +412,24 @@ export function MeasurementPanel({
     };
 
     const load = async (includeVocabulary: boolean) => {
+      if (!selectedPackageId) return;
+      setLoadingReadings(true);
       try {
-        if (!selectedPackageId) return;
-        const [fields, read, vocabulary] = await Promise.all([
+        const { fields, readings, vocabulary } = await loadMeasurementResources(
           getRequiredInputs(projectId(), selectedPackageId),
           listCandidates(projectId(), selectedPackageId),
           includeVocabulary ? listSemanticTypes() : Promise.resolve<string[]>([]),
-        ]);
+        );
         if (cancelled) return;
         const required = fields as unknown as Needed;
         setPackageId(selectedPackageId);
         setNeeded(required);
         setLoadError(null);
-        setCandidates(read.candidates);
+        setCandidates(readings.value?.candidates ?? []);
+        setReadingsError(readings.error);
         if (includeVocabulary) {
-          setSemanticTypes(vocabulary);
+          setSemanticTypes(vocabulary.value ?? []);
+          setVocabularyError(vocabulary.error);
         }
         applyRequiredInputs(required);
         if (required.still_reading) {
@@ -429,6 +439,8 @@ export function MeasurementPanel({
         if (!cancelled) {
           setLoadError(caught instanceof ApiError ? caught.message : String(caught));
         }
+      } finally {
+        if (!cancelled) setLoadingReadings(false);
       }
     };
     void load(true);
@@ -867,6 +879,13 @@ export function MeasurementPanel({
         </div>
       )}
       <MeasurementGuidance rulesPublished={needed.rules_published} />
+      {readingsError && <ReadingAvailability error={readingsError} retrying={loadingReadings}
+        onRetry={() => setReload((count) => count + 1)} />}
+      {vocabularyError && <div className="enter-values__error" role="alert">
+        Reading meanings could not be loaded. {vocabularyError}
+        <button type="button" className="value-secondary" disabled={loadingReadings}
+          onClick={() => setReload((count) => count + 1)}>Retry reading meanings</button>
+      </div>}
 
       {/* **Before any reading can fill a field on a combined sheet** (#795): a reading is used only on
           the side of the drawing it sits in, so the drawings' roles come first. Nothing renders for
@@ -906,7 +925,7 @@ export function MeasurementPanel({
             <span className="measure-coverage__bar" style={{ width: `${coveragePercent}%` }} />
           </div>
           <ul className="measure-coverage__counts">
-            {needed.still_reading && candidates.length + confirmedCount === 0 ? (
+            {readingsError ? <li>Drawing reading total unavailable</li> : needed.still_reading && candidates.length + confirmedCount === 0 ? (
               <li>
                 <strong>Reading</strong> dimensions from the drawings
               </li>
@@ -919,7 +938,7 @@ export function MeasurementPanel({
               <strong>{confirmedCount}</strong> confirmed by a reviewer
             </li>
             <li>
-              <strong>{candidates.length}</strong> not yet given a meaning
+              {readingsError ? 'Unconfirmed reading count unavailable' : <><strong>{candidates.length}</strong> not yet given a meaning</>}
             </li>
             {exactTagFieldCount > 0 && (
               <li>
@@ -1001,7 +1020,7 @@ export function MeasurementPanel({
                 work out which of the two they were in — from a panel that already knows. One of
                 them is a finished package and the other is a drawing nothing was read from, and
                 they want completely different things done about them. */}
-            {candidates.length === 0 && (
+            {candidates.length === 0 && !readingsError && (
               <p className="enter-values__hint enter-values__hint--tight">
                 {needed.still_reading
                   ? `The AI is still reading these drawings (${needed.revision_state.toLowerCase().replace(/_/g, ' ')}). This page is watching, and will fill itself in when the reading finishes.`
