@@ -146,6 +146,18 @@ API_PID=$!
 # — `3 3/4"` on a `3/4"` — is refused. On those 12 fractions every value from 3.2 to 6 pt counts every
 # part right; the widest gap inside a label is 3.12 pt, between the `1` and `3` of a `13 1/8"`.
 #
+# **`TURNED_ASPECT_MIN` finds the sideways ones (#869).** `AI_Set 2` draws its vertical dimensions
+# turned a quarter inside stamps that read upright, so their bars run up the page and the six above
+# never saw them. A bar across the stamp's baseline now counts where each character either side
+# stands at least 1.1 times as tall as it is wide, read the way the label reads; the letters beside
+# an upright `l` or `I` lie on their side and do not. Measured on all 17 pages: 26 sideways stacked
+# fractions drawn as paths (9 on page 2, 8 on page 3, 3 on page 4, 6 on page 5), every one found,
+# laid out reading up the page and with its inch mark, and 4 false alarms, all electrical-outlet
+# symbols. Every value from 1.05 to 1.25 gives exactly that; 1 adds a fifth outlet; at 1.37 two
+# real fractions are lost, because the client's widest digits stand 1.36 times as tall as they are
+# wide. The 27 fractions found before are unchanged. On `AI_Set 1` its 22 are unchanged too, and it
+# gains 5 false alarms, none of them a label: its labels are text the detector cannot see (#738).
+#
 # **The two Bedrock vision readers, and what turning them on costs (#651).** They were built in
 # #622/#623 and PC.3 and this flag is the only thing that starts them; until it was set here the
 # whole reading rebuild had never executed, and the demo ran the vector+OCR path alone. They are
@@ -208,6 +220,7 @@ GV_READER_FRACTION_GLYPH_MIN_PT=1 \
 GV_READER_FRACTION_GLYPH_MAX_PT=12 \
 GV_READER_FRACTION_PROPORTION_MAX=2.5 \
 GV_READER_FRACTION_CHARACTER_GAP_PT=4 \
+GV_READER_FRACTION_TURNED_ASPECT_MIN=1.1 \
 GV_PHRASE_GAP_LINE_HEIGHTS=0.34 \
   "$PYTHON" scripts/drain_outbox.py --watch &
 WORKER_PID=$!

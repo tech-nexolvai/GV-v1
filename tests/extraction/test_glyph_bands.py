@@ -24,7 +24,7 @@ def _d(*values: str) -> GlyphBox:
     return (x0, y0, x1, y1)
 
 
-#: The values `scripts/demo.sh` states, measured on the client set (#735).
+#: The values `scripts/demo.sh` states, measured on the client set (#735, #834, #869).
 GEOMETRY = FractionBarGeometry(
     bar_thickness_max_pt=Decimal("0.3"),
     bar_length_min_pt=Decimal(1),
@@ -33,6 +33,7 @@ GEOMETRY = FractionBarGeometry(
     glyph_max_pt=Decimal(12),
     proportion_max=Decimal("2.5"),
     character_gap_pt=Decimal(4),
+    turned_aspect_min=Decimal("1.1"),
 )
 
 NUMERATOR = _d("0.1", "6.4", "3.7", "11.9")  # one path, as the plotter draws a `3`
@@ -191,11 +192,15 @@ def test_a_path_larger_than_glyph_max_is_not_part_of_a_fraction() -> None:
 
 def test_a_quarter_turned_fraction_is_measured_along_its_own_baseline() -> None:
     """Both drawings carry vertical dimension text. Turned a quarter, the bar is vertical on the page
-    and only reads as a bar when measured across the baseline the stamp states."""
-    turned = [(box[1], box[0], box[3], box[2]) for box in FRACTION]
+    and reads as a bar only when measured across it: where the stamp says its text is turned, and
+    since #869 where only the label is, inside a stamp that reads upright. Either way it is the same
+    fraction."""
+    turned = [_turned(box, 90) for box in FRACTION]
 
-    assert len(_found(turned, rotation_degrees=90)) == 1
-    assert _found(turned, rotation_degrees=0) == ()
+    stated = _found(turned, rotation_degrees=90)
+    unstated = _found(turned, rotation_degrees=0)
+
+    assert _boxes(stated) == _boxes(unstated) == (_turned(_d("0", "-0.8", "3.8", "11.9"), 90),)
 
 
 def test_two_fractions_are_found_separately() -> None:
@@ -218,6 +223,7 @@ def test_no_paths_no_fractions() -> None:
         "glyph_max_pt",
         "proportion_max",
         "character_gap_pt",
+        "turned_aspect_min",
     ],
 )
 def test_every_threshold_is_a_positive_exact_decimal(field: str) -> None:
@@ -230,6 +236,7 @@ def test_every_threshold_is_a_positive_exact_decimal(field: str) -> None:
         "glyph_max_pt": Decimal(12),
         "proportion_max": Decimal("2.5"),
         "character_gap_pt": Decimal(4),
+        "turned_aspect_min": Decimal("1.1"),
     }
     with pytest.raises(TypeError, match="never a float"):
         FractionBarGeometry(**(values | {field: 0.5}))  # type: ignore[arg-type]
@@ -249,6 +256,23 @@ def test_a_proportion_below_one_would_match_nothing_and_is_refused() -> None:
             glyph_max_pt=Decimal(12),
             proportion_max=Decimal("0.9"),
             character_gap_pt=Decimal(4),
+            turned_aspect_min=Decimal("1.1"),
+        )
+
+
+def test_a_turned_aspect_below_one_is_refused() -> None:
+    """Below 1 a character wider than it is tall would count as standing upright, and the letters
+    either side of an upright `l` are exactly that when read up the page."""
+    with pytest.raises(ValueError, match="at least 1"):
+        FractionBarGeometry(
+            bar_thickness_max_pt=Decimal("0.3"),
+            bar_length_min_pt=Decimal(1),
+            reach_pt=Decimal(3),
+            glyph_min_pt=Decimal(1),
+            glyph_max_pt=Decimal(12),
+            proportion_max=Decimal("2.5"),
+            character_gap_pt=Decimal(4),
+            turned_aspect_min=Decimal("0.9"),
         )
 
 
@@ -259,6 +283,7 @@ def test_every_number_is_in_the_run_identity() -> None:
     for value in ("0.3", "1", "3", "12", "2.5"):
         assert value in text
     assert "character_gap<=4" in text
+    assert "turned_aspect>=1.1" in text
 
 
 # ---------------------------------------------------------------------------
@@ -483,3 +508,113 @@ def test_a_turned_label_names_its_neighbour_in_page_space(degrees: int) -> None:
     turned = [_turned(box, degrees) for box in [*FRACTION, PLUS_AFTER]]
 
     assert _layout(turned, rotation_degrees=degrees).neighbours == (_turned(PLUS_AFTER, degrees),)
+
+
+# ---------------------------------------------------------------------------
+# A label turned inside its stamp, found by its own direction (#869)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("degrees", [90, 270])
+def test_a_label_turned_inside_an_upright_stamp_is_found_the_way_it_reads(degrees: int) -> None:
+    """**The case #869 exists for.** The vendor draws vertical dimensions turned a quarter inside a
+    stamp that reads upright, so the stamp says 0 and the bar runs up the page. `39 1/2"` turned
+    either way is found and laid out as it reads: its `1` over its `2`, its two digits before the
+    fraction, its inch mark after it, and the direction it reads in. Read up the page or down it,
+    the shapes are the same; only the inch mark's place says which. Laid out the other way, its two
+    ticks would be counted as a two-digit whole number."""
+    turned = [_turned(box, degrees) for box in THIRTY_NINE_AND_A_HALF]
+
+    layout = _layout(turned)
+
+    assert layout.rotation_degrees == degrees
+    assert _counts(layout) == (2, 1, 1, 2)
+    assert layout.whole == ((_turned(WHOLE_THREE, degrees),), (_turned(WHOLE_NINE, degrees),))
+    assert layout.numerator == ((_turned(ONE, degrees),),)
+    assert layout.denominator == ((_turned(TWO, degrees),),)
+    assert layout.inch_mark == tuple(_turned(tick, degrees) for tick in TICKS)
+    assert layout.bar == _turned(LONG_BAR, degrees)
+    assert layout.box == _turned(_d("0", "-0.74", "3.72", "11.86"), degrees)
+    assert layout.neighbours == ()
+
+
+@pytest.mark.parametrize("degrees", [90, 270])
+def test_a_turned_bare_fraction_with_a_two_stroke_four_is_laid_out_too(degrees: int) -> None:
+    """`3/4"` turned: no whole number, one over one, the `4`'s body and stem one character."""
+    layout = _layout([_turned(box, degrees) for box in FRACTION])
+
+    assert layout.rotation_degrees == degrees
+    assert _counts(layout) == (0, 1, 1, 2)
+    assert layout.denominator == (
+        (_turned(DENOMINATOR_BODY, degrees), _turned(DENOMINATOR_STEM, degrees)),
+    )
+
+
+def test_a_label_running_across_the_page_in_a_turned_stamp_reads_upright() -> None:
+    """**Each label's own direction, not the stamp's.** A stamp whose text runs up the page can hold
+    a label that reads across it; its bar is flat on the page, across that stamp's baseline."""
+    layout = _layout(THIRTY_NINE_AND_A_HALF, rotation_degrees=90)
+
+    assert layout.rotation_degrees == 0
+    assert _counts(layout) == (2, 1, 1, 2)
+    assert layout.whole == ((WHOLE_THREE,), (WHOLE_NINE,))
+
+
+def test_an_upright_letter_stroke_between_two_letters_is_not_a_turned_bar() -> None:
+    """**The false alarm the turned search has to refuse.** `DIN` set upright: its `I` is a
+    zero-width stroke with a letter either side, so read up the page it meets every rule a bar meets.
+    But the `D` and the `N` are taller than they are wide on the page, which read up it is lying on
+    their side, so the `I` is no turned label's bar."""
+    din = [_d("0", "0", "3.6", "5.5"), _d("4.6", "0", "4.6", "5.5"), _d("5.6", "0", "9.2", "5.5")]
+
+    assert _found(din) == ()
+
+
+#: `15/16"` upright, in the plotter's proportions: two digits over two, a bar under both, and an
+#: inch mark. Each side as a whole is wider than it is tall, as any two digits side by side are.
+FIFTEEN_SIXTEENTHS = [
+    _d("0", "6.46", "1.32", "11.86"),  # 1
+    _d("1.92", "6.46", "5.52", "11.86"),  # 5
+    _d("0", "5.5", "5.52", "5.5"),  # the bar
+    _d("0", "-0.74", "1.32", "4.66"),  # 1
+    _d("1.92", "-0.74", "5.52", "4.66"),  # 6
+    _d("7.32", "7.78", "7.8", "9.34"),
+    _d("8.88", "7.78", "9.36", "9.34"),
+]
+
+
+@pytest.mark.parametrize("degrees", [90, 270])
+def test_each_character_of_a_turned_fraction_stands_on_its_own(degrees: int) -> None:
+    """**Character by character, not side by side.** The `15` together is wider than it is tall, and
+    measured as one shape it would lie on its side read up the page; its `1` and its `5` each stand
+    upright, and that is what the rule asks."""
+    layout = _layout([_turned(box, degrees) for box in FIFTEEN_SIXTEENTHS])
+
+    assert layout.rotation_degrees == degrees
+    assert _counts(layout) == (0, 2, 2, 2)
+
+
+@pytest.mark.parametrize("degrees", [90, 270])
+def test_a_turned_fraction_that_does_not_say_which_way_it_reads_reads_up_the_page(
+    degrees: int,
+) -> None:
+    """**The drafting convention, where nothing else decides.** A bare `3/4` with no inch mark looks
+    the same read up the page or down it, so it is laid out reading up, as a drawing is read and as
+    `extraction/glyph_reader.py` tries first. Counted either way, it is one over one."""
+    unmarked = [NUMERATOR, BAR, DENOMINATOR_BODY, DENOMINATOR_STEM]
+
+    layout = _layout([_turned(box, degrees) for box in unmarked])
+
+    assert layout.rotation_degrees == 90
+    assert _counts(layout) == (0, 1, 1, 0)
+
+
+def test_fractions_along_the_stamp_come_first_and_are_unchanged() -> None:
+    """**The fractions found before #869 are found as before**, in the same order, and a turned
+    label beside them only adds to the list."""
+    turned = [_turned(box, 90) for box in _shifted(FRACTION, "40")]
+
+    found = _found([*turned, *FRACTION])
+
+    assert [layout.rotation_degrees for layout in found] == [0, 90]
+    assert found[0] == _layout(FRACTION)

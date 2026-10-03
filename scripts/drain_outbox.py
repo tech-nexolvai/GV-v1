@@ -86,6 +86,10 @@ def _reader_configuration() -> tuple[object | None, object | None]:
         "GV_READER_FRACTION_CHARACTER_GAP_PT": os.environ.get(
             "GV_READER_FRACTION_CHARACTER_GAP_PT"
         ),
+        # Which bars across a stamp's baseline are a turned label's fraction (#869).
+        "GV_READER_FRACTION_TURNED_ASPECT_MIN": os.environ.get(
+            "GV_READER_FRACTION_TURNED_ASPECT_MIN"
+        ),
     }
     missing = [name for name, value in required.items() if not value]
     if missing:
@@ -114,6 +118,7 @@ def _reader_configuration() -> tuple[object | None, object | None]:
                 glyph_max_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MAX_PT"] or ""),
                 proportion_max=Decimal(required["GV_READER_FRACTION_PROPORTION_MAX"] or ""),
                 character_gap_pt=Decimal(required["GV_READER_FRACTION_CHARACTER_GAP_PT"] or ""),
+                turned_aspect_min=Decimal(required["GV_READER_FRACTION_TURNED_ASPECT_MIN"] or ""),
             ),
         ),
         LocalizedOcrSettings(
