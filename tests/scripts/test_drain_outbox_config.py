@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -122,3 +123,91 @@ def test_a_failed_phrase_build_is_reported_never_raised(monkeypatch: pytest.Monk
     result = worker._build_package_text(_Session(), uuid4())
 
     assert result == {"built": False, "reason": "the phrase build failed: RuntimeError"}
+
+
+# ---------------------------------------------------------------------------
+# The stacked-fraction detector's turned labels (#869)
+# ---------------------------------------------------------------------------
+
+
+def _demo_reader_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reader settings the demo's worker block states, set as the worker's environment."""
+    demo = (Path(__file__).resolve().parents[2] / "scripts" / "demo.sh").read_text(encoding="utf-8")
+    worker_block = demo[: demo.index("scripts/drain_outbox.py --watch")]
+    stated = re.findall(
+        r"^(GV_READER_[A-Z0-9_]+|GV_LOCALIZED_OCR_ENABLED)=(\S+) \\$",
+        worker_block,
+        flags=re.MULTILINE,
+    )
+    assert stated, "the demo's worker block states no reader settings"
+    for name, value in stated:
+        monkeypatch.setenv(name, value)
+
+
+def test_the_demo_worker_looks_for_turned_labels_at_the_measured_aspect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**Sideways stacked fractions are looked for in the demo (#869)**, at the 1.1 measured on
+    `AI_Set 2`. Built the way the worker builds it, from what the demo's worker block states."""
+    import scripts.drain_outbox as worker
+    from workflow.association import AssociationSettings
+
+    _demo_reader_environment(monkeypatch)
+
+    association, _ = worker._reader_configuration()
+
+    assert isinstance(association, AssociationSettings)
+    assert association.fraction_bar.turned_aspect_min == Decimal("1.1")
+
+
+def test_the_worker_refuses_to_guess_the_turned_aspect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**No default.** A worker not told which bars across a stamp's baseline count refuses to start
+    rather than choosing a number for every deployment."""
+    import scripts.drain_outbox as worker
+
+    _demo_reader_environment(monkeypatch)
+    monkeypatch.delenv("GV_READER_FRACTION_TURNED_ASPECT_MIN")
+
+    with pytest.raises(ValueError, match="GV_READER_FRACTION_TURNED_ASPECT_MIN"):
+        worker._reader_configuration()
+
+
+# ---------------------------------------------------------------------------
+# Stacked fractions read piece by piece, on in the demo (#875)
+# ---------------------------------------------------------------------------
+
+
+def test_the_demo_worker_reads_stacked_fractions_piece_by_piece(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**On in the demo, at the sizes #848 measured** (the admin's decision of 2026-10-03, on #756).
+    Built the way the worker builds it, from what the demo's worker block states — and with the gate
+    reader stated too, because the route's second reader is that reader and it refuses to start
+    without one (#865)."""
+    from workflow.stages import FRACTION_PARTS_ENV, fraction_parts_from_environment
+
+    demo = (Path(__file__).resolve().parents[2] / "scripts" / "demo.sh").read_text(encoding="utf-8")
+    worker_block = demo[: demo.index("scripts/drain_outbox.py --watch")]
+    stated = dict(
+        re.findall(
+            r"^(GV_FRACTION_PARTS[A-Z0-9_]*|GV_VISION_GATE_READER)=(\S+) \\$",
+            worker_block,
+            flags=re.MULTILINE,
+        )
+    )
+    for name in list(os.environ):
+        if name.startswith(FRACTION_PARTS_ENV):
+            monkeypatch.delenv(name)
+    for name, value in stated.items():
+        monkeypatch.setenv(name, value)
+
+    drawing = fraction_parts_from_environment()
+
+    assert drawing is not None, "the demo does not switch the fraction-parts route on"
+    assert (drawing.height_px, drawing.stroke_px, drawing.margin_px, drawing.bezier_steps) == (
+        40,
+        4,
+        32,
+        8,
+    )
+    assert stated.get("GV_VISION_GATE_READER"), "the route's second reader is not stated"

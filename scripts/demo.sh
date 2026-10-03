@@ -146,6 +146,18 @@ API_PID=$!
 # — `3 3/4"` on a `3/4"` — is refused. On those 12 fractions every value from 3.2 to 6 pt counts every
 # part right; the widest gap inside a label is 3.12 pt, between the `1` and `3` of a `13 1/8"`.
 #
+# **`TURNED_ASPECT_MIN` finds the sideways ones (#869).** `AI_Set 2` draws its vertical dimensions
+# turned a quarter inside stamps that read upright, so their bars run up the page and the six above
+# never saw them. A bar across the stamp's baseline now counts where each character either side
+# stands at least 1.1 times as tall as it is wide, read the way the label reads; the letters beside
+# an upright `l` or `I` lie on their side and do not. Measured on all 17 pages: 26 sideways stacked
+# fractions drawn as paths (9 on page 2, 8 on page 3, 3 on page 4, 6 on page 5), every one found,
+# laid out reading up the page and with its inch mark, and 4 false alarms, all electrical-outlet
+# symbols. Every value from 1.05 to 1.25 gives exactly that; 1 adds a fifth outlet; at 1.37 two
+# real fractions are lost, because the client's widest digits stand 1.36 times as tall as they are
+# wide. The 27 fractions found before are unchanged. On `AI_Set 1` its 22 are unchanged too, and it
+# gains 5 false alarms, none of them a label: its labels are text the detector cannot see (#738).
+#
 # **The two Bedrock vision readers, and what turning them on costs (#651).** They were built in
 # #622/#623 and PC.3 and this flag is the only thing that starts them; until it was set here the
 # whole reading rebuild had never executed, and the demo ran the vector+OCR path alone. They are
@@ -175,6 +187,16 @@ API_PID=$!
 # line's height. Measured on both client drawings in #840: the space between two words of one note
 # is at most 0.333 line heights, and the narrowest space between two separate items is 0.372 on
 # AI_Set_2 and 0.421 on AI_Set_1. The admin's decision of 2026-10-03, on #798. No model is called.
+#
+# **Stacked fractions are read piece by piece (#848, #865), on in the demo only** — the admin's decision
+# of 2026-10-03, on #756. Each laid-out stacked label's whole number, numerator and denominator are
+# drawn alone from the vendor's own strokes and read twice: by local OCR and by the gate reader above,
+# a different vendor's model asked for the digits alone. Only where the two agree on every piece is
+# the value written, and only as a pre-fill a person ticks: it keeps the stacked-fraction flag, so no
+# agreement ever seals it (#726). On `AI_Set 2` it pre-filled 11 labels, all right, and refused 2;
+# 28 Ministral calls, $0.0007. The four drawing sizes were measured in #848: every piece read at a
+# height of 30–56 px, a stroke of 2–8 px and a margin of 16–96 px; the vendor's labels have no
+# curves, so the Bezier step count changes nothing. The route refuses to start without a gate reader.
 GV_VISION_GATE_READER=bedrock-ministral-3-3b \
 GV_READING_AGENT=1 \
 GV_AGENT_MAX_STEPS=6 \
@@ -208,7 +230,13 @@ GV_READER_FRACTION_GLYPH_MIN_PT=1 \
 GV_READER_FRACTION_GLYPH_MAX_PT=12 \
 GV_READER_FRACTION_PROPORTION_MAX=2.5 \
 GV_READER_FRACTION_CHARACTER_GAP_PT=4 \
+GV_READER_FRACTION_TURNED_ASPECT_MIN=1.1 \
 GV_PHRASE_GAP_LINE_HEIGHTS=0.34 \
+GV_FRACTION_PARTS=1 \
+GV_FRACTION_PARTS_HEIGHT_PX=40 \
+GV_FRACTION_PARTS_STROKE_PX=4 \
+GV_FRACTION_PARTS_MARGIN_PX=32 \
+GV_FRACTION_PARTS_BEZIER_STEPS=8 \
   "$PYTHON" scripts/drain_outbox.py --watch &
 WORKER_PID=$!
 

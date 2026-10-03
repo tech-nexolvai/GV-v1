@@ -1,6 +1,7 @@
 """A setting is proposed as a pointer to a passage, never from the vendor's drawing (#849).
 
-Verification for: `workflow/parameter_proposals.py`, `app/models/parameter_proposals.py`, migration
+Verification for: `workflow/parameter_proposals.py`, the guard it shares with the API in
+`workflow/parameter_citations.py` (#866), `app/models/parameter_proposals.py`, migration
 `0057_parameter_proposals`, `vocabulary/parameter_terms.py`, and `confirmed_views_only` in
 `app/evidence/sides.py`.
 
@@ -64,17 +65,19 @@ from tests.extraction.test_reader import _pdf
 from vocabulary.parameter_terms import PARAMETER_TERMS, search_terms
 from vocabulary.semantic_types import DocumentRole
 from workflow.idempotency import stage_idempotency_key
-from workflow.parameter_proposals import (
-    PROPOSER,
-    PROPOSER_VERSION,
+from workflow.parameter_citations import (
     Citation,
     CitationRefusal,
     CitationRefusalReason,
+    _read_inch_dimension,
+    check_proposal,
+)
+from workflow.parameter_proposals import (
+    PROPOSER,
+    PROPOSER_VERSION,
     ProposalOutcome,
     SettingProposal,
-    _read_inch_dimension,
     _span,
-    check_proposal,
     current_parameter_proposals,
     propose_setting,
 )

@@ -1,4 +1,4 @@
-"""Fail-closed payload validation tests for issues #250 and #834."""
+"""Fail-closed payload validation tests for issues #250, #834 and #865."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
 from extraction.glyph_bands import FractionLayout
 from extraction.models.validation import (
+    DIGITS_NOT_A_NUMBER,
+    DIGITS_WRONG_COUNT,
     STACKED_FRACTION_REASON,
     STACKED_LAYOUT_REASON,
     CandidateContext,
@@ -17,6 +19,7 @@ from extraction.models.validation import (
     CropSize,
     ValidationRejection,
     stacked_layout_refusal,
+    validate_digits_payload,
     validate_payload,
 )
 from tests.extraction.test_glyph_bands import FRACTION, THIRTY_NINE_AND_A_HALF, _found, _shifted
@@ -697,3 +700,84 @@ def test_a_dual_token_cannot_carry_a_bare_fraction_past_the_guard() -> None:
 
     assert isinstance(outcome, ValidationRejection)
     assert [r.reason for r in recorder.items] == ["reading_not_a_dimension"]
+
+
+# ---------------------------------------------------------------------------
+# The digits request kind (#865): one piece of a stacked label, read as its digits
+# ---------------------------------------------------------------------------
+
+
+def _digits(payload: object, *, count: int, recorder: RecordingRejections) -> object:
+    return validate_digits_payload(
+        payload, context=_context(), digit_count=count, recorder=recorder
+    )
+
+
+@pytest.mark.parametrize(("digits", "count"), [("28", 2), ("3", 1), ("16", 2), ("101", 3)])
+def test_digits_as_many_as_the_drawing_has_are_the_answer(digits: str, count: int) -> None:
+    """The answer is the digits as written — a string, never turned into a number here."""
+    recorder = RecordingRejections()
+
+    assert _digits({"digits": digits}, count=count, recorder=recorder) == digits
+    assert recorder.items == []
+
+
+@pytest.mark.parametrize(
+    ("digits", "count"),
+    [
+        # A numerator answered with a digit the drawing does not have, and a whole number short of one.
+        ("33", 1),
+        ("8", 2),
+        ("283", 2),
+    ],
+)
+def test_digits_of_another_count_than_the_drawing_has_are_refused(digits: str, count: int) -> None:
+    """**The count is the drawing's.** A reading that is right in every other way but has a digit
+    more or fewer than the piece has characters is refused, and recorded with its reason."""
+    recorder = RecordingRejections()
+
+    outcome = _digits({"digits": digits}, count=count, recorder=recorder)
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == DIGITS_WRONG_COUNT
+    assert recorder.items == [outcome]
+
+
+@pytest.mark.parametrize("digits", ["２８", "2 8", '28"', "3/4", "²", "1028", "-3", "", "twenty"])
+def test_anything_but_one_to_three_ascii_digits_is_refused(digits: str) -> None:
+    """Not `str.isdigit`: full-width digits and a superscript two are digits to Python, and not a
+    number this drawing wrote. An empty answer is refused by the schema before that."""
+    recorder = RecordingRejections()
+
+    outcome = _digits({"digits": digits}, count=2, recorder=recorder)
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason in {DIGITS_NOT_A_NUMBER, "schema_validation_failed"}
+    assert recorder.items == [outcome]
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        ({"digits": 28}, "schema_validation_failed"),
+        ({"digits": 28.0}, "float_not_allowed"),
+        ({"digits": "28", "unit_guess": "in"}, "schema_validation_failed"),
+        ({}, "schema_validation_failed"),
+        ("28", "schema_validation_failed"),
+    ],
+)
+def test_a_digits_answer_of_any_other_shape_is_refused(payload: object, reason: str) -> None:
+    """A number where the string belongs, a float, a field not asked for, or no answer at all: each
+    is a recorded refusal, never coerced into the digits the model did not write."""
+    recorder = RecordingRejections()
+
+    outcome = _digits(payload, count=2, recorder=recorder)
+
+    assert isinstance(outcome, ValidationRejection)
+    assert outcome.reason == reason
+
+
+@pytest.mark.parametrize("count", [0, 4, True, "2"])
+def test_a_digit_count_no_piece_can_have_is_the_callers_mistake(count: object) -> None:
+    with pytest.raises(ValueError, match="digit_count"):
+        _digits({"digits": "28"}, count=count, recorder=RecordingRejections())  # type: ignore[arg-type]
