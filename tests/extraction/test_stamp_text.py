@@ -18,7 +18,14 @@ from uuid import UUID
 
 import pytest
 
-from extraction.stamp_text import StampText, drawing_ink, path_ink, read_stamp_text, stamps_only
+from extraction.stamp_text import (
+    StampText,
+    coloured_text,
+    drawing_ink,
+    path_ink,
+    read_stamp_text,
+    stamps_only,
+)
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
 from units.normalise import normalise_to_inches
 from units.notation import canonical_notation
@@ -139,6 +146,20 @@ def test_coloured_text_in_a_pasted_drawing_is_not_read() -> None:
     assert [item.text for item in reading.contents.texts] == ['36"']
     assert reading.characters.coloured == 3
     assert reading.characters.readable == 3
+
+
+def test_coloured_text_in_a_pasted_drawing_is_found_where_it_is() -> None:
+    """**Where the agreement gate looks for a GV mark (#901).** A black `36"` with a red `38"` below
+    it: only the red one is found, and it is found below the black one, in the page's pixels. The
+    same sheet all in black holds none."""
+    sheet = _sheet(b'(36") Tj 1 0 0 rg 0 -20 Td (38") Tj')
+    (black,) = read_stamp_text(sheet, 0, document_version_id=DOCUMENT, dpi=DPI).contents.texts
+
+    (red,) = coloured_text(sheet, 0, document_version_id=DOCUMENT, dpi=DPI)
+
+    assert red[1] >= max(point.y for point in black.image_extent)
+    all_black = _sheet(b'(36") Tj 0 -20 Td (38") Tj')
+    assert coloured_text(all_black, 0, document_version_id=DOCUMENT, dpi=DPI) == ()
 
 
 @pytest.mark.parametrize(
