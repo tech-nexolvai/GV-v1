@@ -1,6 +1,6 @@
 /** In-memory scenarios for browser QA only. No imports from backend, storage or model code. */
 import { createHash } from 'node:crypto';
-import { project, populated, empty, packages, findings, chains, needed, revision, samplePdf } from './browser-qa-fixtures.mjs';
+import { project, populated, empty, packages, findings, chains, needed, revision, samplePdf, candidates } from './browser-qa-fixtures.mjs';
 
 export const uploadPackage = '00000000-0000-4000-8000-000000000103';
 const uploadRevision = '00000000-0000-4000-8000-000000000203';
@@ -19,7 +19,8 @@ const flowFindings = findings.map((finding, i) => ({ ...finding,
 
 export function createScenarioState(name = null) {
   return {
-    name: ['partial-upload', 'approval', 'review-flow', 'decision-save', 'action-save'].includes(name) ? name : null,
+    name: ['partial-upload', 'approval', 'review-flow', 'decision-save', 'action-save', 'reading-confirmation'].includes(name) ? name : null,
+    confirmationAttempts: 0, confirmedReadings: [],
     dismissAttempts: 0,
     decisionAttempts: { correction: 0, exception: 0 },
     packageCreates: 0, createdPackage: null, documents: [], sessions: [], actions: [], approved: false,
@@ -55,6 +56,7 @@ export function scenarioSnapshot(state) {
     approved: state.approved, events: state.events,
     decisionAttempts: state.decisionAttempts,
     dismissAttempts: state.dismissAttempts,
+    confirmationAttempts: state.confirmationAttempts, confirmedReadings: state.confirmedReadings,
     extracted: state.extracted, storedMeasurements: state.storedMeasurements,
     checksRequests: state.checksRequests, resultsReady: state.resultsReady,
   };
@@ -72,6 +74,13 @@ function respondToScenario(state, method, path, body = {}) {
     return method === 'GET' && path === '/api/v1/semantic-types' ? null : refuse('Unknown synthetic project.', 404);
   }
   if (method === 'GET') {
+    if (state.name === 'reading-confirmation' && path === `${prefix}/packages/${populated}/required-inputs`) {
+      return response({ ...needed, confirmed_readings: [...needed.confirmed_readings, ...state.confirmedReadings] });
+    }
+    if (state.name === 'reading-confirmation' && path === `${prefix}/packages/${populated}/candidates`) {
+      const remaining = state.confirmedReadings.length ? [] : candidates;
+      return response({ candidates: remaining, total: remaining.length });
+    }
     if (path === `${prefix}/packages`) return response({ items: scenarioPackages(state), next_cursor: null, limit: 50, ordering: 'synthetic-test-order' });
     if (path === `${prefix}/review-sessions`) return response({ items: state.sessions });
     const pkg = scenarioPackages(state).find((item) => path === `${prefix}/packages/${item.id}`);
@@ -92,6 +101,16 @@ function respondToScenario(state, method, path, body = {}) {
     if (/\/(?:report(?:\.pdf)?|redline\.pdf)$/.test(path)
       && (!state.approved || !path.startsWith(`${prefix}/packages/${targetPackage}/`))) return refuse('Synthetic sign-off is required for this package before downloads.');
     return null;
+  }
+
+  if (state.name === 'reading-confirmation' && method === 'POST'
+    && path === `${prefix}/packages/${populated}/candidates/synthetic-shop-crop/confirm`) {
+    if (Object.keys(body).length !== 1 || !['countertop_depth', 'filler_width'].includes(body.semantic_type)) return refuse('Fixture expects only a reviewer-selected semantic_type.', 422);
+    if (state.confirmedReadings.length) return refuse('Fixture reading was already confirmed.');
+    state.confirmationAttempts++;
+    if (state.confirmationAttempts === 1) return refuse('Synthetic confirmation service temporarily unavailable. Try use again.', 503);
+    state.confirmedReadings.push({ key: `SHOP:${body.semantic_type}`, source: 'SHOP', semantic_type: body.semantic_type, value: candidates[0].value, qualification: 'reviewer_confirmed' });
+    return response({ canonical_observation_id: 'synthetic-confirmed-reading', semantic_type: body.semantic_type, status: 'HUMAN_CONFIRMED' }, 201);
   }
 
   if (state.name === 'partial-upload' || flow) {

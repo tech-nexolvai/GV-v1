@@ -98,3 +98,15 @@ assert.equal(handleScenario(createScenarioState(), 'POST', `${prefix}/packages`,
   assert.deepEqual(scenarioFindings(state).map(f => f.outcome), findings.map(f => f.outcome), 'saved corrections/exceptions leave recorded verdicts unchanged');
 }
 console.log('browser-qa-scenarios: partial-upload retention, counts, approval gate, exact verdict preservation and download gating passed');
+// Synthetic confirmation follows the real endpoint shape, but never writes to a live backend.
+const readingState = createScenarioState('reading-confirmation');
+const readingPath = `/api/v1/projects/${project}/packages/${populated}/candidates/synthetic-shop-crop/confirm`;
+assert.equal(handleScenario(readingState, 'POST', readingPath, { semantic_type: 'countertop_depth', value: 'invented' }).status, 422);
+assert.equal(handleScenario(readingState, 'POST', readingPath, { semantic_type: 'countertop_depth' }).status, 503);
+assert.equal(readingState.confirmedReadings.length, 0);
+assert.equal(handleScenario(readingState, 'POST', readingPath, { semantic_type: 'countertop_depth' }).status, 201);
+assert.equal(readingState.confirmedReadings[0].value, '25 1/4 in');
+assert.equal(readingState.confirmationAttempts, 2);
+assert.equal(handleScenario(readingState, 'POST', readingPath, { semantic_type: 'countertop_depth' }).status, 409);
+assert.equal(readingState.confirmedReadings.length, 1);
+assert.equal(handleScenario(readingState, 'GET', `/api/v1/projects/${project}/packages/${populated}/candidates`).body.total, 0);

@@ -128,3 +128,18 @@ and ignores late responses after disposal; retry only performs the existing crop
 Component tests cover blind-entry non-leakage, exact citation/source payloads, request disposal,
 recovery states, and source selection. This fixture is not evidence of real drawing extraction,
 server validation, or persisted settings; those remain backend responsibilities.
+# Reading confirmation feedback
+
+Run the isolated server on `GV_QA_PORT=5203` and open
+`http://127.0.0.1:5203/?scenario=reading-confirmation&reset=1#/review/00000000-0000-4000-8000-000000000101`.
+Open Measurements, expand the shop readings under Vendor depth, and click use.
+
+- The first explicit request returns a synthetic 503: the field stays blank and the exact refusal
+  appears beside it. Pending state disables the chips. No background retry occurs.
+- Click use again: synthetic 201 acknowledges the selected meaning; the existing exact reading
+  fills the field once. The candidate leaves the offers. No check or measurement-save is sent.
+- Reload without `reset=1` to check the fixture's confirmed-readings response refills the field.
+- Edit a single-value field before/during confirmation: the reviewer edit takes priority, and the
+  success message says it was kept rather than falsely claiming that the AI value replaced it.
+- `/__qa` exposes the synthetic request log. This is frontend QA only, not live OCR, server
+  persistence or gold-set accuracy. Customer confirmation endpoints are not exercised by this test.

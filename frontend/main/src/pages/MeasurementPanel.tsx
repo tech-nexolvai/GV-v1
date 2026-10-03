@@ -46,6 +46,7 @@ import { settingMissingASource, type SettingSource } from '../components/measure
 import { SettingCitation } from '../components/measure/SettingCitation';
 import { SettingPassage, type PassageImage } from '../components/measure/SettingPassage';
 import { loadPassageImage } from '../components/measure/passageImage';
+import { ReadingConfirmationFeedback, type ReadingConfirmationState } from '../components/measure/ReadingConfirmationFeedback';
 import {
   citingPointer,
   settingEntry,
@@ -314,6 +315,7 @@ export function MeasurementPanel({
   const [semanticTypes, setSemanticTypes] = useState<string[]>([]);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [candidateError, setCandidateError] = useState<string | null>(null);
+  const [confirmationFeedback, setConfirmationFeedback] = useState<Record<string, ReadingConfirmationState>>({});
   /** The phases of an assignment in flight, in arrival order. Empty until one is asked for. */
   const [proposalSteps, setProposalSteps] = useState<AssignmentStep[]>([]);
   const [proposal, setProposal] = useState<ProposedMeasurements | null>(null);
@@ -359,6 +361,8 @@ export function MeasurementPanel({
       setCandidates([]);
       setSemanticTypes([]);
       setCandidateError(null);
+      setConfirmationFeedback({});
+      setConfirming(null);
       setLoadError(null);
       setProposalSteps([]);
       setProposal(null);
@@ -458,7 +462,7 @@ export function MeasurementPanel({
       [key]: (prior[key] ?? ['']).map((v, i) => (i === index ? value : v)),
     }));
 
-  async function confirmFromMeasure(candidate: CandidateOut, semanticType: string) {
+  async function confirmFromMeasure(candidate: CandidateOut, semanticType: string, fromField = false) {
     if (!packageId || !needed || !candidate.source || !candidate.value) return;
     if (appliedConfirmations.current.has(candidate.candidate_id)) return;
     const target = needed.quantities.find(
@@ -473,11 +477,14 @@ export function MeasurementPanel({
 
     setConfirming(candidate.candidate_id);
     setCandidateError(null);
+    setConfirmationFeedback((prior) => ({ ...prior, [target.key]: { kind: 'saving' } }));
+    const requestLedger = confirmationLedger.current;
     try {
       const result = await confirmCandidateOnce(
-        confirmationLedger.current, candidate.candidate_id, semanticType,
+        requestLedger, candidate.candidate_id, semanticType,
         (id, type) => confirmCandidate(projectId(), packageId, id, type),
       );
+      if (confirmationLedger.current !== requestLedger) return;
       // Concurrent clicks share one request and apply its persisted reading only once.
       if (appliedConfirmations.current.has(candidate.candidate_id)) return;
       appliedConfirmations.current.add(candidate.candidate_id);
@@ -511,19 +518,25 @@ export function MeasurementPanel({
         setSingles((prior) => {
           const readingCount =
             needed.confirmed_readings.filter((item) => item.key === key).length + 1;
-          if (reviewerEditedSingles.has(target.key)) return prior;
+          if (reviewerEditedSinglesRef.current.has(target.key)) return prior;
           return { ...prior, [target.key]: readingCount === 1 ? reading.value : '' };
         });
       }
       setCandidates((current) =>
         current.filter((item) => item.candidate_id !== candidate.candidate_id),
       );
+      setConfirmationFeedback((prior) => ({ ...prior, [target.key]: {
+        kind: 'confirmed',
+        preserved: !target.many && reviewerEditedSinglesRef.current.has(target.key),
+        multiple: !target.many && needed.confirmed_readings.some((item) => item.key === key),
+      } }));
     } catch (caught) {
-      setCandidateError(
-        caught instanceof ApiError ? caught.message : 'This AI reading could not be confirmed.',
-      );
+      if (confirmationLedger.current !== requestLedger) return;
+      const message = caught instanceof Error ? caught.message : 'This AI reading could not be confirmed.';
+      setConfirmationFeedback((prior) => ({ ...prior, [target.key]: { kind: 'error', message } }));
+      if (!fromField) setCandidateError(message);
     } finally {
-      setConfirming(null);
+      if (confirmationLedger.current === requestLedger) setConfirming(null);
     }
   }
 
@@ -1099,7 +1112,7 @@ export function MeasurementPanel({
             })}
             </div>
             </div>
-            {candidateError && <p className="enter-values__error">{candidateError}</p>}
+            {candidateError && <p className="enter-values__error" role="alert">{candidateError}</p>}
           </section>
         )}
         {needed.confirmed_readings.length > 0 ? (
@@ -1168,8 +1181,10 @@ export function MeasurementPanel({
                       quantity={quantity}
                       candidates={candidates}
                       busyId={confirming}
-                      onUse={(candidate) => void confirmFromMeasure(candidate, quantity.semantic_type)}
+                      feedbackId={confirmationFeedback[quantity.key] ? `confirmation-${quantity.key}` : undefined}
+                      onUse={(candidate) => void confirmFromMeasure(candidate, quantity.semantic_type, true)}
                     />
+                    <ReadingConfirmationFeedback state={confirmationFeedback[quantity.key]} id={`confirmation-${quantity.key}`} />
                     {quantity.many ? (
                       <>
                         {(runs[quantity.key] ?? ['']).map((value, index) => (
@@ -1512,11 +1527,13 @@ function AiReadings({
   quantity,
   candidates,
   busyId,
+  feedbackId,
   onUse,
 }: {
   quantity: Quantity;
   candidates: CandidateOut[];
   busyId: string | null;
+  feedbackId?: string;
   onUse: (candidate: CandidateOut) => void;
 }) {
   const offered = candidates.filter((candidate) => candidate.source === quantity.source);
@@ -1556,6 +1573,7 @@ function AiReadings({
             disabled={busyId !== null}
             onClick={() => onUse(candidate)}
             title={`Confirm ${candidate.value} as ${fieldLabel(quantity)}`}
+            aria-describedby={feedbackId}
           >
             <strong>{candidate.value}</strong>
             <span>p{candidate.page_index + 1}</span>
