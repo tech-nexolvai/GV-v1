@@ -9,14 +9,17 @@ row; withdrawing makes nothing.
 plan on #748 has the countertop checks read it too, so whatever writes it decides what a check is
 about. Keeping that to one function, called for a person's decision, is what "a suggestion is not a
 part" rests on, and `tests/db/test_drawing_models.py` fails if any other module outside `tests/`
-constructs or inserts into either table.
+constructs or inserts into either table. Matching reads only the items `live_part_item_ids` names
+(#882), so a part a person took back stops being read.
 
-**No extraction imports, on purpose**, as in `workflow/view_roles.py`: the decision will be made
-through the API, and `tests/api/test_no_heavy_work.py` keeps `app/api/` away from anything that
-reads a PDF. The stage that suggests parts (#868) passes plain values to `record_part_proposal`.
+**No extraction imports, on purpose**, as in `workflow/view_roles.py`: the decision is made through
+the API (`app/api/drawing_parts.py`), and `tests/api/test_no_heavy_work.py` keeps `app/api/` away
+from anything that reads a PDF. The stage that suggests parts (#868) passes plain values to
+`record_part_proposal`.
 
-Source: issues #852 and #868; #748 plan, steps 2 and 3. Verification: tests/db/test_drawing_models.py,
-tests/workflow/test_part_proposals_route.py.
+Source: issues #852, #868 and #882; #748 plan, steps 2 to 4. Verification:
+tests/db/test_drawing_models.py, tests/workflow/test_part_proposals_route.py,
+tests/api/test_drawing_parts.py.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from decimal import Decimal
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import exists, select
+from sqlalchemy import Select, exists, select
 from sqlalchemy.orm import Session, aliased
 
 from app.audit.events import AuditCategory, emit
@@ -43,6 +46,7 @@ __all__ = [
     "CODE_IDENTIFIER_KIND",
     "confirm_part",
     "current_decision",
+    "live_part_item_ids",
     "record_part_proposal",
     "withdraw_part",
 ]
@@ -131,6 +135,23 @@ def current_decision(session: Session, proposal: PartProposal) -> PartConfirmati
             ~exists().where(later.supersedes_id == PartConfirmation.id),
         )
     ).scalar_one_or_none()
+
+
+def live_part_item_ids() -> Select[tuple[UUID | None]]:
+    """The `drawing_items` ids a reader may treat as parts: each made by a decision still current.
+
+    A correction or a withdrawal replaces the decision that made an item, and the item keeps its row
+    (no role holds `DELETE`), so a reader that took every row would keep reading a part a person had
+    taken back. An item no decision made is not here either: outside tests, only `confirm_part`
+    writes one, so such a row is one no person confirmed.
+
+    Returns a query rather than running one, so the caller filters with it in its own statement.
+    """
+    later = aliased(PartConfirmation)
+    return select(PartConfirmation.drawing_item_id).where(
+        PartConfirmation.decision == PartDecision.CONFIRMED.value,
+        ~exists().where(later.supersedes_id == PartConfirmation.id),
+    )
 
 
 def confirm_part(

@@ -37,12 +37,43 @@ from retrieval.matching import MatchDocumentRole
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
+from vocabulary.part_kinds import PartKind
+from workflow.parts import confirm_part, record_part_proposal
 from workflow.stages import DatabaseStages, _matchable_items
 from workflow.view_roles import confirm_view_role
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
 BOX = {"space": "pdf_points", "polygon": [0, 0, 100, 100]}
+
+#: A part's outline in stored page space, which a suggestion requires.
+STORED_BOX = ((Decimal(0), Decimal(0)), (Decimal(1), Decimal(0)), (Decimal(1), Decimal(1)))
+
+
+def _confirmed_part(
+    session: Session, view: DrawingView, kind: PartKind = PartKind.CABINET
+) -> DrawingItem:
+    """A part a person confirmed on `view`: outside tests, the only way an item is made (#852).
+
+    Matching reads only items whose confirmation is current (#882), so an item inserted by hand
+    would never be read.
+    """
+    proposal = record_part_proposal(
+        session,
+        drawing_view_id=view.id,
+        kind=kind,
+        extent=STORED_BOX,
+        defining_line=(STORED_BOX[0], STORED_BOX[1]),
+        code_as_printed=None,
+        code_candidate_id=None,
+        reason="seeded by the test",
+        source="test",
+        source_version="1",
+    )
+    confirmation = confirm_part(
+        session, proposal=proposal, kind=kind, code=None, actor="reviewer-1"
+    )
+    return session.get_one(DrawingItem, confirmation.drawing_item_id)
 
 
 def _upgrade(engine: Engine) -> None:
@@ -152,9 +183,7 @@ def _item(
     )
     session.add(view)
     session.flush()
-    item = DrawingItem(drawing_view_id=view.id, item_type="CT001", extent=BOX)
-    session.add(item)
-    session.flush()
+    item = _confirmed_part(session, view)
     session.add(
         ItemIdentifier(
             drawing_item_id=item.id,
@@ -424,16 +453,14 @@ def test_match_says_what_is_missing_once_drawings_are_found(
 def test_after_both_roles_are_confirmed_match_stops_abstaining_once_items_exist(
     session: Session, store: LocalStore
 ) -> None:
-    """**Acceptance 4, as far as this issue reaches.** Nothing creates items yet (#748), so the items
-    here are added by hand to the views the sheet produced. With both roles confirmed, the matcher
-    runs and proposes the match instead of abstaining."""
+    """**Acceptance 4, as far as this issue reaches.** Run without association settings, the stage
+    suggests no parts, so the items here are confirmed by hand on the views the sheet produced. With
+    both roles confirmed, the matcher runs and proposes the match instead of abstaining."""
     revision = _extract(session, store, _combined_sheet())
     views = {_suggestion(session, view).proposed_role: view for view in _views(session)}
     for role, view in views.items():
         confirm_view_role(session, view=view, role=ViewRole(role), actor="reviewer-1")
-        item = DrawingItem(drawing_view_id=view.id, item_type="CT001", extent=BOX)
-        session.add(item)
-        session.flush()
+        item = _confirmed_part(session, view)
         session.add(
             ItemIdentifier(drawing_item_id=item.id, kind="vendor_unique", value_as_printed="B24")
         )

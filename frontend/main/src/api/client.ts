@@ -643,6 +643,92 @@ export function confirmDrawingRole(
   );
 }
 
+/** The parts suggested in each drawing of this package, left to right, and each decision (#882). */
+export function listDrawingParts(projectId: string, packageId: string) {
+  return request<DrawingPartsOut>(`/projects/${projectId}/packages/${packageId}/parts`);
+}
+
+/**
+ * Say what one suggested part is (#882). The only way a part is made, one at a time: there is
+ * deliberately no call that decides more than one suggestion.
+ *
+ * `code` is sent exactly as the person typed it, or null when none is printed; the server keeps it
+ * verbatim.
+ */
+export function confirmDrawingPart(
+  projectId: string,
+  packageId: string,
+  proposalId: string,
+  kind: PartKind,
+  code: string | null,
+) {
+  return request<DrawingPartOut>(
+    `/projects/${projectId}/packages/${packageId}/parts/${proposalId}/confirm`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, code }),
+    },
+  );
+}
+
+/** Say one suggestion is not a part (#882). */
+export function withdrawDrawingPart(projectId: string, packageId: string, proposalId: string) {
+  return request<DrawingPartOut>(
+    `/projects/${projectId}/packages/${packageId}/parts/${proposalId}/withdraw`,
+    { method: 'POST' },
+  );
+}
+
+/**
+ * Add a part the suggestions missed, by its two ends on the drawing (#882). The ends are stored
+ * page points as exact text, such as a listed part's `left_end`, sent back unchanged.
+ */
+export function addDrawingPart(
+  projectId: string,
+  packageId: string,
+  viewId: string,
+  part: { kind: PartKind; code: string | null; ends: [PartPoint, PartPoint] },
+) {
+  return request<DrawingPartOut>(
+    `/projects/${projectId}/packages/${packageId}/views/${viewId}/parts`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(part),
+    },
+  );
+}
+
+/**
+ * The picture stored for one suggested part (#882): today, the crop of the reading its code came
+ * from. Checked against its recorded digest by the server before it is sent.
+ */
+export async function downloadPartCrop(
+  projectId: string,
+  packageId: string,
+  proposalId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/parts/${proposalId}/crop`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The part's picture could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
 /** GV's standard numbers, which every project starts from (#812). */
 export function getCompanySettings() {
   return request<CompanySettings>('/company-settings');
@@ -676,6 +762,10 @@ export type CandidateOut = CandidatesOut['candidates'][number] & {
 };
 export type DrawingViewsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/views'>;
 export type DrawingViewOut = DrawingViewsOut['views'][number];
+export type DrawingPartsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/parts'>;
+export type DrawingPartOut = DrawingPartsOut['drawings'][number]['parts'][number];
+export type PartKind = components['schemas']['PartKind'];
+export type PartPoint = components['schemas']['PointOut'];
 export type CompanySettings = Get<'/api/v1/company-settings'>;
 export type ConfirmedOut =
   paths['/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm']['post']['responses'][201]['content']['application/json'];
