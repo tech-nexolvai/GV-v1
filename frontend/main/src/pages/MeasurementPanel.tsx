@@ -44,10 +44,11 @@ import { prefillReadingValues } from './measurementDraft';
 import { appendConfirmedRunValue, confirmCandidateOnce, confirmProposalFields, newConfirmationLedger } from './measurementConfirmation';
 import { settingMissingASource, type SettingSource } from '../components/measure/settingSources';
 import { SettingCitation } from '../components/measure/SettingCitation';
+import { SettingPassage, type PassageImage } from '../components/measure/SettingPassage';
+import { loadPassageImage } from '../components/measure/passageImage';
 import {
   citingPointer,
   settingEntry,
-  uploadLabel,
   type SettingPointer,
 } from '../components/measure/settingPointers';
 import './MeasurementPanel.css';
@@ -1311,6 +1312,7 @@ export function MeasurementPanel({
                   crop={
                     packageId ? (
                       <SettingPassageCrop
+                        key={`${packageId}:${pointer.proposal_id}`}
                         packageId={packageId}
                         pointer={pointer}
                         name={parameter.name}
@@ -1669,52 +1671,17 @@ function SettingPassageCrop({
   pointer: SettingPointer;
   name: string;
 }) {
-  const [state, setState] = useState<{ url: string } | { error: string } | null>(null);
+  const [image, setImage] = useState<PassageImage>(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => loadPassageImage(
+    () => downloadSettingPassageCrop(projectId(), packageId, pointer.proposal_id),
+    (url) => setImage({ url }),
+    () => setImage({ error: true }),
+  ), [packageId, pointer.proposal_id, attempt]);
 
-  useEffect(() => {
-    let live = true;
-    let objectUrl: string | null = null;
-    void downloadSettingPassageCrop(projectId(), packageId, pointer.proposal_id).then(
-      (blob) => {
-        objectUrl = URL.createObjectURL(blob);
-        if (live) setState({ url: objectUrl });
-        else URL.revokeObjectURL(objectUrl);
-      },
-      () => {
-        if (live) setState({ error: 'The picture of this passage could not be loaded.' });
-      },
-    );
-    return () => {
-      live = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [packageId, pointer.proposal_id]);
-
-  const page = pointer.page_index + 1;
-  if (state && 'error' in state) {
-    return (
-      <p className="setting-citation__note">
-        {state.error} Open page {page} of the {uploadLabel(pointer.document_kind)} and read it there.
-      </p>
-    );
-  }
-  if (!state || !('url' in state)) {
-    return (
-      <span className="ai-proposal__crop-loading">
-        <ScanLine size={14} aria-hidden="true" /> Loading the passage…
-      </span>
-    );
-  }
-  return (
-    <figure className="layout-crop">
-      <img
-        className="setting-citation__crop"
-        src={state.url}
-        alt={`The passage on page ${page} where the architect's drawing states ${name}`}
-      />
-      <figcaption>Page {page} of the {uploadLabel(pointer.document_kind)}</figcaption>
-    </figure>
-  );
+  return <SettingPassage pointer={pointer} name={name} image={image}
+    onImageError={() => setImage({ error: true })}
+    onRetry={() => { setImage(null); setAttempt((prior) => prior + 1); }} />;
 }
 
 /**

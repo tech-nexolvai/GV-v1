@@ -109,3 +109,22 @@ Use a fresh isolated server and the `action-save` scenario:
 
 No optimistic reviewed count, stale whole-list rollback or automatic retry is allowed. The pending
 lock is per mounted card. This fixture does not establish production concurrency or network reliability.
+# Current-origin setting passages
+
+Use `GV_QA_PORT=5202 node tests/browser-qa-server.mjs`, then open
+`http://127.0.0.1:5202/?settings=1&crop-error=once#/review/00000000-0000-4000-8000-000000000101`.
+This adds one explicitly synthetic setting pointer to the in-memory required-inputs response.
+It does not connect to the backend and refuses measurement saves.
+
+1. Open Measurements and go to Settings. The cited setting starts empty; no parsed answer is shown.
+2. The first two passage requests fail (covers React StrictMode's initial double mount).
+3. Type any fixture entry and choose Retry passage image. The crop loads; the entry stays unchanged.
+4. Choose Enter it another way. Source and reference controls remain available; returning to the
+   cited passage preserves the typed entry. No action here confirms a reading or runs checks.
+
+The source/citation contracts are from origin main #828/#871. Integration preserves the redesign's
+package-scoped draft retention and confirmation receipts. The added crop loader revokes blob URLs
+and ignores late responses after disposal; retry only performs the existing crop GET.
+Component tests cover blind-entry non-leakage, exact citation/source payloads, request disposal,
+recovery states, and source selection. This fixture is not evidence of real drawing extraction,
+server validation, or persisted settings; those remain backend responsibilities.
