@@ -4,7 +4,12 @@ Validation is fail-closed: an output is either a complete ``ObservationCandidate
 an explicitly recorded rejection. Unknown fields and binary floating-point values are
 never silently coerced or discarded.
 
-Source: ``docs/DESIGN_AI.md`` section 4.1 and issues #250, #834.
+**A second request kind, digits (#865).** A piece of a stacked label — its whole number, its
+numerator or its denominator — drawn alone is shown to a model, which answers one plain number.
+`validate_digits_payload` holds that answer to the same rule the local reader of the same piece is
+held to: one to three ASCII digits, exactly as many as the drawing has characters in the piece.
+
+Source: ``docs/DESIGN_AI.md`` section 4.1 and issues #250, #834, #865.
 Verification: ``tests/extraction/models/test_validation.py``.
 """
 
@@ -18,7 +23,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from typing import Final, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
 
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
@@ -76,6 +81,40 @@ class NovaToolPayload(BaseModel):
     y1: StrictInt = Field(description=_BOX_DESCRIPTION)
     x2: StrictInt = Field(description=_BOX_DESCRIPTION)
     y2: StrictInt = Field(description=_BOX_DESCRIPTION)
+
+
+#: The most digits one piece of a stacked label is read as (#848). A whole number of inches on a
+#: cabinet or countertop drawing runs to three digits; a numerator or a denominator to two.
+MAXIMUM_PIECE_DIGITS: Final = 3
+
+#: One to three ASCII digits and nothing else. Not `str.isdigit`, which is true of `²` and of other
+#: scripts' digits — none of them a number this drawing wrote. The one rule for a piece's reading,
+#: whichever reader made it: `extraction/fraction_parts.py` holds local OCR to it too.
+PIECE_DIGITS_RE: Final = re.compile(rf"[0-9]{{1,{MAXIMUM_PIECE_DIGITS}}}")
+
+#: Why a digits answer was refused: not one to three ASCII digits, or not as many as the piece has.
+DIGITS_NOT_A_NUMBER: Final = "digits_not_a_number"
+DIGITS_WRONG_COUNT: Final = "digits_wrong_count"
+
+
+class DigitsToolPayload(BaseModel):
+    """What a model may answer about one piece of a stacked label: its digits, and nothing else.
+
+    **One field, a string.** Not an integer: `08` and `8` are different readings of a drawing, and a
+    number type would make them the same answer. `StrictStr`, so a JSON number is refused rather than
+    turned into text the model did not write. The description is the contract, as it is for
+    `NovaToolPayload`: it says what `validate_digits_payload` accepts.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    digits: StrictStr = Field(
+        min_length=1,
+        description=(
+            "The number drawn in the picture, written as its digits only, such as 28, 3 or 16: one "
+            "to three digits, with no unit, no fraction, no spaces and no words."
+        ),
+    )
 
 
 class CoordinateMode(StrEnum):
@@ -570,3 +609,75 @@ def validate_payload(
             f"{context.extractor}_rectangle_polygon_derived",
         ),
     )
+
+
+def validate_digits_payload(
+    payload: object,
+    *,
+    context: CandidateContext,
+    digit_count: int,
+    recorder: RejectionRecorder,
+) -> str | ValidationRejection:
+    """The digits a model read in one piece of a stacked label, or a recorded refusal (#865).
+
+    `digit_count` is how many characters the drawing has in the piece (`FractionLayout`): the
+    answer must be exactly that many ASCII digits, one to three. **The count is the drawing's, never
+    the model's**, so a piece read with a digit the drawing does not have — `33` for a `3` — is
+    refused here, before anything compares it with another reader.
+
+    **Fails closed and never corrects**, like `validate_payload`: a float anywhere, a field that is
+    not asked for, a number where a string belongs, anything but digits, or the wrong number of them
+    is a recorded refusal. Nothing here turns the digits into a value; the caller puts the label
+    together in code.
+    """
+    if (
+        isinstance(digit_count, bool)
+        or not isinstance(digit_count, int)
+        or not 1 <= digit_count <= MAXIMUM_PIECE_DIGITS
+    ):
+        raise ValueError(f"digit_count must be a whole number from 1 to {MAXIMUM_PIECE_DIGITS}")
+    try:
+        _reject_floats(payload)
+    except _FloatFound as error:
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason="float_not_allowed",
+            errors=(str(error),),
+        )
+    try:
+        validated = DigitsToolPayload.model_validate(payload)
+    except ValidationError as error:
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason="schema_validation_failed",
+            errors=_validation_errors(error),
+        )
+    if not PIECE_DIGITS_RE.fullmatch(validated.digits):
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason=DIGITS_NOT_A_NUMBER,
+            errors=(
+                f"digits {validated.digits!r} are not one to {MAXIMUM_PIECE_DIGITS} ASCII digits",
+            ),
+        )
+    if len(validated.digits) != digit_count:
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason=DIGITS_WRONG_COUNT,
+            errors=(
+                (
+                    f"digits {validated.digits!r} are "
+                    f"{_counted(len(validated.digits), 'digit')}, and the drawing has "
+                    f"{_counted(digit_count, 'character')} in this piece"
+                ),
+            ),
+        )
+    return validated.digits

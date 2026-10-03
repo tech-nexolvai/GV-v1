@@ -57,6 +57,30 @@ NOVA_GRID_COORDINATE_INSTRUCTION = (
 
 USER_TASK = f"{_USER_TASK_PREFIX} {PIXEL_COORDINATE_INSTRUCTION}"
 
+#: **The digits request (#865): its own words, and its own id.** A model is shown one piece of a
+#: stacked label — a whole number, a numerator or a denominator — drawn alone from the vendor's
+#: paths, and asked for its digits. It is sent no drawing text at all, so there is nothing here for
+#: a drawing to instruct. The id carries its version: change a word and the id changes with it, so
+#: `model_invocations` says which words a reading was asked for with.
+DIGITS_PROMPT_ID = "piece-digits-v1"
+
+#: What the picture is: one piece, drawn from its own paths and nothing else (`fraction_parts.py`).
+DIGITS_TEMPLATE_ID = "drawn-piece-v1"
+
+DIGITS_SYSTEM_INSTRUCTION = (
+    "You read only the supplied picture. Report what is visibly written by calling the provided "
+    "tool. Do not judge compliance, select a rule, choose a tolerance, or return a verdict."
+)
+
+#: Says neither how many digits the piece has nor what kind of piece it is. The count is checked
+#: against the drawing after the answer; a reader told it would answer to it, and the check would
+#: then measure only that it listened.
+DIGITS_USER_TASK = (
+    "The picture shows one whole number of one to three digits, drawn on its own in black on "
+    "white. Report its digits exactly as drawn, with no unit, no fraction, no spaces and no words. "
+    "Do not guess a digit you cannot see."
+)
+
 
 class CoordinateInstruction(StrEnum):
     """The coordinate convention a particular model family is asked to emit."""

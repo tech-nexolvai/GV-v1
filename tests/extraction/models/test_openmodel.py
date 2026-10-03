@@ -34,10 +34,12 @@ from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.nova import NovaAdapter, NovaInvocationOutcome
 from extraction.models.openmodel import (
+    DIGITS_TOOL_NAME,
     TOOL_NAME,
     ChatCompletionsClient,
     OpenModelAdapter,
     OpenModelConfig,
+    OpenModelDigitsRequest,
     OpenModelEndpointError,
     OpenModelInvocation,
     OpenModelInvocationOutcome,
@@ -49,6 +51,7 @@ from extraction.models.openmodel import (
     OpenModelServiceError,
     StructuredOutputStrategy,
 )
+from extraction.models.sanitisation import DIGITS_PROMPT_ID, DIGITS_TEMPLATE_ID, DIGITS_USER_TASK
 from extraction.models.validation import ValidationRejection
 from tests.extraction.models.test_validation import THREE_QUARTERS
 
@@ -207,7 +210,7 @@ def test_the_two_adapters_are_the_same_seam() -> None:
     take and return the same things in both, and the outcome enums have the same members — so what an
     operator reads in `model_invocations` does not change with the transport underneath.
     """
-    for name in ("extract", "from_environment"):
+    for name in ("extract", "read_digits", "from_environment"):
         nova = inspect.signature(getattr(NovaAdapter, name))
         open_model = inspect.signature(getattr(OpenModelAdapter, name))
         assert [p.name for p in nova.parameters.values()] == [
@@ -219,6 +222,7 @@ def test_the_two_adapters_are_the_same_seam() -> None:
     ]
 
     assert OpenModelAdapter.extract.__annotations__["return"] == "ObservationCandidate"
+    assert OpenModelAdapter.read_digits.__annotations__["return"] == "str"
 
 
 def test_a_scripted_endpoint_returns_a_validated_reading() -> None:
@@ -740,3 +744,77 @@ def test_an_endpoint_that_refuses_tools_is_retried_once_on_the_schema_route() ->
         OpenModelInvocationOutcome.ERROR,
         OpenModelInvocationOutcome.OK,
     ]
+
+
+# ---------------------------------------------------------------------------
+# The digits request (#865), over this transport
+# ---------------------------------------------------------------------------
+
+
+def _digits_request(*, digit_count: int = 2) -> OpenModelDigitsRequest:
+    return OpenModelDigitsRequest(
+        request_id="piece-865", page=1, picture=_synthetic_crop(), digit_count=digit_count
+    )
+
+
+def _digits_tool_response(digits: object) -> dict[str, Any]:
+    response = _tool_response({"digits": digits})
+    response["choices"][0]["message"]["tool_calls"][0]["function"]["name"] = DIGITS_TOOL_NAME
+    return response
+
+
+def test_a_digits_request_returns_the_validated_digits_under_its_own_identity() -> None:
+    sink = RecordingSink()
+    endpoint = FakeEndpoint(_digits_tool_response("28"))
+    adapter = OpenModelAdapter(_config(), endpoint, sink)
+
+    assert adapter.read_digits(_digits_request()) == "28"
+
+    (record,) = sink.items
+    assert (record.prompt_id, record.template_id) == (DIGITS_PROMPT_ID, DIGITS_TEMPLATE_ID)
+    assert record.bound_pt == Decimal(0)
+    body = endpoint.requests[0]
+    assert body["tool_choice"] == {"type": "function", "function": {"name": DIGITS_TOOL_NAME}}
+    content = body["messages"][1]["content"]  # type: ignore[index]
+    assert content[1] == {"type": "text", "text": DIGITS_USER_TASK}
+    image = content[0]["image_url"]["url"]
+    assert base64.b64decode(image.split(",", 1)[1]) == _synthetic_crop()
+
+
+def test_a_digits_answer_of_the_wrong_count_is_refused_and_kept() -> None:
+    sink = RecordingSink()
+    adapter = OpenModelAdapter(_config(), FakeEndpoint(_digits_tool_response("283")), sink)
+
+    with pytest.raises(OpenModelPayloadRejectedError):
+        adapter.read_digits(_digits_request())
+
+    assert [record.outcome for record in sink.items] == [OpenModelInvocationOutcome.REJECTED]
+    assert [rejection.reason for rejection in sink.rejections] == ["digits_wrong_count"]
+
+
+def test_a_digits_request_on_the_schema_route_is_validated_the_same_way() -> None:
+    sink = RecordingSink()
+    endpoint = FakeEndpoint(
+        {
+            "id": "chatcmpl-digits-schema",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": json.dumps({"digits": "16"})},
+                }
+            ],
+        },
+        published=frozenset({"completion", "vision"}),
+    )
+    adapter = OpenModelAdapter(_config(max_attempts=1), endpoint, sink)
+
+    assert adapter.read_digits(_digits_request()) == "16"
+    assert endpoint.requests[0]["response_format"]["json_schema"]["name"] == DIGITS_TOOL_NAME  # type: ignore[index]
+
+
+def test_the_dimension_tool_called_on_a_digits_request_is_a_protocol_error() -> None:
+    sink = RecordingSink()
+    adapter = OpenModelAdapter(_config(), FakeEndpoint(_tool_response({"digits": "28"})), sink)
+
+    with pytest.raises(OpenModelProtocolError, match="unexpected tool"):
+        adapter.read_digits(_digits_request())

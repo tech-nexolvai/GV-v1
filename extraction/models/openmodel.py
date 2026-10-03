@@ -23,31 +23,45 @@ the vocabulary Q20 defers, and no module under `app/` or `workflow/` imports thi
 compatibility endpoint all speak. One shape therefore covers the local case and the free-tier case,
 and the difference between them is a base URL and whether a key is present.
 
-Source: issue #534. Verification: ``tests/extraction/models/test_openmodel.py``.
+**Both request kinds, as `NovaAdapter` has them**: `extract` for a dimension reading, and
+`read_digits` for the digits of one drawn piece of a stacked label (#865), through one strategy
+choice, one retry loop and one record of every attempt.
+
+Source: issues #534, #865. Verification: ``tests/extraction/models/test_openmodel.py``.
 """
 
 from __future__ import annotations
 
 import json
 import struct
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from time import monotonic_ns
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 
 from evidence.candidate import ObservationCandidate
 from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext
-from extraction.models.sanitisation import InjectionAttempt, prepare_prompt
+from extraction.models.sanitisation import (
+    DIGITS_PROMPT_ID,
+    DIGITS_SYSTEM_INSTRUCTION,
+    DIGITS_TEMPLATE_ID,
+    DIGITS_USER_TASK,
+    InjectionAttempt,
+    prepare_prompt,
+)
 from extraction.models.validation import (
+    MAXIMUM_PIECE_DIGITS,
     CandidateContext,
     CoordinateMode,
     CropSize,
+    DigitsToolPayload,
     NovaToolPayload,
     RejectionRecorder,
     ValidationRejection,
+    validate_digits_payload,
     validate_payload,
 )
 
@@ -55,6 +69,14 @@ from extraction.models.validation import (
 #: deliberately the same seam and a reader comparing them should find nothing that differs by accident.
 TOOL_NAME = "report_drawing_reading"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+#: The one function a digits request may call (#865), named as Nova's is for the same reason.
+DIGITS_TOOL_NAME = "report_piece_digits"
+
+#: What a digits request records as its context: no drawing text, and no page around the piece.
+_NO_CONTEXT: Final = AssembledContext(nearby_text=(), nearby_geometry=())
+_NO_BOUND: Final = Decimal(0)
+
 
 #: Where a local Ollama listens. A default rather than a guess: it is the address Ollama binds by
 #: default, and every other setting has to be given explicitly.
@@ -165,6 +187,37 @@ class OpenModelRequest:
             or self.bound_pt < 0
         ):
             raise ValueError("bound_pt must be a finite, non-negative Decimal")
+
+
+@dataclass(frozen=True, slots=True)
+class OpenModelDigitsRequest:
+    """One piece of a stacked label, drawn alone, and how many characters the drawing has in it.
+
+    The same fields as `NovaDigitsRequest`, and kept as its own class for the reason
+    `OpenModelRequest` is.
+    """
+
+    request_id: str
+    page: int
+    picture: bytes
+    """The piece as PNG bytes."""
+
+    digit_count: int
+    """How many characters the drawing has in the piece, which the answer must match."""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request_id, str) or not self.request_id.strip():
+            raise ValueError("request_id must be a non-empty string")
+        if isinstance(self.page, bool) or not isinstance(self.page, int) or self.page < 0:
+            raise ValueError("page must be a non-negative integer")
+        if not isinstance(self.picture, bytes) or not self.picture.startswith(_PNG_SIGNATURE):
+            raise ValueError("picture must be PNG bytes")
+        if (
+            isinstance(self.digit_count, bool)
+            or not isinstance(self.digit_count, int)
+            or not 1 <= self.digit_count <= MAXIMUM_PIECE_DIGITS
+        ):
+            raise ValueError(f"digit_count must be a whole number from 1 to {MAXIMUM_PIECE_DIGITS}")
 
 
 class OpenModelInvocationOutcome(StrEnum):
@@ -379,6 +432,20 @@ def _is_retryable(error: Exception) -> bool:
     return "timeout" in name or "connection" in name
 
 
+@dataclass(frozen=True, slots=True)
+class _Call[AnswerT]:
+    """One request kind's call, as `nova._Call` is: what is sent for a strategy, how the answer is
+    read, and the identity its attempts are recorded under."""
+
+    prompt_id: str
+    template_id: str
+    context: AssembledContext
+    bound_pt: Decimal
+    injection_attempts: tuple[InjectionAttempt, ...]
+    body: Callable[[StructuredOutputStrategy], dict[str, object]]
+    answer: Callable[[Mapping[str, Any], StructuredOutputStrategy], AnswerT]
+
+
 class OpenModelAdapter:
     """Invoke a free or local model through one forced tool and return only an uncertain candidate.
 
@@ -413,11 +480,43 @@ class OpenModelAdapter:
 
         The structure mirrors `NovaAdapter.extract`, including which outcome each failure records and
         which exceptions are re-raised rather than retried. What it adds is the choice of strategy —
-        and one fallback, for the case the endpoint only reveals by refusing.
+        and one fallback, for the case the endpoint only reveals by refusing (`_invoke`).
         """
+        return self._invoke(
+            _Call(
+                prompt_id=self._config.prompt_id,
+                template_id=self._config.template_id,
+                context=request.context,
+                bound_pt=request.bound_pt,
+                injection_attempts=prepare_prompt(request.context).injection_attempts,
+                body=lambda strategy: self._request(request, strategy),
+                answer=lambda response, strategy: self._candidate(response, request, strategy),
+            )
+        )
+
+    def read_digits(self, request: OpenModelDigitsRequest) -> str:
+        """The digits of one drawn piece of a stacked label, validated, or an explicit failure (#865).
+
+        `NovaAdapter.read_digits` over this transport: recorded under `DIGITS_PROMPT_ID` and
+        `DIGITS_TEMPLATE_ID`, and held to `validate_digits_payload`.
+        """
+        return self._invoke(
+            _Call(
+                prompt_id=DIGITS_PROMPT_ID,
+                template_id=DIGITS_TEMPLATE_ID,
+                context=_NO_CONTEXT,
+                bound_pt=_NO_BOUND,
+                injection_attempts=(),
+                body=lambda strategy: self._digits_request(request, strategy),
+                answer=lambda response, strategy: self._digits(response, request, strategy),
+            )
+        )
+
+    def _invoke[AnswerT](self, call: _Call[AnswerT]) -> AnswerT:
+        """One call of either kind, by the strategy this model takes, falling back once if told to."""
         strategy = self._strategy()
         try:
-            return self._attempt(request, strategy)
+            return self._attempt(call, strategy)
         except OpenModelServiceError as error:
             cause = error.__cause__
             if (
@@ -433,7 +532,7 @@ class OpenModelAdapter:
             #
             # The refused attempt stays recorded. It happened, it cost something, and a record that
             # showed only the successful shape would misstate what this call did.
-            return self._attempt(request, StructuredOutputStrategy.SCHEMA)
+            return self._attempt(call, StructuredOutputStrategy.SCHEMA)
 
     def _strategy(self) -> StructuredOutputStrategy:
         """The configured strategy, or the one the endpoint's own answer implies.
@@ -456,21 +555,20 @@ class OpenModelAdapter:
             else StructuredOutputStrategy.SCHEMA
         )
 
-    def _attempt(
-        self, request: OpenModelRequest, strategy: StructuredOutputStrategy
-    ) -> ObservationCandidate:
+    def _attempt[AnswerT](
+        self, call: _Call[AnswerT], strategy: StructuredOutputStrategy
+    ) -> AnswerT:
         """One strategy, with its own bounded retry loop and its own records."""
         last_error: Exception | None = None
-        prepared = prepare_prompt(request.context)
         for attempt in range(1, self._config.max_attempts + 1):
             started_ns = monotonic_ns()
             response: Mapping[str, Any] | None = None
             outcome = OpenModelInvocationOutcome.ERROR
             try:
-                response = self._client.complete(**self._request(request, strategy))
-                candidate = self._candidate(response, request, strategy)
+                response = self._client.complete(**call.body(strategy))
+                answer = call.answer(response, strategy)
                 outcome = OpenModelInvocationOutcome.OK
-                return candidate
+                return answer
             except OpenModelRefusalError:
                 outcome = OpenModelInvocationOutcome.REFUSED
                 raise
@@ -502,17 +600,17 @@ class OpenModelAdapter:
                 self._recorder.record(
                     OpenModelInvocation(
                         model_id=self._config.model_id,
-                        prompt_id=self._config.prompt_id,
-                        template_id=self._config.template_id,
+                        prompt_id=call.prompt_id,
+                        template_id=call.template_id,
                         attempt=attempt,
                         latency_ms=_milliseconds_since(started_ns),
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                         outcome=outcome,
                         request_id=_request_id(response),
-                        context=request.context,
-                        bound_pt=request.bound_pt,
-                        injection_attempts=prepared.injection_attempts,
+                        context=call.context,
+                        bound_pt=call.bound_pt,
+                        injection_attempts=call.injection_attempts,
                     )
                 )
         raise OpenModelRetryExhaustedError("the retry loop ended unexpectedly") from last_error
@@ -556,7 +654,12 @@ class OpenModelAdapter:
         }
 
     def _constraint(
-        self, schema: Mapping[str, object], strategy: StructuredOutputStrategy
+        self,
+        schema: Mapping[str, object],
+        strategy: StructuredOutputStrategy,
+        *,
+        tool_name: str = TOOL_NAME,
+        description: str = "Report one visible dimension reading and rectangle.",
     ) -> dict[str, object]:
         """The part of the body that forces a shape, which is all the two strategies differ by.
 
@@ -568,7 +671,7 @@ class OpenModelAdapter:
             return {
                 "response_format": {
                     "type": "json_schema",
-                    "json_schema": {"name": TOOL_NAME, "schema": schema, "strict": True},
+                    "json_schema": {"name": tool_name, "schema": schema, "strict": True},
                 }
             }
         return {
@@ -576,13 +679,45 @@ class OpenModelAdapter:
                 {
                     "type": "function",
                     "function": {
-                        "name": TOOL_NAME,
-                        "description": "Report one visible dimension reading and rectangle.",
+                        "name": tool_name,
+                        "description": description,
                         "parameters": schema,
                     },
                 }
             ],
-            "tool_choice": {"type": "function", "function": {"name": TOOL_NAME}},
+            "tool_choice": {"type": "function", "function": {"name": tool_name}},
+        }
+
+    def _digits_request(
+        self, request: OpenModelDigitsRequest, strategy: StructuredOutputStrategy
+    ) -> dict[str, object]:
+        """The digits request: the picture and the fixed task, and no drawing data beside them."""
+        import base64
+
+        encoded = base64.b64encode(request.picture).decode("ascii")
+        return {
+            "model": self._config.model_id,
+            "messages": [
+                {"role": "system", "content": DIGITS_SYSTEM_INSTRUCTION},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{encoded}"},
+                        },
+                        {"type": "text", "text": DIGITS_USER_TASK},
+                    ],
+                },
+            ],
+            # Zero, for the reason `_request` gives.
+            "temperature": 0,
+            **self._constraint(
+                DigitsToolPayload.model_json_schema(),
+                strategy,
+                tool_name=DIGITS_TOOL_NAME,
+                description="Report the digits of the one number in the picture.",
+            ),
         }
 
     def _candidate(
@@ -591,7 +726,56 @@ class OpenModelAdapter:
         request: OpenModelRequest,
         strategy: StructuredOutputStrategy,
     ) -> ObservationCandidate:
-        """The one tool call, validated — or an explicit failure.
+        """The one tool call, validated — or an explicit failure."""
+        outcome = validate_payload(
+            self._arguments(response, strategy, TOOL_NAME),
+            context=CandidateContext(
+                candidate_id=request.candidate_id,
+                extractor_version=self._config.model_id,
+                page=request.page,
+                # Names the transport this reading came through, so an operator reading
+                # `model_invocations` can tell a Bedrock reading from a local one.
+                extractor="openmodel",
+            ),
+            crop_size=_crop_size(request.crop, request.image_format),
+            coordinate_mode=CoordinateMode.PIXELS,
+            recorder=self._recorder,
+            stacked_label=request.stacked_label,
+            stacked_layouts=request.stacked_layouts,
+        )
+        if isinstance(outcome, ValidationRejection):
+            raise OpenModelPayloadRejectedError(outcome)
+        return outcome
+
+    def _digits(
+        self,
+        response: Mapping[str, Any],
+        request: OpenModelDigitsRequest,
+        strategy: StructuredOutputStrategy,
+    ) -> str:
+        """The one answer of a digits request, validated — or an explicit failure (#865)."""
+        outcome = validate_digits_payload(
+            self._arguments(response, strategy, DIGITS_TOOL_NAME),
+            context=CandidateContext(
+                candidate_id=request.request_id,
+                extractor_version=self._config.model_id,
+                page=request.page,
+                extractor="openmodel",
+            ),
+            digit_count=request.digit_count,
+            recorder=self._recorder,
+        )
+        if isinstance(outcome, ValidationRejection):
+            raise OpenModelPayloadRejectedError(outcome)
+        return outcome
+
+    def _arguments(
+        self,
+        response: Mapping[str, Any],
+        strategy: StructuredOutputStrategy,
+        tool_name: str,
+    ) -> object:
+        """What the model answered, by the strategy it was asked with — or an explicit failure.
 
         **No free-text path, deliberately.** A model that answers in prose instead of calling the
         tool has not produced a reading, and parsing prose into a dimension is exactly the guess this
@@ -615,30 +799,11 @@ class OpenModelAdapter:
         if message.get("refusal"):
             raise OpenModelRefusalError("the model returned a refusal")
 
-        arguments = (
+        return (
             self._from_content(message)
             if strategy is StructuredOutputStrategy.SCHEMA
-            else self._from_tool_call(message)
+            else self._from_tool_call(message, tool_name)
         )
-        outcome = validate_payload(
-            arguments,
-            context=CandidateContext(
-                candidate_id=request.candidate_id,
-                extractor_version=self._config.model_id,
-                page=request.page,
-                # Names the transport this reading came through, so an operator reading
-                # `model_invocations` can tell a Bedrock reading from a local one.
-                extractor="openmodel",
-            ),
-            crop_size=_crop_size(request.crop, request.image_format),
-            coordinate_mode=CoordinateMode.PIXELS,
-            recorder=self._recorder,
-            stacked_label=request.stacked_label,
-            stacked_layouts=request.stacked_layouts,
-        )
-        if isinstance(outcome, ValidationRejection):
-            raise OpenModelPayloadRejectedError(outcome)
-        return outcome
 
     def _from_content(self, message: Mapping[str, Any]) -> object:
         """The schema route's payload: the reply itself, which must be JSON.
@@ -662,8 +827,8 @@ class OpenModelAdapter:
                 "the model answered with text rather than the requested JSON"
             ) from error
 
-    def _from_tool_call(self, message: Mapping[str, Any]) -> object:
-        """The tool route's payload: exactly one forced call, and no prose beside it."""
+    def _from_tool_call(self, message: Mapping[str, Any], tool_name: str) -> object:
+        """The tool route's payload: exactly one forced call to `tool_name`, and no prose beside it."""
         calls = message.get("tool_calls")
         if not isinstance(calls, list) or len(calls) != 1:
             raise OpenModelProtocolError("the model must return exactly one tool call and no prose")
@@ -671,7 +836,7 @@ class OpenModelAdapter:
         function = call.get("function") if isinstance(call, Mapping) else None
         if not isinstance(function, Mapping):
             raise OpenModelProtocolError("the tool call has no function")
-        if function.get("name") != TOOL_NAME:
+        if function.get("name") != tool_name:
             raise OpenModelProtocolError(
                 f"the model called an unexpected tool: {function.get('name')!r}"
             )

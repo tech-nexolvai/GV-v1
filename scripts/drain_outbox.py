@@ -236,7 +236,8 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         # Off unless named: the vision reader that goes first, the others reading only where it
         # read a value (#787). An unknown name is refused when the stages are built.
         vision_gate=os.environ.get("GV_VISION_GATE_READER", "").strip() or None,
-        # Off unless GV_FRACTION_PARTS is on, and then every drawing setting is required (#848).
+        # Off unless GV_FRACTION_PARTS is on, and then every drawing setting is required (#848),
+        # and so is the gate reader above: it is the route's second reader (#865).
         fraction_parts=fraction_parts_from_environment(),
     )
 
