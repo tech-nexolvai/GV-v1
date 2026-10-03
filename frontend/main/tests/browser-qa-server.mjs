@@ -11,6 +11,7 @@ import { createScenarioState, handleScenario, scenarioSnapshot, scenarioPackages
 import { pageFixture } from './browser-qa-pages.mjs';
 import { fixtureParts, decisionPartsFixture } from './browser-qa-parts.mjs';
 import { roleViewsFixture } from './browser-qa-roles.mjs';
+import { distributionNeeded, distributionFixture } from './browser-qa-distribution.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const failCropOnce = new Set();
@@ -29,6 +30,8 @@ let decisionParts = decisionPartsFixture();
 const partDecisionAttempts = new Map();
 let scenario = createScenarioState();
 let rolesMode = '';
+let distributionMode = false;
+let distributionAttempts = 0;
 let roleListAttempts = 0;
 let roleViews = roleViewsFixture();
 const roleSaveAttempts = new Map();
@@ -57,6 +60,8 @@ const qa = {
         decisionParts = decisionPartsFixture();
         partDecisionAttempts.clear();
         rolesMode = url.searchParams.get('roles') ?? '';
+        distributionMode = url.searchParams.get('distribution') === '1';
+        distributionAttempts = 0;
         roleListAttempts = 0;
         roleViews = roleViewsFixture();
         roleSaveAttempts.clear();
@@ -105,6 +110,16 @@ const qa = {
         // Deliberate delay only in isolated QA: makes the pending/disabled state inspectable.
         if (scenario.name === 'decision-save' && req.method === 'POST' && /\/(evidence|exceptions)$/.test(path)) await new Promise(resolve => setTimeout(resolve, 1500));
         return json(localResponse.body, localResponse.status);
+      }
+      if (distributionMode && req.method === 'POST' && path === `/api/v1/projects/${project}/filler-distribution`) {
+        const result = distributionFixture(requestBody);
+        if (!result) return refusal('Only the documented synthetic distribution inputs are accepted.', 422);
+        const attempt = ++distributionAttempts;
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path,
+          status: attempt === 2 ? 503 : 200, result: 'Synthetic distribution only', body: requestBody });
+        if (attempt === 2) return refusal('Synthetic calculator temporarily unavailable.', 503);
+        return json(result);
       }
       if (rolesMode === 'decisions' && req.method === 'POST' &&
           path.startsWith(`/api/v1/projects/${project}/packages/${populated}/views/`)) {
@@ -163,7 +178,7 @@ const qa = {
       if (path.endsWith('/packages')) return json({ items: visiblePackages, next_cursor: null, limit: 50, ordering: 'created_at' });
       if (path.endsWith('/chat/models')) return json({ models: [], default: null });
       if (path.endsWith('/semantic-types')) return json(['countertop_depth', 'filler_width']);
-      if (path.endsWith('/required-inputs')) return json(settingMode ? { ...needed, parameters: [
+      if (path.endsWith('/required-inputs')) return json(distributionMode ? distributionNeeded : settingMode ? { ...needed, parameters: [
         { name: 'countertop_overhang', scope: 'project', rule_ids: ['CT-WIDTH-001'], blocked: false, declared_default: null,
           sources: [{ value: 'G.C / Client', guidance: 'Synthetic source guidance.' }],
           found: { proposal_id: 'synthetic-setting-passage', page_index: 0, document_kind: 'architectural', has_crop: true } },

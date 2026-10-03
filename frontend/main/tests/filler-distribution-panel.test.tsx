@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 
 import { DistributionMissingInputs, FillerDistributionPanel } from '../src/components/measure/FillerDistributionPanel.js';
+import { DistributionProvenance } from '../src/components/measure/DistributionProvenance.js';
+import { distributionInputKey, distributionIsCurrent } from '../src/components/measure/distributionSnapshot.js';
 import {
   buildFillerDistributionRequest,
   CABINET_BOUND_NAMES,
@@ -56,6 +58,45 @@ assert.deepEqual(
   classified.request?.assembly.cabinets.map((cabinet) => cabinet.type),
   ['double_door', 'equipment'],
 );
+
+assert.ok(classified.request);
+const submitted = classified.request;
+const submittedText = JSON.stringify(submitted);
+const savedInputs = { inputKey: distributionInputKey(submitted) };
+assert.equal(distributionIsCurrent(savedInputs, structuredClone(submitted)), true);
+assert.equal(distributionIsCurrent(savedInputs, { ...submitted, field_width: '71"' }), false, 'late response belongs to the submitted site width');
+assert.equal(distributionIsCurrent(savedInputs, null), false, 'incomplete inputs cannot match a previous result');
+assert.equal(distributionIsCurrent({ inputKey: null }, submitted), false, 'unlinked responses never claim to be current');
+assert.equal(distributionIsCurrent({ inputKey: null }, null), false);
+for (const key of ['filler_min', 'filler_max', ...CABINET_BOUND_NAMES] as const) {
+  assert.equal(distributionIsCurrent(savedInputs, { ...submitted, [key]: '12"' }), false, key);
+}
+for (const altered of [
+  { ...submitted, assembly: { ...submitted.assembly, cabinets: submitted.assembly.cabinets.map((cabinet, i) => i ? cabinet : { ...cabinet, width: '31"' }) } },
+  { ...submitted, assembly: { ...submitted.assembly, cabinets: submitted.assembly.cabinets.map((cabinet, i) => i ? cabinet : { ...cabinet, type: 'drawer' as const }) } },
+  { ...submitted, assembly: { ...submitted.assembly, cabinets: [...submitted.assembly.cabinets].reverse() } },
+  { ...submitted, assembly: { ...submitted.assembly, fillers: [{ id: 'filler', width: '3"' }] } },
+  { ...submitted, field_width: '70.0"' }, // do not infer numeric equivalence from display text
+  { ...submitted, field_width: null },
+]) assert.equal(distributionIsCurrent(savedInputs, altered), false);
+assert.equal(distributionIsCurrent(savedInputs, submitted), true, 'restoring the exact submitted request matches again');
+
+const provenance = (current: boolean, busy = false) => renderToStaticMarkup(
+  <DistributionProvenance request={submitted} current={current} busy={busy} />);
+assert.match(provenance(false), /role="status"/);
+assert.match(provenance(false), /Earlier result — not for the current inputs/);
+assert.match(provenance(false), /Calculate again/);
+assert.match(provenance(false, true), /new calculation is in progress/);
+assert.doesNotMatch(provenance(true), /Earlier result/);
+assert.match(provenance(true, true), /previous result remains below/);
+assert.match(provenance(false), /Inputs used for this result/);
+assert.doesNotMatch(provenance(false), /<details[^>]* open/);
+for (const value of ['70&quot;', '30&quot;', '2&quot;', '9&quot;', '48&quot;']) assert.ok(provenance(false).includes(value));
+assert.match(provenance(false), /Other equipment/);
+const unlinked = renderToStaticMarkup(<DistributionProvenance request={null} current={false} busy={false} />);
+assert.match(unlinked, /inputs used for this result were not recorded/);
+assert.doesNotMatch(unlinked, /<dl>/);
+assert.equal(JSON.stringify(submitted), submittedText, 'provenance never mutates the request');
 
 // There is no longer any field through which a caller could nominate one cabinet to absorb
 // everything. #678 removed it rather than deprecating it: a path that still produced the wrong

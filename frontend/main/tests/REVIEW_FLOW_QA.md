@@ -252,3 +252,36 @@ exact escaped server errors, retained recorded roles and quiet successful empty 
 This remains synthetic UI verification, not proof of live OCR or backend persistence. Backend
 code, schemas and customer records are unchanged. The previously observed live parts-route 404
 and 500-candidate list limit are not resolved by this phase.
+
+## Filler-distribution results stay tied to their submitted inputs
+
+Run `GV_QA_PORT=5208 node tests/browser-qa-server.mjs` and open
+`http://127.0.0.1:5208/?distribution=1&reset=1#/review/00000000-0000-4000-8000-000000000101`.
+Use a fresh document navigation to reset the scenario. This fixture supplies explicitly synthetic
+architectural widths and rule limits, never project defaults in production.
+
+1. Open Measurements → Filler distribution. Enter `32 in` as the site width and classify the
+   single cabinet as Double door. Click Calculate distribution, then change the width to `33 in`
+   while the five-second response is pending.
+2. The response for `32 in` must show “Earlier result — not for the current inputs”. Its numbers,
+   table, message and calculation stay intact. Expand Inputs used for this result: it must show
+   `32 in`, the original cabinet/filler widths, the classification, and all eight submitted limits.
+3. Calculate again. The second fixture request returns 503. The old result and its warning must
+   remain, alongside the exact error; the current field must still read `33 in`.
+4. Explicitly calculate once more. The `33 in` response becomes current and the old error/warning
+   disappear. Change the cabinet type to Drawer: the result immediately becomes earlier again,
+   without a request, altered response, saved measurement or check run.
+5. `/__qa/state` must show exactly three calculator POSTs: `32 in` → 200, `33 in` → 503,
+   `33 in` → 200, and zero checks/measurement writes. The fixture accepts only its documented
+   inputs, has no proxy, and its request/response were checked against the backend Pydantic schema.
+
+Before this fix, step 2 presented “Proposal returned” beside the new input with no warning.
+The UI now captures the submitted request before awaiting the response and compares it with the
+current request as text/structure only. It neither normalizes numeric equality nor repeats the
+distribution arithmetic. Missing/unlinked inputs cannot claim a current result. The last response
+is retained during recalculation/failure; this is component state, not a new persisted history.
+
+Tests cover site width, cabinet widths/types/order, filler changes, every limit, missing inputs,
+exact restoration, unknown provenance, collapsed input details, and no request mutation.
+Browser checks cover late arrival, refusal, manual retry and classification edits. This is
+synthetic frontend verification, not a live calculation or OCR accuracy claim.
