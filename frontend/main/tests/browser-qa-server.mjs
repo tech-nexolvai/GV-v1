@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { project, populated, empty, packages, findings, chains, needed, candidates, cropPng, samplePdf, sampleWorkbook } from './browser-qa-fixtures.mjs';
 import { createScenarioState, handleScenario, scenarioSnapshot, scenarioPackages, scenarioFindings, fixturePdf, prepareUploadedFixture } from './browser-qa-scenarios.mjs';
 import { pageFixture } from './browser-qa-pages.mjs';
+import { fixtureParts } from './browser-qa-parts.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const failCropOnce = new Set();
@@ -20,6 +21,9 @@ let reportErrorMode = false;
 let settingMode = false;
 let readingsMode = '';
 let readingsAttempts = 0;
+let partsMode = '';
+let partsAttempts = 0;
+let partCropAttempts = 0;
 let scenario = createScenarioState();
 const port = Number(process.env.GV_QA_PORT ?? '5193');
 const qa = {
@@ -40,6 +44,9 @@ const qa = {
         settingMode = url.searchParams.get('settings') === '1';
         readingsMode = url.searchParams.get('readings') ?? '';
         readingsAttempts = 0;
+        partsMode = url.searchParams.get('parts') ?? '';
+        partsAttempts = 0;
+        partCropAttempts = 0;
         failCropOnce.clear();
         settingCropAttempts.clear();
         const requestedScenario = url.searchParams.get('scenario');
@@ -117,10 +124,19 @@ const qa = {
         return json({ candidates, total: candidates.length });
       }
       if (path.endsWith('/views')) return json({ views: [], total: 0 });
+      if (path.endsWith('/parts')) {
+        partsAttempts++;
+        if (partsMode === 'retry' && partsAttempts <= 2) return refusal('Synthetic parts list temporarily unavailable.', 503);
+        return json(partsMode ? fixtureParts : { drawings: [] });
+      }
       if (path.endsWith('/findings/summary')) return json({ total: rows.length, failed: rows.length ? 1 : 0, passed: rows.length ? 1 : 0, review_required: rows.length ? 1 : 0, not_found: rows.length ? 1 : 0, no_applicable_rule: 0, critical_failed: 0 });
       if (path.endsWith('/findings')) return json({ items: rows, next_cursor: null, limit: 50, ordering: 'synthetic-test-order' });
       if (path.endsWith('/chain')) { const id = path.split('/').at(-2); return chains[id] ? json(chains[id]) : refusal('Unknown synthetic finding.'); }
       if (path.endsWith('/crop')) {
+        if (partsMode === 'retry' && path.includes('/parts/')) {
+          partCropAttempts++;
+          if (partCropAttempts <= 2) return refusal('Synthetic part crop temporarily unavailable.', 503);
+        }
         if (settingMode && cropRetryMode && path.includes('/parameter-proposals/')) {
           const attempts = (settingCropAttempts.get(path) ?? 0) + 1;
           settingCropAttempts.set(path, attempts);

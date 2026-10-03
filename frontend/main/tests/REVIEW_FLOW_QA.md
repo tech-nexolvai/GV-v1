@@ -179,3 +179,25 @@ fails, second succeeds), then edit its field. The historical success receipt dis
 value is marked typed, and the persisted confirmation stays on record. Pending/error feedback is
 not discarded by edits. Unit tests cover edited, empty, proposed, placement-unverified, exact-tagged
 and reviewer-confirmed origins. These are frontend provenance checks, not a semantic-type change.
+
+## Parts of each drawing: current-origin integration and recovery
+
+Origin #886 adds one-at-a-time human decisions on suggested drawing parts. The redesign retains
+its endpoint payloads, exact codes, role restrictions and decisions; no backend logic is authored here.
+
+Run `GV_QA_PORT=5205 node tests/browser-qa-server.mjs` and open
+`http://127.0.0.1:5205/?parts=retry#/review/00000000-0000-4000-8000-000000000101`.
+
+1. Open Measurements. The initial list requests fail with synthetic 503s (twice for StrictMode).
+   Required measurement fields remain usable; Retry parts list is available.
+2. Retry. The list loads and the previous error disappears. The stored code crop initially fails.
+3. Edit the first part's code without confirming it. Retry part 1 crop. The synthetic image loads;
+   the code draft remains and the part still says Not decided yet. No decision is sent by retry.
+4. A failed refresh retains a previously loaded list with an explicit stale-list explanation.
+   This state is covered by the recovery component test. Image disposal/retry/late-response safety
+   reuses the tested passage-image loader; image decode errors also expose retry.
+
+The fixture's image is a synthetic placeholder, not a claim that the reader found a part. All
+part writes are refused by this isolated server. Successful live part confirmation is not tested.
+At verification time the real app's parts GET returned 404; this UI phase does not claim the running
+backend has deployed the new route. Backend services and customer data were left untouched.

@@ -11,6 +11,8 @@ import {
 import { projectId } from '../../api/config';
 import { type PartDrawing, type PartKind, type SuggestedPart } from './drawingPartChoices.js';
 import { DrawingPartsList, type NewPart } from './DrawingPartsList.js';
+import { PartPicture, PartsLoadState, type PartImageState } from './PartRecovery.js';
+import { loadPassageImage } from './passageImage.js';
 import './DrawingParts.css';
 
 /**
@@ -25,21 +27,31 @@ export function DrawingParts({ packageId, refresh }: { packageId: string; refres
   const [drawings, setDrawings] = useState<PartDrawing[] | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [retry, setRetry] = useState(0);
   const [decided, setDecided] = useState(0);
 
   useEffect(() => {
     let live = true;
     listDrawingParts(projectId(), packageId)
       .then((result) => {
-        if (live) setDrawings(result.drawings);
+        if (live) {
+          setDrawings(result.drawings);
+          setLoadError(null);
+          setLoading(false);
+        }
       })
       .catch((caught: unknown) => {
-        if (live) setError(caught instanceof ApiError ? caught.message : String(caught));
+        if (live) {
+          setLoadError(caught instanceof ApiError ? caught.message : String(caught));
+          setLoading(false);
+        }
       });
     return () => {
       live = false;
     };
-  }, [packageId, refresh, decided]);
+  }, [packageId, refresh, decided, retry]);
 
   async function save(key: string, decide: () => Promise<unknown>) {
     setSaving(key);
@@ -68,23 +80,18 @@ export function DrawingParts({ packageId, refresh }: { packageId: string; refres
     void save(drawing.view_id, () => addDrawingPart(projectId(), packageId, drawing.view_id, part));
   }
 
-  if (drawings === null || drawings.length === 0) {
-    return error ? (
-      <p className="enter-values__error" role="alert">
-        The parts of these drawings could not be listed: {error}
-      </p>
-    ) : null;
-  }
   return (
     <>
-      <DrawingPartsList
+      <PartsLoadState error={loadError} loading={loading} hasDrawings={!!drawings?.length}
+        onRetry={() => { setLoading(true); setRetry((count) => count + 1); }} />
+      {!!drawings?.length && <DrawingPartsList
         drawings={drawings}
         saving={saving}
         renderCrop={(_drawing, part) => <PartCrop packageId={packageId} part={part} />}
         onConfirm={confirm}
         onWithdraw={withdraw}
         onAdd={add}
-      />
+      />}
       {error && (
         <p className="enter-values__error" role="alert">
           {error}
@@ -96,33 +103,19 @@ export function DrawingParts({ packageId, refresh }: { packageId: string; refres
 
 /** The stored picture of one part, loaded when it is shown. */
 function PartCrop({ packageId, part }: { packageId: string; part: SuggestedPart }) {
-  const [state, setState] = useState<{ url?: string; error?: string }>({});
+  const [attempt, setAttempt] = useState(0);
+  return <PartCropRequest key={`${packageId}:${part.proposal_id}:${attempt}`} packageId={packageId}
+    part={part} onRetry={() => setAttempt((value) => value + 1)} />;
+}
 
-  useEffect(() => {
-    let live = true;
-    let url: string | undefined;
-    void downloadPartCrop(projectId(), packageId, part.proposal_id).then(
-      (blob) => {
-        url = URL.createObjectURL(blob);
-        if (live) setState({ url });
-      },
-      () => {
-        if (live) setState({ error: 'The stored picture of this part could not be loaded.' });
-      },
-    );
-    return () => {
-      live = false;
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [packageId, part.proposal_id]);
-
-  if (state.error) return <p className="drawing-parts__no-picture">{state.error}</p>;
-  if (!state.url) return <p className="drawing-parts__no-picture">Loading the picture…</p>;
-  return (
-    <img
-      className="drawing-parts__crop"
-      src={state.url}
-      alt={`Where the code is printed on part ${part.position}, page ${part.page_index + 1}`}
-    />
-  );
+function PartCropRequest({ packageId, part, onRetry }: {
+  packageId: string; part: SuggestedPart; onRetry: () => void;
+}) {
+  const [state, setState] = useState<PartImageState>(null);
+  useEffect(() => loadPassageImage(
+    () => downloadPartCrop(projectId(), packageId, part.proposal_id),
+    (url) => setState({ url }), () => setState({ error: true }),
+  ), [packageId, part.proposal_id]);
+  return <PartPicture state={state} position={part.position} page={part.page_index + 1}
+    onRetry={onRetry} onError={() => setState({ error: true })} />;
 }
