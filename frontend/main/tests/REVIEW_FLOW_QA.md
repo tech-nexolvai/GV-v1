@@ -165,3 +165,17 @@ or the vocabulary fail. A required-inputs failure still blocks the form rather t
 This is partial-load recovery, not a solution for browsing large candidate lists. Backend filtering
 or pagination is still required for those packages. No backend, stored value, drawing, rule, verdict,
 or schema was changed. The synthetic retry proves UI draft retention, not live server persistence.
+
+## Current field value versus recorded reading
+
+Use the isolated server on 5204 with no query flags. Open Measurements and edit Approved depth
+from its prefilled reading to `26 in`. The label must switch from "you confirmed this reading"
+to "you typed this". Clear it: the label becomes "needs a value". Neither action changes the
+recorded confirmation count or sends a backend write. Re-entering even the original text remains
+a reviewer edit; the UI does not infer confirmation from numeric equality.
+
+Also use `?scenario=reading-confirmation&reset=1`. Confirm Vendor depth (first attempt intentionally
+fails, second succeeds), then edit its field. The historical success receipt disappears, the current
+value is marked typed, and the persisted confirmation stays on record. Pending/error feedback is
+not discarded by edits. Unit tests cover edited, empty, proposed, placement-unverified, exact-tagged
+and reviewer-confirmed origins. These are frontend provenance checks, not a semantic-type change.

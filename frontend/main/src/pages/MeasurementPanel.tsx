@@ -40,7 +40,7 @@ import { layoutChoiceDefaults } from './layoutChoices';
 import { MeasurementGuidance, StoredProposalGuidance } from './MeasurementGuidance';
 import { MeasurementSectionNav } from './MeasurementSectionNav';
 import { jumpToMeasurementSection, measurementSections } from './measurementNavigation';
-import { prefillReadingValues } from './measurementDraft';
+import { measurementValueOrigin, prefillReadingValues } from './measurementDraft';
 import { loadMeasurementResources } from './measurementResources';
 import { ReadingAvailability } from './ReadingAvailability';
 import { appendConfirmedRunValue, confirmCandidateOnce, confirmProposalFields, newConfirmationLedger } from './measurementConfirmation';
@@ -739,6 +739,14 @@ export function MeasurementPanel({
     const edited = new Set(reviewerEditedSinglesRef.current).add(key);
     reviewerEditedSinglesRef.current = edited;
     setReviewerEditedSingles(edited);
+    // A receipt describes the previous insertion, not the value being edited now. Keep pending
+    // and failed requests visible; removing this UI receipt does not undo the stored confirmation.
+    setConfirmationFeedback((prior) => {
+      if (prior[key]?.kind !== 'confirmed') return prior;
+      const next = { ...prior };
+      delete next[key];
+      return next;
+    });
     setAiFilled((prior) => {
       if (!(key in prior)) return prior;
       const next = { ...prior };
@@ -830,18 +838,13 @@ export function MeasurementPanel({
    * has to be able to answer before they sign the form — and three sources that look identical in
    * a box is most of what makes this screen hard to trust.
    */
-  const fieldOrigin = (
-    quantity: Quantity,
-  ): 'empty' | 'proposed' | 'unplaced' | 'confirmed' | 'tagged' | 'typed' => {
-    if (!hasValue(quantity)) return 'empty';
-    if (quantity.key in aiFilled) {
-      return unverifiedFields.has(quantity.key) ? 'unplaced' : 'proposed';
-    }
-    const readings = readingsByKey[quantity.key] ?? [];
-    if (readings.some((reading) => reading.qualification === 'exact_vector_tag')) return 'tagged';
-    if (readings.length > 0) return 'confirmed';
-    return 'typed';
-  };
+  const fieldOrigin = (quantity: Quantity) => measurementValueOrigin({
+    hasValue: hasValue(quantity),
+    humanEdited: reviewerEditedSingles.has(quantity.key),
+    proposed: quantity.key in aiFilled,
+    placementUnverified: unverifiedFields.has(quantity.key),
+    qualifications: (readingsByKey[quantity.key] ?? []).map((reading) => reading.qualification),
+  });
 
   /** How many fields the filed proposal covers. Zero when nothing was filed, which is a real
    *  outcome: the checks refused the model's answer, or the reader attached nothing to fill from. */
@@ -1136,8 +1139,8 @@ export function MeasurementPanel({
         )}
         {needed.confirmed_readings.length > 0 ? (
           <p className="enter-values__hint" role="status">
-            {needed.confirmed_readings.length} drawing reading{needed.confirmed_readings.length === 1 ? ' has' : 's have'} filled below.
-            Review or edit them before saving.
+            {needed.confirmed_readings.length} qualified drawing reading{needed.confirmed_readings.length === 1 ? '' : 's'} on record.
+            Review the current field values before saving; your edits do not change those recorded readings.
           </p>
         ) : (
           <p className="enter-values__hint" role="status">
