@@ -187,6 +187,16 @@ API_PID=$!
 # line's height. Measured on both client drawings in #840: the space between two words of one note
 # is at most 0.333 line heights, and the narrowest space between two separate items is 0.372 on
 # AI_Set_2 and 0.421 on AI_Set_1. The admin's decision of 2026-10-03, on #798. No model is called.
+#
+# **Stacked fractions are read piece by piece (#848, #865), on in the demo only** — the admin's decision
+# of 2026-10-03, on #756. Each laid-out stacked label's whole number, numerator and denominator are
+# drawn alone from the vendor's own strokes and read twice: by local OCR and by the gate reader above,
+# a different vendor's model asked for the digits alone. Only where the two agree on every piece is
+# the value written, and only as a pre-fill a person ticks: it keeps the stacked-fraction flag, so no
+# agreement ever seals it (#726). On `AI_Set 2` it pre-filled 11 labels, all right, and refused 2;
+# 28 Ministral calls, $0.0007. The four drawing sizes were measured in #848: every piece read at a
+# height of 30–56 px, a stroke of 2–8 px and a margin of 16–96 px; the vendor's labels have no
+# curves, so the Bezier step count changes nothing. The route refuses to start without a gate reader.
 GV_VISION_GATE_READER=bedrock-ministral-3-3b \
 GV_READING_AGENT=1 \
 GV_AGENT_MAX_STEPS=6 \
@@ -222,6 +232,11 @@ GV_READER_FRACTION_PROPORTION_MAX=2.5 \
 GV_READER_FRACTION_CHARACTER_GAP_PT=4 \
 GV_READER_FRACTION_TURNED_ASPECT_MIN=1.1 \
 GV_PHRASE_GAP_LINE_HEIGHTS=0.34 \
+GV_FRACTION_PARTS=1 \
+GV_FRACTION_PARTS_HEIGHT_PX=40 \
+GV_FRACTION_PARTS_STROKE_PX=4 \
+GV_FRACTION_PARTS_MARGIN_PX=32 \
+GV_FRACTION_PARTS_BEZIER_STEPS=8 \
   "$PYTHON" scripts/drain_outbox.py --watch &
 WORKER_PID=$!
 
