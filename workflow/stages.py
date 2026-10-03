@@ -196,6 +196,7 @@ from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_readin
 from extraction.panels import propose_panel_roles
 from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
 from extraction.reader import (
+    MissingSpace,
     PageContents,
     SetAsideLabel,
     SetAsideReason,
@@ -468,6 +469,33 @@ def ai_budget_from_environment(environ: Mapping[str, str] = os.environ) -> Decim
     if not value.is_finite() or value <= 0:
         raise ValueError(f"{AI_BUDGET_ENV} must be more than zero dollars, not {raw!r}")
     return value
+
+
+#: The reader's missing-space setting (#912): how wide a gap inside the inches is a space the file
+#: left out, as a share of the text's height. Required wherever a page's text is read; no default.
+MISSING_SPACE_ENV: Final = "GV_READER_MISSING_SPACE_HEIGHTS"
+
+
+def missing_space_from_environment(environ: Mapping[str, str] = os.environ) -> MissingSpace:
+    """The reader's missing-space setting as the deployment states it (#912).
+
+    **Refused, never filled in.** Unstated, or not a number the setting accepts, is an error naming
+    the variable: a guessed width would decide, on every drawing anybody runs, whether `[1 3/16]`
+    with its space set as a gap is read as 13/16 inch.
+    """
+    raw = environ.get(MISSING_SPACE_ENV, "").strip()
+    if not raw:
+        raise ValueError(
+            f"{MISSING_SPACE_ENV} is not stated: the share of the text's height at which a gap inside "
+            "the inches is a space the file left out. A page's text is not read without it, and it "
+            "has no default"
+        )
+    try:
+        return MissingSpace(gap_heights=Decimal(raw))
+    except (ArithmeticError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"{MISSING_SPACE_ENV} is not a usable share of the text's height: {error}"
+        ) from error
 
 
 #: The switch for reading each stacked fraction piece by piece (#848). Off unless a deployment turns
@@ -1132,6 +1160,7 @@ class DatabaseStages:
         vision_gate: str | None = None,
         ai_budget_usd: Decimal | None = None,
         fraction_parts: PieceDrawing | None = None,
+        missing_space: MissingSpace | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -1140,9 +1169,15 @@ class DatabaseStages:
         `extract_pages` reports that it has no store and does nothing — which is a fact a caller can
         act on, where a crash on a missing dependency would look like a broken document.
 
+        `missing_space` is the reader's setting (#912), with no default. Stages that never read a
+        page's text — checks, matching, outputs — run without it; `extract_pages` refuses to read a
+        page without it (`_stated_missing_space`).
         """
         self._store = store
         self._dpi = dpi
+        if missing_space is not None and not isinstance(missing_space, MissingSpace):
+            raise TypeError("missing_space must be a MissingSpace")
+        self._missing_space = missing_space
         # **`None` means the association step does not run, and that is recorded as not run.**
         # Association is inherently thresholded — unlike reading a `/FreeText`, there is no
         # threshold-free version of it — so the five lengths are a deployment's to state. A default
@@ -1255,6 +1290,16 @@ class DatabaseStages:
         # becoming a verdict input while allowing the live worker to see a later human confirmation.
         self._operands = None if operands is None else dict(operands)
         self._discriminators = dict(discriminators or {})
+
+    def _stated_missing_space(self) -> MissingSpace:
+        """The reader's missing-space setting, or an error naming it: no page's text is read with
+        the setting left out, and nothing here supplies one (#912)."""
+        if self._missing_space is None:
+            raise ValueError(
+                "these stages were built without the reader's missing-space setting "
+                f"({MISSING_SPACE_ENV}), so they read no page's text. It has no default"
+            )
+        return self._missing_space
 
     def _not_built(self, stage: str) -> Mapping[str, object]:
         """The same answer `NoStages` gives, for the stages that are still not built.
@@ -1372,7 +1417,8 @@ class DatabaseStages:
             task_run_id=task_run.id,
             extractor=EXTRACTOR,
             extractor_version=EXTRACTOR_VERSION,
-            config_hash=f"dpi={self._dpi}",
+            # The reader's setting is part of what read the page (#912), as the resolution is.
+            config_hash=f"dpi={self._dpi};{self._stated_missing_space().config_hash}",
             dpi=self._dpi,
         )
         layout_discriminators = _layout_discriminators(session)
@@ -1507,7 +1553,11 @@ class DatabaseStages:
                 ) as span:
                     try:
                         contents = read_page_contents(
-                            data, page.index, document_version_id=version_id, dpi=self._dpi
+                            data,
+                            page.index,
+                            document_version_id=version_id,
+                            dpi=self._dpi,
+                            missing_space=self._stated_missing_space(),
                         )
                     except UnreadablePdf as error:
                         # One page that will not parse, in a document whose other pages might. The
@@ -2245,7 +2295,13 @@ class DatabaseStages:
         """The page's markup drawn in colour (#901), or `None` where its pasted drawings could not
         be read for it. The glyph paths are the ones the page's layers read, if they read any."""
         try:
-            text = coloured_text(data, page.index, document_version_id=version_id, dpi=self._dpi)
+            text = coloured_text(
+                data,
+                page.index,
+                document_version_id=version_id,
+                dpi=self._dpi,
+                missing_space=self._stated_missing_space(),
+            )
         except UnreadablePdf:
             return None
         return ColouredMarkup(
@@ -3050,14 +3106,20 @@ class DatabaseStages:
         if layers is None or not layers.vendor_stamps:
             return (), (), []
         try:
-            stamp = read_stamp_text(data, page.index, document_version_id=version_id, dpi=self._dpi)
+            stamp = read_stamp_text(
+                data,
+                page.index,
+                document_version_id=version_id,
+                dpi=self._dpi,
+                missing_space=self._stated_missing_space(),
+            )
         except UnreadablePdf as error:
             failed_run = open_extraction_run(
                 session,
                 task_run_id=task_run_id,
                 extractor=STAMP_TEXT_EXTRACTOR,
                 extractor_version=STAMP_TEXT_EXTRACTOR_VERSION,
-                config_hash=f"dpi={self._dpi}",
+                config_hash=f"dpi={self._dpi};{self._stated_missing_space().config_hash}",
                 dpi=self._dpi,
             )
             record_unreadable_page(
@@ -3082,7 +3144,7 @@ class DatabaseStages:
                 task_run_id=task_run_id,
                 extractor=STAMP_TEXT_EXTRACTOR,
                 extractor_version=STAMP_TEXT_EXTRACTOR_VERSION,
-                config_hash=f"dpi={self._dpi}",
+                config_hash=f"dpi={self._dpi};{self._stated_missing_space().config_hash}",
                 dpi=self._dpi,
             )
             rows = record_candidates(

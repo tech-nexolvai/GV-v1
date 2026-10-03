@@ -42,7 +42,7 @@ from rules.schema import Rule
 from rules.snapshot import publish
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import LAYOUT_PROMPT_ID, UNCONFIGURED_LAYOUT_MODEL_ID, DatabaseStages
@@ -204,7 +204,9 @@ def test_extract_pages_records_one_layout_proposal_per_declared_discriminator(
     expected = len(required_inputs(rules).discriminators)
     assert expected > 0, "the published rulebook declared no layout discriminators"
 
-    DatabaseStages(store, layout_readers=[_AnsweringReader()]).extract_pages(session, revision.id)
+    DatabaseStages(
+        store, layout_readers=[_AnsweringReader()], missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
 
     proposals = _proposals(session)
     assert len(proposals) == expected
@@ -227,7 +229,7 @@ def test_absent_layout_reader_configuration_records_abstentions(
     monkeypatch.delenv("GV_BEDROCK_LAYOUT_MODEL", raising=False)
     monkeypatch.delenv("GV_BEDROCK_MODEL", raising=False)
 
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     proposals = _proposals(session)
     assert len(proposals) == len(required_inputs(rules).discriminators)
@@ -246,6 +248,7 @@ def test_layout_reader_disagreement_is_recorded_without_a_closed_choice(
     DatabaseStages(
         store,
         layout_readers=[_AnsweringReader(), _SecondChoiceReader()],
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     choices = {choice for need in required_inputs(rules).discriminators for choice in need.choices}
@@ -259,7 +262,7 @@ def test_rerunning_extraction_over_unchanged_layout_evidence_does_not_duplicate(
 ) -> None:
     _publish_rulebook(session)
     revision = _revision(session, store)
-    stages = DatabaseStages(store, layout_readers=[_AnsweringReader()])
+    stages = DatabaseStages(store, layout_readers=[_AnsweringReader()], missing_space=MISSING_SPACE)
 
     stages.extract_pages(session, revision.id)
     first = session.execute(select(func.count()).select_from(LayoutProposal)).scalar_one()
@@ -273,9 +276,11 @@ def test_layout_proposals_still_do_not_supply_run_checks_discriminators(
 ) -> None:
     _publish_rulebook(session)
     revision = _revision(session, store)
-    DatabaseStages(store, layout_readers=[_AnsweringReader()]).extract_pages(session, revision.id)
+    DatabaseStages(
+        store, layout_readers=[_AnsweringReader()], missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
 
-    result = DatabaseStages().run_checks(session, revision.id)
+    result = DatabaseStages(missing_space=MISSING_SPACE).run_checks(session, revision.id)
 
     assert result["ran"] is True
     assert _outcome_for(session, revision, "CT-WIDTH-001") == "REVIEW_REQUIRED"

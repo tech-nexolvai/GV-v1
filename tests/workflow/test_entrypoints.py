@@ -209,6 +209,20 @@ def test_the_worker_refuses_to_start_without_a_token(caplog: pytest.LogCaptureFi
     assert "runs nothing" in message
 
 
+def test_the_worker_refuses_to_start_without_the_reader_setting(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """**No default** (#912). A worker given pages to read and no `GV_READER_MISSING_SPACE_HEIGHTS`
+    would fail on the first one; it refuses to start instead, and says which variable to set."""
+    monkeypatch.delenv("GV_READER_MISSING_SPACE_HEIGHTS", raising=False)
+
+    with caplog.at_level(logging.ERROR, logger="gv.workflow.entrypoints"):
+        code = run_worker(_settings(), factory=object())  # type: ignore[arg-type]
+
+    assert code == EXIT_MISCONFIGURED
+    assert "GV_READER_MISSING_SPACE_HEIGHTS" in " ".join(r.getMessage() for r in caplog.records)
+
+
 def test_a_missing_setting_is_reported_rather_than_raised(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path: Path
 ) -> None:

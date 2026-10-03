@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.models import PackageState
 from extraction.reader import read_page_contents
+from tests.extraction.test_reader import MISSING_SPACE
 
 
 class _DemoStages(Protocol):
@@ -145,6 +146,7 @@ def test_evidence_demo_fixture_is_a_synthetic_pdf_with_the_declared_reading() ->
         0,
         document_version_id=uuid4(),
         dpi=300,
+        missing_space=MISSING_SPACE,
     )
 
     assert module.EVIDENCE_DRAWING.startswith(b"%PDF-")

@@ -27,6 +27,7 @@ from extraction.stamp_text import (
     stamps_only,
 )
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
+from tests.extraction.test_reader import MISSING_SPACE
 from units.normalise import normalise_to_inches
 from units.notation import canonical_notation
 
@@ -66,7 +67,9 @@ def _sheet(text: bytes = b"(36) Tj", *, with_markup: bool = False) -> bytes:
 def _texts(data: bytes) -> list[str]:
     return [
         item.text
-        for item in read_stamp_text(data, 0, document_version_id=DOCUMENT, dpi=DPI).contents.texts
+        for item in read_stamp_text(
+            data, 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+        ).contents.texts
     ]
 
 
@@ -92,7 +95,9 @@ def test_a_dimension_split_by_a_space_is_read_whole() -> None:
 
 def test_the_text_is_placed_where_the_stamp_puts_it() -> None:
     """Outcome: the reading's box sits inside the stamp's own rectangle on the page."""
-    reading = read_stamp_text(_sheet(), 0, document_version_id=DOCUMENT, dpi=DPI)
+    reading = read_stamp_text(
+        _sheet(), 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+    )
     (item,) = reading.contents.texts
     xs = [point.x for point in item.extent.points]
     ys = [point.y for point in item.extent.points]
@@ -109,6 +114,7 @@ def test_a_page_without_pasted_text_says_so() -> None:
         0,
         document_version_id=DOCUMENT,
         dpi=DPI,
+        missing_space=MISSING_SPACE,
     )
 
     assert reading.contents.texts == ()
@@ -118,7 +124,9 @@ def test_a_page_without_pasted_text_says_so() -> None:
 
 def test_the_stamps_line_work_is_not_read_twice() -> None:
     """Outcome: no segments — the stamp's paths are read by `annotations.py`, once."""
-    reading = read_stamp_text(_sheet(), 0, document_version_id=DOCUMENT, dpi=DPI)
+    reading = read_stamp_text(
+        _sheet(), 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+    )
 
     assert reading.contents.segments == ()
 
@@ -141,6 +149,7 @@ def test_coloured_text_in_a_pasted_drawing_is_not_read() -> None:
         0,
         document_version_id=DOCUMENT,
         dpi=DPI,
+        missing_space=MISSING_SPACE,
     )
 
     assert [item.text for item in reading.contents.texts] == ['36"']
@@ -153,13 +162,22 @@ def test_coloured_text_in_a_pasted_drawing_is_found_where_it_is() -> None:
     it: only the red one is found, and it is found below the black one, in the page's pixels. The
     same sheet all in black holds none."""
     sheet = _sheet(b'(36") Tj 1 0 0 rg 0 -20 Td (38") Tj')
-    (black,) = read_stamp_text(sheet, 0, document_version_id=DOCUMENT, dpi=DPI).contents.texts
+    (black,) = read_stamp_text(
+        sheet, 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+    ).contents.texts
 
-    (red,) = coloured_text(sheet, 0, document_version_id=DOCUMENT, dpi=DPI)
+    (red,) = coloured_text(
+        sheet, 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+    )
 
     assert red[1] >= max(point.y for point in black.image_extent)
     all_black = _sheet(b'(36") Tj 0 -20 Td (38") Tj')
-    assert coloured_text(all_black, 0, document_version_id=DOCUMENT, dpi=DPI) == ()
+    assert (
+        coloured_text(
+            all_black, 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+        )
+        == ()
+    )
 
 
 @pytest.mark.parametrize(
@@ -189,6 +207,7 @@ def test_a_stacked_fraction_in_a_pasted_drawing_is_set_aside() -> None:
         0,
         document_version_id=DOCUMENT,
         dpi=DPI,
+        missing_space=MISSING_SPACE,
     )
 
     assert not any(item.text.startswith("24") for item in reading.contents.texts)
@@ -204,7 +223,13 @@ CLIENT_SIZE_STACK = (
 
 def test_a_stacked_fraction_in_a_pasted_drawing_is_read_whole_and_marked() -> None:
     """Outcome: `24 3/4"`, marked stacked — a reviewer's suggestion, never `2434"`."""
-    reading = read_stamp_text(_sheet(CLIENT_SIZE_STACK), 0, document_version_id=DOCUMENT, dpi=DPI)
+    reading = read_stamp_text(
+        _sheet(CLIENT_SIZE_STACK),
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+        missing_space=MISSING_SPACE,
+    )
 
     assert [(item.text, item.stacked) for item in reading.contents.texts] == [('24 3/4"', True)]
     assert reading.contents.set_aside == ()
@@ -212,7 +237,11 @@ def test_a_stacked_fraction_in_a_pasted_drawing_is_read_whole_and_marked() -> No
 
 def test_millimetres_over_inches_in_a_pasted_drawing_are_one_dual_token() -> None:
     reading = read_stamp_text(
-        _sheet(b"/F1 3 Tf (585) Tj 0.4 -3 Td ([23]) Tj"), 0, document_version_id=DOCUMENT, dpi=DPI
+        _sheet(b"/F1 3 Tf (585) Tj 0.4 -3 Td ([23]) Tj"),
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+        missing_space=MISSING_SPACE,
     )
 
     assert [(item.text, item.stacked) for item in reading.contents.texts] == [("585 [23]", False)]
@@ -256,7 +285,9 @@ def _split_stack(
 
 
 def _read(stream: bytes) -> StampText:
-    return read_stamp_text(_drawing(stream), 0, document_version_id=DOCUMENT, dpi=DPI)
+    return read_stamp_text(
+        _drawing(stream), 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+    )
 
 
 def _reasons(reading: StampText) -> list[str]:
@@ -483,4 +514,50 @@ def test_two_labels_side_by_side_in_a_pasted_drawing_each_read_their_own_value()
     }
     first, second = reading.contents.texts
     assert first.image_extent != second.image_extent
+    assert reading.contents.set_aside == ()
+
+
+# ---------------------------------------------------------------------------
+# A space the file left out inside the inches (#912)
+# ---------------------------------------------------------------------------
+
+
+def test_inches_in_a_pasted_drawing_with_a_space_set_as_a_gap_are_not_read() -> None:
+    """**The failure this prevents** (#912), inside a pasted drawing, read by the same reader: a
+    `[1 3/16]` whose space is a `TJ` gap and no character read `984 [13/16]`, 13/16 inch. Outcome:
+    nothing read; the label set aside, blank, for a person."""
+    reading = _read(b"BT /F1 3 Tf 1 0 0 1 110 520 Tm [(984 [1) -278 (3/16])] TJ ET")
+
+    assert reading.contents.texts == ()
+    assert _reasons(reading) == ["missing_space"]
+
+
+def test_a_split_stack_whose_whole_number_holds_a_gap_stays_a_stacked_fraction() -> None:
+    """The stack put back together round its bar (#880) is held to the rule too: here its whole
+    number is `1` and `2` with a space's gap between them, read as `12 1/2"` before. Outcome:
+    nothing read, and its place still listed as a stacked fraction, so a reviewer is sent to it."""
+    gap = 0.278 * 4  # Helvetica's space at 4 points, set as a `TJ` gap
+    start = 112.224 - 2 * 2.224 - gap  # the whole number still touching the stack
+    stream = b"BT /F1 4 Tf 1 0 0 1 %.3f 520 Tm [(1) -278 (2)] TJ " % start
+    stream += b"1 0 0 1 112.3 522 Tm (1) Tj 1 0 0 1 112.3 518 Tm (2) Tj "
+    stream += b'1 0 0 1 114.6 520 Tm (") Tj ET ' + BAR
+
+    reading = _read(stream)
+
+    assert reading.contents.texts == ()
+    assert set(_reasons(reading)) == {"stacked_fraction"}
+
+
+def test_a_split_stack_a_little_apart_from_its_whole_number_is_still_read() -> None:
+    """**No false refusal.** The stack put back together round its bar reads its whole number and
+    its fraction apart, so a stack set a little along from the whole number, 0.3 of the text's
+    height, is not a space left out of one number. Outcome: `2 1/2"`, marked stacked."""
+    apart = 0.3 * 4
+    stream = b"BT /F1 4 Tf 1 0 0 1 %.3f 520 Tm (2) Tj " % (112.224 - 2.224 - apart)
+    stream += b"1 0 0 1 112.3 522 Tm (1) Tj 1 0 0 1 112.3 518 Tm (2) Tj "
+    stream += b'1 0 0 1 114.6 520 Tm (") Tj ET ' + BAR
+
+    reading = _read(stream)
+
+    assert [(item.text, item.stacked) for item in reading.contents.texts] == [('2 1/2"', True)]
     assert reading.contents.set_aside == ()

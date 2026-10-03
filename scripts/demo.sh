@@ -64,7 +64,11 @@ with Session(create_engine(Settings().database_url)) as session:
 PY
 
 say "5/6  a synthetic uploaded drawing with inspectable evidence"
-PROJECT_ID="$(GV_DATABASE_URL="$BARE_URL" "$PYTHON" scripts/seed_demo.py --with-evidence 2>/dev/null \
+# The seed reads its synthetic drawing with the real reader, so it is given the worker's
+# `GV_READER_MISSING_SPACE_HEIGHTS` (#912), the same value; `tests/scripts/test_settings_construction.py`
+# holds the two equal.
+PROJECT_ID="$(GV_DATABASE_URL="$BARE_URL" GV_READER_MISSING_SPACE_HEIGHTS=0.1 \
+  "$PYTHON" scripts/seed_demo.py --with-evidence 2>/dev/null \
   | awk '/^package /{print $2}')"
 if [ -z "$PROJECT_ID" ]; then
   echo "  seed produced no package — run '$PYTHON scripts/seed_demo.py' to see why" >&2
@@ -167,6 +171,17 @@ API_PID=$!
 # wide. The 27 fractions found before are unchanged. On `AI_Set 1` its 22 are unchanged too, and it
 # gains 5 false alarms, none of them a label: its labels are text the detector cannot see (#738).
 #
+# **`MISSING_SPACE_HEIGHTS` is the reader's own (#912).** Where a drawing's software sets the
+# space in `[1 3/16]` as a gap instead of a space character, the inches read as one number,
+# `[13/16]`: a proper inch fraction, exact and wrong. A gap at least this share of the text's height
+# between two characters read as one number inside the inches sets the label aside, blank, for a
+# person. Measured on both client drawings, every reading of every page: a space is 0.228 to 0.296
+# of the text's height across their fonts (1,903 spaces), and the two characters either side of one
+# inside the inches are 0.274 to 0.284 apart (21 labels); two characters read as one number inside
+# the inches are -0.018 to 0.022 apart (582 pairs). 0.1 is 4.5 times the widest of those and under
+# half the narrowest space. Every value from 0.023 to below 1 reads both drawings exactly as before;
+# at 0.02, thirteen labels on `AI_Set_1` go blank.
+#
 # **The two Bedrock vision readers, and what turning them on costs (#651).** They were built in
 # #622/#623 and PC.3 and this flag is the only thing that starts them; until it was set here the
 # whole reading rebuild had never executed, and the demo ran the vector+OCR path alone. They are
@@ -240,6 +255,7 @@ GV_READER_FRACTION_GLYPH_MAX_PT=12 \
 GV_READER_FRACTION_PROPORTION_MAX=2.5 \
 GV_READER_FRACTION_CHARACTER_GAP_PT=4 \
 GV_READER_FRACTION_TURNED_ASPECT_MIN=1.1 \
+GV_READER_MISSING_SPACE_HEIGHTS=0.1 \
 GV_PHRASE_GAP_LINE_HEIGHTS=0.34 \
 GV_FRACTION_PARTS=1 \
 GV_FRACTION_PARTS_HEIGHT_PX=40 \

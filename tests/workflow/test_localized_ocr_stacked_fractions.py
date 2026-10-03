@@ -43,6 +43,7 @@ from extraction.glyph_reader import GlyphReading
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
 from tests.extraction.models.test_validation import THIRTY_NINE_AND_A_HALF_LAYOUT, THREE_QUARTERS
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from tests.workflow.test_fraction_parts_route import _copy, _second_reader
 from tests.workflow.test_glyph_route import _glyph_rows, _settings, _templates
@@ -129,6 +130,7 @@ def _extract(
         ocr_engine=_ReadsEachCrop(*texts) if texts else _SilentOcr(),  # type: ignore[arg-type]
         localized_ocr=LOCALIZED,
         glyph_route=glyph_route,
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
     session.commit()
     return dict(result.payload)

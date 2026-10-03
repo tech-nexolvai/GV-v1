@@ -55,6 +55,7 @@ from tests.extraction.test_annotations import (
     _pdf,
     _stamp,
 )
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.extraction.test_stamp_text import CLIENT_SIZE_STACK, _drawing, _sheet, _split_stack
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
@@ -182,7 +183,7 @@ class _SilentOcr:
 
 
 def _stages(store: LocalStore) -> DatabaseStages:
-    return DatabaseStages(store=store, dpi=150, ocr_engine=_SilentOcr())  # type: ignore[arg-type]
+    return DatabaseStages(store=store, dpi=150, ocr_engine=_SilentOcr(), missing_space=MISSING_SPACE)  # type: ignore[arg-type]
 
 
 def _extract(session: Session, store: LocalStore, *, data: bytes = ANNOTATED) -> PackageRevision:

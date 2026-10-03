@@ -37,6 +37,7 @@ from retrieval.matching import MatchDocumentRole
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
+from tests.extraction.test_reader import MISSING_SPACE
 from vocabulary.part_kinds import PartKind
 from workflow.parts import confirm_part, record_part_proposal
 from workflow.stages import DatabaseStages, _matchable_items
@@ -212,7 +213,7 @@ def test_combined_sheet_matches_by_confirmed_view_roles(session: Session) -> Non
         tag="SHOP",
     )
 
-    result = DatabaseStages().match(session, revision.id)
+    result = DatabaseStages(missing_space=MISSING_SPACE).match(session, revision.id)
 
     assert result["candidates"] == 1
     candidate = session.scalars(select(MatchCandidate)).one()
@@ -227,7 +228,7 @@ def test_combined_sheet_with_unconfirmed_roles_abstains(session: Session) -> Non
     _item(session, combined, view_role=None, tag="ID SET")
     _item(session, combined, view_role=None, tag="SHOP")
 
-    result = DatabaseStages().match(session, revision.id)
+    result = DatabaseStages(missing_space=MISSING_SPACE).match(session, revision.id)
 
     assert result["candidates"] == 0
     assert result["reason"] == (
@@ -254,7 +255,7 @@ def test_two_pdf_package_still_falls_back_to_document_kind(session: Session) -> 
         tag="S-101",
     )
 
-    result = DatabaseStages().match(session, revision.id)
+    result = DatabaseStages(missing_space=MISSING_SPACE).match(session, revision.id)
 
     assert result["candidates"] == 1
     candidate = session.scalars(select(MatchCandidate)).one()
@@ -327,7 +328,7 @@ def _extract(session: Session, store: LocalStore, data: bytes) -> PackageRevisio
 
     revision = _stored_revision(session, store, data=data)
     session.commit()
-    DatabaseStages(store, dpi=150, ocr_engine=_SilentOcr()).extract_pages(  # type: ignore[arg-type]
+    DatabaseStages(store, dpi=150, ocr_engine=_SilentOcr(), missing_space=MISSING_SPACE).extract_pages(  # type: ignore[arg-type]
         session, revision.id
     )
     session.commit()
@@ -389,7 +390,7 @@ def test_reading_the_sheet_again_adds_nothing(session: Session, store: LocalStor
     revision = _extract(session, store, _combined_sheet())
     from tests.workflow.test_markup_route import _SilentOcr
 
-    DatabaseStages(store, dpi=150, ocr_engine=_SilentOcr()).extract_pages(  # type: ignore[arg-type]
+    DatabaseStages(store, dpi=150, ocr_engine=_SilentOcr(), missing_space=MISSING_SPACE).extract_pages(  # type: ignore[arg-type]
         session, revision.id
     )
     session.commit()
@@ -441,7 +442,7 @@ def test_match_says_what_is_missing_once_drawings_are_found(
         confirm_view_role(session, view=view, role=role, actor="reviewer-1")
     session.commit()
 
-    result = DatabaseStages().match(session, revision.id)
+    result = DatabaseStages(missing_space=MISSING_SPACE).match(session, revision.id)
 
     assert result["candidates"] == 0
     reason = str(result["reason"])
@@ -466,7 +467,7 @@ def test_after_both_roles_are_confirmed_match_stops_abstaining_once_items_exist(
         )
     session.commit()
 
-    result = DatabaseStages().match(session, revision.id)
+    result = DatabaseStages(missing_space=MISSING_SPACE).match(session, revision.id)
 
     assert result["candidates"] == 1
 

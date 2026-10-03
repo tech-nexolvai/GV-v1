@@ -211,3 +211,38 @@ def test_the_demo_worker_reads_stacked_fractions_piece_by_piece(
         8,
     )
     assert stated.get("GV_VISION_GATE_READER"), "the route's second reader is not stated"
+
+
+# ---------------------------------------------------------------------------
+# A space the file left out inside the inches (#912)
+# ---------------------------------------------------------------------------
+
+
+def test_the_demo_worker_reads_with_the_measured_missing_space_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**Stated in the demo's worker block, at the 0.1 measured on both client drawings** (#912).
+    Built the way the worker builds it, from what the block states."""
+    from extraction.reader import MissingSpace
+    from workflow.stages import missing_space_from_environment
+
+    _demo_reader_environment(monkeypatch)
+
+    assert missing_space_from_environment() == MissingSpace(gap_heights=Decimal("0.1"))
+
+
+@pytest.mark.parametrize("stated", [None, "", "a tenth", "0", "1", "-0.1"])
+def test_the_worker_refuses_to_guess_the_missing_space_setting(
+    monkeypatch: pytest.MonkeyPatch, stated: str | None
+) -> None:
+    """**No default.** Unstated, or not a share of the text's height above 0 and below 1, the
+    setting is refused with the variable named: the stages are never built without it."""
+    from workflow.stages import MISSING_SPACE_ENV, missing_space_from_environment
+
+    if stated is None:
+        monkeypatch.delenv(MISSING_SPACE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(MISSING_SPACE_ENV, stated)
+
+    with pytest.raises(ValueError, match=MISSING_SPACE_ENV):
+        missing_space_from_environment()

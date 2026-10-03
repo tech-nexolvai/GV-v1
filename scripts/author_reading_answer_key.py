@@ -124,7 +124,7 @@ from extraction.geometry.dimension_lines import detect
 from extraction.geometry.text_association import DimensionText, associate, lines_within
 from extraction.glyph_bands import FractionBarGeometry
 from extraction.rasterise import VISION_CROP_DPI
-from extraction.reader import SetAsideReason, read_page_contents, read_pages
+from extraction.reader import MissingSpace, SetAsideReason, read_page_contents, read_pages
 from extraction.stamp_text import drawing_ink, read_stamp_text, stamps_only
 from extraction.vector_first import plan_reads
 from units.measurement import Measurement
@@ -1074,14 +1074,20 @@ def _measurement_payload(value: object, raw: str) -> dict[str, str]:
 # #867: a dimension-first sample
 # ---------------------------------------------------------------------------
 
+#: The text reader's setting (#912): the share of the text's height at which a gap inside the
+#: inches is a space the file left out. The frame and the look-again check both read the drawing's
+#: printed text with the reader, so both read it from the settings file; it has no default.
+MISSING_SPACE_SETTING: Final = "GV_READER_MISSING_SPACE_HEIGHTS"
+
 #: Settings the dimension-first frame reads beyond the reader's own: the association's ambiguity
-#: margin, which decides whether one dimension line is clearly the nearest, and the reading agent's
-#: two label lengths, which decide where a label ends and so whether a crop cut it. Read from the
-#: same file, like the rest; none has a default.
+#: margin, which decides whether one dimension line is clearly the nearest, the reading agent's
+#: two label lengths, which decide where a label ends and so whether a crop cut it, and the text
+#: reader's missing-space setting. Read from the same file, like the rest; none has a default.
 FRAME_SETTINGS: Final = (
     "GV_READER_AMBIGUITY_MARGIN",
     "GV_AGENT_LABEL_GAP_PT",
     "GV_AGENT_MAX_LABEL_PT",
+    MISSING_SPACE_SETTING,
 )
 
 #: Where a run agreed, on the drawing with this content hash. **Place only**: the query selects the
@@ -1117,6 +1123,28 @@ def _frame_settings(path: Path) -> dict[str, str]:
             raise ScaffoldError(f"{path} does not state {name}, and it has no default")
         settings[name] = match.group(1).rstrip("\\").strip()
     return settings
+
+
+def _missing_space(reader: Mapping[str, str]) -> MissingSpace:
+    """The text reader's missing-space setting, as the settings file states it (#912)."""
+    raw = reader[MISSING_SPACE_SETTING]
+    try:
+        return MissingSpace(gap_heights=Decimal(raw))
+    except (ArithmeticError, TypeError, ValueError) as error:
+        raise ScaffoldError(f"{MISSING_SPACE_SETTING}={raw} is not usable: {error}") from error
+
+
+def _stated_missing_space(path: Path) -> MissingSpace:
+    """`_missing_space`, read from a `scripts/demo.sh`-style file on its own: all the look-again
+    check needs, because it reads the drawing's printed text and nothing else."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ScaffoldError(f"could not read the reader settings in {path}: {error}") from error
+    match = re.search(rf"^\s*{MISSING_SPACE_SETTING}=(\S+)", text, flags=re.MULTILINE)
+    if match is None:
+        raise ScaffoldError(f"{path} does not state {MISSING_SPACE_SETTING}, and it has no default")
+    return _missing_space({MISSING_SPACE_SETTING: match.group(1).rstrip("\\").strip()})
 
 
 def _point_box(path: VectorPath) -> PointBox:
@@ -1433,8 +1461,13 @@ def _page_frame(
                 layout=None,
             )
         )
+    missing_space = _missing_space(reader)
     printed = read_stamp_text(
-        pdf, page_index, document_version_id=version_id, dpi=VISION_CROP_DPI
+        pdf,
+        page_index,
+        document_version_id=version_id,
+        dpi=VISION_CROP_DPI,
+        missing_space=missing_space,
     ).contents
     for item in printed.texts:
         places.append(
@@ -1452,6 +1485,7 @@ def _page_frame(
         SetAsideReason.STACKED_FRACTION: Layout.STACKED_FRACTION,
         SetAsideReason.TWO_LINES: Layout.TWO_LINES,
         SetAsideReason.FRAGMENT: Layout.FRAGMENT,
+        SetAsideReason.MISSING_SPACE: Layout.MISSING_SPACE,
     }
     for label in printed.set_aside:
         places.append(
@@ -1477,10 +1511,14 @@ def _page_frame(
                 layout=None,
             )
         )
-    return _PageFrame(places=places, sites=_sites(pdf, flattened, page_index, version_id))
+    return _PageFrame(
+        places=places, sites=_sites(pdf, flattened, page_index, version_id, missing_space)
+    )
 
 
-def _sites(pdf: bytes, flattened: bytes, page_index: int, version_id: UUID) -> list[Site]:
+def _sites(
+    pdf: bytes, flattened: bytes, page_index: int, version_id: UUID, missing_space: MissingSpace
+) -> list[Site]:
     """Where GV's reviewer corrected a dimension on this page (#850's sites).
 
     Two ways it is drawn: a note box over the vendor's drawing, and — on a drawing snapped after it
@@ -1498,6 +1536,7 @@ def _sites(pdf: bytes, flattened: bytes, page_index: int, version_id: UUID) -> l
         page_index,
         document_version_id=version_id,
         dpi=VISION_CROP_DPI,
+        missing_space=missing_space,
         keep_char=lambda char: not drawing_ink(char),
     )
     for item in corrections.texts:
@@ -1876,14 +1915,25 @@ def _centre_in(points: Sequence[ImagePoint], crop: tuple[int, int, int, int]) ->
 
 
 def _witnessed(
-    pdf: bytes, page_index: int, dpi: int, crops: Mapping[str, tuple[int, int, int, int]]
+    pdf: bytes,
+    page_index: int,
+    dpi: int,
+    crops: Mapping[str, tuple[int, int, int, int]],
+    missing_space: MissingSpace,
 ) -> dict[str, Witnessed]:
     """What the file itself prints inside each crop on one page: black numbers and GV's coloured ones."""
     version_id = uuid4()
     black = [
-        *read_stamp_text(pdf, page_index, document_version_id=version_id, dpi=dpi).contents.texts,
+        *read_stamp_text(
+            pdf, page_index, document_version_id=version_id, dpi=dpi, missing_space=missing_space
+        ).contents.texts,
         *read_page_contents(
-            pdf, page_index, document_version_id=version_id, dpi=dpi, keep_char=drawing_ink
+            pdf,
+            page_index,
+            document_version_id=version_id,
+            dpi=dpi,
+            missing_space=missing_space,
+            keep_char=drawing_ink,
         ).texts,
     ]
     coloured = read_page_contents(
@@ -1891,6 +1941,7 @@ def _witnessed(
         page_index,
         document_version_id=version_id,
         dpi=dpi,
+        missing_space=missing_space,
         keep_char=lambda char: not drawing_ink(char),
     ).texts
     seen: dict[str, Witnessed] = {}
@@ -1931,6 +1982,7 @@ def check_command(arguments: argparse.Namespace) -> int:
         pdf = pdf_path.read_bytes()
     except OSError as error:
         raise ScaffoldError(f"could not read {pdf_path}: {error}") from error
+    missing_space = _stated_missing_space(Path(arguments.reader_settings))
     typed: list[Typed] = []
     by_page: dict[int, dict[str, tuple[int, int, int, int]]] = {}
     for row in rows:
@@ -1954,7 +2006,7 @@ def check_command(arguments: argparse.Namespace) -> int:
         by_page.setdefault(page, {})[crop_id] = (box[0], box[1], box[2], box[3])
     witnessed: dict[str, Witnessed] = {}
     for page, crops in sorted(by_page.items()):
-        witnessed.update(_witnessed(pdf, page, keyframe.polygon_dpi, crops))
+        witnessed.update(_witnessed(pdf, page, keyframe.polygon_dpi, crops, missing_space))
     listed: tuple[LookAgain, ...] = look_again(typed, witnessed)
     if not listed:
         print("\n  Nothing to look at again: what was typed matches the file wherever it prints.\n")
@@ -2064,6 +2116,14 @@ def main(argv: list[str] | None = None) -> int:
     look = subcommands.add_parser("check", help="a blind look-again list for the typist")
     look.add_argument("out", help="the sampled directory, once values are typed")
     look.add_argument("--pdf", required=True, help="the same drawing the crops were cut from")
+    look.add_argument(
+        "--reader-settings",
+        required=True,
+        help=(
+            "the settings file the worker is started with, e.g. scripts/demo.sh: the drawing's "
+            f"printed text is read with its {MISSING_SPACE_SETTING}, which has no default"
+        ),
+    )
     look.set_defaults(handler=check_command)
 
     finish = subcommands.add_parser("build", help="turn the filled sheet into an answer key")

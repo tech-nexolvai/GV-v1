@@ -45,6 +45,7 @@ from extraction.annotations import read_annotation_layers
 from extraction.manifest import PageManifest
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, _revision, _upgrade
 from tests.workflow.test_localized_ocr_stacked_fractions import ASSOCIATION
 from tests.workflow.test_stacked_fraction_route import PLAIN_SHEET, STACKED_SHEET
@@ -170,6 +171,7 @@ def _extract(
         association=ASSOCIATION if detector else None,
         ocr_engine=engine,  # type: ignore[arg-type]
         localized_ocr=LOCALIZED if route == "no transform" else None,
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
     session.commit()
     return dict(result.payload)

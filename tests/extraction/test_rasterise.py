@@ -25,7 +25,7 @@ from evidence.crop import CropSpec, RenderedPage, generate_crop
 from extraction.rasterise import PageTooLarge, render_page
 from extraction.reader import UnreadablePdf, read_page_contents, read_pages
 from storage.local import LocalStore
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 
 DOCUMENT = uuid4()
 DPI = 150
@@ -240,7 +240,9 @@ def test_a_reader_polygon_and_rendered_pixels_produce_a_crop() -> None:
     it reached the store, and a `CropResult` that reported success while storing nothing would look
     identical from the outside.
     """
-    contents = read_page_contents(DRAWING, 0, document_version_id=DOCUMENT, dpi=DPI)
+    contents = read_page_contents(
+        DRAWING, 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+    )
     rendered = _render()
 
     assert contents.texts, "the reader found no text to crop around"
@@ -274,7 +276,9 @@ def test_the_crop_dpi_must_match_the_render_dpi() -> None:
     region of the drawing that is not the one the finding is about — evidence for the wrong thing,
     which is worse than none.
     """
-    contents = read_page_contents(DRAWING, 0, document_version_id=DOCUMENT, dpi=DPI)
+    contents = read_page_contents(
+        DRAWING, 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+    )
     rendered = _render(dpi=DPI)
 
     with tempfile.TemporaryDirectory() as directory:

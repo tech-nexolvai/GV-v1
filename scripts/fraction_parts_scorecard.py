@@ -67,6 +67,7 @@ from extraction.models.nova import (
 
 if TYPE_CHECKING:
     from extraction.fraction_parts import PieceDrawing
+    from extraction.reader import MissingSpace
     from workflow.association import AssociationSettings, LocalizedOcrSettings
 
 #: The reader settings the stage needs, read from a `scripts/demo.sh`-style file, each required.
@@ -91,6 +92,7 @@ READER_SETTINGS: Final = (
     "GV_READER_FRACTION_PROPORTION_MAX",
     "GV_READER_FRACTION_CHARACTER_GAP_PT",
     "GV_READER_FRACTION_TURNED_ASPECT_MIN",
+    "GV_READER_MISSING_SPACE_HEIGHTS",
 )
 
 
@@ -164,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     from extraction.fraction_parts import PieceDrawing
     from extraction.glyph_bands import FractionBarGeometry
     from extraction.models.nova import vision_config_for_extractor
+    from extraction.reader import MissingSpace
     from workflow.association import AssociationSettings, LocalizedOcrSettings
     from workflow.stages import VISION_CROP_CONTEXT_MARGIN_PT
 
@@ -224,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         maximum_span=Decimal(stated["GV_READER_LOCALIZED_MAXIMUM_SPAN"]),
         crop_margin_pt=Decimal(stated["GV_READER_LOCALIZED_CROP_MARGIN_PT"]),
     )
+    missing_space = MissingSpace(gap_heights=Decimal(stated["GV_READER_MISSING_SPACE_HEIGHTS"]))
 
     pre_fills, refusals, spend = _run(
         args.database_url,
@@ -231,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         dpi=args.stage_dpi,
         association=association,
         localized=localized,
+        missing_space=missing_space,
         drawing=drawing,
         reader=PiecesOnly(config),
         budget=args.budget_usd,
@@ -265,6 +270,7 @@ def _run(
     dpi: int,
     association: AssociationSettings,
     localized: LocalizedOcrSettings,
+    missing_space: MissingSpace,
     drawing: PieceDrawing,
     reader: PiecesOnly,
     budget: Decimal,
@@ -364,6 +370,7 @@ def _run(
             layout_readers=(),
             ai_budget_usd=budget,
             fraction_parts=drawing,
+            missing_space=missing_space,
         )
         results = stages.extract_pages(session, revision.id)
         session.commit()

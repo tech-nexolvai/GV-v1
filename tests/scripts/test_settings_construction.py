@@ -12,15 +12,31 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import re
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from extraction.glyph_bands import FractionBarGeometry
+from extraction.reader import MissingSpace
 from workflow.association import AssociationSettings, LocalizedOcrSettings
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
-GUARDED = (FractionBarGeometry, AssociationSettings, LocalizedOcrSettings)
+GUARDED = (FractionBarGeometry, AssociationSettings, LocalizedOcrSettings, MissingSpace)
+
+#: The reader's functions that read a page's text, each of which requires the reader's setting
+#: (#912): a script that calls one without it crashes on its first page, as #902's did.
+READERS = ("read_page_contents", "read_stamp_text", "coloured_text")
+
+#: The scripts whose stages read a page's text, and so must be built with the reader's setting
+#: (#912). A script that builds stages and runs extraction must be named here.
+STAGES_THAT_READ = (
+    "drain_outbox.py",
+    "evaluate_goldset.py",
+    "fraction_parts_scorecard.py",
+    "seed_demo.py",
+)
 
 
 def _required(cls: type) -> frozenset[str]:
@@ -114,3 +130,68 @@ def test_the_fraction_scorecard_reads_every_setting_it_uses() -> None:
     }
     assert looked_up, "the check found no settings lookups to compare"
     assert looked_up <= set(READER_SETTINGS), sorted(looked_up - set(READER_SETTINGS))
+
+
+def _names(call: ast.Call, keyword: str) -> bool:
+    """Whether `call` passes `keyword`, or spreads a mapping that may hold it."""
+    return any(item.arg in (keyword, None) for item in call.keywords)
+
+
+@pytest.mark.parametrize("reader", READERS)
+def test_every_script_that_reads_a_page_passes_the_missing_space_setting(reader: str) -> None:
+    """**No default** (#912). Each call a script makes to a reader function states the setting."""
+    gaps = [
+        f"{path.name}:{call.lineno}"
+        for path in sorted(SCRIPTS.glob("*.py"))
+        for call in _calls(path.read_text(), reader)
+        if not _names(call, "missing_space")
+    ]
+    assert not gaps, f"{reader} called without missing_space: {gaps}"
+
+
+def test_every_script_whose_stages_read_a_page_builds_them_with_the_setting() -> None:
+    """`DatabaseStages` reads no page without the reader's setting (#912), and a script that builds
+    it and runs extraction must say so: one forgotten fails on its first drawing, after any setup.
+    """
+    reading = {
+        path.name: path.read_text()
+        for path in sorted(SCRIPTS.glob("*.py"))
+        if _calls(path.read_text(), "DatabaseStages")
+        and re.search(r"\b(extract_pages|run_all|run_stage)\(", path.read_text())
+    }
+    assert reading, "the check found no script whose stages read a page"
+    assert sorted(reading) == sorted(STAGES_THAT_READ), "name each script whose stages read here"
+    for name, source in reading.items():
+        assert any(
+            _names(call, "missing_space") for call in _calls(source, "DatabaseStages")
+        ), f"{name} builds its stages without missing_space"
+
+
+def test_the_demo_states_the_reader_setting_once_for_everything_it_starts() -> None:
+    """The worker block states it, as every `GV_READER_*` setting is stated there, and the seed,
+    which reads its synthetic drawing with the same reader, is given the same value (#912)."""
+    demo = (SCRIPTS / "demo.sh").read_text(encoding="utf-8")
+    worker_block = demo[: demo.index("scripts/drain_outbox.py --watch")]
+    stated = re.findall(r"^GV_READER_MISSING_SPACE_HEIGHTS=(\S+) \\$", worker_block, re.MULTILINE)
+    everywhere = re.findall(r"GV_READER_MISSING_SPACE_HEIGHTS=(\S+)", demo)
+
+    assert len(stated) == 1, "the worker block does not state GV_READER_MISSING_SPACE_HEIGHTS"
+    assert len(everywhere) == 2, "stated for the worker and for the seed, and nowhere else"
+    assert set(everywhere) == set(stated)
+    assert MissingSpace(gap_heights=Decimal(stated[0])).gap_heights == Decimal("0.1")
+
+
+def test_every_script_that_reads_the_setting_from_the_demo_finds_it() -> None:
+    """Passing the setting is half of it: each script that reads it from a `scripts/demo.sh`-style
+    file must read it from there, or its first page fails (#902's lesson, for #912's setting)."""
+    from scripts.author_reading_answer_key import _frame_settings, _stated_missing_space
+    from scripts.fraction_parts_scorecard import READER_SETTINGS, read_stated
+    from scripts.gate_replay import read_settings
+
+    demo = SCRIPTS / "demo.sh"
+    stated = MissingSpace(gap_heights=Decimal("0.1"))
+
+    assert _stated_missing_space(demo) == stated
+    assert _frame_settings(demo)["GV_READER_MISSING_SPACE_HEIGHTS"] == "0.1"
+    assert read_settings(demo)["GV_READER_MISSING_SPACE_HEIGHTS"] == "0.1"
+    assert read_stated(demo, READER_SETTINGS)["GV_READER_MISSING_SPACE_HEIGHTS"] == "0.1"

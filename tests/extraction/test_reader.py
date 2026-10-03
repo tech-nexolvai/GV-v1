@@ -27,6 +27,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from extraction.reader import (
+    MissingSpace,
     PageContents,
     TextItem,
     UnreadablePdf,
@@ -37,6 +38,11 @@ from extraction.reader import (
 DOCUMENT = UUID("11111111-1111-4111-8111-111111111111")
 DPI = 150
 
+#: The reader's missing-space setting for every page built here (#912): the value `scripts/demo.sh`
+#: states, so these pages are read as the demo reads. It is these tests' own, as the setting has no
+#: default; other test modules import it from here.
+MISSING_SPACE = MissingSpace(gap_heights=Decimal("0.1"))
+
 #: A real PDF that happens to be in the repository. Not a drawing and not treated as one — it is here
 #: so the reader meets a document it was not designed against.
 REAL_PDF = (
@@ -44,8 +50,18 @@ REAL_PDF = (
 )
 
 
-def _pdf(content: bytes, *, box: bytes = b"[0 0 200 100]", rotate: bytes = b"") -> bytes:
-    """A one-page PDF containing exactly `content`.
+#: The font the pages here set their text in, as `/F1`, unless one says otherwise.
+HELVETICA = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+
+
+def _pdf(
+    content: bytes,
+    *,
+    box: bytes = b"[0 0 200 100]",
+    rotate: bytes = b"",
+    font: bytes = HELVETICA,
+) -> bytes:
+    """A one-page PDF containing exactly `content`, its text in `font`.
 
     Assembled by hand because every byte then has a reason to be there. The cross-reference table is
     built from the real object offsets, so this is a valid PDF rather than something that happens to
@@ -59,7 +75,7 @@ def _pdf(content: bytes, *, box: bytes = b"[0 0 200 100]", rotate: bytes = b"") 
         + rotate
         + b" /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
         b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        font,
     ]
     out = bytearray(b"%PDF-1.4\n")
     offsets: list[int] = []
@@ -92,7 +108,9 @@ NO_TEXT = _pdf(b"1 w 20 40 m 120 40 l S\n")
 
 
 def _contents(data: bytes = DRAWING, page: int = 0) -> PageContents:
-    return read_page_contents(data, page, document_version_id=DOCUMENT, dpi=DPI)
+    return read_page_contents(
+        data, page, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+    )
 
 
 def _by_text(contents: PageContents) -> dict[str, TextItem]:
@@ -305,7 +323,7 @@ def test_dpi_must_be_a_positive_integer(dpi: object) -> None:
     resolution decides how much precision survives. A default here would pick that silently for
     every caller."""
     with pytest.raises(ValueError, match="dpi"):
-        read_page_contents(DRAWING, 0, document_version_id=DOCUMENT, dpi=dpi)  # type: ignore[arg-type]
+        read_page_contents(DRAWING, 0, document_version_id=DOCUMENT, dpi=dpi, missing_space=MISSING_SPACE)  # type: ignore[arg-type]
 
 
 def test_the_bytes_must_be_bytes() -> None:
@@ -335,7 +353,9 @@ def test_the_reader_survives_a_real_multi_page_document() -> None:
         page.vector_character_count > 0 for page in pages
     ), "a text-bearing PDF reported no characters on any page"
 
-    contents = read_page_contents(REAL_PDF.read_bytes(), 0, document_version_id=uuid4(), dpi=DPI)
+    contents = read_page_contents(
+        REAL_PDF.read_bytes(), 0, document_version_id=uuid4(), dpi=DPI, missing_space=MISSING_SPACE
+    )
     assert contents.texts
     assert contents.readable is True
 
@@ -735,7 +755,12 @@ def test_a_path_keep_path_refuses_is_no_bar_and_no_segment() -> None:
     """Outcome: with its only path refused, the same stack stays set aside and the page has no
     segments."""
     contents = read_page_contents(
-        SPLIT_STACK_WITH_BAR, 0, document_version_id=DOCUMENT, dpi=DPI, keep_path=lambda _: False
+        SPLIT_STACK_WITH_BAR,
+        0,
+        document_version_id=DOCUMENT,
+        dpi=DPI,
+        keep_path=lambda _: False,
+        missing_space=MISSING_SPACE,
     )
 
     assert not any(item.stacked for item in contents.texts)
@@ -898,7 +923,9 @@ def _characters_read_twice(data: bytes, monkeypatch: pytest.MonkeyPatch) -> list
         return item
 
     monkeypatch.setattr(reader, "_text_item", recording)
-    contents = read_page_contents(data, 0, document_version_id=DOCUMENT, dpi=DPI)
+    contents = read_page_contents(
+        data, 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=MISSING_SPACE
+    )
 
     assert len(runs) == len(contents.texts) + len(contents.set_aside)
     readings: dict[int, int] = {}
@@ -1270,6 +1297,32 @@ def test_side_by_side_labels_that_do_not_split_cleanly_are_left_as_they_were(
 _UPPER_X = (22.703, 23.666, 24.59, 25.515)
 _LOWER_X = (21.14, 21.691, 22.615, 23.578, 24.502, 24.983, 25.907, 26.57, 27.494)
 
+#: How far the pen moves after each character in that label, as a share of its size: the advances of
+#: the font the client's labels are set in (#912), measured on `AI_Set_1`. Helvetica's slash is
+#: narrower, so a label set in it at the client's places has a gap of 0.12 of its height after the
+#: slash, which no client label has.
+_CLIENT_ADVANCES = {
+    **dict.fromkeys("0123456789", 0.527),
+    "/": 0.378,
+    "[": 0.292,
+    "]": 0.292,
+    " ": 0.274,
+}
+
+#: The client's labels are 1.753 points tall where these shapes are drawn 1.66 tall, so each width is
+#: the client's advance in points at 1.66: every character ends where the client sets the next. The
+#: rest of the font is Helvetica's, so each character's box sits where Helvetica's would.
+CLIENT_FONT = (
+    b"<< /Type /Font /Subtype /Type1 /BaseFont /ClientAdvances /FirstChar 32 /LastChar 93 /Widths ["
+    + b" ".join(
+        b"%d" % round(_CLIENT_ADVANCES.get(chr(code), 0.556) * 1753 / 1.66)
+        for code in range(32, 94)
+    )
+    + b"] /FontDescriptor << /Type /FontDescriptor /FontName /ClientAdvances /Flags 32"
+    b" /FontBBox [-166 -225 1000 931] /ItalicAngle 0 /Ascent 718 /Descent -207 /CapHeight 718"
+    b" /StemV 88 >> >>"
+)
+
 
 def _two_lines_with_a_space(
     upper: bytes = b"3048",
@@ -1287,7 +1340,7 @@ def _two_lines_with_a_space(
 
 
 #: AI_Set_1 page 3's shape (#904): millimetres over bracketed inches that hold a space.
-TWO_LINES_WITH_A_SPACE = _pdf(_two_lines_with_a_space())
+TWO_LINES_WITH_A_SPACE = _pdf(_two_lines_with_a_space(), font=CLIENT_FONT)
 
 
 def test_millimetres_over_inches_split_at_a_space_are_read_whole() -> None:
@@ -1333,7 +1386,7 @@ def test_halves_that_do_not_make_one_label_stay_set_aside(page: bytes) -> None:
     """**Refuse rather than guess.** Measured on `AI_Set_1`: the gap refuses millimetres with two
     characters' room missing from them, and the millimetres of two labels run together. Outcome:
     no dual dimension read, and both halves still set aside."""
-    contents = _contents(_pdf(page))
+    contents = _contents(_pdf(page, font=CLIENT_FONT))
 
     assert not any("[" in item.text for item in contents.texts)
     assert _set_aside(contents) == ["two_lines", "two_lines"]
@@ -1343,7 +1396,10 @@ def test_halves_of_two_labels_apart_are_not_put_together() -> None:
     """**No false merge.** The halves of two such labels well apart along one line: each label is
     put back together from its own halves only."""
     contents = _contents(
-        _pdf(_two_lines_with_a_space() + _two_lines_with_a_space(b"4763", b"[187 1/2]", along=20))
+        _pdf(
+            _two_lines_with_a_space() + _two_lines_with_a_space(b"4763", b"[187 1/2]", along=20),
+            font=CLIENT_FONT,
+        )
     )
 
     assert sorted(item.text for item in contents.texts) == ["3048 [120 1/4]", "4763 [187 1/2]"]
@@ -1418,3 +1474,304 @@ def test_no_character_of_neighbouring_labels_is_read_twice(
 ) -> None:
     """#894's invariant holds for every label this section reads apart or puts back together."""
     assert _characters_read_twice(_NEIGHBOURS[page], monkeypatch) == []
+
+
+# ---------------------------------------------------------------------------
+# A space the file left out inside the inches (#912)
+#
+# Each page sets a label in Helvetica, whose space is 278 thousandths of the size. Where a page sets
+# the space as a gap, the `TJ` moves the pen on by that much and prints no space character: what a
+# drawing's software does when it positions the next character instead of typing a space.
+# ---------------------------------------------------------------------------
+
+#: A space's width as a `TJ` gap, in thousandths of the size: Helvetica's own space.
+_SPACE_AS_A_GAP = b"-278"
+
+
+def _set(operands: bytes, *, matrix: bytes = b"1 0 0 1 20 50") -> bytes:
+    """A page with one run of 3-point text, the operands of one `TJ`, at `matrix`."""
+    return _pdf(b"BT /F1 3 Tf " + matrix + b" Tm [" + operands + b"] TJ ET\n")
+
+
+def _words(data: bytes) -> tuple[list[str], list[str]]:
+    """`(words, characters)`: what `extract_words` makes of the page, and every character it prints,
+    so each page below is checked to be the shape it claims before the reader is asked about it."""
+    import io
+
+    import pdfplumber
+
+    with pdfplumber.open(io.BytesIO(data)) as document:
+        page = document.pages[0]
+        words = [str(word["text"]) for word in page.extract_words(char_dir_rotated="btt")]
+        return words, [str(char["text"]) for char in page.chars]
+
+
+#: `984 [1 3/16]` with the space in its inches set as a gap: one line, upright.
+DUAL_WITH_A_GAP = _set(b"(984 [1) " + _SPACE_AS_A_GAP + b" (3/16])")
+
+#: `[1 3/16]` read without its space is `[13/16]`, worth 13/16 inch; and every other shape the
+#: reader reads inches from, with the same gap. Each with what the page prints run on, with no space
+#: character in it, and the words `extract_words` makes of it where the page is one line.
+_GAPS = {
+    "one line": (DUAL_WITH_A_GAP, "13/16", ["984", "[13/16]"]),
+    "inches alone": (_set(b"(1) " + _SPACE_AS_A_GAP + b' (3/16")'), "13/16", ['13/16"']),
+    "sideways": (
+        _set(b"(984 [1) " + _SPACE_AS_A_GAP + b" (3/16])", matrix=b"0 1 -1 0 150 10"),
+        "13/16",
+        ["984", "[13/16]"],
+    ),
+    "two lines": (_two_line_word(b"30", b"([1) " + _SPACE_AS_A_GAP + b" (3/16])"), "13/16", None),
+    "feet and inches": (
+        _set(b"(1) " + _SPACE_AS_A_GAP + b" (2' -6\")"),
+        "12’",
+        ["12’", '-6"'],
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_GAPS))
+def test_inches_with_a_space_set_as_a_gap_are_not_read_without_it(shape: str) -> None:
+    """**The failure this prevents** (#912). A file that sets the space in `[1 3/16]` as a gap
+    rather than a space character prints no space, so the words run on: `[13/16]`, a proper inch
+    fraction that every guard on the text alone passes, read as 13/16 inch where the drawing says
+    1 3/16. Before this, each of these pages was read so: `984 [13/16]`, `13/16"`, `30 [13/16]`,
+    and `12' -6"` for `1 2' -6"`. Outcome: no reading and no value; the label is set aside, blank,
+    for a person to read."""
+    page, run_on, words = _GAPS[shape]
+    printed, characters = _words(page)
+    assert run_on in "".join(characters)
+    if words is not None:
+        assert printed == words
+
+    contents = _contents(page)
+
+    assert contents.texts == ()
+    assert _set_aside(contents) == ["missing_space"]
+
+
+#: The same labels with their spaces printed as space characters.
+_SPACES = {
+    "one line": (_set(b"(984 [1 3/16])"), "984 [1 3/16]"),
+    "inches alone": (_set(b'(1 3/16")'), '1 3/16"'),
+    "sideways": (_set(b"(984 [1 3/16])", matrix=b"0 1 -1 0 150 10"), "984 [1 3/16]"),
+    "two lines": (_two_line_word(b"30", b"([1 3/16])"), "30 [1 3/16]"),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_SPACES))
+def test_inches_with_a_space_character_are_still_read(shape: str) -> None:
+    """**No false refusal.** A space the page prints is read as a space: the gap it leaves is
+    between two stretches the text already reads apart, never inside one number. Outcome: the label,
+    worth exactly 1 3/16 inches; nothing set aside."""
+    page, text = _SPACES[shape]
+
+    contents = _contents(page)
+
+    assert [(item.text, item.stacked) for item in contents.texts] == [(text, False)]
+    assert _value(contents.texts[0].text) == Fraction(19, 16)
+    assert contents.set_aside == ()
+
+
+@pytest.mark.parametrize(
+    "operands",
+    [b"(984 [13/16])", b"(984 [1) 20 (3) -50 (/16])", b"(984 [1) 30 (3/1) -22 (6])"],
+    ids=["set solid", "kerned 0.02 tighter and 0.05 looser", "kerned as the client's widest"],
+)
+def test_tight_kerning_inside_a_number_is_not_a_space(operands: bytes) -> None:
+    """**No false refusal.** Characters of one number are set touching, give or take a font's
+    kerning: measured on both client drawings, -0.018 to 0.022 of the text's height apart. A gap
+    that is no space is read as before. Outcome: `984 [13/16]`, worth exactly 13/16 inch."""
+    contents = _contents(_set(operands))
+
+    assert [item.text for item in contents.texts] == ["984 [13/16]"]
+    assert _value(contents.texts[0].text) == Fraction(13, 16)
+    assert contents.set_aside == ()
+
+
+@pytest.mark.parametrize(("gap", "read"), [(b"-95", True), (b"-105", False)])
+def test_the_stated_setting_is_what_decides(gap: bytes, read: bool) -> None:
+    """The line between a kerned pair and a space left out is the deployment's setting, not a number
+    in the reader: these tests state 0.1 of the text's height. Outcome: a gap of 0.095 is read, one
+    of 0.105 is refused."""
+    contents = _contents(_set(b"(984 [1) " + gap + b" (3/16])"))
+
+    assert [item.text for item in contents.texts] == (["984 [13/16]"] if read else [])
+    assert _set_aside(contents) == ([] if read else ["missing_space"])
+
+
+@pytest.mark.parametrize(
+    ("operands", "text"),
+    [
+        (b"(9) " + _SPACE_AS_A_GAP + b" (84 [1 3/16])", "984 [1 3/16]"),
+        (b"(20) " + _SPACE_AS_A_GAP + b" (102)", "20102"),
+    ],
+    ids=["in the millimetres", "in a number with no unit"],
+)
+def test_only_the_inches_are_asked(operands: bytes, text: str) -> None:
+    """**What the rule is about: the inches.** Millimetres are never a verdict's operand (Q12), and
+    a number with no unit is never given a value, so a gap in either is left as it was read: on
+    `AI_Set_2` a number with no unit holds one, and on `AI_Set_1` the millimetres of a label do.
+    Outcome: both read as before."""
+    contents = _contents(_set(operands))
+
+    assert [item.text for item in contents.texts] == [text]
+    assert contents.set_aside == ()
+
+
+#: `24 3/4"` set as a stack, its whole number `2 4` with the space between them as a gap: the
+#: stack moved along by the gap, so it touches the whole number as `STACKED`'s does.
+STACKED_WITH_A_GAP = _pdf(
+    b"BT /F1 3 Tf 1 0 0 1 20 50 Tm [(2) " + _SPACE_AS_A_GAP + b" (4)] TJ ET\n"
+    b"BT /F1 2 Tf 1 0 0 1 24.434 51.2 Tm (3) Tj ET\n"
+    b"BT /F1 2 Tf 1 0 0 1 24.434 49 Tm (4) Tj ET\n"
+    b'BT /F1 3 Tf 1 0 0 1 25.634 50 Tm (") Tj ET\n'
+)
+
+
+#: `24 3/4"` as `STACKED` sets it, the stack 0.3 of the text's height along from the whole number:
+#: further than the rule's 0.1, and still touching as the stack composer counts it (0.5).
+STACKED_A_LITTLE_APART = _pdf(
+    b"BT /F1 3 Tf 1 0 0 1 20 50 Tm (24) Tj ET\n"
+    b"BT /F1 2 Tf 1 0 0 1 24.236 51.2 Tm (3) Tj ET\n"
+    b"BT /F1 2 Tf 1 0 0 1 24.236 49 Tm (4) Tj ET\n"
+    b'BT /F1 3 Tf 1 0 0 1 25.436 50 Tm (") Tj ET\n'
+)
+
+
+def test_a_stack_a_little_apart_from_its_whole_number_is_still_read() -> None:
+    """**No false refusal.** The rule asks only what the text reads with no space between: the
+    whole number, the numerator, the denominator, each on its own. A stack set a little along from
+    its whole number is not a space left out of one number. Outcome: `24 3/4"`, marked stacked."""
+    contents = _contents(STACKED_A_LITTLE_APART)
+
+    assert [(item.text, item.stacked) for item in contents.texts] == [('24 3/4"', True)]
+    assert contents.set_aside == ()
+
+
+def test_a_stacked_fraction_refused_this_way_is_still_a_stacked_fraction() -> None:
+    """A stacked label is held to the rule too, and keeps its reason when refused: its place is
+    still listed as a stacked fraction, so a reviewer is still sent to it and no model crop showing
+    it is believed (#726). Outcome: nothing read; set aside as a stacked fraction, not `24 3/4"`."""
+    contents = _contents(STACKED_WITH_A_GAP)
+
+    assert contents.texts == ()
+    assert _set_aside(contents) == ["stacked_fraction"]
+
+
+#: `[13/16]` set solid and `[1 3/16]` set with a gap, turned 30 degrees, as some labels on
+#: `AI_Set_1` are.
+TURNED = b"0.866 0.5 -0.5 0.866 20 30"
+
+
+@pytest.mark.parametrize(("operands", "gap"), [(b"([1) -278 (3/16])", 0.278), (b"([13/16])", 0.0)])
+def test_a_gap_is_measured_from_where_the_file_puts_each_character(
+    operands: bytes, gap: float
+) -> None:
+    """**Not from the boxes.** A character's box is square to the page, so for text set at an angle
+    it is larger than the character, and the boxes of two touching characters overlap: measured on
+    `AI_Set_1`, by 0.6 of the boxes' height. Read from each character's matrix and advance, the gap
+    between the `1` and the `3` is what the file put there, a space's 0.278 of the height or none,
+    and the height is the 3 points the text is set at."""
+    import io
+
+    import pdfplumber
+
+    from extraction import reader
+
+    with pdfplumber.open(io.BytesIO(_set(operands, matrix=TURNED))) as document:
+        bracket, one, three = document.pages[0].chars[:3]
+    assert (bracket["text"], one["text"], three["text"]) == ("[", "1", "3")
+
+    # 0.866 and 0.5 are a turn of 30 degrees to three figures, so the size comes back to as many.
+    assert reader._text_height(one) == pytest.approx(3.0, abs=1e-3)
+    assert reader._pen_gap(one, three) == pytest.approx(gap, abs=1e-3)
+    # The boxes say the two overlap, gap or no gap.
+    boxes = reader._frame(one), reader._frame(three)
+    assert boxes[0] is not None and boxes[1] is not None
+    assert boxes[1][0] - boxes[0][1] < 0
+
+
+def test_a_gap_that_cannot_be_measured_is_refused() -> None:
+    """A blank beats a wrong value: a character with no matrix to place it by is not read as part of
+    one number with its neighbour."""
+    from extraction import reader
+
+    placed = {"text": "1", "matrix": (1, 0, 0, 1, 0, 0), "adv": 1.0, "x0": 0, "x1": 1, "y0": 0}
+    run = {"text": '13/16"', "chars": [{**placed, "y1": 2}, {"text": "3"}]}
+
+    assert reader._pen_gap(run["chars"][0], run["chars"][1]) is None
+    assert reader._space_left_out(run, MISSING_SPACE)
+
+
+def test_the_setting_has_no_default() -> None:
+    """**Stated, or nothing is read.** No reader function supplies the setting, and the setting
+    supplies no value of its own (#912)."""
+    import dataclasses
+    import inspect
+
+    from extraction.reader import MissingSpace
+    from extraction.stamp_text import coloured_text, read_stamp_text
+
+    for function in (read_page_contents, read_stamp_text, coloured_text):
+        parameter = inspect.signature(function).parameters["missing_space"]
+        assert parameter.default is inspect.Parameter.empty, function.__name__
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, function.__name__
+    (field,) = dataclasses.fields(MissingSpace)
+    assert field.default is dataclasses.MISSING and field.default_factory is dataclasses.MISSING
+
+    with pytest.raises(TypeError):
+        read_page_contents(DRAWING, 0, document_version_id=DOCUMENT, dpi=DPI)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="MissingSpace"):
+        read_page_contents(
+            DRAWING, 0, document_version_id=DOCUMENT, dpi=DPI, missing_space=0.1  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        (0.1, TypeError),
+        (Decimal(0), ValueError),
+        (Decimal(1), ValueError),
+        (Decimal("-0.1"), ValueError),
+        (Decimal("NaN"), ValueError),
+        ("0.1", ValueError),
+    ],
+    ids=["a float", "zero", "one", "negative", "not a number", "text"],
+)
+def test_the_setting_refuses_what_is_no_share_of_a_height(value: object, error: type) -> None:
+    from extraction.reader import MissingSpace
+
+    with pytest.raises(error):
+        MissingSpace(gap_heights=value)  # type: ignore[arg-type]
+
+
+def test_the_join_of_two_lines_split_at_a_space_is_held_to_the_rule() -> None:
+    """The join #904 added reads each row in stretches broken only where the page prints a space
+    character. A gap a space wide inside one of them, here between the `2` and the `0` of `120`, is
+    held to the rule like any other: before, the label read `3048 [120 1/4]`. Outcome: nothing
+    read; set aside as a space left out."""
+    gap = 0.278 * 1.66  # a space's width at the size these shapes are drawn
+    lower_x = (*_LOWER_X[:3], *(x + gap for x in _LOWER_X[3:]))
+
+    contents = _contents(
+        _pdf(
+            _glyphs(
+                1.66,
+                [(x, 57.381, bytes([c])) for x, c in zip(_UPPER_X, b"3048", strict=True)]
+                + [(x, 55.551, bytes([c])) for x, c in zip(lower_x, b"[120 1/4]", strict=True)],
+            ),
+            font=CLIENT_FONT,
+        )
+    )
+
+    assert contents.texts == ()
+    assert _set_aside(contents) == ["missing_space"]
+
+
+@pytest.mark.parametrize("shape", sorted(_GAPS))
+def test_no_character_of_a_label_refused_this_way_is_read_twice(
+    shape: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#894's invariant holds for every label this rule sets aside."""
+    assert _characters_read_twice(_GAPS[shape][0], monkeypatch) == []

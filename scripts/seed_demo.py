@@ -211,7 +211,7 @@ def _seed_evidence_demo(session: Session) -> tuple[UUID, UUID, Mapping[str, obje
     from app.models.runs import WorkflowRun
     from storage.local import LocalStore
     from workflow.review import run_all
-    from workflow.stages import DatabaseStages
+    from workflow.stages import DatabaseStages, missing_space_from_environment
 
     root = pathlib.Path(os.environ.get("GV_DEV_STORAGE", ".dev-storage")).resolve()
     store = LocalStore(root=root, ticket_secret=b"synthetic evidence demo fixture")
@@ -263,7 +263,9 @@ def _seed_evidence_demo(session: Session) -> tuple[UUID, UUID, Mapping[str, obje
         factory,
         package_revision_id=revision.id,
         workflow_run_id=workflow_run.id,
-        stages=DatabaseStages(store),
+        # The fixture is read by the real reader, so it needs the reader's setting (#912), which
+        # has no default: `scripts/demo.sh` states it, as it does for the worker.
+        stages=DatabaseStages(store, missing_space=missing_space_from_environment()),
     )
 
     session.expire_all()
