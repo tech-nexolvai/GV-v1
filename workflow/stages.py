@@ -243,7 +243,7 @@ from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
-from workflow.parts import record_part_proposal
+from workflow.parts import live_part_item_ids, record_part_proposal
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
@@ -3695,13 +3695,11 @@ class DatabaseStages:
         this writes nothing else — no approved match, no verdict operand. Approval is a separate
         insert that names who decided, and nothing here decides.
 
-        **Today this finds nothing, and says so rather than appearing to work.** Writing a candidate
-        needs two `drawing_items` rows, and an item needs a view and a type from the `CT0xx`
-        vocabulary. Views now exist — one per drawing on a combined sheet, each with a role a person
-        confirms (#710) — but nothing finds the cabinets and their tags on a drawing yet (#748). So
-        this stage is wired to the real matcher and returns an honest zero with the reason, naming
-        how many drawings were found and how many roles are confirmed. The moment items exist, this
-        runs unchanged.
+        **Only parts a person confirmed and has not taken back (#882).** Writing a candidate needs
+        two `drawing_items` rows, and outside tests an item exists only once a person confirms a
+        suggested part (`workflow/parts.py`). A withdrawn or corrected part keeps its row, so both
+        queries this reads keep to `live_part_item_ids`. With none, it returns an honest zero with
+        the reason, naming how many drawings were found and how many roles are confirmed.
         """
         role_summary = _match_role_summary(session, package_revision_id)
         items = _matchable_items(session, package_revision_id)
@@ -3726,9 +3724,9 @@ class DatabaseStages:
                 "items": 0,
                 "candidates": 0,
                 "reason": (
-                    "no drawing items exist for this revision: nothing finds the cabinets and their "
-                    f"tags on a drawing yet (#748). Drawings found: {len(views)}; roles confirmed "
-                    f"by a reviewer: {confirmed.count('arch')} architect, "
+                    "no confirmed parts exist for this revision: an item exists only once a person "
+                    f"confirms a part of a drawing (#748). Drawings found: {len(views)}; roles "
+                    f"confirmed by a reviewer: {confirmed.count('arch')} architect, "
                     f"{confirmed.count('shop')} vendor"
                 ),
             }
@@ -4899,6 +4897,7 @@ def _match_role_summary(session: Session, package_revision_id: UUID) -> _MatchRo
             PackageRevisionDocument.document_version_id == DocumentVersion.id,
         )
         .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .where(DrawingItem.id.in_(live_part_item_ids()))
     ).all()
     roles = {
         role
@@ -4930,6 +4929,10 @@ def _matchable_items(
     The role comes from the view when it has been established. For legacy two-PDF packages only, a
     null view role falls back to `Document.kind`; combined sheets must not infer every view from one
     upload kind. Schedules and product specs are filtered out because they have no match role.
+
+    **Only live parts (#882).** An item a person withdrew, or replaced with a correction, keeps its
+    row; reading it would match a part that no longer exists. So only the items
+    `live_part_item_ids` names are read.
     """
     project_id = session.execute(
         select(Package.project_id)
@@ -4952,6 +4955,7 @@ def _matchable_items(
         )
         .outerjoin(ItemIdentifier, ItemIdentifier.drawing_item_id == DrawingItem.id)
         .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .where(DrawingItem.id.in_(live_part_item_ids()))
         .order_by(DrawingItem.created_at)
     ).all()
 

@@ -137,6 +137,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         confirmations,
         distribution,
         documents,
+        drawing_parts,
         drawing_views,
         finding_chain,
         finding_export,
@@ -160,6 +161,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Which drawing on a combined sheet is which: listed with a suggestion, set only by a reviewer
     # (#710).
     app.include_router(drawing_views.router, prefix=API_PREFIX)
+    # The parts of each vendor drawing: suggested by the computer, each one confirmed, corrected,
+    # withdrawn or added by a person, never all at once (#882).
+    app.include_router(drawing_parts.router, prefix=API_PREFIX)
     app.include_router(approvals.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(finding_chain.router, prefix=API_PREFIX)

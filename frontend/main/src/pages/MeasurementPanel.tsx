@@ -28,6 +28,7 @@ import {
 import { projectId } from '../api/config';
 import { AssignmentProgress } from '../components/measure/AssignmentProgress';
 import { DrawingRoles } from '../components/measure/DrawingRoles';
+import { DrawingParts } from '../components/measure/DrawingParts';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { distributionFieldWidthKey } from '../components/measure/fillerDistribution';
 import {
@@ -889,6 +890,9 @@ export function MeasurementPanel({
           onConfirmed={() => setReload((count) => count + 1)}
         />
       )}
+
+      {/* **The parts of each vendor drawing** (#882): suggested, and each one decided by a person. */}
+      {packageId && <DrawingParts key={packageId} packageId={packageId} refresh={reload} />}
 
       <section className="enter-values__section">
         <h2>Measurements</h2>

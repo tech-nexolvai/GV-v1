@@ -720,6 +720,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The parts suggested in each drawing, left to right, and what a person said of each
+         * @description Read only: listing never makes a part, however many times it is called.
+         */
+        get: operations["list_parts_api_v1_projects__project_id__packages__package_id__parts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say what one suggested part is: a cabinet, a filler or a countertop
+         * @description Record a person's decision, which makes the part. Audited, and correctable by deciding again:
+         *     the latest decision is the one that counts, and every earlier one is kept.
+         */
+        post: operations["confirm_part_endpoint_api_v1_projects__project_id__packages__package_id__parts__proposal_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/crop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the picture stored for one suggested part
+         * @description The crop of the reading the part's code came from, checked against its recorded digest.
+         *
+         *     The same picture the Measure page shows for that reading, through the same project boundary:
+         *     the suggestion must be on this package's current revision, and so must the reading.
+         */
+        get: operations["part_crop_api_v1_projects__project_id__packages__package_id__parts__proposal_id__crop_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say one suggestion is not a part
+         * @description Record that it is not a part. Makes nothing; a part it had made stops being read.
+         */
+        post: operations["withdraw_part_endpoint_api_v1_projects__project_id__packages__package_id__parts__proposal_id__withdraw_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/redline.pdf": {
         parameters: {
             query?: never;
@@ -846,6 +930,26 @@ export interface paths {
         get: operations["list_views_api_v1_projects__project_id__packages__package_id__views_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/parts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add a part the suggestions missed, by its two ends on the drawing
+         * @description File the person's own suggestion and confirm it, in one transaction.
+         */
+        post: operations["add_part_endpoint_api_v1_projects__project_id__packages__package_id__views__view_id__parts_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1324,6 +1428,20 @@ export interface components {
              */
             what_it_means: string;
         };
+        /** AddPartIn */
+        AddPartIn: {
+            /** Code */
+            code?: string | null;
+            /**
+             * Ends
+             * @description The part's two ends on the drawing, in either order.
+             */
+            ends: [
+                components["schemas"]["EndIn"],
+                components["schemas"]["EndIn"]
+            ];
+            kind: components["schemas"]["PartKind"];
+        };
         /**
          * ApplicabilityOut
          * @description What a rule applies to: one discriminator and its branches, or everything of its type.
@@ -1740,6 +1858,15 @@ export interface components {
              */
             semantic_type: string;
         };
+        /** ConfirmPartIn */
+        ConfirmPartIn: {
+            /**
+             * Code
+             * @description The code printed on the part, exactly as it is printed; null when none is printed. Stored as sent: never trimmed, never read as a width.
+             */
+            code?: string | null;
+            kind: components["schemas"]["PartKind"];
+        };
         /** ConfirmRoleIn */
         ConfirmRoleIn: {
             /**
@@ -1844,6 +1971,24 @@ export interface components {
             resulting_value: string;
         };
         /**
+         * DecisionOut
+         * @description What a person last said about one suggestion.
+         */
+        DecisionOut: {
+            /** Code */
+            code: string | null;
+            /**
+             * Decided At
+             * Format: date-time
+             */
+            decided_at: string;
+            /** Decided By */
+            decided_by: string;
+            /** Decision */
+            decision: string;
+            kind: components["schemas"]["PartKind"] | null;
+        };
+        /**
          * DiscriminatorOut
          * @description A judgement about the drawing that decides which variant of a rule applies.
          */
@@ -1913,6 +2058,39 @@ export interface components {
             source_artifact_id: string;
             /** Storage Key */
             storage_key: string;
+        };
+        /**
+         * DrawingOut
+         * @description One drawing and its suggested parts, left to right.
+         */
+        DrawingOut: {
+            /** Can Confirm */
+            can_confirm: boolean;
+            /** Page Index */
+            page_index: number;
+            /** Parts */
+            parts: components["schemas"]["PartOut"][];
+            /** Role */
+            role: string | null;
+            /** Tag */
+            tag: string;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
+            /** Why Not */
+            why_not: string | null;
+        };
+        /**
+         * EndIn
+         * @description A point in stored page space, sent as exact text, such as one `left_end` from the list.
+         */
+        EndIn: {
+            /** X */
+            x: string;
+            /** Y */
+            y: string;
         };
         /**
          * EvidenceLocation
@@ -2592,6 +2770,76 @@ export interface components {
              * @default []
              */
             sources: components["schemas"]["SourceOut"][];
+        };
+        /**
+         * PartKind
+         * @description The three kinds of part a countertop check is about.
+         * @enum {string}
+         */
+        PartKind: "cabinet" | "filler" | "countertop";
+        /**
+         * PartOut
+         * @description One suggested part, as a person needs it to decide what it is.
+         */
+        PartOut: {
+            /**
+             * Added By A Person
+             * @description True when a person added it because the suggestions missed it.
+             */
+            added_by_a_person: boolean;
+            /** @description The decision nothing has replaced, or null while nobody has decided. */
+            decision: components["schemas"]["DecisionOut"] | null;
+            /**
+             * Has Crop
+             * @description Whether a picture is stored for it. Today that is the crop of the reading its code came from, so a suggestion with no code has none.
+             */
+            has_crop: boolean;
+            /** @description The left end of the line that defines it, or null when no line did. */
+            left_end: components["schemas"]["PointOut"] | null;
+            /** Page Index */
+            page_index: number;
+            /**
+             * Position
+             * @description Its place on its drawing, 1 for the leftmost.
+             */
+            position: number;
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
+            /**
+             * Reason
+             * @description Why it was suggested, in plain English.
+             */
+            reason: string;
+            right_end: components["schemas"]["PointOut"] | null;
+            /**
+             * Suggested Code
+             * @description The code read on the part, as printed, or null when none was read.
+             */
+            suggested_code: string | null;
+            suggested_kind: components["schemas"]["PartKind"];
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
+        };
+        /** PartsOut */
+        PartsOut: {
+            /** Drawings */
+            drawings: components["schemas"]["DrawingOut"][];
+        };
+        /**
+         * PointOut
+         * @description A point in stored page space, as exact text.
+         */
+        PointOut: {
+            /** X */
+            x: string;
+            /** Y */
+            y: string;
         };
         /**
          * PresignedUpload
@@ -4333,6 +4581,141 @@ export interface operations {
             };
         };
     };
+    list_parts_api_v1_projects__project_id__packages__package_id__parts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_part_endpoint_api_v1_projects__project_id__packages__package_id__parts__proposal_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmPartIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    part_crop_api_v1_projects__project_id__packages__package_id__parts__proposal_id__crop_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The integrity-checked picture stored for this suggestion. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_part_endpoint_api_v1_projects__project_id__packages__package_id__parts__proposal_id__withdraw_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     download_redline_api_v1_projects__project_id__packages__package_id__redline_pdf_get: {
         parameters: {
             query?: never;
@@ -4510,6 +4893,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ViewsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_part_endpoint_api_v1_projects__project_id__packages__package_id__views__view_id__parts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                view_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddPartIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartOut"];
                 };
             };
             /** @description Validation Error */
