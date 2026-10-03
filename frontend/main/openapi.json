@@ -1032,6 +1032,79 @@
         "title": "ConfirmRoleIn",
         "type": "object"
       },
+      "ConfirmRunIn": {
+        "properties": {
+          "part_ids": {
+            "description": "The drawing items the run holds, in any order: the server orders them across the drawing, never by the order they were picked in.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Part Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "part_ids"
+        ],
+        "title": "ConfirmRunIn",
+        "type": "object"
+      },
+      "ConfirmedMemberOut": {
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PartKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Number"
+          },
+          "position": {
+            "description": "Its place in the run, 1 for the leftmost.",
+            "title": "Position",
+            "type": "integer"
+          },
+          "signal": {
+            "title": "Signal",
+            "type": "string"
+          },
+          "stands": {
+            "description": "False once a person has taken the part back or corrected it.",
+            "title": "Stands",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "item_id",
+          "number",
+          "kind",
+          "position",
+          "signal",
+          "stands"
+        ],
+        "title": "ConfirmedMemberOut",
+        "type": "object"
+      },
       "ConfirmedOut": {
         "description": "The evidence a confirmation produced.",
         "properties": {
@@ -1093,6 +1166,68 @@
           "qualification"
         ],
         "title": "ConfirmedReadingOut",
+        "type": "object"
+      },
+      "CountertopOut": {
+        "description": "One confirmed countertop and its run.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "countertop_item_id": {
+            "format": "uuid",
+            "title": "Countertop Item Id",
+            "type": "string"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunDecisionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Number"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuggestionOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no tolerance is stated, so nothing can be suggested."
+          }
+        },
+        "required": [
+          "countertop_item_id",
+          "number",
+          "code",
+          "suggestion",
+          "decision"
+        ],
+        "title": "CountertopOut",
         "type": "object"
       },
       "DecideEvidence": {
@@ -2298,6 +2433,41 @@
           "prompt_id"
         ],
         "title": "LayoutProposalOut",
+        "type": "object"
+      },
+      "LeftOutOut": {
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PartKind"
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Number"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "number",
+          "kind",
+          "reason"
+        ],
+        "title": "LeftOutOut",
         "type": "object"
       },
       "MeasurementEntry": {
@@ -3860,6 +4030,203 @@
         "title": "RuleSnapshotRecord",
         "type": "object"
       },
+      "RunDecisionOut": {
+        "description": "What a person last said about the run.",
+        "properties": {
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decided_by": {
+            "title": "Decided By",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "edge_tolerance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edge Tolerance"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/ConfirmedMemberOut"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "read": {
+            "title": "Read",
+            "type": "boolean"
+          },
+          "why_not_read": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Not Read"
+          }
+        },
+        "required": [
+          "decision",
+          "decided_by",
+          "decided_at",
+          "members",
+          "read",
+          "why_not_read",
+          "edge_tolerance"
+        ],
+        "title": "RunDecisionOut",
+        "type": "object"
+      },
+      "RunDrawingOut": {
+        "properties": {
+          "can_confirm": {
+            "title": "Can Confirm",
+            "type": "boolean"
+          },
+          "countertops": {
+            "items": {
+              "$ref": "#/components/schemas/CountertopOut"
+            },
+            "title": "Countertops",
+            "type": "array"
+          },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "parts": {
+            "description": "The confirmed cabinets and fillers on the drawing, which a run may hold.",
+            "items": {
+              "$ref": "#/components/schemas/RunPartOut"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "view_id": {
+            "format": "uuid",
+            "title": "View Id",
+            "type": "string"
+          },
+          "why_not": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Not"
+          }
+        },
+        "required": [
+          "view_id",
+          "page_index",
+          "tag",
+          "can_confirm",
+          "why_not",
+          "parts",
+          "countertops"
+        ],
+        "title": "RunDrawingOut",
+        "type": "object"
+      },
+      "RunPartOut": {
+        "description": "A confirmed part, named as \"Parts of each drawing\" names it.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PartKind"
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its number in that list, 1 for the leftmost; null if it is not listed there.",
+            "title": "Number"
+          }
+        },
+        "required": [
+          "item_id",
+          "number",
+          "kind",
+          "code"
+        ],
+        "title": "RunPartOut",
+        "type": "object"
+      },
+      "RunsOut": {
+        "properties": {
+          "can_suggest": {
+            "title": "Can Suggest",
+            "type": "boolean"
+          },
+          "drawings": {
+            "items": {
+              "$ref": "#/components/schemas/RunDrawingOut"
+            },
+            "title": "Drawings",
+            "type": "array"
+          },
+          "why_not": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Not"
+          }
+        },
+        "required": [
+          "can_suggest",
+          "why_not",
+          "drawings"
+        ],
+        "title": "RunsOut",
+        "type": "object"
+      },
       "SettingPointerOut": {
         "description": "Where the architect's drawing states a setting: a page and a crop, **never the number** (#866).\n\nThe reviewer types the value they see without being shown the one the app found, and the server\nsaves it only if the two match (step 3.3 of #798). So nothing here may carry the number: no\nvalue, no text from the drawing, and no id of the runs, which `GET .../candidates` would turn\nback into a value. `tests/api/test_setting_citations.py` holds this class to that list.",
         "properties": {
@@ -4009,6 +4376,88 @@
           "as_typed"
         ],
         "title": "StoredValue",
+        "type": "object"
+      },
+      "SuggestedMemberOut": {
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PartKind"
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Number"
+          },
+          "position": {
+            "description": "Its place in the run, 1 for the leftmost.",
+            "title": "Position",
+            "type": "integer"
+          },
+          "signal": {
+            "description": "Why it was suggested, in plain English.",
+            "title": "Signal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "number",
+          "kind",
+          "position",
+          "signal"
+        ],
+        "title": "SuggestedMemberOut",
+        "type": "object"
+      },
+      "SuggestionOut": {
+        "description": "The run the computer suggests. Nothing is written until a person confirms it.",
+        "properties": {
+          "edge_tolerance": {
+            "title": "Edge Tolerance",
+            "type": "string"
+          },
+          "left_out": {
+            "description": "Parts along the countertop that the below-the-top filter left out, and why.",
+            "items": {
+              "$ref": "#/components/schemas/LeftOutOut"
+            },
+            "title": "Left Out",
+            "type": "array"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/SuggestedMemberOut"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "warnings": {
+            "description": "Where the run does not cover the countertop as one unbroken row.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "members",
+          "left_out",
+          "warnings",
+          "edge_tolerance"
+        ],
+        "title": "SuggestionOut",
         "type": "object"
       },
       "ToleranceReportOut": {
@@ -5336,6 +5785,198 @@
         "summary": "Ask for the checks to be run against this package",
         "tags": [
           "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-runs": {
+      "get": {
+        "description": "Read only: a suggested run is worked out on each call and never stored.",
+        "operationId": "list_runs_api_v1_projects__project_id__packages__package_id__countertop_runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Each confirmed countertop, the run suggested beneath it, and what a person decided",
+        "tags": [
+          "countertop runs"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-runs/{countertop_item_id}/confirm": {
+      "post": {
+        "description": "Record a person's run, as suggested or corrected. Audited, and correctable by confirming\nagain: the latest decision is the one that counts, and every earlier one is kept.",
+        "operationId": "confirm_run_endpoint_api_v1_projects__project_id__packages__package_id__countertop_runs__countertop_item_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "countertop_item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Countertop Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmRunIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountertopOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Say which parts make up the run beneath one countertop",
+        "tags": [
+          "countertop runs"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-runs/{countertop_item_id}/withdraw": {
+      "post": {
+        "description": "Record that it is not the run. Writes no run; a run confirmed before stops being read.",
+        "operationId": "withdraw_run_endpoint_api_v1_projects__project_id__packages__package_id__countertop_runs__countertop_item_id__withdraw_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "countertop_item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Countertop Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountertopOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Say the run suggested or confirmed beneath one countertop is wrong",
+        "tags": [
+          "countertop runs"
         ]
       }
     },

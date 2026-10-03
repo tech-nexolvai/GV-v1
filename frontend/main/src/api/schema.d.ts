@@ -412,6 +412,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Each confirmed countertop, the run suggested beneath it, and what a person decided
+         * @description Read only: a suggested run is worked out on each call and never stored.
+         */
+        get: operations["list_runs_api_v1_projects__project_id__packages__package_id__countertop_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-runs/{countertop_item_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say which parts make up the run beneath one countertop
+         * @description Record a person's run, as suggested or corrected. Audited, and correctable by confirming
+         *     again: the latest decision is the one that counts, and every earlier one is kept.
+         */
+        post: operations["confirm_run_endpoint_api_v1_projects__project_id__packages__package_id__countertop_runs__countertop_item_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-runs/{countertop_item_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say the run suggested or confirmed beneath one countertop is wrong
+         * @description Record that it is not the run. Writes no run; a run confirmed before stops being read.
+         */
+        post: operations["withdraw_run_endpoint_api_v1_projects__project_id__packages__package_id__countertop_runs__countertop_item_id__withdraw_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/documents": {
         parameters: {
             query?: never;
@@ -1875,6 +1936,37 @@ export interface components {
              */
             role: "arch" | "shop";
         };
+        /** ConfirmRunIn */
+        ConfirmRunIn: {
+            /**
+             * Part Ids
+             * @description The drawing items the run holds, in any order: the server orders them across the drawing, never by the order they were picked in.
+             */
+            part_ids: string[];
+        };
+        /** ConfirmedMemberOut */
+        ConfirmedMemberOut: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            kind: components["schemas"]["PartKind"] | null;
+            /** Number */
+            number: number | null;
+            /**
+             * Position
+             * @description Its place in the run, 1 for the leftmost.
+             */
+            position: number;
+            /** Signal */
+            signal: string;
+            /**
+             * Stands
+             * @description False once a person has taken the part back or corrected it.
+             */
+            stands: boolean;
+        };
         /**
          * ConfirmedOut
          * @description The evidence a confirmation produced.
@@ -1914,6 +2006,24 @@ export interface components {
             source: string;
             /** Value */
             value: string;
+        };
+        /**
+         * CountertopOut
+         * @description One confirmed countertop and its run.
+         */
+        CountertopOut: {
+            /** Code */
+            code: string | null;
+            /**
+             * Countertop Item Id
+             * Format: uuid
+             */
+            countertop_item_id: string;
+            decision: components["schemas"]["RunDecisionOut"] | null;
+            /** Number */
+            number: number | null;
+            /** @description Null when no tolerance is stated, so nothing can be suggested. */
+            suggestion: components["schemas"]["SuggestionOut"] | null;
         };
         /**
          * DecideEvidence
@@ -2532,6 +2642,19 @@ export interface components {
             prompt_id: string;
             /** Value */
             value: string;
+        };
+        /** LeftOutOut */
+        LeftOutOut: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            kind: components["schemas"]["PartKind"];
+            /** Number */
+            number: number | null;
+            /** Reason */
+            reason: string;
         };
         /**
          * MeasurementEntry
@@ -3407,6 +3530,80 @@ export interface components {
             version: string;
         };
         /**
+         * RunDecisionOut
+         * @description What a person last said about the run.
+         */
+        RunDecisionOut: {
+            /**
+             * Decided At
+             * Format: date-time
+             */
+            decided_at: string;
+            /** Decided By */
+            decided_by: string;
+            /** Decision */
+            decision: string;
+            /** Edge Tolerance */
+            edge_tolerance: string | null;
+            /** Members */
+            members: components["schemas"]["ConfirmedMemberOut"][];
+            /** Read */
+            read: boolean;
+            /** Why Not Read */
+            why_not_read: string | null;
+        };
+        /** RunDrawingOut */
+        RunDrawingOut: {
+            /** Can Confirm */
+            can_confirm: boolean;
+            /** Countertops */
+            countertops: components["schemas"]["CountertopOut"][];
+            /** Page Index */
+            page_index: number;
+            /**
+             * Parts
+             * @description The confirmed cabinets and fillers on the drawing, which a run may hold.
+             */
+            parts: components["schemas"]["RunPartOut"][];
+            /** Tag */
+            tag: string;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
+            /** Why Not */
+            why_not: string | null;
+        };
+        /**
+         * RunPartOut
+         * @description A confirmed part, named as "Parts of each drawing" names it.
+         */
+        RunPartOut: {
+            /** Code */
+            code: string | null;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            kind: components["schemas"]["PartKind"];
+            /**
+             * Number
+             * @description Its number in that list, 1 for the leftmost; null if it is not listed there.
+             */
+            number: number | null;
+        };
+        /** RunsOut */
+        RunsOut: {
+            /** Can Suggest */
+            can_suggest: boolean;
+            /** Drawings */
+            drawings: components["schemas"]["RunDrawingOut"][];
+            /** Why Not */
+            why_not: string | null;
+        };
+        /**
          * SettingPointerOut
          * @description Where the architect's drawing states a setting: a page and a crop, **never the number** (#866).
          *
@@ -3479,6 +3676,47 @@ export interface components {
             source?: string | null;
             /** Unit */
             unit: string;
+        };
+        /** SuggestedMemberOut */
+        SuggestedMemberOut: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            kind: components["schemas"]["PartKind"];
+            /** Number */
+            number: number | null;
+            /**
+             * Position
+             * @description Its place in the run, 1 for the leftmost.
+             */
+            position: number;
+            /**
+             * Signal
+             * @description Why it was suggested, in plain English.
+             */
+            signal: string;
+        };
+        /**
+         * SuggestionOut
+         * @description The run the computer suggests. Nothing is written until a person confirms it.
+         */
+        SuggestionOut: {
+            /** Edge Tolerance */
+            edge_tolerance: string;
+            /**
+             * Left Out
+             * @description Parts along the countertop that the below-the-top filter left out, and why.
+             */
+            left_out: components["schemas"]["LeftOutOut"][];
+            /** Members */
+            members: components["schemas"]["SuggestedMemberOut"][];
+            /**
+             * Warnings
+             * @description Where the run does not cover the countertop as one unbroken row.
+             */
+            warnings: string[];
         };
         /**
          * ToleranceReportOut
@@ -4191,6 +4429,108 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_runs_api_v1_projects__project_id__packages__package_id__countertop_runs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_run_endpoint_api_v1_projects__project_id__packages__package_id__countertop_runs__countertop_item_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                countertop_item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmRunIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CountertopOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_run_endpoint_api_v1_projects__project_id__packages__package_id__countertop_runs__countertop_item_id__withdraw_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                countertop_item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CountertopOut"];
                 };
             };
             /** @description Validation Error */
