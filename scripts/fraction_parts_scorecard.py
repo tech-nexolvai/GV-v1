@@ -90,6 +90,7 @@ READER_SETTINGS: Final = (
     "GV_READER_FRACTION_GLYPH_MAX_PT",
     "GV_READER_FRACTION_PROPORTION_MAX",
     "GV_READER_FRACTION_CHARACTER_GAP_PT",
+    "GV_READER_FRACTION_TURNED_ASPECT_MIN",
 )
 
 
@@ -215,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
             glyph_max_pt=Decimal(stated["GV_READER_FRACTION_GLYPH_MAX_PT"]),
             proportion_max=Decimal(stated["GV_READER_FRACTION_PROPORTION_MAX"]),
             character_gap_pt=Decimal(stated["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
+            turned_aspect_min=Decimal(stated["GV_READER_FRACTION_TURNED_ASPECT_MIN"]),
         ),
     )
     localized = LocalizedOcrSettings(
