@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import pathlib
 from decimal import Decimal
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -634,3 +635,269 @@ def test_a_path_keep_path_refuses_is_no_bar_and_no_segment() -> None:
     assert not any(item.stacked for item in contents.texts)
     assert _set_aside(contents) == ["stacked_fraction", "stacked_fraction"]
     assert contents.segments == ()
+
+
+# ---------------------------------------------------------------------------
+# Every character is read into one label at most (#894)
+# ---------------------------------------------------------------------------
+
+#: A line of large text running past a label on both sides, as a note runs across the labels of a
+#: drawing. `extract_text_lines` gives a line the box round all its characters, so this line's box
+#: encloses the label although none of the label's characters is on it.
+ENCLOSING_LINE = (
+    b"BT /F1 20 Tf 1 0 0 1 2 40 Tm (A) Tj ET\n" b"BT /F1 20 Tf 1 0 0 1 180 40 Tm (B) Tj ET\n"
+)
+
+#: A taller line round the first. Measured on `AI_Set_1`, five labels sat inside two lines besides
+#: their own and came back three times each.
+TALLER_LINE = (
+    b"BT /F1 40 Tf 1 0 0 1 0 30 Tm (I) Tj ET\n" b"BT /F1 40 Tf 1 0 0 1 188 30 Tm (I) Tj ET\n"
+)
+
+#: What the two lines read as themselves.
+_ENCLOSING_TEXT = frozenset({"A", "B", "I"})
+
+#: Every kind of label measured coming back more than once on `AI_Set_1` and `AI_Set_2`, and the one
+#: other kind the join reads whole, each set small where the lines above enclose it, with what it
+#: reads as on a page of its own: `(text, stacked)` for each text, and the reason for each label set
+#: aside.
+DOUBLED_SHAPES: dict[str, tuple[bytes, list[tuple[str, bool]], list[str]]] = {
+    # Split at the space by `extract_words` and joined back (AI_Set_1 p5, AI_Set_2 p8).
+    "feet and inches": (
+        b"BT /F1 4 Tf 1 0 0 1 80 45 Tm (2' -5\") Tj ET\n",
+        [('2’ -5"', False)],
+        [],
+    ),
+    # Split at its spaces and joined back (AI_Set_2 p7 and p8).
+    "dual token": (
+        b"BT /F1 4 Tf 1 0 0 1 80 45 Tm (984 [38 3/4]) Tj ET\n",
+        [("984 [38 3/4]", False)],
+        [],
+    ),
+    # Set large enough for its space to split it: the shape `MIXED_INCH_TOKEN_RE` joins. Not
+    # measured doubled; held to the same rule.
+    "inches and a fraction": (
+        b'BT /F1 4 Tf 1 0 0 1 80 45 Tm (24 3/4") Tj ET\n',
+        [('24 3/4"', False)],
+        [],
+    ),
+    # Millimetres over their bracketed inches, composed from one word (AI_Set_1 p3, seven labels).
+    "millimetres over inches": (
+        (
+            b"BT /F1 3 Tf 1 0 0 1 80 50 Tm (585) Tj ET\n"
+            b"BT /F1 3 Tf 1 0 0 1 80.4 47 Tm ([23]) Tj ET\n"
+        ),
+        [("585 [23]", False)],
+        [],
+    ),
+    # A stacked fraction composed from its word (AI_Set_1 p1, three labels).
+    "stacked fraction": (
+        (
+            b"BT /F1 3 Tf 1 0 0 1 80 50 Tm (24) Tj ET\n"
+            b"BT /F1 2 Tf 1 0 0 1 83.6 51.2 Tm (3) Tj ET\n"
+            b"BT /F1 2 Tf 1 0 0 1 83.6 49 Tm (4) Tj ET\n"
+            b'BT /F1 3 Tf 1 0 0 1 84.8 50 Tm (") Tj ET\n'
+        ),
+        [('24 3/4"', True)],
+        [],
+    ),
+    # The same, sideways (AI_Set_1 p1, three labels).
+    "sideways stacked fraction": (
+        (
+            b"BT /F1 3 Tf 0 1 -1 0 80 40 Tm (24) Tj ET\n"
+            b"BT /F1 2 Tf 0 1 -1 0 78.8 43.6 Tm (3) Tj ET\n"
+            b"BT /F1 2 Tf 0 1 -1 0 81 43.6 Tm (4) Tj ET\n"
+            b'BT /F1 3 Tf 0 1 -1 0 80 44.8 Tm (") Tj ET\n'
+        ),
+        [('24 3/4"', True)],
+        [],
+    ),
+    # A stack the words came apart from, composed round its bar (#880; AI_Set_1 p1, two labels).
+    "stack composed round its bar": (
+        (
+            b"BT /F1 4 Tf 1 0 0 1 80 50 Tm (2) Tj 1 0 0 1 82.3 52 Tm (1) Tj "
+            b'1 0 0 1 82.3 48 Tm (2) Tj 1 0 0 1 84.6 50 Tm (") Tj ET\n'
+            b"0.3 w 82.4 51.2 m 84.4 51.2 l S\n"
+        ),
+        [('2 1/2"', True)],
+        [],
+    ),
+    # A joined label set aside as a piece of a longer one, a digit standing inside its span: the
+    # label was set aside twice (AI_Set_1 p4).
+    "piece of a longer label": (
+        (
+            b"BT /F1 4 Tf 1 0 0 1 80 45 Tm (1' -0\") Tj ET\n"
+            b"BT /F1 4 Tf 1 0 0 1 85 48.2 Tm (3) Tj ET\n"
+        ),
+        [("3", False)],
+        ["fragment"],
+    ),
+}
+
+
+def _readings(contents: PageContents) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
+    """`(texts, set_aside)`, every field of each, leaving out the enclosing lines' own letters."""
+    texts = [
+        (
+            item.text,
+            item.stacked,
+            item.extent,
+            item.image_extent,
+            item.rotation_degrees,
+            item.upright,
+        )
+        for item in contents.texts
+        if item.text not in _ENCLOSING_TEXT
+    ]
+    labels = [(label.reason, label.extent, label.image_extent) for label in contents.set_aside]
+    return texts, labels
+
+
+@pytest.mark.parametrize("shape", sorted(DOUBLED_SHAPES))
+def test_a_label_inside_another_lines_box_is_read_once(shape: str) -> None:
+    """**The failure this prevents** (#894). The dual-token join put a word on every line whose box
+    holds it, and a line's box can hold words that are not on it: measured on `AI_Set_1`, a note
+    running across a drawing enclosed a stacked fraction none of whose characters it has. The label
+    was joined on its own line and again on the note's, and read twice from the same characters,
+    each copy with the same text, mark and place: 26 extra readings and two extra labels set aside
+    on the two client sets. Outcome: inside two such lines, each shape reads exactly as it does on
+    a page of its own — same text, same mark, same place — and once."""
+    label, texts, reasons = DOUBLED_SHAPES[shape]
+    alone = _contents(_pdf(label))
+    enclosed = _contents(_pdf(label + ENCLOSING_LINE + TALLER_LINE))
+
+    assert [(item.text, item.stacked) for item in alone.texts] == texts
+    assert _set_aside(alone) == reasons
+    assert _readings(enclosed) == _readings(alone)
+
+
+def _characters_read_twice(data: bytes, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The characters of the page that more than one of its readings is made of, texts and labels
+    set aside alike, each as its text.
+
+    `TextItem` does not carry its characters, so they are taken from the runs the reader turns into
+    readings: every run `_text_item` makes a reading of is a text or a set-aside label of the page.
+    The runs are counted against the readings, so a reading made some other way fails here rather
+    than going unchecked.
+    """
+    from extraction import reader
+
+    runs: dict[int, dict[str, Any]] = {}  # each run held, so no other run can be given its `id`
+    original = reader._text_item
+
+    def recording(word: dict[str, Any], *args: Any) -> TextItem | None:
+        item = original(word, *args)
+        if item is not None:
+            runs[id(word)] = word
+        return item
+
+    monkeypatch.setattr(reader, "_text_item", recording)
+    contents = read_page_contents(data, 0, document_version_id=DOCUMENT, dpi=DPI)
+
+    assert len(runs) == len(contents.texts) + len(contents.set_aside)
+    readings: dict[int, int] = {}
+    texts: dict[int, str] = {}
+    for run in runs.values():
+        for char in run.get("chars") or ():
+            readings[id(char)] = readings.get(id(char), 0) + 1
+            texts[id(char)] = str(char["text"])
+    return sorted(texts[key] for key, count in readings.items() if count > 1)
+
+
+#: Every page this module builds, and each doubled shape inside its enclosing lines.
+_EVERY_PAGE = {
+    "drawing": DRAWING,
+    "feet and inches": FEET_AND_INCHES,
+    "stacked": STACKED,
+    "split stack": SPLIT_STACK,
+    "tight note": TIGHT_NOTE,
+    "two-line dual": TWO_LINE_DUAL,
+    "sideways feet and inches": SIDEWAYS_FEET_AND_INCHES,
+    "half a label": HALF_A_LABEL,
+    "cut number": CUT_NUMBER,
+    "chain": CHAIN,
+    "printed twice": PRINTED_TWICE,
+    "large mixed": LARGE_MIXED,
+    "split stack with bar": SPLIT_STACK_WITH_BAR,
+    **{
+        f"{shape}, enclosed": _pdf(label + ENCLOSING_LINE + TALLER_LINE)
+        for shape, (label, _, _) in DOUBLED_SHAPES.items()
+    },
+}
+
+
+@pytest.mark.parametrize("page", sorted(_EVERY_PAGE))
+def test_no_character_is_read_into_two_labels(page: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**The invariant #894 restores.** A character drawn once is part of one reading at most: a
+    text, or a label set aside. Two readings of one character are one label counted twice — a second
+    row for a person to tick, and a second vote in every count readers are scored by."""
+    assert _characters_read_twice(_EVERY_PAGE[page], monkeypatch) == []
+
+
+def test_the_check_finds_a_character_read_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check above, run where the join hands every label over twice as #894 found it doing,
+    names that label's characters: so it cannot pass by finding nothing."""
+    from extraction import reader
+
+    original = reader._dual_tokens
+
+    def twice(*args: Any) -> tuple[tuple[TextItem, Any, dict[str, Any]], ...]:
+        found = original(*args)
+        return found + tuple((item, box, dict(run)) for item, box, run in found)
+
+    monkeypatch.setattr(reader, "_dual_tokens", twice)
+
+    assert _characters_read_twice(FEET_AND_INCHES, monkeypatch) == sorted('2’-5"')
+
+
+def test_a_token_already_found_keeps_its_characters() -> None:
+    """`_join_lines` joins no character a token already in `found` holds, whichever call found it:
+    the sideways lines are joined after the upright ones, into the same list. Outcome: the same two
+    words on a second line, in the same call or in a later one, add nothing."""
+    from evidence.coordinates import PageTransform
+    from extraction import reader
+
+    def word(text: str, x0: float) -> dict[str, Any]:
+        return {
+            "text": text,
+            "chars": [{"text": char} for char in text],
+            "x0": x0,
+            "top": 40,
+            "x1": x0 + 5,
+            "bottom": 45,
+            "upright": True,
+        }
+
+    feet, inches = word("2'", 20), word('-5"', 27)
+    sheet = (Decimal(0), Decimal(0), Decimal(200), Decimal(100))
+    transform = PageTransform(dpi=DPI, rotation=0, media_box=sheet, crop_box=sheet)
+    found: list[tuple[TextItem, Any, dict[str, Any]]] = []
+
+    def join(lines: list[list[dict[str, Any]]]) -> None:
+        reader._join_lines(lines, found, transform, Decimal(100), DOCUMENT, 0)
+
+    join([[feet, inches], [feet, inches]])
+    assert [run["text"] for _, _, run in found] == ["2' -5\""]
+
+    join([[feet, inches]])
+    assert len(found) == 1
+
+    # Nor any run with one such character in it: `7' -5"` would share the inches.
+    join([[word("7'", 20), inches]])
+    assert len(found) == 1
+
+
+#: The same label drawn twice, well apart on one line: two labels.
+ALIKE = _pdf(
+    b"BT /F1 10 Tf 1 0 0 1 20 70 Tm (2' -5\") Tj ET\n"
+    b"BT /F1 10 Tf 1 0 0 1 120 70 Tm (2' -5\") Tj ET\n"
+)
+
+
+def test_two_labels_alike_are_each_read() -> None:
+    """**No false merge.** Read once means once for each label drawn, not once for each value: what
+    keeps a character to one label is the character itself. Outcome: both labels are read."""
+    contents = _contents(ALIKE)
+
+    assert [item.text for item in contents.texts] == ['2’ -5"', '2’ -5"']
+    assert len({item.image_extent for item in contents.texts}) == 2
