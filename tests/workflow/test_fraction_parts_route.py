@@ -137,7 +137,8 @@ class _Gate:
 
 
 class _Engine:
-    """Answers each piece the route draws in turn; reads any other picture as one `28"` filling it.
+    """Answers each piece the route draws in turn; reads any other picture as one `28 3/4"` filling
+    it — what the label says, so localized OCR records it, flagged, rather than refusing it (#846).
 
     **A piece is told apart by how it was made.** The route draws a piece: pure black on white. The
     localized OCR route shares this engine and hands it crops of a page render, whose thin lines are
@@ -158,7 +159,7 @@ class _Engine:
             self.pieces_shown += 1
             corners = (ImagePoint(0, 0), ImagePoint(1, 0), ImagePoint(1, 1), ImagePoint(0, 1))
         else:
-            texts = ('28"',)
+            texts = ('28 3/4"',)
             corners = (
                 ImagePoint(0, 0),
                 ImagePoint(width - 1, 0),

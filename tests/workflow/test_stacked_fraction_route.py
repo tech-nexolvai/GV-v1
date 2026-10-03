@@ -74,11 +74,14 @@ class _WholeCropOcr:
     name = "stacked-route-ocr"
     version = "test/1"
 
+    def __init__(self, text: str = '28"') -> None:
+        self.text = text
+
     def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
         assert rgb
         return (
             OcrItem(
-                text='28"',
+                text=self.text,
                 confidence=Decimal("0.9"),
                 image_extent=(
                     ImagePoint(0, 0),
@@ -163,7 +166,7 @@ def store() -> Iterator[LocalStore]:
 
 
 def _vision_result_for(
-    session: Session, store: LocalStore, data: bytes
+    session: Session, store: LocalStore, data: bytes, *, ocr_text: str = '28"'
 ) -> tuple[list[NovaRequest], dict[str, object]]:
     revision = _revision(session, store, data=data)
     session.commit()
@@ -172,7 +175,7 @@ def _vision_result_for(
         store,
         dpi=150,
         association=replace(SETTINGS, proximity_limit=Decimal("0.9")),
-        ocr_engine=_WholeCropOcr(),
+        ocr_engine=_WholeCropOcr(ocr_text),
         localized_ocr=LOCALIZED,
         vision_readers=(reader,),
     ).extract_pages(session, revision.id)
@@ -188,8 +191,11 @@ def _requests_for(session: Session, store: LocalStore, data: bytes) -> list[Nova
 def test_a_crop_that_shows_a_stacked_fraction_is_skipped_before_the_model_call(
     session: Session, store: LocalStore
 ) -> None:
-    """A real stamp, the real reader, a real crop: the guaranteed rejection is not a paid call."""
-    requests, payload = _vision_result_for(session, store, STACKED_SHEET)
+    """A real stamp, the real reader, a real crop: the guaranteed rejection is not a paid call.
+
+    OCR reads the label as its layout allows, so its box is recorded and offered to the vision
+    reader. A reading the layout rules out would have no row, and nothing to offer (#846)."""
+    requests, payload = _vision_result_for(session, store, STACKED_SHEET, ocr_text='28 3/4"')
 
     assert requests == []
     assert payload["vision_invocations"] == 0

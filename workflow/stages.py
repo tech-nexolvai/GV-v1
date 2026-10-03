@@ -186,7 +186,11 @@ from extraction.models.nova import (
     vision_configs_from_environment,
 )
 from extraction.models.sanitisation import DIGITS_PROMPT_ID
-from extraction.models.validation import STACKED_FRACTION_REASON, ValidationRejection
+from extraction.models.validation import (
+    STACKED_FRACTION_REASON,
+    ValidationRejection,
+    stacked_layout_refusal,
+)
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_reading, read_page
 from extraction.panels import propose_panel_roles
 from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
@@ -1480,6 +1484,8 @@ class DatabaseStages:
             ocr_items: tuple[OcrItem, ...] = ()
             ocr_rows: list[ObservationCandidate] = []
             ocr_fragments: tuple[OcrItem, ...] = ()
+            # Localized-OCR readings a stacked label's layout ruled out (#846); `None` off that route.
+            ocr_refusals: Counter[str] | None = None
             glyph_rows: list[ObservationCandidate] = []
             glyph_association: tuple[tuple[_LocatedOcrReading, ...], list[ObservationCandidate]] = (
                 (),
@@ -1639,14 +1645,16 @@ class DatabaseStages:
                     )
                     if plan.to_read:
                         route = "localized_ocr"
-                        ocr_items, ocr_rows, ocr_fragments = self._read_page_by_localized_ocr(
-                            session,
-                            version_id=version_id,
-                            data=data,
-                            page=page,
-                            task_run_id=run.task_run_id,
-                            layers=layers,
-                            regions=tuple(entry.region for entry in plan.to_read),
+                        ocr_items, ocr_rows, ocr_fragments, ocr_refusals = (
+                            self._read_page_by_localized_ocr(
+                                session,
+                                version_id=version_id,
+                                data=data,
+                                page=page,
+                                task_run_id=run.task_run_id,
+                                layers=layers,
+                                regions=tuple(entry.region for entry in plan.to_read),
+                            )
                         )
                         if self._glyph_route is not None:
                             glyph_rows, glyph_association, glyph_abstentions = (
@@ -1664,7 +1672,7 @@ class DatabaseStages:
                         # back to full-page OCR would reintroduce the tiny-text failure and could
                         # grab an unrelated number; reviewers can see the geometry set-asides.
                         route = "localized_ocr"
-                        ocr_items, ocr_rows, ocr_fragments = (), [], ()
+                        ocr_items, ocr_rows, ocr_fragments, ocr_refusals = (), [], (), Counter()
                 else:
                     route = "ocr"
                     ocr_items, ocr_rows, ocr_fragments = self._read_page_by_ocr(
@@ -1877,6 +1885,19 @@ class DatabaseStages:
                         # not a candidate, so without this the page would simply look smaller.
                         # Each box was still offered to the vision readers.
                         "ocr_fragments": len(ocr_fragments),
+                        # Localized-OCR readings a stacked label's layout ruled out (#846), refused
+                        # with no row: `None` off that route. Each reason names the reading.
+                        "localized_ocr_refusals": (
+                            None if ocr_refusals is None else sum(ocr_refusals.values())
+                        ),
+                        "localized_ocr_refusal_reasons": (
+                            None
+                            if ocr_refusals is None
+                            else [
+                                f"{count} × {reason}"
+                                for reason, count in ocr_refusals.most_common(REPORTED_REFUSALS)
+                            ]
+                        ),
                         # The shape reader (#756): `None` when it did not run on this page, which
                         # is not the same fact as its having read nothing.
                         "glyph_readings": None if glyph_abstentions is None else len(glyph_rows),
@@ -3093,14 +3114,22 @@ class DatabaseStages:
         task_run_id: UUID,
         layers: PageLayers,
         regions: Sequence[OutlinedTextRegion],
-    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate], tuple[OcrItem, ...]]:
+    ) -> tuple[tuple[OcrItem, ...], list[ObservationCandidate], tuple[OcrItem, ...], Counter[str]]:
         """Read vendor outlined-text regions as bounded, vendor-only high-DPI crops.
 
-        Returns what `_read_page_by_ocr` returns, and splits readings from fragments the same way.
+        Returns what `_read_page_by_ocr` returns, and splits readings from fragments the same way;
+        then why each reading it refused was refused.
 
         ``layers`` was read with the deployment's explicit geometry thresholds. ``region_crop``
         independently strips non-stamp annotations from each rendered crop, so a reviewer
         annotation cannot leak into OCR even when the original upload carries one.
+
+        **Each reading is held to the page's stacked fractions before it is recorded** (#846), by
+        `stacked_reading_check` — the vision readers' rule, on the reading's own box. One over a
+        stacked fraction is recorded with `STACKED_FRACTION_FLAG`, so no agreement and no
+        millimetre figure confirms it (#726). One a laid-out label rules out, as it does a stacked
+        `3/4"` read as `3 3/4"`, gets no row and is counted. `layers.stacked_fractions` holds the
+        fractions set in text too. Where this falls back to full-page OCR, nothing is held to them.
 
         Candidate polygons remain in the shared reader DPI frame. The extraction run configuration
         separately records the 600-DPI crop pixels RapidOCR actually saw, avoiding the provenance
@@ -3109,22 +3138,28 @@ class DatabaseStages:
         if page.media_box is None or page.crop_box is None:
             # A manifest row without transform metadata cannot carry a crop reading back to page
             # coordinates. Full-page OCR is the honest fallback rather than a made-up polygon.
-            return self._read_page_by_ocr(
-                session,
-                version_id=version_id,
-                data=data,
-                page=page,
-                task_run_id=task_run_id,
+            return (
+                *self._read_page_by_ocr(
+                    session,
+                    version_id=version_id,
+                    data=data,
+                    page=page,
+                    task_run_id=task_run_id,
+                ),
+                Counter(),
             )
         media = tuple(Decimal(value) for value in page.media_box)
         crop = tuple(Decimal(value) for value in page.crop_box)
         if len(media) != 4 or len(crop) != 4:
-            return self._read_page_by_ocr(
-                session,
-                version_id=version_id,
-                data=data,
-                page=page,
-                task_run_id=task_run_id,
+            return (
+                *self._read_page_by_ocr(
+                    session,
+                    version_id=version_id,
+                    data=data,
+                    page=page,
+                    task_run_id=task_run_id,
+                ),
+                Counter(),
             )
         transform = PageTransform(
             dpi=self._dpi,
@@ -3152,6 +3187,17 @@ class DatabaseStages:
                 ),
             )
             readings, fragments = _split_ocr_readings(items)
+            held: list[OcrItem] = []
+            refusals: Counter[str] = Counter()
+            for item in readings:
+                stacked, refusal = stacked_reading_check(
+                    item.image_extent, item.text, layers.stacked_fractions
+                )
+                if refusal is not None:
+                    refusals[refusal] += 1
+                    continue
+                held.append(replace(item, stacked=True) if stacked else item)
+            readings = tuple(held)
             ocr_run = open_extraction_run(
                 session,
                 task_run_id=task_run_id,
@@ -3161,6 +3207,17 @@ class DatabaseStages:
                     f"dpi={self._dpi};route=localized_vendor_regions;crop_dpi={VISION_CROP_DPI};"
                     f"{self._localized_ocr.config_hash if self._localized_ocr is not None else ''}"
                     f";{OCR_FRAGMENTS_CONFIG}"
+                    # Which readings are flagged and which refused depends on the detector's
+                    # settings (#846), so a run under other numbers is another run. A fingerprint
+                    # of them, because written out they run past the column's 200 characters.
+                    + (
+                        ""
+                        if self._association is None
+                        else ";stacked="
+                        + hashlib.sha256(
+                            self._association.fraction_bar.config_hash.encode()
+                        ).hexdigest()[:16]
+                    )
                 ),
                 # Candidate polygons use this full-page frame. The actual pixel resolution used by
                 # OCR is separately retained in config_hash above.
@@ -3175,7 +3232,7 @@ class DatabaseStages:
                 page_index=page.index,
                 flush=False,
             )
-            return readings, self._ordered_ocr_rows(readings, rows), fragments
+            return readings, self._ordered_ocr_rows(readings, rows), fragments, refusals
 
     def _read_page_by_glyphs(
         self,
@@ -3202,7 +3259,9 @@ class DatabaseStages:
         Its rows are not given to the bounded agent.
 
         **A stacked fraction is flagged** (#756 D3): read and pre-filled, never confirmed by any
-        number of readers (#726).
+        number of readers (#726). That is a reading the reader composed across a bar, or one lying
+        over a stacked fraction found on the page (`stacked_reading_check`, #846). A reading a
+        laid-out label rules out gets no row: it abstains, under the sentence saying why.
 
         **Its own extraction run**, keyed on the template set's hash, so a reading made with one set
         is never mistaken for a reading made with another. A re-run finds its rows and reads nothing.
@@ -3254,6 +3313,12 @@ class DatabaseStages:
             except (TypeError, ValueError):
                 abstentions["the label lies outside the visible page"] += 1
                 continue
+            stacked, refusal = stacked_reading_check(
+                corners, reading.text, layers.stacked_fractions
+            )
+            if refusal is not None:
+                abstentions[refusal] += 1
+                continue
             row = ObservationCandidate(
                 document_version_id=version_id,
                 page_id=page.id,
@@ -3267,7 +3332,7 @@ class DatabaseStages:
                 polygon=[[corner.x, corner.y] for corner in corners],
                 coordinate_space="image",
                 confidence=None,
-                ambiguity_flags=[STACKED_FRACTION_FLAG] if reading.stacked else [],
+                ambiguity_flags=[STACKED_FRACTION_FLAG] if reading.stacked or stacked else [],
             )
             # Set before the insert: the table is append-only (see `record_candidates`).
             row.corroboration_status, row.corroboration_lane = dual_unit_lane(
@@ -4776,6 +4841,30 @@ def _vision_pre_call_refusal(
     if crop_shows_a_stacked_fraction(crop_box, fractions):
         return STACKED_FRACTION_REASON
     return None
+
+
+def stacked_reading_check(
+    corners: Sequence[ImagePoint], reading: str, fractions: Sequence[StackedFraction]
+) -> tuple[bool, str | None]:
+    """Whether a reading lies over a stacked fraction, and why the drawing rules it out, if it does.
+
+    For the readers that say where they read — localized OCR and the shape reader (#846) — what
+    `_vision_pre_call_refusal` is for a model's crop. **The same rule, not a copy of it**: the box
+    round `corners` is held to `crop_shows_a_stacked_fraction`, so this finds a stacked fraction in
+    exactly the boxes that check would refuse as a crop, edges included. `corners` are page pixels
+    at the stage's dpi, as a fraction's `image_extent` is.
+
+    Over a laid-out label the reading is also held to its digit counts (`stacked_layout_refusal`,
+    #834): the sentence that comes back says why it cannot be what the drawing shows, and the caller
+    records no row for it. A fraction set in text has no layout to count, so it can flag a reading
+    and never refuse one.
+    """
+    xs = [corner.x for corner in corners]
+    ys = [corner.y for corner in corners]
+    box = (min(xs), min(ys), max(xs), max(ys))
+    if not crop_shows_a_stacked_fraction(box, fractions):
+        return False, None
+    return True, stacked_layout_refusal(reading, stacked_layouts_shown(box, fractions))
 
 
 def stored_polygon(
