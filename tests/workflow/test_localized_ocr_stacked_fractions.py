@@ -173,7 +173,7 @@ def test_a_stacked_label_read_by_localized_ocr_is_stored_flagged(
         assert (row.value_numerator, row.value_denominator, row.unit) == (115, 4, "in")
         assert STACKED_FRACTION_FLAG in row.ambiguity_flags
         assert (row.corroboration_status, row.corroboration_lane) == (None, None)
-    assert payload["localized_ocr_refusals"] == 0
+    assert payload["ocr_refusals"] == 0
 
 
 def test_a_reading_of_the_label_without_its_fraction_is_not_flagged(
@@ -207,9 +207,9 @@ def test_a_localized_reading_the_layout_rules_out_is_refused(
     payload = _extract(session, store, *texts)
 
     assert _ocr_rows(session) == []
-    refused = payload["localized_ocr_refusals"]
+    refused = payload["ocr_refusals"]
     assert isinstance(refused, int) and refused >= 1
-    reasons = payload["localized_ocr_refusal_reasons"]
+    reasons = payload["ocr_refusal_reasons"]
     assert isinstance(reasons, list) and reasons
     assert all(repr(" ".join(texts)) in reason for reason in reasons)
 
