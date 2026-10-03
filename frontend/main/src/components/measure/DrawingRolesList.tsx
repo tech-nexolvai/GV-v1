@@ -6,6 +6,8 @@ import {
   type DrawingRole,
   type DrawingView,
 } from './drawingRoleChoices.js';
+import { DrawingRoleFeedback } from './DrawingRolesFeedback.js';
+import type { MeasurementDecisionState } from './measurementDecisionSave.js';
 
 /**
  * Which drawing is which, on sheets that hold both (#795).
@@ -21,12 +23,11 @@ import {
  */
 export function DrawingRolesList({
   views,
-  saving,
+  decisions = {},
   onChoose,
 }: {
   views: readonly DrawingView[];
-  /** The drawing whose answer is being saved, so its buttons cannot be pressed twice. */
-  saving: string | null;
+  decisions?: Readonly<Record<string, MeasurementDecisionState | undefined>>;
   onChoose: (view: DrawingView, role: DrawingRole) => void;
 }) {
   const open = stillToConfirm(views);
@@ -74,13 +75,14 @@ export function DrawingRolesList({
                     type="button"
                     className={`btn btn--sm ${view.role === role ? 'btn--primary' : 'btn--subtle'}`}
                     aria-pressed={view.role === role}
-                    disabled={saving === view.view_id}
+                    disabled={decisions[view.view_id]?.kind === 'saving'}
                     onClick={() => onChoose(view, role)}
                   >
                     {ROLE_LABEL[role]}
                   </button>
                 ))}
               </div>
+              <DrawingRoleFeedback state={decisions[view.view_id]} />
             </li>
           );
         })}

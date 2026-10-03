@@ -13,7 +13,7 @@ import { type PartDrawing, type PartKind, type SuggestedPart } from './drawingPa
 import { DrawingPartsList, type NewPart } from './DrawingPartsList.js';
 import { PartPicture, PartsLoadState, type PartImageState } from './PartRecovery.js';
 import { loadPassageImage } from './passageImage.js';
-import { createPartDecisionSaver, type PartDecisionState } from './partDecisionSave.js';
+import { createMeasurementDecisionSaver as createPartDecisionSaver, type MeasurementDecisionState as PartDecisionState } from './measurementDecisionSave.js';
 import './DrawingParts.css';
 
 /**

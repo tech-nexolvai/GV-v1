@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { createPartDecisionSaver, type PartDecisionState } from '../src/components/measure/partDecisionSave.js';
+import { createMeasurementDecisionSaver as createPartDecisionSaver, type MeasurementDecisionState as PartDecisionState } from '../src/components/measure/measurementDecisionSave.js';
 import { PartDecisionFeedback } from '../src/components/measure/PartDecisionFeedback.js';
 
 for (const failFirst of [true, false]) {

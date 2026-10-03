@@ -223,3 +223,32 @@ This is in-memory synthetic QA only. The harness accepts only its two known part
 explicit mode; other writes remain refused. Controller tests exercise both completion orders,
 duplicate-submit prevention, exact error/code preservation and the independent add-form key.
 Part decisions retain the backend's role restrictions and per-person confirmation requirement.
+
+## Drawing roles: retry, independent saves and stable sections
+
+Run `GV_QA_PORT=5207 node tests/browser-qa-server.mjs` and open
+`http://127.0.0.1:5207/?roles=decisions&reset=1#/review/00000000-0000-4000-8000-000000000101`.
+
+1. Open Measurements. The initial drawing-list requests fail with synthetic 503s (twice for
+   StrictMode). Enter `26 in` in Vendor depth, then Retry drawing list. The exact draft must stay;
+   the error must disappear and exactly one “Which drawing is which?” section must appear.
+2. Choose Architect's drawing for panel 1, then Vendor's drawing for panel 2 while panel 1 is
+   pending. Each row disables only its own choices and waits for its own acknowledgement.
+   Panel 1 refuses after 12s; panel 2 acknowledges after 1.5s. The refusal appears beside panel 1;
+   panel 2 stays saved, with only its role selected. No suggestion becomes a saved role by itself.
+3. Explicitly choose Architect's drawing again for panel 1. Both rows now show saved, the list
+   says All confirmed, and `26 in` remains in the form. Confirmation triggers the existing
+   parent read refresh; it does not run checks or save measurement values.
+4. `/__qa` must show only three role POSTs: shop 201, arch 503, arch 201; their bodies are exactly
+   `{role: "shop"}` and `{role: "arch"}`. No retry may submit a role without the person's click.
+
+Browser evaluation caught a separate reconciliation bug: sibling DrawingRoles and DrawingParts
+used the same package key. A successful role refresh left duplicate lists and stale pending/error
+DOM. Their keys now have separate roles/parts prefixes while remaining package-scoped. The retry
+and success flow was rerun to verify one section and correct receipts; a source regression guard
+also protects the distinct keys. Unit tests cover acknowledgement-only state, same-row locking,
+exact escaped server errors, retained recorded roles and quiet successful empty lists.
+
+This remains synthetic UI verification, not proof of live OCR or backend persistence. Backend
+code, schemas and customer records are unchanged. The previously observed live parts-route 404
+and 500-candidate list limit are not resolved by this phase.

@@ -1,4 +1,4 @@
-import type { PartDecisionState } from './partDecisionSave.js';
+import type { MeasurementDecisionState as PartDecisionState } from './measurementDecisionSave.js';
 
 export function PartDecisionFeedback({ state }: { state?: PartDecisionState }) {
   if (!state) return null;

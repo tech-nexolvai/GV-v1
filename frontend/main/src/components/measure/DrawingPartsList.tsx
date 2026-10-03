@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { PartDecisionFeedback } from './PartDecisionFeedback.js';
-import type { PartDecisionState } from './partDecisionSave.js';
+import type { MeasurementDecisionState as PartDecisionState } from './measurementDecisionSave.js';
 
 import {
   KIND_LABEL,

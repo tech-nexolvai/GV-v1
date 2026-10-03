@@ -896,14 +896,14 @@ export function MeasurementPanel({
           a package of two separate PDFs. Each answer re-reads the readings, which now have a side. */}
       {packageId && (
         <DrawingRoles
-          key={packageId}
+          key={`roles:${packageId}`}
           packageId={packageId}
           onConfirmed={() => setReload((count) => count + 1)}
         />
       )}
 
       {/* **The parts of each vendor drawing** (#882): suggested, and each one decided by a person. */}
-      {packageId && <DrawingParts key={packageId} packageId={packageId} refresh={reload} />}
+      {packageId && <DrawingParts key={`parts:${packageId}`} packageId={packageId} refresh={reload} />}
 
       <section className="enter-values__section">
         <h2 data-measure-section="overview" tabIndex={-1}>Measurements</h2>
