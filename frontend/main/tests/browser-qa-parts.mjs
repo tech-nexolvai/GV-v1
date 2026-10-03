@@ -10,3 +10,13 @@ export const fixtureParts = { drawings: [{
     has_crop: true, decision: null,
   }],
 }] };
+
+export function decisionPartsFixture() {
+  const result = structuredClone(fixtureParts);
+  result.drawings[0].parts.push({ ...structuredClone(result.drawings[0].parts[0]),
+    proposal_id: '00000000-0000-4000-8000-000000000403', position: 2,
+    suggested_code: 'SYNTHETIC-SECOND', has_crop: false,
+    left_end: { x: '0.5', y: '0.5' }, right_end: { x: '0.75', y: '0.5' },
+  });
+  return result;
+}

@@ -1,4 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
+import { PartDecisionFeedback } from './PartDecisionFeedback.js';
+import type { PartDecisionState } from './partDecisionSave.js';
 
 import {
   KIND_LABEL,
@@ -35,15 +37,15 @@ export interface NewPart {
  */
 export function DrawingPartsList({
   drawings,
-  saving,
+  decisions = {},
   renderCrop,
   onConfirm,
   onWithdraw,
   onAdd,
 }: {
   drawings: readonly PartDrawing[];
-  /** The part (or, while adding, the drawing) being saved, so its buttons cannot be pressed twice. */
-  saving: string | null;
+  /** Independent state per part, or per drawing while adding, never one shared pending row. */
+  decisions?: Readonly<Record<string, PartDecisionState | undefined>>;
   /** The stored picture of a part that has one. */
   renderCrop: (drawing: PartDrawing, part: SuggestedPart) => ReactNode;
   onConfirm: (part: SuggestedPart, kind: PartKind, code: string | null) => void;
@@ -76,7 +78,7 @@ export function DrawingPartsList({
                   key={part.proposal_id}
                   drawing={drawing}
                   part={part}
-                  saving={saving === part.proposal_id}
+                  state={decisions[part.proposal_id]}
                   crop={part.has_crop ? renderCrop(drawing, part) : null}
                   onConfirm={onConfirm}
                   onWithdraw={onWithdraw}
@@ -85,7 +87,7 @@ export function DrawingPartsList({
             </ol>
           )}
           {drawing.can_confirm && (
-            <AddPartForm drawing={drawing} saving={saving === drawing.view_id} onAdd={onAdd} />
+            <AddPartForm drawing={drawing} state={decisions[drawing.view_id]} onAdd={onAdd} />
           )}
         </article>
       ))}
@@ -96,19 +98,20 @@ export function DrawingPartsList({
 function PartRow({
   drawing,
   part,
-  saving,
+  state,
   crop,
   onConfirm,
   onWithdraw,
 }: {
   drawing: PartDrawing;
   part: SuggestedPart;
-  saving: boolean;
+  state?: PartDecisionState;
   crop: ReactNode;
   onConfirm: (part: SuggestedPart, kind: PartKind, code: string | null) => void;
   onWithdraw: (part: SuggestedPart) => void;
 }) {
   const [code, setCode] = useState(() => startingCode(part));
+  const saving = state?.kind === 'saving';
   const page = drawing.page_index + 1;
   const confirmedKind = part.decision?.decision === 'confirmed' ? part.decision.kind : null;
   return (
@@ -169,6 +172,7 @@ function PartRow({
           Not a part
         </button>
       </div>
+      <PartDecisionFeedback state={state} />
     </li>
   );
 }
@@ -181,14 +185,15 @@ function PartRow({
  */
 function AddPartForm({
   drawing,
-  saving,
+  state,
   onAdd,
 }: {
   drawing: PartDrawing;
-  saving: boolean;
+  state?: PartDecisionState;
   onAdd: (drawing: PartDrawing, part: NewPart) => void;
 }) {
   const ends = endChoices(drawing);
+  const saving = state?.kind === 'saving';
   const [kind, setKind] = useState<PartKind>('filler');
   const [code, setCode] = useState('');
   const [from, setFrom] = useState('');
@@ -265,6 +270,7 @@ function AddPartForm({
       >
         Add this part
       </button>
+      <PartDecisionFeedback state={state} />
     </form>
   );
 }

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { project, populated, empty, packages, findings, chains, needed, candidates, cropPng, samplePdf, sampleWorkbook } from './browser-qa-fixtures.mjs';
 import { createScenarioState, handleScenario, scenarioSnapshot, scenarioPackages, scenarioFindings, fixturePdf, prepareUploadedFixture } from './browser-qa-scenarios.mjs';
 import { pageFixture } from './browser-qa-pages.mjs';
-import { fixtureParts } from './browser-qa-parts.mjs';
+import { fixtureParts, decisionPartsFixture } from './browser-qa-parts.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const failCropOnce = new Set();
@@ -24,6 +24,8 @@ let readingsAttempts = 0;
 let partsMode = '';
 let partsAttempts = 0;
 let partCropAttempts = 0;
+let decisionParts = decisionPartsFixture();
+const partDecisionAttempts = new Map();
 let scenario = createScenarioState();
 const port = Number(process.env.GV_QA_PORT ?? '5193');
 const qa = {
@@ -47,6 +49,8 @@ const qa = {
         partsMode = url.searchParams.get('parts') ?? '';
         partsAttempts = 0;
         partCropAttempts = 0;
+        decisionParts = decisionPartsFixture();
+        partDecisionAttempts.clear();
         failCropOnce.clear();
         settingCropAttempts.clear();
         const requestedScenario = url.searchParams.get('scenario');
@@ -93,6 +97,28 @@ const qa = {
         if (scenario.name === 'decision-save' && req.method === 'POST' && /\/(evidence|exceptions)$/.test(path)) await new Promise(resolve => setTimeout(resolve, 1500));
         return json(localResponse.body, localResponse.status);
       }
+      if (partsMode === 'decisions' && req.method === 'POST' &&
+          path.startsWith(`/api/v1/projects/${project}/packages/${populated}/parts/`)) {
+        const match = path.match(/\/parts\/([^/]+)\/(confirm|withdraw)$/);
+        const part = match && decisionParts.drawings[0].parts.find(item => item.proposal_id === match[1]);
+        if (!part) return refusal('Unknown synthetic part. No write was made.', 404);
+        if (match[2] === 'confirm' && (!['cabinet', 'filler', 'countertop'].includes(requestBody.kind) ||
+          (requestBody.code !== null && (typeof requestBody.code !== 'string' || requestBody.code.length > 200)))) {
+          return refusal('Invalid synthetic part decision.', 422);
+        }
+        const attempts = (partDecisionAttempts.get(part.proposal_id) ?? 0) + 1;
+        partDecisionAttempts.set(part.proposal_id, attempts);
+        const fails = part.position === 1 && attempts === 1;
+        await new Promise(resolve => setTimeout(resolve, fails ? 12000 : 1500));
+        scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path,
+          status: fails ? 503 : 201, result: 'Synthetic part decision only', body: requestBody });
+        if (fails) return refusal('Synthetic part decision refused. Retry explicitly.', 503);
+        part.decision = { decision: match[2] === 'confirm' ? 'confirmed' : 'withdrawn',
+          kind: match[2] === 'confirm' ? requestBody.kind : null,
+          code: match[2] === 'confirm' ? requestBody.code : null,
+          decided_by: 'Synthetic QA reviewer', decided_at: '2030-01-01T00:00:00Z' };
+        return json(part, 201);
+      }
       if (req.method === 'POST' && /\/chat(?:\/stream)?$/.test(path)) {
         const { question = '' } = requestBody;
         scenario.events.push({ sequence: scenario.events.length + 1, method: req.method, path, status: 200, result: 'Synthetic structured fallback; no model connection', question });
@@ -127,7 +153,7 @@ const qa = {
       if (path.endsWith('/parts')) {
         partsAttempts++;
         if (partsMode === 'retry' && partsAttempts <= 2) return refusal('Synthetic parts list temporarily unavailable.', 503);
-        return json(partsMode ? fixtureParts : { drawings: [] });
+        return json(partsMode === 'decisions' ? decisionParts : partsMode ? fixtureParts : { drawings: [] });
       }
       if (path.endsWith('/findings/summary')) return json({ total: rows.length, failed: rows.length ? 1 : 0, passed: rows.length ? 1 : 0, review_required: rows.length ? 1 : 0, not_found: rows.length ? 1 : 0, no_applicable_rule: 0, critical_failed: 0 });
       if (path.endsWith('/findings')) return json({ items: rows, next_cursor: null, limit: 50, ordering: 'synthetic-test-order' });

@@ -13,6 +13,7 @@ import { type PartDrawing, type PartKind, type SuggestedPart } from './drawingPa
 import { DrawingPartsList, type NewPart } from './DrawingPartsList.js';
 import { PartPicture, PartsLoadState, type PartImageState } from './PartRecovery.js';
 import { loadPassageImage } from './passageImage.js';
+import { createPartDecisionSaver, type PartDecisionState } from './partDecisionSave.js';
 import './DrawingParts.css';
 
 /**
@@ -25,8 +26,8 @@ import './DrawingParts.css';
  */
 export function DrawingParts({ packageId, refresh }: { packageId: string; refresh: number }) {
   const [drawings, setDrawings] = useState<PartDrawing[] | null>(null);
-  const [saving, setSaving] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [decisions, setDecisions] = useState<Record<string, PartDecisionState>>({});
+  const [saveDecision] = useState(createPartDecisionSaver);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [retry, setRetry] = useState(0);
@@ -53,17 +54,11 @@ export function DrawingParts({ packageId, refresh }: { packageId: string; refres
     };
   }, [packageId, refresh, decided, retry]);
 
-  async function save(key: string, decide: () => Promise<unknown>) {
-    setSaving(key);
-    setError(null);
-    try {
-      await decide();
-      setDecided((count) => count + 1);
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : String(caught));
-    } finally {
-      setSaving(null);
-    }
+  function save(key: string, decide: () => Promise<unknown>) {
+    return saveDecision(key, decide, {
+      state: (id, state) => setDecisions((prior) => ({ ...prior, [id]: state })),
+      saved: () => setDecided((count) => count + 1),
+    });
   }
 
   function confirm(part: SuggestedPart, kind: PartKind, code: string | null) {
@@ -86,17 +81,12 @@ export function DrawingParts({ packageId, refresh }: { packageId: string; refres
         onRetry={() => { setLoading(true); setRetry((count) => count + 1); }} />
       {!!drawings?.length && <DrawingPartsList
         drawings={drawings}
-        saving={saving}
+        decisions={decisions}
         renderCrop={(_drawing, part) => <PartCrop packageId={packageId} part={part} />}
         onConfirm={confirm}
         onWithdraw={withdraw}
         onAdd={add}
       />}
-      {error && (
-        <p className="enter-values__error" role="alert">
-          {error}
-        </p>
-      )}
     </>
   );
 }
