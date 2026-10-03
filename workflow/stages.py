@@ -74,7 +74,7 @@ from app.models.document import (
     PackageRevisionDocument,
     Page,
 )
-from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier, ViewRole
+from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier, ViewRole, ViewRoleProposal
 from app.models.evidence import (
     EvidenceArtifact,
     EvidenceArtifactKind,
@@ -160,6 +160,13 @@ from extraction.layout import (
 )
 from extraction.localized_ocr import read_localized_vendor_regions
 from extraction.manifest import build_manifest
+from extraction.model.part_proposals import (
+    PROPOSER_SOURCE,
+    PROPOSER_VERSION,
+    PrintedText,
+    ViewOutline,
+    propose_parts,
+)
 from extraction.models.context import AssembledContext
 from extraction.models.invocations import InvocationRecord
 from extraction.models.nova import (
@@ -216,6 +223,7 @@ from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from verdict.outcomes import Outcome
+from vocabulary.part_kinds import PartKind
 from workflow.association import (
     AssociationSettings,
     LocalizedOcrSettings,
@@ -235,6 +243,7 @@ from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
+from workflow.parts import record_part_proposal
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
@@ -1802,6 +1811,26 @@ class DatabaseStages:
                     + (layers.drawing_segments if layers is not None else ())
                 ),
             )
+            # **What each vendor drawing's parts might be (#868)**, suggested for a person to confirm
+            # and never written as items. The same strokes, and the same readings less the
+            # reviewer's markup: a code is what the vendor printed on a part, and a reviewer's note
+            # beside it is a reviewer's word about the drawing, not part of it.
+            parts = self._propose_page_parts(
+                session,
+                page=page,
+                readings=(
+                    vector_association_inputs,
+                    ocr_association_inputs,
+                    _vision_association_inputs(vision_association_links, association_sources),
+                    ((layers.vendor_text if layers is not None else ()), cad_text_rows),
+                    (stamp_texts, stamp_text_rows),
+                    glyph_association,
+                ),
+                lines=(
+                    (read.segments if read is not None else ())
+                    + (layers.drawing_segments if layers is not None else ())
+                ),
+            )
             results.append(
                 PageResult(
                     index=page.index,
@@ -1924,6 +1953,9 @@ class DatabaseStages:
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
                         "associations": associated,
+                        # The parts suggested in this page's vendor drawings (#868), counted; `None`
+                        # when no association settings were stated, which is not the same as none.
+                        "part_proposals": parts,
                         "has_vector_text": page.has_vector_text,
                         # Which route read this page. Two readings of the same page by different
                         # routes are the basis of corroboration, so the route has to be visible.
@@ -2652,6 +2684,109 @@ class DatabaseStages:
                     lines_on_page=len(detected.lines),
                 )
             )
+
+    def _propose_page_parts(
+        self,
+        session: Session,
+        *,
+        page: Page,
+        readings: Sequence[tuple[Sequence[ReadItem], Sequence[ObservationCandidate]]],
+        lines: tuple[DimensionExtent, ...],
+    ) -> dict[str, int] | None:
+        """Suggest the parts of each vendor drawing on the page, as `part_proposals` rows (#868).
+
+        Returns counts, or `None` when no association settings were stated. The detector takes its
+        four lengths from them, so without them there are no dimensions to suggest anything from,
+        which is a different fact from a page that has none.
+
+        **Suggestions only.** Every row is written by `record_part_proposal`, and no drawing item is
+        written: only a person's confirmation makes one (#852).
+
+        **Which drawing is the vendor's** is the role a person confirmed, or, where nobody has yet,
+        the role the sheet's own label suggests (#710). A suggestion is enough to aim a suggestion:
+        a person decides on every part before anything is made of it.
+
+        **Its one tolerance is the detector's own witness tolerance.** That is the number `detect()`
+        used to decide which dimensions run end to end, and the suggester asks the same kind of
+        question three times: whether two strokes are one dimension drawn twice, which chained
+        dimensions share the lowest row, and whether a countertop's ends meet its cabinets'. A
+        second number for the same question could disagree with the first. The call to `detect()`
+        is the one `_associate_page` makes, on the same strokes under the same settings, so where
+        both run they find the same lines.
+        """
+        settings = self._association
+        if settings is None:
+            return None
+        counts = {"cabinets": 0, "countertops": 0, "with_code": 0, "nested_views": 0}
+        views = list(
+            session.scalars(
+                select(DrawingView)
+                .where(DrawingView.page_id == page.id)
+                .order_by(DrawingView.tag, DrawingView.id)
+            )
+        )
+        if not views:
+            return counts
+
+        with traced(
+            "extraction.page.part_proposals",
+            document_version_id=str(page.document_version_id),
+            page_index=page.index,
+            extractor_version=PROPOSER_VERSION,
+        ):
+            outlines = [
+                ViewOutline(
+                    view_id=view.id,
+                    region=Polygon(
+                        # Kept as text by `record_panel_view`, so read back exactly.
+                        points=tuple(
+                            StoredPoint(Decimal(x), Decimal(y))
+                            for x, y in cast(list[list[str]], view.region["points"])
+                        ),
+                        space="stored",
+                        document_version_id=page.document_version_id,
+                        page=page.index,
+                    ),
+                    vendor=_view_role(session, view) == ViewRole.SHOP.value,
+                )
+                for view in views
+            ]
+            detected = detect(
+                lines,
+                witness_tolerance=settings.witness_tolerance,
+                minimum_span=settings.minimum_span,
+                straightness=settings.straightness,
+                crossing_margin=settings.crossing_margin,
+            )
+            texts = [
+                PrintedText(candidate_id=row.id, text=row.raw_text, extent=item.extent)
+                for items, rows in readings
+                for item, row in zip(items, rows, strict=True)
+            ]
+            proposed = propose_parts(
+                outlines, detected, texts, edge_tolerance=settings.witness_tolerance
+            )
+            for part in proposed.parts:
+                record_part_proposal(
+                    session,
+                    drawing_view_id=part.view_id,
+                    kind=part.kind,
+                    extent=[(point.x, point.y) for point in part.extent.points],
+                    defining_line=(
+                        (part.defining_line.start.x, part.defining_line.start.y),
+                        (part.defining_line.end.x, part.defining_line.end.y),
+                    ),
+                    code_as_printed=None if part.code is None else part.code.text,
+                    code_candidate_id=None if part.code is None else part.code.candidate_id,
+                    reason=part.reason,
+                    source=PROPOSER_SOURCE,
+                    source_version=PROPOSER_VERSION,
+                )
+                counts["countertops" if part.kind is PartKind.COUNTERTOP else "cabinets"] += 1
+                if part.code is not None:
+                    counts["with_code"] += 1
+            counts["nested_views"] = len(proposed.nested)
+        return counts
 
     def _read_page_markup(
         self,
@@ -4521,6 +4656,18 @@ def _record_panel_views(session: Session, page: Page, layers: PageLayers) -> dic
         counts["views"] += 1
         counts[f"suggested_{proposal.role}" if proposal.role else "no_suggestion"] += 1
     return counts
+
+
+def _view_role(session: Session, view: DrawingView) -> str | None:
+    """The role a person confirmed for a view, or else the latest one its label suggests (#710)."""
+    if view.role is not None:
+        return view.role
+    return session.execute(
+        select(ViewRoleProposal.proposed_role)
+        .where(ViewRoleProposal.drawing_view_id == view.id)
+        .order_by(ViewRoleProposal.created_at.desc(), ViewRoleProposal.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 def region_facts(
