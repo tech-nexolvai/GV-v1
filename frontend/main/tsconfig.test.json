@@ -39,6 +39,8 @@
     "src/components/measure/drawingPartChoices.ts",
     "src/components/measure/CountertopRunsList.tsx",
     "src/components/measure/countertopRunChoices.ts",
+    "src/components/measure/ReadingPartsList.tsx",
+    "src/components/measure/readingPartChoices.ts",
     "src/components/measure/SettingCitation.tsx",
     "src/components/measure/settingPointers.ts",
     "src/components/measure/settingSources.ts",

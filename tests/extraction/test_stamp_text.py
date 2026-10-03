@@ -447,3 +447,40 @@ def test_what_is_left_of_a_word_once_its_label_is_composed_stays_set_aside() -> 
 )
 def test_path_ink_counts_the_colours_a_path_shows(path: dict[str, object], ink: bool) -> None:
     assert path_ink(path) is ink
+
+
+# ---------------------------------------------------------------------------
+# Neighbouring labels are read apart (#904)
+# ---------------------------------------------------------------------------
+
+#: Two labels side by side, millimetres over bracketed inches, reading up the page, set as
+#: AI_Set_1 pages 4 and 5 set theirs in their pasted drawings: so close along their line that each
+#: row comes back as one word. The labels are invented.
+SIDE_BY_SIDE_LABELS = b"".join(
+    b"BT /F1 3.25 Tf 0 1 -1 0 %.2f %.2f Tm (%s) Tj ET " % (x, y, text)
+    for x, y, text in (
+        (152.4, 520.0, b"46"),
+        (152.4, 524.48, b"97"),
+        (156.9, 519.86, b"[2]"),
+        (156.9, 524.34, b"[4]"),
+    )
+)
+
+
+def test_two_labels_side_by_side_in_a_pasted_drawing_each_read_their_own_value() -> None:
+    """**The gap this closes** (#904). Measured on `AI_Set_1` pages 4 and 5: two sideways labels
+    came back as one word of millimetres and one of bracketed inches, and both reached a person
+    blank. Outcome: two readings, each exactly its own inches, neither marked stacked."""
+    reading = _read(SIDE_BY_SIDE_LABELS)
+
+    assert sorted((item.text, item.stacked) for item in reading.contents.texts) == [
+        ("46 [2]", False),
+        ("97 [4]", False),
+    ]
+    assert {item.text: _exact(item.text) for item in reading.contents.texts} == {
+        "46 [2]": Fraction(2),
+        "97 [4]": Fraction(4),
+    }
+    first, second = reading.contents.texts
+    assert first.image_extent != second.image_extent
+    assert reading.contents.set_aside == ()

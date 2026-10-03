@@ -28,7 +28,9 @@ Environment:
     GV_DEV_STORAGE      where uploaded drawings go (default ./.dev-storage)
     GV_DEV_PORT         default 8000
     GV_RUN_EDGE_TOLERANCE  how far a part may stray past a countertop and still be suggested as
-                        part of its run (#893). No default: unset, no run is suggested or confirmed.
+                        part of its run (#893), and how far a reading's ends may lie from a part's
+                        and still be suggested as its width (#913). No default: unset, no run or
+                        reading is suggested, and no run is confirmed.
 
 Verification: `tests/test_dev_server.py`
 """
