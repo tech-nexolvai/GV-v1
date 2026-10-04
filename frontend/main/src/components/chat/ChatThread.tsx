@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CheckCircle2, XCircle, AlertCircle, CircleDashed, Sparkles, Shield } from 'lucide-react';
+import { Sparkles, Shield } from 'lucide-react';
 import { OUTCOME_LABELS } from '../../data/outcomeLabels.js';
 import type { ChatMessage, Finding } from '../../data/types';
 import { FindingCard } from './FindingCard';
@@ -7,6 +7,8 @@ import { ThinkingStream } from './ThinkingStream';
 import { StreamingText } from './StreamingText';
 import { ChatMarkdown } from './ChatMarkdown';
 import { FindingsTable } from '../output/FindingsTable.js';
+import { OutcomeIcon } from '../ui/OutcomeIcon.js';
+import type { DecisionSaveResult, SimpleReviewAction } from './decisionSave';
 import './ChatThread.css';
 
 interface ChatThreadProps {
@@ -14,9 +16,9 @@ interface ChatThreadProps {
   selectedFinding: string | null;
   recordedFindingCount: number;
   onViewEvidence: (finding: Finding) => void;
-  onAction: (findingId: string, action: 'confirm' | 'correct' | 'except' | 'dismiss', note?: string) => void;
-  onCorrect: (findingId: string, correctedValue: string) => void;
-  onExcept: (findingId: string, reason: string, expiresAt: string) => void;
+  onAction: (findingId: string, action: SimpleReviewAction) => Promise<DecisionSaveResult>;
+  onCorrect: (findingId: string, correctedValue: string) => Promise<DecisionSaveResult>;
+  onExcept: (findingId: string, reason: string, expiresAt: string) => Promise<DecisionSaveResult>;
 }
 
 export function ChatThread({
@@ -155,6 +157,7 @@ export function ChatThread({
                     <FindingCard
                       finding={finding}
                       isSelected={selectedFinding === finding.id}
+                      defaultExpanded
                       onViewEvidence={onViewEvidence}
                       onAction={onAction}
                       onCorrect={onCorrect}
@@ -257,10 +260,10 @@ function FindingsSummary({ findings }: { findings: Finding[] }) {
 
       <div className="summary__counts">
         {/* "not found" read as missing evidence; it means a value the check needs was never supplied. */}
-        {counts.PASS > 0 && <Count icon={<CheckCircle2 size={12} />} kind="pass" n={counts.PASS} label={OUTCOME_LABELS.PASS.toLowerCase()} />}
-        {counts.FAIL > 0 && <Count icon={<XCircle size={12} />} kind="fail" n={counts.FAIL} label={OUTCOME_LABELS.FAIL.toLowerCase()} />}
-        {counts.REVIEW_REQUIRED > 0 && <Count icon={<AlertCircle size={12} />} kind="review" n={counts.REVIEW_REQUIRED} label={OUTCOME_LABELS.REVIEW_REQUIRED.toLowerCase()} />}
-        {counts.NOT_FOUND > 0 && <Count icon={<CircleDashed size={12} />} kind="missing" n={counts.NOT_FOUND} label={OUTCOME_LABELS.NOT_FOUND.toLowerCase()} />}
+        {counts.PASS > 0 && <Count icon={<OutcomeIcon outcome="PASS" size={12} />} kind="pass" n={counts.PASS} label={OUTCOME_LABELS.PASS.toLowerCase()} />}
+        {counts.FAIL > 0 && <Count icon={<OutcomeIcon outcome="FAIL" size={12} />} kind="fail" n={counts.FAIL} label={OUTCOME_LABELS.FAIL.toLowerCase()} />}
+        {counts.REVIEW_REQUIRED > 0 && <Count icon={<OutcomeIcon outcome="REVIEW_REQUIRED" size={12} />} kind="review" n={counts.REVIEW_REQUIRED} label={OUTCOME_LABELS.REVIEW_REQUIRED.toLowerCase()} />}
+        {counts.NOT_FOUND > 0 && <Count icon={<OutcomeIcon outcome="NOT_FOUND" size={12} />} kind="missing" n={counts.NOT_FOUND} label={OUTCOME_LABELS.NOT_FOUND.toLowerCase()} />}
       </div>
     </div>
   );

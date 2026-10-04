@@ -1,5 +1,6 @@
 import { OUTCOME_LABELS } from '../../data/outcomeLabels.js';
 import type { Outcome, PackageStatus } from '../../data/types';
+import { OutcomeIcon } from './OutcomeIcon.js';
 import '../../design/components.css';
 
 // ── Outcome → display config ─────────────────────────────────
@@ -7,12 +8,12 @@ import '../../design/components.css';
 // The colour and the dot are this file's business; the **word** is not. It comes from
 // `OUTCOME_LABELS`, which the backend narration is also written against, so the badge and the
 // sentence underneath it cannot say two different things about the same finding.
-const OUTCOME_CONFIG: Record<Outcome, { cls: string; dot: string }> = {
-  PASS:               { cls: 'badge--pass',    dot: '●' },
-  FAIL:               { cls: 'badge--fail',    dot: '✕' },
-  REVIEW_REQUIRED:    { cls: 'badge--review',  dot: '◎' },
-  NOT_FOUND:          { cls: 'badge--missing', dot: '–' },
-  NO_APPLICABLE_RULE: { cls: 'badge--none',    dot: '—' },
+const OUTCOME_CONFIG: Record<Outcome, { cls: string }> = {
+  PASS:               { cls: 'badge--pass' },
+  FAIL:               { cls: 'badge--fail' },
+  REVIEW_REQUIRED:    { cls: 'badge--review' },
+  NOT_FOUND:          { cls: 'badge--missing' },
+  NO_APPLICABLE_RULE: { cls: 'badge--none' },
 };
 
 const STATUS_CONFIG: Record<PackageStatus, { label: string; cls: string }> = {
@@ -48,7 +49,7 @@ export function OutcomeBadge({ outcome, size = 'md' }: OutcomeBadgeProps) {
       className={`badge ${cfg.cls}`}
       style={size === 'sm' ? { fontSize: 'var(--text-xs)', padding: '1px 6px' } : undefined}
     >
-      <span aria-hidden="true">{cfg.dot}</span>
+      <OutcomeIcon outcome={outcome} size={12} />
       {OUTCOME_LABELS[outcome]}
     </span>
   );

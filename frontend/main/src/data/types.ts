@@ -73,6 +73,7 @@ export interface Evidence {
  *  Served by `GET /api/v1/projects/{p}/packages/{pkg}/findings/{id}/chain`. Values are exact
  *  rationals and must be rendered as written — `38 3/4`, never `38.75`. */
 export interface Trace {
+  kind?: 'calculation' | 'abstention' | 'unrecognised';
   operation: string;
   operands: Array<{ name: string; value: string; status: string; source: string }>;
   comparison: string;
@@ -85,6 +86,8 @@ export interface Finding {
   check_id: string;
   scope_item_id?: string | null;
   scope_label?: string | null;
+  /** Persisted check notes from the backend, including human layout-choice provenance. */
+  notes?: string[];
   name: string;
   outcome: Outcome;
   severity: Severity;

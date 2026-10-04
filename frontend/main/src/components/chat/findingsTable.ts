@@ -57,6 +57,9 @@ function comparisonFor(finding: Finding): string {
     operandValues(finding, 'ARCH') ||
     finding.expected ||
     valueFromTraceSource(finding, 'ARCH') ||
+    // The engine's stored exact comparison is safe to display verbatim. Never split it to
+    // manufacture an approved-side operand the finding did not record.
+    (finding.trace?.kind === 'calculation' ? finding.trace.comparison : '') ||
     'Not recorded'
   );
 }

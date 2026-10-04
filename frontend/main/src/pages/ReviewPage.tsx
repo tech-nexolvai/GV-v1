@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { ChatThread } from '../components/chat/ChatThread';
+import type { DecisionSaveResult, SimpleReviewAction } from '../components/chat/decisionSave';
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { ChangedValuesPanel } from '../components/output/ChangedValuesPanel';
@@ -30,6 +31,7 @@ import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
 import { ArrowLeft, CheckSquare, Download } from 'lucide-react';
 import { ReviewPackageDetails } from './ReviewPackageDetails';
+import { recordReviewDecision } from './recordReviewDecision';
 import './ReviewPage.css';
 
 interface ReviewPageProps {
@@ -328,27 +330,18 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * dismissal was discarded on refresh and nothing was ever written down. "A reviewer signs off" is
    * the fourth clause of the invariant, and it was the one clause with no persistence behind it.
    *
-   * Shown immediately and rolled back if the write fails. A reviewer works down a list, and waiting
-   * on a round trip per row makes that unusable — but a decision that silently did not save is worse
-   * than a slow one, so a failure puts the row back and says so rather than leaving the tick.
+   * Count a decision only after the server acknowledges it. A stale-list rollback on failure can
+   * erase another finding's decision that succeeded in the meantime.
    */
   async function handleAction(
     findingId: string,
-    action: 'confirm' | 'correct' | 'except' | 'dismiss',
-  ) {
-    const previous = findings;
+    action: SimpleReviewAction,
+  ): Promise<DecisionSaveResult> {
     setActionError(null);
-    setFindings(prev => prev.map(f => (f.id === findingId ? { ...f, reviewer_action: action } : f)));
-
-    try {
+    return recordReviewDecision(findingId, action, async () => {
       const current = await ensureSession();
       await recordReviewAction(projectId(), current.id, { finding_id: findingId, action });
-    } catch (error) {
-      setFindings(previous);
-      setActionError(
-        `That decision was not recorded — ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    }, setFindings);
   }
 
   /**
@@ -365,7 +358,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * wrong for a multi-operand one, so a finding with more than one is left to the evidence view
    * rather than guessed at here.
    */
-  async function handleCorrect(findingId: string, correctedValue: string) {
+  async function handleCorrect(findingId: string, correctedValue: string): Promise<DecisionSaveResult> {
     setActionError(null);
     try {
       const current = await ensureSession();
@@ -373,15 +366,16 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       // Through `evidence`, which is where the chain puts the observation an operand came from —
       // and `null` there is meaningful: an operand a reviewer supplied has no observation behind it,
       // so there is nothing to correct rather than something to correct blindly.
-      const observationId =
-        chain.operands?.find(operand => operand.evidence !== null)?.evidence
-          ?.canonical_observation_id ?? null;
+      const observationIds = [...new Set(chain.operands?.flatMap((operand) =>
+        operand.evidence ? [operand.evidence.canonical_observation_id] : [],
+      ) ?? [])];
+      if (observationIds.length > 1) {
+        return { saved: false, error: 'This finding uses several drawing readings. Inspect its evidence and correct the specific measurement in Measurements before running the checks again.' };
+      }
+      const observationId = observationIds[0] ?? null;
       if (observationId === null) {
-        setActionError(
-          'This finding does not name a reading that can be corrected — it has no authoritative ' +
-            'observation behind it, so there is nothing to correct.',
-        );
-        return;
+        return { saved: false, error: 'This finding does not name a reading that can be corrected — it has no authoritative ' +
+          'observation behind it, so there is nothing to correct.' };
       }
       await decideEvidence(projectId(), current.id, {
         finding_id: findingId,
@@ -392,10 +386,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       setFindings(prev =>
         prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'correct' } : f)),
       );
+      return { saved: true };
     } catch (error) {
-      setActionError(
-        `That correction was not recorded — ${error instanceof Error ? error.message : String(error)}`,
-      );
+      return { saved: false, error: `That correction was not recorded — ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -406,7 +399,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * the same as saying the rule should stop firing, and the second is a rule change that goes
    * through the rulebook where somebody reviews it.
    */
-  async function handleExcept(findingId: string, reason: string, expiresAt: string) {
+  async function handleExcept(findingId: string, reason: string, expiresAt: string): Promise<DecisionSaveResult> {
     setActionError(null);
     try {
       const current = await ensureSession();
@@ -420,10 +413,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       setFindings(prev =>
         prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'except' } : f)),
       );
+      return { saved: true };
     } catch (error) {
-      setActionError(
-        `That exception was not granted — ${error instanceof Error ? error.message : String(error)}`,
-      );
+      return { saved: false, error: `That exception was not granted — ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
