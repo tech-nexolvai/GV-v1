@@ -10,7 +10,9 @@ that lets any of these through is one that answers `same_assembly` confidently a
 * a reading measuring two parts at once, or a run whose members are not confirmed parts;
 * a reading linked to a part by anything but a person's decision, or read by a rule (#913);
 * a part's picture edited, doubled, or written by anything but the one function that records it,
-  or a decision about a part written by anything but a person's (#897).
+  or a decision about a part written by anything but a person's (#897);
+* a picture cut before the check for GV's coloured marks read as checked, or its answer changed
+  after it was recorded (#921).
 """
 
 from __future__ import annotations
@@ -69,7 +71,13 @@ from tests.app.postgres_fixture import alembic_config
 from units.measurement import Unit
 from verdict.operands import EvidenceStatus
 from vocabulary.part_kinds import PartKind
-from workflow.part_pictures import PartPictureSettings, record_part_picture
+from workflow.part_pictures import (
+    GvMarks,
+    PartPictureSettings,
+    gv_marks,
+    pictured,
+    record_part_picture,
+)
 from workflow.parts import (
     CODE_IDENTIFIER_KIND,
     confirm_part,
@@ -1588,6 +1596,7 @@ def _picture(session: Session, proposal: PartProposal | None) -> PartPicture:
         storage_key=f"evidence-crops/{uuid4()}/pages/0/{HASH}.png",
         sha256=HASH,
         settings=PICTURES,
+        shows_gv_marks=False,
     )
 
 
@@ -1946,14 +1955,16 @@ def test_a_picture_is_recorded_once_per_suggestion(postgres_engine: Engine) -> N
             storage_key="evidence-crops/another/pages/0/other.png",
             sha256="d" * 64,
             settings=PartPictureSettings(margin_pt=Decimal(9), dpi=300),
+            shows_gv_marks=True,
         )
         assert again.id == first.id
-        assert (again.storage_key, again.sha256, again.margin_pt, again.dpi) == (
-            first.storage_key,
-            HASH,
-            Decimal(72),
-            150,
-        )
+        assert (
+            again.storage_key,
+            again.sha256,
+            again.margin_pt,
+            again.dpi,
+            again.shows_gv_marks,
+        ) == (first.storage_key, HASH, Decimal(72), 150, False)
         proposal_id = proposal.id
     with (
         pytest.raises(IntegrityError, match="uq_part_pictures_part_proposal_id"),
@@ -2021,5 +2032,133 @@ def test_a_picture_holds_a_pointer_never_the_image() -> None:
         "media_type",
         "margin_pt",
         "dpi",
+        "shows_gv_marks",
     }
     assert not any("LargeBinary" in type(column.type).__name__ for column in columns)
+
+
+# -- whether a picture shows GV's coloured marks (#921) -------------------------------------------
+
+#: The migration before the check existed: a picture recorded there has never been checked.
+BEFORE_THE_CHECK = "0061_part_pictures"
+
+
+def _migrate(engine: Engine, revision: str, *, down: bool = False) -> None:
+    config = alembic_config()
+    config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
+    (command.downgrade if down else command.upgrade)(config, revision)
+
+
+def _columns(session: Session) -> set[str]:
+    return set(
+        session.scalars(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'part_pictures'"
+            )
+        )
+    )
+
+
+def test_a_picture_cut_before_the_check_reads_not_checked_and_stays_append_only(
+    postgres_engine: Engine,
+) -> None:
+    """**0062 is append-only safe.** A picture recorded at 0061, before the check existed, keeps
+    its row, its pointer and its digest through the upgrade; it reads null, "not checked", never
+    clean; the answer cannot be written into it afterwards, because the table still refuses every
+    update; and the downgrade drops only the answers."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    try:
+        _migrate(postgres_engine, BEFORE_THE_CHECK, down=True)
+        with unit_of_work(factory) as session:
+            assert "shows_gv_marks" not in _columns(session)
+            proposal = _proposal(session, _view(session, _page(session)))
+            proposal_id = proposal.id
+            # Written as the 0061 worker wrote it: the model now has a column this schema lacks.
+            session.execute(
+                text(
+                    "INSERT INTO part_pictures (id, created_at, part_proposal_id, storage_key, "
+                    "sha256, media_type, margin_pt, dpi) VALUES (:id, now(), :proposal, :key, "
+                    ":sha256, 'image/png', 72, 150)"
+                ),
+                {
+                    "id": uuid4(),
+                    "proposal": proposal_id,
+                    "key": "evidence-crops/old/pages/0/old.png",
+                    "sha256": HASH,
+                },
+            )
+
+        _migrate(postgres_engine, "head")
+        with unit_of_work(factory) as session:
+            picture = session.scalars(select(PartPicture)).one()
+            assert (picture.storage_key, picture.sha256, picture.margin_pt, picture.dpi) == (
+                "evidence-crops/old/pages/0/old.png",
+                HASH,
+                Decimal(72),
+                150,
+            )
+            assert picture.shows_gv_marks is None
+            assert pictured(session, [proposal_id]) == {proposal_id: GvMarks.NOT_CHECKED}
+        for answer in ("true", "false"):
+            with pytest.raises(DBAPIError, match="append-only"), unit_of_work(factory) as session:
+                session.execute(text(f"UPDATE part_pictures SET shows_gv_marks = {answer}"))
+
+        _migrate(postgres_engine, BEFORE_THE_CHECK, down=True)
+        with unit_of_work(factory) as session:
+            assert "shows_gv_marks" not in _columns(session)
+            assert session.scalar(text("SELECT count(*) FROM part_pictures")) == 1
+            assert session.scalar(text("SELECT sha256 FROM part_pictures")) == HASH
+    finally:
+        _migrate(postgres_engine, "head")
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [(True, GvMarks.SHOWN), (False, GvMarks.NOT_SHOWN), (None, GvMarks.NOT_CHECKED)],
+    ids=["shown", "not-shown", "not-checked"],
+)
+def test_a_new_picture_keeps_the_answer_it_was_recorded_with(
+    postgres_engine: Engine, answer: bool | None, said: GvMarks
+) -> None:
+    """The answer is written with the picture, in the same insert, and read back as recorded; `None`
+    is "not checked", never "clean"."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        proposal = _proposal(session, _view(session, _page(session)))
+        picture = record_part_picture(
+            session,
+            proposal=proposal,
+            storage_key=f"evidence-crops/{uuid4()}/pages/0/{HASH}.png",
+            sha256=HASH,
+            settings=PICTURES,
+            shows_gv_marks=answer,
+        )
+        proposal_id = proposal.id
+        assert picture.shows_gv_marks is answer
+    with unit_of_work(factory) as session:
+        assert session.scalars(select(PartPicture.shows_gv_marks)).one() is answer
+        assert pictured(session, [proposal_id]) == {proposal_id: said}
+        assert gv_marks(answer) is said
+
+
+@pytest.mark.parametrize("answer", [1, 0, "yes", "true"])
+def test_an_answer_that_is_not_true_false_or_none_is_refused(
+    postgres_engine: Engine, answer: object
+) -> None:
+    """A truthy number or word is not an answer: refused before anything is written."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(TypeError, match="shows_gv_marks"), unit_of_work(factory) as session:
+        record_part_picture(
+            session,
+            proposal=_proposal(session, _view(session, _page(session))),
+            storage_key=f"evidence-crops/{uuid4()}/pages/0/{HASH}.png",
+            sha256=HASH,
+            settings=PICTURES,
+            shows_gv_marks=answer,  # type: ignore[arg-type]
+        )
+    with unit_of_work(factory) as session:
+        assert _count(session, PartPicture) == 0

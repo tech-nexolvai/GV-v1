@@ -12,9 +12,11 @@ The rules about which drawing may have parts, and what is kept, are `app/evidenc
 **Each part's picture (#897)** is served from where the worker stored it, checked against its
 recorded digest first. Adding a part asks the worker to cut the new part's picture, in the same
 transaction as the part, through the outbox: this module may not render a page itself
-(`tests/api/test_no_heavy_work.py`).
+(`tests/api/test_no_heavy_work.py`). Each part says what its picture was found to show of GV's own
+coloured marks when it was cut (#921), so the page can warn under one that shows them.
 
-Source: issues #882 and #897; #748 plan, step 4. Verification: tests/api/test_drawing_parts.py.
+Source: issues #882, #897 and #921; #748 plan, step 4. Verification:
+tests/api/test_drawing_parts.py.
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
 from vocabulary.part_kinds import PartKind
 from workflow.outbox import enqueue
-from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
+from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW, GvMarks
 from workflow.part_pictures import part_picture as recorded_picture
 
 router = APIRouter(tags=["drawing parts"])
@@ -118,6 +120,15 @@ class PartOut(BaseModel):
         description=(
             "Whether its own picture is stored: the vendor's drawing around its outline (#897). "
             "False until the worker has cut it, or where the page could not be rendered."
+        )
+    )
+    picture_gv_marks: GvMarks | None = Field(
+        description=(
+            "What its picture was found to show of GV's own coloured marks when it was cut (#921): "
+            "`shown` where markup drawn in colour lies in it, so the page warns under it; "
+            "`not_shown` where it was checked and none does; `not_checked` for a picture cut "
+            "before the check existed or whose page's coloured markup could not be read. Null "
+            "when no picture is stored."
         )
     )
     has_crop: bool = Field(
@@ -204,6 +215,7 @@ def _part_out(drawing: DrawingParts, listed: ListedPart) -> PartOut:
         left_end=None if ends is None else PointOut(x=ends[0][0], y=ends[0][1]),
         right_end=None if ends is None else PointOut(x=ends[1][0], y=ends[1][1]),
         has_picture=listed.has_picture,
+        picture_gv_marks=listed.picture_gv_marks,
         has_crop=listed.has_crop,
         decision=_decision(listed.decision),
     )

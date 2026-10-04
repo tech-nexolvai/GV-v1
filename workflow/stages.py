@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -104,7 +105,7 @@ from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint, StoredPoint
-from evidence.corroborate import corroborate
+from evidence.corroborate import corroborate, is_consistent_dual_label
 from evidence.crop import (
     BoxCropSpec,
     CropSpec,
@@ -817,6 +818,7 @@ __all__ = [
     "crop_shows_a_stacked_fraction",
     "cut_label_refusal",
     "gv_mark_in_crop",
+    "mixed_fraction_refusal",
     "page_transform",
     "region_facts",
     "stacked_layouts_shown",
@@ -2068,6 +2070,9 @@ class DatabaseStages:
                 glyphs=None if layers is None else layers.glyph_paths,
                 render=vendor_render,
             )
+            # **And a whole number and a fraction (#924)**, the kind two readers have agreed on wrongly
+            # twice: purely textual, so it reads and renders nothing.
+            mixed_fraction = _MixedFractionGuard()
             self._apply_cross_route_corroboration(
                 session,
                 page_index=page.index,
@@ -2084,6 +2089,7 @@ class DatabaseStages:
                 ),
                 gv_mark=gv_mark,
                 cut_label=cut_label,
+                mixed_fraction=mixed_fraction,
             )
             agent = self._run_bounded_agent_for_ambiguous_regions(
                 session,
@@ -2118,6 +2124,7 @@ class DatabaseStages:
                     candidates=page_rows,
                     gv_mark=gv_mark,
                     cut_label=cut_label,
+                    mixed_fraction=mixed_fraction,
                 )
                 self._mark_regions_the_agent_contradicted(
                     session, page_index=page.index, candidates=page_rows, agent_rows=agent_rows
@@ -2204,8 +2211,11 @@ class DatabaseStages:
             )
             # **And a picture of each (#897)**, for a person to look at while deciding what it is.
             # Every suggestion on the page's drawings that has none yet, so a re-read also cuts the
-            # pictures a person's own additions are still missing.
-            part_pictures = self._cut_page_part_pictures(session, page=page, data=data)
+            # pictures a person's own additions are still missing. Each is checked for GV's coloured
+            # marks as it is cut (#921), with the glyph paths the page's layers read.
+            part_pictures = self._cut_page_part_pictures(
+                session, page=page, data=data, layers=layers
+            )
             results.append(
                 PageResult(
                     index=page.index,
@@ -2342,11 +2352,16 @@ class DatabaseStages:
                         # Regions whose readers agreed and were not confirmed: the crop shows markup
                         # drawn in colour, a GV mark baked into the vendor's drawing (#901); or it
                         # cuts the label off at its edge (#919); or it could not be checked for one
-                        # of them. Each stays a pre-fill a person ticks; each reason says which. A
-                        # region is refused by one guard at most, so the two counts add up.
-                        "agreement_refusals": len(gv_mark.refused) + len(cut_label.refused),
+                        # of them; or the readers agreed on a whole number and a fraction (#924).
+                        # Each stays a pre-fill a person ticks; each reason says which. A region is
+                        # refused by one guard at most, so the counts add up.
+                        "agreement_refusals": (
+                            len(gv_mark.refused)
+                            + len(cut_label.refused)
+                            + len(mixed_fraction.refused)
+                        ),
                         "agreement_refusal_reasons": agreement_refusal_reasons(
-                            (gv_mark, cut_label), REPORTED_REFUSALS
+                            (gv_mark, cut_label, mixed_fraction), REPORTED_REFUSALS
                         ),
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
@@ -2565,6 +2580,7 @@ class DatabaseStages:
         candidates: Sequence[ObservationCandidate],
         gv_mark: _GvMarkGuard,
         cut_label: _CutLabelGuard,
+        mixed_fraction: _MixedFractionGuard,
     ) -> None:
         """Run the second-reader lane across same-region readings before first insert.
 
@@ -2579,11 +2595,20 @@ class DatabaseStages:
         2026-10-04: both readers of the new pair agreed on a label running past their crop's edge on
         AI_Set_2 (#907), and a cut `12 3/4"` read by both as `12"` would be a confirmed wrong number.
 
-        Where either guard holds a region's agreement back, its readings keep no lane — pre-fills a
-        person ticks — and the guard records why; the cut is asked about only where the GV mark let
-        the agreement through, so each refusal has one reason. **Only an agreement is held back**: a
-        conflict is still recorded as one, so the guards can take a confirmation away and never make
-        one.
+        **Nor does an agreement on a whole number and a fraction (#924)** — `13 1/2"`, `3 3/4"` —
+        the kind two readers of different vendors have twice agreed on wrongly, by the admin's
+        standing rule that such a kind goes to a person. A dual label agreed on both its halves is
+        let through (`mixed_fraction_refusal`).
+
+        Where a guard holds a region's agreement back, its readings keep no lane — pre-fills a person
+        ticks — and the guard records why. They are asked in that order, each only where the ones
+        before let the agreement through, so each refusal has one reason. **Only an agreement is held
+        back**: a conflict is still recorded as one, so the guards can take a confirmation away and
+        never make one.
+
+        **A reading with no value abstains (#924)**: `corroborate` judges a region among the readings
+        that have one, and only those that agreed are given the lane. One that abstained keeps none,
+        and is grouped again with the reading agent's looks.
         """
 
         pending_ids = {row.id for row in candidates if inspect(row).pending}
@@ -2616,28 +2641,53 @@ class DatabaseStages:
             )
             if result.lane is None:
                 continue
-            if (
-                result.lane is CorroborationLane.SECOND_READER
-                and result.status is not EvidenceStatus.CONFLICTING
-                and (gv_mark.holds_back(rows[0]) or cut_label.holds_back(rows[0]))
+            # **A reading with no value abstains (#924)**: an agreement is marked on the readings that
+            # agreed, never on one that had nothing to agree with, which keeps no lane. A conflict is
+            # the whole region's, as `_mark_regions_the_agent_contradicted` marks it.
+            agreed = set(result.supported_by)
+            if result.lane is CorroborationLane.SECOND_READER and (
+                result.status is not EvidenceStatus.CONFLICTING
             ):
-                continue
+                # The guards are asked about a reading that agreed: every one shares its polygon and
+                # its value, and the whole-number-and-fraction guard reads the value.
+                first_agreed = next(row for row in rows if str(row.id) in agreed)
+                if (
+                    gv_mark.holds_back(first_agreed)
+                    or cut_label.holds_back(first_agreed)
+                    or mixed_fraction.holds_back(first_agreed)
+                ):
+                    continue
             for row in rows:
-                if row.id in pending_ids:
-                    row.corroboration_status = result.status.value
-                    row.corroboration_lane = result.lane.value
+                if row.id not in pending_ids:
+                    continue
+                if result.status is not EvidenceStatus.CONFLICTING and str(row.id) not in agreed:
+                    continue
+                row.corroboration_status = result.status.value
+                row.corroboration_lane = result.lane.value
 
     def _coloured_markup(
-        self, data: bytes, page: Page, version_id: UUID, layers: PageLayers | None
+        self,
+        data: bytes,
+        page: Page,
+        version_id: UUID,
+        layers: PageLayers | None,
+        *,
+        dpi: int | None = None,
     ) -> ColouredMarkup | None:
         """The page's markup drawn in colour (#901), or `None` where its pasted drawings could not
-        be read for it. The glyph paths are the ones the page's layers read, if they read any."""
+        be read for it. The glyph paths are the ones the page's layers read, if they read any.
+
+        In the page's pixels at the stage's dpi, as the vision readers' crops are; or at `dpi`, for
+        a part's picture cut at its own resolution (#921), so the picture's own pixel box is what
+        `crop_shows_a_gv_mark` is asked about. The glyph paths are in PDF points at any dpi.
+        """
+        at = self._dpi if dpi is None else dpi
         try:
             text = coloured_text(
                 data,
                 page.index,
                 document_version_id=version_id,
-                dpi=self._dpi,
+                dpi=at,
                 missing_space=self._stated_missing_space(),
             )
         except UnreadablePdf:
@@ -2645,7 +2695,7 @@ class DatabaseStages:
         return ColouredMarkup(
             text=text,
             paths=() if layers is None else layers.glyph_paths,
-            transform=page_transform(page, self._dpi),
+            transform=page_transform(page, at),
         )
 
     def _vendor_render(self, data: bytes, page: Page, version_id: UUID) -> RenderedPage | None:
@@ -3348,9 +3398,13 @@ class DatabaseStages:
         return counts
 
     def _cut_page_part_pictures(
-        self, session: Session, *, page: Page, data: bytes
+        self, session: Session, *, page: Page, data: bytes, layers: PageLayers | None
     ) -> dict[str, object] | None:
         """Cut a picture of every suggestion on the page's drawings that has none yet (#897).
+
+        `layers` are the page's annotation layers as the page stage read them, or `None` where they
+        could not be read: their glyph paths are part of the markup each picture is checked for
+        (#921), as they are for the agreement gate's crops.
 
         Returns what was cut and what was refused, or `None` when no picture settings were stated
         or no store is configured: then nothing was asked for, which is not the same as nothing cut.
@@ -3358,7 +3412,19 @@ class DatabaseStages:
         if self._part_pictures is None or self._store is None:
             return None
         return self._cut_pictures(
-            session, page=page, data=data, settings=self._part_pictures, store=self._store
+            session,
+            page=page,
+            data=data,
+            settings=self._part_pictures,
+            store=self._store,
+            markup=partial(
+                self._coloured_markup,
+                data,
+                page,
+                page.document_version_id,
+                layers,
+                dpi=self._part_pictures.dpi,
+            ),
         ).as_payload()
 
     @staticmethod
@@ -3369,6 +3435,7 @@ class DatabaseStages:
         data: bytes,
         settings: PartPictureSettings,
         store: ArtifactStore,
+        markup: Callable[[], ColouredMarkup | None],
     ) -> _PartPictures:
         """The pictures still missing on one page, cut and recorded.
 
@@ -3380,11 +3447,20 @@ class DatabaseStages:
         person added by its two ends has a line for an outline (#882), so its picture is that line
         and the margin around it; nothing here invents a height the person did not give.
 
+        **Whether it shows GV's own coloured marks (#921)**, which the render cannot leave out where
+        they are baked into the vendor's drawing, is asked of each picture as it is cut, and
+        recorded with it. The question is the agreement gate's own (`crop_shows_a_gv_mark`, #901),
+        asked about the rectangle the picture was actually cut by (`crop_pixel_box`), with the
+        page's markup in colour read at the picture's resolution (`markup`, read once per page and
+        only once a picture is cut). Where that markup could not be read the answer is `None`, "not
+        checked": nothing rules a mark out, and nothing says the picture is clean.
+
         **It writes a picture and nothing else**: never a part, a decision or a run. A suggestion
         whose picture cannot be cut keeps its place on the page without one, and the reason is in
         the result.
         """
         outcome = _PartPictures()
+        page_markup = cache(markup)
         proposals = unpictured_proposals(session, page.id)
         if not proposals:
             return outcome
@@ -3428,12 +3504,20 @@ class DatabaseStages:
             if result.status is not CropStatus.AVAILABLE or result.artifact is None:
                 outcome.refuse(1, f"page {page.index}: {result.reason}")
                 continue
+            coloured = page_markup()
             record_part_picture(
                 session,
                 proposal=proposal,
                 storage_key=result.artifact.key,
                 sha256=result.artifact.sha256,
                 settings=settings,
+                # The pixels the picture was cut by: `generate_crop` has just cut them, so the same
+                # spec on the same rendering gives the same box.
+                shows_gv_marks=(
+                    None
+                    if coloured is None
+                    else crop_shows_a_gv_mark(crop_pixel_box(rendered, spec), coloured)
+                ),
             )
             outcome.cut += 1
         return outcome
@@ -3450,11 +3534,24 @@ class DatabaseStages:
         **It writes pictures and nothing else**, and asking twice cuts nothing twice. A document
         whose bytes no longer match their recorded digest is not rendered: its pictures are refused,
         and the reason says why.
+
+        **Each picture is checked for GV's coloured marks as the page stage checks one (#921)**: the
+        page's layers are read as the page stage reads them (`_read_layers`), for their glyph paths,
+        and the coloured text with the reader's own setting. Without that setting nothing is cut:
+        every picture would be "not checked", and the Measure page would warn under none of them.
         """
         if self._store is None:
             return {"ran": False, "reason": "no artifact store is configured"}
         if self._part_pictures is None:
             return {"ran": False, "reason": "no part picture settings are stated"}
+        if self._missing_space is None:
+            return {
+                "ran": False,
+                "reason": (
+                    "the reader's missing-space setting is not stated, so no picture could be "
+                    "checked for GV's coloured marks"
+                ),
+            }
         documents = {
             version: (key, sha256)
             for version, key, sha256, _ in _document_records_for(session, package_revision_id)
@@ -3483,10 +3580,43 @@ class DatabaseStages:
                     data=document,
                     settings=self._part_pictures,
                     store=self._store,
+                    markup=partial(self._picture_markup, document, page, self._part_pictures.dpi),
                 )
             )
         session.flush()
         return {"ran": True, **outcome.as_payload()}
+
+    def _picture_markup(self, data: bytes, page: Page, dpi: int) -> ColouredMarkup | None:
+        """The page's markup drawn in colour, at a picture's `dpi`, for the job that cuts pictures
+        outside the page stage (#921): its layers read as the page stage reads them, and the
+        coloured markup made of them as it makes it. Layers that cannot be read leave the glyph
+        paths out, as they do in the page stage."""
+        try:
+            layers: PageLayers | None = self._read_layers(
+                data, page.index, page.document_version_id
+            )
+        except UnreadablePdf:
+            layers = None
+        return self._coloured_markup(data, page, page.document_version_id, layers, dpi=dpi)
+
+    def _read_layers(self, data: bytes, page_index: int, version_id: UUID) -> PageLayers:
+        """The page's annotation layers: the reviewer's markup alone, or with the vendor's geometry
+        where the association settings are stated (see `_read_page_markup`). Raises
+        `UnreadablePdf` where they cannot be read."""
+        if self._association is None:
+            return read_markup_layer(
+                data, page_index, document_version_id=version_id, dpi=self._dpi
+            )
+        return read_annotation_layers(
+            data,
+            page_index,
+            document_version_id=version_id,
+            dpi=self._dpi,
+            line_minimum_pt=self._association.line_minimum_pt,
+            glyph_maximum_pt=self._association.glyph_maximum_pt,
+            glyph_gap_pt=self._association.glyph_gap_pt,
+            fraction_bar=self._association.fraction_bar,
+        )
 
     def _read_page_markup(
         self,
@@ -3517,28 +3647,13 @@ class DatabaseStages:
         stop for the routes above.
         """
         try:
-            if self._association is None:
-                layers = read_markup_layer(
-                    data,
-                    page.index,
-                    document_version_id=version_id,
-                    dpi=self._dpi,
-                )
-            else:
-                # **The full read, because the association step needs the vendor's line-work too.**
-                # `read_markup_layer` skips it deliberately: it needs no thresholds and the pipeline
-                # must not invent any. When a deployment has stated them, there is nothing to invent
-                # and the geometry is exactly what a reading has to be attached to.
-                layers = read_annotation_layers(
-                    data,
-                    page.index,
-                    document_version_id=version_id,
-                    dpi=self._dpi,
-                    line_minimum_pt=self._association.line_minimum_pt,
-                    glyph_maximum_pt=self._association.glyph_maximum_pt,
-                    glyph_gap_pt=self._association.glyph_gap_pt,
-                    fraction_bar=self._association.fraction_bar,
-                )
+            # **The full read where the association settings are stated, because the association
+            # step needs the vendor's line-work too.** `read_markup_layer` skips it deliberately: it
+            # needs no thresholds and the pipeline must not invent any. When a deployment has stated
+            # them, there is nothing to invent and the geometry is exactly what a reading has to be
+            # attached to. One reader of the layers (`_read_layers`), so the job that cuts pictures
+            # outside this stage reads the same glyph paths (#921).
+            layers = self._read_layers(data, page.index, version_id)
         except UnreadablePdf as error:
             # The run is opened here rather than before the read, because a run is a record of work
             # and most pages have no markup to do any on. A *failed* attempt is work: the failure
@@ -5762,7 +5877,8 @@ class ColouredMarkup:
     """
 
     text: tuple[tuple[int, int, int, int], ...]
-    """Each coloured run's `(left, top, right, bottom)`, in the page's pixels at the stage's dpi."""
+    """Each coloured run's `(left, top, right, bottom)`, in the page's pixels at the dpi it was read
+    at: the stage's for the vision readers' crops, a part picture's own for that picture (#921)."""
 
     paths: tuple[VectorPath, ...]
     """The page's glyph-sized paths, in PDF points; the ones drawn in colour are marks. Empty where
@@ -5795,11 +5911,12 @@ def crop_shows_a_gv_mark(crop_box: tuple[int, int, int, int], markup: ColouredMa
 
     **Any part, edges included**, as `crop_shows_a_stacked_fraction` counts a fraction: a reader
     reads whatever it is shown, and GV's number half inside the crop is still there to be read as the
-    vendor's. `crop_box` is the crop's page pixels at the stage's dpi, as the text boxes are; a path
-    is held to the crop's corners carried into PDF points by the page's transform.
+    vendor's. `crop_box` is the crop's page pixels at the dpi the markup was read at, as the text
+    boxes are — the stage's for a reader's crop, a part picture's own for that picture (#921); a path
+    is held to the crop's corners carried into PDF points by the page's transform at that dpi.
 
     The test the gate replay measured on the 51-crop key (#851), moved here so the replay and the
-    gate are one function and cannot disagree.
+    gate are one function and cannot disagree; and the one a part's picture is checked by (#921).
     """
     if any(_boxes_overlap(box, crop_box) for box in markup.text):
         return True
@@ -6047,6 +6164,61 @@ class _CutLabelGuard(_AgreementGuard):
             reach=self._reach,
             page_glyphs=self._glyphs,
         )
+
+
+#: Why the agreement gate did not confirm what two readers agreed on (#924), as the page result says.
+MIXED_FRACTION_REASON: Final = (
+    "two readers agreed on a whole number and a fraction, a kind of number two readers have agreed "
+    "on wrongly before, so a person confirms the reading"
+)
+
+#: A reading written in millimetres: its inch value is a conversion, never written as a fraction.
+_WRITTEN_IN_MILLIMETRES: Final = re.compile(r"\bmm\b", re.IGNORECASE)
+
+
+def mixed_fraction_refusal(value: Measurement | None, text: str) -> str | None:
+    """Why two readers' agreement on `value`, read from `text`, must not confirm it, the value being
+    a whole number and a fraction (#924); `None` where it may.
+
+    **The admin's standing rule** (2026-10-03, #728): where two readers ever agree on a wrong number
+    of some kind, that whole kind goes to a person. Twice two readers of different vendors agreed on
+    a wrong whole number and a fraction: a stacked `3/4"` read as `3 3/4"` (#726), and a two-line
+    label of millimetres over bracketed inches read as one mixed number, as `13 [1/2]` read as
+    `13 1/2"` would be (#924).
+
+    **What it covers: the value, however it was written.** An inch value with a whole part of at
+    least one and a fraction left over — `13 1/2"`, `13-1/2"`, `13½"`, `13.5"`, `1'-1 1/2"` —
+    because the mistake is in the reading, not in its notation. A value below one (`3/4"`), a whole
+    number, and a reading written in millimetres (whose inches are a conversion) are not this kind.
+
+    **A dual label agreed on both its halves is let through.** `corroborate` agrees a dual label only
+    where every reader read the same millimetres and the same inches, and each reader's millimetres
+    agree with its inches within rounding (`check_dual`); that cross-check is evidence the fraction
+    was read right, which a plain inch reading has none of. `text` is checked for that shape here,
+    so a reading that is not one is held back.
+
+    Purely textual: nothing is rendered, and no threshold is involved.
+    """
+    if value is None or value.unit is not Unit.INCH:
+        return None
+    whole, part = divmod(value.exact, 1)
+    if whole < 1 or part == 0:
+        return None
+    if is_consistent_dual_label(value, text):
+        return None
+    # Millimetres alone, never beside bracketed inches: a dual label is let through only above.
+    if _WRITTEN_IN_MILLIMETRES.search(text) and "[" not in text:
+        return None
+    return MIXED_FRACTION_REASON
+
+
+class _MixedFractionGuard(_AgreementGuard):
+    """The agreement gate's whole-number-and-fraction guard on one page, and the agreements it
+    refused (#924). Asked about a reading that agreed: every reading of an agreement shares its
+    value, and is a dual label or is not, so one tells for all."""
+
+    def _reason(self, region: ObservationCandidate) -> str | None:
+        return mixed_fraction_refusal(_stored_measurement(region), region.raw_text)
 
 
 def _vision_pre_call_refusal(

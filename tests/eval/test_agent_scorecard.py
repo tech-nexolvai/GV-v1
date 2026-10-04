@@ -130,15 +130,26 @@ def test_an_agent_reading_that_agrees_with_one_pair_reading_confirms_it() -> Non
     assert judgement.agreeing == (MINI, NOVA)
 
 
-def test_a_pair_reading_the_parser_refused_blocks_an_agreement_but_not_a_proposal() -> None:
-    """Outcome: the stage groups every row of the region, so an unparsed row keeps the agent's and
-    the pair's values from confirming each other; the agent's proposal is still handed over."""
+def test_a_pair_reading_the_parser_refused_abstains_from_the_agreement() -> None:
+    """**#924.** Outcome: the stage groups every row of the region, and the unparsed row abstains —
+    it neither confirms nor vetoes — so the agent's look and the pair's other reading, from two
+    vendors, confirm `12"`. Only the two that agreed are named."""
     look = _read(NOVA, '12"', 12)
     judgement = judge(
         (_read(NOVA, "see detail"), _read(MINI, '12"', 12)), looks=(look,), proposal=look
     )
 
-    assert judgement.outcome is Outcome.PROPOSED and judgement.value == _inches(12)
+    assert judgement.outcome is Outcome.CONFIRMED and judgement.value == _inches(12)
+    assert judgement.agreeing == (MINI, NOVA)
+
+
+def test_a_conflict_beside_an_unparsed_pair_reading_still_goes_to_a_reviewer() -> None:
+    """**#924: a conflict is still a conflict.** The unparsed row abstains from the disagreement too."""
+    judgement = judge(
+        (_read(NOVA, "see detail"), _read(MINI, '12"', 12)), looks=(_read(NOVA, '13"', 13),)
+    )
+
+    assert judgement == Judgement(Outcome.TO_REVIEWER, None, conflict=True)
 
 
 def test_two_readers_of_one_vendor_agreeing_confirm_nothing() -> None:

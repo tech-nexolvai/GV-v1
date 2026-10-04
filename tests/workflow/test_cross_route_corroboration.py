@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from alembic import command
 from app.api.documents import storage_key
 from app.db.session import session_factory
+from app.evidence.record import open_extraction_run
 from app.models import (
     Document,
     DocumentVersion,
@@ -47,7 +48,7 @@ from tests.workflow.test_cut_label_guard import stated_geometry
 from units.measurement import Unit
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
-from workflow.stages import DatabaseStages
+from workflow.stages import DatabaseStages, _AgreementGuard, _MixedFractionGuard
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -78,8 +79,8 @@ def _drawing(text: bytes = b'BT /F1 10 Tf 1 0 0 1 20 70 Tm (24") Tj ET\n') -> by
     return _pdf(text)
 
 
-def _revision(session: Session, store: LocalStore) -> PackageRevision:
-    data = _drawing()
+def _revision(session: Session, store: LocalStore, data: bytes | None = None) -> PackageRevision:
+    data = _drawing() if data is None else data
     digest = hashlib.sha256(data).hexdigest()
     project = Project(name=f"cross-route {uuid4()}")
     session.add(project)
@@ -280,3 +281,106 @@ def test_two_versions_of_the_same_extractor_do_not_count_as_independent(
     assert all(row.raw_text == '24"' for row, _ in rows)
     assert all(row.corroboration_status is None for row, _ in rows)
     assert all(row.corroboration_lane is None for row, _ in rows)
+
+
+# ---------------------------------------------------------------------------
+# A reading with no value abstains (#924)
+# ---------------------------------------------------------------------------
+
+
+class _HoldsNothingBack(_AgreementGuard):
+    """A guard that lets every agreement through, so only `corroborate` decides here."""
+
+    def _reason(self, region: ObservationCandidate) -> str | None:
+        del region
+        return None
+
+
+AGREED = ((10, 10), (20, 10), (20, 20), (10, 20))
+CONFLICTED = ((30, 10), (40, 10), (40, 20), (30, 20))
+
+#: The #907 pair and the reading agent's forced-tool reader: Qwen, Amazon, and Amazon again.
+QWEN = ("bedrock-qwen3-vl-235b", "qwen.qwen3-vl-235b-a22b")
+NOVA_TAUGHT = ("bedrock-nova-2-lite-taught", "us.amazon.nova-2-lite-v1:0")
+NOVA_FORCED = ("bedrock-nova-2-lite", "amazon.nova-2-lite-v1:0")
+
+
+def _dual_region(session: Session, store: LocalStore) -> list[ObservationCandidate]:
+    """Unsaved readings of two regions: the pair agreeing on `914 [36]` beside a forced-tool `914`
+    with no value, and the pair disagreeing — `914 [36]` against `895 [35]` — beside the same."""
+    revision = _revision(session, store)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
+    template = session.execute(select(ObservationCandidate)).scalars().one()
+    first = session.get(ExtractionRun, template.extraction_run_id)
+    assert first is not None
+    runs = {
+        extractor: open_extraction_run(
+            session,
+            task_run_id=first.task_run_id,
+            extractor=extractor,
+            extractor_version=model_id,
+            config_hash="test",
+            dpi=first.dpi,
+        )
+        for extractor, model_id in (QWEN, NOVA_TAUGHT, NOVA_FORCED)
+    }
+
+    def row(
+        reader: tuple[str, str], region: tuple[tuple[int, int], ...], text: str, inches: int | None
+    ) -> ObservationCandidate:
+        return ObservationCandidate(
+            document_version_id=template.document_version_id,
+            page_id=template.page_id,
+            extraction_run_id=runs[reader[0]].id,
+            raw_text=text,
+            value_numerator=inches,
+            value_denominator=None if inches is None else 1,
+            unit=None if inches is None else "in",
+            unit_guess=None if inches is None else "in",
+            semantic_guess=None,
+            polygon=[list(point) for point in region],
+            coordinate_space="image",
+            confidence=None,
+            ambiguity_flags=[] if inches is not None else ["unparsed"],
+        )
+
+    rows = [
+        row(QWEN, AGREED, "914 [36]", 36),
+        row(NOVA_TAUGHT, AGREED, "914 [36]", 36),
+        row(NOVA_FORCED, AGREED, "914", None),
+        row(QWEN, CONFLICTED, "914 [36]", 36),
+        row(NOVA_TAUGHT, CONFLICTED, "895 [35]", 35),
+        row(NOVA_FORCED, CONFLICTED, "914", None),
+    ]
+    session.add_all(rows)
+    return rows
+
+
+def test_an_agreement_is_marked_on_the_readings_that_agreed_and_a_conflict_on_the_region(
+    session: Session, store: LocalStore
+) -> None:
+    """**#924 in the stage.** Two vendors agreeing on both halves of `914 [36]` are given the
+    second-reader lane; the forced-tool reader's `914`, with no value, abstained and keeps none, so
+    it is grouped again with the reading agent's looks. Where the two disagree, the conflict is the
+    region's: every reading in it is marked, the empty one too, as the agent's contradiction check
+    marks a region."""
+    rows = _dual_region(session, store)
+
+    DatabaseStages._apply_cross_route_corroboration(
+        session,
+        page_index=0,
+        candidates=rows,
+        gv_mark=_HoldsNothingBack(),  # type: ignore[arg-type]
+        cut_label=_HoldsNothingBack(),  # type: ignore[arg-type]
+        mixed_fraction=_MixedFractionGuard(),
+    )
+
+    marks = [(row.raw_text, row.corroboration_status, row.corroboration_lane) for row in rows]
+    assert marks == [
+        ("914 [36]", "RAW_CANDIDATE", "SECOND_READER"),
+        ("914 [36]", "RAW_CANDIDATE", "SECOND_READER"),
+        ("914", None, None),
+        ("914 [36]", "CONFLICTING", "SECOND_READER"),
+        ("895 [35]", "CONFLICTING", "SECOND_READER"),
+        ("914", "CONFLICTING", "SECOND_READER"),
+    ]

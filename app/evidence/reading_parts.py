@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 
 from app.evidence.parts import revision_parts
 from app.models import CanonicalObservation, DrawingView, ReadingPart, ViewRole
+from workflow.part_pictures import GvMarks
 from workflow.parts import PlacedPart, live_parts_on
 from workflow.reading_parts import (
     LinkSuggestion,
@@ -134,6 +135,9 @@ class ListedPart:
     """The suggestion a person confirmed it from, whose picture is the part's (#897)."""
     has_picture: bool
     """Whether that suggestion's picture is stored."""
+    picture_gv_marks: GvMarks | None
+    """What that picture was found to show of GV's own coloured marks (#921); `None` with no
+    picture."""
     code: str | None
     suggestion: LinkSuggestion | None
     """`None` when no tolerance is stated."""
@@ -169,7 +173,11 @@ def revision_links(
         if not placed:
             continue
         numbers = {listed.proposal.id: listed.position for listed in drawing.parts}
-        pictured = {listed.proposal.id for listed in drawing.parts if listed.has_picture}
+        pictured = {
+            listed.proposal.id: listed.picture_gv_marks
+            for listed in drawing.parts
+            if listed.has_picture
+        }
         decided = {
             listed.decision.drawing_item_id: listed.decision
             for listed in drawing.parts
@@ -228,6 +236,11 @@ def revision_links(
                 ),
                 has_picture=(
                     part.item_id in decided and decided[part.item_id].part_proposal_id in pictured
+                ),
+                picture_gv_marks=(
+                    pictured.get(decided[part.item_id].part_proposal_id)
+                    if part.item_id in decided
+                    else None
                 ),
                 code=decided[part.item_id].code_as_printed if part.item_id in decided else None,
                 suggestion=suggestions.get(part.item_id),
