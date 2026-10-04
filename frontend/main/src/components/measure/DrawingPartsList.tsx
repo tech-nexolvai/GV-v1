@@ -14,6 +14,7 @@ import {
   type PartPoint,
   type SuggestedPart,
 } from './drawingPartChoices.js';
+import { GvMarksWarning } from './GvMarksWarning.js';
 
 /** A part a person adds, as the form hands it over. */
 export interface NewPart {
@@ -36,6 +37,9 @@ export interface NewPart {
  * **Each part shows its own picture (#897)**, the vendor's drawing round it, once the worker has cut
  * it; a part with a code also shows where the code is printed. A part with no picture says so, and
  * says where to find it, rather than showing some other region.
+ *
+ * **A picture that shows GV's own coloured marks says so under it (#921)**, because the marks are
+ * baked into the vendor's drawing there and the picture cannot leave them out.
  */
 export function DrawingPartsList({
   drawings,
@@ -130,6 +134,7 @@ function PartRow({
             {part.position} from the left in this drawing.
           </p>
         )}
+        {picture && <GvMarksWarning marks={part.picture_gv_marks} />}
         {crop && (
           <figure className="drawing-parts__code-crop">
             {crop}

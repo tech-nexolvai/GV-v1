@@ -13,6 +13,7 @@ import {
   type LinkPart,
   type ReadingLinks,
 } from './readingPartChoices.js';
+import { GvMarksWarning } from './GvMarksWarning.js';
 
 /**
  * Which confirmed reading is each confirmed part's width: what the computer suggests, and a person
@@ -27,7 +28,8 @@ import {
  * "confirm all".
  *
  * **Each part shows its picture (#897)**, the one cut for the suggestion it was confirmed from, so
- * the person picking its width sees the part; a part with none says so.
+ * the person picking its width sees the part; a part with none says so. A picture that shows GV's
+ * own coloured marks says so under it (#921), as in "Parts of each drawing".
  */
 export function ReadingPartsList({
   links,
@@ -113,6 +115,7 @@ function PartLinkRow({
     <li className="drawing-parts__item" data-decided={part.links.length > 0}>
       <div className="drawing-parts__picture">
         {picture ?? <p className="drawing-parts__no-picture">No picture of this part is stored yet.</p>}
+        {picture && <GvMarksWarning marks={part.picture_gv_marks} />}
       </div>
       <div className="drawing-parts__facts">
         <strong>{name}</strong>
