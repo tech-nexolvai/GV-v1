@@ -29,10 +29,19 @@ is one more reading: proposed, never sealed on its own, and set against every ot
 region by the decision table. Anything else, including a label with runs both ways, is read as it
 stands, which is what every reader did before #757.
 
+**Which way it runs, where a wrong answer costs more than none (#918).** Turning a crop by the
+longest run is cheap to get wrong: the reader sees the label sideways and its reading is one more
+proposal. Attaching a reading to a dimension line is not: a reading attached to a line running the
+wrong way is a fact about the wrong dimension. So `label_direction` asks more. **Every** run of two or
+more of the label's characters must go the same way — across the page, or up it — on a settled label.
+A label with runs both ways — a stacked fraction's numerator above its denominator beside a whole
+number, a two-line label turned sideways — has no direction here, and nor has a label with no two
+characters side by side. That costs readings, and is meant to.
+
 **Nothing here has a default.** Both gathering lengths and the run gap are the deployment's to
 state, and all of them are in `LabelReach.config_hash`.
 
-Source: issue #757 · Verification: `tests/extraction/agent/test_geometry.py`
+Source: issues #757, #918 · Verification: `tests/extraction/agent/test_geometry.py`
 """
 
 from __future__ import annotations
@@ -40,11 +49,23 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Final
 
 from extraction.annotations import VectorPath, glyph_runs
 from extraction.glyph_reader import gather_label
 
-__all__ = ["Box", "LabelGeometry", "LabelReach", "label_geometry"]
+__all__ = [
+    "BOTH_WAYS",
+    "NOT_CLOSED",
+    "NO_PATHS",
+    "NO_RUN",
+    "Box",
+    "LabelDirection",
+    "LabelGeometry",
+    "LabelReach",
+    "label_direction",
+    "label_geometry",
+]
 
 Box = tuple[Decimal, Decimal, Decimal, Decimal]
 """left, bottom, right, top, in PDF points."""
@@ -132,14 +153,49 @@ def _runs_up_the_page(boxes: list[Box], glyph_gap_pt: Decimal) -> bool:
     return longest_up >= 2 and longest_up > longest_across
 
 
-def label_geometry(
-    region: Box, crop: Box, page_glyphs: Sequence[VectorPath], reach: LabelReach
-) -> LabelGeometry:
-    """The label in `region`: its whole extent, whether `crop` cuts it, and which way it runs.
+@dataclass(frozen=True, slots=True)
+class LabelDirection:
+    """Which way the label in one region runs, only where every run of it says the same (#918)."""
 
-    `region` is the box a reader's reading was placed at; `crop` is the page area a crop of it
-    shows. Both in PDF points, the space the glyph paths are in.
-    """
+    label_box: Box | None
+    """The whole label's extent, as `LabelGeometry.label_box`; `None` where no glyph path lies in the
+    region."""
+
+    in_region: Box | None
+    """The extent of the characters that lie in the region itself, which the label was gathered
+    from; `None` where there are none."""
+
+    degrees: int | None
+    """0 across the page, 90 up it (the drafting convention, as `LabelGeometry.rotation_degrees`), or
+    `None` when the paths do not settle it — `unsettled` says why."""
+
+    unsettled: str | None
+    """Why the paths settle no direction, in plain English, or `None` when they do."""
+
+
+#: Why a label's direction is not settled, as `LabelDirection.unsettled` says it.
+NO_PATHS: Final = (
+    "none of the vendor's drawn characters lies in its region, so which way its label runs is not "
+    "known from the drawing"
+)
+NOT_CLOSED: Final = (
+    "where its label ends is not settled, so which way the label runs is not settled either"
+)
+NO_RUN: Final = (
+    "no two of its label's characters stand side by side along a line, so the label shows no "
+    "direction"
+)
+BOTH_WAYS: Final = (
+    "its label's characters run both across the page and up it (a stacked fraction, or a label on "
+    "two lines), so which way it runs is not settled"
+)
+
+
+def _gathered(
+    region: Box, page_glyphs: Sequence[VectorPath], reach: LabelReach
+) -> tuple[list[Box], list[Box], str | None] | None:
+    """The boxes of the characters lying in the region, of the whole label gathered from them, and
+    why its end is not settled (or `None`); `None` when no glyph path lies in the region."""
     # **Only characters that could matter, and exactly those.** While a label is still growing its
     # box is at most `maximum_label_pt` across and holds a seed, which touches the region. A joining
     # character is within `label_gap_pt` of that box, and one that leaves the label's end unsettled
@@ -155,15 +211,33 @@ def label_geometry(
     nearby = [path for path in page_glyphs if path.points and _overlaps(_box(path), around)]
     seeds = [path for path in nearby if _overlaps(_box(path), region)]
     if not seeds:
-        return LabelGeometry(label_box=None, closed=True, cut_at_edge=False, rotation_degrees=0)
+        return None
     members, unclosed = gather_label(seeds, nearby, settings=reach)
-    boxes = [_box(path) for path in members]
-    label_box: Box = (
+    return [_box(path) for path in seeds], [_box(path) for path in members], unclosed
+
+
+def _extent(boxes: Sequence[Box]) -> Box:
+    return (
         min(box[0] for box in boxes),
         min(box[1] for box in boxes),
         max(box[2] for box in boxes),
         max(box[3] for box in boxes),
     )
+
+
+def label_geometry(
+    region: Box, crop: Box, page_glyphs: Sequence[VectorPath], reach: LabelReach
+) -> LabelGeometry:
+    """The label in `region`: its whole extent, whether `crop` cuts it, and which way it runs.
+
+    `region` is the box a reader's reading was placed at; `crop` is the page area a crop of it
+    shows. Both in PDF points, the space the glyph paths are in.
+    """
+    gathered = _gathered(region, page_glyphs, reach)
+    if gathered is None:
+        return LabelGeometry(label_box=None, closed=True, cut_at_edge=False, rotation_degrees=0)
+    _, boxes, unclosed = gathered
+    label_box = _extent(boxes)
     return LabelGeometry(
         label_box=label_box,
         closed=unclosed is None,
@@ -174,4 +248,37 @@ def label_geometry(
             if unclosed is None and _runs_up_the_page(boxes, reach.glyph_gap_pt)
             else 0
         ),
+    )
+
+
+def label_direction(
+    region: Box, page_glyphs: Sequence[VectorPath], reach: LabelReach
+) -> LabelDirection:
+    """Which way the label in `region` runs, where every run of its characters goes one way (#918).
+
+    The label is gathered as `label_geometry` gathers it, and must be settled. Its runs are the
+    grouping its regions were formed by (`glyph_runs`, at `reach.glyph_gap_pt`): two or more
+    characters along one line. **Across** where at least one run goes across the page and none goes
+    up it; **up** (90, the drafting convention for a vertical label) the other way round; otherwise
+    no direction, and why. `region` is in PDF points.
+    """
+    gathered = _gathered(region, page_glyphs, reach)
+    if gathered is None:
+        return LabelDirection(label_box=None, in_region=None, degrees=None, unsettled=NO_PATHS)
+    seeds, boxes, unclosed = gathered
+    label_box = _extent(boxes)
+    in_region = _extent(seeds)
+    degrees: int | None = None
+    unsettled: str | None = NOT_CLOSED
+    if unclosed is None:
+        across, _ = glyph_runs(boxes, reach.glyph_gap_pt, 0)
+        up, _ = glyph_runs(boxes, reach.glyph_gap_pt, CONVENTIONAL_VERTICAL_DEGREES)
+        if across and not up:
+            degrees, unsettled = 0, None
+        elif up and not across:
+            degrees, unsettled = CONVENTIONAL_VERTICAL_DEGREES, None
+        else:
+            unsettled = BOTH_WAYS if across else NO_RUN
+    return LabelDirection(
+        label_box=label_box, in_region=in_region, degrees=degrees, unsettled=unsettled
     )

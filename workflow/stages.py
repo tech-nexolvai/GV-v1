@@ -103,11 +103,17 @@ from app.verdicts.rulebook import snapshot_store
 from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
-from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
+from evidence.coordinates import ImagePoint, PageTransform, PdfPoint, StoredPoint
 from evidence.corroborate import corroborate
 from evidence.crop import CropSpec, CropStatus, RenderedPage, crop_pixel_box, generate_crop
 from evidence.polygon import Polygon
-from extraction.agent.geometry import Box, LabelGeometry, LabelReach, label_geometry
+from extraction.agent.geometry import (
+    Box,
+    LabelGeometry,
+    LabelReach,
+    label_direction,
+    label_geometry,
+)
 from extraction.agent.graph import (
     AbstentionTerminal,
     BoundedAgentGraph,
@@ -148,7 +154,13 @@ from extraction.fraction_parts import (
 )
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import DetectedDimensions, detect
-from extraction.geometry.text_association import DimensionText, associate
+from extraction.geometry.text_association import (
+    AssociationResult,
+    CannotAssociate,
+    DimensionText,
+    TextAssociation,
+    associate,
+)
 from extraction.glyph_bands import FractionLayout
 from extraction.layout import (
     BedrockClosedQuestionConfig,
@@ -1140,6 +1152,149 @@ def _vision_association_inputs(
     return tuple(items), tuple(rows)
 
 
+#: A region by its recorded polygon, in page pixels: the rule cross-route corroboration groups the
+#: readings of one place by. Every AI reading is recorded at the polygon of the region it was shown
+#: — a vision reader's at the box its crop was cut round, the agent's at its source reading's — so
+#: two readings at one polygon are readings of one region.
+type _RegionKey = tuple[tuple[int, int], ...]
+
+
+def _region_key(polygon: Sequence[Sequence[int]]) -> _RegionKey:
+    return tuple((int(point[0]), int(point[1])) for point in polygon)
+
+
+#: How an AI reading was placed, as an attachment records it (#918).
+PLACED_BY_THE_VENDORS_PATHS: Final = (
+    "an AI reader read this region; where it sits is the region it was shown, and which way it "
+    "reads is the way every run of the vendor's own drawn characters there goes ({direction}), "
+    "never the AI reader's"
+)
+
+#: Why an attachment of an AI reading's region was refused after `associate` chose a line (#918).
+#: Each can only take an attachment away, and each is about the line it would have been attached to.
+TOUCHES_ITS_LINE: Final = (
+    "the vendor's characters in this region touch the line it would be attached to: they are drawn "
+    "on it (a tick at its end, say), not printed beside it as its number is, so the line is not "
+    "taken to be the one this region labels"
+)
+BEYOND_ITS_ENDS: Final = (
+    "the region this AI reader was shown is not wholly between the ends of the line it would be "
+    "attached to, so the line may not be the one it labels; a dimension's number is printed along "
+    "its own line"
+)
+
+#: Why an AI reading was not handed to the association step (#918), as the page result counts them.
+UNPLACED_EXACT_TEXT: Final = (
+    "its region is text the file states exactly, whose own reading is attached by its own place; "
+    "an AI reading of the same characters is not attached again"
+)
+UNPLACED_NOT_A_BOX: Final = "its region is not a box on the visible page"
+UNPLACED_NO_REACH: Final = (
+    "which way its label runs is not known: the lengths a label is gathered by "
+    "(GV_AGENT_LABEL_GAP_PT, GV_AGENT_MAX_LABEL_PT) are not stated"
+)
+UNPLACED_NO_PATHS_READ: Final = (
+    "which way its label runs is not known: the vendor's drawn characters on this page were not read"
+)
+UNPLACED_NO_TRANSFORM: Final = (
+    "the page was read before its transform was recorded, so its region cannot be placed"
+)
+UNPLACED_STACKED: Final = (
+    "a stacked fraction lies in its label, whose characters stand on two lines, so which way it "
+    "runs is not settled"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RegionReading:
+    """An AI reading's region as `associate` takes it (#918): where the region sits and which way
+    the label in it reads, from the vendor's own drawn characters — never from the AI reader.
+
+    **A fact about geometry, not about the value.** It carries no number: the reading's value stays
+    on its own row, exactly as read, and the association records only which line the region labels.
+    """
+
+    extent: Polygon
+    """The region the reader was shown, in stored page space."""
+
+    rotation_degrees: int
+    """0 across the page, 90 up it: `label_direction`'s, never the reader's."""
+
+    drawn: tuple[Decimal, Decimal, Decimal, Decimal]
+    """The box round the vendor's characters lying in the region itself, `(left, top, right,
+    bottom)` in stored page space."""
+
+    signal: str
+    """How the place and the direction were established, in plain English. An attachment made from
+    it records this before `associate`'s own reasons."""
+
+    def refusal(self, line: DimensionExtent) -> str | None:
+        """Why `line`, the one `associate` chose, is not taken to be the one this region labels, or
+        `None` when nothing says so. **Only ever takes an attachment away.**
+
+        Two facts of the drawing, no length: a dimension's number is printed **beside** its line,
+        so a region whose own characters touch the line holds something drawn on it — on `AI_Set_2`
+        the ticks at a dimension's ends, which a gate reader read as `7` and the agent then read a
+        neighbour's number round; and it is printed **between the line's ends**, the rule #913 holds
+        a reading to before it is suggested, here held exactly. A region that holds no number at all
+        — a symbol's squares — is usually beyond any line's ends.
+
+        **The region's own characters, not the whole label gathered from them**: a narrow filler's
+        number stands within a label gap of the ticks at its line's ends, so its gathered label
+        reaches them, and the number itself does not.
+        """
+        low_x, high_x = sorted((line.start.x, line.end.x))
+        low_y, high_y = sorted((line.start.y, line.end.y))
+        left, top, right, bottom = self.drawn
+        if left <= high_x and low_x <= right and top <= high_y and low_y <= bottom:
+            return TOUCHES_ITS_LINE
+        xs = [point.x for point in self.extent.points]
+        ys = [point.y for point in self.extent.points]
+        if line.axis == "horizontal":
+            between = low_x <= min(xs) and max(xs) <= high_x
+        else:
+            between = low_y <= min(ys) and max(ys) <= high_y
+        return None if between else BEYOND_ITS_ENDS
+
+
+def _exact_text_regions(*routes: Sequence[ObservationCandidate]) -> frozenset[_RegionKey]:
+    """The regions the file's own text is read at exactly: its page text, its pasted drawings' font
+    text and the vendor's CAD notes (#918).
+
+    An AI reading of one of these is a second reading of characters the file already states, and the
+    agent asks about them only when they did not parse. Their own readings are attached, or refused,
+    by their own place; an AI reading is not placed there again, because doing so would only copy
+    that decision — and on `AI_Set_2` that copied a stacked filler label onto the neighbouring
+    cabinet's line, whose own line is too short to be offered at all. **Not the reviewer's markup**:
+    a GV note's box says nothing about the vendor's label under it.
+    """
+    return frozenset(_region_key(row.polygon) for rows in routes for row in rows)
+
+
+def _held_to_their_regions(
+    result: AssociationResult, placements: Mapping[UUID, RegionReading]
+) -> AssociationResult:
+    """`associate`'s result with each AI reading's attachment held to its region (#918).
+
+    An attachment `RegionReading.refusal` speaks against becomes a refusal naming the one line it
+    was between, with the reason; one it does not records how the region was placed before
+    `associate`'s own reasons. Every other reading's decision is left exactly as it was.
+    """
+    attached: list[TextAssociation] = []
+    refused = list(result.unassociated)
+    for association in result.associated:
+        placement = placements.get(association.text.observation_id)
+        if placement is None:
+            attached.append(association)
+            continue
+        reason = placement.refusal(association.line)
+        if reason is not None:
+            refused.append(CannotAssociate(association.text, reason, (association.line,)))
+            continue
+        attached.append(replace(association, signals=(placement.signal, *association.signals)))
+    return AssociationResult(associated=tuple(attached), unassociated=tuple(refused))
+
+
 class DatabaseStages:
     """The pipeline as far as it is built: checks run, everything else still says it did not.
 
@@ -1899,6 +2054,26 @@ class DatabaseStages:
             )
             session.flush()
 
+            vision_association_inputs = _vision_association_inputs(
+                vision_association_links, association_sources
+            )
+            # **Every other AI reading by the region it was shown (#918).** A vision reader's crop
+            # was cut round a box another route recorded, and the agent's round its source reading,
+            # so where the number sits is known without the reader; which way it reads comes from
+            # the vendor's own drawn characters there. Until this, an AI reading attached only
+            # through an OCR box whose layout settled a direction, which on `AI_Set_2` none did. A
+            # region the file's own text is read at keeps that reading's attachment alone. The value
+            # is never touched: an attachment says which line the region labels, and the number
+            # stays the reader's.
+            region_items, region_rows, region_refusals = self._ai_region_inputs(
+                page=page,
+                rows=tuple(vision_rows + agent_rows),
+                associated=frozenset(row.id for row in vision_association_inputs[1]),
+                exact_text=_exact_text_regions(vector_rows, cad_text_rows, stamp_text_rows),
+                layers=layers,
+                stacked_fractions=page_stacked,
+            )
+
             # **Both routes' readings against all of the page's lines, in one pass.** A reviewer's
             # correction labels a line the vendor drew, so judging the two layers against separate
             # sets of geometry would refuse exactly the associations that matter most.
@@ -1911,21 +2086,22 @@ class DatabaseStages:
                 readings=(
                     vector_association_inputs,
                     ocr_association_inputs,
-                    _vision_association_inputs(
-                        vision_association_links,
-                        association_sources,
-                    ),
+                    vision_association_inputs,
                     ((layers.markup if layers is not None else ()), markup_rows),
                     ((layers.vendor_text if layers is not None else ()), cad_text_rows),
                     (stamp_texts, stamp_text_rows),
                     # Glyph readings attach to the line they label like any reading — the reader
                     # established which way each label runs, which is what `associate` needs.
                     glyph_association,
+                    (region_items, region_rows),
                 ),
                 lines=(
                     (read.segments if read is not None else ())
                     + (layers.drawing_segments if layers is not None else ())
                 ),
+                placements={
+                    row.id: item for item, row in zip(region_items, region_rows, strict=True)
+                },
             )
             # **What each vendor drawing's parts might be (#868)**, suggested for a person to confirm
             # and never written as items. The same strokes, and the same readings less the
@@ -1937,7 +2113,7 @@ class DatabaseStages:
                 readings=(
                     vector_association_inputs,
                     ocr_association_inputs,
-                    _vision_association_inputs(vision_association_links, association_sources),
+                    vision_association_inputs,
                     ((layers.vendor_text if layers is not None else ()), cad_text_rows),
                     (stamp_texts, stamp_text_rows),
                     glyph_association,
@@ -2089,6 +2265,23 @@ class DatabaseStages:
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
                         "associations": associated,
+                        # AI readings with a value handed to that step by the region they were
+                        # shown (#918), and those that were not, by why: a reading is never placed
+                        # by the AI reader's own word. `None` where the step did not run.
+                        "ai_readings_placed_by_region": (
+                            None if associated is None else len(region_rows)
+                        ),
+                        "ai_readings_not_placed": (
+                            None if associated is None else sum(region_refusals.values())
+                        ),
+                        "ai_readings_not_placed_reasons": (
+                            None
+                            if associated is None
+                            else [
+                                f"{count} × {reason}"
+                                for reason, count in region_refusals.most_common(REPORTED_REFUSALS)
+                            ]
+                        ),
                         # The parts suggested in this page's vendor drawings (#868), counted; `None`
                         # when no association settings were stated, which is not the same as none.
                         "part_proposals": parts,
@@ -2787,6 +2980,89 @@ class DatabaseStages:
             flush=flush,
         )
 
+    def _association_config(self) -> str:
+        """The association run's identity: the dpi, the association's own nine lengths, and — where
+        stated — the two a label is gathered by, which decide which AI readings are placed by the
+        vendor's paths and so which are attached (#918). A re-association under other lengths is
+        another run, not this one reused (#487)."""
+        settings = self._association
+        assert settings is not None
+        written = f"dpi={self._dpi};{settings.config_hash}"
+        reach = self._label_reach()
+        if reach is None:
+            return written
+        written += f";label_gap<={reach.label_gap_pt};label<={reach.maximum_label_pt}"
+        if len(written) <= RUN_IDENTITY_CHARACTERS:
+            return written
+        # As `_text_run_config` does: written out past the column, a fingerprint of all of it.
+        return f"dpi={self._dpi};run={hashlib.sha256(written.encode()).hexdigest()[:16]}"
+
+    def _label_reach(self) -> LabelReach | None:
+        """How a label is gathered from the vendor's paths: the reading agent's two lengths and the
+        run gap the page's regions were formed by — the reach the vision readers' upright turn reads
+        a label by (#907). `None` where either is not stated, and nothing then decides a direction.
+        """
+        if self._reading_agent is None or self._association is None:
+            return None
+        return self._reading_agent.reach(self._association.glyph_gap_pt)
+
+    def _ai_region_inputs(
+        self,
+        *,
+        page: Page,
+        rows: Sequence[ObservationCandidate],
+        associated: frozenset[UUID],
+        exact_text: frozenset[_RegionKey],
+        layers: PageLayers | None,
+        stacked_fractions: Sequence[StackedFraction],
+    ) -> tuple[tuple[RegionReading, ...], tuple[ObservationCandidate, ...], Counter[str]]:
+        """Each AI reading's region as the association step takes it, and why the rest are not (#918).
+
+        `rows` are the page's AI readings — the vision readers' and the agent's. Only those with a
+        value are placed: an AI reader that read no number says nothing a line could label. One
+        already handed to the association through its source region (`_vision_association_inputs`)
+        is not handed twice, and nor is one of a region the file's own text is read at exactly
+        (`_exact_text_regions`).
+
+        **Placed by the vendor's drawn characters in the region** (`region_placement`), or not at
+        all, and the page result says why: a reading is never placed by the AI reader's own word.
+        """
+        items: list[RegionReading] = []
+        placed: list[ObservationCandidate] = []
+        refused: Counter[str] = Counter()
+        transform = page_transform(page, self._dpi)
+        reach = self._label_reach()
+        seen: set[UUID] = set()
+        for row in rows:
+            if row.value_numerator is None or row.id in associated or row.id in seen:
+                continue
+            seen.add(row.id)
+            placement: RegionReading | str
+            if _region_key(row.polygon) in exact_text:
+                placement = UNPLACED_EXACT_TEXT
+            elif reach is None:
+                placement = UNPLACED_NO_REACH
+            elif layers is None or not layers.geometry_read:
+                placement = UNPLACED_NO_PATHS_READ
+            elif transform is None:
+                placement = UNPLACED_NO_TRANSFORM
+            else:
+                placement = region_placement(
+                    row.polygon,
+                    transform=transform,
+                    document_version_id=page.document_version_id,
+                    page_index=page.index,
+                    page_glyphs=layers.glyph_paths,
+                    stacked_fractions=stacked_fractions,
+                    reach=reach,
+                )
+            if isinstance(placement, str):
+                refused[placement] += 1
+                continue
+            items.append(placement)
+            placed.append(row)
+        return tuple(items), tuple(placed), refused
+
     def _associate_page(
         self,
         session: Session,
@@ -2795,6 +3071,7 @@ class DatabaseStages:
         task_run_id: UUID,
         readings: Sequence[tuple[Sequence[ReadItem], Sequence[ObservationCandidate]]],
         lines: tuple[DimensionExtent, ...],
+        placements: Mapping[UUID, RegionReading] | None = None,
     ) -> int | None:
         """Attach each of a page's readings to the line it annotates, or record why not.
 
@@ -2811,6 +3088,12 @@ class DatabaseStages:
         one goes missing from both halves, and the refusals are the half that matters today: two
         lines equally close to one number is the ordinary case on a dimensioned elevation, and an
         unattached number is what a reviewer has to look at.
+
+        **`placements` are the AI readings placed by their regions** (#918), by row. The line
+        `associate` chose for one is held to `RegionReading.refusal` — beside it, between its ends —
+        and refused with the reason where it fails, which can only take an attachment away. One
+        that holds records how its place was found first, then `associate`'s own reasons, so the row
+        says the AI reader supplied neither where the number sits nor which way it reads.
         """
         settings = self._association
         if settings is None:
@@ -2854,12 +3137,14 @@ class DatabaseStages:
                 proximity_limit=settings.proximity_limit,
                 ambiguity_margin=settings.ambiguity_margin,
             )
+            if placements:
+                result = _held_to_their_regions(result, placements)
             association_run = open_extraction_run(
                 session,
                 task_run_id=task_run_id,
                 extractor=ASSOCIATION_EXTRACTOR,
                 extractor_version=ASSOCIATION_EXTRACTOR_VERSION,
-                config_hash=f"dpi={self._dpi};{settings.config_hash}",
+                config_hash=self._association_config(),
                 dpi=self._dpi,
             )
             return len(
@@ -5117,6 +5402,89 @@ def region_label_geometry(
     left, top, right, bottom = crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT)
     crop_box = _pdf_box(transform, [(left, top), (right, bottom)])
     return label_geometry(region_box, crop_box, page_glyphs, reach), region_box
+
+
+def region_placement(
+    polygon_px: Sequence[Sequence[int]],
+    *,
+    transform: PageTransform,
+    document_version_id: UUID,
+    page_index: int,
+    page_glyphs: Sequence[VectorPath],
+    stacked_fractions: Sequence[StackedFraction],
+    reach: LabelReach,
+) -> RegionReading | str:
+    """An AI reading's region placed by the vendor's own drawn characters in it, or why not (#918).
+
+    `polygon_px` is the region the reader was shown, in page pixels at `transform`'s dpi. **Where it
+    sits** is that region, carried into stored page space by the page's transform — the step every
+    reader's box takes. **Which way it reads** is `label_direction`'s: the label in the region,
+    gathered from the vendor's paths, settled, and with every run of its characters going one way.
+    Nothing the AI reader said is used: not its value, not a box of its own.
+
+    **The vendor's ink only** (`VectorPath.drawing_ink`): a mark GV drew in colour inside the pasted
+    drawing is not one of the vendor's characters, so it neither joins a label nor gives one a
+    direction.
+
+    **A stacked fraction in the label settles nothing**, wherever the bar detector found one in the
+    label or the region (`crop_shows_a_stacked_fraction`, the rule a vision crop is held to): its
+    numerator stands above its denominator, so its runs say nothing about which way the label reads.
+
+    Public so a measurement places a stored reading by this code, not a copy of it.
+    """
+    corners = [(int(point[0]), int(point[1])) for point in polygon_px]
+    if not corners:
+        return UNPLACED_NOT_A_BOX
+    try:
+        extent = Polygon(
+            points=tuple(transform.to_stored(ImagePoint(x=x, y=y)) for x, y in corners),
+            space="stored",
+            document_version_id=document_version_id,
+            page=page_index,
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        return UNPLACED_NOT_A_BOX
+    found = label_direction(
+        _pdf_box(transform, corners),
+        [path for path in page_glyphs if path.drawing_ink],
+        reach,
+    )
+    if found.degrees is None or found.label_box is None or found.in_region is None:
+        return found.unsettled or UNPLACED_NOT_A_BOX
+    label = _pixel_box(transform, found.label_box)
+    shown = (
+        min(label[0], *(x for x, _ in corners)),
+        min(label[1], *(y for _, y in corners)),
+        max(label[2], *(x for x, _ in corners)),
+        max(label[3], *(y for _, y in corners)),
+    )
+    if crop_shows_a_stacked_fraction(shown, stacked_fractions):
+        return UNPLACED_STACKED
+    drawn = _pixel_box(transform, found.in_region)
+    top_left = transform.to_stored(ImagePoint(x=drawn[0], y=drawn[1]))
+    bottom_right = transform.to_stored(ImagePoint(x=drawn[2], y=drawn[3]))
+    return RegionReading(
+        extent=extent,
+        rotation_degrees=found.degrees,
+        drawn=(top_left.x, top_left.y, bottom_right.x, bottom_right.y),
+        signal=PLACED_BY_THE_VENDORS_PATHS.format(
+            direction="across the page" if found.degrees == 0 else "up the page"
+        ),
+    )
+
+
+def _pixel_box(transform: PageTransform, box: Box) -> tuple[int, int, int, int]:
+    """A PDF-point box as `(left, top, right, bottom)` page pixels at the transform's dpi."""
+    low_x, low_y, high_x, high_y = box
+    corners = [
+        transform.to_image(PdfPoint(x=x, y=y)) for x in (low_x, high_x) for y in (low_y, high_y)
+    ]
+    return (
+        min(point.x for point in corners),
+        min(point.y for point in corners),
+        max(point.x for point in corners),
+        max(point.y for point in corners),
+    )
 
 
 def _shows(crop_box: tuple[int, int, int, int], fraction: StackedFraction) -> bool:
