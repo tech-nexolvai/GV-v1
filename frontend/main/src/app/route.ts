@@ -25,7 +25,13 @@ const PAGES: readonly Page[] = ['review', 'documents', 'rulebook', 'settings', '
 
 /** `#/review/<id>` → review of that package; `#/documents` → documents; anything else → start. */
 export function parseRoute(hash: string): Route {
-  const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  let parts: string[];
+  try {
+    parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  } catch {
+    // An edited or truncated URL must not crash the whole reviewer app.
+    return { page: 'review', packageId: null };
+  }
   const page = PAGES.find((candidate) => candidate === parts[0]);
   if (page === undefined) return { page: 'review', packageId: null };
   if (page === 'review') return { page, packageId: parts[1] ?? null };

@@ -164,6 +164,8 @@
   overflow-wrap: anywhere;
 }
 
+.new-review__open-saved { margin-top: var(--space-3); }
+
 /* ── Uploading ─────────────────────────────────────────────── */
 .new-review--running {
   flex-direction: row;

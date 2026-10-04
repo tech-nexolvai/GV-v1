@@ -14,6 +14,7 @@ import { useRef, useState } from 'react';
 import { ArrowUp, FileText, Loader2, Plus, X } from 'lucide-react';
 import { createPackage } from '../../api/upload';
 import type { UploadProgress } from '../../api/upload';
+import { describeUploadFailure } from '../../api/uploadState';
 import { projectId } from '../../api/config';
 import './NewReviewForm.css';
 
@@ -45,7 +46,11 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
   const [running, setRunning] = useState(false);
   const [step, setStep] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const inputs = { architectural: useRef<HTMLInputElement>(null), shop: useRef<HTMLInputElement>(null) };
+  const [savedPackageId, setSavedPackageId] = useState<string | null>(null);
+  // Hooks must be called directly: the React compiler can memoize an object literal and skip
+  // hooks nested inside it on the next render.
+  const architecturalInput = useRef<HTMLInputElement>(null);
+  const shopInput = useRef<HTMLInputElement>(null);
 
   const ready = vendor.trim() !== '' && files.architectural !== null && files.shop !== null;
   const missing = [
@@ -68,6 +73,8 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
     if (!ready || running) return;
     setRunning(true);
     setError(null);
+    setSavedPackageId(null);
+    setStep('');
     try {
       const { packageId } = await createPackage(
         projectId(),
@@ -78,10 +85,11 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
       );
       onCreated(packageId);
     } catch (failure) {
-      // Left on screen with everything still filled in. Nothing has been recorded — the API confirms
-      // the bytes before it writes anything — so the reviewer can simply try again.
+      // A package may have been created before a later upload step failed. Keep its identity visible.
+      const described = describeUploadFailure(failure);
       setRunning(false);
-      setError(failure instanceof Error ? failure.message : String(failure));
+      setError(described.detail);
+      setSavedPackageId(described.savedPackageId);
     }
   }
 
@@ -140,7 +148,7 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
               }}
             >
               <input
-                ref={inputs[slot]}
+                ref={slot === 'architectural' ? architecturalInput : shopInput}
                 type="file"
                 accept="application/pdf,.pdf"
                 hidden
@@ -153,7 +161,7 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
                 <button
                   type="button"
                   className="new-review__slot-pick"
-                  onClick={() => inputs[slot].current?.click()}
+                  onClick={() => (slot === 'architectural' ? architecturalInput : shopInput).current?.click()}
                 >
                   <Plus size={16} aria-hidden="true" />
                   <span className="new-review__slot-text">
@@ -188,7 +196,7 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
       <div className="new-review__foot">
         <p className="new-review__need" aria-live="polite">
           {ready
-            ? 'Ready. Both drawings will be read and checked against the rulebook.'
+            ? 'Ready to upload. You will review the readings and any values still needed.'
             : `Add ${missing.join(', ').replace(/, ([^,]*)$/, ' and $1')}.`}
         </p>
         <button
@@ -207,8 +215,16 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
       )}
       {error && (
         <div className="new-review__error" role="alert">
-          <strong>The drawings were not submitted.</strong> Nothing has been recorded, so you can try
-          again. <span className="new-review__error-detail">{error}</span>
+          <strong>The submission did not finish.</strong>{' '}
+          {savedPackageId
+            ? 'A document set was created and may contain an uploaded drawing. Open that set to inspect it; starting again here creates another set.'
+            : 'We could not confirm whether a document set was created. Check Documents before trying again.'}{' '}
+          <span className="new-review__error-detail">{error}</span>
+          {savedPackageId && (
+            <button type="button" className="btn btn--ghost new-review__open-saved" onClick={() => onCreated(savedPackageId)}>
+              Open saved document set
+            </button>
+          )}
         </div>
       )}
     </form>

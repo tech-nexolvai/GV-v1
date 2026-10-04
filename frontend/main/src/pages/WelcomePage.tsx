@@ -35,8 +35,8 @@ export function WelcomePage({ onCreated, onOpenReview }: WelcomePageProps) {
       <div className="welcome__inner">
         <h2 className="welcome__heading">Start a review</h2>
         <p className="welcome__sub">
-          Add the architect&rsquo;s drawings and the vendor&rsquo;s shop drawings. GV Review reads
-          both, checks every dimension against the rulebook, and shows you what needs a decision.
+          Add the architect&rsquo;s drawings and the vendor&rsquo;s shop drawings. GV Review proposes
+          readings for you to confirm, runs the published checks, and shows what still needs a decision.
         </p>
 
         <NewReviewForm onCreated={onCreated} />
