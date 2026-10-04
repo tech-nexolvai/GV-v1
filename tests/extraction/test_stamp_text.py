@@ -18,10 +18,16 @@ from uuid import UUID
 
 import pytest
 
+from evidence.coordinates import ImagePoint
+from extraction.reader import UnreadablePdf
 from extraction.stamp_text import (
+    ColouredPath,
     StampText,
+    _coloured_path,
+    coloured_paths,
     coloured_text,
     drawing_ink,
+    pasted_stamps,
     path_ink,
     read_stamp_text,
     stamps_only,
@@ -561,3 +567,183 @@ def test_a_split_stack_a_little_apart_from_its_whole_number_is_still_read() -> N
 
     assert [(item.text, item.stacked) for item in reading.contents.texts] == [('2 1/2"', True)]
     assert reading.contents.set_aside == ()
+
+
+# ---------------------------------------------------------------------------
+# Where GV's other marks are: paths drawn in colour, and stamps pasted onto a drawing (#929)
+# ---------------------------------------------------------------------------
+
+#: The stamp's appearance `(x, y)` is page `(x - 50, y - 450)` on the 400 x 300 page; at 150 dpi a
+#: page point is 150/72 of a pixel, down from the page's top.
+
+
+def _paths(stream: bytes) -> tuple[ColouredPath, ...]:
+    return coloured_paths(_drawing(stream), 0, dpi=DPI)
+
+
+def test_a_long_coloured_line_is_found_whole_and_placed_where_the_page_puts_it() -> None:
+    """**#929's first blind spot.** A red line nearly the stamp's width, far longer than any glyph:
+    found, as one straight piece from end to end, in the page's pixels at 150 dpi. Page
+    `(60, 70)` to `(340, 70)` is pixels `(125, 479)` to `(708, 479)`."""
+    (line,) = _paths(b"1 0 0 RG 1 w 110 520 m 390 520 l S")
+
+    assert line.lines == ((125, 479, 708, 479),)
+    assert line.areas == () and line.rings == ()
+    assert line.meets((400, 400, 450, 500))
+    assert not line.meets((400, 400, 450, 470))
+
+
+@pytest.mark.parametrize(
+    "stream",
+    [
+        b"0 0 0 RG 1 w 110 520 m 390 520 l S",
+        b"0.5 G 1 w 110 520 m 390 520 l S",
+        b"0.6 g 300 520 13 7 re f",
+        b"1 1 1 rg 300 520 13 7 re f",
+        b"0 0 0 RG 1 1 0 rg 300 520 13 7 re n",
+    ],
+    ids=["black-line", "grey-line", "grey-fill", "white-fill", "drawn-neither-way"],
+)
+def test_lines_and_fills_in_black_or_grey_are_the_vendors_and_not_found(stream: bytes) -> None:
+    """**The one ink rule** (`path_ink`): black, grey and white are a drawing's; a path painted
+    neither way shows nothing."""
+    assert _paths(stream) == ()
+
+
+def test_a_coloured_fill_is_found_with_its_outline_and_its_inside() -> None:
+    """**#929's second blind spot.** A yellow fill 13 x 7 points with a red outline, as GV's pasted
+    outlet symbols are: one path, its four sides as its outline, its inside one ring. A box inside
+    it, none of the outline in reach, is covered; one beside it is not."""
+    (fill,) = _paths(b"1 0 0 RG 1 1 0.5 rg 300 520 13 7 re B")
+
+    assert len(fill.lines) == 4
+    assert len(fill.rings) == 1
+    left, top, right, bottom = (
+        min(x for x, _ in fill.rings[0]),
+        min(y for _, y in fill.rings[0]),
+        max(x for x, _ in fill.rings[0]),
+        max(y for _, y in fill.rings[0]),
+    )
+    assert (left, top, right, bottom) == (521, 465, 548, 479)
+    assert fill.meets((530, 470, 535, 474))
+    assert not fill.meets((550, 470, 560, 474))
+
+
+def test_a_stroked_outline_shows_where_its_line_runs_and_not_inside_it() -> None:
+    """A red box drawn round an area: the area it encloses is not drawn on."""
+    (outline,) = _paths(b"1 0 0 RG 1 w 150 550 200 100 re S")
+
+    assert outline.rings == ()
+    # Page (100, 100) to (300, 200): pixels 208 to 625 across, 208 to 417 down.
+    assert outline.meets((300, 300, 320, 320)) is False
+    assert outline.meets((200, 300, 220, 320)) is True
+
+
+def test_a_curve_counts_by_the_box_that_holds_it() -> None:
+    (curve,) = _paths(b"1 0 0 RG 1 w 110 520 m 150 600 250 600 290 520 c S")
+
+    assert curve.lines == ()
+    (area,) = curve.areas
+    assert area == (125, 313, 500, 479)
+
+
+def test_a_coloured_line_inside_a_drawing_nested_in_the_snapshot_is_found() -> None:
+    """The client's snapshots nest drawings inside their own drawings, which the page's layers do
+    not open (AI_Set_2's 13th and 16th sheets): the paths drawn in them are found all the same."""
+    nested = (
+        b"<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 400 300] /Length 34 >>\n"
+        b"stream\n1 0 0 RG 1 w 110 520 m 390 520 l S\nendstream"
+    )
+    outer = (
+        b"<< /Type /XObject /Subtype /Form /FormType 1 /BBox [100 500 400 700] "
+        b"/Matrix [1 0 0 1 -100 -500] /Resources << /XObject << /N1 7 0 R >> >> /Length 8 >>\n"
+        b"stream\n/N1 Do\nendstream"
+    )
+    sheet = _pdf(annotations=[_stamp(appearance_object=6)], extra_objects=[outer, nested])
+
+    (line,) = coloured_paths(sheet, 0, dpi=DPI)
+
+    assert line.lines == ((125, 479, 708, 479),)
+
+
+def test_a_path_whose_pieces_cannot_be_told_apart_is_its_whole_box() -> None:
+    """Never narrower than what is drawn: a command this does not know gives the whole box."""
+
+    def place(x: object, top: object) -> ImagePoint:
+        return ImagePoint(int(x), int(top))  # type: ignore[call-overload]
+
+    path = {
+        "stroke": True,
+        "fill": False,
+        "path": [("m", (10, 10)), ("q", (50, 50)), ("l", (90, 10))],
+        "x0": 10,
+        "top": 10,
+        "x1": 90,
+        "bottom": 50,
+    }
+
+    assert _coloured_path(path, place) == ColouredPath(
+        lines=(), areas=((10, 10, 90, 50),), rings=(), even_odd=False
+    )
+
+
+def _stamped(*rects: bytes, free_text: bytes | None = None) -> bytes:
+    """A page whose stamps have these rectangles, each drawing one black stroke."""
+    annotations = [_stamp(rect=rect, appearance_object=6 + len(rects)) for rect in rects]
+    if free_text is not None:
+        annotations.append(_free_text('38"', rect=free_text))
+    return _pdf(
+        annotations=annotations,
+        extra_objects=[_appearance(b"0 0 0 RG 1 w 110 520 m 130 540 l S")],
+    )
+
+
+def test_a_stamp_pasted_onto_a_drawing_is_found_where_it_lies() -> None:
+    """**#929's third blind spot.** A small stamp wholly inside the drawing's stamp is pasted onto
+    it, whatever it draws: its box, in the page's pixels. The drawing itself is not."""
+    sheet = _stamped(b"[50 50 350 250]", b"[250 70 264 82]")
+
+    assert pasted_stamps(sheet, 0, dpi=DPI) == ((521, 454, 550, 479),)
+    assert pasted_stamps(sheet, 0, dpi=72) == ((250, 218, 264, 230),)
+    # Rectangles the file writes from their top right corners are the same rectangles.
+    assert pasted_stamps(_stamped(b"[350 250 50 50]", b"[264 82 250 70]"), 0, dpi=DPI) == (
+        (521, 454, 550, 479),
+    )
+
+
+@pytest.mark.parametrize(
+    "rects",
+    [
+        (b"[50 50 350 250]",),
+        (b"[10 10 190 290]", b"[200 10 390 290]"),
+        (b"[10 10 210 290]", b"[200 10 390 290]"),
+    ],
+    ids=["one-drawing", "side-by-side", "overlapping-margins"],
+)
+def test_drawings_that_lie_side_by_side_or_overlap_are_not_pasted(rects: tuple[bytes, ...]) -> None:
+    """Drawings on a combined sheet sit side by side, and on AI_Set_1 their margins overlap: none
+    lies inside another, so none is taken for a pasted stamp."""
+    assert pasted_stamps(_stamped(*rects), 0, dpi=DPI) == ()
+
+
+def test_two_stamps_with_one_rectangle_both_count() -> None:
+    """Nothing tells which is the drawing, so the check holds both: it can only hold more back."""
+    sheet = _stamped(b"[250 70 264 82]", b"[250 70 264 82]")
+
+    assert len(pasted_stamps(sheet, 0, dpi=DPI)) == 2
+
+
+def test_a_reviewer_note_inside_a_drawing_is_not_a_pasted_stamp() -> None:
+    """The reviewer's notes are not drawn for a reader (#742); only stamps are."""
+    sheet = _stamped(b"[50 50 350 250]", free_text=b"[250 70 264 82]")
+
+    assert pasted_stamps(sheet, 0, dpi=DPI) == ()
+
+
+def test_a_page_that_is_not_there_cannot_be_read_for_marks() -> None:
+    sheet = _stamped(b"[50 50 350 250]")
+
+    with pytest.raises(UnreadablePdf):
+        pasted_stamps(sheet, 3, dpi=DPI)
+    with pytest.raises(UnreadablePdf):
+        coloured_paths(sheet, 3, dpi=DPI)

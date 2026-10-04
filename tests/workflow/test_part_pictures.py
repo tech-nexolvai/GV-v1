@@ -53,11 +53,19 @@ from evidence.crop import BoxCropSpec, crop_pixel_box, decode_rgb_png, generate_
 from extraction.rasterise import render_page
 from extraction.reader import UnreadablePdf
 from storage.local import LocalStore
+from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _stamp
 from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import SETTINGS
 from tests.workflow.test_association import _revision as _stored_revision
 from tests.workflow.test_markup_route import _SilentOcr
-from tests.workflow.test_part_proposals_route import DRAWING, SHEET, _sheet, _upgrade
+from tests.workflow.test_part_proposals_route import (
+    DRAWING,
+    HELVETICA,
+    SHEET,
+    _drawing_appearance,
+    _sheet,
+    _upgrade,
+)
 from vocabulary.part_kinds import PartKind
 from workflow import stages as stages_module
 from workflow.part_pictures import PNG, PartPictureSettings
@@ -85,6 +93,38 @@ RED_STROKE = b"1 0 0 RG 1 w 300 525 m 306 530 l S\n"
 
 #: The sheet with GV's red `38` in the vendor's drawing.
 MARKED_SHEET = _sheet(DRAWING + RED_TEXT)
+
+#: #929's marks at the same place, none of which the glyph-sized test saw: a red line 100 points
+#: long, page `(240, 75)` to `(340, 75)`, through the second cabinet's picture and clear of the
+#: first's; a yellow fill 13 x 7 points in a red outline, as GV's pasted outlet symbols are drawn;
+#: and the same line and fill in the vendor's black and grey.
+LONG_RED_LINE = b"1 0 0 RG 1 w 290 525 m 390 525 l S\n"
+YELLOW_FILL = b"1 0 0 RG 1 1 0.5 rg 300 520 13 7 re B\n"
+LONG_BLACK_LINE = b"0 0 0 RG 1 w 290 525 m 390 525 l S\n"
+GREY_FILL = b"0.6 g 300 520 13 7 re f\n"
+
+
+def _sheet_with_a_pasted_stamp(rect: bytes) -> bytes:
+    """`SHEET` with a small stamp pasted onto the vendor's drawing at `rect`, holding one black
+    stroke, as GV's reviewer pasted outlet symbols onto AI_Set_2's 17th sheet (#929). Objects 5 to
+    8 are the annotations, 9 the drawing's appearance, 10 its font and 11 the pasted stamp's."""
+    return _pdf(
+        annotations=[
+            _free_text("VENDOR'S SHOP DRAWING ELEVATION ", rect=b"[60 262 340 280]"),
+            _free_text("XQ30L", rect=b"[220 140 260 150]"),
+            _stamp(appearance_object=9),
+            _stamp(rect=rect, appearance_object=11),
+        ],
+        extra_objects=[
+            _drawing_appearance(10, DRAWING),
+            HELVETICA,
+            _appearance(
+                b"0 0 0 RG 0.5 w 101 501 m 113 511 l S",
+                bbox=b"[100 500 114 512]",
+                matrix=b"[1 0 0 1 -100 -500]",
+            ),
+        ],
+    )
 
 
 @pytest.fixture
@@ -582,6 +622,60 @@ def test_each_picture_records_whether_it_shows_gv_s_coloured_marks(
     assert [page.payload["part_pictures"] for page in result] == [
         {"cut": 3, "refused": 0, "refusals": []}
     ]
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (_sheet(DRAWING + LONG_RED_LINE), [False, True, False]),
+        (_sheet(DRAWING + YELLOW_FILL), [False, True, False]),
+        (_sheet_with_a_pasted_stamp(b"[250 70 264 82]"), [False, True, False]),
+        (_sheet(DRAWING + LONG_BLACK_LINE), [False, False, False]),
+        (_sheet(DRAWING + GREY_FILL), [False, False, False]),
+    ],
+    ids=["long-red-line", "yellow-fill", "pasted-stamp", "long-black-line", "grey-fill"],
+)
+def test_a_picture_showing_a_long_line_a_fill_or_a_pasted_stamp_records_it(
+    session: Session, store: LocalStore, data: bytes, expected: list[bool | None]
+) -> None:
+    """**#929 in the part pictures.** A long red line, a yellow fill in a red outline, or a stamp
+    pasted onto the drawing — the three marks the glyph-sized test missed, the last as on AI_Set_2's
+    17th sheet — lie in the second cabinet's picture only, and it records them; the same line and
+    fill in the vendor's black and grey are no mark."""
+    _extract(session, store, data=data)
+
+    assert [proposal.kind for proposal in _proposals(session)] == [
+        "cabinet",
+        "cabinet",
+        "countertop",
+    ]
+    assert _marks(session) == expected
+
+
+def test_each_picture_s_markup_is_gathered_by_the_one_production_function(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**One function, not two (#929).** The markup a picture is checked against is
+    `coloured_markup`'s, the function the agreement gate and the gate replay gather theirs by,
+    asked once for the page at the picture's own resolution. Made to find nothing, it leaves the
+    second cabinet's picture with the long red line unmarked."""
+    real = stages_module.coloured_markup
+    asked: list[int] = []
+
+    def nothing(*arguments: object, **keywords: object) -> ColouredMarkup:
+        found = real(*arguments, **keywords)  # type: ignore[arg-type]
+        asked.append(int(keywords["dpi"]))  # type: ignore[call-overload]
+        if int(keywords["dpi"]) == PICTURES.dpi:
+            assert found.coloured_paths, "the real function finds the red line"
+        return ColouredMarkup(
+            text=(), paths=(), transform=None, coloured_paths=(), pasted_stamps=()
+        )
+
+    monkeypatch.setattr(stages_module, "coloured_markup", nothing)
+    _extract(session, store, data=_sheet(DRAWING + LONG_RED_LINE))
+
+    assert asked.count(PICTURES.dpi) == 1
+    assert _marks(session) == [False, False, False]
 
 
 @pytest.mark.parametrize("dpi", [100, 300])
