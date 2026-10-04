@@ -342,15 +342,18 @@ class Judgement:
 def _agreement(readings: Sequence[Reading]) -> Judgement | None:
     if len(readings) < 2:
         return None
-    result = corroborate(tuple(_candidate(reading) for reading in readings))
+    asked = [(_candidate(reading), reading) for reading in readings]
+    result = corroborate(tuple(candidate for candidate, _ in asked))
     if result.lane is None or result.status is EvidenceStatus.CONFLICTING:
         return None
-    value = readings[0].value
+    # **Only the readings that agreed** (#924): one with no value abstained, and is not among them.
+    by_id = {candidate.candidate_id: reading for candidate, reading in asked}
+    agreed = [by_id[candidate_id] for candidate_id in result.supported_by]
     return Judgement(
         Outcome.CONFIRMED,
-        value,
-        agreeing=tuple(sorted({reading.extractor for reading in readings})),
-        vendors=frozenset(reading.vendor for reading in readings),
+        agreed[0].value,
+        agreeing=tuple(sorted({reading.extractor for reading in agreed})),
+        vendors=frozenset(reading.vendor for reading in agreed),
     )
 
 
@@ -362,7 +365,7 @@ def judge(
     1. Any two readings with values that disagree → the region is conflicting and goes to a
        reviewer (`_mark_regions_the_agent_contradicted`, and the first pass for the pair alone).
     2. The pair agreeing → confirmed (the first pass; `corroborate` groups every row of the region,
-       so a pair reading with no value blocks it).
+       and a pair reading with no value abstains, #924).
     3. Otherwise the agent's readings, grouped with the pair's rows that have no lane yet → confirmed
        where they agree (the second pass).
     4. Otherwise one value → proposed: the agent's proposal, else the one value read.
@@ -370,11 +373,11 @@ def judge(
 
     Only readings that returned text are rows; a refusal is recorded as a call, not a reading.
 
-    **Not applied here: the gate's guards** — a GV mark in the crop (#901), and a crop that cuts the
-    label off (#919). The stage does not confirm an agreement whose crop shows markup drawn in
-    colour, or cuts the label off; this judgement has no crop facts and does, so a scorecard counts
-    such an agreement as confirmed. `scripts/gate_replay.py` replays these files with both guards,
-    by the stage's own functions.
+    **Not applied here: the gate's guards** — a GV mark in the crop (#901), a crop that cuts the
+    label off (#919), and an agreed whole number and a fraction (#924). The stage does not confirm
+    such an agreement; this judgement counts it as confirmed, and so measures the readers rather
+    than the gate. `scripts/gate_replay.py` replays these files with the guards, by the stage's own
+    functions.
     """
     rows = [reading for reading in pair if reading.raw_text is not None]
     added = [reading for reading in looks if reading.raw_text is not None]

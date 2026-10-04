@@ -63,6 +63,7 @@ from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from tests.workflow.test_cut_label_guard import whole_labels
 from tests.workflow.test_gv_mark_guard import unmarked_page
+from tests.workflow.test_mixed_fraction_guard import fractions_let_through
 from tests.workflow.test_stacked_fraction_route import DIMENSION_LINE, STACKED_SHEET
 from vocabulary.semantic_types import SemanticType
 from workflow.stages import (
@@ -436,6 +437,7 @@ def test_two_agreeing_readers_leave_it_unconfirmed_with_no_lane(
         candidates=(flagged, agreeing),
         gv_mark=unmarked_page(),
         cut_label=whole_labels(),
+        mixed_fraction=fractions_let_through(),
     )
 
     for row in (flagged, agreeing):
@@ -458,6 +460,7 @@ def test_the_same_agreement_without_the_flag_does_corroborate(
         candidates=(unflagged, agreeing),
         gv_mark=unmarked_page(),
         cut_label=whole_labels(),
+        mixed_fraction=fractions_let_through(),
     )
 
     for row in (unflagged, agreeing):

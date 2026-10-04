@@ -549,7 +549,9 @@ def _depth_operands(shop_depth: Fraction) -> dict[str, dict[str, VerdictOperand]
     }
 
 
-def _project_depth_parameters(session: Session, revision: PackageRevision) -> None:
+def _project_depth_parameters(
+    session: Session, revision: PackageRevision, *, overhang: Fraction = Fraction(3, 2)
+) -> None:
     """The project's cabinet depth and overhang, as a reviewer would set them for one job.
 
     The **project** layer, deliberately: it is the sanctioned place for a per-project answer. A
@@ -571,7 +573,7 @@ def _project_depth_parameters(session: Session, revision: PackageRevision) -> No
                 set_at=now,
             ),
             "countertop_overhang": InMemoryParameterValue(
-                value=Quantity(value=Fraction(3, 2), unit=Unit.INCH),
+                value=Quantity(value=overhang, unit=Unit.INCH),
                 provenance=Provenance.MEASURED,
                 set_by="test reviewer",
                 set_at=now,
