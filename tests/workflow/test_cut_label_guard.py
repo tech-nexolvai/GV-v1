@@ -553,21 +553,24 @@ def test_a_gv_mark_and_a_cut_label_are_each_refused_once_and_counted_together(
     """**#901's guard first, then this one.** A region the GV-mark guard holds back is never asked
     about its cut — had it been, the cut guard here would hold it back too — so each refusal has one
     reason, and the page's count is the two guards' counts added. The region neither holds back is
-    confirmed."""
+    confirmed. Asked again, as the stage asks once the reading agent has looked, a guard answers a
+    region it refused from what it already decided; a region it let through is asked again."""
     rows = _agreeing_pairs(session, store)
     gv_mark = _Says({MARKED: "a GV mark"})
     cut_label = _Says({MARKED: "a cut label", CUT: "a cut label"})
 
-    DatabaseStages._apply_cross_route_corroboration(
-        session,
-        page_index=0,
-        candidates=rows,
-        gv_mark=gv_mark,  # type: ignore[arg-type]
-        cut_label=cut_label,  # type: ignore[arg-type]
-    )
+    for _ in range(2):
+        DatabaseStages._apply_cross_route_corroboration(
+            session,
+            page_index=0,
+            candidates=rows,
+            gv_mark=gv_mark,  # type: ignore[arg-type]
+            cut_label=cut_label,  # type: ignore[arg-type]
+        )
 
     assert _lanes(rows) == {MARKED: {None}, CUT: {None}, PLAIN: {"SECOND_READER"}}
     assert MARKED not in cut_label.asked
+    assert (gv_mark.asked, cut_label.asked) == ([MARKED, CUT, PLAIN, CUT], [CUT, PLAIN])
     assert (set(gv_mark.refused), set(cut_label.refused)) == ({MARKED}, {CUT})
     assert agreement_refusal_reasons((gv_mark, cut_label), 20) == [
         "1 × a GV mark",
