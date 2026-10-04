@@ -823,6 +823,8 @@ class PartPicture(Base, TimestampedUUID, Immutable):
 
     **The vendor's drawing alone.** Cut from the page rendered with the reviewer's markup removed, as
     every reader's crop is (#742), so a person confirms the vendor's part and not GV's note about it.
+    Where GV's marks are baked into the vendor's drawing itself, the render cannot remove them, and
+    `shows_gv_marks` records that the picture shows them (#921).
 
     **A pointer and a digest, never the bytes.** The image is in the object store under a
     content-addressed key; whoever shows it checks the bytes against `sha256` first. Two suggestions
@@ -849,6 +851,16 @@ class PartPicture(Base, TimestampedUUID, Immutable):
 
     dpi: Mapped[int] = mapped_column()
     """The resolution the vendor's page was rendered at to cut it."""
+
+    shows_gv_marks: Mapped[bool | None] = mapped_column()
+    """Whether markup drawn in colour lies in the picture, wholly or in part (#921): GV's own marks
+    baked into the vendor's drawing, which the vendor-only render cannot strip.
+
+    Answered once, when the picture is cut, by the agreement gate's own test of a crop
+    (`workflow/stages.py:crop_shows_a_gv_mark`, #901) on the picture's own pixels. **`None` is "not
+    checked"**, never "no marks": a picture cut before the check existed (migration 0062 adds the
+    column and fills in nothing), or one whose page's coloured markup could not be read. The Measure
+    page warns only under a picture where this is true."""
 
     __table_args__ = (
         UniqueConstraint("part_proposal_id", name="uq_part_pictures_part_proposal_id"),

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { ReadingPartsList } from '../src/components/measure/ReadingPartsList.js';
+import { GV_MARKS_WARNING } from '../src/components/measure/drawingPartChoices.js';
 import {
   isTheSuggestion,
   linkLabel,
@@ -44,6 +45,8 @@ const cabinet: LinkPart = {
   number: 1,
   proposal_id: 'p-cabinet',
   has_picture: true,
+  // Its picture shows GV's own coloured marks (#921).
+  picture_gv_marks: 'shown',
   kind: 'cabinet',
   code: null,
   left: '0.25',
@@ -56,6 +59,7 @@ const filler: LinkPart = {
   number: 2,
   proposal_id: 'p-filler',
   has_picture: false,
+  picture_gv_marks: null,
   kind: 'filler',
   code: null,
   left: '0.5',
@@ -100,6 +104,26 @@ const html = renderToStaticMarkup(
 assert.deepEqual(pictured, ['cabinet']);
 assert.match(html, /data-part="p-cabinet"/);
 assert.equal((html.match(/No picture of this part is stored yet\./g) ?? []).length, 1);
+
+// **A picture that shows GV's own coloured marks says so under it (#921)**, as in "Parts of each
+// drawing"; the part with no picture says nothing about marks.
+const warning = GV_MARKS_WARNING.replaceAll("'", '&#x27;');
+assert.equal(html.split(warning).length - 1, 1);
+assert.ok(html.indexOf('data-part="p-cabinet"') < html.indexOf(warning));
+assert.ok(html.indexOf(warning) < html.indexOf('Part 1 (cabinet)'));
+for (const marks of ['not_shown', 'not_checked'] as const) {
+  const quiet = renderToStaticMarkup(
+    <ReadingPartsList
+      links={{ ...links, drawings: [{ ...drawing, parts: [{ ...cabinet, picture_gv_marks: marks }, filler] }] }}
+      saving={null}
+      renderPicture={(_drawing, shown) => <img data-part={shown.proposal_id ?? ''} alt="" />}
+      onConfirm={() => undefined}
+      onWithdraw={() => undefined}
+    />,
+  );
+  assert.match(quiet, /data-part="p-cabinet"/);
+  assert.doesNotMatch(quiet, /coloured marks/, marks);
+}
 
 // The question is asked, and how much is left is stated.
 assert.match(html, /Which reading is each part&#x27;s width/);

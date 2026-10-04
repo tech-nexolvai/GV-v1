@@ -11,7 +11,9 @@ invented code `XQ24`) and a countertop. **Every code here is invented.**
 no part. A suggestion becomes a part only through a person's confirmation (#852).
 
 **Each part's own picture (#897)** is served checked against its digest, through the same project
-boundary, and adding a part asks the worker to cut one in the same transaction.
+boundary, and adding a part asks the worker to cut one in the same transaction. **Each part says
+what its picture was found to show of GV's own coloured marks (#921)**: `shown`, `not_shown`, or
+`not_checked` for a picture cut before the check existed.
 """
 
 from __future__ import annotations
@@ -47,6 +49,8 @@ from app.models import (
 )
 from storage.local import LocalStore
 from tests.api.test_drawing_views import _client
+from tests.extraction.test_reader import MISSING_SPACE
+from tests.workflow.test_part_pictures import MARKED_SHEET
 from tests.workflow.test_part_proposals_route import _extract, _upgrade
 from tests.workflow.test_view_roles import _document_version, _item
 from tests.workflow.test_view_roles import _revision as _bare_revision
@@ -84,9 +88,11 @@ def store() -> Iterator[LocalStore]:
         yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
 
 
-def _sheet(session: Session, store: LocalStore) -> tuple[PackageRevision, UUID, UUID]:
-    """The extracted sheet: its revision, its project and its package."""
-    revision, _ = _extract(session, store)
+def _sheet(
+    session: Session, store: LocalStore, data: bytes | None = None
+) -> tuple[PackageRevision, UUID, UUID]:
+    """The extracted sheet, or another drawing: its revision, its project and its package."""
+    revision, _ = _extract(session, store) if data is None else _extract(session, store, data=data)
     package = session.get_one(Package, revision.package_id)
     return revision, package.project_id, package.id
 
@@ -116,9 +122,13 @@ def _count(session: Session, model: type) -> int:
 
 def _cut_pictures(session: Session, store: LocalStore, revision: PackageRevision) -> None:
     """What the worker does when a part is added: cut every picture still missing (#897)."""
-    DatabaseStages(store=store, dpi=150, part_pictures=PICTURES).cut_part_pictures(
-        session, revision.id
-    )
+    DatabaseStages(
+        store=store,
+        dpi=150,
+        # The reader's own setting (#912): each picture is checked for GV's coloured marks (#921).
+        missing_space=MISSING_SPACE,
+        part_pictures=PICTURES,
+    ).cut_part_pictures(session, revision.id)
     session.commit()
 
 
@@ -224,6 +234,7 @@ def test_every_suggestion_shows_its_own_picture(session: Session, store: LocalSt
     ]
 
     assert [part["has_picture"] for part in parts] == [True, True, True]
+    assert [part["picture_gv_marks"] for part in parts] == ["not_shown"] * 3
     for part, response in zip(parts, responses, strict=True):
         assert response.status_code == 200, response.text
         assert response.headers["content-type"] == "image/png"
@@ -262,6 +273,7 @@ def _record_a_picture_of(
         storage_key=key,
         sha256=hashlib.sha256(recorded).hexdigest(),
         settings=PICTURES,
+        shows_gv_marks=False,
     )
     session.commit()
 
@@ -736,3 +748,80 @@ def test_an_unknown_part_is_not_found(session: Session, store: LocalStore) -> No
     )
 
     assert response.status_code == 404
+
+
+# -- whether a picture shows GV's coloured marks (#921) -------------------------------------------
+
+
+def test_each_part_says_whether_its_picture_shows_gv_s_coloured_marks(
+    session: Session, store: LocalStore
+) -> None:
+    """**#921.** On the sheet with GV's red `38` in the vendor's drawing, below the second cabinet:
+    before the worker cuts anything no part has a picture or an answer; once it has, the second
+    cabinet says its picture shows GV's marks and the others say theirs do not. Listing decides and
+    writes nothing."""
+    revision, project_id, package_id = _sheet(session, store, MARKED_SHEET)
+    client = _client(session, store, project_id)
+    before = _drawing(client, project_id, package_id)["parts"]
+
+    _cut_pictures(session, store, revision)
+    after = _drawing(client, project_id, package_id)["parts"]
+
+    kinds = {str(proposal.id): proposal.kind for proposal in session.scalars(select(PartProposal))}
+    lefts = {part["proposal_id"]: Decimal(part["left_end"]["x"]) for part in after}
+    second_cabinet = max(
+        (part for part in after if kinds[part["proposal_id"]] == "cabinet"),
+        key=lambda part: lefts[part["proposal_id"]],
+    )
+    assert [(part["has_picture"], part["picture_gv_marks"]) for part in before] == [
+        (False, None)
+    ] * 3
+    assert {part["proposal_id"]: part["picture_gv_marks"] for part in after} == {
+        part["proposal_id"]: (
+            "shown" if part["proposal_id"] == second_cabinet["proposal_id"] else "not_shown"
+        )
+        for part in after
+    }
+    _nothing_decided(session)
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [(True, "shown"), (False, "not_shown"), (None, "not_checked")],
+    ids=["shown", "not-shown", "not-checked"],
+)
+def test_a_picture_says_what_was_recorded_and_an_unchecked_one_says_not_checked(
+    session: Session, store: LocalStore, answer: bool | None, said: str
+) -> None:
+    """The answer recorded with the picture, as the page is told it: a picture with no answer, as
+    every picture cut before the check existed has, is `not_checked`, never `not_shown`. The picture
+    itself is served as before."""
+    _, project_id, package_id = _sheet(session, store)
+    client = _client(session, store, project_id)
+    first = _drawing(client, project_id, package_id)["parts"][0]
+    picture = b"\x89PNG\r\n\x1a\nthe worker's picture"
+    key = f"evidence-crops/{uuid4()}/pages/0/picture.png"
+    store.put(key, io.BytesIO(picture), content_type="image/png")
+    record_part_picture(
+        session,
+        proposal=session.get_one(PartProposal, UUID(first["proposal_id"])),
+        storage_key=key,
+        sha256=hashlib.sha256(picture).hexdigest(),
+        settings=PICTURES,
+        shows_gv_marks=answer,
+    )
+    session.commit()
+
+    listed = {
+        part["proposal_id"]: part for part in _drawing(client, project_id, package_id)["parts"]
+    }
+    served = client.get(f"{_base(project_id, package_id)}/parts/{first['proposal_id']}/picture")
+
+    assert listed[first["proposal_id"]]["picture_gv_marks"] == said
+    assert [
+        part["picture_gv_marks"] for key, part in listed.items() if key != first["proposal_id"]
+    ] == [
+        None,
+        None,
+    ]
+    assert served.status_code == 200 and served.content == picture

@@ -2402,6 +2402,16 @@
         "title": "GrantException",
         "type": "object"
       },
+      "GvMarks": {
+        "description": "What a part's picture was found to show of GV's own coloured marks (#921), as the Measure\npage is told it. Read from `PartPicture.shows_gv_marks` by `gv_marks`.",
+        "enum": [
+          "shown",
+          "not_shown",
+          "not_checked"
+        ],
+        "title": "GvMarks",
+        "type": "string"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -3185,6 +3195,17 @@
             "description": "Its number in 'Parts of each drawing', 1 for the leftmost; null if not listed.",
             "title": "Number"
           },
+          "picture_gv_marks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GvMarks"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown`, `not_shown`, or `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored."
+          },
           "proposal_id": {
             "anyOf": [
               {
@@ -3219,6 +3240,7 @@
           "number",
           "proposal_id",
           "has_picture",
+          "picture_gv_marks",
           "kind",
           "code",
           "left",
@@ -3272,6 +3294,17 @@
           "page_index": {
             "title": "Page Index",
             "type": "integer"
+          },
+          "picture_gv_marks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GvMarks"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown` where markup drawn in colour lies in it, so the page warns under it; `not_shown` where it was checked and none does; `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored."
           },
           "position": {
             "description": "Its place on its drawing, 1 for the leftmost.",
@@ -3331,6 +3364,7 @@
           "left_end",
           "right_end",
           "has_picture",
+          "picture_gv_marks",
           "has_crop",
           "decision"
         ],

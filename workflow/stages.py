@@ -2211,8 +2211,11 @@ class DatabaseStages:
             )
             # **And a picture of each (#897)**, for a person to look at while deciding what it is.
             # Every suggestion on the page's drawings that has none yet, so a re-read also cuts the
-            # pictures a person's own additions are still missing.
-            part_pictures = self._cut_page_part_pictures(session, page=page, data=data)
+            # pictures a person's own additions are still missing. Each is checked for GV's coloured
+            # marks as it is cut (#921), with the glyph paths the page's layers read.
+            part_pictures = self._cut_page_part_pictures(
+                session, page=page, data=data, layers=layers
+            )
             results.append(
                 PageResult(
                     index=page.index,
@@ -2663,16 +2666,28 @@ class DatabaseStages:
                 row.corroboration_lane = result.lane.value
 
     def _coloured_markup(
-        self, data: bytes, page: Page, version_id: UUID, layers: PageLayers | None
+        self,
+        data: bytes,
+        page: Page,
+        version_id: UUID,
+        layers: PageLayers | None,
+        *,
+        dpi: int | None = None,
     ) -> ColouredMarkup | None:
         """The page's markup drawn in colour (#901), or `None` where its pasted drawings could not
-        be read for it. The glyph paths are the ones the page's layers read, if they read any."""
+        be read for it. The glyph paths are the ones the page's layers read, if they read any.
+
+        In the page's pixels at the stage's dpi, as the vision readers' crops are; or at `dpi`, for
+        a part's picture cut at its own resolution (#921), so the picture's own pixel box is what
+        `crop_shows_a_gv_mark` is asked about. The glyph paths are in PDF points at any dpi.
+        """
+        at = self._dpi if dpi is None else dpi
         try:
             text = coloured_text(
                 data,
                 page.index,
                 document_version_id=version_id,
-                dpi=self._dpi,
+                dpi=at,
                 missing_space=self._stated_missing_space(),
             )
         except UnreadablePdf:
@@ -2680,7 +2695,7 @@ class DatabaseStages:
         return ColouredMarkup(
             text=text,
             paths=() if layers is None else layers.glyph_paths,
-            transform=page_transform(page, self._dpi),
+            transform=page_transform(page, at),
         )
 
     def _vendor_render(self, data: bytes, page: Page, version_id: UUID) -> RenderedPage | None:
@@ -3383,9 +3398,13 @@ class DatabaseStages:
         return counts
 
     def _cut_page_part_pictures(
-        self, session: Session, *, page: Page, data: bytes
+        self, session: Session, *, page: Page, data: bytes, layers: PageLayers | None
     ) -> dict[str, object] | None:
         """Cut a picture of every suggestion on the page's drawings that has none yet (#897).
+
+        `layers` are the page's annotation layers as the page stage read them, or `None` where they
+        could not be read: their glyph paths are part of the markup each picture is checked for
+        (#921), as they are for the agreement gate's crops.
 
         Returns what was cut and what was refused, or `None` when no picture settings were stated
         or no store is configured: then nothing was asked for, which is not the same as nothing cut.
@@ -3393,7 +3412,19 @@ class DatabaseStages:
         if self._part_pictures is None or self._store is None:
             return None
         return self._cut_pictures(
-            session, page=page, data=data, settings=self._part_pictures, store=self._store
+            session,
+            page=page,
+            data=data,
+            settings=self._part_pictures,
+            store=self._store,
+            markup=partial(
+                self._coloured_markup,
+                data,
+                page,
+                page.document_version_id,
+                layers,
+                dpi=self._part_pictures.dpi,
+            ),
         ).as_payload()
 
     @staticmethod
@@ -3404,6 +3435,7 @@ class DatabaseStages:
         data: bytes,
         settings: PartPictureSettings,
         store: ArtifactStore,
+        markup: Callable[[], ColouredMarkup | None],
     ) -> _PartPictures:
         """The pictures still missing on one page, cut and recorded.
 
@@ -3415,11 +3447,20 @@ class DatabaseStages:
         person added by its two ends has a line for an outline (#882), so its picture is that line
         and the margin around it; nothing here invents a height the person did not give.
 
+        **Whether it shows GV's own coloured marks (#921)**, which the render cannot leave out where
+        they are baked into the vendor's drawing, is asked of each picture as it is cut, and
+        recorded with it. The question is the agreement gate's own (`crop_shows_a_gv_mark`, #901),
+        asked about the rectangle the picture was actually cut by (`crop_pixel_box`), with the
+        page's markup in colour read at the picture's resolution (`markup`, read once per page and
+        only once a picture is cut). Where that markup could not be read the answer is `None`, "not
+        checked": nothing rules a mark out, and nothing says the picture is clean.
+
         **It writes a picture and nothing else**: never a part, a decision or a run. A suggestion
         whose picture cannot be cut keeps its place on the page without one, and the reason is in
         the result.
         """
         outcome = _PartPictures()
+        page_markup = cache(markup)
         proposals = unpictured_proposals(session, page.id)
         if not proposals:
             return outcome
@@ -3463,12 +3504,20 @@ class DatabaseStages:
             if result.status is not CropStatus.AVAILABLE or result.artifact is None:
                 outcome.refuse(1, f"page {page.index}: {result.reason}")
                 continue
+            coloured = page_markup()
             record_part_picture(
                 session,
                 proposal=proposal,
                 storage_key=result.artifact.key,
                 sha256=result.artifact.sha256,
                 settings=settings,
+                # The pixels the picture was cut by: `generate_crop` has just cut them, so the same
+                # spec on the same rendering gives the same box.
+                shows_gv_marks=(
+                    None
+                    if coloured is None
+                    else crop_shows_a_gv_mark(crop_pixel_box(rendered, spec), coloured)
+                ),
             )
             outcome.cut += 1
         return outcome
@@ -3485,11 +3534,24 @@ class DatabaseStages:
         **It writes pictures and nothing else**, and asking twice cuts nothing twice. A document
         whose bytes no longer match their recorded digest is not rendered: its pictures are refused,
         and the reason says why.
+
+        **Each picture is checked for GV's coloured marks as the page stage checks one (#921)**: the
+        page's layers are read as the page stage reads them (`_read_layers`), for their glyph paths,
+        and the coloured text with the reader's own setting. Without that setting nothing is cut:
+        every picture would be "not checked", and the Measure page would warn under none of them.
         """
         if self._store is None:
             return {"ran": False, "reason": "no artifact store is configured"}
         if self._part_pictures is None:
             return {"ran": False, "reason": "no part picture settings are stated"}
+        if self._missing_space is None:
+            return {
+                "ran": False,
+                "reason": (
+                    "the reader's missing-space setting is not stated, so no picture could be "
+                    "checked for GV's coloured marks"
+                ),
+            }
         documents = {
             version: (key, sha256)
             for version, key, sha256, _ in _document_records_for(session, package_revision_id)
@@ -3518,10 +3580,43 @@ class DatabaseStages:
                     data=document,
                     settings=self._part_pictures,
                     store=self._store,
+                    markup=partial(self._picture_markup, document, page, self._part_pictures.dpi),
                 )
             )
         session.flush()
         return {"ran": True, **outcome.as_payload()}
+
+    def _picture_markup(self, data: bytes, page: Page, dpi: int) -> ColouredMarkup | None:
+        """The page's markup drawn in colour, at a picture's `dpi`, for the job that cuts pictures
+        outside the page stage (#921): its layers read as the page stage reads them, and the
+        coloured markup made of them as it makes it. Layers that cannot be read leave the glyph
+        paths out, as they do in the page stage."""
+        try:
+            layers: PageLayers | None = self._read_layers(
+                data, page.index, page.document_version_id
+            )
+        except UnreadablePdf:
+            layers = None
+        return self._coloured_markup(data, page, page.document_version_id, layers, dpi=dpi)
+
+    def _read_layers(self, data: bytes, page_index: int, version_id: UUID) -> PageLayers:
+        """The page's annotation layers: the reviewer's markup alone, or with the vendor's geometry
+        where the association settings are stated (see `_read_page_markup`). Raises
+        `UnreadablePdf` where they cannot be read."""
+        if self._association is None:
+            return read_markup_layer(
+                data, page_index, document_version_id=version_id, dpi=self._dpi
+            )
+        return read_annotation_layers(
+            data,
+            page_index,
+            document_version_id=version_id,
+            dpi=self._dpi,
+            line_minimum_pt=self._association.line_minimum_pt,
+            glyph_maximum_pt=self._association.glyph_maximum_pt,
+            glyph_gap_pt=self._association.glyph_gap_pt,
+            fraction_bar=self._association.fraction_bar,
+        )
 
     def _read_page_markup(
         self,
@@ -3552,28 +3647,13 @@ class DatabaseStages:
         stop for the routes above.
         """
         try:
-            if self._association is None:
-                layers = read_markup_layer(
-                    data,
-                    page.index,
-                    document_version_id=version_id,
-                    dpi=self._dpi,
-                )
-            else:
-                # **The full read, because the association step needs the vendor's line-work too.**
-                # `read_markup_layer` skips it deliberately: it needs no thresholds and the pipeline
-                # must not invent any. When a deployment has stated them, there is nothing to invent
-                # and the geometry is exactly what a reading has to be attached to.
-                layers = read_annotation_layers(
-                    data,
-                    page.index,
-                    document_version_id=version_id,
-                    dpi=self._dpi,
-                    line_minimum_pt=self._association.line_minimum_pt,
-                    glyph_maximum_pt=self._association.glyph_maximum_pt,
-                    glyph_gap_pt=self._association.glyph_gap_pt,
-                    fraction_bar=self._association.fraction_bar,
-                )
+            # **The full read where the association settings are stated, because the association
+            # step needs the vendor's line-work too.** `read_markup_layer` skips it deliberately: it
+            # needs no thresholds and the pipeline must not invent any. When a deployment has stated
+            # them, there is nothing to invent and the geometry is exactly what a reading has to be
+            # attached to. One reader of the layers (`_read_layers`), so the job that cuts pictures
+            # outside this stage reads the same glyph paths (#921).
+            layers = self._read_layers(data, page.index, version_id)
         except UnreadablePdf as error:
             # The run is opened here rather than before the read, because a run is a record of work
             # and most pages have no markup to do any on. A *failed* attempt is work: the failure
@@ -5797,7 +5877,8 @@ class ColouredMarkup:
     """
 
     text: tuple[tuple[int, int, int, int], ...]
-    """Each coloured run's `(left, top, right, bottom)`, in the page's pixels at the stage's dpi."""
+    """Each coloured run's `(left, top, right, bottom)`, in the page's pixels at the dpi it was read
+    at: the stage's for the vision readers' crops, a part picture's own for that picture (#921)."""
 
     paths: tuple[VectorPath, ...]
     """The page's glyph-sized paths, in PDF points; the ones drawn in colour are marks. Empty where
@@ -5830,11 +5911,12 @@ def crop_shows_a_gv_mark(crop_box: tuple[int, int, int, int], markup: ColouredMa
 
     **Any part, edges included**, as `crop_shows_a_stacked_fraction` counts a fraction: a reader
     reads whatever it is shown, and GV's number half inside the crop is still there to be read as the
-    vendor's. `crop_box` is the crop's page pixels at the stage's dpi, as the text boxes are; a path
-    is held to the crop's corners carried into PDF points by the page's transform.
+    vendor's. `crop_box` is the crop's page pixels at the dpi the markup was read at, as the text
+    boxes are — the stage's for a reader's crop, a part picture's own for that picture (#921); a path
+    is held to the crop's corners carried into PDF points by the page's transform at that dpi.
 
     The test the gate replay measured on the 51-crop key (#851), moved here so the replay and the
-    gate are one function and cannot disagree.
+    gate are one function and cannot disagree; and the one a part's picture is checked by (#921).
     """
     if any(_boxes_overlap(box, crop_box) for box in markup.text):
         return True

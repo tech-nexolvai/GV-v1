@@ -54,6 +54,17 @@
   border: 1px solid var(--border-default);
 }
 
+/* A picture that shows GV's own coloured marks (#921): said plainly under it, in the colours a
+   finding needing review uses. */
+.drawing-parts__gv-marks {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  color: var(--status-review);
+  background: var(--status-review-bg);
+  border: 1px solid var(--status-review-border);
+  font-size: var(--text-xs);
+}
+
 .drawing-parts__code-crop {
   margin: 0;
 }

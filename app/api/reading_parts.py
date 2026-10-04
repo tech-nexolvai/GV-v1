@@ -47,6 +47,7 @@ from app.evidence.reading_parts import (
 from app.models import ReadingPart
 from units.imperial import format_inches
 from vocabulary.part_kinds import PartKind
+from workflow.part_pictures import GvMarks
 
 router = APIRouter(tags=["reading parts"])
 
@@ -115,6 +116,13 @@ class PartLinkOut(BaseModel):
     )
     has_picture: bool = Field(
         description="Whether its picture is stored, served at `…/parts/{proposal_id}/picture`."
+    )
+    picture_gv_marks: GvMarks | None = Field(
+        description=(
+            "What its picture was found to show of GV's own coloured marks when it was cut (#921): "
+            "`shown`, `not_shown`, or `not_checked` for a picture cut before the check existed or "
+            "whose page's coloured markup could not be read. Null when no picture is stored."
+        )
     )
     kind: PartKind
     code: str | None
@@ -196,6 +204,7 @@ def _part_out(listed: ListedPart) -> PartLinkOut:
         number=listed.number,
         proposal_id=listed.proposal_id,
         has_picture=listed.has_picture,
+        picture_gv_marks=listed.picture_gv_marks,
         kind=listed.part.kind,
         code=listed.code,
         left=str(listed.part.left),

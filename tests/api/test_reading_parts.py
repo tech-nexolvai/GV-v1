@@ -40,15 +40,17 @@ from app.models import (
     Package,
     PackageRevision,
     PackageRevisionDocument,
+    PartProposal,
     ReadingPart,
     ViewRole,
 )
 from storage.local import LocalStore
 from tests.api.test_v1_loop import _settings
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_part_proposals_route import DRAWING, _extract, _sheet, _upgrade
 from tests.workflow.test_reading_parts import _replace_in_review
 from workflow import reading_parts as workflow_links
-from workflow.part_pictures import PartPictureSettings
+from workflow.part_pictures import PartPictureSettings, record_part_picture
 from workflow.reading_parts import REPLACED, WITHDRAWN, live_reading_parts
 from workflow.stages import DatabaseStages
 from workflow.view_roles import confirm_view_role, revision_views
@@ -241,6 +243,8 @@ def test_each_confirmed_part_shows_the_picture_of_the_suggestion_it_was_confirme
     DatabaseStages(
         store=sheet.store,
         dpi=150,
+        # The reader's own setting (#912): each picture is checked for GV's coloured marks (#921).
+        missing_space=MISSING_SPACE,
         part_pictures=PartPictureSettings(margin_pt=Decimal(36), dpi=150),
     ).cut_part_pictures(sheet.session, sheet.revision.id)
     sheet.session.commit()
@@ -252,12 +256,46 @@ def test_each_confirmed_part_shows_the_picture_of_the_suggestion_it_was_confirme
     ]
     assert [part["has_picture"] for part in before] == [False, False, False]
     assert [part["has_picture"] for part in after] == [True, True, True]
+    # The widths are printed in the vendor's black, so no picture shows GV's marks (#921).
+    assert [part["picture_gv_marks"] for part in before] == [None, None, None]
+    assert [part["picture_gv_marks"] for part in after] == ["not_shown"] * 3
     unchanged = ("item_id", "proposal_id", "number", "suggestion", "links")
     assert [{key: part[key] for key in unchanged} for part in after] == [
         {key: part[key] for key in unchanged} for part in before
     ]
     assert picture.status_code == 200 and picture.headers["content-type"] == "image/png"
     assert _count(sheet.session, ReadingPart) == 0
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [(True, "shown"), (False, "not_shown"), (None, "not_checked")],
+    ids=["shown", "not-shown", "not-checked"],
+)
+def test_a_confirmed_part_says_what_its_picture_shows_of_gv_s_coloured_marks(
+    sheet: Sheet, answer: bool | None, said: str
+) -> None:
+    """**#921.** The part a person picks a width for shows its suggestion's picture, so it says
+    what that picture was found to show of GV's coloured marks, as `…/parts` does: `not_checked`
+    for a picture cut before the check existed. Nothing else in the list changes."""
+    before = sheet.drawing()["parts"]
+    record_part_picture(
+        sheet.session,
+        proposal=sheet.session.get_one(PartProposal, UUID(sheet.proposals["left"])),
+        storage_key=f"evidence-crops/{uuid4()}/pages/0/picture.png",
+        sha256="c" * 64,
+        settings=PartPictureSettings(margin_pt=Decimal(36), dpi=150),
+        shows_gv_marks=answer,
+    )
+    sheet.session.commit()
+    after = sheet.drawing()["parts"]
+
+    assert [part["picture_gv_marks"] for part in after] == [said, None, None]
+    assert [part["has_picture"] for part in after] == [True, False, False]
+    unchanged = ("item_id", "proposal_id", "number", "suggestion", "links")
+    assert [{key: part[key] for key in unchanged} for part in after] == [
+        {key: part[key] for key in unchanged} for part in before
+    ]
 
 
 def test_each_reading_is_listed_with_its_value_and_what_places_it(sheet: Sheet) -> None:

@@ -12,7 +12,10 @@ above the second cabinet. **Every code here is invented.**
 **What matters most:**
 - each suggestion's picture is the vendor's drawing round its outline and the stated margin, with
   the reviewer's note left out of it;
-- cutting writes a picture and nothing else: never a part, a decision or a run.
+- cutting writes a picture and nothing else: never a part, a decision or a run;
+- each picture records whether it shows GV's own coloured marks, baked into the vendor's drawing
+  where the render cannot leave them out, as the agreement gate's own test finds them on the
+  picture's own pixels; and "not checked" where that test could not be asked (#921).
 """
 
 from __future__ import annotations
@@ -48,18 +51,19 @@ from app.models import (
 )
 from evidence.crop import BoxCropSpec, crop_pixel_box, decode_rgb_png, generate_crop
 from extraction.rasterise import render_page
+from extraction.reader import UnreadablePdf
 from storage.local import LocalStore
 from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import SETTINGS
 from tests.workflow.test_association import _revision as _stored_revision
 from tests.workflow.test_markup_route import _SilentOcr
-from tests.workflow.test_part_proposals_route import SHEET, _upgrade
+from tests.workflow.test_part_proposals_route import DRAWING, SHEET, _sheet, _upgrade
 from vocabulary.part_kinds import PartKind
 from workflow import stages as stages_module
 from workflow.part_pictures import PNG, PartPictureSettings
 from workflow.parts import outline_box
 from workflow.review import PageResult
-from workflow.stages import DatabaseStages
+from workflow.stages import ColouredMarkup, DatabaseStages
 from workflow.view_roles import confirm_view_role
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -67,6 +71,20 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 #: Half an inch round each part, at the resolution the sheet's own tests read at. The reviewer's
 #: note sits ten points above the second cabinet's box, so this margin takes it into that picture.
 PICTURES = PartPictureSettings(margin_pt=Decimal(36), dpi=150)
+
+#: GV's `38` in red, written into the vendor's drawing itself (#921), as a snapshot's markup is: at
+#: appearance `(300, 525)`, page `(250, 75)`, just below the second cabinet's dimension. Inside that
+#: cabinet's picture; outside the first cabinet's, which ends 36 points past page `x = 200`, and the
+#: countertop's, which starts 36 points below page `y = 160`.
+RED_TEXT = b"1 0 0 rg BT /F1 8 Tf 300 525 Td (38) Tj ET\n"
+#: The same `38` in the vendor's black: the vendor's own number, not a mark.
+BLACK_TEXT = b"0 0 0 rg BT /F1 8 Tf 300 525 Td (38) Tj ET\n"
+#: GV's mark drawn as a glyph-sized red stroke at the same place, as a pen stroke is (#834): found
+#: among the glyph paths the page's layers read, not in its text.
+RED_STROKE = b"1 0 0 RG 1 w 300 525 m 306 530 l S\n"
+
+#: The sheet with GV's red `38` in the vendor's drawing.
+MARKED_SHEET = _sheet(DRAWING + RED_TEXT)
 
 
 @pytest.fixture
@@ -92,16 +110,21 @@ def _stages(store: LocalStore, pictures: PartPictureSettings | None = PICTURES) 
         ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
         association=SETTINGS,
         # The reader's own setting (#912): the page stage reads the sheet's text before it suggests
-        # any part. Cutting a picture reads no text and does not use it.
+        # any part, and checking each picture for GV's coloured marks reads the coloured text in the
+        # pasted drawing with it (#921).
         missing_space=MISSING_SPACE,
         part_pictures=pictures,
     )
 
 
 def _extract(
-    session: Session, store: LocalStore, pictures: PartPictureSettings | None = PICTURES
+    session: Session,
+    store: LocalStore,
+    pictures: PartPictureSettings | None = PICTURES,
+    *,
+    data: bytes = SHEET,
 ) -> tuple[PackageRevision, Sequence[PageResult]]:
-    revision = _stored_revision(session, store, data=SHEET)
+    revision = _stored_revision(session, store, data=data)
     session.commit()
     result = _stages(store, pictures).extract_pages(session, revision.id)
     session.commit()
@@ -212,12 +235,14 @@ def test_the_picture_is_cut_from_the_vendors_drawing_alone(
     assert stored != both_layers
 
 
+@pytest.mark.parametrize("data", [SHEET, MARKED_SHEET], ids=["clean", "gv-mark"])
 def test_cutting_pictures_writes_no_part_decision_or_run(
-    session: Session, store: LocalStore
+    session: Session, store: LocalStore, data: bytes
 ) -> None:
     """**Done when, 3.** The worker writes a picture of each suggestion and nothing else: no item,
-    no code, no decision, no run and no link, by extraction or by the job a person asks for."""
-    revision, _ = _extract(session, store)
+    no code, no decision, no run and no link, by extraction or by the job a person asks for. A
+    picture that shows GV's coloured marks changes none of that (#921)."""
+    revision, _ = _extract(session, store, data=data)
     view = session.scalars(select(DrawingView)).one()
     confirm_view_role(session, view=view, role=ViewRole.SHOP, actor="reviewer@example.com")
     session.commit()
@@ -489,3 +514,180 @@ def test_each_picture_is_the_outline_and_the_margin_round_it(
         assert (width, height) != (rendered.width_px, rendered.height_px)
         if proposal.kind == PartKind.CABINET.value:
             assert 358 <= width <= 360
+
+
+# -- whether a picture shows GV's coloured marks (#921) ------------------------------------------
+
+
+def _marks(session: Session) -> list[bool | None]:
+    """Each suggestion's recorded answer: the cabinets left to right, then the countertop."""
+    return [_picture_of(session, proposal).shows_gv_marks for proposal in _proposals(session)]
+
+
+def _picture_box(session: Session, proposal: PartProposal) -> tuple[int, int, int, int]:
+    """The pixels a suggestion's picture is cut by: `crop_pixel_box` on the vendor-only page at the
+    stated resolution, as the stage cuts it."""
+    view = session.get_one(DrawingView, proposal.drawing_view_id)
+    page = session.get_one(Page, view.page_id)
+    rendered = render_page(
+        MARKED_SHEET,
+        page.index,
+        document_version_id=page.document_version_id,
+        page_content_hash=page.content_hash,
+        dpi=PICTURES.dpi,
+        maximum_pixels=stages_module.MAXIMUM_RENDER_PIXELS,
+        vendor_only=True,
+    )
+    left, top, right, bottom = outline_box(proposal.extent)
+    return crop_pixel_box(
+        rendered,
+        BoxCropSpec(
+            document_version_id=page.document_version_id,
+            page=page.index,
+            left=left,
+            top=top,
+            right=right,
+            bottom=bottom,
+            context_margin_pt=PICTURES.margin_pt,
+            dpi=PICTURES.dpi,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("mark", "expected"),
+    [
+        (RED_TEXT, [False, True, False]),
+        (RED_STROKE, [False, True, False]),
+        (BLACK_TEXT, [False, False, False]),
+        (b"", [False, False, False]),
+    ],
+    ids=["red-text", "red-stroke", "black-text", "no-mark"],
+)
+def test_each_picture_records_whether_it_shows_gv_s_coloured_marks(
+    session: Session, store: LocalStore, mark: bytes, expected: list[bool | None]
+) -> None:
+    """**#921, done when, first line, on a made-up sheet.** GV's red `38`, as text or as a pen
+    stroke, lies in the second cabinet's picture only: that picture records it, and the first
+    cabinet's and the countertop's record none. The same `38` in the vendor's black is no mark, and
+    nor is the reviewer's note over the second cabinet, which the picture leaves out (#742)."""
+    _, result = _extract(session, store, data=_sheet(DRAWING + mark))
+
+    assert [proposal.kind for proposal in _proposals(session)] == [
+        "cabinet",
+        "cabinet",
+        "countertop",
+    ]
+    assert _marks(session) == expected
+    assert [page.payload["part_pictures"] for page in result] == [
+        {"cut": 3, "refused": 0, "refusals": []}
+    ]
+
+
+@pytest.mark.parametrize("dpi", [100, 300])
+def test_a_picture_cut_at_another_resolution_is_checked_on_its_own_pixels(
+    session: Session, store: LocalStore, dpi: int
+) -> None:
+    """The stage reads the page at 150 dpi; a picture cut at another resolution is checked on its
+    own pixels, with the coloured markup read at that resolution, so the answers are the same."""
+    _extract(session, store, PartPictureSettings(margin_pt=Decimal(36), dpi=dpi), data=MARKED_SHEET)
+
+    assert _marks(session) == [False, True, False]
+    assert {_picture_of(session, proposal).dpi for proposal in _proposals(session)} == {dpi}
+
+
+def test_the_answer_is_the_gate_s_own_test_asked_about_the_picture_s_own_pixels(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**#921, done when, second line.** Each picture's answer is what `crop_shows_a_gv_mark` — the
+    test the agreement gate asks through `gv_mark_in_crop` (#901) — returned, asked once per picture
+    about the rectangle that picture was cut by, with the page's coloured markup read at the
+    picture's own resolution. The test is made to answer the opposite of the truth here, so a
+    recorded answer can only have come from it."""
+    real = stages_module.crop_shows_a_gv_mark
+    calls: list[tuple[tuple[int, int, int, int], ColouredMarkup, bool]] = []
+
+    def opposite(crop_box: tuple[int, int, int, int], markup: ColouredMarkup) -> bool:
+        answer = not real(crop_box, markup)
+        calls.append((crop_box, markup, answer))
+        return answer
+
+    monkeypatch.setattr(stages_module, "crop_shows_a_gv_mark", opposite)
+    _extract(session, store, data=MARKED_SHEET)
+
+    proposals = _proposals(session)
+    answered = {box: answer for box, _, answer in calls}
+    assert len(calls) == len(proposals) == 3
+    assert set(answered) == {_picture_box(session, proposal) for proposal in proposals}
+    for proposal in proposals:
+        assert (
+            _picture_of(session, proposal).shows_gv_marks
+            is answered[_picture_box(session, proposal)]
+        )
+    assert _marks(session) == [True, False, True]
+    for _, markup, _ in calls:
+        assert markup.transform is not None and markup.transform.dpi == PICTURES.dpi
+        assert markup.text, "the red 38 is read as markup in colour"
+
+
+def test_a_page_whose_coloured_markup_cannot_be_read_has_its_pictures_not_checked(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where the pasted drawings cannot be read for their coloured text, nothing rules a mark out
+    and nothing says a picture is clean: each picture is still cut, and records `None`, "not
+    checked". The markup is read once for the page, not once per picture."""
+    reads: list[int] = []
+
+    def unreadable(*arguments: object, **keywords: object) -> tuple[tuple[int, int, int, int], ...]:
+        reads.append(1)
+        raise UnreadablePdf("the pasted drawings could not be read")
+
+    monkeypatch.setattr(stages_module, "coloured_text", unreadable)
+    _, result = _extract(session, store, data=MARKED_SHEET)
+
+    assert _marks(session) == [None, None, None]
+    assert [page.payload["part_pictures"] for page in result] == [
+        {"cut": 3, "refused": 0, "refusals": []}
+    ]
+    assert len(reads) == 1
+
+
+@pytest.mark.parametrize(
+    ("mark", "expected"),
+    [(RED_TEXT, True), (RED_STROKE, True), (BLACK_TEXT, False)],
+    ids=["red-text", "red-stroke", "black-text"],
+)
+def test_the_job_checks_an_added_part_s_picture_as_the_stage_does(
+    session: Session, store: LocalStore, mark: bytes, expected: bool
+) -> None:
+    """A part a person adds is cut by the job, outside the page stage, and checked the same way:
+    the glyph paths its page's layers read, and the coloured text. The added filler runs from the
+    first cabinet's left end to the second's right end, so its picture holds the mark."""
+    revision, _ = _extract(session, store, data=_sheet(DRAWING + mark))
+    added = _add_between_the_cabinets(session, revision)
+
+    result = _stages(store).cut_part_pictures(session, revision.id)
+    session.commit()
+
+    picture = _picture_of(session, session.get_one(PartProposal, added.part_proposal_id))
+    assert result == {"ran": True, "cut": 1, "refused": 0, "refusals": []}
+    assert picture.shows_gv_marks is expected
+
+
+def test_the_job_cuts_nothing_without_the_reader_s_setting(
+    session: Session, store: LocalStore
+) -> None:
+    """Without the reader's missing-space setting the coloured text cannot be read (#912), so no
+    picture could be checked and the page would warn under none: the job cuts nothing, and says
+    why, rather than cutting pictures nobody checked."""
+    revision, _ = _extract(session, store, pictures=None, data=MARKED_SHEET)
+    stages = DatabaseStages(store=store, dpi=150, association=SETTINGS, part_pictures=PICTURES)
+
+    assert stages.cut_part_pictures(session, revision.id) == {
+        "ran": False,
+        "reason": (
+            "the reader's missing-space setting is not stated, so no picture could be checked for "
+            "GV's coloured marks"
+        ),
+    }
+    assert _count(session, PartPicture) == 0
