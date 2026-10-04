@@ -237,7 +237,7 @@ def test_two_vendors_agreeing_on_both_halves_of_a_models_dual_label_agree_it() -
     assert gate((blank, *pair)) == gate_replay.Agreement(
         _inches(36), CorroborationLane.SECOND_READER, "914 [36]"
     )
-    assert gate((pair[0], Reading(MINI[0], MINI[1], "915 [36]", _inches(36)))) is None
+    assert gate((pair[0], Reading(MINI[0], MINI[1], "920 [36]", _inches(36)))) is None
 
 
 def test_the_replay_follows_the_gate_and_never_overrules_it(
@@ -318,12 +318,12 @@ def test_the_whole_number_and_fraction_guard_is_the_production_gates_own(
 
 
 def test_the_guard_holds_back_a_whole_number_and_a_fraction_and_lets_a_dual_label_through() -> None:
-    """`3 3/4"` agreed is held back; `724 [28 1/2]` agreed on both halves is not."""
+    """`3 3/4"` agreed is held back; `597 [23 1/2]` agreed on both halves is not."""
     mixed = _agreeing("r1", '3 3/4"', Fraction(15, 4))
     dual = _region(
         "r2",
-        Reading(NOVA[0], NOVA[1], "724 [28 1/2]", _inches(Fraction(57, 2))),
-        Reading(MINI[0], MINI[1], "724 [28 1/2]", _inches(Fraction(57, 2))),
+        Reading(NOVA[0], NOVA[1], "597 [23 1/2]", _inches(Fraction(47, 2))),
+        Reading(MINI[0], MINI[1], "597 [23 1/2]", _inches(Fraction(47, 2))),
     )
 
     assert judge(mixed, PLAIN, Guard.NONE) is not None

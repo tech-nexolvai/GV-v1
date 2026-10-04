@@ -2,9 +2,10 @@
 
 **The admin's standing rule** (2026-10-03, #728): where two readers ever agree on a wrong number of
 some kind, that whole kind goes to a person. Two readers of different vendors have twice agreed on a
-wrong whole number and a fraction — a stacked `3/4"` read as `3 3/4"` (#726), and a two-line
-`18 [3/4]` read as `18 3/4"` (#924) — so an agreement on one confirms nothing: it stays a pre-fill a
-person ticks, counted on the page result with its reason, as #901's and #919's guards count theirs.
+wrong whole number and a fraction — a stacked `3/4"` read as `3 3/4"` (#726), and a two-line label
+of millimetres over bracketed inches read as one mixed number, as `13 [1/2]` read as `13 1/2"` would be
+(#924) — so an agreement on one confirms nothing: it stays a pre-fill a person ticks, counted on the
+page result with its reason, as #901's and #919's guards count theirs.
 
 The drawings are made up here. No model is called and no client drawing is read.
 """
@@ -63,13 +64,13 @@ def _inches(value: Fraction | int, text: str) -> Measurement:
 @pytest.mark.parametrize(
     ("text", "value"),
     [
-        ('18 3/4"', Fraction(75, 4)),  # the #924 case: `18 [3/4]` read as one number
+        ('13 1/2"', Fraction(27, 2)),  # the #924 shape: `13 [1/2]` read as one number
         ('3 3/4"', Fraction(15, 4)),  # the #726 case: a stacked `3/4"` with a `3` before it
         ('1 1/2"', Fraction(3, 2)),  # a real label it also stops: the cost of the kind
-        ('18-3/4"', Fraction(75, 4)),
-        ('18¾"', Fraction(75, 4)),
-        ('18.75"', Fraction(75, 4)),
-        ("1'-6 3/4\"", Fraction(75, 4)),
+        ('13-1/2"', Fraction(27, 2)),
+        ('13½"', Fraction(27, 2)),
+        ('13.5"', Fraction(27, 2)),
+        ("1'-1 1/2\"", Fraction(27, 2)),
     ],
 )
 def test_a_whole_number_and_a_fraction_is_held_back_however_written(
@@ -84,7 +85,7 @@ def test_a_whole_number_and_a_fraction_is_held_back_however_written(
         ('3/4"', Fraction(3, 4)),  # below one: no whole number to promote a fraction into
         ('36"', Fraction(36)),
         ("2'-6\"", Fraction(30)),
-        ("18 [3/4]", Fraction(3, 4)),  # the #924 label read right: its inches are 3/4
+        ("13 [1/2]", Fraction(1, 2)),  # the #924 shape read right: its inches are 1/2
         ("914 mm", Fraction(914 * 5, 127)),  # millimetres: a conversion, never written so
     ],
 )
@@ -93,20 +94,20 @@ def test_other_values_are_not_this_kind(text: str, value: Fraction) -> None:
 
 
 def test_a_dual_label_agreed_on_both_halves_is_let_through() -> None:
-    """**The millimetres cross-checked it.** `724 [28 1/2]`: 28 1/2" is 723.9 mm, inside the
-    rounding of 724 — the evidence a plain `28 1/2"` reading has none of."""
-    assert mixed_fraction_refusal(_inches(Fraction(57, 2), "724 [28 1/2]"), "724 [28 1/2]") is None
+    """**The millimetres cross-checked it.** `597 [23 1/2]`: 23 1/2" is 596.9 mm, inside the
+    rounding of 597 — the evidence a plain `23 1/2"` reading has none of."""
+    assert mixed_fraction_refusal(_inches(Fraction(47, 2), "597 [23 1/2]"), "597 [23 1/2]") is None
 
 
-@pytest.mark.parametrize("text", ["700 [28 1/2]", "700 mm [28 1/2]", '700mm [28 1/2"]'])
+@pytest.mark.parametrize("text", ["570 [23 1/2]", "570 mm [23 1/2]", '570mm [23 1/2"]'])
 def test_a_dual_label_whose_millimetres_do_not_agree_is_held_back(text: str) -> None:
-    """`700 [28 1/2]`: 700 mm is not 28 1/2" by any rounding, so nothing cross-checks the fraction —
+    """`570 [23 1/2]`: 570 mm is not 23 1/2" by any rounding, so nothing cross-checks the fraction —
     however the millimetres are written: a dual label is never taken for millimetres alone."""
-    assert mixed_fraction_refusal(_inches(Fraction(57, 2), text), text) == MIXED_FRACTION_REASON
+    assert mixed_fraction_refusal(_inches(Fraction(47, 2), text), text) == MIXED_FRACTION_REASON
 
 
 def test_no_value_is_not_held_back() -> None:
-    assert mixed_fraction_refusal(None, "18") is None
+    assert mixed_fraction_refusal(None, "13") is None
 
 
 # ---------------------------------------------------------------------------
@@ -163,13 +164,13 @@ def _lanes(session: Session) -> set[tuple[str, str, str | None, str | None]]:
 def test_two_routes_agreeing_on_a_whole_number_and_a_fraction_do_not_confirm_it(
     session: Session, store: LocalStore
 ) -> None:
-    """**The guard in production.** The file's own `18.75"` and a vision reader's `18.75"` agree;
+    """**The guard in production.** The file's own `13.5"` and a vision reader's `13.5"` agree;
     neither takes the second-reader lane, and the page result counts the refusal and says why."""
-    payload = _extract(session, store, '18.75"', '18.75"')
+    payload = _extract(session, store, '13.5"', '13.5"')
 
     assert _lanes(session) == {
-        ("pdfplumber", '18.75"', None, None),
-        ("bedrock-nova-pro", '18.75"', None, None),
+        ("pdfplumber", '13.5"', None, None),
+        ("bedrock-nova-pro", '13.5"', None, None),
     }
     assert payload["agreement_refusals"] == 1
     assert payload["agreement_refusal_reasons"] == [f"1 × {MIXED_FRACTION_REASON}"]
@@ -179,11 +180,11 @@ def test_the_same_agreement_on_a_whole_number_is_confirmed(
     session: Session, store: LocalStore
 ) -> None:
     """The control: it is the value's kind that holds the agreement back, not the routes."""
-    payload = _extract(session, store, '18"', '18"')
+    payload = _extract(session, store, '13"', '13"')
 
     assert _lanes(session) == {
-        ("pdfplumber", '18"', "RAW_CANDIDATE", "SECOND_READER"),
-        ("bedrock-nova-pro", '18"', "RAW_CANDIDATE", "SECOND_READER"),
+        ("pdfplumber", '13"', "RAW_CANDIDATE", "SECOND_READER"),
+        ("bedrock-nova-pro", '13"', "RAW_CANDIDATE", "SECOND_READER"),
     }
     assert payload["agreement_refusals"] == 0
 
@@ -198,7 +199,7 @@ def test_a_disagreement_on_a_whole_number_and_a_fraction_is_still_a_conflict(
 
     monkeypatch.setattr(_MixedFractionGuard, "_reason", never)
 
-    payload = _extract(session, store, '18.75"', '18.5"')
+    payload = _extract(session, store, '13.5"', '13.25"')
 
     assert {(status, lane) for *_, status, lane in _lanes(session)} == {
         ("CONFLICTING", "SECOND_READER")
@@ -210,7 +211,7 @@ def test_the_guard_is_asked_about_a_reading_that_agreed(
     session: Session, store: LocalStore
 ) -> None:
     """A reading with no value abstains (#924), and may come first in its region: the guard reads
-    the value of one that agreed, so `18 3/4"` agreed beside a blank `18` is still held back."""
+    the value of one that agreed, so `13 1/2"` agreed beside a blank `13` is still held back."""
     from app.evidence.record import open_extraction_run
     from tests.workflow.test_cross_route_corroboration import (
         NOVA_FORCED,
@@ -227,9 +228,9 @@ def test_the_guard_is_asked_about_a_reading_that_agreed(
     region = [[10, 10], [20, 10], [20, 20], [10, 20]]
     rows = []
     for (extractor, model_id), text, inches in (
-        (NOVA_FORCED, "18", None),
-        (QWEN, '18 3/4"', Fraction(75, 4)),
-        (NOVA_TAUGHT, '18 3/4"', Fraction(75, 4)),
+        (NOVA_FORCED, "13", None),
+        (QWEN, '13 1/2"', Fraction(27, 2)),
+        (NOVA_TAUGHT, '13 1/2"', Fraction(27, 2)),
     ):
         run = open_extraction_run(
             session,

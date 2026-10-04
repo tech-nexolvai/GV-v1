@@ -2592,7 +2592,7 @@ class DatabaseStages:
         2026-10-04: both readers of the new pair agreed on a label running past their crop's edge on
         AI_Set_2 (#907), and a cut `12 3/4"` read by both as `12"` would be a confirmed wrong number.
 
-        **Nor does an agreement on a whole number and a fraction (#924)** — `18 3/4"`, `3 3/4"` —
+        **Nor does an agreement on a whole number and a fraction (#924)** — `13 1/2"`, `3 3/4"` —
         the kind two readers of different vendors have twice agreed on wrongly, by the admin's
         standing rule that such a kind goes to a person. A dual label agreed on both its halves is
         let through (`mixed_fraction_refusal`).
@@ -6101,10 +6101,11 @@ def mixed_fraction_refusal(value: Measurement | None, text: str) -> str | None:
     **The admin's standing rule** (2026-10-03, #728): where two readers ever agree on a wrong number
     of some kind, that whole kind goes to a person. Twice two readers of different vendors agreed on
     a wrong whole number and a fraction: a stacked `3/4"` read as `3 3/4"` (#726), and a two-line
-    `18 [3/4]` (18 mm over 3/4 inch) read as `18 3/4"` (#924).
+    label of millimetres over bracketed inches read as one mixed number, as `13 [1/2]` read as
+    `13 1/2"` would be (#924).
 
     **What it covers: the value, however it was written.** An inch value with a whole part of at
-    least one and a fraction left over — `18 3/4"`, `18-3/4"`, `18¾"`, `18.75"`, `1'-6 3/4"` —
+    least one and a fraction left over — `13 1/2"`, `13-1/2"`, `13½"`, `13.5"`, `1'-1 1/2"` —
     because the mistake is in the reading, not in its notation. A value below one (`3/4"`), a whole
     number, and a reading written in millimetres (whose inches are a conversion) are not this kind.
 

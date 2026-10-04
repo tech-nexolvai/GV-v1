@@ -431,10 +431,10 @@ def test_one_vendor_agreeing_on_a_dual_label_confirms_nothing() -> None:
 
 
 def test_the_same_inches_with_different_millimetres_confirm_nothing() -> None:
-    """Input: `914 [36]` and `915 [36]` — both consistent, the same inches. Outcome: RAW with no lane,
+    """Input: `914 [36]` and `920 [36]` — both consistent, the same inches. Outcome: RAW with no lane,
     and no conflict. Why: agreement on the inches alone does not confirm; a reader who misread one
     half may have misread the other."""
-    result = corroborate((_dual("a", QWEN3_VL), _dual("b", NOVA_2_LITE_TAUGHT, "915 [36]")))
+    result = corroborate((_dual("a", QWEN3_VL), _dual("b", NOVA_2_LITE_TAUGHT, "920 [36]")))
 
     assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None)
 
@@ -464,10 +464,10 @@ def test_millimetres_inconsistent_with_their_inches_confirm_nothing() -> None:
 
 
 def test_a_dual_label_whose_inches_differ_is_a_conflict() -> None:
-    """Input: `914 [36]` and `889 [35]`, each consistent on its own. Outcome: CONFLICTING. Why: the
+    """Input: `914 [36]` and `895 [35]`, each consistent on its own. Outcome: CONFLICTING. Why: the
     inches are the value, and different values are a conflict, whatever else agrees."""
     result = corroborate(
-        (_dual("a", QWEN3_VL), _dual("b", NOVA_2_LITE_TAUGHT, "889 [35]", Fraction(35)))
+        (_dual("a", QWEN3_VL), _dual("b", NOVA_2_LITE_TAUGHT, "895 [35]", Fraction(35)))
     )
 
     assert result == CorroborationResult(
@@ -604,7 +604,7 @@ def test_a_stacked_reading_with_no_value_still_keeps_the_group_raw() -> None:
 
 
 def test_a_dual_label_is_one_whichever_of_a_readings_texts_states_it() -> None:
-    """Input: two vendors' readings that say `914 [36]` and `915 [36]`, each valued by the canonical
+    """Input: two vendors' readings that say `914 [36]` and `920 [36]`, each valued by the canonical
     token `36"`, as the scorecards value a reading. Outcome: RAW with no lane. Why: the label is a
     dual one whichever text says so, and agreement on its inches alone confirms nothing."""
     from dataclasses import replace
@@ -613,7 +613,7 @@ def test_a_dual_label_is_one_whichever_of_a_readings_texts_states_it() -> None:
         return replace(candidate, parsed_value=Measurement(Fraction(36), Unit.INCH, '36"'))
 
     first = token_valued(_dual("a", QWEN3_VL))
-    second = token_valued(_dual("b", NOVA_2_LITE_TAUGHT, "915 [36]"))
+    second = token_valued(_dual("b", NOVA_2_LITE_TAUGHT, "920 [36]"))
     assert corroborate((first, token_valued(_dual("b", NOVA_2_LITE_TAUGHT)))).lane is (
         CorroborationLane.SECOND_READER
     )  # the control: both halves agree

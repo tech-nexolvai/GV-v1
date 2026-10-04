@@ -307,7 +307,7 @@ NOVA_FORCED = ("bedrock-nova-2-lite", "amazon.nova-2-lite-v1:0")
 
 def _dual_region(session: Session, store: LocalStore) -> list[ObservationCandidate]:
     """Unsaved readings of two regions: the pair agreeing on `914 [36]` beside a forced-tool `914`
-    with no value, and the pair disagreeing — `914 [36]` against `889 [35]` — beside the same."""
+    with no value, and the pair disagreeing — `914 [36]` against `895 [35]` — beside the same."""
     revision = _revision(session, store)
     DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
     template = session.execute(select(ObservationCandidate)).scalars().one()
@@ -349,7 +349,7 @@ def _dual_region(session: Session, store: LocalStore) -> list[ObservationCandida
         row(NOVA_TAUGHT, AGREED, "914 [36]", 36),
         row(NOVA_FORCED, AGREED, "914", None),
         row(QWEN, CONFLICTED, "914 [36]", 36),
-        row(NOVA_TAUGHT, CONFLICTED, "889 [35]", 35),
+        row(NOVA_TAUGHT, CONFLICTED, "895 [35]", 35),
         row(NOVA_FORCED, CONFLICTED, "914", None),
     ]
     session.add_all(rows)
@@ -381,6 +381,6 @@ def test_an_agreement_is_marked_on_the_readings_that_agreed_and_a_conflict_on_th
         ("914 [36]", "RAW_CANDIDATE", "SECOND_READER"),
         ("914", None, None),
         ("914 [36]", "CONFLICTING", "SECOND_READER"),
-        ("889 [35]", "CONFLICTING", "SECOND_READER"),
+        ("895 [35]", "CONFLICTING", "SECOND_READER"),
         ("914", "CONFLICTING", "SECOND_READER"),
     ]
