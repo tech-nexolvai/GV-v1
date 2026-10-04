@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { User, CheckCircle2, XCircle, AlertCircle, CircleDashed, Sparkles, Shield } from 'lucide-react';
+import { CheckCircle2, XCircle, AlertCircle, CircleDashed, Sparkles, Shield } from 'lucide-react';
 import { OUTCOME_LABELS } from '../../data/outcomeLabels.js';
 import type { ChatMessage, Finding } from '../../data/types';
 import { FindingCard } from './FindingCard';
-import { GVMark } from '../brand/GVMark';
 import { ThinkingStream } from './ThinkingStream';
 import { StreamingText } from './StreamingText';
 import { ChatMarkdown } from './ChatMarkdown';
@@ -13,6 +12,7 @@ import './ChatThread.css';
 interface ChatThreadProps {
   messages: ChatMessage[];
   selectedFinding: string | null;
+  recordedFindingCount: number;
   onViewEvidence: (finding: Finding) => void;
   onAction: (findingId: string, action: 'confirm' | 'correct' | 'except' | 'dismiss', note?: string) => void;
   onCorrect: (findingId: string, correctedValue: string) => void;
@@ -22,6 +22,7 @@ interface ChatThreadProps {
 export function ChatThread({
   messages,
   selectedFinding,
+  recordedFindingCount,
   onViewEvidence,
   onAction,
   onCorrect,
@@ -87,17 +88,19 @@ export function ChatThread({
 
   return (
     <div className="chat-thread" role="log" aria-live="polite" ref={threadRef}>
+      {messages.length === 0 && (
+        <div className="chat-thread__empty">
+          <span className="chat-thread__empty-mark" aria-hidden="true">GV</span>
+          <h2>Ask about this review</h2>
+          <p>
+            {recordedFindingCount > 0
+              ? `${recordedFindingCount} recorded ${recordedFindingCount === 1 ? 'finding is' : 'findings are'} ready to explore. Ask which checks need attention.`
+              : 'No findings are recorded for this package yet. Enter measurements and run the checks to create them.'}
+          </p>
+        </div>
+      )}
       {messages.map((msg) => (
-        <div key={msg.id} className={`chat-message chat-message--${msg.role} anim-rise`}>
-          {/* Avatar */}
-          <div className="chat-message__avatar" aria-hidden="true">
-            {msg.role === 'assistant' ? (
-              <GVMark size={26} animated={Boolean(msg.is_typing)} />
-            ) : (
-              <div className="chat-message__avatar-user"><User size={13} /></div>
-            )}
-          </div>
-
+        <div key={msg.id} className={`chat-message chat-message--${msg.role}`}>
           {/* Content */}
           <div className="chat-message__content">
             <div className="chat-message__header">
@@ -105,7 +108,7 @@ export function ChatThread({
                 {msg.role === 'assistant' ? 'GV Review' : 'You'}
               </span>
               {!msg.is_typing && (
-                <time className="chat-message__time" dateTime={msg.timestamp}>
+                <time className="chat-message__time sr-only" dateTime={msg.timestamp}>
                   {formatTime(msg.timestamp)}
                 </time>
               )}
@@ -129,7 +132,7 @@ export function ChatThread({
             {msg.role === 'assistant' && msg.narrating && (
               <p className="chat-message__narrating" role="status" aria-live="polite">
                 <span className="chat-message__narrating-dot" aria-hidden="true" />
-                Writing the explanation
+                {msg.streamStage === 'narrating' ? 'Writing the explanation' : 'Preparing the explanation'}
               </p>
             )}
             {msg.role === 'assistant' && msg.narration && (

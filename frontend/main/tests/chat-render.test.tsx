@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { ChatMarkdown } from '../src/components/chat/ChatMarkdown.js';
+import { PromptSuggestions } from '../src/components/chat/PromptSuggestions.js';
+import { ReviewPackageDetails } from '../src/pages/ReviewPackageDetails.js';
 import { findingsTableMarkdown } from '../src/components/chat/findingsTable.js';
 import type { Finding } from '../src/data/types.js';
 
@@ -65,5 +67,30 @@ assert.match(html, /<td>25 in<\/td>/);
 assert.match(html, /<td>Needs correction<\/td>/);
 assert.doesNotMatch(html, /<td>Fail<\/td>/);
 assert.doesNotMatch(html, /\| Check \| Reading \|/);
+
+const questions = ['Show all findings', 'Show FAIL findings', 'Show findings needing review',
+  'Which sheet has the failure?', 'Why did this fail?'];
+let sends = 0;
+const suggestions = renderToStaticMarkup(<PromptSuggestions prompts={questions} onSend={() => { sends += 1; }} />);
+assert.match(suggestions, /aria-expanded="false"/);
+const listId = suggestions.match(/aria-controls="([^"]+)"/)?.[1];
+assert.ok(listId && suggestions.includes(`id="${listId}"`));
+assert.equal(suggestions.match(/class="chat-input-area__quick-btn"/g)?.length, 5);
+for (const question of questions) assert.equal(suggestions.split(question).length - 1, 1);
+assert.equal(renderToStaticMarkup(<PromptSuggestions prompts={[]} onSend={() => {}} />), '');
+const disabledSuggestions = renderToStaticMarkup(<PromptSuggestions prompts={questions} disabled onSend={() => { sends += 1; }} />);
+assert.equal(disabledSuggestions.match(/disabled=""/g)?.length, 5);
+assert.equal(sends, 0, 'rendering suggestions does not send a question');
+
+const details = renderToStaticMarkup(
+  <ReviewPackageDetails packageId="package-a" projectId="project-b">
+    <ol><li>Upload</li><li>Review</li></ol>
+  </ReviewPackageDetails>,
+);
+assert.match(details, /Details &amp; steps/);
+assert.match(details, /package-a/);
+assert.match(details, /project-b/);
+assert.match(details, /Upload/);
+assert.doesNotMatch(details, /<details[^>]* open=/);
 
 console.log('chat-render component test passed');
