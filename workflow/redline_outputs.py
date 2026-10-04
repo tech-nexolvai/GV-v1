@@ -278,6 +278,7 @@ def _stored_finding(
         or (trace_reason if isinstance(trace_reason, str) else None)
         or "No reason was recorded."
     )
+    comparison_value = row.trace.get("comparison")
     return RedlineFinding(
         rule_id=rule_id,
         outcome=outcome,
@@ -289,4 +290,7 @@ def _stored_finding(
         # never rebuilds an operand or intermediate from display text just to repeat a number.
         calculation_available=is_decision(outcome),
         evidence_refs=tuple(references),
+        scope_label=row.scope_label,
+        comparison=comparison_value if isinstance(comparison_value, str) else None,
+        notes=tuple(row.notes or ()),
     )

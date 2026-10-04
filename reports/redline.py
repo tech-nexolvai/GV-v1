@@ -83,6 +83,15 @@ from typing import Final
 from uuid import UUID
 
 from pypdf import PageObject, PdfReader, PdfWriter
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    FloatObject,
+    NameObject,
+    NumberObject,
+    RectangleObject,
+)
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from evidence.coordinates import PageTransform, PdfPoint, StoredPoint
@@ -161,6 +170,9 @@ class RedlineFinding:
     intentionally omits the calculation trace.
     """
     evidence_refs: tuple[str, ...] = ()
+    scope_label: str | None = None
+    comparison: str | None = None
+    notes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.rule_id.strip():
@@ -319,8 +331,8 @@ class _OutcomeStyle:
 #: prevent. `tests/reports/test_redline.py` asserts the table covers `Outcome` completely.
 OUTCOME_STYLES: Final[dict[Outcome, _OutcomeStyle]] = {
     Outcome.PASS: _OutcomeStyle((0.0, 0.45, 0.2), None, 0.75, False),
-    Outcome.FAIL: _OutcomeStyle((0.8, 0.05, 0.05), (0.8, 0.05, 0.05), 2.0, False),
-    Outcome.REVIEW_REQUIRED: _OutcomeStyle((0.85, 0.45, 0.0), (0.85, 0.45, 0.0), 2.0, False),
+    Outcome.FAIL: _OutcomeStyle((0.8, 0.05, 0.05), None, 1.25, False),
+    Outcome.REVIEW_REQUIRED: _OutcomeStyle((0.85, 0.45, 0.0), None, 1.25, False),
     Outcome.NOT_FOUND: _OutcomeStyle((0.15, 0.3, 0.6), None, 1.25, True),
     Outcome.NO_APPLICABLE_RULE: _OutcomeStyle((0.4, 0.2, 0.55), None, 1.25, True),
 }
@@ -348,6 +360,37 @@ class _Mark:
 
     finding: RenderableFinding
     polygon: Polygon
+
+
+CALLOUT_COLUMN_WIDTH: Final = Decimal(252)
+CALLOUT_MARGIN: Final = Decimal(16)
+CALLOUT_LINE_HEIGHT: Final = Decimal(10)
+CALLOUT_FONT_SIZE: Final = 7.5
+
+
+def _fact_note(finding: RenderableFinding) -> str:
+    """A fixed presentation template, never a new reading or an inferred role."""
+    outcome = finding.outcome
+    parts = [f"{finding.rule_id} · {outcome.value.replace('_', ' ')}"]
+    scope = finding.scope_label if isinstance(finding, RedlineFinding) else None
+    if scope:
+        parts.append(scope)
+    if finding.reason:
+        parts.append(finding.reason)
+    comparison = (
+        finding.comparison
+        if isinstance(finding, RedlineFinding)
+        else finding.trace.comparison if finding.trace is not None else None
+    )
+    if outcome in (Outcome.FAIL, Outcome.REVIEW_REQUIRED) and comparison:
+        parts.append(f"Comparison: {comparison}")
+    if outcome is not Outcome.NO_APPLICABLE_RULE:
+        parts.extend(note for note in finding.notes if note.startswith("Wall layout:"))
+    return ". ".join(part.rstrip(". ") for part in parts if part) + "."
+
+
+def _note_lines(finding: RenderableFinding) -> tuple[str, ...]:
+    return tuple(textwrap.wrap(_fact_note(finding), width=47, break_long_words=True))
 
 
 def polygon_pdf_points(polygon: Polygon, transform: PageTransform) -> tuple[PdfPoint, ...]:
@@ -658,7 +701,12 @@ def _compose(
     for index, page in enumerate(writer.pages):
         page_marks = marks.get(index) or ()
         if page_marks:
-            page.merge_page(_overlay(by_index[index], page_marks))
+            entry = by_index[index]
+            ordered = _ordered_marks(entry, page_marks)
+            placements, columns = _callout_layout(entry, ordered)
+            expanded = _expanded_boxes(entry, columns)
+            overlay = _overlay(entry, ordered, placements, expanded)
+            _append_overlay(writer, page, overlay, expanded)
 
     pages_with_marks = frozenset(index for index, page_marks in marks.items() if page_marks)
     summary = _listing(package, findings, marked, unplaced, pages_with_marks, clearance)
@@ -681,14 +729,114 @@ def _canvas(width: Decimal, height: Decimal) -> tuple[Canvas, BytesIO]:
     return Canvas(buffer, pagesize=(float(width), float(height)), invariant=1), buffer
 
 
-def _overlay(entry: RedlinePage, marks: Sequence[_Mark]) -> PageObject:
-    """Build the transparent page of marks that is merged onto one source page."""
-    left, bottom, right, top = entry.transform.media_box
-    canvas, buffer = _canvas(right - left, top - bottom)
+def _ordered_marks(entry: RedlinePage, marks: Sequence[_Mark]) -> tuple[_Mark, ...]:
+    """Stable top-to-bottom order in the visible, rotated sheet."""
     angle = text_angle(entry.transform.rotation)
 
+    def key(mark: _Mark) -> tuple[Decimal, Decimal, str]:
+        anchor = label_anchor(polygon_pdf_points(mark.polygon, entry.transform), angle)
+        x, y = _turn(anchor.x, anchor.y, (360 - angle) % 360)
+        return (-y, x, mark.finding.rule_id)
+
+    return tuple(sorted(marks, key=key))
+
+
+def _visible_size(entry: RedlinePage) -> tuple[Decimal, Decimal]:
+    left, bottom, right, top = entry.transform.crop_box
+    width, height = right - left, top - bottom
+    return (height, width) if entry.transform.rotation in (90, 270) else (width, height)
+
+
+def _callout_layout(
+    entry: RedlinePage, marks: Sequence[_Mark]
+) -> tuple[tuple[tuple[int, Decimal, tuple[str, ...]], ...], int]:
+    """Allocate full notes in external columns; never truncate or use the drawing crop."""
+    _, height = _visible_size(entry)
+    column = 0
+    cursor = height - CALLOUT_MARGIN
+    result: list[tuple[int, Decimal, tuple[str, ...]]] = []
     for mark in marks:
-        _draw_mark(canvas, mark, entry.transform, angle)
+        lines = _note_lines(mark.finding)
+        needed = CALLOUT_LINE_HEIGHT * (len(lines) + 2)
+        if result and cursor - needed < CALLOUT_MARGIN:
+            column += 1
+            cursor = height - CALLOUT_MARGIN
+        result.append((column, cursor, lines))
+        cursor -= needed
+    return tuple(result), column + 1
+
+
+def _expanded_boxes(
+    entry: RedlinePage, columns: int
+) -> tuple[tuple[Decimal, Decimal, Decimal, Decimal], tuple[Decimal, Decimal, Decimal, Decimal]]:
+    """Extend the visible right edge without scaling or moving the original crop."""
+    amount = CALLOUT_COLUMN_WIDTH * columns
+    side = entry.transform.rotation
+
+    def extend(
+        box: tuple[Decimal, Decimal, Decimal, Decimal],
+    ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+        left, bottom, right, top = box
+        if side == 0:
+            return (left, bottom, right + amount, top)
+        if side == 90:
+            return (left, bottom, right, top + amount)
+        if side == 180:
+            return (left - amount, bottom, right, top)
+        return (left, bottom - amount, right, top)
+
+    return extend(entry.transform.media_box), extend(entry.transform.crop_box)
+
+
+def _visual_point(entry: RedlinePage, u: Decimal, v: Decimal) -> tuple[Decimal, Decimal]:
+    """External-strip position in the same visible frame the reader sees."""
+    left, bottom, right, top = entry.transform.crop_box
+    angle = entry.transform.rotation
+    if angle == 0:
+        return left + u, bottom + v
+    if angle == 90:
+        return right - v, bottom + u
+    if angle == 180:
+        return right - u, top - v
+    return left + v, top - u
+
+
+def _overlay(
+    entry: RedlinePage,
+    marks: Sequence[_Mark],
+    placements: Sequence[tuple[int, Decimal, tuple[str, ...]]],
+    expanded: tuple[
+        tuple[Decimal, Decimal, Decimal, Decimal],
+        tuple[Decimal, Decimal, Decimal, Decimal],
+    ],
+) -> PageObject:
+    """Build the transparent vector mark and callout page."""
+    left, bottom, right, top = expanded[0]
+    canvas, buffer = _canvas(right - left, top - bottom)
+    canvas.translate(float(-left), float(-bottom))
+    angle = text_angle(entry.transform.rotation)
+    visible_width, _ = _visible_size(entry)
+
+    for index, (mark, (column, cursor, lines)) in enumerate(
+        zip(marks, placements, strict=True), start=1
+    ):
+        _draw_mark(canvas, mark, entry.transform, angle, index)
+        u = visible_width + column * CALLOUT_COLUMN_WIDTH + CALLOUT_MARGIN
+        x, y = _visual_point(entry, u, cursor)
+        style = OUTCOME_STYLES[mark.finding.outcome]
+        canvas.saveState()
+        canvas.translate(float(x), float(y))
+        canvas.rotate(angle)
+        canvas.setFillColorRGB(*style.stroke)
+        canvas.setFont("Courier-Bold", CALLOUT_FONT_SIZE)
+        canvas.drawString(
+            0, 0, f"{index:02d}  {mark.finding.rule_id} · {mark.finding.outcome.value}"
+        )
+        canvas.setFillColorRGB(0.1, 0.1, 0.1)
+        canvas.setFont("Courier", CALLOUT_FONT_SIZE)
+        for line_number, line in enumerate(lines, start=1):
+            canvas.drawString(0, -line_number * float(CALLOUT_LINE_HEIGHT), line)
+        canvas.restoreState()
 
     canvas.showPage()
     canvas.save()
@@ -696,7 +844,68 @@ def _overlay(entry: RedlinePage, marks: Sequence[_Mark]) -> PageObject:
     return PdfReader(buffer).pages[0]
 
 
-def _draw_mark(canvas: Canvas, mark: _Mark, transform: PageTransform, angle: int) -> None:
+def _append_overlay(
+    writer: PdfWriter,
+    page: PageObject,
+    overlay: PageObject,
+    expanded: tuple[
+        tuple[Decimal, Decimal, Decimal, Decimal],
+        tuple[Decimal, Decimal, Decimal, Decimal],
+    ],
+) -> None:
+    """Add a Form XObject stream while keeping every source stream byte-identical."""
+    media, crop = expanded
+    content = overlay.get_contents()
+    if content is None:
+        raise ValueError("the redline overlay has no vector content")
+    form = DecodedStreamObject()
+    form.set_data(content.get_data())
+    form.update(
+        {
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Form"),
+            NameObject("/FormType"): NumberObject(1),
+            NameObject("/BBox"): RectangleObject((0, 0, media[2] - media[0], media[3] - media[1])),
+            NameObject("/Matrix"): ArrayObject(
+                [
+                    NumberObject(1),
+                    NumberObject(0),
+                    NumberObject(0),
+                    NumberObject(1),
+                    FloatObject(media[0]),
+                    FloatObject(media[1]),
+                ]
+            ),
+            NameObject("/Resources"): overlay["/Resources"].clone(writer),
+        }
+    )
+    form_ref = writer._add_object(form)
+    source_resources = page.get("/Resources")
+    resources = DictionaryObject(
+        source_resources.get_object() if source_resources is not None else {}
+    )
+    xobjects = DictionaryObject(resources.get("/XObject", DictionaryObject()).get_object())
+    name = NameObject("/GVRedline939")
+    if name in xobjects:
+        raise ValueError("source drawing already uses the reserved redline resource name")
+    xobjects[name] = form_ref
+    resources[NameObject("/XObject")] = xobjects
+    page[NameObject("/Resources")] = resources
+    command = DecodedStreamObject()
+    command.set_data(b"q /GVRedline939 Do Q\n")
+    command_ref = writer._add_object(command)
+    original = page.get("/Contents")
+    page[NameObject("/Contents")] = ArrayObject(
+        ([*original] if isinstance(original, ArrayObject) else [original] if original else [])
+        + [command_ref]
+    )
+    page.mediabox = RectangleObject(tuple(FloatObject(value) for value in media))
+    page.cropbox = RectangleObject(tuple(FloatObject(value) for value in crop))
+
+
+def _draw_mark(
+    canvas: Canvas, mark: _Mark, transform: PageTransform, angle: int, index: int
+) -> None:
     """Outline the evidence region and label it with the rule and the outcome."""
     style = OUTCOME_STYLES[mark.finding.outcome]
     points = polygon_pdf_points(mark.polygon, transform)
@@ -722,7 +931,29 @@ def _draw_mark(canvas: Canvas, mark: _Mark, transform: PageTransform, angle: int
         canvas.drawPath(path, stroke=1, fill=0)
     canvas.restoreState()
 
-    _draw_label(canvas, mark, points, style, angle)
+    _draw_cloud(canvas, points, style)
+    _draw_label(canvas, mark, points, style, angle, index)
+
+
+def _draw_cloud(canvas: Canvas, points: Sequence[PdfPoint], style: _OutcomeStyle) -> None:
+    """Fine vector scallops around the real evidence polygon, never a raster or opaque mask."""
+    left = min(float(point.x) for point in points) - 5
+    right = max(float(point.x) for point in points) + 5
+    bottom = min(float(point.y) for point in points) - 5
+    top = max(float(point.y) for point in points) + 5
+    radius = 5.0
+    canvas.saveState()
+    canvas.setStrokeColorRGB(*style.stroke)
+    canvas.setLineWidth(style.line_width)
+    if style.dashed:
+        canvas.setDash(4, 3)
+    for x in range(int(left), int(right) + 1, 10):
+        canvas.arc(x - radius, top - radius, x + radius, top + radius, 0, 180)
+        canvas.arc(x - radius, bottom - radius, x + radius, bottom + radius, 180, 180)
+    for y in range(int(bottom), int(top) + 1, 10):
+        canvas.arc(left - radius, y - radius, left + radius, y + radius, 90, 180)
+        canvas.arc(right - radius, y - radius, right + radius, y + radius, 270, 180)
+    canvas.restoreState()
 
 
 def _draw_label(
@@ -731,6 +962,7 @@ def _draw_label(
     points: Sequence[PdfPoint],
     style: _OutcomeStyle,
     angle: int,
+    index: int,
 ) -> None:
     """Write the rule id and outcome beside the mark, turned to read upright on a rotated page.
 
@@ -738,20 +970,14 @@ def _draw_label(
     covering the line work with a paragraph would hide the very thing the reviewer is being asked
     to look at.
     """
-    label = f"{mark.finding.rule_id} · {mark.finding.outcome.value}"
+    label = f"{index:02d} · {mark.finding.rule_id} · {mark.finding.outcome.value}"
     anchor = label_anchor(points, angle)
 
     canvas.saveState()
     canvas.translate(float(anchor.x), float(anchor.y))
     canvas.rotate(angle)
+    canvas.translate(0, 12)
     canvas.setFont("Helvetica-Bold", MARK_FONT_SIZE)
-
-    width = canvas.stringWidth(label, "Helvetica-Bold", MARK_FONT_SIZE)
-    canvas.setFillColorRGB(1.0, 1.0, 1.0)
-    canvas.setFillAlpha(0.75)
-    canvas.rect(-1.0, 1.0, width + 2.0, MARK_FONT_SIZE + 1.0, stroke=0, fill=1)
-    canvas.setFillAlpha(1.0)
-
     canvas.setFillColorRGB(*style.stroke)
     canvas.drawString(0.0, MARK_FONT_SIZE * 0.35 + 1.0, label)
     canvas.restoreState()
