@@ -120,6 +120,13 @@ API_PID=$!
 # not anybody else's. `CROSSING_MARGIN` is the one that separates a dimension from the box it
 # measures; raise it toward `WITNESS_TOLERANCE` and every real dimension on that sheet is rejected.
 #
+# **`MINIMUM_SPAN` stays 0.01, measured again in #926.** A narrow filler's own dimension line on
+# `AI_Set 2` is 0.0093 of the page, so it is never offered and its number fell to the next
+# cabinet's line. The largest span that finds those six lines also finds 64 other strokes on
+# `AI_Set 2` (41 of them the edges of the white boxes behind one page's labels) and 23 on `AI_Set 1`,
+# and attaches eight more pieces of text wrongly, five of them numbers. Instead, a stroke that short
+# now only ever takes an attachment of the drawing's own text away (`workflow/stages.py`).
+#
 # **`LINE_MINIMUM_PT` was 50 and that discarded every dimension line on every drawing we have.**
 # It is the shortest stroke the reader will consider line-work at all, applied before the detector
 # ever runs. The client's dimension lines are shorter than that, so the detector was being handed a

@@ -331,8 +331,11 @@ EXACT_TEXT_EXTRACTORS: Final = frozenset(
 #: extractor, version and configuration. The five lengths go into the configuration, which is what
 #: makes a re-association under different numbers a different run rather than the same one quietly
 #: meaning something else.
+#:
+#: `/2` since #926: the file's own text is held to the line it is attached to, under no new setting,
+#: so an association made before it is another version's decision rather than this one's.
 ASSOCIATION_EXTRACTOR = "extraction.geometry.text_association"
-ASSOCIATION_EXTRACTOR_VERSION = "extraction.geometry.text_association/1"
+ASSOCIATION_EXTRACTOR_VERSION = "extraction.geometry.text_association/2"
 
 #: One character is enough to call a page text-bearing. `build_manifest` requires the threshold from
 #: its caller and gives it no default, because "enough text to be worth reading" is a judgement about
@@ -1265,13 +1268,25 @@ class RegionReading:
         left, top, right, bottom = self.drawn
         if left <= high_x and low_x <= right and top <= high_y and low_y <= bottom:
             return TOUCHES_ITS_LINE
-        xs = [point.x for point in self.extent.points]
-        ys = [point.y for point in self.extent.points]
-        if line.axis == "horizontal":
-            between = low_x <= min(xs) and max(xs) <= high_x
-        else:
-            between = low_y <= min(ys) and max(ys) <= high_y
-        return None if between else BEYOND_ITS_ENDS
+        return None if between_its_ends(self.extent, line) else BEYOND_ITS_ENDS
+
+
+def between_its_ends(extent: Polygon, line: DimensionExtent) -> bool:
+    """Whether `extent` lies wholly between `line`'s two ends, measured along the line (#918, #926).
+
+    **One rule for every reading it is asked of**: a dimension's number is printed along its own
+    line, between the line's ends — the rule #913 holds a reading to before it is suggested, here
+    held exactly, with no length. An AI reading's region is held to it (`RegionReading.refusal`),
+    and so is the drawing's own text (`_own_text_held_to_their_lines`); a second copy could judge a
+    line's ends differently from the first.
+    """
+    low_x, high_x = sorted((line.start.x, line.end.x))
+    low_y, high_y = sorted((line.start.y, line.end.y))
+    xs = [point.x for point in extent.points]
+    ys = [point.y for point in extent.points]
+    if line.axis == "horizontal":
+        return low_x <= min(xs) and max(xs) <= high_x
+    return low_y <= min(ys) and max(ys) <= high_y
 
 
 def _exact_text_regions(*routes: Sequence[ObservationCandidate]) -> frozenset[_RegionKey]:
@@ -1282,7 +1297,8 @@ def _exact_text_regions(*routes: Sequence[ObservationCandidate]) -> frozenset[_R
     agent asks about them only when they did not parse. Their own readings are attached, or refused,
     by their own place; an AI reading is not placed there again, because doing so would only copy
     that decision — and on `AI_Set_2` that copied a stacked filler label onto the neighbouring
-    cabinet's line, whose own line is too short to be offered at all. **Not the reviewer's markup**:
+    cabinet's line, whose own line is too short to be offered at all (the text's own attachment
+    there is refused since #926). **Not the reviewer's markup**:
     a GV note's box says nothing about the vendor's label under it.
     """
     return frozenset(_region_key(row.polygon) for rows in routes for row in rows)
@@ -1310,6 +1326,123 @@ def _held_to_their_regions(
             continue
         attached.append(replace(association, signals=(placement.signal, *association.signals)))
     return AssociationResult(associated=tuple(attached), unassociated=tuple(refused))
+
+
+#: Why an attachment of the text the file states exactly — its page text, its pasted drawings' font
+#: text, the vendor's CAD notes — was refused after `associate` chose a line (#926). Each can only
+#: take an attachment away, and each is about the line the text would have been attached to.
+OWN_TEXT_BEYOND_ITS_ENDS: Final = (
+    "this text is not wholly between the ends of the line it would be attached to, so the line may "
+    "not be the one it labels: a dimension's number is printed along its own line, and text standing "
+    "past a line's end is usually a neighbour's — a narrow part's number, whose own line is too "
+    "short to be offered, or a note's"
+)
+OWN_TEXT_SHORTER_LINE: Final = (
+    "a stroke drawn as a dimension line is drawn, crossed by a witness line at both ends, but too "
+    "short to be offered as one (GV_READER_MINIMUM_SPAN), is as near this text as the line it would "
+    "be attached to, or nearer: a narrow part's own dimension, say. Offered too, it leaves the "
+    "choice unmade, so the text is attached to neither"
+)
+
+
+def _own_text_held_to_their_lines(
+    result: AssociationResult,
+    own_text: frozenset[UUID],
+    *,
+    offered: tuple[DimensionExtent, ...],
+    shorter: tuple[DimensionExtent, ...],
+    proximity_limit: Decimal,
+    ambiguity_margin: Decimal,
+) -> AssociationResult:
+    """`associate`'s result with each attachment of the file's own text held to its line (#926).
+
+    `own_text` are the readings of text the file states exactly; `offered` the dimension lines
+    `associate` chose among; `shorter` the strokes the detector bounds as it bounds a line, at both
+    ends by a crossing witness line, that are too short to be offered as one.
+
+    **Two facts of the drawing, and no new length.** An attachment is refused when:
+
+    - the text is not wholly between the line's ends (`between_its_ends`, the rule an AI reading's
+      region is held to, #918). On `AI_Set_2` a note's number stood past the end of a panel's edge
+      and a narrow filler's number past the start of the next cabinet's line, and both were
+      attached to them;
+    - a shorter stroke contests it: associated again with `shorter` offered as well, the text is
+      not attached to the same line — another is nearer, or two are within the ambiguity margin.
+      On `AI_Set_2` a narrow filler's own line is 0.0093 of the page, under the detector's 0.01, so
+      its number fell to the next cabinet's line even where it stood between that line's ends; and
+      a label printed sideways across a narrow panel fell to the panel's long edge.
+
+    **Why not offer the shorter strokes as lines instead** (#926, measured on both drawings): the
+    largest minimum span that finds the fillers' six lines also finds 64 other strokes on `AI_Set_2`
+    — 41 of them the edges of the white boxes behind one page's labels — and 23 on `AI_Set_1`; with
+    them offered, four sideways labels on that page were attached to one short stroke beside them,
+    and one label on `AI_Set_1` to a stroke it stands past the end of. Here a stroke too short to be
+    offered only ever takes an attachment away, so a false one costs a refusal, never a wrong
+    attachment.
+
+    **Why not #918's other check, that the characters touch the line**: the file's own text is not
+    a tick drawn on the line, and its box is the font's, not the ink. A number set in a break in its
+    line (`associate`'s inline placement) touches it, and so does a stacked fraction's denominator
+    printed just above it; on `AI_Set_2` five of the six numbers it would refuse were right.
+
+    Every other reading's decision is left exactly as it was; a kept attachment is left unchanged.
+    """
+    held = tuple(entry for entry in result.associated if entry.text.observation_id in own_text)
+    if not held:
+        return result
+    again: dict[UUID, TextAssociation | CannotAssociate] = {}
+    if shorter:
+        contested = associate(
+            tuple(entry.text for entry in held),
+            offered + shorter,
+            proximity_limit=proximity_limit,
+            ambiguity_margin=ambiguity_margin,
+        )
+        again.update((entry.text.observation_id, entry) for entry in contested.associated)
+        again.update((entry.text.observation_id, entry) for entry in contested.unassociated)
+    attached: list[TextAssociation] = []
+    refused = list(result.unassociated)
+    for association in result.associated:
+        observation_id = association.text.observation_id
+        if observation_id not in own_text:
+            attached.append(association)
+            continue
+        line = association.line
+        if not between_its_ends(association.text.extent, line):
+            refused.append(CannotAssociate(association.text, OWN_TEXT_BEYOND_ITS_ENDS, (line,)))
+            continue
+        twin = again.get(observation_id)
+        if isinstance(twin, TextAssociation) and twin.line != line:
+            refused.append(
+                CannotAssociate(association.text, OWN_TEXT_SHORTER_LINE, (line, twin.line))
+            )
+            continue
+        if isinstance(twin, CannotAssociate):
+            refused.append(
+                CannotAssociate(
+                    association.text,
+                    OWN_TEXT_SHORTER_LINE,
+                    (line, *(candidate for candidate in twin.candidates if candidate != line)),
+                )
+            )
+            continue
+        attached.append(association)
+    return AssociationResult(associated=tuple(attached), unassociated=tuple(refused))
+
+
+def _held_as_own_text(
+    exact_text: frozenset[UUID], links: Sequence[_VisionAssociationLink]
+) -> frozenset[UUID]:
+    """The readings `_own_text_held_to_their_lines` holds (#926): the file's own text, by row, and
+    every vision reading associated through one of its boxes (`_vision_association_inputs`).
+
+    Such a vision reading is placed by the text's box, not its own, so it is attached to whatever
+    line the text would be: left out, a refusal of the text would leave the same box attached
+    through its second reading.
+    """
+    return exact_text | frozenset(
+        link.row.id for link in links if link.source_candidate_id in exact_text
+    )
 
 
 @dataclass
@@ -2188,6 +2321,14 @@ class DatabaseStages:
                 placements={
                     row.id: item for item, row in zip(region_items, region_rows, strict=True)
                 },
+                # The text the file states exactly, held to the line it is attached to (#926): the
+                # same three routes whose regions an AI reading is not placed at again — and a
+                # vision reading attached through one of their boxes, which takes that box's place
+                # and so is held to the same line.
+                own_text=_held_as_own_text(
+                    frozenset(row.id for row in (*vector_rows, *cad_text_rows, *stamp_text_rows)),
+                    vision_association_links,
+                ),
             )
             # **What each vendor drawing's parts might be (#868)**, suggested for a person to confirm
             # and never written as items. The same strokes, and the same readings less the
@@ -3206,6 +3347,7 @@ class DatabaseStages:
         readings: Sequence[tuple[Sequence[ReadItem], Sequence[ObservationCandidate]]],
         lines: tuple[DimensionExtent, ...],
         placements: Mapping[UUID, RegionReading] | None = None,
+        own_text: frozenset[UUID] = frozenset(),
     ) -> int | None:
         """Attach each of a page's readings to the line it annotates, or record why not.
 
@@ -3228,6 +3370,11 @@ class DatabaseStages:
         and refused with the reason where it fails, which can only take an attachment away. One
         that holds records how its place was found first, then `associate`'s own reasons, so the row
         says the AI reader supplied neither where the number sits nor which way it reads.
+
+        **`own_text` are the readings of text the file states exactly** (#926), by row: its page
+        text, its pasted drawings' font text, the vendor's CAD notes. The line `associate` chose for
+        one is held to `_own_text_held_to_their_lines` — between its ends, and not contested by a
+        stroke too short to be offered — which can only take an attachment away.
         """
         settings = self._association
         if settings is None:
@@ -3273,6 +3420,29 @@ class DatabaseStages:
             )
             if placements:
                 result = _held_to_their_regions(result, placements)
+            if any(entry.text.observation_id in own_text for entry in result.associated):
+                # **The strokes too short to be offered (#926)**: the detector's own lines with its
+                # floor taken away, bounded at both ends exactly as an offered line is. No new
+                # length: they are never offered, and only ever take an attachment away.
+                everything = detect(
+                    lines,
+                    witness_tolerance=settings.witness_tolerance,
+                    minimum_span=Decimal(0),
+                    straightness=settings.straightness,
+                    crossing_margin=settings.crossing_margin,
+                )
+                result = _own_text_held_to_their_lines(
+                    result,
+                    own_text,
+                    offered=tuple(line.extent for line in detected.lines),
+                    shorter=tuple(
+                        line.extent
+                        for line in everything.lines
+                        if line.span < settings.minimum_span
+                    ),
+                    proximity_limit=settings.proximity_limit,
+                    ambiguity_margin=settings.ambiguity_margin,
+                )
             association_run = open_extraction_run(
                 session,
                 task_run_id=task_run_id,
