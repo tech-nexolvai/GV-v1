@@ -254,3 +254,64 @@ def test_the_replay_asks_the_production_gate_whether_a_crop_shows_a_gv_mark(
     report = output.read_text(encoding="utf-8")
     assert f"| {Guard.GV_MARK.value} | 0 |" in report
     assert f"| {Guard.NONE.value} | 1 |" in report
+
+
+#: A key crop round the label's last two digits and its inch mark only: its region, 9 pt in on each
+#: side, is 78–91 × 221–230 pt, so the crop production cuts round it starts after the label does.
+ROUND_THE_LAST_DIGITS = {"left_px": "575", "top_px": "1767", "right_px": "834", "bottom_px": "1992"}
+
+
+@pytest.mark.parametrize(
+    ("crop", "agreed"),
+    [(ROUND_THE_LABEL, 1), (ROUND_THE_LAST_DIGITS, 0)],
+    ids=["whole-label", "cut-label"],
+)
+def test_a_crop_that_cuts_the_label_holds_its_agreement_back(
+    tmp_path: Path, crop: dict[str, str], agreed: int
+) -> None:
+    """**The row the admin's decision rests on (#919).** The same pair, agreeing on the same value:
+    held back by the cut-label guard, and by the gate as it now is, where production's crop round
+    the region cuts the label the sheet draws; kept where it holds all of it."""
+    pair: list[list[str | None]] = [
+        ["bedrock-qwen3-vl-235b", '12"', None],
+        ["bedrock-nova-2-lite-taught", '12"', None],
+    ]
+    key, settings, scorecard = _setup(tmp_path, pair, crop=crop)
+    output = tmp_path / "data" / "replay.md"
+
+    assert _run(key, settings, scorecard, output) == 0
+
+    report = output.read_text(encoding="utf-8")
+    assert f"| {Guard.NONE.value} | 1 |" in report
+    assert f"| {Guard.CUT.value} | {agreed} |" in report
+    assert f"| {Guard.GATE.value} | {agreed} |" in report
+
+
+def test_the_replay_asks_the_production_gate_whether_a_crop_cuts_the_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**One test, not two copies of it (#919).** The replay's cut fact is the production gate's own
+    `workflow.stages.cut_label_refusal`, handed what the stage hands it: whatever that function says
+    about a crop is what the replay's guard does with it. Here it is made to refuse the crop round
+    the whole label, and the agreement is held back."""
+    assert gate_replay_script.cut_label_refusal is stages.cut_label_refusal
+    asked: list[str | None] = []
+
+    def spy(*arguments: object, **named: object) -> str | None:
+        asked.append(stages.cut_label_refusal(*arguments, **named))  # type: ignore[arg-type]
+        return "held back"
+
+    monkeypatch.setattr(gate_replay_script, "cut_label_refusal", spy)
+    pair: list[list[str | None]] = [
+        ["bedrock-qwen3-vl-235b", '12"', None],
+        ["bedrock-nova-2-lite-taught", '12"', None],
+    ]
+    key, settings, scorecard = _setup(tmp_path, pair)
+    output = tmp_path / "data" / "replay.md"
+
+    assert _run(key, settings, scorecard, output) == 0
+
+    assert asked == [None], "asked once, for the key's one crop, which holds the whole label"
+    report = output.read_text(encoding="utf-8")
+    assert f"| {Guard.CUT.value} | 0 |" in report
+    assert f"| {Guard.NONE.value} | 1 |" in report

@@ -7,8 +7,9 @@ files; `--database` and `--scorecard` may each be given more than once. The draw
 geometry and its coloured markup only, by the stage's own code
 (`eval.experiments.agent_scorecard.ScorecardPage`, `extraction.stamp_text.coloured_text`), with
 every threshold taken from a `scripts/demo.sh`-style file — none has a default. **Whether a crop
-shows a GV mark is the production gate's own function** (`workflow.stages.gv_mark_in_crop`, #901),
-so the replay and the gate cannot disagree about it.
+shows a GV mark, and whether it cuts the label off, are the production gate's own functions**
+(`workflow.stages.gv_mark_in_crop`, #901; `workflow.stages.cut_label_refusal`, #919), so the replay
+and the gate cannot disagree about either.
 
     python scripts/gate_replay.py data/goldset/reading-key-2026-09-30 \\
         --key-dpi 600 --key-margin-pt 9 --reader-settings scripts/demo.sh --stage-dpi 300 \\
@@ -67,7 +68,7 @@ from extraction.agent.geometry import LabelReach
 from extraction.glyph_bands import FractionBarGeometry
 from extraction.reader import MissingSpace
 from extraction.stamp_text import coloured_text
-from workflow.stages import ColouredMarkup, gv_mark_in_crop
+from workflow.stages import ColouredMarkup, cut_label_refusal, gv_mark_in_crop
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine
@@ -163,15 +164,28 @@ def facts_of(
     markup: ColouredMarkup,
     box_px: tuple[int, int, int, int],
     margin_pt: Decimal,
+    reach: LabelReach,
 ) -> Facts:
-    """A region's geometry, by `workflow.stages.region_facts` through the scorecard's page, and
-    whether the crop production cuts round it shows a GV mark, by the gate's own function."""
+    """A region's geometry, by `workflow.stages.region_facts` through the scorecard's page; and
+    whether the crop production cuts round it shows a GV mark, or cuts the label off, by the gate's
+    own functions, handed what the stage hands them."""
     found, _ = page.facts(box_px, (), margin_pt)
+    left, top, right, bottom = box_px
+    polygon = page.polygon(box_px)
     return Facts(
-        cut_at_edge=found.cut_at_edge,
+        cut_at_edge=cut_label_refusal(
+            # The region's corners as the stage stores a polygon, and `page.facts` places one.
+            [[left, top], [right, top], [right, bottom], [left, bottom]],
+            rendered=page.rendered,
+            polygon=polygon,
+            transform=page.transform,
+            reach=reach,
+            page_glyphs=page.layers.glyph_paths,
+        )
+        is not None,
         sideways=found.rotation_degrees != 0,
         stacked=found.stacked_fraction,
-        gv_mark=gv_mark_in_crop(page.polygon(box_px), page.rendered, markup),
+        gv_mark=gv_mark_in_crop(polygon, page.rendered, markup),
     )
 
 
@@ -302,7 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         def geometry_of(page_index: int, box: Box) -> Facts:
             return facts_of(
-                pages[page_index], markup[page_index], pixels(box, args.stage_dpi), margin
+                pages[page_index], markup[page_index], pixels(box, args.stage_dpi), margin, reach
             )
 
         key_facts = {
