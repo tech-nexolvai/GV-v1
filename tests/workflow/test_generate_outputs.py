@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from alembic import command
 from app.db.session import session_factory
 from app.models import OutputArtifact, OutputArtifactKind
+from app.models.verdicts import CheckRun
 from reports.findings_pdf import FINDINGS_PDF_MEDIA_TYPE
 from reports.spreadsheet import (
     FINDING_COLUMNS,
@@ -49,6 +50,7 @@ from tests.workflow.test_stages import (
     _publish_rulebook,
     _revision,
 )
+from workflow.changed_values import UNAVAILABLE, changed_values_for_revision
 from workflow.findings_composer import (
     ComposerFinding,
     ModelComposition,
@@ -201,6 +203,53 @@ def test_a_reviewed_package_yields_a_persisted_workbook_and_branded_pdf(
     )
     assert "GRANITI + NEXOLV" in report_text
     assert "CT-DEPTH-001" in report_text
+
+
+def test_the_same_pinned_changed_values_appear_in_pdf_and_workbook(
+    session: Session, store: LocalStore
+) -> None:
+    revision = _checked(session, store)
+    summary = changed_values_for_revision(session, revision.id)
+    assert summary.status == "available"
+    DatabaseStages(store).generate_outputs(session, revision.id)
+    pdf_bytes = store.get(
+        _artifact(session, revision.id, OutputArtifactKind.FINDINGS_PDF).storage_key
+    ).read()
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf_bytes)).pages)
+    workbook_bytes = store.get(
+        _artifact(session, revision.id, OutputArtifactKind.FINDINGS_WORKBOOK).storage_key
+    ).read()
+    sheet = load_workbook(BytesIO(workbook_bytes))["Project Values"]
+    cell_text = "\n".join(str(cell.value) for row in sheet for cell in row if cell.value)
+    assert "PROJECT VALUES THAT DIFFER FROM GV STANDARDS" in pdf_text
+    for value in (*summary.company_standards_displaced, *summary.outstanding):
+        assert value in pdf_text
+        assert value in cell_text
+
+
+def test_legacy_run_exports_refuse_an_unstored_defaults_citation(
+    session: Session, store: LocalStore
+) -> None:
+    revision = _checked(session, store)
+    for finding in _live_findings(session, revision.id):
+        run = session.get(CheckRun, finding.check_run_id)
+        assert run is not None
+        run.defaults_set_id = None
+        run.defaults_canonical_json = None
+    session.flush()
+    assert changed_values_for_revision(session, revision.id).message == UNAVAILABLE
+    DatabaseStages(store).generate_outputs(session, revision.id)
+    pdf_bytes = store.get(
+        _artifact(session, revision.id, OutputArtifactKind.FINDINGS_PDF).storage_key
+    ).read()
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf_bytes)).pages)
+    workbook_bytes = store.get(
+        _artifact(session, revision.id, OutputArtifactKind.FINDINGS_WORKBOOK).storage_key
+    ).read()
+    sheet = load_workbook(BytesIO(workbook_bytes))["Project Values"]
+    cell_text = "\n".join(str(cell.value) for row in sheet for cell in row if cell.value)
+    assert UNAVAILABLE in pdf_text
+    assert UNAVAILABLE in cell_text
 
 
 def test_composed_findings_are_wired_1_to_1_into_the_end_to_end_workbook(

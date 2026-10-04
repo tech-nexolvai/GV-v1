@@ -101,6 +101,7 @@ from storage.store import ArtifactStore, StoredArtifact
 from verdict.finding import Finding
 from verdict.outcomes import Outcome, Severity, is_abstention
 from verdict.trace import CalculationTrace
+from workflow.changed_values import ChangedValues
 
 PDF_CONTENT_TYPE: Final = "application/pdf"
 
@@ -453,6 +454,7 @@ def render_redline(
     store: ArtifactStore,
     *,
     clearance: VendorClearance | None = None,
+    changed_values: ChangedValues | None = None,
 ) -> StoredArtifact:
     """Overlay the findings onto the source pages and store the result.
 
@@ -499,7 +501,9 @@ def render_redline(
     _check_pages_describe_the_pdf(package, reader)
 
     marks, unplaced, marked = _place(package, findings)
-    document = _compose(package, reader, marks, findings, marked, unplaced, clearance)
+    document = _compose(
+        package, reader, marks, findings, marked, unplaced, clearance, changed_values
+    )
 
     digest, _ = sha256_stream(BytesIO(document))
     key = content_key(f"redlines/{package.package_revision_id}/{mode.value}", digest, suffix=".pdf")
@@ -687,6 +691,7 @@ def _compose(
     marked: int,
     unplaced: Sequence[Unplaced],
     clearance: VendorClearance | None,
+    changed_values: ChangedValues | None,
 ) -> bytes:
     """Merge the overlays onto the original pages and append the summary pages.
 
@@ -709,7 +714,9 @@ def _compose(
             _append_overlay(writer, page, overlay, expanded)
 
     pages_with_marks = frozenset(index for index, page_marks in marks.items() if page_marks)
-    summary = _listing(package, findings, marked, unplaced, pages_with_marks, clearance)
+    summary = _listing(
+        package, findings, marked, unplaced, pages_with_marks, clearance, changed_values
+    )
     for listing in PdfReader(BytesIO(summary)).pages:
         writer.add_page(listing)
 
@@ -916,31 +923,20 @@ def _draw_mark(
     if style.dashed:
         canvas.setDash(4, 3)
 
-    path = canvas.beginPath()
-    path.moveTo(float(points[0].x), float(points[0].y))
-    for point in points[1:]:
-        path.lineTo(float(point.x), float(point.y))
-    path.close()
-
-    if style.fill is not None:
-        canvas.setFillColorRGB(*style.fill)
-        canvas.setFillAlpha(0.12)
-        canvas.drawPath(path, stroke=1, fill=1)
-        canvas.setFillAlpha(1.0)
-    else:
-        canvas.drawPath(path, stroke=1, fill=0)
     canvas.restoreState()
 
+    # The stored polygon may tightly bound the vendor's glyphs. Stroking that polygon
+    # crosses the number itself; the padded cloud alone is the visible region mark.
     _draw_cloud(canvas, points, style)
     _draw_label(canvas, mark, points, style, angle, index)
 
 
 def _draw_cloud(canvas: Canvas, points: Sequence[PdfPoint], style: _OutcomeStyle) -> None:
     """Fine vector scallops around the real evidence polygon, never a raster or opaque mask."""
-    left = min(float(point.x) for point in points) - 5
-    right = max(float(point.x) for point in points) + 5
-    bottom = min(float(point.y) for point in points) - 5
-    top = max(float(point.y) for point in points) + 5
+    left = min(float(point.x) for point in points) - 8
+    right = max(float(point.x) for point in points) + 8
+    bottom = min(float(point.y) for point in points) - 8
+    top = max(float(point.y) for point in points) + 8
     radius = 5.0
     canvas.saveState()
     canvas.setStrokeColorRGB(*style.stroke)
@@ -1099,6 +1095,7 @@ def _listing(
     unplaced: Sequence[Unplaced],
     pages_with_marks: frozenset[int],
     clearance: VendorClearance | None,
+    changed_values: ChangedValues | None,
 ) -> bytes:
     """Render the appended pages that account for every finding not on the drawing.
 
@@ -1144,6 +1141,18 @@ def _listing(
             "Every finding in this document was covered by that sign-off. A person accepted "
             "responsibility for this content; it is not raw engine output."
         )
+        line("")
+
+    if changed_values is not None:
+        line("Project values that differ from GV standards", font="Helvetica-Bold", size=12.0)
+        if changed_values.message is not None:
+            paragraph(changed_values.message)
+        else:
+            for value in changed_values.company_standards_displaced or ("None",):
+                paragraph(value)
+            line("Required values not set", font="Helvetica-Bold", size=12.0)
+            for value in changed_values.outstanding or ("None",):
+                paragraph(value)
         line("")
 
     _derived_section(findings, line, paragraph)

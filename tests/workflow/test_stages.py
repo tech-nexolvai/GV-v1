@@ -12,6 +12,7 @@ two. Both failures are silent, and both read as a clean package.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 from collections.abc import Iterator
@@ -41,6 +42,7 @@ from app.models import (
 from app.models.parameters import to_rows
 from app.verdicts.record import EvidenceMissing, record_finding
 from app.verdicts.rulebook import from_row
+from rules.overrides import override_report
 from rules.parameters import ParameterLayer, Provenance
 from rules.parameters import ParameterSet as InMemoryParameterSet
 from rules.parameters import ParameterValue as InMemoryParameterValue
@@ -52,6 +54,13 @@ from verdict.finding import Finding as DomainFinding
 from verdict.operands import EvidenceStatus, VerdictOperand
 from verdict.outcomes import Outcome, Severity
 from verdict.trace import CalculationTrace
+from workflow.changed_values import (
+    UNAVAILABLE,
+    _defaults,
+    _stored_layer,
+    changed_values_for_revision,
+    layered_parameter_sets,
+)
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -434,6 +443,160 @@ def test_the_findings_carry_the_parameter_sets_that_judged_them(session: Session
 
     assert "global" in versions
     assert versions["global"].startswith("sha256:")
+
+
+def test_new_check_runs_pin_verifiable_exact_default_bytes(session: Session) -> None:
+    revision = _revision(session)
+    _publish_rulebook(session)
+    DatabaseStages().run_checks(session, revision.id)
+
+    for finding in _live_findings(session, revision.id):
+        run = session.get(CheckRun, finding.check_run_id)
+        assert run is not None
+        assert run.defaults_canonical_json is not None
+        assert (
+            run.defaults_set_id
+            == "sha256:" + hashlib.sha256(run.defaults_canonical_json.encode("utf-8")).hexdigest()
+        )
+        assert finding.parameter_set_versions["global"] == run.defaults_set_id
+    assert changed_values_for_revision(session, revision.id).status == "available"
+
+
+def test_legacy_and_tampered_default_citations_never_yield_a_pinned_report(
+    session: Session,
+) -> None:
+    revision = _revision(session)
+    _publish_rulebook(session)
+    DatabaseStages().run_checks(session, revision.id)
+    runs = [
+        session.get(CheckRun, finding.check_run_id)
+        for finding in _live_findings(session, revision.id)
+    ]
+    for run in runs:
+        assert run is not None
+        run.defaults_set_id = "sha256:" + "0" * 64
+    session.flush()
+    assert changed_values_for_revision(session, revision.id).message == UNAVAILABLE
+
+    # Even with intact stored bytes, a finding citing a different setting batch
+    # cannot borrow the other findings' pinned report.
+    for run in runs:
+        assert run is not None
+        assert run.defaults_canonical_json is not None
+        run.defaults_set_id = (
+            "sha256:" + hashlib.sha256(run.defaults_canonical_json.encode("utf-8")).hexdigest()
+        )
+    findings = _live_findings(session, revision.id)
+    original_versions = findings[0].parameter_set_versions
+    findings[0].parameter_set_versions = {
+        **original_versions,
+        "global": "sha256:" + "1" * 64,
+    }
+    with session.no_autoflush:
+        assert changed_values_for_revision(session, revision.id).message == UNAVAILABLE
+    findings[0].parameter_set_versions = original_versions
+
+    for run in runs:
+        assert run is not None
+        run.defaults_set_id = None
+        run.defaults_canonical_json = None
+    session.flush()
+    assert changed_values_for_revision(session, revision.id).message == UNAVAILABLE
+
+
+def test_changed_values_reports_both_sections_empty_when_all_required_values_are_supplied(
+    session: Session,
+) -> None:
+    revision = _revision(session)
+    _publish_rulebook(session)
+    DatabaseStages().run_checks(session, revision.id)
+    missing = changed_values_for_revision(session, revision.id).outstanding
+    assert missing
+    package = session.get(Package, revision.package_id)
+    assert package is not None
+    setting = InMemoryParameterSet(
+        project_id=str(package.project_id),
+        layer=ParameterLayer.PROJECT,
+        version=1,
+        parameters={
+            name: InMemoryParameterValue(
+                value=Quantity(value=Fraction(7), unit=Unit.INCH),
+                provenance=Provenance.MEASURED,
+                set_by="synthetic test reviewer",
+                set_at=utc_now(),
+            )
+            for name in missing
+        },
+    )
+    row, values = to_rows(setting)
+    session.add(row)
+    session.add_all(values)
+    session.flush()
+
+    DatabaseStages().run_checks(session, revision.id)
+    summary = changed_values_for_revision(session, revision.id)
+    assert summary.status == "available"
+    assert summary.company_standards_displaced == ()
+    assert summary.outstanding == ()
+
+
+def test_changed_company_standard_uses_pinned_project_version_not_a_later_one(
+    session: Session,
+) -> None:
+    revision = _revision(session)
+    _publish_rulebook(session)
+    package = session.get(Package, revision.package_id)
+    assert package is not None
+
+    def write_setting(version: int, synthetic_value: int) -> None:
+        selected = InMemoryParameterSet(
+            project_id=str(package.project_id),
+            layer=ParameterLayer.PROJECT,
+            version=version,
+            parameters={
+                "front_offset_required": InMemoryParameterValue(
+                    value=Quantity(value=Fraction(synthetic_value), unit=Unit.INCH),
+                    provenance=Provenance.MEASURED,
+                    set_by="synthetic test reviewer",
+                    set_at=utc_now(),
+                )
+            },
+        )
+        row, values = to_rows(selected)
+        session.add(row)
+        session.add_all(values)
+        session.flush()
+
+    write_setting(1, 7)
+    DatabaseStages().run_checks(session, revision.id)
+    pinned = changed_values_for_revision(session, revision.id)
+    assert pinned.status == "available"
+    assert len(pinned.company_standards_displaced) == 1
+    assert "front_offset_required" in pinned.company_standards_displaced[0]
+    live = _live_findings(session, revision.id)
+    first_run = session.get(CheckRun, live[0].check_run_id)
+    assert first_run is not None
+    assert first_run.defaults_canonical_json is not None
+    assert first_run.defaults_set_id is not None
+    defaults = _defaults(first_run.defaults_canonical_json, first_run.defaults_set_id)
+    cited = live[0].parameter_set_versions
+    layers = tuple(
+        _stored_layer(session, set_id)
+        for name, set_id in cited.items()
+        if name != "global" or set_id != defaults.set_id
+    )
+    snapshots = {
+        run.rule_snapshot_id: from_row(session.get(RuleSnapshot, run.rule_snapshot_id)).rule
+        for finding in live
+        if (run := session.get(CheckRun, finding.check_run_id)) is not None
+    }
+    direct = override_report(snapshots.values(), *layered_parameter_sets(defaults, layers))
+    assert pinned.company_standards_displaced == tuple(
+        value.explain() for value in direct.company_standards_displaced
+    )
+    assert pinned.outstanding == direct.outstanding
+    write_setting(2, 8)
+    assert changed_values_for_revision(session, revision.id) == pinned
 
 
 def _findings_by_rule(session: Session, revision_id: UUID) -> dict[str, Finding]:

@@ -58,6 +58,7 @@ from storage.store import StoredArtifact
 from verdict.finding import Finding
 from verdict.outcomes import Outcome, Severity
 from verdict.trace import CalculationTrace, TracedOperand
+from workflow.changed_values import UNAVAILABLE, ChangedValues
 
 DOCUMENT: Final = UUID("11111111-1111-1111-1111-111111111111")
 REVISION: Final = UUID("22222222-2222-2222-2222-222222222222")
@@ -231,6 +232,21 @@ def _read_back(store_root: Path, key: str) -> list[tuple[str, int]]:
     """
     with LocalStore(store_root).get(key) as handle:
         return [(page.extract_text(), page.rotation % 360) for page in PdfReader(handle).pages]
+
+
+def test_changed_values_refusal_is_on_the_redline_summary_not_the_drawing(
+    tmp_path: Path,
+) -> None:
+    artifact = render_redline(
+        _package(),
+        [_finding(refs=(_reference(),))],
+        ReportMode.INTERNAL,
+        LocalStore(tmp_path),
+        changed_values=ChangedValues("unavailable", UNAVAILABLE, (), ()),
+    )
+    pages = _read_back(tmp_path, artifact.key)
+    assert UNAVAILABLE in " ".join(" ".join(text.split()) for text, _ in pages[1:])
+    assert UNAVAILABLE not in pages[0][0]
 
 
 def _content_stream(store_root: Path, key: str, index: int = 0) -> str:
@@ -413,6 +429,9 @@ def test_a_placed_finding_has_a_cloud_and_external_stored_fact_note(
         ]
         assert OUTCOME_STYLES[outcome].stroke in colours
         assert sum(operator == b"c" for _, operator in operations) > 8
+        # The evidence polygon can be the glyph box itself. A straight outline
+        # across that box would obscure the vendor's number.
+        assert not any(operator == b"l" for _, operator in operations)
         assert any(operator == b"d" for _, operator in operations) is OUTCOME_STYLES[outcome].dashed
 
 
@@ -553,9 +572,12 @@ def test_the_mark_reaches_the_page_at_the_coordinates_the_transform_gives(
 
     expected = polygon_pdf_points(_polygon(), _transform(rotation))
     stream = _content_stream(tmp_path, artifact.key)
-    assert f"{expected[0].x} {expected[0].y} m" in stream
-    for point in expected[1:]:
-        assert f"{point.x} {point.y} l" in stream
+    # The cloud is padded away from the exact evidence polygon so its stroke
+    # cannot run through a tightly bounded dimension glyph.
+    cloud_left = int(min(point.x for point in expected)) - 8
+    cloud_top = int(max(point.y for point in expected)) + 8
+    assert f"{cloud_left + 5} {cloud_top} m" in stream
+    assert not any(f"{point.x} {point.y} l" in stream for point in expected)
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])

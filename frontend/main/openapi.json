@@ -691,6 +691,54 @@
         "title": "CandidatesOut",
         "type": "object"
       },
+      "ChangedValuesOut": {
+        "description": "One pinned check-run summary, or an explicit refusal to claim one.",
+        "properties": {
+          "company_standards_displaced": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Company Standards Displaced",
+            "type": "array"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "outstanding": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Outstanding",
+            "type": "array"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id",
+          "status",
+          "message",
+          "company_standards_displaced",
+          "outstanding"
+        ],
+        "title": "ChangedValuesOut",
+        "type": "object"
+      },
       "ChatModelChoice": {
         "additionalProperties": false,
         "description": "One selectable model: the exact Bedrock id, and the name a reviewer reads.",
@@ -6046,6 +6094,59 @@
         "summary": "View the mechanical crop behind an untyped AI reading",
         "tags": [
           "confirmations"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/changed-values": {
+      "get": {
+        "operationId": "get_changed_values_api_v1_projects__project_id__packages__package_id__changed_values_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangedValuesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read the changed values pinned to this package's current check run",
+        "tags": [
+          "findings"
         ]
       }
     },

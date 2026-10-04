@@ -5243,7 +5243,10 @@ class DatabaseStages:
             replace(finding, reviewer_summary=narratives[facts.key])
             for finding, facts in zip(stored_findings, composition_facts, strict=True)
         ]
-        workbook = write_stored_workbook(rendered_findings)
+        from workflow.changed_values import changed_values_for_revision
+
+        changed_values = changed_values_for_revision(session, package_revision_id)
+        workbook = write_stored_workbook(rendered_findings, changed_values=changed_values)
         revision = session.get(PackageRevision, package_revision_id)
         if revision is None:
             raise ValueError(f"package revision {package_revision_id} does not exist")
@@ -5256,6 +5259,7 @@ class DatabaseStages:
                 revision_number=revision.revision_number,
                 vendor=package.vendor,
                 findings=tuple(rendered_findings),
+                changed_values=changed_values,
             )
         )
         composition_status: dict[str, object] = {
@@ -5275,6 +5279,7 @@ class DatabaseStages:
                 (finding, run, definition.rule_id, snapshot.snapshot_id)
                 for finding, run, snapshot, definition in rows
             ),
+            changed_values=changed_values,
         )
 
         outputs = (
@@ -5407,6 +5412,8 @@ class DatabaseStages:
         defaults = declared_defaults(
             [snapshot.rule for snapshot in rules if snapshot is not None], when=utc_now()
         )
+        defaults_canonical_json = defaults.canonical_json()
+        defaults_set_id = defaults.set_id
         layers = _layered(defaults, stored_layers)
         cited = _cited_sets(defaults, stored_layers)
         resolved = resolve_all(*layers)
@@ -5483,6 +5490,8 @@ class DatabaseStages:
                             ),
                             operands={},
                             parameter_set_ids=cited,
+                            defaults_set_id=defaults_set_id,
+                            defaults_canonical_json=defaults_canonical_json,
                         )
                         written += 1
                     for scoped_subject in countertop_subjects:
@@ -5518,6 +5527,8 @@ class DatabaseStages:
                             finding=scoped_finding,
                             operands=scoped_evidence.operands.get(abstention.rule_id, {}),
                             parameter_set_ids=cited,
+                            defaults_set_id=defaults_set_id,
+                            defaults_canonical_json=defaults_canonical_json,
                             scope_item_id=scoped_subject.item_id,
                             scope_label=scoped_subject.label,
                         )
@@ -5529,6 +5540,8 @@ class DatabaseStages:
                     finding=_unresolved(snapshot, abstention),
                     operands={},
                     parameter_set_ids=cited,
+                    defaults_set_id=defaults_set_id,
+                    defaults_canonical_json=defaults_canonical_json,
                 )
                 written += 1
 
@@ -5568,6 +5581,8 @@ class DatabaseStages:
                         ),
                         operands={},
                         parameter_set_ids=cited,
+                        defaults_set_id=defaults_set_id,
+                        defaults_canonical_json=defaults_canonical_json,
                     )
                     written += 1
                 for subject in subjects:
@@ -5650,6 +5665,8 @@ class DatabaseStages:
                         finding=finding,
                         operands=supplied,
                         parameter_set_ids=cited,
+                        defaults_set_id=defaults_set_id,
+                        defaults_canonical_json=defaults_canonical_json,
                         missing=_declared_inputs(applicable.snapshot.rule),
                         scope_item_id=None if subject is None else subject.item_id,
                         scope_label=None if subject is None else subject.label,
@@ -5673,6 +5690,8 @@ class DatabaseStages:
                         ),
                         operands={},
                         parameter_set_ids=cited,
+                        defaults_set_id=defaults_set_id,
+                        defaults_canonical_json=defaults_canonical_json,
                     )
                     written += 1
                 for subject in countertop_subjects:
@@ -5773,6 +5792,8 @@ class DatabaseStages:
                         finding=finding,
                         operands=supplied,
                         parameter_set_ids=cited,
+                        defaults_set_id=defaults_set_id,
+                        defaults_canonical_json=defaults_canonical_json,
                         missing=_declared_inputs(width_snapshot.rule),
                         scope_item_id=subject.item_id,
                         scope_label=subject.label,
@@ -5822,16 +5843,9 @@ def _layered(defaults: ParameterSet, stored: Sequence[ParameterSet]) -> tuple[Pa
     The merged set is resolution's input, not a record: a finding cites the stored company set's own
     hash (`_cited_sets`), and the defaults beneath it are pinned by the rule snapshot it also cites.
     """
-    company = next((layer for layer in stored if layer.layer is defaults.layer), None)
-    if company is None:
-        return (defaults, *stored)
-    merged = ParameterSet(
-        project_id=company.project_id,
-        layer=company.layer,
-        version=company.version,
-        parameters={**defaults.parameters, **company.parameters},
-    )
-    return tuple(merged if layer is company else layer for layer in stored)
+    from workflow.changed_values import layered_parameter_sets
+
+    return layered_parameter_sets(defaults, tuple(stored))
 
 
 def _cited_sets(defaults: ParameterSet, stored: Sequence[ParameterSet]) -> dict[str, str]:

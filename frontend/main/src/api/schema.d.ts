@@ -304,6 +304,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/changed-values": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the changed values pinned to this package's current check run */
+        get: operations["get_changed_values_api_v1_projects__project_id__packages__package_id__changed_values_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/chat": {
         parameters: {
             query?: never;
@@ -1871,6 +1888,25 @@ export interface components {
             candidates: components["schemas"]["CandidateOut"][];
             /** Total */
             total: number;
+        };
+        /**
+         * ChangedValuesOut
+         * @description One pinned check-run summary, or an explicit refusal to claim one.
+         */
+        ChangedValuesOut: {
+            /** Company Standards Displaced */
+            company_standards_displaced: string[];
+            /** Message */
+            message: string | null;
+            /** Outstanding */
+            outstanding: string[];
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+            /** Status */
+            status: string;
         };
         /**
          * ChatModelChoice
@@ -4592,6 +4628,38 @@ export interface operations {
                 };
                 content: {
                     "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_changed_values_api_v1_projects__project_id__packages__package_id__changed_values_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangedValuesOut"];
                 };
             };
             /** @description Validation Error */

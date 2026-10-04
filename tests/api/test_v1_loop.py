@@ -349,10 +349,12 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     assert redline.status_code == 200, redline.text
     assert redline.headers["content-type"] == "application/pdf"
     assert redline.content.startswith(b"%PDF-"), "the evidence-grounded redline is not a PDF"
-    # This drawing-page label reaches the overlay only through the sealed VerdictInput and its
-    # typed canonical reading's stored page region — it proves the result is not a copied source.
+    # The placed label, external callout header and stored-fact note all name this
+    # same finding. The source drawing did not contain any of them.
     drawing_page_text = PdfReader(io.BytesIO(redline.content)).pages[0].extract_text() or ""
-    assert drawing_page_text.count("CT-DEPTH-001") == 1, drawing_page_text
+    assert "02 · CT-DEPTH-001 · PASS" in drawing_page_text
+    assert "02  CT-DEPTH-001 · PASS" in drawing_page_text
+    assert "CT-DEPTH-001 · PASS." in drawing_page_text
 
     # The newest, which is what the endpoint serves. Two reports exist here and both are real: the
     # pipeline wrote one before the reading had a meaning, and the reviewer's confirmation made the

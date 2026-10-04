@@ -102,6 +102,8 @@ def record_finding(
     finding: Finding,
     operands: Mapping[str, VerdictOperand],
     parameter_set_ids: Mapping[str, str],
+    defaults_set_id: str | None = None,
+    defaults_canonical_json: str | None = None,
     missing: Mapping[str, str] | None = None,
     scope_item_id: UUID | None = None,
     scope_label: str | None = None,
@@ -173,6 +175,8 @@ def record_finding(
         package_revision_id=package_revision_id,
         rule_snapshot_id=snapshot_row.id,
         engine_version=finding.engine_version,
+        defaults_set_id=defaults_set_id,
+        defaults_canonical_json=defaults_canonical_json,
     )
     session.add(run)
     session.flush()
