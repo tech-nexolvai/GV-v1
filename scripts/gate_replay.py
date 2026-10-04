@@ -65,6 +65,7 @@ from eval.experiments.gate_replay import (
 )
 from extraction.agent.geometry import LabelReach
 from extraction.glyph_bands import FractionBarGeometry
+from extraction.reader import MissingSpace
 from extraction.stamp_text import coloured_text
 from workflow.stages import ColouredMarkup, gv_mark_in_crop
 
@@ -74,6 +75,10 @@ if TYPE_CHECKING:
 #: The reading agent's label lengths, which `scripts/glyph_inventory.READER_SETTINGS` does not read.
 #: Required like the rest: they decide where a label ends, so whether a crop cut it.
 AGENT_SETTINGS: Final = ("GV_AGENT_LABEL_GAP_PT", "GV_AGENT_MAX_LABEL_PT")
+
+#: The text reader's setting (#912), which `scripts/glyph_inventory.READER_SETTINGS` does not read
+#: either: the coloured text a crop may show is read by the reader, and it has no default.
+TEXT_READER_SETTINGS: Final = ("GV_READER_MISSING_SPACE_HEIGHTS",)
 
 #: Every stored reading of one drawing, with where it was recorded. Selects nothing it does not use.
 ROWS_SQL: Final = """
@@ -95,7 +100,7 @@ VERSIONS_SQL: Final = """
 
 
 def read_settings(path: Path) -> dict[str, str]:
-    """The reader settings and the agent's label lengths; every one required."""
+    """The reader settings, the text reader's and the agent's label lengths; every one required."""
     from scripts.glyph_inventory import InventoryError, read_reader_settings
 
     try:
@@ -103,7 +108,7 @@ def read_settings(path: Path) -> dict[str, str]:
     except InventoryError as error:
         raise ReplayError(str(error)) from error
     text = path.read_text(encoding="utf-8")
-    for name in AGENT_SETTINGS:
+    for name in (*AGENT_SETTINGS, *TEXT_READER_SETTINGS):
         match = re.search(rf"^\s*{name}=(\S+)", text, flags=re.MULTILINE)
         if match is None:
             raise ReplayError(f"{path} does not state {name}, and it has no default")
@@ -126,14 +131,28 @@ def _geometry(reader: dict[str, str]) -> PageGeometry:
             character_gap_pt=Decimal(reader["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
             turned_aspect_min=Decimal(reader["GV_READER_FRACTION_TURNED_ASPECT_MIN"]),
         ),
+        missing_space=MissingSpace(gap_heights=Decimal(reader["GV_READER_MISSING_SPACE_HEIGHTS"])),
     )
 
 
-def markup_of(pdf: bytes, page: ScorecardPage, *, version_id: UUID, dpi: int) -> ColouredMarkup:
+def markup_of(
+    pdf: bytes,
+    page: ScorecardPage,
+    *,
+    version_id: UUID,
+    dpi: int,
+    missing_space: MissingSpace,
+) -> ColouredMarkup:
     """The page's markup drawn in colour, gathered as the stage gathers it (`_coloured_markup`):
     the coloured text in its pasted drawings, and the glyph paths its layers read."""
     return ColouredMarkup(
-        text=coloured_text(pdf, page.page.index, document_version_id=version_id, dpi=dpi),
+        text=coloured_text(
+            pdf,
+            page.page.index,
+            document_version_id=version_id,
+            dpi=dpi,
+            missing_space=missing_space,
+        ),
         paths=page.layers.glyph_paths,
         transform=page.transform,
     )
@@ -269,8 +288,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             geometry=geometry,
             reach=reach,
         )
+        missing_space = geometry.missing_space
         markup = {
-            index: markup_of(pdf, page, version_id=version_id, dpi=args.stage_dpi)
+            index: markup_of(
+                pdf,
+                page,
+                version_id=version_id,
+                dpi=args.stage_dpi,
+                missing_space=missing_space,
+            )
             for index, page in pages.items()
         }
 

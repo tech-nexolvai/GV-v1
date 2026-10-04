@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -42,11 +43,29 @@ def test_the_shipped_price_file_is_usd_dated_and_covers_every_reader() -> None:
     shipped = load_model_rates(SHIPPED)
 
     assert shipped.currency == "USD"
-    assert shipped.retrieved == date(2026, 9, 30)
+    assert shipped.retrieved == date(2026, 10, 4)
     assert "price list" in shipped.source
-    for reader in VISION_READERS:
-        if reader.coordinate_measured:
-            assert shipped.rate_for(reader.model_id) is not None, reader.model_id
+    # Every reader a deployment or the agent can run: a measured space, or no rectangle asked (#907).
+    runnable = [reader for reader in VISION_READERS if reader.answers_readably]
+    assert "qwen.qwen3-vl-235b-a22b" in {reader.model_id for reader in runnable}
+    for reader in runnable:
+        assert shipped.rate_for(reader.model_id) is not None, reader.model_id
+
+
+def test_qwen_is_priced_at_aws_s_published_on_demand_rate() -> None:
+    """**#907.** Qwen3-VL-235B in us-east-1, standard on-demand, from AWS's public price list
+    (usage types `USE1-Qwen3-VL-235B-A22B-input-tokens` and `-output-tokens`, read 2026-10-04):
+    $0.00053 per 1,000 input tokens and $0.00266 per 1,000 output tokens. A trial call of 412 in
+    and 8 out costs 218.36 + 21.28 = 239.64 millionths, rounded half-up once to 240."""
+    shipped = load_model_rates(SHIPPED)
+
+    rate = shipped.rate_for("qwen.qwen3-vl-235b-a22b")
+    assert rate is not None
+    assert (rate.input_per_1k_tokens, rate.output_per_1k_tokens) == (
+        Decimal("0.00053"),
+        Decimal("0.00266"),
+    )
+    assert call_cost_micros(shipped, "qwen.qwen3-vl-235b-a22b", 412, 8) == 240
 
 
 def test_the_cost_is_exact_and_rounded_once() -> None:

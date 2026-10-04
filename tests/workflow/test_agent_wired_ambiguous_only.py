@@ -57,7 +57,7 @@ from extraction.models.nova import (
 )
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from units.measurement import Unit
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
@@ -258,6 +258,7 @@ def test_trigger_permitted_raw_region_runs_agent_and_records_only_a_candidate(
         bounded_agent=_graph(
             recorder, ocr_result=RetryableToolFailure("unused"), vlm_result=_agent_candidate()
         ),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     runs = _candidate_runs(session)
@@ -299,6 +300,7 @@ def test_conflicting_fixed_evidence_never_reaches_the_agent(
         store,
         vision_readers=(reader,),
         bounded_agent=_graph(recorder, ocr_result=_agent_candidate()),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     rows = _candidate_runs(session)
@@ -334,6 +336,7 @@ def test_graph_bounds_are_enforced_when_workflow_supplies_too_many_actions(
         store,
         bounded_agent=_graph(recorder, ocr_result=RetryableToolFailure("still unreadable")),
         bounded_agent_planner=too_many_ocr,  # type: ignore[arg-type]
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     assert [call.call_id for call in recorder.calls] == ["ocr-0", "ocr-1"]
@@ -371,6 +374,7 @@ def _run_on_text(
         bounded_agent=_graph(
             recorder, ocr_result=RetryableToolFailure("unused"), vlm_result=_agent_candidate()
         ),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
     return recorder, results[0].payload
 

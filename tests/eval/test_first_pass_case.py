@@ -39,6 +39,7 @@ from rules.parameters import ParameterValue as InMemoryParameterValue
 from rules.schema import Quantity
 from scripts.evaluate_goldset import ANSWER_KEY, _pdf, _private_schema, _run_pipeline, load_package
 from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
+from tests.extraction.test_reader import MISSING_SPACE
 from units.measurement import Unit
 from workflow.association import AssociationSettings
 
@@ -114,6 +115,7 @@ def _run_case(database_url: str, package: Path) -> tuple[Any, str]:
         dpi=150,
         association=_association(),
         localized_ocr=None,
+        missing_space=MISSING_SPACE,
         vendor_stamps_only=False,
         seed_project_parameters=_seed_depth_parameters,
         project_id=PROJECT_ID,

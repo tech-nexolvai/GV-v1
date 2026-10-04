@@ -49,6 +49,7 @@ from app.models import (
 from evidence.crop import BoxCropSpec, crop_pixel_box, decode_rgb_png, generate_crop
 from extraction.rasterise import render_page
 from storage.local import LocalStore
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import SETTINGS
 from tests.workflow.test_association import _revision as _stored_revision
 from tests.workflow.test_markup_route import _SilentOcr
@@ -90,6 +91,9 @@ def _stages(store: LocalStore, pictures: PartPictureSettings | None = PICTURES) 
         dpi=150,
         ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
         association=SETTINGS,
+        # The reader's own setting (#912): the page stage reads the sheet's text before it suggests
+        # any part. Cutting a picture reads no text and does not use it.
+        missing_space=MISSING_SPACE,
         part_pictures=pictures,
     )
 

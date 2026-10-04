@@ -54,7 +54,7 @@ from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Prove
 from rules.schema import Quantity, Rule
 from storage.local import LocalStore
 from tests.evidence.test_bridge import _upgrade
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from tests.workflow.test_stages import RULEBOOK, _publish_rulebook
 from units.measurement import Measurement, Unit
 from verdict.operations import POSITION_SENSITIVE_OPERATIONS
@@ -312,7 +312,7 @@ def _swapped_and_labelled(session: Session, store: LocalStore) -> PackageRevisio
         store,
         {"architectural": _two_cabinets('24"', '36"'), "shop": _two_cabinets('36"', '24"')},
     )
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
     _label(session, revision, "architectural", '24"')
     _label(session, revision, "architectural", '36"')
     _label(session, revision, "shop", '24"')
@@ -328,7 +328,7 @@ def test_two_swapped_cabinets_labelled_in_another_order_never_pass(
     revision = _swapped_and_labelled(session, store)
     _publish_rulebook(session)
 
-    DatabaseStages(store).run_checks(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).run_checks(session, revision.id)
 
     finding = _finding(session, revision, RULE)
     assert finding.outcome == Outcome.NOT_FOUND.value
@@ -429,7 +429,7 @@ def _swapped_run_labelled(session: Session, store: LocalStore) -> PackageRevisio
             "shop": _run('1"', '36"', '24"', '2"'),
         },
     )
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
     _label(session, revision, "architectural", '63"', "CT001")
     for kind in ("architectural", "shop"):
         _label(session, revision, kind, '1"', "filler_width")
@@ -452,7 +452,7 @@ def test_a_run_with_two_cabinets_swapped_never_passes_the_filler_check(
     _form(session, revision)
     _publish_rulebook(session)
 
-    DatabaseStages(store).run_checks(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).run_checks(session, revision.id)
 
     finding = _finding(session, revision, FILLER_RULE)
     assert finding.outcome == Outcome.NOT_FOUND.value, finding.reason
@@ -476,7 +476,7 @@ def test_the_same_swap_typed_on_the_form_in_wall_order_fails(
     )
     _publish_rulebook(session)
 
-    DatabaseStages(store).run_checks(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).run_checks(session, revision.id)
 
     finding = _finding(session, revision, FILLER_RULE)
     assert finding.outcome == Outcome.FAIL.value, finding.reason

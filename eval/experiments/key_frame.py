@@ -99,6 +99,7 @@ class Layout(StrEnum):
     STACKED_FRACTION = "stacked fraction"
     TWO_LINES = "millimetres over inches"
     FRAGMENT = "piece of a longer label"
+    MISSING_SPACE = "inches with a space left out"
 
 
 class Kind(StrEnum):

@@ -36,6 +36,7 @@ from scripts.author_reading_answer_key import (
 )
 from tests.eval.test_author_reading_answer_key import SETTINGS, _glyph_clusters
 from tests.extraction.test_annotations import _free_text, _pdf, _stamp
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.extraction.test_stamp_text import _text_appearance
 from workflow.config import READER_RASTER_DPI
 
@@ -48,6 +49,7 @@ FRAME_SETTINGS: Final = {
     "GV_READER_AMBIGUITY_MARGIN": "0.005",
     "GV_AGENT_LABEL_GAP_PT": "4",
     "GV_AGENT_MAX_LABEL_PT": "40",
+    "GV_READER_MISSING_SPACE_HEIGHTS": str(MISSING_SPACE.gap_heights),
 }
 
 #: What each drawing prints, in the same three places: upright, sideways, upright. The second set
@@ -332,7 +334,11 @@ def _crop_printing(folder: Path, drawing: Path, text: str) -> str:
     (run,) = (
         item
         for item in read_stamp_text(
-            drawing.read_bytes(), 0, document_version_id=uuid4(), dpi=VISION_CROP_DPI
+            drawing.read_bytes(),
+            0,
+            document_version_id=uuid4(),
+            dpi=VISION_CROP_DPI,
+            missing_space=MISSING_SPACE,
         ).contents.texts
         if item.text == text
     )
@@ -357,8 +363,9 @@ def test_the_look_again_list_names_the_crop_and_never_a_value(
         row["vendor_value"] = '25"' if row["crop_id"] == crop_id else ""
     _write_rows(out, rows)
     capsys.readouterr()
+    settings = _settings_file(drawing.parent)
 
-    assert main(["check", str(out), "--pdf", str(drawing)]) == 0
+    assert main(["check", str(out), "--pdf", str(drawing), "--reader-settings", str(settings)]) == 0
 
     printed = capsys.readouterr().out
     assert crop_id in printed and "the drawing's own printed text" in printed
@@ -367,8 +374,26 @@ def test_the_look_again_list_names_the_crop_and_never_a_value(
     for row in rows:
         row["vendor_value"] = '24"' if row["crop_id"] == crop_id else ""
     _write_rows(out, rows)
-    assert main(["check", str(out), "--pdf", str(drawing)]) == 0
+    assert main(["check", str(out), "--pdf", str(drawing), "--reader-settings", str(settings)]) == 0
     assert "Nothing to look at again" in capsys.readouterr().out
+
+
+def test_the_look_again_check_reads_with_the_stated_reader_setting(
+    drawing: Path, out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**No default** (#912). The check reads the drawing's printed text with the reader, and a
+    settings file that does not state its missing-space setting is refused, by name."""
+    assert _sample(drawing, out, quotas={**QUOTAS, "plain": 6}) == 0
+    without = {
+        name: value
+        for name, value in FRAME_SETTINGS.items()
+        if name != "GV_READER_MISSING_SPACE_HEIGHTS"
+    }
+    settings = _settings_file(drawing.parent, without)
+    capsys.readouterr()
+
+    assert main(["check", str(out), "--pdf", str(drawing), "--reader-settings", str(settings)]) == 2
+    assert "GV_READER_MISSING_SPACE_HEIGHTS" in capsys.readouterr().err
 
 
 # --- the new columns, round trip ---------------------------------------------------------------
@@ -482,7 +507,7 @@ def test_both_scripts_take_several_keys() -> None:
         [
             *("--key", "a", "--key", "b", "--reader-settings", "demo.sh", "--stage-dpi", "300"),
             *("--sharper-dpi", "450", "--label-gap-pt", "4", "--max-label-pt", "40"),
-            *("--max-steps", "6", "--output", "out.md"),
+            *("--max-steps", "6", "--budget-usd", "0.50", "--output", "out.md"),
         ]
     )
 

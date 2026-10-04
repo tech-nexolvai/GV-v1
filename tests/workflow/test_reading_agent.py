@@ -46,6 +46,7 @@ from storage.local import LocalStore
 from tests.extraction.models.test_validation import THREE_QUARTERS
 from tests.extraction.test_annotations import _appearance, _pdf, _stamp
 from tests.extraction.test_glyph_reader import _row
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from tests.workflow.test_glyph_route import _content
 from units.measurement import Unit
@@ -460,6 +461,7 @@ def _stages(
         localized_ocr=LOCALIZED,
         vision_readers=readers,
         reading_agent=agent,
+        missing_space=MISSING_SPACE,
     )
 
 

@@ -33,6 +33,7 @@ from extraction.glyph_reader import ReaderSettings, TemplateSet, described
 from storage.local import LocalStore
 from tests.extraction.test_annotations import _appearance, _pdf, _stamp
 from tests.extraction.test_glyph_reader import SHAPE, _row
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from tests.workflow.test_markup_route import _SilentOcr
 from workflow.glyph_route import (
@@ -133,6 +134,7 @@ def _stages(
         localized_ocr=LOCALIZED,
         vision_readers=vision_readers,  # type: ignore[arg-type]
         glyph_route=route,
+        missing_space=MISSING_SPACE,
     )
 
 

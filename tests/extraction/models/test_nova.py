@@ -781,17 +781,24 @@ def test_claude_is_configured_and_switched_off_until_its_account_form_lands() ->
 
 
 def test_the_default_readers_are_the_ones_this_account_can_invoke(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """The recommended pair (#641, #751): one reader from each vendor that answers at all."""
+    """**The pair since #907** (the admin's decision of 2026-10-04, switched on after its
+    production measurement): Qwen3-VL and Nova 2 Lite as the trial measured it — two vendors.
+    Ministral 3B left the pair; Nova 2 Lite on the tool path stays the reading agent's reader."""
+    from extraction.models.nova import NOVA_2_LITE_TAUGHT_EXTRACTOR, QWEN3_VL_235B_EXTRACTOR
+
     monkeypatch.delenv("GV_BEDROCK_VISION_READERS", raising=False)
 
     configs = vision_configs_from_environment()
 
-    assert [config.model_id for config in configs] == [
-        MINISTRAL_3_3B_MODEL_ID,
-        NOVA_2_LITE_MODEL_ID,
+    assert [config.extractor for config in configs] == [
+        QWEN3_VL_235B_EXTRACTOR,
+        NOVA_2_LITE_TAUGHT_EXTRACTOR,
     ]
+    assert MINISTRAL_3_3B_MODEL_ID not in {config.model_id for config in configs}
     assert NOVA_PRO_MODEL_ID not in {config.model_id for config in configs}
     assert CLAUDE_HAIKU_4_5_MODEL_ID not in {config.model_id for config in configs}
+    ministral = next(r for r in VISION_READERS if r.model_id == MINISTRAL_3_3B_MODEL_ID)
+    assert ministral.disabled_reason is not None and "#907" in ministral.disabled_reason
 
 
 def test_a_deployment_selects_its_readers_by_key(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -817,11 +824,11 @@ def test_an_unknown_reader_key_is_refused_by_name(monkeypatch) -> None:  # type:
 def test_each_reader_carries_its_own_model_override(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Derived from the key, so a rename cannot leave an override quietly not applying."""
     monkeypatch.delenv("GV_BEDROCK_VISION_READERS", raising=False)
-    monkeypatch.setenv("GV_BEDROCK_MINISTRAL_3_3B_MODEL", "mistral.something-else")
+    monkeypatch.setenv("GV_BEDROCK_QWEN3_VL_235B_MODEL", "qwen.something-else")
 
     configs = vision_configs_from_environment()
 
-    assert "mistral.something-else" in {config.model_id for config in configs}
+    assert "qwen.something-else" in {config.model_id for config in configs}
 
 
 # ---------------------------------------------------------------------------

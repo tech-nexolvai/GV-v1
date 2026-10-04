@@ -24,6 +24,7 @@ the notation GV's reviewers write in their markup.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Final
 
 from units.dual import DualDimensionParseError, parse_dual
@@ -68,10 +69,52 @@ _UNIT_WORD_BEFORE_BRACKET: Final = re.compile(r"^(\s*\d+)\s*mm\s*(\[)", re.IGNOR
 _HYPHENATED_FRACTION: Final = re.compile(r"(?<!')\b(?P<whole>\d+)-(?P<fraction>\d+/\d+)")
 
 
+#: The fraction slash, `⁄` (U+2044): the slash Unicode writes between a fraction's numerator and its
+#: denominator. It means `/` and nothing else.
+_FRACTION_SLASH: Final = "⁄"
+
+
 def _marks(token: str) -> str:
     for spelling, canonical in _MARK_SPELLINGS:
         token = token.replace(spelling, canonical)
-    return token
+    return _fraction_symbols(token)
+
+
+def _fraction_symbols(token: str) -> str:
+    """`23½"` as `23 1/2"`, and the fraction slash as `/` (#907). Nothing else.
+
+    **A model returns these.** Asked for a stacked or a small fraction, a vision reader writes the one
+    character `½` or `¾`, or the fraction slash between two digits, and before this the reading had
+    no value: a right reading lost to formatting.
+
+    **Taken from Unicode, never typed out here.** A vulgar fraction is the character whose
+    decomposition Unicode tags `<fraction>`, and that decomposition *is* its numerator, the fraction
+    slash and its denominator — `½` is `1⁄2` — so the digits written in its place are the standard's
+    own, and no table here can hold a wrong one. A space goes in front only where a digit comes
+    before it, so `23½` is twenty-three and a half and `½` alone is a half, which the shape check
+    then refuses as a bare fraction, as it refuses `1/2"`.
+
+    **Only these two.** No other notation is rewritten: a LaTeX `\\frac{3}{8}` stays as it was
+    written and is refused as not a dimension. A rule here that read markup would be a parser of a
+    second language, and a reading in it is one the reader was not asked for.
+    """
+    if not any(
+        character == _FRACTION_SLASH
+        or unicodedata.decomposition(character).startswith("<fraction>")
+        for character in token
+    ):
+        return token
+    written: list[str] = []
+    for character in token:
+        if unicodedata.decomposition(character).startswith("<fraction>"):
+            parts = unicodedata.normalize("NFKD", character).replace(_FRACTION_SLASH, "/")
+            after_a_digit = bool(written) and written[-1][-1:].isdigit()
+            written.append(f" {parts}" if after_a_digit else parts)
+        elif character == _FRACTION_SLASH:
+            written.append("/")
+        else:
+            written.append(character)
+    return "".join(written)
 
 
 def is_compound(token: str) -> bool:

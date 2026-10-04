@@ -35,6 +35,7 @@ from extraction.models.nova import (
     NovaRequest,
 )
 from storage.local import LocalStore
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import (
     SETTINGS,
     VISION_SOURCE_REGIONS,
@@ -129,6 +130,7 @@ def _stages(store: LocalStore, readers: tuple[_Reader, ...], gate: str | None) -
         ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
         vision_readers=readers,
         vision_gate=gate,
+        missing_space=MISSING_SPACE,
     )
 
 
