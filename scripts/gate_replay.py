@@ -5,11 +5,12 @@
 from runs' databases, each read inside a read-only transaction, and from agent scorecard working
 files; `--database` and `--scorecard` may each be given more than once. The drawing is read for its
 geometry and its coloured markup only, by the stage's own code
-(`eval.experiments.agent_scorecard.ScorecardPage`, `extraction.stamp_text.coloured_text`), with
-every threshold taken from a `scripts/demo.sh`-style file — none has a default. **Whether a crop
-shows a GV mark, and whether it cuts the label off, are the production gate's own functions**
-(`workflow.stages.gv_mark_in_crop`, #901; `workflow.stages.cut_label_refusal`, #919), so the replay
-and the gate cannot disagree about either.
+(`eval.experiments.agent_scorecard.ScorecardPage`, `workflow.stages.coloured_markup`), with every
+threshold taken from a `scripts/demo.sh`-style file — none has a default. **Whether a crop shows a
+GV mark, and whether it cuts the label off, are the production gate's own functions**
+(`workflow.stages.gv_mark_in_crop`, #901, #929; `workflow.stages.cut_label_refusal`, #919), over
+the markup the stage's own function gathers, so the replay and the gate cannot disagree about
+either.
 
     python scripts/gate_replay.py data/goldset/reading-key-2026-09-30 \\
         --key-dpi 600 --key-margin-pt 9 --reader-settings scripts/demo.sh --stage-dpi 300 \\
@@ -67,8 +68,7 @@ from eval.experiments.gate_replay import (
 from extraction.agent.geometry import LabelReach
 from extraction.glyph_bands import FractionBarGeometry
 from extraction.reader import MissingSpace
-from extraction.stamp_text import coloured_text
-from workflow.stages import ColouredMarkup, cut_label_refusal, gv_mark_in_crop
+from workflow.stages import ColouredMarkup, coloured_markup, cut_label_refusal, gv_mark_in_crop
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine
@@ -144,18 +144,17 @@ def markup_of(
     dpi: int,
     missing_space: MissingSpace,
 ) -> ColouredMarkup:
-    """The page's markup drawn in colour, gathered as the stage gathers it (`_coloured_markup`):
-    the coloured text in its pasted drawings, and the glyph paths its layers read."""
-    return ColouredMarkup(
-        text=coloured_text(
-            pdf,
-            page.page.index,
-            document_version_id=version_id,
-            dpi=dpi,
-            missing_space=missing_space,
-        ),
-        paths=page.layers.glyph_paths,
+    """The page's markup drawn in colour and the stamps pasted onto its drawings, gathered by the
+    stage's own function (`workflow.stages.coloured_markup`, #929) from what the stage hands it: the
+    page's transform and the glyph paths its layers read."""
+    return coloured_markup(
+        pdf,
+        page.page.index,
+        document_version_id=version_id,
+        dpi=dpi,
+        missing_space=missing_space,
         transform=page.transform,
+        glyph_paths=page.layers.glyph_paths,
     )
 
 

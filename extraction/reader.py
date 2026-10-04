@@ -126,6 +126,8 @@ __all__ = [
     "SetAsideReason",
     "TextItem",
     "UnreadablePdf",
+    "page_frame",
+    "pixel_placement",
     "read_page_contents",
     "read_pages",
 ]
@@ -540,14 +542,7 @@ def read_page_contents(
                     f"page {page_index} is beyond the {len(document.pages)} pages in this document"
                 ) from error
 
-            media_box, crop_box = page_boxes_in_pdf_space(page)
-            transform = PageTransform(
-                dpi=dpi,
-                rotation=_rotation(page.rotation),
-                media_box=media_box,
-                crop_box=crop_box,
-            )
-            height = _decimal(page.height)
+            transform, height = page_frame(page, dpi)
             if keep_char is not None or keep_path is not None:
                 page = page.filter(lambda obj: _kept(obj, keep_char, keep_path))
             # **Text printed twice in one place is read once.** Measured on `AI_Set_2`: a label drawn
@@ -651,6 +646,31 @@ def read_page_contents(
         ),
         set_aside=labels,
     )
+
+
+def page_frame(page: Any, dpi: int) -> tuple[PageTransform, Decimal]:
+    """A pdfplumber page's transform at `dpi`, and the height its `top` is measured down from: the
+    frame `read_page_contents` places every text run in."""
+    media_box, crop_box = page_boxes_in_pdf_space(page)
+    transform = PageTransform(
+        dpi=dpi,
+        rotation=_rotation(page.rotation),
+        media_box=media_box,
+        crop_box=crop_box,
+    )
+    return transform, _decimal(page.height)
+
+
+def pixel_placement(page: Any, dpi: int) -> Callable[[object, object], ImagePoint]:
+    """Where a pdfplumber `(x, top)` on `page` lands in its pixels at `dpi`.
+
+    **The placement every text run's `image_extent` is made by**, on the same boxes and rotation,
+    for a caller placing other objects of the same page beside that text: the paths drawn in colour
+    and the pasted stamps that `extraction/stamp_text.py` finds for the GV-mark check (#929), which
+    holds them to the same crops as the coloured text.
+    """
+    transform, height = page_frame(page, dpi)
+    return lambda x, top: _image(x, top, transform, height)
 
 
 #: A digit's place in its own text frame: `(along_low, along_high, across_low, across_high, up)`.

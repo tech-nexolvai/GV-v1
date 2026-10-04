@@ -226,7 +226,14 @@ from extraction.reader import (
     read_page_contents,
     read_pages,
 )
-from extraction.stamp_text import coloured_text, read_stamp_text
+from extraction.stamp_text import (
+    ColouredPath,
+    PixelBox,
+    coloured_paths,
+    coloured_text,
+    pasted_stamps,
+    read_stamp_text,
+)
 from extraction.text_sources import survey_page
 from extraction.vector_first import plan_reads
 from reports.findings_pdf import FINDINGS_PDF_MEDIA_TYPE, FindingsPdfInput, write_findings_pdf
@@ -817,7 +824,10 @@ VIEW_MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
 }
 
 __all__ = [
+    "ColouredMarkup",
     "DatabaseStages",
+    "coloured_markup",
+    "crop_shows_a_gv_mark",
     "crop_shows_a_stacked_fraction",
     "cut_label_refusal",
     "gv_mark_in_crop",
@@ -2815,8 +2825,9 @@ class DatabaseStages:
         *,
         dpi: int | None = None,
     ) -> ColouredMarkup | None:
-        """The page's markup drawn in colour (#901), or `None` where its pasted drawings could not
-        be read for it. The glyph paths are the ones the page's layers read, if they read any.
+        """The page's markup drawn in colour and the stamps pasted onto its drawings (#901, #929),
+        by `coloured_markup`; or `None` where its pasted drawings could not be read for them. The
+        glyph paths are the ones the page's layers read, if they read any.
 
         In the page's pixels at the stage's dpi, as the vision readers' crops are; or at `dpi`, for
         a part's picture cut at its own resolution (#921), so the picture's own pixel box is what
@@ -2824,20 +2835,17 @@ class DatabaseStages:
         """
         at = self._dpi if dpi is None else dpi
         try:
-            text = coloured_text(
+            return coloured_markup(
                 data,
                 page.index,
                 document_version_id=version_id,
                 dpi=at,
                 missing_space=self._stated_missing_space(),
+                transform=page_transform(page, at),
+                glyph_paths=() if layers is None else layers.glyph_paths,
             )
         except UnreadablePdf:
             return None
-        return ColouredMarkup(
-            text=text,
-            paths=() if layers is None else layers.glyph_paths,
-            transform=page_transform(page, at),
-        )
 
     def _vendor_render(self, data: bytes, page: Page, version_id: UUID) -> RenderedPage | None:
         """The page as the vision readers are shown it, or `None` where it cannot be rendered."""
@@ -6037,16 +6045,19 @@ GV_MARK_UNCHECKED_REASON: Final = (
 
 @dataclass(frozen=True, slots=True)
 class ColouredMarkup:
-    """Where markup drawn in colour lies on one page: how GV's own marks show when they are baked
-    into the vendor's drawing (#901).
+    """Where markup drawn in colour lies on one page, and the stamps pasted onto its drawings: how
+    GV's own marks show when they are baked into the vendor's drawing (#901, #929).
 
-    Two places it can be, each found by the stage's own test of what is the vendor's black or grey
-    ink: text set in colour inside the pasted drawings (`extraction.stamp_text.coloured_text`), and a
-    glyph-sized path drawn in colour (`VectorPath.drawing_ink`, #834). The vision crops leave GV's
-    own notes out (#742); these are what is left for a reader to see.
+    Each found by the stage's own test of what is the vendor's black or grey ink, in the pasted
+    drawings: text set in colour (`extraction.stamp_text.coloured_text`); every line, rectangle,
+    curve and fill drawn in colour, of any length (`coloured_paths`, #929); a glyph-sized path drawn
+    in colour, as the page's layers read it (`VectorPath.drawing_ink`, #834); and, whatever its
+    colour, a stamp pasted onto one of the drawings (`pasted_stamps`, #929). The vision crops leave
+    GV's own notes out (#742); these are what is left for a reader to see. Gathered by
+    `coloured_markup`, the one function the gate, the gate replay and the part pictures use.
     """
 
-    text: tuple[tuple[int, int, int, int], ...]
+    text: tuple[PixelBox, ...]
     """Each coloured run's `(left, top, right, bottom)`, in the page's pixels at the dpi it was read
     at: the stage's for the vision readers' crops, a part picture's own for that picture (#921)."""
 
@@ -6055,16 +6066,63 @@ class ColouredMarkup:
     the page's geometry was not read, which is where no association settings were stated."""
 
     transform: PageTransform | None
-    """The page's recorded transform. A page with none places no path, and its paths then say
-    nothing, as the stage's own geometry says nothing there."""
+    """The page's recorded transform. A page with none places no glyph path, and its glyph paths
+    then say nothing, as the stage's own geometry says nothing there."""
+
+    coloured_paths: tuple[ColouredPath, ...]
+    """Every path the pasted drawings draw in colour, long or short, stroked or filled, in the page's
+    pixels at the dpi the text was read at (#929). Read whatever settings are stated."""
+
+    pasted_stamps: tuple[PixelBox, ...]
+    """Each stamp pasted onto one of the page's pasted drawings, in the same pixels (#929)."""
 
     @property
     def shown(self) -> bool:
-        """Whether the page holds any markup in colour that a crop could show."""
-        return bool(self.text) or (
-            self.transform is not None
-            and any(not path.drawing_ink and path.points for path in self.paths)
+        """Whether the page holds any markup in colour, or any pasted stamp, that a crop could
+        show."""
+        return (
+            bool(self.text)
+            or bool(self.coloured_paths)
+            or bool(self.pasted_stamps)
+            or (
+                self.transform is not None
+                and any(not path.drawing_ink and path.points for path in self.paths)
+            )
         )
+
+
+def coloured_markup(
+    data: bytes,
+    page_index: int,
+    *,
+    document_version_id: UUID,
+    dpi: int,
+    missing_space: MissingSpace,
+    transform: PageTransform | None,
+    glyph_paths: tuple[VectorPath, ...],
+) -> ColouredMarkup:
+    """The page's markup drawn in colour and the stamps pasted onto its drawings, in its pixels at
+    `dpi` (#901, #929). Raises `UnreadablePdf` where its pasted drawings cannot be read for them.
+
+    **The one place they are gathered**: the agreement gate (`DatabaseStages._coloured_markup`), the
+    part pictures it is asked about at their own resolution (#921), and the gate replay
+    (`scripts/gate_replay.py`) all call this, so none of them can look for less than the others.
+    `missing_space` is the text reader's own setting (#912). `transform` and `glyph_paths` are the
+    page's, as its layers were read: `None` and empty where they were not.
+    """
+    return ColouredMarkup(
+        text=coloured_text(
+            data,
+            page_index,
+            document_version_id=document_version_id,
+            dpi=dpi,
+            missing_space=missing_space,
+        ),
+        paths=glyph_paths,
+        transform=transform,
+        coloured_paths=coloured_paths(data, page_index, dpi=dpi),
+        pasted_stamps=pasted_stamps(data, page_index, dpi=dpi),
+    )
 
 
 def _boxes_overlap(first: Sequence[int], second: Sequence[int]) -> bool:
@@ -6077,18 +6135,29 @@ def _boxes_overlap(first: Sequence[int], second: Sequence[int]) -> bool:
 
 
 def crop_shows_a_gv_mark(crop_box: tuple[int, int, int, int], markup: ColouredMarkup) -> bool:
-    """Whether markup drawn in colour lies in the crop, wholly or in part (#901).
+    """Whether markup drawn in colour, or a stamp pasted onto the drawing, lies in the crop, wholly
+    or in part (#901, #929).
 
     **Any part, edges included**, as `crop_shows_a_stacked_fraction` counts a fraction: a reader
     reads whatever it is shown, and GV's number half inside the crop is still there to be read as the
     vendor's. `crop_box` is the crop's page pixels at the dpi the markup was read at, as the text
-    boxes are — the stage's for a reader's crop, a part picture's own for that picture (#921); a path
-    is held to the crop's corners carried into PDF points by the page's transform at that dpi.
+    boxes are — the stage's for a reader's crop, a part picture's own for that picture (#921); a
+    glyph path is held to the crop's corners carried into PDF points by the page's transform at that
+    dpi.
+
+    **A line counts where it crosses the crop**, however long it is and wherever it ends (#929): a
+    long red line running through the crop is in the picture the reader is shown. A stroked outline
+    counts only where its line passes through the crop, not for the area it encloses; a fill counts
+    wherever it covers. A stamp pasted onto the drawing counts whatever its colour.
 
     The test the gate replay measured on the 51-crop key (#851), moved here so the replay and the
     gate are one function and cannot disagree; and the one a part's picture is checked by (#921).
     """
     if any(_boxes_overlap(box, crop_box) for box in markup.text):
+        return True
+    if any(_boxes_overlap(box, crop_box) for box in markup.pasted_stamps):
+        return True
+    if any(path.meets(crop_box) for path in markup.coloured_paths):
         return True
     if markup.transform is None:
         return False
