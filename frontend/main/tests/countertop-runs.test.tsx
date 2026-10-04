@@ -54,7 +54,12 @@ const drawing: RunDrawing = {
   countertops: [countertop],
 };
 
-const runs: RunsList = { can_suggest: true, why_not: null, drawings: [drawing] };
+const runs: RunsList = {
+  can_suggest: true,
+  why_not: null,
+  wall_layout_choices: ['back_left_right', 'back_only', 'island'],
+  drawings: [drawing],
+};
 
 const html = renderToStaticMarkup(
   <CountertopRunsList
@@ -84,7 +89,9 @@ assert.match(html, /Not decided yet\./);
 assert.deepEqual(startingSelection(countertop), ['left', 'right']);
 assert.equal((html.match(/checked=""/g) ?? []).length, 2);
 assert.equal((html.match(/type="checkbox"/g) ?? []).length, 3);
-assert.match(html, />Confirm this run<\/button>/);
+assert.match(html, /Choose this countertop&#x27;s wall layout/);
+assert.match(html, /<select[^>]*required=""/);
+assert.match(html, /disabled=""[^>]*>Confirm this run<\/button>/);
 
 // **There is no "confirm all".** Two buttons, both about this one countertop.
 assert.doesNotMatch(html, /confirm all|accept all|confirm every/i);
@@ -114,12 +121,13 @@ const confirmed: RunCountertop = {
     read: true,
     why_not_read: null,
     edge_tolerance: '0.004',
+    wall_config: 'back_left_right',
   },
 };
 assert.deepEqual(startingSelection(confirmed), ['left', 'wall']);
 assert.equal(
   runDecisionLabel(confirmed),
-  'Confirmed by reviewer@example.com: part 1 (cabinet), part 4 (cabinet), left to right.',
+  'Confirmed by reviewer@example.com: part 1 (cabinet), part 4 (cabinet), left to right. Wall layout: Walls at both ends, chosen by reviewer@example.com.',
 );
 
 // A confirmed run that is no longer read says why, and the boxes start from the suggestion again.
@@ -142,6 +150,7 @@ const staleHtml = renderToStaticMarkup(
 );
 assert.match(staleHtml, /role="status">A part in this run was taken back/);
 assert.match(staleHtml, /Nothing left to decide\./);
+assert.match(staleHtml, /<option value="" selected="">Choose this countertop&#x27;s wall layout<\/option>/);
 
 // A withdrawal is the pressed answer.
 const withdrawn: RunCountertop = {
@@ -154,6 +163,7 @@ const withdrawn: RunCountertop = {
     read: false,
     why_not_read: null,
     edge_tolerance: null,
+    wall_config: null,
   },
 };
 assert.equal(runDecisionLabel(withdrawn), "Said not to be this countertop's run by reviewer@example.com.");
@@ -171,6 +181,7 @@ assert.match(withdrawnHtml, /aria-pressed="true"[^>]*>Not this countertop&#x27;s
 const unstated: RunsList = {
   can_suggest: false,
   why_not: 'No run can be suggested or confirmed yet: GV_RUN_EDGE_TOLERANCE has not been set.',
+  wall_layout_choices: runs.wall_layout_choices,
   drawings: [{ ...drawing, countertops: [{ ...countertop, suggestion: null }] }],
 };
 const unstatedHtml = renderToStaticMarkup(

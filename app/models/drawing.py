@@ -709,6 +709,10 @@ class CountertopRunDecision(Base, TimestampedUUID, Immutable):
     confirmed_by: Mapped[str] = mapped_column(String(200))
     """Who decided, on a withdrawal too."""
 
+    wall_config: Mapped[str | None] = mapped_column(String(32), default=None)
+    """The human-chosen CT-WIDTH-001 layout for this confirmation; null on withdrawals and
+    older confirmations. A replacement never inherits it implicitly."""
+
     __table_args__ = (
         CheckConstraint(f"decision IN ({PART_DECISION_VALUES})", name="run_decision_value"),
         # A confirmation names its run; a withdrawal names none.
@@ -717,6 +721,11 @@ class CountertopRunDecision(Base, TimestampedUUID, Immutable):
             name="run_decision_shape",
         ),
         CheckConstraint("confirmed_by !~ '^[[:space:]]*$'", name="run_decision_actor_not_blank"),
+        CheckConstraint(
+            "wall_config IS NULL OR (decision = 'confirmed' AND "
+            "wall_config IN ('back_left_right', 'back_only', 'island'))",
+            name="countertop_run_wall_config",
+        ),
         UniqueConstraint("run_id", name="uq_countertop_run_decisions_run_id"),
         # What `countertop_runs` points at, so a member row can only belong to a run confirmed for
         # its own countertop.

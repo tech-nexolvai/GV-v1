@@ -254,6 +254,7 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
             Finding.package_revision_id,
             Finding.scope_item_id,
             Finding.scope_label,
+            Finding.notes,
             Finding.outcome,
             Finding.severity,
             Finding.parameter_set_versions,

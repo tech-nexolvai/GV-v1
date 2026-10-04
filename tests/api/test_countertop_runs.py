@@ -43,6 +43,7 @@ from app.models import (
 from storage.local import LocalStore
 from tests.api.test_v1_loop import _settings
 from tests.workflow.test_part_proposals_route import _extract, _upgrade
+from tests.workflow.test_stages import _publish_rulebook
 from workflow import countertop_runs as workflow_runs
 from workflow.countertop_runs import RUN_PROPOSAL_SOURCE, live_run_rows
 from workflow.view_roles import confirm_view_role, revision_views
@@ -59,6 +60,7 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
     _upgrade(postgres_engine)
     opened = session_factory(postgres_engine)()
     try:
+        _publish_rulebook(opened)
         yield opened
     finally:
         opened.close()
@@ -142,7 +144,8 @@ class Sheet:
 
     def confirm(self, part_ids: list[str], client: Any | None = None) -> Any:
         return (client or self.client()).post(
-            f"{self.base}/countertop-runs/{self.top}/confirm", json={"part_ids": part_ids}
+            f"{self.base}/countertop-runs/{self.top}/confirm",
+            json={"part_ids": part_ids, "wall_config": "back_left_right"},
         )
 
     def withdraw(self, client: Any | None = None) -> Any:
@@ -244,6 +247,30 @@ def test_without_a_stated_tolerance_nothing_is_suggested_or_confirmed(sheet: She
 # -- deciding --------------------------------------------------------------------------------------
 
 
+def test_a_new_run_requires_a_chosen_wall_layout(sheet: Sheet) -> None:
+    from app.api.countertop_runs import ConfirmRunIn
+
+    assert "wall_config" in ConfirmRunIn.model_json_schema()["required"]
+    response = sheet.client().post(
+        f"{sheet.base}/countertop-runs/{sheet.top}/confirm",
+        json={"part_ids": [sheet.left, sheet.right]},
+    )
+
+    assert response.status_code == 422
+    assert "choose this countertop's wall layout" in response.json()["message"].lower()
+    _nothing_written(sheet.session)
+
+
+def test_a_new_run_refuses_an_unpublished_wall_layout(sheet: Sheet) -> None:
+    response = sheet.client().post(
+        f"{sheet.base}/countertop-runs/{sheet.top}/confirm",
+        json={"part_ids": [sheet.left, sheet.right], "wall_config": "made_up"},
+    )
+
+    assert response.status_code == 422
+    _nothing_written(sheet.session)
+
+
 def test_only_a_confirmation_writes_a_run_in_the_drawings_order(sheet: Sheet) -> None:
     """**Done when, 1.** Picked right first, written left to right; one decision, audited, naming
     the person; every row the stated tolerance and the suggester."""
@@ -255,6 +282,8 @@ def test_only_a_confirmation_writes_a_run_in_the_drawings_order(sheet: Sheet) ->
     assert decision["decided_by"] == "reviewer@example.com"
     assert decision["read"] is True and decision["why_not_read"] is None
     assert decision["edge_tolerance"] == "0.004"
+    assert decision["wall_config"] == "back_left_right"
+    assert "back_only" in sheet.runs()["wall_layout_choices"]
     assert [member["item_id"] for member in decision["members"]] == [sheet.left, sheet.right]
     assert [member["position"] for member in decision["members"]] == [1, 2]
     rows = sheet.read()
@@ -281,10 +310,38 @@ def test_a_withdrawn_run_is_not_read(sheet: Sheet) -> None:
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["decision"]["decision"] == "withdrawn"
+    assert body["decision"]["wall_config"] is None
     assert body["decision"]["members"] == [] and body["decision"]["read"] is False
     assert len(body["suggestion"]["members"]) == 2
     assert sheet.read() == []
     assert _count(sheet.session, CountertopRun) == 2
+
+
+def test_a_correction_requires_its_own_new_layout_and_never_inherits_the_old_one(
+    sheet: Sheet,
+) -> None:
+    assert sheet.confirm([sheet.left, sheet.right]).status_code == 201
+    first = sheet.session.scalars(select(CountertopRunDecision)).one()
+
+    missing = sheet.client().post(
+        f"{sheet.base}/countertop-runs/{sheet.top}/confirm",
+        json={"part_ids": [sheet.left]},
+    )
+    assert missing.status_code == 422
+    assert sheet.countertop()["decision"]["wall_config"] == "back_left_right"
+    assert _count(sheet.session, CountertopRunDecision) == 1
+
+    corrected = sheet.client().post(
+        f"{sheet.base}/countertop-runs/{sheet.top}/confirm",
+        json={"part_ids": [sheet.left], "wall_config": "back_only"},
+    )
+    assert corrected.status_code == 201, corrected.text
+    assert corrected.json()["decision"]["wall_config"] == "back_only"
+    current = sheet.session.scalars(
+        select(CountertopRunDecision).where(CountertopRunDecision.supersedes_id == first.id)
+    ).one()
+    assert current.wall_config == "back_only"
+    assert first.wall_config == "back_left_right"
 
 
 def test_a_suggested_run_can_be_said_to_be_wrong_before_anything_is_confirmed(
@@ -398,7 +455,8 @@ def test_a_cabinet_or_an_unknown_id_is_not_a_countertop(sheet: Sheet) -> None:
     client = sheet.client()
     responses = [
         client.post(
-            f"{sheet.base}/countertop-runs/{countertop}/confirm", json={"part_ids": [sheet.left]}
+            f"{sheet.base}/countertop-runs/{countertop}/confirm",
+            json={"part_ids": [sheet.left], "wall_config": "back_left_right"},
         )
         for countertop in (sheet.left, str(uuid4()))
     ]
@@ -448,7 +506,8 @@ def test_another_projects_countertop_is_not_found(
 
     responses = [
         client.post(
-            f"{other.base}/countertop-runs/{sheet.top}/confirm", json={"part_ids": [sheet.left]}
+            f"{other.base}/countertop-runs/{sheet.top}/confirm",
+            json={"part_ids": [sheet.left], "wall_config": "back_left_right"},
         ),
         client.post(f"{other.base}/countertop-runs/{sheet.top}/withdraw"),
         client.get(f"{sheet.base}/countertop-runs"),

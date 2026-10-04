@@ -22,7 +22,7 @@ from typing import Annotated, Final
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -44,6 +44,8 @@ from app.evidence.countertop_runs import (
 )
 from app.models import CountertopRunDecision
 from vocabulary.part_kinds import PartKind
+from vocabulary.semantic_types import SemanticType
+from workflow.countertop_runs import published_wall_layouts
 
 router = APIRouter(tags=["countertop runs"])
 
@@ -128,6 +130,8 @@ class RunDecisionOut(BaseModel):
     why_not_read: str | None
     edge_tolerance: str | None
     """The tolerance recorded with the confirmed run."""
+    wall_config: str | None
+    """The layout this person chose for this run; null for withdrawals or legacy decisions."""
 
 
 class CountertopOut(BaseModel):
@@ -158,6 +162,7 @@ class RunDrawingOut(BaseModel):
 class RunsOut(BaseModel):
     can_suggest: bool
     why_not: str | None
+    wall_layout_choices: list[str]
     drawings: list[RunDrawingOut]
 
 
@@ -169,6 +174,19 @@ class ConfirmRunIn(BaseModel):
             "drawing, never by the order they were picked in."
         ),
     )
+    wall_config: str | None = Field(
+        description="Required: one of the published CT-WIDTH-001 wall-layout choices."
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _missing_layout_gets_the_plain_refusal(cls, data: object) -> object:
+        # Keep the field required in the API schema while the evidence boundary gives an older
+        # caller that omits it the exact, actionable refusal rather than a generic shape error.
+        layout_key = SemanticType.WALL_CONFIG.value
+        if isinstance(data, dict) and layout_key not in data:
+            return {**data, layout_key: None}
+        return data
 
 
 def _tolerance(request: Request) -> Decimal | None:
@@ -241,6 +259,7 @@ def _decision_out(decision: CountertopRunDecision, listed: ListedCountertop) -> 
         read=listed.read,
         why_not_read=None if listed.read or not confirmed else _NOT_READ,
         edge_tolerance=str(listed.members[0].row.edge_tolerance) if listed.members else None,
+        wall_config=decision.wall_config,
     )
 
 
@@ -319,6 +338,7 @@ def list_runs(
     return RunsOut(
         can_suggest=tolerance is not None,
         why_not=None if tolerance is not None else NO_TOLERANCE,
+        wall_layout_choices=list(published_wall_layouts(session)),
         drawings=[
             _drawing_out(drawing)
             for drawing in revision_runs(session, revision.id, edge_tolerance=tolerance)
@@ -355,6 +375,7 @@ def confirm_run_endpoint(
             member_item_ids=body.part_ids,
             edge_tolerance=tolerance,
             actor=principal.id,
+            wall_config=body.wall_config,
         ),
     )
     return _listed(session, revision.id, countertop_item_id, tolerance)
