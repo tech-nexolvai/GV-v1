@@ -144,6 +144,7 @@ function FindingRows({
         <th scope="row" className="ftable__check">
           {cells.check}
           <span className="ftable__rule mono">{finding.check_id}</span>
+          <span className="ftable__rule">{finding.scope_label || 'Package revision'}</span>
         </th>
         <td className="mono ftable__value ftable__value--shop" data-mismatch={finding.outcome === 'FAIL' || undefined}>
           <Value text={cells.reading} loaded={loaded} />

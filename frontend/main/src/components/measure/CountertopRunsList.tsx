@@ -6,6 +6,7 @@ import {
   runDecisionLabel,
   runsStillToDecide,
   startingSelection,
+  wallLayoutLabel,
   type RunCountertop,
   type RunDrawing,
   type RunsList,
@@ -35,7 +36,7 @@ export function CountertopRunsList({
   runs: RunsList;
   /** The countertop being saved, so its buttons cannot be pressed twice. */
   saving: string | null;
-  onConfirm: (countertop: RunCountertop, partIds: string[]) => void;
+  onConfirm: (countertop: RunCountertop, partIds: string[], wallConfig: string) => void;
   onWithdraw: (countertop: RunCountertop) => void;
 }) {
   const open = runsStillToDecide(runs);
@@ -69,6 +70,7 @@ export function CountertopRunsList({
                   canSuggest={runs.can_suggest}
                   drawing={drawing}
                   countertop={countertop}
+                  wallLayoutChoices={runs.wall_layout_choices}
                   saving={saving === countertop.countertop_item_id}
                   onConfirm={onConfirm}
                   onWithdraw={onWithdraw}
@@ -86,6 +88,7 @@ function CountertopRow({
   canSuggest,
   drawing,
   countertop,
+  wallLayoutChoices,
   saving,
   onConfirm,
   onWithdraw,
@@ -93,17 +96,19 @@ function CountertopRow({
   canSuggest: boolean;
   drawing: RunDrawing;
   countertop: RunCountertop;
+  wallLayoutChoices: string[];
   saving: boolean;
-  onConfirm: (countertop: RunCountertop, partIds: string[]) => void;
+  onConfirm: (countertop: RunCountertop, partIds: string[], wallConfig: string) => void;
   onWithdraw: (countertop: RunCountertop) => void;
 }) {
   const [selected, setSelected] = useState<string[]>(() => startingSelection(countertop));
+  const [wallConfig, setWallConfig] = useState('');
   const suggestion = countertop.suggestion;
   const decision = countertop.decision;
   const name = countertop.number === null ? 'A countertop' : `Countertop, part ${countertop.number}`;
   // Only parts still on the drawing: one taken back since the boxes were ticked is never sent.
   const ticked = selected.filter((id) => drawing.parts.some((part) => part.item_id === id));
-  const canConfirm = canSuggest && drawing.can_confirm && ticked.length > 0 && !saving;
+  const canConfirm = canSuggest && drawing.can_confirm && ticked.length > 0 && wallConfig !== '' && !saving;
 
   function toggle(itemId: string, ticked: boolean) {
     setSelected((current) =>
@@ -161,6 +166,17 @@ function CountertopRow({
           </label>
         ))}
       </fieldset>
+      <label className="countertop-runs__layout">
+        Wall layout for this countertop (required)
+        <select value={wallConfig} onChange={(event) => setWallConfig(event.target.value)} required>
+          <option value="">Choose this countertop&apos;s wall layout</option>
+          {wallLayoutChoices.map((choice) => (
+            <option key={choice} value={choice}>
+              {wallLayoutLabel(choice)}
+            </option>
+          ))}
+        </select>
+      </label>
       <div
         className="drawing-parts__choices"
         role="group"
@@ -170,7 +186,7 @@ function CountertopRow({
           type="button"
           className="btn btn--sm btn--subtle"
           disabled={!canConfirm}
-          onClick={() => onConfirm(countertop, ticked)}
+          onClick={() => onConfirm(countertop, ticked, wallConfig)}
         >
           {isTheSuggestion(countertop, ticked) ? 'Confirm this run' : 'Confirm the ticked parts'}
         </button>

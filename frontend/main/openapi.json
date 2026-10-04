@@ -691,6 +691,54 @@
         "title": "CandidatesOut",
         "type": "object"
       },
+      "ChangedValuesOut": {
+        "description": "One pinned check-run summary, or an explicit refusal to claim one.",
+        "properties": {
+          "company_standards_displaced": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Company Standards Displaced",
+            "type": "array"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "outstanding": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Outstanding",
+            "type": "array"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id",
+          "status",
+          "message",
+          "company_standards_displaced",
+          "outstanding"
+        ],
+        "title": "ChangedValuesOut",
+        "type": "object"
+      },
       "ChatModelChoice": {
         "additionalProperties": false,
         "description": "One selectable model: the exact Bedrock id, and the name a reviewer reads.",
@@ -990,6 +1038,21 @@
         "title": "ConfirmIn",
         "type": "object"
       },
+      "ConfirmLinkIn": {
+        "properties": {
+          "reading_id": {
+            "description": "The confirmed reading that is this part's width: the suggestion or another.",
+            "format": "uuid",
+            "title": "Reading Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reading_id"
+        ],
+        "title": "ConfirmLinkIn",
+        "type": "object"
+      },
       "ConfirmPartIn": {
         "properties": {
           "code": {
@@ -1043,10 +1106,23 @@
             "maxItems": 200,
             "title": "Part Ids",
             "type": "array"
+          },
+          "wall_config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required: one of the published CT-WIDTH-001 wall-layout choices.",
+            "title": "Wall Config"
           }
         },
         "required": [
-          "part_ids"
+          "part_ids",
+          "wall_config"
         ],
         "title": "ConfirmRunIn",
         "type": "object"
@@ -2070,6 +2146,29 @@
           "rule_snapshot": {
             "$ref": "#/components/schemas/RuleSnapshotRecord"
           },
+          "scope_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Item Id"
+          },
+          "scope_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Label"
+          },
           "severity": {
             "title": "Severity",
             "type": "string"
@@ -2161,7 +2260,7 @@
         "title": "FindingCounts",
         "type": "object"
       },
-      "FindingExportV1": {
+      "FindingExportV2": {
         "description": "The export envelope. Version first, so a consumer can check before it parses.",
         "properties": {
           "findings": {
@@ -2182,7 +2281,7 @@
             "type": "string"
           },
           "schema_version": {
-            "const": "1",
+            "const": "2",
             "title": "Schema Version",
             "type": "string"
           },
@@ -2197,7 +2296,7 @@
           "summary",
           "findings"
         ],
-        "title": "FindingExportV1",
+        "title": "FindingExportV2",
         "type": "object"
       },
       "FindingOut": {
@@ -2235,6 +2334,20 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
           },
           "outcome": {
             "$ref": "#/components/schemas/Outcome"
@@ -2285,6 +2398,29 @@
           "rule_version": {
             "title": "Rule Version",
             "type": "string"
+          },
+          "scope_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Item Id"
+          },
+          "scope_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Label"
           },
           "severity": {
             "$ref": "#/components/schemas/Severity"
@@ -2387,6 +2523,16 @@
         "title": "GrantException",
         "type": "object"
       },
+      "GvMarks": {
+        "description": "What a part's picture was found to show of GV's own coloured marks (#921), as the Measure\npage is told it. Read from `PartPicture.shows_gv_marks` by `gv_marks`.",
+        "enum": [
+          "shown",
+          "not_shown",
+          "not_checked"
+        ],
+        "title": "GvMarks",
+        "type": "string"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2468,6 +2614,218 @@
           "reason"
         ],
         "title": "LeftOutOut",
+        "type": "object"
+      },
+      "LinkDrawingOut": {
+        "properties": {
+          "can_confirm": {
+            "title": "Can Confirm",
+            "type": "boolean"
+          },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/PartLinkOut"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "readings": {
+            "description": "The confirmed readings on the drawing, which a link may name, left to right.",
+            "items": {
+              "$ref": "#/components/schemas/LinkReadingOut"
+            },
+            "title": "Readings",
+            "type": "array"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "view_id": {
+            "format": "uuid",
+            "title": "View Id",
+            "type": "string"
+          },
+          "why_not": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Not"
+          }
+        },
+        "required": [
+          "view_id",
+          "page_index",
+          "tag",
+          "can_confirm",
+          "why_not",
+          "parts",
+          "readings"
+        ],
+        "title": "LinkDrawingOut",
+        "type": "object"
+      },
+      "LinkOut": {
+        "description": "A reading a person linked to the part.",
+        "properties": {
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decided_by": {
+            "title": "Decided By",
+            "type": "string"
+          },
+          "read": {
+            "description": "Whether a reader reads this link.",
+            "title": "Read",
+            "type": "boolean"
+          },
+          "reading_id": {
+            "format": "uuid",
+            "title": "Reading Id",
+            "type": "string"
+          },
+          "signal": {
+            "description": "Why the reading belongs to the part, in plain English.",
+            "title": "Signal",
+            "type": "string"
+          },
+          "why_not_read": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Not Read"
+          }
+        },
+        "required": [
+          "reading_id",
+          "decided_by",
+          "decided_at",
+          "signal",
+          "read",
+          "why_not_read"
+        ],
+        "title": "LinkOut",
+        "type": "object"
+      },
+      "LinkReadingOut": {
+        "description": "A confirmed reading on the drawing, which a person may pick as a part's width.",
+        "properties": {
+          "left": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its span across the page, exact; null with no span.",
+            "title": "Left"
+          },
+          "linked_to": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The part it is linked to now, while that part still stands.",
+            "title": "Linked To"
+          },
+          "linked_to_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linked To Number"
+          },
+          "placed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`line` when a reading behind it was attached to a dimension line, `region` when none was and the box it is printed in places it; null when neither places it.",
+            "title": "Placed By"
+          },
+          "reading_id": {
+            "format": "uuid",
+            "title": "Reading Id",
+            "type": "string"
+          },
+          "right": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Right"
+          },
+          "semantic_type": {
+            "description": "What a person confirmed the reading is.",
+            "title": "Semantic Type",
+            "type": "string"
+          },
+          "unplaced": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it spans no part, in plain English, or null.",
+            "title": "Unplaced"
+          },
+          "value": {
+            "description": "The reading's exact value, as `25 1/2 in`.",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reading_id",
+          "value",
+          "semantic_type",
+          "placed_by",
+          "left",
+          "right",
+          "unplaced",
+          "linked_to",
+          "linked_to_number"
+        ],
+        "title": "LinkReadingOut",
         "type": "object"
       },
       "MeasurementEntry": {
@@ -2906,6 +3264,114 @@
         "title": "PartKind",
         "type": "string"
       },
+      "PartLinkOut": {
+        "description": "One confirmed part: the reading suggested as its width, and what a person decided.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "has_picture": {
+            "description": "Whether its picture is stored, served at `\u2026/parts/{proposal_id}/picture`.",
+            "title": "Has Picture",
+            "type": "boolean"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PartKind"
+          },
+          "left": {
+            "description": "Its left end across the page, exact.",
+            "title": "Left",
+            "type": "string"
+          },
+          "links": {
+            "description": "The readings linked to this part now: one, or none. Two only when two people linked different readings at the same moment, and then neither is read.",
+            "items": {
+              "$ref": "#/components/schemas/LinkOut"
+            },
+            "title": "Links",
+            "type": "array"
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its number in 'Parts of each drawing', 1 for the leftmost; null if not listed.",
+            "title": "Number"
+          },
+          "picture_gv_marks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GvMarks"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown`, `not_shown`, or `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored."
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The suggestion it was confirmed from, whose picture is the part's (#897).",
+            "title": "Proposal Id"
+          },
+          "right": {
+            "title": "Right",
+            "type": "string"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuggestedLinkOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no tolerance is stated, so nothing can be suggested."
+          }
+        },
+        "required": [
+          "item_id",
+          "number",
+          "proposal_id",
+          "has_picture",
+          "picture_gv_marks",
+          "kind",
+          "code",
+          "left",
+          "right",
+          "suggestion",
+          "links"
+        ],
+        "title": "PartLinkOut",
+        "type": "object"
+      },
       "PartOut": {
         "description": "One suggested part, as a person needs it to decide what it is.",
         "properties": {
@@ -2926,8 +3392,13 @@
             "description": "The decision nothing has replaced, or null while nobody has decided."
           },
           "has_crop": {
-            "description": "Whether a picture is stored for it. Today that is the crop of the reading its code came from, so a suggestion with no code has none.",
+            "description": "Whether the crop of the reading its code came from is stored, so a suggestion with no code has none.",
             "title": "Has Crop",
+            "type": "boolean"
+          },
+          "has_picture": {
+            "description": "Whether its own picture is stored: the vendor's drawing around its outline (#897). False until the worker has cut it, or where the page could not be rendered.",
+            "title": "Has Picture",
             "type": "boolean"
           },
           "left_end": {
@@ -2944,6 +3415,17 @@
           "page_index": {
             "title": "Page Index",
             "type": "integer"
+          },
+          "picture_gv_marks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GvMarks"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown` where markup drawn in colour lies in it, so the page warns under it; `not_shown` where it was checked and none does; `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored."
           },
           "position": {
             "description": "Its place on its drawing, 1 for the leftmost.",
@@ -3002,6 +3484,8 @@
           "added_by_a_person",
           "left_end",
           "right_end",
+          "has_picture",
+          "picture_gv_marks",
           "has_crop",
           "decision"
         ],
@@ -3347,6 +3831,39 @@
         ],
         "title": "PublicationTarget",
         "type": "string"
+      },
+      "ReadingPartsOut": {
+        "properties": {
+          "can_suggest": {
+            "title": "Can Suggest",
+            "type": "boolean"
+          },
+          "drawings": {
+            "items": {
+              "$ref": "#/components/schemas/LinkDrawingOut"
+            },
+            "title": "Drawings",
+            "type": "array"
+          },
+          "why_not": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Not"
+          }
+        },
+        "required": [
+          "can_suggest",
+          "why_not",
+          "drawings"
+        ],
+        "title": "ReadingPartsOut",
+        "type": "object"
       },
       "RecordAction": {
         "additionalProperties": false,
@@ -4068,6 +4585,17 @@
             "title": "Read",
             "type": "boolean"
           },
+          "wall_config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Config"
+          },
           "why_not_read": {
             "anyOf": [
               {
@@ -4087,7 +4615,8 @@
           "members",
           "read",
           "why_not_read",
-          "edge_tolerance"
+          "edge_tolerance",
+          "wall_config"
         ],
         "title": "RunDecisionOut",
         "type": "object"
@@ -4207,6 +4736,13 @@
             "title": "Drawings",
             "type": "array"
           },
+          "wall_layout_choices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Wall Layout Choices",
+            "type": "array"
+          },
           "why_not": {
             "anyOf": [
               {
@@ -4222,6 +4758,7 @@
         "required": [
           "can_suggest",
           "why_not",
+          "wall_layout_choices",
           "drawings"
         ],
         "title": "RunsOut",
@@ -4376,6 +4913,50 @@
           "as_typed"
         ],
         "title": "StoredValue",
+        "type": "object"
+      },
+      "SuggestedLinkOut": {
+        "description": "The reading the computer suggests is a part's width. Nothing is written until a person\nconfirms it.",
+        "properties": {
+          "edge_tolerance": {
+            "title": "Edge Tolerance",
+            "type": "string"
+          },
+          "reading_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no single reading spans this part alone; `said` says why.",
+            "title": "Reading Id"
+          },
+          "said": {
+            "description": "Why this reading, or why none, in plain English.",
+            "title": "Said",
+            "type": "string"
+          },
+          "spanning": {
+            "description": "Every confirmed reading on the drawing whose line or region spans the part.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Spanning",
+            "type": "array"
+          }
+        },
+        "required": [
+          "reading_id",
+          "said",
+          "spanning",
+          "edge_tolerance"
+        ],
+        "title": "SuggestedLinkOut",
         "type": "object"
       },
       "SuggestedMemberOut": {
@@ -5516,6 +6097,59 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/changed-values": {
+      "get": {
+        "operationId": "get_changed_values_api_v1_projects__project_id__packages__package_id__changed_values_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangedValuesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read the changed values pinned to this package's current check run",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/chat": {
       "post": {
         "description": "Narrate the package's current findings without changing, calculating, or extending them.",
@@ -6362,7 +6996,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FindingExportV1"
+                  "$ref": "#/components/schemas/FindingExportV2"
                 }
               }
             },
@@ -6924,7 +7558,7 @@
                 }
               }
             },
-            "description": "The integrity-checked picture stored for this suggestion."
+            "description": "The integrity-checked crop of the reading the code came from."
           },
           "422": {
             "content": {
@@ -6937,7 +7571,72 @@
             "description": "Validation Error"
           }
         },
-        "summary": "View the picture stored for one suggested part",
+        "summary": "View the crop of the reading one suggested part's code came from",
+        "tags": [
+          "drawing parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/picture": {
+      "get": {
+        "description": "The part's own picture: the vendor's drawing around its outline, checked against its\nrecorded digest. For a person's eyes only; nothing reads a value from it.\n\nThe suggestion must be on this package's current revision, so another project's part looks\nabsent (404), as every other absence does.",
+        "operationId": "part_picture_api_v1_projects__project_id__packages__package_id__parts__proposal_id__picture_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The integrity-checked picture of this part (#897)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View the picture of one suggested part, cut from the vendor's drawing",
         "tags": [
           "drawing parts"
         ]
@@ -7004,6 +7703,198 @@
         "summary": "Say one suggestion is not a part",
         "tags": [
           "drawing parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts": {
+      "get": {
+        "description": "Read only: a suggestion is worked out on each call and never stored.",
+        "operationId": "list_reading_parts_api_v1_projects__project_id__packages__package_id__reading_parts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadingPartsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Each confirmed part, the reading suggested as its width, and what a person decided",
+        "tags": [
+          "reading parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts/{item_id}/confirm": {
+      "post": {
+        "description": "Record a person's link, as suggested or corrected. Audited, and correctable by confirming\nanother reading: the latest decision is the one that counts, and every earlier one is kept.",
+        "operationId": "confirm_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmLinkIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartLinkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Say which confirmed reading is one part's width",
+        "tags": [
+          "reading parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts/{item_id}/withdraw": {
+      "post": {
+        "description": "Record that the reading is not the part's width. Links nothing; the link stops being read.",
+        "operationId": "withdraw_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__withdraw_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartLinkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Take back the link between one part and its reading",
+        "tags": [
+          "reading parts"
         ]
       }
     },
@@ -7321,7 +8212,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/parts": {
       "post": {
-        "description": "File the person's own suggestion and confirm it, in one transaction.",
+        "description": "File the person's own suggestion and confirm it, in one transaction, and ask the worker to\ncut its picture (#897) in the same one: the part and the request commit together or not at all.\nThe list shows the part at once and its picture once the worker has cut it.",
         "operationId": "add_part_endpoint_api_v1_projects__project_id__packages__package_id__views__view_id__parts_post",
         "parameters": [
           {

@@ -1,12 +1,16 @@
 """The agreement gate does not confirm a reading whose crop shows a GV mark in colour (#901).
 
-Verification for: `workflow/stages.py` (`crop_shows_a_gv_mark`, `gv_mark_in_crop`, `_GvMarkGuard`
-and `DatabaseStages._apply_cross_route_corroboration`).
+Verification for: `workflow/stages.py` (`crop_shows_a_gv_mark`, `gv_mark_in_crop`, `_GvMarkGuard`,
+`coloured_markup` and `DatabaseStages._apply_cross_route_corroboration`).
 
 **The admin's decision, 2026-10-03.** In every scorecard run on the 51-crop key the two readers
 agreed on GV's own number, baked into the vendor's drawing in colour (#851). An agreement whose crop
 shows markup drawn in colour, wholly or in part, stays a pre-fill a person ticks; the same pair on a
 crop with no mark is confirmed as before. The guard only ever takes a confirmation away.
+
+**And its two blind spots, closed (admin, 2026-10-04, #929):** a long coloured line running through
+the crop, and a coloured fill or a stamp pasted onto the drawing, are GV marks too. A line or a fill
+in the vendor's black or grey is not.
 
 The drawings are made up here. No model is called and no client drawing is read.
 """
@@ -45,9 +49,14 @@ from evidence.coordinates import PageTransform, StoredPoint
 from evidence.crop import RenderedPage
 from evidence.polygon import Polygon
 from extraction.annotations import PathSegment, SegmentKind, VectorPath
+from extraction.stamp_text import ColouredPath
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.workflow.test_cross_route_corroboration import _reader
+from tests.extraction.test_reader import MISSING_SPACE
+from tests.workflow.test_cross_route_corroboration import _Reader, _reader
+from tests.workflow.test_cut_label_guard import stated_geometry
+from workflow import stages as stages_module
+from workflow.config import READER_RASTER_DPI
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import (
@@ -56,6 +65,7 @@ from workflow.stages import (
     ColouredMarkup,
     DatabaseStages,
     _GvMarkGuard,
+    coloured_markup,
     crop_shows_a_gv_mark,
     gv_mark_in_crop,
 )
@@ -84,7 +94,7 @@ def unmarked_page() -> _GvMarkGuard:
 
     For the tests of other rules that call `_apply_cross_route_corroboration` directly."""
     return _GvMarkGuard(
-        markup=lambda: ColouredMarkup(text=(), paths=(), transform=None),
+        markup=lambda: _markup(),
         render=_never_rendered,
     )
 
@@ -109,12 +119,54 @@ def _path(
     )
 
 
+def _markup(
+    *,
+    text: tuple[tuple[int, int, int, int], ...] = (),
+    paths: tuple[VectorPath, ...] = (),
+    transform: PageTransform | None = None,
+    drawn: tuple[ColouredPath, ...] = (),
+    pasted: tuple[tuple[int, int, int, int], ...] = (),
+) -> ColouredMarkup:
+    return ColouredMarkup(
+        text=text,
+        paths=paths,
+        transform=transform,
+        coloured_paths=drawn,
+        pasted_stamps=pasted,
+    )
+
+
 def _text(*boxes: tuple[int, int, int, int]) -> ColouredMarkup:
-    return ColouredMarkup(text=boxes, paths=(), transform=None)
+    return _markup(text=boxes)
 
 
 def _paths(*paths: VectorPath, transform: PageTransform | None = TRANSFORM) -> ColouredMarkup:
-    return ColouredMarkup(text=(), paths=paths, transform=transform)
+    return _markup(paths=paths, transform=transform)
+
+
+def _drawn(
+    *lines: tuple[int, int, int, int], areas: tuple[tuple[int, int, int, int], ...] = ()
+) -> ColouredMarkup:
+    """A coloured path in the page's pixels: its straight lines, and the areas it may cover."""
+    return _markup(drawn=(ColouredPath(lines=lines, areas=areas, rings=(), even_odd=False),))
+
+
+def _filled(*rings: tuple[tuple[int, int], ...], even_odd: bool = False) -> ColouredMarkup:
+    """A coloured fill in the page's pixels, its outline closed round each ring."""
+    return _markup(
+        drawn=(
+            ColouredPath(
+                lines=tuple(
+                    (*first, *second)
+                    for ring in rings
+                    for first, second in zip(ring, ring[1:] + ring[:1], strict=True)
+                ),
+                areas=(),
+                rings=rings,
+                even_odd=even_odd,
+            ),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +222,130 @@ def test_a_page_with_no_transform_places_no_path() -> None:
     """As the stage's own geometry says nothing there; its coloured text still counts."""
     assert not crop_shows_a_gv_mark(CROP, _paths(_path(120, 30, 140, 30, RED), transform=None))
     assert not _paths(_path(120, 30, 140, 30, RED), transform=None).shown
+
+
+# ---------------------------------------------------------------------------
+# #929: a long line through the crop, a fill, and a stamp pasted onto the drawing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        (0, 100, 400, 100),  # across the whole page, through the middle
+        (150, 0, 150, 400),  # down the whole page
+        (0, 0, 400, 400),  # corner to corner, through the crop
+        (0, 50, 1000, 50),  # along the crop's top edge
+        (50, 0, 100, 50),  # ending on the crop's corner
+        (0, 150, 150, 0),  # through the crop's corner and on
+    ],
+    ids=[
+        "across",
+        "down",
+        "diagonal",
+        "along-the-edge",
+        "ending-on-the-corner",
+        "through-the-corner",
+    ],
+)
+def test_a_long_coloured_line_crossing_the_crop_is_a_gv_mark(
+    line: tuple[int, int, int, int],
+) -> None:
+    """**#929, done when, first line.** Neither end is anywhere near the crop, and the line runs
+    through it: the reader is shown the red line, so it counts. The glyph-sized test that missed it
+    is still asked; this is the test of every coloured path, whatever its length."""
+    markup = _drawn(line)
+
+    assert markup.shown
+    assert crop_shows_a_gv_mark(CROP, markup)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        (0, 140, 140, 0),  # its box covers the crop's corner, the line passes outside it
+        (0, 151, 400, 151),  # just below the crop
+        (201, 0, 201, 400),  # just right of it
+    ],
+    ids=["past-the-corner", "below", "right"],
+)
+def test_a_coloured_line_that_passes_the_crop_is_not_a_gv_mark(
+    line: tuple[int, int, int, int],
+) -> None:
+    """Only a line that crosses the crop counts, not one whose box happens to cover part of it."""
+    assert not crop_shows_a_gv_mark(CROP, _drawn(line))
+
+
+def test_a_coloured_outline_round_the_crop_counts_only_where_its_line_crosses() -> None:
+    """A red box drawn round a whole area: the crop inside it, clear of its sides, shows none of it;
+    a crop its side runs through shows it."""
+    outline = ((50, 20, 250, 20), (250, 20, 250, 180), (250, 180, 50, 180), (50, 180, 50, 20))
+
+    assert not crop_shows_a_gv_mark(CROP, _drawn(*outline))
+    assert crop_shows_a_gv_mark((40, 50, 140, 150), _drawn(*outline))
+
+
+#: A filled tick round the crop's lower left corner: its box reaches into the crop, its ink does not
+#: (its arms run up the crop's left and along below it).
+TICK = ((60, 190), (95, 140), (99, 142), (75, 180), (160, 170), (160, 176), (62, 196))
+#: A square ring round the whole crop, and a hole in it the crop lies in.
+ROUND_THE_CROP = ((50, 20), (250, 20), (250, 180), (50, 180))
+HOLE = ((90, 40), (210, 40), (210, 160), (90, 160))
+
+
+def test_a_coloured_fill_counts_where_it_covers_the_crop_not_where_its_box_does() -> None:
+    """**A fill is held to its own outline.** GV's green tick just below a crop: its box touches
+    the crop, its ink does not (as on AI_Set_2's 16th sheet), so it is no mark there. A fill the
+    crop lies wholly inside is one, though none of its outline is in the crop; and a crop in a
+    hole of a fill filled by the even-odd rule shows none of it."""
+    assert not crop_shows_a_gv_mark(CROP, _filled(TICK))
+    assert crop_shows_a_gv_mark((90, 150, 190, 250), _filled(TICK))
+    assert crop_shows_a_gv_mark(CROP, _filled(ROUND_THE_CROP))
+    assert not crop_shows_a_gv_mark(CROP, _filled(ROUND_THE_CROP, HOLE, even_odd=True))
+    assert crop_shows_a_gv_mark(CROP, _filled(ROUND_THE_CROP, HOLE, even_odd=False))
+
+
+@pytest.mark.parametrize(
+    ("area", "shown"),
+    [
+        ((120, 70, 133, 77), True),  # a 13 x 7 fill inside the crop
+        ((0, 0, 400, 400), True),  # a fill the crop lies wholly inside
+        ((190, 140, 260, 170), True),  # over the crop's corner
+        ((201, 60, 260, 70), False),  # beside it
+    ],
+    ids=["inside", "covering", "corner", "beside"],
+)
+def test_a_coloured_fill_is_a_gv_mark_wherever_it_covers_the_crop(
+    area: tuple[int, int, int, int], shown: bool
+) -> None:
+    """**#929, done when, third line.** A fill shows wherever it covers, inside the crop or round
+    it; so does a stroked curve's box, which holds the curve."""
+    assert crop_shows_a_gv_mark(CROP, _drawn(areas=(area,))) is shown
+
+
+@pytest.mark.parametrize(
+    ("stamp", "shown"),
+    [
+        ((120, 70, 150, 120), True),
+        ((90, 40, 100, 50), True),  # touching the crop's corner
+        ((250, 70, 280, 120), False),
+    ],
+    ids=["inside", "corner", "far"],
+)
+def test_a_stamp_pasted_onto_the_drawing_is_a_gv_mark_where_the_crop_shows_it(
+    stamp: tuple[int, int, int, int], shown: bool
+) -> None:
+    """**#929, done when, second line.** Whatever it holds: it is not the vendor's drawing."""
+    markup = _markup(pasted=(stamp,))
+
+    assert markup.shown
+    assert crop_shows_a_gv_mark(CROP, markup) is shown
+
+
+def test_a_page_with_nothing_in_colour_and_nothing_pasted_shows_no_mark() -> None:
+    assert not _markup().shown
+    assert not crop_shows_a_gv_mark(CROP, _markup())
+    assert not gv_mark_in_crop(None, _rendered(), _markup())
 
 
 def _rendered() -> RenderedPage:
@@ -305,15 +481,19 @@ FAR_AWAY = b'1 0 0 rg BT /F1 6 Tf 1 0 0 1 150 15 Tm (38") Tj ET'
 BLACK_OVER_THE_LABEL = b'0 0 0 rg BT /F1 6 Tf 1 0 0 1 22 72 Tm (38") Tj ET'
 
 
-def _sheet(mark: bytes) -> bytes:
+def _sheet(mark: bytes, *, pasted: tuple[bytes, bytes] | None = None) -> bytes:
     """A 200 × 100 pt page whose own text is the vendor's `24"`, with a pasted drawing over the
-    whole page holding `mark` — a snapshot's markup, as on the client's sets."""
+    whole page holding `mark` — a snapshot's markup, as on the client's sets — and, if given, a
+    second, small stamp pasted onto that drawing: its `/Rect` and what it draws (#929)."""
+    annotations = b"[6 0 R 8 0 R]" if pasted is not None else b"[6 0 R]"
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         (
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100]"
-            b" /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /Annots [6 0 R] >>"
+            b" /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /Annots "
+            + annotations
+            + b" >>"
         ),
         _stream(b'BT /F1 10 Tf 1 0 0 1 20 70 Tm (24") Tj ET', b""),
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
@@ -324,6 +504,16 @@ def _sheet(mark: bytes) -> bytes:
             b" /Matrix [1 0 0 1 0 0] /Resources << /Font << /F1 5 0 R >> >> ",
         ),
     ]
+    if pasted is not None:
+        rect, drawing = pasted
+        objects += [
+            b"<< /Type /Annot /Subtype /Stamp /Rect " + rect + b" /T (GV) /AP << /N 9 0 R >> >>",
+            _stream(
+                drawing,
+                b"/Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 14 12]"
+                b" /Matrix [1 0 0 1 0 0] ",
+            ),
+        ]
     out = bytearray(b"%PDF-1.7\n")
     offsets: list[int] = []
     for number, body in enumerate(objects, start=1):
@@ -417,14 +607,26 @@ PAIR = (
 
 
 def _extract(
-    session: Session, store: LocalStore, mark: bytes, *, reading: str = '24"'
+    session: Session,
+    store: LocalStore,
+    mark: bytes,
+    *,
+    reading: str = '24"',
+    pasted: tuple[bytes, bytes] | None = None,
 ) -> tuple[list[tuple[ObservationCandidate, str]], dict[str, object]]:
     """The page's `24"` readings with what read each, and the page result."""
-    revision = _revision(session, store, _sheet(mark))
+    revision = _revision(session, store, _sheet(mark, pasted=pasted))
     readers = tuple(
         _reader(reader.config.extractor, reader.config.model_id, reading=reading) for reader in PAIR
     )
-    (result,) = DatabaseStages(store, vision_readers=readers).extract_pages(session, revision.id)
+    (result,) = DatabaseStages(
+        store,
+        vision_readers=readers,
+        missing_space=MISSING_SPACE,
+        # The drawing's geometry stated, as in the demo: without it the cut-label guard (#919)
+        # cannot rule a cut out, and no agreement is confirmed whatever the crop shows.
+        **stated_geometry(PAIR[0].config.extractor),  # type: ignore[arg-type]
+    ).extract_pages(session, revision.id)
     rows = [
         (row, extractor)
         for row, extractor in session.execute(
@@ -501,3 +703,159 @@ def test_a_disagreement_in_a_marked_crop_is_still_a_conflict(
         "bedrock-ministral-3-3b": ("CONFLICTING", "SECOND_READER"),
     }
     assert payload["agreement_refusals"] == 0
+
+
+# ---------------------------------------------------------------------------
+# #929 in the stage: a long line, a fill and a pasted stamp over the vendor's `24"`
+# ---------------------------------------------------------------------------
+
+#: The label's crop is the `24"` (page `(20, 70)`, 10 pt high) and 9 pt round it. A red line the
+#: whole width of the page runs through it, nowhere near either of its ends; the same line in the
+#: vendor's black; and the same red line well below the crop.
+LONG_RED_LINE = b"1 0 0 RG 1 w 0 74 m 200 74 l S"
+LONG_BLACK_LINE = b"0 0 0 RG 1 w 0 74 m 200 74 l S"
+LONG_RED_LINE_BELOW = b"1 0 0 RG 1 w 0 20 m 200 20 l S"
+#: A yellow fill 13 × 7 pt over the label, as GV's pasted outlet symbols are filled; the same in grey.
+YELLOW_FILL = b"1 1 0.5 rg 18 66 13 7 re f"
+GREY_FILL = b"0.6 g 18 66 13 7 re f"
+#: A red box drawn round the whole label, every side well clear of its crop.
+RED_BOX_ROUND_THE_CROP = b"1 0 0 RG 1 w 2 45 120 53 re S"
+#: A small stamp pasted onto the drawing, holding only a black outline, over the label and far from
+#: it: the stamp counts whatever its colour, and only where the crop shows it.
+PASTED_OVER_THE_LABEL = (b"[18 66 32 78]", b"0 0 0 RG 0.5 w 1 1 12 10 re S")
+PASTED_FAR_AWAY = (b"[170 5 184 17]", b"0 0 0 RG 0.5 w 1 1 12 10 re S")
+
+
+@pytest.mark.parametrize(
+    ("mark", "pasted", "held_back"),
+    [
+        (LONG_RED_LINE, None, True),
+        (YELLOW_FILL, None, True),
+        (b"", PASTED_OVER_THE_LABEL, True),
+        (LONG_BLACK_LINE, None, False),
+        (GREY_FILL, None, False),
+        (LONG_RED_LINE_BELOW, None, False),
+        (RED_BOX_ROUND_THE_CROP, None, False),
+        (b"", PASTED_FAR_AWAY, False),
+    ],
+    ids=[
+        "long-red-line-through-the-crop",
+        "yellow-fill-over-the-label",
+        "stamp-pasted-over-the-label",
+        "long-black-line",
+        "grey-fill",
+        "long-red-line-below-the-crop",
+        "red-box-round-the-crop",
+        "stamp-pasted-far-away",
+    ],
+)
+def test_a_long_line_a_fill_or_a_pasted_stamp_in_the_crop_holds_the_agreement_back(
+    session: Session,
+    store: LocalStore,
+    mark: bytes,
+    pasted: tuple[bytes, bytes] | None,
+    held_back: bool,
+) -> None:
+    """**#929, done when.** Two readers of different vendors agree on the vendor's `24"`. A long red
+    line crossing their crop, a yellow fill over the label, or a stamp pasted onto the drawing over
+    it holds the agreement back, counted with the GV-mark reason. The same line or fill in black or
+    grey, a red line or a pasted stamp outside the crop, and a red box drawn round the label whose
+    sides the crop does not reach, leave it confirmed as before."""
+    rows, payload = _extract(session, store, mark, pasted=pasted)
+
+    lanes = {
+        extractor: (row.corroboration_status, row.corroboration_lane)
+        for row, extractor in rows
+        if extractor != "pdfplumber"
+    }
+    lane = (None, None) if held_back else ("RAW_CANDIDATE", "SECOND_READER")
+    assert lanes == {"bedrock-nova-2-lite": lane, "bedrock-ministral-3-3b": lane}
+    assert payload["agreement_refusals"] == (1 if held_back else 0)
+    assert payload["agreement_refusal_reasons"] == ([f"1 × {GV_MARK_REASON}"] if held_back else [])
+
+
+def test_the_stage_gathers_the_markup_by_the_one_production_function(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**One function, not three (#929).** The gate's markup is `coloured_markup`'s, asked at the
+    stage's dpi with the stage's own missing-space setting; the gate replay calls the same function
+    (`tests/scripts/test_gate_replay.py`), and so do the part pictures
+    (`tests/workflow/test_part_pictures.py`). Made to find nothing here, the long red line through
+    the crop holds nothing back."""
+    calls: list[int] = []
+
+    def nothing(*arguments: object, **keywords: object) -> ColouredMarkup:
+        found = coloured_markup(*arguments, **keywords)  # type: ignore[arg-type]
+        assert found.coloured_paths, "the real function finds the red line"
+        calls.append(int(keywords["dpi"]))  # type: ignore[call-overload]
+        assert keywords["missing_space"] is MISSING_SPACE
+        return _markup()
+
+    monkeypatch.setattr(stages_module, "coloured_markup", nothing)
+    _, payload = _extract(session, store, LONG_RED_LINE)
+
+    assert calls == [READER_RASTER_DPI]
+    assert payload["agreement_refusals"] == 0
+
+
+# ---------------------------------------------------------------------------
+# The new pair, Qwen3-VL + Nova 2 Lite (#907)
+# ---------------------------------------------------------------------------
+
+
+def _new_pair(reading: str) -> tuple[_Reader, _Reader]:
+    """The two readers #907 makes the pair, as they are configured: Qwen on the crop as cut, Nova 2
+    Lite on the label upright and sharper."""
+    from extraction.models.nova import (
+        NOVA_2_LITE_TAUGHT_EXTRACTOR,
+        QWEN3_VL_235B_EXTRACTOR,
+        vision_config_for_extractor,
+    )
+
+    configs = [
+        vision_config_for_extractor(extractor)
+        for extractor in (QWEN3_VL_235B_EXTRACTOR, NOVA_2_LITE_TAUGHT_EXTRACTOR)
+    ]
+    assert all(config is not None for config in configs)
+    return _Reader(configs[0], reading=reading), _Reader(configs[1], reading=reading)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("mark", "confirmed"),
+    [(OVER_THE_LABEL, False), (BLACK_OVER_THE_LABEL, True), (FAR_AWAY, True)],
+    ids=["gv-mark-over-the-label", "black-over-the-label", "gv-mark-far-away"],
+)
+def test_the_new_pair_agreeing_on_a_gv_mark_s_number_is_held_back(
+    session: Session, store: LocalStore, mark: bytes, confirmed: bool
+) -> None:
+    """**#901 holds for the new pair.** In the trial Qwen3-VL and Nova 2 Lite agreed on GV's own
+    red number in three crops whose vendor number was hidden (#728, 2026-10-04). The same agreement
+    here — both readers say what GV wrote — confirms nothing where the crop shows GV's mark, and is
+    confirmed as before where the mark is the vendor's black or lies outside the crop. Two vendors,
+    so without the mark the pair would confirm it (#775)."""
+    from workflow.reader_pictures import PictureSettings
+
+    revision = _revision(session, store, _sheet(mark))
+    readers = _new_pair('24"')
+    stages = DatabaseStages(
+        store,
+        vision_readers=readers,
+        reader_pictures=PictureSettings(sharper_dpi=900),
+        missing_space=MISSING_SPACE,
+        **stated_geometry(readers[0].config.extractor),  # type: ignore[arg-type]
+    )
+
+    (result,) = stages.extract_pages(session, revision.id)
+
+    lanes = {
+        extractor: (row.corroboration_status, row.corroboration_lane)
+        for row, extractor in session.execute(
+            select(ObservationCandidate, ExtractionRun.extractor).join(
+                ExtractionRun, ObservationCandidate.extraction_run_id == ExtractionRun.id
+            )
+        ).all()
+        if row.raw_text == '24"' and extractor != "pdfplumber"
+    }
+    lane = ("RAW_CANDIDATE", "SECOND_READER") if confirmed else (None, None)
+    assert lanes == {"bedrock-qwen3-vl-235b": lane, "bedrock-nova-2-lite-taught": lane}
+    assert result.payload["agreement_refusals"] == (0 if confirmed else 1)

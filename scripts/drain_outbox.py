@@ -129,6 +129,50 @@ def _reader_configuration() -> tuple[object | None, object | None]:
     )
 
 
+#: How a suggested part's picture is cut (#897): how far past the part's outline it reaches, in PDF
+#: points, and the resolution the vendor's page is rendered at. No defaults.
+PART_PICTURE_MARGIN_VARIABLE = "GV_PART_PICTURE_MARGIN_PT"
+PART_PICTURE_DPI_VARIABLE = "GV_PART_PICTURE_DPI"
+
+
+def _part_picture_configuration(*, required: bool) -> object | None:
+    """The stated way to cut each part's picture, or `None` where nothing asks for one (#897).
+
+    **Required whenever the worker suggests parts** (`required`, which is whenever the localized
+    reader's settings are stated): the admin decided on 2026-10-04 that every suggested part gets
+    its own picture, so a worker that suggests parts and cannot picture them refuses to start
+    rather than leaving the Measure page without them. Otherwise optional, for a part a person adds,
+    but never half-stated. Neither value has a default; a value that is not a number is refused
+    rather than ignored.
+    """
+    stated = {
+        name: os.environ.get(name, "").strip()
+        for name in (PART_PICTURE_MARGIN_VARIABLE, PART_PICTURE_DPI_VARIABLE)
+    }
+    missing = [name for name, value in stated.items() if not value]
+    if not required and len(missing) == len(stated):
+        return None
+    if missing:
+        raise ValueError(
+            "every suggested part gets a picture (#897), and how it is cut has no default; "
+            "missing " + ", ".join(missing)
+        )
+    from decimal import InvalidOperation
+
+    from workflow.part_pictures import PartPictureSettings
+
+    try:
+        margin = Decimal(stated[PART_PICTURE_MARGIN_VARIABLE])
+    except InvalidOperation as error:
+        raise ValueError(
+            f"{PART_PICTURE_MARGIN_VARIABLE} must be a number of PDF points, such as 36"
+        ) from error
+    raw_dpi = stated[PART_PICTURE_DPI_VARIABLE]
+    if not raw_dpi.isdigit():
+        raise ValueError(f"{PART_PICTURE_DPI_VARIABLE} must be a whole number of dots per inch")
+    return PartPictureSettings(margin_pt=margin, dpi=int(raw_dpi))
+
+
 def _automatic_typing_configuration() -> AutomaticTypingSettings | None:
     """Enable only explicitly approved exact-tag types; all other readings stay for review."""
     raw = os.environ.get("GV_AUTOMATIC_TYPES", "").strip()
@@ -235,7 +279,11 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
     from storage.local import LocalStore
     from workflow.findings_bedrock import configured_findings_composer
-    from workflow.stages import DatabaseStages, fraction_parts_from_environment
+    from workflow.stages import (
+        DatabaseStages,
+        fraction_parts_from_environment,
+        missing_space_from_environment,
+    )
 
     # A LocalStore needs a signing key to satisfy its interface, but this worker never issues upload
     # tickets.  It only reads already-confirmed objects from the same explicitly configured dev root.
@@ -247,6 +295,7 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
     automatic_typing = _automatic_typing_configuration()
     from app.config import Settings
     from workflow.glyph_route import glyph_route_from_environment
+    from workflow.reader_pictures import picture_settings_from_environment
     from workflow.reading_agent import reading_agent_from_environment
 
     return DatabaseStages(
@@ -267,6 +316,17 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         # Off unless GV_FRACTION_PARTS is on, and then every drawing setting is required (#848),
         # and so is the gate reader above: it is the route's second reader (#865).
         fraction_parts=fraction_parts_from_environment(),
+        # The dpi an upright, sharper picture is rendered at (#907). No default: a stage with a
+        # reader shown one refuses to start without it.
+        reader_pictures=picture_settings_from_environment(),
+        # Always required: how wide a gap inside the inches is a space the file left out (#912).
+        # Unstated, building the stages fails with an error naming the variable, so no page is
+        # read without it.
+        missing_space=missing_space_from_environment(),
+        # Required wherever parts are suggested, which is wherever the reader's settings are (#897).
+        part_pictures=_part_picture_configuration(  # type: ignore[arg-type]
+            required=association is not None
+        ),
     )
 
 
@@ -383,6 +443,20 @@ def _ensure_workflow_run(
         session.flush()  # type: ignore[union-attr]
 
 
+def _cut_part_pictures(session: object, package_revision_id: UUID) -> Mapping[str, object]:
+    """Cut the pictures still missing on one revision's drawings (#897).
+
+    What a person adding a part asks for: the part is recorded by the API, which may not render a
+    page, and its picture is cut here. It writes pictures and nothing else, and asking twice cuts
+    nothing twice.
+    """
+    stages = _stages()
+    cut: Mapping[str, object] = stages.cut_part_pictures(  # type: ignore[attr-defined]
+        session, package_revision_id
+    )
+    return cut
+
+
 def _propose_measurements(session: object, package_revision_id: UUID) -> Mapping[str, object]:
     """Ask a model which reading fills which field, check it, and file what survived.
 
@@ -470,6 +544,33 @@ def _extract_package(
     return results
 
 
+def _consume(
+    session: object, *, workflow: str, payload: Mapping[str, object], idempotency_key: str
+) -> Mapping[str, object]:
+    """Do the work one outbox row names, in the caller's session. Commits nothing.
+
+    A workflow with no local consumer is refused, never dropped: the row stays undispatched for
+    whichever worker does consume it.
+    """
+    from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
+
+    revision_id = UUID(str(payload["package_revision_id"]))
+    if workflow == "extract_package":
+        return _extract_package(session, revision_id, idempotency_key)
+    if workflow == "run_checks":
+        raw = payload.get("discriminators")
+        # Narrowed rather than cast: the payload is JSON from a database row, so its shape is a
+        # claim this process checks rather than assumes. A malformed declaration lets a rule abstain
+        # rather than selecting a layout by guess.
+        stated = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+        return _run_checks(session, revision_id, idempotency_key, stated)
+    if workflow == CUT_PART_PICTURES_WORKFLOW:
+        # A person added a part (#897): cut its picture, and any other still missing.
+        return _cut_part_pictures(session, revision_id)
+    print(f"  no local consumer for {workflow!r} — leaving it for its worker")
+    raise NotImplementedError(f"no local consumer for {workflow!r}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--watch", action="store_true", help="keep draining rather than one pass")
@@ -500,18 +601,9 @@ def main(argv: list[str] | None = None) -> int:
         """
         revision_id = UUID(str(payload["package_revision_id"]))
         with factory() as session:
-            if workflow == "extract_package":
-                result = _extract_package(session, revision_id, idempotency_key)
-            elif workflow == "run_checks":
-                raw = payload.get("discriminators")
-                # Narrowed rather than cast: the payload is JSON from a database row, so its shape is
-                # a claim this process checks rather than assumes. A malformed declaration lets a
-                # rule abstain rather than selecting a layout by guess.
-                stated = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
-                result = _run_checks(session, revision_id, idempotency_key, stated)
-            else:
-                print(f"  no local consumer for {workflow!r} — leaving it for its worker")
-                raise NotImplementedError(f"no local consumer for {workflow!r}")
+            result = _consume(
+                session, workflow=workflow, payload=payload, idempotency_key=idempotency_key
+            )
             session.commit()
         print(f"  {workflow} {revision_id}: {dict(result)}")
 

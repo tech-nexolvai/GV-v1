@@ -21,14 +21,22 @@ removable.
 **There is no "confirm all".** Each call decides one suggestion, because each decision is a person
 looking at one part.
 
-**The picture is the one stored for the suggestion.** Today that is the crop of the reading its code
-came from, cut by the evidence stage as every reading's is. A suggestion with no code has none, and
-`has_crop` says so rather than offering some other region.
+**Each suggestion has its own picture (#897)**, cut by the worker from the vendor's drawing: the
+part's outline and a stated margin around it (`workflow/part_pictures.py`). A part a person adds is
+cut once the worker reaches it, and until then, or where the page could not be rendered, it has
+none and `has_picture` says so rather than offering some other region. **A suggestion with a code
+also has the crop of the reading its code came from**, cut by the evidence stage as every reading's
+is (`has_crop`), so a person can check the code itself.
+
+**A picture that shows GV's own coloured marks says so (#921)**: `picture_gv_marks` is what the
+worker's check found when it cut the picture, `not_checked` for one cut before the check existed.
+It changes nothing else here: no part, decision or link depends on it.
 
 **No extraction imports**, as in `workflow/view_roles.py`: the API reaches this, and
 `tests/api/test_no_heavy_work.py` keeps `app/api/` away from anything that reads a PDF.
 
-Source: issue #882; #748 plan, step 4. Verification: tests/api/test_drawing_parts.py.
+Source: issues #882, #897 and #921; #748 plan, step 4. Verification:
+tests/api/test_drawing_parts.py.
 """
 
 from __future__ import annotations
@@ -54,6 +62,7 @@ from app.models import (
 )
 from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind
 from vocabulary.part_kinds import PartKind
+from workflow.part_pictures import GvMarks, pictured
 from workflow.parts import confirm_part, record_part_proposal, withdraw_part
 from workflow.view_roles import revision_views
 
@@ -116,8 +125,14 @@ class ListedPart:
     """Its place on its drawing, `1` for the leftmost."""
     decision: PartConfirmation | None
     """The decision nothing has replaced, or `None` while nobody has decided."""
+    has_picture: bool
+    """Whether its own picture is stored (#897)."""
+    picture_gv_marks: GvMarks | None
+    """What its picture was found to show of GV's own coloured marks (#921); `None` with no
+    picture."""
     has_crop: bool
-    """Whether a picture is stored for it (the module docstring says which)."""
+    """Whether the crop of the reading its code came from is stored (the module docstring says
+    why both)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +161,7 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
         )
     )
     decisions = _current_decisions(session, [proposal.id for proposal in proposals])
+    pictures = pictured(session, [proposal.id for proposal in proposals])
     cropped = _cropped_candidates(session, proposals)
     by_view: dict[UUID, list[PartProposal]] = {}
     for proposal in proposals:
@@ -165,6 +181,8 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
                         proposal=proposal,
                         position=index,
                         decision=decisions.get(proposal.id),
+                        has_picture=proposal.id in pictures,
+                        picture_gv_marks=pictures.get(proposal.id),
                         has_crop=proposal.code_candidate_id in cropped,
                     )
                     for index, proposal in enumerate(on_view, start=1)

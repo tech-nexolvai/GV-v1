@@ -14,6 +14,7 @@ import {
   type PartPoint,
   type SuggestedPart,
 } from './drawingPartChoices.js';
+import { GvMarksWarning } from './GvMarksWarning.js';
 
 /** A part a person adds, as the form hands it over. */
 export interface NewPart {
@@ -32,10 +33,18 @@ export interface NewPart {
  *
  * **One part at a time.** Each part has its own buttons and its own code box, and there is
  * deliberately no "confirm all": each decision is a person looking at one part.
+ *
+ * **Each part shows its own picture (#897)**, the vendor's drawing round it, once the worker has cut
+ * it; a part with a code also shows where the code is printed. A part with no picture says so, and
+ * says where to find it, rather than showing some other region.
+ *
+ * **A picture that shows GV's own coloured marks says so under it (#921)**, because the marks are
+ * baked into the vendor's drawing there and the picture cannot leave them out.
  */
 export function DrawingPartsList({
   drawings,
   saving,
+  renderPicture,
   renderCrop,
   onConfirm,
   onWithdraw,
@@ -44,7 +53,9 @@ export function DrawingPartsList({
   drawings: readonly PartDrawing[];
   /** The part (or, while adding, the drawing) being saved, so its buttons cannot be pressed twice. */
   saving: string | null;
-  /** The stored picture of a part that has one. */
+  /** The part's own picture, for a part that has one. */
+  renderPicture: (drawing: PartDrawing, part: SuggestedPart) => ReactNode;
+  /** The crop of the reading a part's code came from, for a part that has one. */
   renderCrop: (drawing: PartDrawing, part: SuggestedPart) => ReactNode;
   onConfirm: (part: SuggestedPart, kind: PartKind, code: string | null) => void;
   onWithdraw: (part: SuggestedPart) => void;
@@ -77,6 +88,7 @@ export function DrawingPartsList({
                   drawing={drawing}
                   part={part}
                   saving={saving === part.proposal_id}
+                  picture={part.has_picture ? renderPicture(drawing, part) : null}
                   crop={part.has_crop ? renderCrop(drawing, part) : null}
                   onConfirm={onConfirm}
                   onWithdraw={onWithdraw}
@@ -97,6 +109,7 @@ function PartRow({
   drawing,
   part,
   saving,
+  picture,
   crop,
   onConfirm,
   onWithdraw,
@@ -104,6 +117,7 @@ function PartRow({
   drawing: PartDrawing;
   part: SuggestedPart;
   saving: boolean;
+  picture: ReactNode;
   crop: ReactNode;
   onConfirm: (part: SuggestedPart, kind: PartKind, code: string | null) => void;
   onWithdraw: (part: SuggestedPart) => void;
@@ -114,11 +128,18 @@ function PartRow({
   return (
     <li className="drawing-parts__item" data-decided={part.decision !== null}>
       <div className="drawing-parts__picture">
-        {crop ?? (
+        {picture ?? (
           <p className="drawing-parts__no-picture">
             No picture of this part is stored yet. Find it on page {page}: it is number{' '}
             {part.position} from the left in this drawing.
           </p>
+        )}
+        {picture && <GvMarksWarning marks={part.picture_gv_marks} />}
+        {crop && (
+          <figure className="drawing-parts__code-crop">
+            {crop}
+            <figcaption>Where its code is printed</figcaption>
+          </figure>
         )}
       </div>
       <div className="drawing-parts__facts">

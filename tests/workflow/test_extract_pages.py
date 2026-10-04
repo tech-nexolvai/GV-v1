@@ -50,11 +50,11 @@ from app.models.runs import ExtractionFailure, ExtractionRun, TaskRun, WorkflowR
 from app.telemetry.tracing import configure_tracing
 from evidence.coordinates import ImagePoint
 from extraction.ocr import OcrItem
-from extraction.reader import UnreadablePdf
+from extraction.reader import MissingSpace, UnreadablePdf
 from storage.hashing import ArtifactCorrupt
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from workflow.config import READER_RASTER_DPI
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
@@ -233,7 +233,7 @@ def test_a_bare_number_is_recorded_without_a_value(session: Session, store: Loca
     tokenised away. So a bare number keeps its reading and claims no value.
     """
     revision = _revision(session, store)
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     bare = _candidates(session)["984"]
 
@@ -247,7 +247,7 @@ def test_a_bare_number_is_recorded_without_a_value(session: Session, store: Loca
 def test_a_token_carrying_its_own_unit_is_parsed(session: Session, store: LocalStore) -> None:
     """The control. Without it, a recorder that valued nothing would pass the test above."""
     revision = _revision(session, store)
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     # Read whole: `3/4"` alone would be three quarters of an inch for a label of 38 3/4 (#738).
     inches = _candidates(session)['38 3/4"']
@@ -273,7 +273,7 @@ def test_text_that_is_not_a_dimension_is_still_recorded(
     would be gone, and so would any dimension the filter got wrong.
     """
     revision = _revision(session, store)
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     found = _candidates(session)
 
@@ -286,7 +286,7 @@ def test_the_two_failures_are_told_apart(session: Session, store: LocalStore) ->
     """A number with no unit and a word that is not a number mean different things to whoever reads
     the row: one is a dimension worth chasing, the other is a title block."""
     revision = _revision(session, store)
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     found = _candidates(session)
 
@@ -307,7 +307,7 @@ def test_the_polygon_is_integer_image_pixels(session: Session, store: LocalStore
     candidate written in stored space would have geometry nothing could place.
     """
     revision = _revision(session, store)
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     candidates = _candidates(session)
     # Asserted before the loop, because a `for` over an empty set makes every property below vacuous
@@ -332,7 +332,7 @@ def test_a_page_manifest_and_an_extraction_run_are_written(
     first.
     """
     revision = _revision(session, store)
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     pages = list(session.execute(select(Page)).scalars())
     runs = list(session.execute(select(ExtractionRun)).scalars())
@@ -344,7 +344,7 @@ def test_a_page_manifest_and_an_extraction_run_are_written(
     assert len(runs) == 1
     assert runs[0].extractor == "pdfplumber"
     assert runs[0].dpi == READER_RASTER_DPI == 300
-    assert runs[0].config_hash == "dpi=300"
+    assert runs[0].config_hash == "dpi=300;missing_space>=0.1"
 
 
 def test_running_twice_writes_nothing_the_second_time(session: Session, store: LocalStore) -> None:
@@ -361,7 +361,7 @@ def test_running_twice_writes_nothing_the_second_time(session: Session, store: L
     part of the extraction run's identity now — that gets its own run and its own rows.
     """
     revision = _revision(session, store)
-    stages = DatabaseStages(store)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
 
     stages.extract_pages(session, revision.id)
     first = len(list(session.execute(select(ObservationCandidate)).scalars()))
@@ -385,11 +385,14 @@ def test_a_different_dpi_is_a_different_extraction_run(session: Session, store: 
     """
     revision = _revision(session, store)
 
-    DatabaseStages(store, dpi=150).extract_pages(session, revision.id)
-    DatabaseStages(store, dpi=300).extract_pages(session, revision.id)
+    DatabaseStages(store, dpi=150, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
+    DatabaseStages(store, dpi=300, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     runs = list(session.execute(select(ExtractionRun)).scalars())
-    assert sorted(run.config_hash for run in runs) == ["dpi=150", "dpi=300"]
+    assert sorted(run.config_hash for run in runs) == [
+        "dpi=150;missing_space>=0.1",
+        "dpi=300;missing_space>=0.1",
+    ]
 
     # And each run's candidates belong to it — the second read is recorded, not suppressed by the
     # repeat guard, because a different configuration is different work rather than the same work
@@ -400,6 +403,39 @@ def test_a_different_dpi_is_a_different_extraction_run(session: Session, store: 
             for row in session.execute(select(ObservationCandidate)).scalars()
             if row.extraction_run_id == run.id
         ], f"run {run.config_hash} recorded no candidates"
+
+
+def test_a_different_missing_space_setting_is_a_different_extraction_run(
+    session: Session, store: LocalStore
+) -> None:
+    """**The reader's setting is part of what read the page** (#912), as the resolution is: a re-read
+    under another value is another run with its own rows, never the first run's rows claimed by a
+    setting that did not produce them."""
+    revision = _revision(session, store)
+    wider = MissingSpace(gap_heights=Decimal("0.2"))
+
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=wider).extract_pages(session, revision.id)
+
+    runs = list(session.execute(select(ExtractionRun)).scalars())
+    assert sorted(run.config_hash for run in runs) == [
+        "dpi=300;missing_space>=0.1",
+        "dpi=300;missing_space>=0.2",
+    ]
+
+
+def test_stages_built_without_the_reader_setting_read_no_page(
+    session: Session, store: LocalStore
+) -> None:
+    """**No default** (#912). Stages built without the setting refuse to read, naming it, before any
+    run is opened or any reading written; nothing here supplies a value."""
+    revision = _revision(session, store)
+
+    with pytest.raises(ValueError, match="GV_READER_MISSING_SPACE_HEIGHTS"):
+        DatabaseStages(store).extract_pages(session, revision.id)
+
+    assert list(session.execute(select(ExtractionRun)).scalars()) == []
+    assert list(session.execute(select(ObservationCandidate)).scalars()) == []
 
 
 def test_an_unreadable_artifact_fails_the_stage_rather_than_skipping_the_document(
@@ -434,7 +470,9 @@ def test_an_unreadable_artifact_fails_the_stage_rather_than_skipping_the_documen
             return super().get(key)
 
     with pytest.raises(ArtifactCorrupt):
-        DatabaseStages(_OneBadObject(store.root)).extract_pages(session, revision.id)
+        DatabaseStages(_OneBadObject(store.root), missing_space=MISSING_SPACE).extract_pages(
+            session, revision.id
+        )
 
     # The first document *was* read before the failure — asserted, because if the ordering ever put
     # the failing document first this test would go quiet rather than fail, and prove nothing again.
@@ -457,7 +495,7 @@ def test_the_page_result_reports_what_was_written(session: Session, store: Local
     make a page that read nothing indistinguishable from a page nobody read."""
     revision = _revision(session, store)
 
-    results = DatabaseStages(store).extract_pages(session, revision.id)
+    results = DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     assert len(results) == 1
     assert results[0].index == 0
@@ -479,7 +517,7 @@ def test_no_candidate_claims_a_semantic_type(session: Session, store: LocalStore
     internally consistent and completely wrong.
     """
     revision = _revision(session, store)
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     candidates = _candidates(session)
     # `all()` is True for an empty set, so without this the assertion below would hold most strongly
@@ -493,12 +531,12 @@ def test_without_an_artifact_store_it_does_nothing_rather_than_failing(
 ) -> None:
     """No settings-driven store factory exists for a worker yet. Reporting nothing read is a fact a
     caller can act on; crashing on a missing dependency would look like a broken document."""
-    assert DatabaseStages(None).extract_pages(session, uuid4()) == ()
+    assert DatabaseStages(None, missing_space=MISSING_SPACE).extract_pages(session, uuid4()) == ()
 
 
 def test_a_revision_with_no_documents_reads_nothing(session: Session, store: LocalStore) -> None:
     """An empty result, and no page or run written for a revision that has nothing attached."""
-    assert DatabaseStages(store).extract_pages(session, uuid4()) == ()
+    assert DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, uuid4()) == ()
     assert list(session.execute(select(Page)).scalars()) == []
 
 
@@ -514,7 +552,7 @@ def test_an_unreadable_document_does_not_produce_empty_pages(
     """
     revision = _revision(session, store, data=b"%PDF-1.4\nthis will not parse\n")
 
-    results = DatabaseStages(store).extract_pages(session, revision.id)
+    results = DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     assert results == ()
     assert list(session.execute(select(Page)).scalars()) == []
@@ -547,7 +585,7 @@ def test_a_page_that_will_not_parse_is_told_apart_from_a_page_with_nothing_on_it
     monkeypatch.setattr("workflow.stages.read_page_contents", _fails)
     revision = _revision(session, store)
 
-    results = DatabaseStages(store).extract_pages(session, revision.id)
+    results = DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     # The page itself is still recorded — the manifest read fine, so the page exists and is known.
     assert [page.index for page in session.execute(select(Page)).scalars()] == [0]
@@ -575,7 +613,7 @@ def test_the_failure_records_the_error_type_and_not_its_message(
 
     monkeypatch.setattr("workflow.stages.read_page_contents", _fails)
     revision = _revision(session, store)
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     failure = session.execute(select(ExtractionFailure)).scalars().one()
     stored = " ".join(
@@ -607,7 +645,7 @@ def test_the_work_happens_inside_spans_that_name_the_document_and_the_page(
     provider.add_span_processor(processor)
     try:
         revision = _revision(session, store)
-        DatabaseStages(store).extract_pages(session, revision.id)
+        DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
         spans = {span.name: span for span in exporter.get_finished_spans()}
     finally:
         processor.shutdown()
@@ -691,7 +729,9 @@ def test_a_page_with_no_vector_text_is_read_by_ocr_instead_of_skipped(
         )
     )
 
-    results = DatabaseStages(store, ocr_engine=engine).extract_pages(session, revision.id)
+    results = DatabaseStages(store, ocr_engine=engine, missing_space=MISSING_SPACE).extract_pages(
+        session, revision.id
+    )
 
     assert [result.payload["route"] for result in results] == ["ocr"]
     assert [result.payload["candidates"] for result in results] == [1]
@@ -715,7 +755,9 @@ def test_an_ocr_reading_keeps_its_confidence_where_a_vector_one_has_none(
         (OcrItem(text="984 mm", confidence=Decimal("0.87"), image_extent=_OCR_CORNERS),)
     )
 
-    DatabaseStages(store, ocr_engine=engine).extract_pages(session, revision.id)
+    DatabaseStages(store, ocr_engine=engine, missing_space=MISSING_SPACE).extract_pages(
+        session, revision.id
+    )
 
     row = _candidates(session)["984 mm"]
     assert row.confidence == Decimal("0.87")
@@ -757,7 +799,9 @@ def test_split_vendor_dual_notation_becomes_one_untyped_inch_reading(
         )
     )
 
-    results = DatabaseStages(store, ocr_engine=engine).extract_pages(session, revision.id)
+    results = DatabaseStages(store, ocr_engine=engine, missing_space=MISSING_SPACE).extract_pages(
+        session, revision.id
+    )
 
     assert [result.payload["candidates"] for result in results] == [1]
     row = _candidates(session)["76 [3]"]
@@ -779,7 +823,9 @@ def test_an_ocr_reading_is_recorded_under_its_own_extraction_run(
         (OcrItem(text="984 mm", confidence=Decimal("0.87"), image_extent=_OCR_CORNERS),)
     )
 
-    DatabaseStages(store, ocr_engine=engine).extract_pages(session, revision.id)
+    DatabaseStages(store, ocr_engine=engine, missing_space=MISSING_SPACE).extract_pages(
+        session, revision.id
+    )
 
     runs = {run.extractor: run for run in session.execute(select(ExtractionRun)).scalars()}
     assert "stub-ocr" in runs, f"the OCR reading was filed under {sorted(runs)}"
@@ -803,7 +849,9 @@ def test_a_vector_page_never_reaches_the_ocr_route(session: Session, store: Loca
 
     revision = _revision(session, store)
 
-    results = DatabaseStages(store, ocr_engine=_Exploding()).extract_pages(session, revision.id)
+    results = DatabaseStages(
+        store, ocr_engine=_Exploding(), missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
 
     assert [result.payload["route"] for result in results] == ["vector"]
 
@@ -827,7 +875,7 @@ def test_a_document_whose_bytes_changed_in_storage_is_refused_and_recorded(
     """
     revision = _revision(session, store, data=DRAWING, stored=SECOND_DRAWING)
 
-    results = DatabaseStages(store).extract_pages(session, revision.id)
+    results = DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     assert results == ()
     assert list(session.execute(select(Page)).scalars()) == []
@@ -863,7 +911,7 @@ def test_one_corrupt_document_does_not_stop_the_others_being_read(
         when=datetime.now(UTC) + timedelta(seconds=1),
     )
 
-    results = DatabaseStages(store).extract_pages(session, revision.id)
+    results = DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     assert results, "the second document was not read"
     failure = session.execute(select(ExtractionFailure)).scalars().one()
@@ -900,7 +948,9 @@ def test_ocr_text_with_no_numeral_is_counted_and_not_recorded(
     """
     revision = _revision(session, store, data=SCANNED)
 
-    results = DatabaseStages(store, ocr_engine=_line_work_ocr()).extract_pages(session, revision.id)
+    results = DatabaseStages(
+        store, ocr_engine=_line_work_ocr(), missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
 
     assert set(_candidates(session)) == {"724 mm", "[4]"}
     (payload,) = [result.payload for result in results]
@@ -913,7 +963,9 @@ def test_a_real_number_among_line_work_keeps_its_value(session: Session, store: 
     """**Outcome: the one real reading still parses to its exact value.** The filter costs no reading."""
     revision = _revision(session, store, data=SCANNED)
 
-    DatabaseStages(store, ocr_engine=_line_work_ocr()).extract_pages(session, revision.id)
+    DatabaseStages(store, ocr_engine=_line_work_ocr(), missing_space=MISSING_SPACE).extract_pages(
+        session, revision.id
+    )
 
     row = _candidates(session)["724 mm"]
     assert row.value_numerator is not None and row.value_denominator is not None
@@ -951,6 +1003,7 @@ def test_a_box_whose_text_was_not_recorded_is_still_read_by_the_vision_readers(
         store,
         ocr_engine=_line_work_ocr(),
         vision_readers=(reader,),  # type: ignore[arg-type]
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     assert len(reader.requests) == 7
@@ -976,7 +1029,9 @@ def test_a_rerun_does_not_reuse_an_ocr_run_recorded_under_the_old_rule(
     """
     revision = _revision(session, store, data=SCANNED)
 
-    DatabaseStages(store, ocr_engine=_line_work_ocr()).extract_pages(session, revision.id)
+    DatabaseStages(store, ocr_engine=_line_work_ocr(), missing_space=MISSING_SPACE).extract_pages(
+        session, revision.id
+    )
 
     runs = [
         run

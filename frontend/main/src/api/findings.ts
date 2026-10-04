@@ -23,6 +23,8 @@ export function toFinding(listed: Listed): Finding {
   return {
     id: listed.id,
     check_id: listed.rule_id,
+    scope_item_id: listed.scope_item_id,
+    scope_label: listed.scope_label,
     // The rule id until the snapshot's human name is on the wire. Better a real identifier than a
     // placeholder sentence nobody can look up.
     name: listed.rule_id,

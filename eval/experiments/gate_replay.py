@@ -16,13 +16,17 @@ the reading agent has added its looks; here a region's readings, the agent's amo
 in the one call. A second-reader agreement is what counts, because it is the only lane
 `evidence/gate.py` seals.
 
-**Candidate guards are measured here.** Each is a pure pre-filter, decided from the region's
-geometry and readings before the gate is asked. Four can only hold an agreement back; the fifth asks
-what a label's own millimetres would add if they could confirm its inches, on the file's own text
-only (#691). The admin decided on 2026-10-03, before any of this was counted, that a kind of reading
-whose readers agree on a wrong value always goes to a person. **One guard is now the production
-gate's: a GV mark in the crop** (#901). Its test is the stage's own `workflow.stages.gv_mark_in_crop`,
-which `scripts/gate_replay.py` calls for `Facts.gv_mark`; the other four are wired in nowhere.
+**Candidate guards are measured here.** Most are pure pre-filters, decided from the region's
+geometry and readings before the gate is asked; one reads the value the gate agreed. All but one can
+only hold an agreement back; that one asks what a label's own millimetres would add if they could
+confirm its inches, on the file's own text only (#691). The admin decided on 2026-10-03, before any
+of this was counted, that a kind of reading whose readers agree on a wrong value always goes to a
+person. **Three guards are now the production gate's: a GV mark in the crop** (#901), **a crop that
+cuts the label** (#919) **and an agreed whole number and a fraction** (#924). Their tests are the
+stage's own `workflow.stages.gv_mark_in_crop`, `workflow.stages.cut_label_refusal` and
+`workflow.stages.mixed_fraction_refusal`: `scripts/gate_replay.py` calls the first two for
+`Facts.gv_mark` and `Facts.cut_at_edge`, and `judge` calls the third on what the gate agreed. The gate
+as it now is, all three together, is measured as one more guard. The other two are wired in nowhere.
 
 **Zero wrong is not safe.** With no wrong agreement among n, the true rate is only known to be
 below about 3/n, with about 95% confidence (the rule of three): nine agreements bound it below a
@@ -56,7 +60,7 @@ from evidence.corroborate import corroborate, independence_key
 from extraction.agent.observations import value_of
 from units.dual import DualDimension, DualDimensionParseError, parse_dual
 from units.measurement import Measurement
-from workflow.stages import EXACT_TEXT_EXTRACTORS
+from workflow.stages import EXACT_TEXT_EXTRACTORS, mixed_fraction_refusal
 
 __all__ = [
     "Agreement",
@@ -79,7 +83,6 @@ __all__ = [
     "judge",
     "outcome",
     "pixels",
-    "promoted_numerator",
     "region_of",
     "regions_from_scorecard",
     "render_markdown",
@@ -204,7 +207,8 @@ class Facts:
     """What the file's own geometry says about a region: all a guard reads but the readings."""
 
     cut_at_edge: bool
-    """The crop production cuts round it cuts a label (`RegionFacts.cut_at_edge`)."""
+    """The crop production cuts round it cuts a label off, or cannot be shown not to. Decided by
+    the production gate's own test, `workflow.stages.cut_label_refusal` (#919)."""
 
     sideways: bool
     """The label runs up the page (`RegionFacts.rotation_degrees` is not 0)."""
@@ -232,7 +236,8 @@ def group_rows(rows: Sequence[StoredRow]) -> tuple[Region, ...]:
     """One region per page and recorded polygon — the key `_apply_cross_route_corroboration` uses.
 
     Every row of a region is a reading of it, whichever route wrote it, and they are judged
-    together: a reading with no value blocks an agreement here, as in the stage's first pass.
+    together. A reading with no value abstains, here as in the stage (#924): it neither agrees nor
+    blocks an agreement.
     """
     groups: dict[tuple[int, tuple[tuple[int, int], ...]], list[StoredRow]] = {}
     for row in rows:
@@ -353,6 +358,8 @@ class Agreement:
 
     value: Measurement
     lane: CorroborationLane
+    text: str = ""
+    """What a reading that agreed it says, for the guard that reads it (#924)."""
 
 
 def _candidate(
@@ -430,7 +437,7 @@ def gate(
         else:
             duals.append((reading, dual))
 
-    confirmed: list[Measurement] = []
+    confirmed: list[tuple[Measurement, str]] = []
     for number, (reading, dual) in enumerate(duals):
         result = corroborate(
             (
@@ -452,7 +459,7 @@ def gate(
             and dual.alternate is not None
             and mm_confirms(reading)
         ):
-            confirmed.append(dual.alternate)
+            confirmed.append((dual.alternate, reading.raw_text))
 
     if len(grouped) >= 2:
         result = corroborate(
@@ -471,12 +478,14 @@ def gate(
         if result.status is EvidenceStatus.CONFLICTING:
             return None
         if result.lane is CorroborationLane.SECOND_READER:
-            value = grouped[0].value
-            # `corroborate` agrees only where every reading has the same value, so this one is it.
-            assert value is not None
-            return Agreement(value, CorroborationLane.SECOND_READER)
+            # The value the readings that agreed share: `corroborate` agrees only where every
+            # reading with a value has the same one, and one with none is not among them (#924).
+            agreed = {f"reading-{number}": reading for number, reading in enumerate(grouped)}
+            first = agreed[result.supported_by[0]]
+            assert first.value is not None
+            return Agreement(first.value, CorroborationLane.SECOND_READER, first.raw_text)
     if confirmed:
-        return Agreement(confirmed[0], CorroborationLane.DUAL_UNIT)
+        return Agreement(confirmed[0][0], CorroborationLane.DUAL_UNIT, confirmed[0][1])
     return None
 
 
@@ -486,41 +495,38 @@ def gate(
 
 
 class Guard(StrEnum):
-    """A candidate pre-filter on the gate. **`GV_MARK` is what production does since #901**;
-    `NONE` is the readers' agreement alone, which is what it did before."""
+    """A candidate guard on the gate. **`GATE` is what production does since #924**: `GV_MARK`
+    (#901), `CUT` (#919) and `MIXED_FRACTION` (#924) together. `NONE` is the readers' agreement
+    alone, which is what it did before #901; `GV_MARK` alone is what it did from #901 to #919, and
+    `GATE_919` from #919 to #924."""
 
     NONE = "agreement alone (the gate before #901)"
     CUT = "held back where the crop cuts the label"
-    GV_MARK = "held back where a GV mark is in the crop (the gate since #901)"
-    PROMOTED_NUMERATOR = "held back where a reading is `n n/d`"
+    GV_MARK = "held back where a GV mark is in the crop (the gate from #901 to #919)"
+    GATE_919 = (
+        "the gate from #919 to #924: held back where a GV mark is in the crop or it cuts the label"
+    )
+    MIXED_FRACTION = "held back where the agreed value is a whole number and a fraction"
+    GATE = (
+        "the gate since #924: held back where a GV mark is in the crop, it cuts the label, or the "
+        "agreed value is a whole number and a fraction"
+    )
     SIDEWAYS = "a sideways label needs a third reader"
     MM_ON_FILE_TEXT = "a label's mm confirms its inches, on the file's own text only"
-
-
-def promoted_numerator(value: Measurement) -> bool:
-    """Whether a value has the shape `n n/d`: a whole number equal to its fraction's numerator.
-
-    It is the shape of a stacked `3/4"` read as `3 3/4"`, which two readers from different vendors
-    agreed on (#726). It is also the shape of a real `1 1/2"`, which is what holding it back costs.
-    """
-    whole, part = divmod(value.exact, 1)
-    return whole >= 1 and part != 0 and part.numerator == whole
 
 
 def held_back(region: Region, facts: Facts, guard: Guard) -> bool:
     """Whether `guard` keeps the gate from agreeing anything in `region`, before it is asked.
 
-    A sideways label's third reader is a third extractor with a value.
+    A sideways label's third reader is a third extractor with a value. The whole-number-and-fraction
+    guard reads what the gate agreed, so it is applied in `judge`, after the gate.
     """
     if guard is Guard.CUT:
         return facts.cut_at_edge
     if guard is Guard.GV_MARK:
         return facts.gv_mark
-    if guard is Guard.PROMOTED_NUMERATOR:
-        return any(
-            reading.value is not None and promoted_numerator(reading.value)
-            for reading in region.readings
-        )
+    if guard in (Guard.GATE_919, Guard.GATE):
+        return facts.gv_mark or facts.cut_at_edge
     if guard is Guard.SIDEWAYS:
         readers = {reading.extractor for reading in region.readings if reading.value is not None}
         return facts.sideways and len(readers) < THIRD_READER
@@ -528,12 +534,25 @@ def held_back(region: Region, facts: Facts, guard: Guard) -> bool:
 
 
 def judge(region: Region, facts: Facts, guard: Guard) -> Agreement | None:
-    """What the gate agrees in `region` with `guard` in front of it."""
+    """What the gate agrees in `region` with `guard` in front of it.
+
+    **The whole-number-and-fraction guard is the production gate's own** (#924): what two readers
+    agreed is held back where `workflow.stages.mixed_fraction_refusal` says so, as the stage asks it
+    about a reading that agreed.
+    """
     if held_back(region, facts, guard):
         return None
-    return gate(
+    agreement = gate(
         region.readings, mm_confirms=_file_text if guard is Guard.MM_ON_FILE_TEXT else _never
     )
+    if (
+        agreement is not None
+        and guard in (Guard.MIXED_FRACTION, Guard.GATE)
+        and agreement.lane is CorroborationLane.SECOND_READER
+        and mixed_fraction_refusal(agreement.value, agreement.text) is not None
+    ):
+        return None
+    return agreement
 
 
 # ---------------------------------------------------------------------------

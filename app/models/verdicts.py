@@ -93,6 +93,10 @@ class CheckRun(Base, TimestampedUUID):
     that can move a result without any input moving, and `eval/regression.py` needs to be able to
     attribute that."""
 
+    defaults_set_id: Mapped[str | None] = mapped_column(String(71), nullable=True, default=None)
+    defaults_canonical_json: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    """Exact synthetic GLOBAL defaults for this run. Null means legacy/unverifiable, not empty."""
+
     superseded_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None, nullable=True)
     """When a later run replaced this one, or `NULL` while it is the current answer.
 
@@ -109,6 +113,14 @@ class CheckRun(Base, TimestampedUUID):
 
     __table_args__ = (
         CheckConstraint("engine_version <> ''", name="check_run_engine_version_present"),
+        CheckConstraint(
+            "(defaults_set_id IS NULL) = (defaults_canonical_json IS NULL)",
+            name="check_run_defaults_paired",
+        ),
+        CheckConstraint(
+            "defaults_set_id IS NULL OR defaults_set_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="check_run_defaults_digest_shape",
+        ),
         # Lets a child carry the revision and have the database prove it is the run's own.
         UniqueConstraint("id", "package_revision_id", name="uq_check_runs_id_revision"),
         Index("ix_check_runs_revision_snapshot", "package_revision_id", "rule_snapshot_id"),
@@ -197,6 +209,13 @@ class Finding(Base, TimestampedUUID, Immutable):
     package B, and the record would misstate what was reviewed.
     """
 
+    scope_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("drawing_items.id", ondelete="RESTRICT", name="fk_findings_scope_item"),
+        default=None,
+    )
+    scope_label: Mapped[str | None] = mapped_column(Text, default=None)
+    """The confirmed countertop and frozen plain name, or both null for a revision-level result."""
+
     outcome: Mapped[str] = mapped_column(String(32), index=True)
     severity: Mapped[str] = mapped_column(String(16))
     trace: Mapped[dict[str, object]] = mapped_column(JSONB)
@@ -276,6 +295,12 @@ class Finding(Base, TimestampedUUID, Immutable):
         CheckConstraint("reason IS NULL OR reason <> ''", name="finding_reason"),
         CheckConstraint("variant IS NULL OR variant <> ''", name="finding_variant"),
         CheckConstraint(f"severity IN ({SEVERITY_VALUES})", name="finding_severity"),
+        CheckConstraint(
+            "(scope_item_id IS NULL AND scope_label IS NULL) OR "
+            "(scope_item_id IS NOT NULL AND scope_label IS NOT NULL AND scope_label <> '')",
+            name="finding_scope_pair",
+        ),
+        Index("ix_findings_revision_scope", "package_revision_id", "scope_item_id"),
         Index("ix_findings_outcome_severity", "outcome", "severity"),
     )
 

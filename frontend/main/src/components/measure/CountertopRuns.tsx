@@ -53,9 +53,9 @@ export function CountertopRuns({ packageId, refresh }: { packageId: string; refr
     }
   }
 
-  function confirm(countertop: RunCountertop, partIds: string[]) {
+  function confirm(countertop: RunCountertop, partIds: string[], wallConfig: string) {
     void save(countertop, () =>
-      confirmCountertopRun(projectId(), packageId, countertop.countertop_item_id, partIds),
+      confirmCountertopRun(projectId(), packageId, countertop.countertop_item_id, partIds, wallConfig),
     );
   }
 

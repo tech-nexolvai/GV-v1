@@ -1,4 +1,4 @@
-"""Whether a crop cut a label off, and which way the label runs, from the file's paths (#757).
+"""Whether a crop cut a label off, and which way the label runs, from the file's paths (#757, #918).
 
 Verification for: `extraction/agent/geometry.py`.
 
@@ -15,7 +15,16 @@ from decimal import Decimal
 
 import pytest
 
-from extraction.agent.geometry import Box, LabelReach, label_geometry
+from extraction.agent.geometry import (
+    BOTH_WAYS,
+    NO_PATHS,
+    NO_RUN,
+    NOT_CLOSED,
+    Box,
+    LabelReach,
+    label_direction,
+    label_geometry,
+)
 from extraction.annotations import VectorPath
 from tests.extraction.test_glyph_reader import _fraction, _row, _turned
 
@@ -236,3 +245,99 @@ def test_an_unsettled_label_has_no_direction() -> None:
 
     assert not geometry.closed
     assert geometry.rotation_degrees == 0
+
+
+# ---------------------------------------------------------------------------
+# Which way it runs, where a wrong answer costs more than none (#918)
+# ---------------------------------------------------------------------------
+
+
+def test_a_label_on_one_line_across_the_page_runs_across() -> None:
+    """Outcome: 0, with the label's extent and the extent of the characters in the region."""
+    paths, _ = _row('12"', 0, 0)
+    region = _box(paths[:1])
+
+    found = label_direction(region, paths, REACH)
+
+    assert (found.degrees, found.unsettled) == (0, None)
+    assert found.label_box == _box(paths)
+    assert found.in_region == region
+
+
+@pytest.mark.parametrize("degrees", [90, 270])
+def test_a_label_on_one_line_up_or_down_the_page_runs_up(degrees: int) -> None:
+    """Outcome: 90 either way, the drafting convention `label_geometry` turns a crop by."""
+    turned = _turned(_row('45"', 0, 0)[0], degrees)
+
+    assert label_direction(_box(turned), turned, REACH).degrees == 90
+
+
+def test_a_stacked_fraction_has_no_direction() -> None:
+    """**Where the longest-run rule turns a crop, this one refuses.** The numerator above the
+    denominator is a run up the page beside the whole number's run across it. Outcome: no
+    direction, and why — a stacked label's runs say nothing about which way it reads."""
+    paths, _ = _fraction("1", "3", "4")
+
+    found = label_direction(_box(paths), paths, REACH)
+
+    assert found.degrees is None and found.unsettled == BOTH_WAYS
+
+
+def test_a_two_line_label_turned_sideways_has_no_direction() -> None:
+    """**The label the longest-run rule calls sideways** (`test_a_turned_label_with_pieces_side_by_
+    side_is_still_sideways`): its two lines side by side make runs across as well as up. Outcome:
+    turned for a reader by `label_geometry`, but no direction to attach it by."""
+    top, _ = _row("102", 0, 12)
+    bottom, _ = _row("[4]", 3, 0)
+    turned = _turned(top + bottom, 90)
+    region = _box(turned)
+
+    assert label_geometry(region, _grown(region, 2), turned, REACH).rotation_degrees == 90
+    found = label_direction(region, turned, REACH)
+    assert found.degrees is None and found.unsettled == BOTH_WAYS
+
+
+def test_the_same_two_line_label_upright_has_no_direction_either() -> None:
+    top, _ = _row("102", 0, 12)
+    bottom, _ = _row("[4]", 3, 0)
+
+    found = label_direction(_box(top + bottom), top + bottom, REACH)
+
+    assert found.degrees is None and found.unsettled == BOTH_WAYS
+
+
+def test_one_character_shows_no_direction() -> None:
+    paths, _ = _row("1", 0, 0)
+
+    found = label_direction(_box(paths), paths, REACH)
+
+    assert found.degrees is None and found.unsettled == NO_RUN
+
+
+def test_an_unsettled_label_has_no_direction_to_attach_by() -> None:
+    """Outcome: sixteen characters in a row run past where a label may end, so even a perfectly
+    straight run across says nothing."""
+    paths, _ = _row("8888888888888888", 0, 0)
+
+    found = label_direction(_box(paths[:2]), paths, REACH)
+
+    assert found.degrees is None and found.unsettled == NOT_CLOSED
+
+
+def test_a_region_with_no_paths_has_no_direction() -> None:
+    paths, _ = _row("12", 0, 0)
+    far: Box = (Decimal(500), Decimal(500), Decimal(510), Decimal(510))
+
+    found = label_direction(far, paths, REACH)
+
+    assert (found.degrees, found.label_box, found.in_region) == (None, None, None)
+    assert found.unsettled == NO_PATHS
+
+
+def test_label_geometry_is_unchanged_by_the_direction_rule() -> None:
+    """The crop turn keeps the longest-run rule (#783): a turned two-line label still turns, and a
+    stacked fraction still reads as it stands."""
+    paths, _ = _fraction("1", "3", "4")
+    region = _box(paths)
+
+    assert label_geometry(region, _grown(region, 2), paths, REACH).rotation_degrees == 0

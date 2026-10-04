@@ -50,6 +50,12 @@ stacks set aside, round the bar the page draws between numerator and denominator
 marked as stacked, so it is a reviewer's suggestion and never evidence; anything that does not fit
 the shape exactly stays set aside.
 
+**Nor is a space the file left out read through (#912).** A drawing's software can set the space in
+`[1 3/16]` as a gap rather than a space character, and the inches then read `[13/16]`: a proper inch
+fraction, exact and wrong. Every reading of inches is measured where the file puts its characters,
+and one that reads two characters as one number across a gap of the deployment's `MissingSpace` or
+more is set aside too.
+
 What this module deliberately does not do: rasterise a page, run OCR, merge fragmented dimensions, or
 associate text with lines. The last two need thresholds, and thresholds need real drawings (#274) —
 `AGENTS.md` §9, *"a fixture invented today encodes today's guess as ground truth"*.
@@ -114,11 +120,14 @@ __all__ = [
     "FRAGMENT_REACH",
     "INCH_DENOMINATORS",
     "STACK_REACH",
+    "MissingSpace",
     "PageContents",
     "SetAsideLabel",
     "SetAsideReason",
     "TextItem",
     "UnreadablePdf",
+    "page_frame",
+    "pixel_placement",
     "read_page_contents",
     "read_pages",
 ]
@@ -184,7 +193,8 @@ _NO_TEXT_REASON: Final = (
 
 _ONLY_SET_ASIDE_REASON: Final = (
     "the only text on this page was set aside unread: stacked fractions, labels written on two "
-    "lines, or pieces of longer labels, none of which can be read as a number on its own."
+    "lines, pieces of longer labels, or inches whose space the file left out, none of which can be "
+    "read as a number on its own."
 )
 
 
@@ -238,6 +248,59 @@ class SetAsideReason(StrEnum):
 
     FRAGMENT = "fragment"
     """A piece of a longer label: `7'` of a sideways `7' -11"`, `9.7"` of `19.7"`."""
+
+    MISSING_SPACE = "missing_space"
+    """Inches whose space the file set as a gap rather than a space character, which read without it
+    as one number: `[13/16]` for `[1 3/16]` (#912). A stacked fraction refused this way keeps
+    `STACKED_FRACTION`, so it still goes to a reviewer as one (#726)."""
+
+
+@dataclass(frozen=True, slots=True)
+class MissingSpace:
+    """When a gap inside the inches is a space the file left out (#912). **No default.**
+
+    Stated by the deployment (`GV_READER_MISSING_SPACE_HEIGHTS`), as every reader threshold is: a
+    value here would be this module deciding, for every drawing anybody runs, how wide a space is.
+    """
+
+    gap_heights: Decimal
+    """The narrowest gap, as a share of the text's height, between two characters read as one
+    number inside the inches that is taken for a space the file left out. A gap this wide or wider
+    sets the label aside, unread.
+
+    **A share of the text's height, because the height is always in the file.** Every character
+    states its own size on the page in its matrix, so every gap can be judged. A font's own space
+    width is stated only by a space the page prints in that font, and some fonts on the client's
+    drawings print none. Measured on both client drawings (#912): a space is 0.228 to 0.296 of the
+    text's height across their fonts, and two characters read as one number inside the inches are
+    -0.018 to 0.022 of it apart, so a share of the height separates the two without knowing the
+    font. `scripts/demo.sh` states the value and the measurement behind it.
+
+    The error directions are not equal. Too narrow, and two characters set a little apart read
+    blank, which costs a person one look; too wide, and a space the file left out reads `13/16` for
+    `1 3/16`, exact and wrong. So the safer value is nearer the tightest number than the narrowest
+    space, as the demo's 0.1 is."""
+
+    def __post_init__(self) -> None:
+        if isinstance(self.gap_heights, float):
+            raise TypeError(
+                "gap_heights must be a Decimal, never a float: it is stated configuration, and a "
+                "float would state something other than what was written"
+            )
+        if not isinstance(self.gap_heights, Decimal) or not self.gap_heights.is_finite():
+            raise ValueError("gap_heights must be a finite Decimal")
+        if not 0 < self.gap_heights < 1:
+            raise ValueError(
+                "gap_heights must be above 0 and below 1: at 0 every two characters are a space "
+                "apart, and at 1 or more no space is ever found, a space being narrower than the "
+                "text is tall"
+            )
+
+    @property
+    def config_hash(self) -> str:
+        """The setting as the text that becomes part of a reading run's identity: a re-read under
+        another value is another run, whose rows are not taken for this one's (#487)."""
+        return f"missing_space>={self.gap_heights}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,10 +500,14 @@ def read_page_contents(
     *,
     document_version_id: UUID,
     dpi: int,
+    missing_space: MissingSpace,
     keep_char: Callable[[dict[str, Any]], bool] | None = None,
     keep_path: Callable[[dict[str, Any]], bool] | None = None,
 ) -> PageContents:
     """The text runs and straight segments on one page, in stored coordinates.
+
+    `missing_space` has no default either: it says how wide a gap inside the inches is a space the
+    file left out (#912), and a reading with one is set aside rather than read without its space.
 
     `keep_char`, where given, is asked of every character before any word is formed, and a character
     it refuses is not read at all. `extraction/stamp_text.py` uses it to leave out coloured text.
@@ -463,6 +530,8 @@ def read_page_contents(
         pass
     else:
         raise ValueError("dpi must be a positive integer; stored coordinates depend on it")
+    if not isinstance(missing_space, MissingSpace):
+        raise TypeError("missing_space must be a MissingSpace: the reader has no default for it")
 
     try:
         with pdfplumber.open(io.BytesIO(data)) as document:
@@ -473,14 +542,7 @@ def read_page_contents(
                     f"page {page_index} is beyond the {len(document.pages)} pages in this document"
                 ) from error
 
-            media_box, crop_box = page_boxes_in_pdf_space(page)
-            transform = PageTransform(
-                dpi=dpi,
-                rotation=_rotation(page.rotation),
-                media_box=media_box,
-                crop_box=crop_box,
-            )
-            height = _decimal(page.height)
+            transform, height = page_frame(page, dpi)
             if keep_char is not None or keep_path is not None:
                 page = page.filter(lambda obj: _kept(obj, keep_char, keep_path))
             # **Text printed twice in one place is read once.** Measured on `AI_Set_2`: a label drawn
@@ -541,6 +603,20 @@ def read_page_contents(
                 )
                 if fragment or other_half:
                     set_aside.append((run, SetAsideReason.FRAGMENT))
+                # **Last, every reading of inches is held to the spaces the file sets** (#912):
+                # two characters read as one number but set `missing_space` or more apart are a
+                # space the file left out, and `[13/16]` for `[1 3/16]` is exact and wrong.
+                elif _space_left_out(run, missing_space):
+                    set_aside.append(
+                        (
+                            run,
+                            (
+                                SetAsideReason.STACKED_FRACTION
+                                if run.get("stacked")
+                                else SetAsideReason.MISSING_SPACE
+                            ),
+                        )
+                    )
                 else:
                     kept_runs.append(run)
             texts = tuple(
@@ -570,6 +646,31 @@ def read_page_contents(
         ),
         set_aside=labels,
     )
+
+
+def page_frame(page: Any, dpi: int) -> tuple[PageTransform, Decimal]:
+    """A pdfplumber page's transform at `dpi`, and the height its `top` is measured down from: the
+    frame `read_page_contents` places every text run in."""
+    media_box, crop_box = page_boxes_in_pdf_space(page)
+    transform = PageTransform(
+        dpi=dpi,
+        rotation=_rotation(page.rotation),
+        media_box=media_box,
+        crop_box=crop_box,
+    )
+    return transform, _decimal(page.height)
+
+
+def pixel_placement(page: Any, dpi: int) -> Callable[[object, object], ImagePoint]:
+    """Where a pdfplumber `(x, top)` on `page` lands in its pixels at `dpi`.
+
+    **The placement every text run's `image_extent` is made by**, on the same boxes and rotation,
+    for a caller placing other objects of the same page beside that text: the paths drawn in colour
+    and the pasted stamps that `extraction/stamp_text.py` finds for the GV-mark check (#929), which
+    holds them to the same crops as the coloured text.
+    """
+    transform, height = page_frame(page, dpi)
+    return lambda x, top: _image(x, top, transform, height)
 
 
 #: A digit's place in its own text frame: `(along_low, along_high, across_low, across_high, up)`.
@@ -814,8 +915,9 @@ def _text_of(entries: list[_Framed]) -> str:
     return "".join(str(char["text"]) for char, _ in entries)
 
 
-def _compose_fraction(word: dict[str, Any]) -> str | None:
-    """A stacked fraction's label as one line — `24 3/4"`, `2'-10 1/2"`, `3/4"` — or `None`.
+def _compose_fraction(word: dict[str, Any]) -> tuple[str, list[list[dict[str, Any]]]] | None:
+    """A stacked fraction's label as one line — `24 3/4"`, `2'-10 1/2"`, `3/4"` — with the
+    stretches of characters it reads with no space between them (`_unspaced`), or `None`.
 
     Read from where the characters sit, never from their order in the word. The fraction's digits
     are those smaller than the label's tallest (or all of them, for a fraction standing alone), and
@@ -869,12 +971,19 @@ def _compose_fraction(word: dict[str, Any]) -> str | None:
         return None
     text = f"{_text_of(before)} {numerator}/{denominator}{_text_of(after)}".strip()
     # A bare `3/8` inside a note says nothing of its unit; only a label with its mark is suggested.
-    return text if _UNIT_MARK_RE.search(text) else None
+    if not _UNIT_MARK_RE.search(text):
+        return None
+    return text, [_chars(before), _chars(upper), _chars(lower), _chars(after)]
 
 
-def _compose_two_lines(word: dict[str, Any]) -> str | None:
+def _chars(entries: list[_Framed]) -> list[dict[str, Any]]:
+    return [char for char, _ in entries]
+
+
+def _compose_two_lines(word: dict[str, Any]) -> tuple[str, list[list[dict[str, Any]]]] | None:
     """Millimetres written over their bracketed inches, as the one dual token they are — `610 [24]`
-    — or `None`. Either line may be the upper one; the token is written millimetres first.
+    — with each row as a stretch read with no space in it (`_unspaced`), or `None`. Either line
+    may be the upper one; the token is written millimetres first.
 
     **Held to `_checked_dual`, as every dual dimension put together from pieces is** (#909). Each
     row is read as its characters in order, and a space is not a character the word holds
@@ -889,8 +998,11 @@ def _compose_two_lines(word: dict[str, Any]) -> str | None:
     rows = _two_rows(framed)
     if rows is None:
         return None
-    first, second = (_text_of(row) for row in rows)
-    return _checked_dual(first, second) or _checked_dual(second, first)
+    for millimetres, inches in (rows, rows[::-1]):
+        token = _checked_dual(_text_of(millimetres), _text_of(inches))
+        if token is not None:
+            return token, [_chars(millimetres), _chars(inches)]
+    return None
 
 
 def _checked_dual(millimetres: str, inches: str) -> str | None:
@@ -919,6 +1031,166 @@ def _checked_dual(millimetres: str, inches: str) -> str | None:
     return token if DUAL_TOKEN_RE.fullmatch(token) else None
 
 
+#: Besides the digits, what makes one number or one fraction of characters read with nothing
+#: between them: the fraction's slash and a decimal point. `1`, `3`, `/`, `1` and `6` of `13/16`.
+_INSIDE_A_NUMBER: Final = frozenset({"/", "."})
+
+#: A foot or inch mark. A reading that holds one and no bracket is a value in feet and inches
+#: throughout: `24 3/4"`, `2' -5"`.
+_IMPERIAL_MARK_RE: Final = re.compile(r"['’′\"”″]")
+
+
+def _unspaced(run: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    """The stretches of a run's characters that its text reads with no space between them, in the
+    order the text reads them (#912).
+
+    A word as `extract_words` gives it is one stretch: it breaks a word at every space character.
+    Whatever puts a reading together from pieces records its own (`"unspaced"`): the dual-token
+    join, each word it joined; the two-line composers, each row, broken where the page sets a space
+    character; the stacked-fraction composers, what stands before the stack (the whole number), the
+    numerator, the denominator and the mark, each on its own, because the fraction's slash is not on
+    the page.
+    """
+    recorded = run.get("unspaced")
+    if recorded is not None:
+        return [list(stretch) for stretch in recorded]
+    return [list(run.get("chars") or ())]
+
+
+def _space_left_out(run: dict[str, Any], missing_space: MissingSpace) -> bool:
+    """Whether a reading of inches reads two characters as one number across a gap a space wide:
+    `[13/16]` where the file set `[1 3/16]` with its space as a gap rather than a character (#912).
+
+    **Why the text cannot tell.** A space the page does not print is nowhere among the characters,
+    and what is read without it can still be a proper inch fraction: `[1 3/16]` becomes `[13/16]`,
+    13/16 inch, and `[1 5/16]` becomes `[15/16]`. #909's guard on whole numbers and inch fractions
+    passes both. Only where the characters sit says a space was there.
+
+    **What is measured.** Within each stretch the text reads with no space (`_unspaced`), each two
+    neighbouring characters of one number (`_INSIDE_A_NUMBER`) inside the inches: inside the
+    brackets of a dual dimension, whose millimetres are never a verdict's operand; anywhere in a
+    reading in feet and inches (`_IMPERIAL_MARK_RE`). A reading with neither holds no inches and is
+    not asked. The gap between them is measured along their line from where the first one's advance
+    ends to where the second one starts (`_pen_gap`), as a share of the text's height, and at
+    `missing_space.gap_heights` or more the reading is refused. So is one whose gap cannot be
+    measured: a blank is always safer than a wrong number.
+
+    It only ever refuses. A reading it passes is read exactly as before; one it refuses is set aside,
+    and a stacked fraction keeps its reason so it still goes to a reviewer as one (#726).
+    """
+    text = str(run.get("text", ""))
+    bracketed = "[" in text or "]" in text
+    if not bracketed and _IMPERIAL_MARK_RE.search(text) is None:
+        return False
+    limit = float(missing_space.gap_heights)
+    # A piece that closes a bracket before it opens one, `3/16]`, starts inside the inches.
+    opening, closing = text.find("["), text.find("]")
+    inside = not bracketed or (closing != -1 and (opening == -1 or closing < opening))
+    for stretch in _unspaced(run):
+        previous: dict[str, Any] | None = None
+        for char in _along_the_pen(stretch):
+            character = str(char.get("text", ""))
+            if bracketed and character in ("[", "]"):
+                inside = character == "["
+                previous = None
+                continue
+            if not inside or not (character.isdigit() or character in _INSIDE_A_NUMBER):
+                previous = None
+                continue
+            if previous is not None:
+                gap = _pen_gap(previous, char)
+                if gap is None or gap >= limit:
+                    return True
+            previous = char
+    return False
+
+
+def _pen_matrix(char: dict[str, Any]) -> tuple[float, float, float, float, float, float] | None:
+    matrix = char.get("matrix")
+    if not isinstance(matrix, (tuple, list)) or len(matrix) != 6:
+        return None
+    try:
+        a, b, c, d, e, f = (float(value) for value in matrix)
+    except (TypeError, ValueError):
+        return None
+    return a, b, c, d, e, f
+
+
+def _along_the_pen(stretch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A stretch's characters in the order the file set them along their line: by where each one
+    starts, measured the way the first one advances. A character that cannot be placed goes last;
+    it has no gap `_pen_gap` can measure, so a number it is part of is refused."""
+    if not stretch:
+        return []
+    matrix = _pen_matrix(stretch[0])
+    if matrix is None or math.hypot(matrix[0], matrix[1]) == 0:
+        return list(stretch)
+    a, b = matrix[0], matrix[1]
+
+    def start(char: dict[str, Any]) -> float:
+        own = _pen_matrix(char)
+        return math.inf if own is None else own[4] * a + own[5] * b
+
+    return sorted(stretch, key=start)
+
+
+def _text_height(char: dict[str, Any]) -> float | None:
+    """A character's font size on the page, measured up its own line; or `None`.
+
+    Read from the file, not the box round the character: the box pdfminer gives is the one round
+    the character's advance and its font size, turned by its matrix, so the size comes back out of
+    it exactly (`|b|·advance + |d|·size` high, `|a|·advance + |c|·size` wide). For text set square
+    to the page it is the box's height across the line, as `_frame` measures it; for text set at an
+    angle the box is larger than the text, and this is not.
+    """
+    matrix = _pen_matrix(char)
+    if matrix is None:
+        return None
+    a, b, c, d, _, _ = matrix
+    try:
+        advance = float(char["adv"])
+        width = float(char["x1"]) - float(char["x0"])
+        height = float(char["y1"]) - float(char["y0"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if abs(d) >= abs(c) and d != 0:
+        size = (height - abs(b) * advance) / abs(d)
+    elif c != 0:
+        size = (width - abs(a) * advance) / abs(c)
+    else:
+        return None
+    measured = size * math.hypot(c, d)
+    return measured if measured > 0 and math.isfinite(measured) else None
+
+
+def _pen_gap(before: dict[str, Any], after: dict[str, Any]) -> float | None:
+    """How far along their line `after` starts from where `before`'s advance ends, as a share of the
+    taller of the two's height (`_text_height`); or `None` where either cannot be measured.
+
+    **From where the file puts each character, never from its box.** A character's matrix holds the
+    point it is drawn from, and its advance is how far the pen then moves along the line. In a run
+    of text the next character starts where that advance ends, so the gap is 0; a positioning gap
+    in its place, such as a `TJ` number, moves it on by exactly that much. The box would do for text
+    set square to the page, and not for text set at an angle, whose box is larger than the text:
+    measured on `AI_Set_1`, labels set at 30 degrees have boxes that overlap by 0.6 of their height.
+    """
+    first, second = _pen_matrix(before), _pen_matrix(after)
+    if first is None or second is None:
+        return None
+    a, b, _, _, e, f = first
+    scale = math.hypot(a, b)
+    height, other = _text_height(before), _text_height(after)
+    if scale == 0 or height is None or other is None:
+        return None
+    try:
+        advance = float(before["adv"]) * scale
+    except (KeyError, TypeError, ValueError):
+        return None
+    along_x, along_y = a / scale, b / scale
+    starts = (second[4] - e) * along_x + (second[5] - f) * along_y
+    return (starts - advance) / max(height, other)
+
+
 def _read_what_composes(
     words: list[dict[str, Any]],
     set_aside: list[tuple[dict[str, Any], SetAsideReason]],
@@ -932,7 +1204,7 @@ def _read_what_composes(
     kept = list(words)
     still: list[tuple[dict[str, Any], SetAsideReason]] = []
     for word, reason in set_aside:
-        composed: str | None = None
+        composed: tuple[str, list[list[dict[str, Any]]]] | None = None
         if digits.printed_over(word):
             pass
         elif reason is SetAsideReason.STACKED_FRACTION:
@@ -942,8 +1214,14 @@ def _read_what_composes(
         if composed is None:
             still.append((word, reason))
             continue
+        text, unspaced = composed
         kept.append(
-            {**word, "text": composed, "stacked": reason is SetAsideReason.STACKED_FRACTION}
+            {
+                **word,
+                "text": text,
+                "stacked": reason is SetAsideReason.STACKED_FRACTION,
+                "unspaced": unspaced,
+            }
         )
     return kept, still
 
@@ -1002,9 +1280,23 @@ def _row_text(row: list[_Framed], other: list[_Framed], spaces: list[_Framed]) -
     The space is the page's own character, never a gap judged by its width: in the client's text a
     space is narrower than `_TOUCHING`, so no width tells it from two characters set close.
     """
+    stretches = _row_stretches(row, other, spaces)
+    return None if stretches is None else _spaced(stretches)
+
+
+def _spaced(stretches: list[list[_Framed]]) -> str:
+    """Stretches of characters as text, a space between each two."""
+    return " ".join(_text_of(stretch) for stretch in stretches)
+
+
+def _row_stretches(
+    row: list[_Framed], other: list[_Framed], spaces: list[_Framed]
+) -> list[list[_Framed]] | None:
+    """`_row_text`'s row as the stretches it reads with no space between their characters: broken
+    wherever the page sets a space character on the row; or `None` where `_row_text` is."""
     low, high = min(frame[2] for _, frame in row), max(frame[3] for _, frame in row)
     other_low, other_high = min(frame[2] for _, frame in other), max(frame[3] for _, frame in other)
-    text = str(row[0][0]["text"])
+    stretches = [[row[0]]]
     for (_, before), (char, after) in pairwise(row):
         between = [
             frame
@@ -1015,8 +1307,10 @@ def _row_text(row: list[_Framed], other: list[_Framed], spaces: list[_Framed]) -
         ]
         if any(other_low <= _across_middle(frame) <= other_high for frame in between):
             return None
-        text += (" " if between else "") + str(char["text"])
-    return text
+        if between:
+            stretches.append([])
+        stretches[-1].append((char, after))
+    return stretches
 
 
 def _one_run_split(first: list[_Framed], second: list[_Framed]) -> bool:
@@ -1107,13 +1401,18 @@ def _rejoin_two_lines(
             and _alone(framed, printed)
         ):
             continue
-        above, below = _row_text(upper, lower, spaces), _row_text(lower, upper, spaces)
+        above = _row_stretches(upper, lower, spaces)
+        below = _row_stretches(lower, upper, spaces)
         if above is None or below is None:
             continue
-        token = _checked_dual(above, below) or _checked_dual(below, above)
-        if token is None:
+        for millimetres, inches in ((above, below), (below, above)):
+            token = _checked_dual(_spaced(millimetres), _spaced(inches))
+            if token is not None:
+                break
+        else:
             continue
-        kept.append({**_run_of(own), "text": token, "stacked": False})
+        unspaced = [_chars(stretch) for stretch in (*millimetres, *inches)]
+        kept.append({**_run_of(own), "text": token, "stacked": False, "unspaced": unspaced})
         joined.update(pieces[member][0] for member in members)
     return kept, [entry for index, entry in enumerate(set_aside) if index not in joined]
 
@@ -1294,7 +1593,8 @@ def _stack_on_bar(
     if denominator not in INCH_DENOMINATORS or not 0 < numerator < denominator:
         return None
     text = f"{pieces[0]} {numerator}/{denominator}{mark[0]['text']}".strip()
-    return {**_run_of(chars), "text": text, "stacked": True}
+    unspaced = [_chars(whole), _chars(upper), _chars(lower), [mark[0]]]
+    return {**_run_of(chars), "text": text, "stacked": True, "unspaced": unspaced}
 
 
 def _compose_split_stacks(
@@ -1506,7 +1806,14 @@ def _read_side_by_side(
             ):
                 break
             chars = [char for char, _ in (*part, *group)]
-            labels.append({**_run_of(chars), "text": token, "stacked": False})
+            labels.append(
+                {
+                    **_run_of(chars),
+                    "text": token,
+                    "stacked": False,
+                    "unspaced": [_chars(part), _chars(group)],
+                }
+            )
         else:
             replaced[other] = []
             replaced[index] = labels
@@ -1697,6 +2004,9 @@ def _join_lines(
                 merged = {
                     "text": " ".join(str(word["text"]) for word in run),
                     "chars": chars,
+                    # Each word's own stretches: the join puts a space between words, never
+                    # inside one (#912).
+                    "unspaced": [stretch for word in run for stretch in _unspaced(word)],
                     "x0": box[0],
                     "top": box[1],
                     "x1": box[2],

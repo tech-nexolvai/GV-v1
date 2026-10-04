@@ -64,6 +64,7 @@ from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
 from units.measurement import Measurement
 from verdict.finding import Finding
 from verdict.outcomes import Outcome, is_abstention
+from workflow.changed_values import ChangedValues
 
 __all__ = [
     "FINDINGS_SHEET",
@@ -89,6 +90,7 @@ TEXT_FORMAT: Final = "@"
 FINDINGS_SHEET: Final = "Findings"
 OPERANDS_SHEET: Final = "Operands"
 SUMMARY_SHEET: Final = "Review Summary"
+PROJECT_VALUES_SHEET: Final = "Project Values"
 
 _BLACK: Final = "000000"
 _WHITE: Final = "FFFFFF"
@@ -112,6 +114,7 @@ FINDING_COLUMNS: Final = (
     "reason",
     "notes",
     "reviewer_summary",
+    "subject",
 )
 
 #: One row per operand the calculation used. Frozen for the same reason.
@@ -275,6 +278,7 @@ def _finding_row(finding: Finding) -> tuple[object, ...]:
         finding.reason,
         " | ".join(finding.notes),
         finding.reason,
+        "Package revision",
     )
 
 
@@ -427,6 +431,7 @@ class StoredFinding:
     This is presentation only.  It is appended to the frozen findings sheet rather than replacing
     ``reason``, so a reviewer can always compare the narration with the engine's exact words.
     """
+    scope_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,6 +545,7 @@ def _stored_finding_row(finding: StoredFinding) -> tuple[object, ...]:
         reason,
         NOT_RECORDED if finding.notes is None else " | ".join(finding.notes),
         finding.reviewer_summary or reason,
+        finding.scope_label or "Package revision",
     )
 
 
@@ -627,7 +633,10 @@ def _without_timestamps(archive: bytes) -> bytes:
 
 
 def write_stored_workbook(
-    findings: Sequence[StoredFinding], *, signoff: WorkbookSignoff | None = None
+    findings: Sequence[StoredFinding],
+    *,
+    signoff: WorkbookSignoff | None = None,
+    changed_values: ChangedValues | None = None,
 ) -> bytes:
     """The same workbook, built from stored rows instead of engine values.
 
@@ -643,6 +652,21 @@ def write_stored_workbook(
     workbook = Workbook()
     workbook.remove(workbook.active)
     _write_summary(workbook, findings, signoff=signoff)
+    if changed_values is not None:
+        rows: list[tuple[str, str]] = []
+        if changed_values.message is not None:
+            rows.append(("Status", changed_values.message))
+        else:
+            rows.extend(
+                ("Changed company standard", value)
+                for value in changed_values.company_standards_displaced
+            )
+            rows.extend(("Required value not set", value) for value in changed_values.outstanding)
+            if not changed_values.company_standards_displaced:
+                rows.append(("Changed company standards", "None"))
+            if not changed_values.outstanding:
+                rows.append(("Required values not set", "None"))
+        _write_sheet(workbook, PROJECT_VALUES_SHEET, ("Section", "Recorded value"), rows)
     _write_sheet(
         workbook, FINDINGS_SHEET, FINDING_COLUMNS, [_stored_finding_row(f) for f in findings]
     )

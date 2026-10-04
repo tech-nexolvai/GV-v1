@@ -34,7 +34,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject, NumberObject
+from pypdf.generic import ContentStream, NameObject, NumberObject
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from evidence.coordinates import PageTransform, PdfPoint, StoredPoint
@@ -42,10 +42,12 @@ from evidence.polygon import Polygon
 from reports.redline import (
     OUTCOME_STYLES,
     PageMismatchError,
+    RedlineFinding,
     RedlinePackage,
     RedlinePage,
     ReportMode,
     VendorApprovalUnavailable,
+    _visual_point,
     label_anchor,
     polygon_pdf_points,
     render_redline,
@@ -56,6 +58,7 @@ from storage.store import StoredArtifact
 from verdict.finding import Finding
 from verdict.outcomes import Outcome, Severity
 from verdict.trace import CalculationTrace, TracedOperand
+from workflow.changed_values import UNAVAILABLE, ChangedValues
 
 DOCUMENT: Final = UUID("11111111-1111-1111-1111-111111111111")
 REVISION: Final = UUID("22222222-2222-2222-2222-222222222222")
@@ -231,12 +234,31 @@ def _read_back(store_root: Path, key: str) -> list[tuple[str, int]]:
         return [(page.extract_text(), page.rotation % 360) for page in PdfReader(handle).pages]
 
 
+def test_changed_values_refusal_is_on_the_redline_summary_not_the_drawing(
+    tmp_path: Path,
+) -> None:
+    artifact = render_redline(
+        _package(),
+        [_finding(refs=(_reference(),))],
+        ReportMode.INTERNAL,
+        LocalStore(tmp_path),
+        changed_values=ChangedValues("unavailable", UNAVAILABLE, (), ()),
+    )
+    pages = _read_back(tmp_path, artifact.key)
+    assert UNAVAILABLE in " ".join(" ".join(text.split()) for text, _ in pages[1:])
+    assert UNAVAILABLE not in pages[0][0]
+
+
 def _content_stream(store_root: Path, key: str, index: int = 0) -> str:
-    """The drawing operators of one finished page, as text."""
+    """The original drawing operators and the separate vector overlay operators."""
     with LocalStore(store_root).get(key) as handle:
-        contents = PdfReader(handle).pages[index].get_contents()
+        page = PdfReader(handle).pages[index]
+        contents = page.get_contents()
         assert contents is not None
-        return contents.get_data().decode("latin-1")
+        xobjects = page["/Resources"].get_object().get("/XObject", {}).get_object()
+        overlay = xobjects.get("/GVRedline939")
+        added = overlay.get_object().get_data() if overlay is not None else b""
+        return (contents.get_data() + added).decode("latin-1")
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +390,104 @@ def test_the_original_page_content_survives_the_overlay(tmp_path: Path) -> None:
     assert "CT-1" in extracted
 
 
+@pytest.mark.parametrize("outcome", list(Outcome))
+def test_a_placed_finding_has_a_cloud_and_external_stored_fact_note(
+    tmp_path: Path, outcome: Outcome
+) -> None:
+    finding = RedlineFinding(
+        rule_id="CT-1",
+        outcome=outcome,
+        severity=Severity.FLAG,
+        reason="Recorded reason only.",
+        snapshot_id="sha256:recorded",
+        engine_version="test",
+        scope_label="Countertop A",
+        comparison="Recorded comparison only.",
+        notes=("Wall layout: chosen by reviewer on recorded date.",),
+        evidence_refs=(_reference(),),
+    )
+    artifact = _render(_package(), [finding], tmp_path)
+    with LocalStore(tmp_path).get(artifact.key) as handle:
+        reader = PdfReader(handle)
+        page = reader.pages[0]
+        text = " ".join(page.extract_text().split())
+        assert "CT-1" in text
+        assert outcome.value.replace("_", " ") in text
+        assert "Countertop A" in text
+        assert "Recorded reason only." in text
+        if outcome is not Outcome.NO_APPLICABLE_RULE:
+            assert "Wall layout: chosen by reviewer" in text
+        assert float(page.cropbox.width) > float(WIDTH) or float(page.cropbox.height) > float(
+            HEIGHT
+        )
+        form = page["/Resources"]["/XObject"]["/GVRedline939"]
+        operations = ContentStream(form, reader).operations
+        colours = [
+            tuple(float(value) for value in operands)
+            for operands, operator in operations
+            if operator == b"RG"
+        ]
+        assert OUTCOME_STYLES[outcome].stroke in colours
+        assert sum(operator == b"c" for _, operator in operations) > 8
+        # The evidence polygon can be the glyph box itself. A straight outline
+        # across that box would obscure the vendor's number.
+        assert not any(operator == b"l" for _, operator in operations)
+        assert any(operator == b"d" for _, operator in operations) is OUTCOME_STYLES[outcome].dashed
+
+
+def test_original_content_stream_bytes_remain_separate_and_unchanged(tmp_path: Path) -> None:
+    package = _package()
+    source_stream = PdfReader(BytesIO(package.source_pdf)).pages[0].get("/Contents")
+    assert source_stream is not None
+    original = source_stream.get_object().get_data()
+    original_encoded = source_stream.get_object()._data
+    artifact = _render(package, [_finding(refs=(_reference(),))], tmp_path)
+
+    with LocalStore(tmp_path).get(artifact.key) as handle:
+        rendered = PdfReader(handle).pages[0]
+        streams = rendered.get("/Contents")
+        assert streams is not None
+        streams = streams.get_object()
+        if not isinstance(streams, list):
+            streams = [streams]
+        assert any(
+            stream.get_object().get_data() == original
+            and stream.get_object()._data == original_encoded
+            for stream in streams
+        )
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_external_note_position_is_outside_the_original_crop(rotation: int) -> None:
+    entry = RedlinePage(DOCUMENT, 0, 0, _transform(rotation))
+    visible_width = HEIGHT if rotation in (90, 270) else WIDTH
+    x, y = _visual_point(entry, visible_width + Decimal(16), Decimal(80))
+    left, bottom, right, top = BOX
+    assert x < left or x > right or y < bottom or y > top
+
+
+def test_crowded_notes_get_extra_external_columns_without_truncation(tmp_path: Path) -> None:
+    findings = [
+        RedlineFinding(
+            rule_id=f"CHECK-{index}",
+            outcome=Outcome.REVIEW_REQUIRED,
+            severity=Severity.FLAG,
+            reason=f"Recorded reason for finding {index}, which remains complete in the callout.",
+            snapshot_id="sha256:recorded",
+            engine_version="test",
+            evidence_refs=(_reference(),),
+        )
+        for index in range(8)
+    ]
+    artifact = _render(_package(), findings, tmp_path)
+    with LocalStore(tmp_path).get(artifact.key) as handle:
+        page = PdfReader(handle).pages[0]
+        content = " ".join(page.extract_text().split())
+        assert float(page.cropbox.width) > float(WIDTH + Decimal(252))
+        for index in range(8):
+            assert f"Recorded reason for finding {index}, which remains complete" in content
+
+
 def test_every_source_page_is_carried_over_marked_or_not(tmp_path: Path) -> None:
     """A vendor must not receive a document that looks like the whole set and is not."""
     package = _package(0, 0, 0)
@@ -452,9 +572,12 @@ def test_the_mark_reaches_the_page_at_the_coordinates_the_transform_gives(
 
     expected = polygon_pdf_points(_polygon(), _transform(rotation))
     stream = _content_stream(tmp_path, artifact.key)
-    assert f"{expected[0].x} {expected[0].y} m" in stream
-    for point in expected[1:]:
-        assert f"{point.x} {point.y} l" in stream
+    # The cloud is padded away from the exact evidence polygon so its stroke
+    # cannot run through a tightly bounded dimension glyph.
+    cloud_left = int(min(point.x for point in expected)) - 8
+    cloud_top = int(max(point.y for point in expected)) + 8
+    assert f"{cloud_left + 5} {cloud_top} m" in stream
+    assert not any(f"{point.x} {point.y} l" in stream for point in expected)
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])

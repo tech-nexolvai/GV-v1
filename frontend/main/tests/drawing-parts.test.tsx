@@ -3,9 +3,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import { DrawingPartsList } from '../src/components/measure/DrawingPartsList.js';
 import {
+  GV_MARKS_WARNING,
   codeToSend,
   decisionLabel,
   endChoices,
+  showsGvMarks,
   startingCode,
   stillToDecide,
   type PartDrawing,
@@ -25,16 +27,31 @@ const part = (overrides: Partial<SuggestedPart>): SuggestedPart => ({
   added_by_a_person: false,
   left_end: { x: '0.25', y: '0.8' },
   right_end: { x: '0.5', y: '0.8' },
+  has_picture: false,
+  picture_gv_marks: null,
   has_crop: false,
   decision: null,
   ...overrides,
 });
 
+// The first cabinet and the countertop have their own pictures (#897); the first cabinet's code also
+// has the crop of the reading it came from. The worker has not cut the second cabinet's yet. The
+// countertop's picture shows GV's own coloured marks, and the first cabinet's was checked and does
+// not (#921).
 const parts: SuggestedPart[] = [
-  part({ proposal_id: 'p-1', position: 1, suggested_code: 'XQ24', has_crop: true }),
+  part({
+    proposal_id: 'p-1',
+    position: 1,
+    suggested_code: 'XQ24',
+    has_picture: true,
+    picture_gv_marks: 'not_shown',
+    has_crop: true,
+  }),
   part({
     proposal_id: 'p-top',
     position: 2,
+    has_picture: true,
+    picture_gv_marks: 'shown',
     suggested_kind: 'countertop',
     left_end: { x: '0.25', y: '0.6' },
     right_end: { x: '0.75', y: '0.6' },
@@ -57,11 +74,16 @@ const vendors: PartDrawing = {
   parts,
 };
 
+const pictures: string[] = [];
 const crops: string[] = [];
 const html = renderToStaticMarkup(
   <DrawingPartsList
     drawings={[vendors]}
     saving={null}
+    renderPicture={(_drawing, shown) => {
+      pictures.push(shown.proposal_id);
+      return <img className="test-picture" data-picture={shown.proposal_id} alt="" />;
+    }}
     renderCrop={(_drawing, shown) => {
       crops.push(shown.proposal_id);
       return <img className="test-crop" data-part={shown.proposal_id} alt="" />;
@@ -79,12 +101,62 @@ assert.match(html, /Page 3: the vendor&#x27;s drawing/);
 assert.match(html, /3 still to decide\./);
 assert.equal(stillToDecide([vendors]), 3);
 
-// **Each suggestion is shown with its crop.** The one with a stored picture shows it; the others say
-// there is none and where to look, rather than showing some other region.
+// **Each suggestion is shown with its own picture (#897).** Coded or not, a part with a picture shows
+// it; the one the worker has not cut yet says there is none and where to look, rather than showing
+// some other region. The coded part also shows where its code is printed.
+assert.deepEqual(pictures, ['p-1', 'p-top']);
+assert.match(html, /data-picture="p-1"/);
+assert.match(html, /data-picture="p-top"/);
+assert.equal((html.match(/No picture of this part is stored yet\./g) ?? []).length, 1);
+assert.match(html, /Find it on page 3: it is number 3 from the left in this drawing\./);
 assert.deepEqual(crops, ['p-1']);
 assert.match(html, /data-part="p-1"/);
-assert.equal((html.match(/No picture of this part is stored yet\./g) ?? []).length, 2);
-assert.match(html, /Find it on page 3: it is number 2 from the left in this drawing\./);
+assert.equal((html.match(/Where its code is printed/g) ?? []).length, 1);
+assert.ok(html.indexOf('data-picture="p-1"') < html.indexOf('data-part="p-1"'));
+
+// **A picture that shows GV's own coloured marks says so, plainly, under that picture (#921)**, and
+// nowhere else: not under a picture checked and found without them, nor where there is no picture.
+const warning = GV_MARKS_WARNING.replaceAll("'", '&#x27;');
+const rowOf = (markup: string, proposalId: string): string => {
+  const start = markup.indexOf(`data-picture="${proposalId}"`);
+  const end = markup.indexOf('class="drawing-parts__item"', start);
+  return markup.slice(start, end === -1 ? undefined : end);
+};
+assert.equal(GV_MARKS_WARNING, "This picture shows GV's own coloured marks; check the vendor's drawing itself.");
+assert.equal(html.split(warning).length - 1, 1);
+assert.ok(rowOf(html, 'p-top').includes(warning));
+assert.ok(!rowOf(html, 'p-1').includes(warning));
+assert.match(html, /<p class="drawing-parts__gv-marks" role="note">/);
+assert.ok(html.indexOf('data-picture="p-top"') < html.indexOf(warning));
+assert.ok(html.indexOf(warning) < html.indexOf('2. Suggested as a countertop'));
+
+// A picture never checked, cut before the check existed, carries no warning: nothing is guessed. Nor
+// does a part with no picture, whatever it says.
+const unchecked = renderToStaticMarkup(
+  <DrawingPartsList
+    drawings={[
+      {
+        ...vendors,
+        parts: [
+          part({ proposal_id: 'p-old', has_picture: true, picture_gv_marks: 'not_checked' }),
+          part({ proposal_id: 'p-none', position: 2, has_picture: false, picture_gv_marks: 'shown' }),
+        ],
+      },
+    ]}
+    saving={null}
+    renderPicture={(_drawing, shown) => <img data-picture={shown.proposal_id} alt="" />}
+    renderCrop={() => <img alt="" />}
+    onConfirm={() => undefined}
+    onWithdraw={() => undefined}
+    onAdd={() => undefined}
+  />,
+);
+assert.match(unchecked, /data-picture="p-old"/);
+assert.doesNotMatch(unchecked, /coloured marks/);
+assert.equal(showsGvMarks('shown'), true);
+for (const marks of ['not_shown', 'not_checked', null, undefined] as const) {
+  assert.equal(showsGvMarks(marks), false, String(marks));
+}
 
 // Each suggestion is listed once, left to right, with why it was suggested and the code read on it.
 assert.equal((html.match(/class="drawing-parts__item"/g) ?? []).length, 3);
@@ -139,6 +211,7 @@ const decided = renderToStaticMarkup(
       },
     ]}
     saving="p-top"
+    renderPicture={() => <img alt="" />}
     renderCrop={() => <img alt="" />}
     onConfirm={() => undefined}
     onWithdraw={() => undefined}
@@ -172,6 +245,7 @@ const unconfirmed = renderToStaticMarkup(
       },
     ]}
     saving={null}
+    renderPicture={() => <img alt="" />}
     renderCrop={() => <img alt="" />}
     onConfirm={() => undefined}
     onWithdraw={() => undefined}

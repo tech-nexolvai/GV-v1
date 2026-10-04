@@ -46,6 +46,7 @@ from storage.local import LocalStore
 from tests.extraction.models.test_validation import THREE_QUARTERS
 from tests.extraction.test_annotations import _appearance, _pdf, _stamp
 from tests.extraction.test_glyph_reader import _row
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from tests.workflow.test_glyph_route import _content
 from units.measurement import Unit
@@ -460,6 +461,7 @@ def _stages(
         localized_ocr=LOCALIZED,
         vision_readers=readers,
         reading_agent=agent,
+        missing_space=MISSING_SPACE,
     )
 
 
@@ -683,11 +685,13 @@ def test_an_agreement_the_agent_contradicts_is_marked_conflicting_not_left_stand
     assert {(status, lane) for *_, status, lane in statuses} == {("CONFLICTING", "SECOND_READER")}
 
 
-def test_an_agent_reading_that_agrees_leaves_the_agreement_standing(
+def test_an_agent_reading_that_agrees_marks_nothing_conflicting(
     session: Session, store: LocalStore
 ) -> None:
-    """Outcome: the whole label was never cut for the readers here, so the agent's reading agrees
-    with theirs and nothing is marked conflicting — the check only ever takes an agreement away."""
+    """Outcome: the readers read the whole label's value from their cut crop, so the agent's reading
+    agrees with theirs and nothing is marked conflicting — the check only ever takes an agreement
+    away. (The agreement is still not confirmed, because the crop cut the label: #919,
+    `tests/workflow/test_cut_label_guard.py`.)"""
     revision = _revision(session, store, data=SHEET)
     session.commit()
     primary, escalation = _readers(cut_reading='10192"')
@@ -725,9 +729,12 @@ def test_a_contradiction_found_after_the_first_readings_were_saved_still_blocks_
 ) -> None:
     """**The crash of the first end-to-end run (#790).** In a real run the page's panel step saves the
     first readings before the agent runs, and a saved reading is append-only. Outcome: no crash; the
-    agent's readings are marked conflicting; the first readers' `92"` agreement keeps the status it
-    was saved with — and automatic typing still refuses to lock it in, because its region holds a
-    conflict."""
+    agent's readings are marked conflicting; the first readers' `92"` readings keep what they were
+    saved with — and automatic typing still refuses to lock one in.
+
+    **Since #919 they were saved unconfirmed.** Their crop cut the label, so the gate never
+    confirmed their agreement: each is a pre-fill with no lane, where before it was saved as two
+    readers agreeing and only the region's conflict kept it from being sealed."""
     from app.evidence.automatic_typing import _second_reader_candidate_ids
 
     original = DatabaseStages._run_bounded_agent_for_ambiguous_regions
@@ -750,8 +757,7 @@ def test_a_contradiction_found_after_the_first_readings_were_saved_still_blocks_
     agent = [row for row, _run in _agent_rows(session)]
     assert {row.raw_text for row in agent} == {'10192"'}
     assert {row.corroboration_status for row in agent} == {"CONFLICTING"}
-    first = next(
-        row for row in rows if row.raw_text == '92"' and row.corroboration_lane == "SECOND_READER"
-    )
-    assert first.corroboration_status != "CONFLICTING"
-    assert _second_reader_candidate_ids(session, first) == ()
+    cut = [row for row in rows if row.raw_text == '92"']
+    assert len(cut) == 3, "OCR's and both readers'"
+    assert {(row.corroboration_status, row.corroboration_lane) for row in cut} == {(None, None)}
+    assert all(_second_reader_candidate_ids(session, row) == () for row in cut)

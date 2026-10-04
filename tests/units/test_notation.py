@@ -90,3 +90,82 @@ def test_nothing_is_computed(written: str) -> None:
     source = "".join(ch for ch in written if ch.isdigit())
 
     assert digits in source
+
+
+# ---------------------------------------------------------------------------
+# Fraction symbols and the fraction slash (#907)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("written", "inches"),
+    [
+        ('10½"', "21/2"),  # a model writes the one character for a half
+        ('10 ½"', "21/2"),  # with a space already there, no second space is added
+        ('10-½"', "21/2"),  # hyphenated, then joined as a hyphenated fraction is
+        ('7¾"', "31/4"),
+        ('9⅞"', "79/8"),
+        ('6 5⁄16"', "101/16"),  # the fraction slash between two digits
+        ('5⁄16"', "5/16"),
+        ("300 [11½]", "23/2"),  # inside a dual token's bracket
+    ],
+)
+def test_a_fraction_symbol_is_read_as_the_fraction_it_is(written: str, inches: str) -> None:
+    """**#907.** A reader that writes `½` or the fraction slash read the label right; before this
+    its reading had no value, lost to formatting."""
+    assert _inches(written) == Fraction(inches)
+
+
+def test_every_fraction_symbol_is_written_as_unicode_decomposes_it() -> None:
+    """**Taken from the standard, not a table.** For every character Unicode tags as a vulgar
+    fraction, the digits written in its place are its own decomposition — numerator, fraction slash,
+    denominator — with the slash as `/`. A wrong digit cannot come from here."""
+    import sys
+    import unicodedata
+
+    symbols = [
+        chr(code)
+        for code in range(sys.maxunicode + 1)
+        if unicodedata.decomposition(chr(code)).startswith("<fraction>")
+    ]
+    assert "½" in symbols and "⅞" in symbols, "the standard's fraction characters were not found"
+    for symbol in symbols:
+        expected = unicodedata.normalize("NFKD", symbol).replace("⁄", "/")
+        assert canonical_notation(f'{symbol}"')[0] == f'{expected}"', symbol
+        assert canonical_notation(f'4{symbol}"')[0] == f'4 {expected}"', symbol
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        r"10\frac{1}{2}",  # LaTeX is not the drawing's notation and is never rewritten
+        r'10 \frac{1}{2}"',
+        r"\tfrac{3}{8}",
+        '10 ¹⁄₂"',  # superscript and subscript digits are not digits the parser reads
+    ],
+)
+def test_nothing_but_the_fraction_symbols_and_the_slash_is_rewritten(written: str) -> None:
+    """**Only those two.** A `\\frac` stays exactly as written and has no value; so does a fraction
+    built from superscript and subscript digits, whose slash alone is rewritten."""
+    token, _mm = canonical_notation(written)
+    assert "\\" not in written or token == written
+    with pytest.raises(UnitNormalisationError):
+        normalise_to_inches(token)
+
+
+def test_a_fraction_symbol_alone_is_still_a_bare_fraction() -> None:
+    """`½"` alone is a half inch, written as `1/2"`, which the vision shape check refuses as a
+    bare fraction exactly as it refuses a typed `1/2"` — a dropped whole number must not pass."""
+    from extraction.models.validation import _reading_refusal
+
+    assert canonical_notation('½"')[0] == '1/2"'
+    refusal = _reading_refusal('½"')
+    assert refusal is not None and "no whole number" in refusal
+
+
+def test_a_reading_with_no_fraction_symbol_is_left_alone() -> None:
+    """The rule touches nothing else: a token with neither character comes back as it went in."""
+    from units.notation import _fraction_symbols
+
+    for written in ['10 1/4"', "300 [12]", "8'-6''", "abc", "", "10/4"]:
+        assert _fraction_symbols(written) == written

@@ -43,6 +43,7 @@ from extraction.model.part_proposals import PROPOSER_SOURCE, PROPOSER_VERSION
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_annotations import _free_text, _pdf, _stamp
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import SETTINGS
 from tests.workflow.test_association import _revision as _stored_revision
 from tests.workflow.test_markup_route import _SilentOcr
@@ -159,6 +160,7 @@ def _run(
         dpi=150,
         ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
         association=association,
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
     session.commit()
     return result

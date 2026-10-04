@@ -709,6 +709,10 @@ class CountertopRunDecision(Base, TimestampedUUID, Immutable):
     confirmed_by: Mapped[str] = mapped_column(String(200))
     """Who decided, on a withdrawal too."""
 
+    wall_config: Mapped[str | None] = mapped_column(String(32), default=None)
+    """The human-chosen CT-WIDTH-001 layout for this confirmation; null on withdrawals and
+    older confirmations. A replacement never inherits it implicitly."""
+
     __table_args__ = (
         CheckConstraint(f"decision IN ({PART_DECISION_VALUES})", name="run_decision_value"),
         # A confirmation names its run; a withdrawal names none.
@@ -717,6 +721,11 @@ class CountertopRunDecision(Base, TimestampedUUID, Immutable):
             name="run_decision_shape",
         ),
         CheckConstraint("confirmed_by !~ '^[[:space:]]*$'", name="run_decision_actor_not_blank"),
+        CheckConstraint(
+            "wall_config IS NULL OR (decision = 'confirmed' AND "
+            "wall_config IN ('back_left_right', 'back_only', 'island'))",
+            name="countertop_run_wall_config",
+        ),
         UniqueConstraint("run_id", name="uq_countertop_run_decisions_run_id"),
         # What `countertop_runs` points at, so a member row can only belong to a run confirmed for
         # its own countertop.
@@ -803,6 +812,75 @@ class ReadingPart(Base, TimestampedUUID, Immutable):
             unique=True,
             postgresql_where=text("supersedes_id IS NULL"),
         ),
+    )
+
+
+#: What a stored digest looks like: lowercase SHA-256 hex, as every other stored artifact's.
+SHA256_PATTERN: Final = "^[0-9a-f]{64}$"
+
+
+class PartPicture(Base, TimestampedUUID, Immutable):
+    """A picture of one suggested part, cut from the vendor's drawing for a person to look at (#897).
+
+    So a person can decide what a suggestion is without opening the PDF. The worker that suggests
+    the parts cuts one per suggestion: the box around the part's outline and a stated margin, at a
+    stated resolution, both recorded here.
+
+    **For a person's eyes only.** Nothing reads a value from it: a part's width is a reading linked
+    to it (`ReadingPart`), its code is what a person confirmed, and this is how the person sees the
+    part they are deciding on.
+
+    **The vendor's drawing alone.** Cut from the page rendered with the reviewer's markup removed, as
+    every reader's crop is (#742), so a person confirms the vendor's part and not GV's note about it.
+    Where GV's marks are baked into the vendor's drawing itself, the render cannot remove them, and
+    `shows_gv_marks` records that the picture shows them (#921).
+
+    **A pointer and a digest, never the bytes.** The image is in the object store under a
+    content-addressed key; whoever shows it checks the bytes against `sha256` first. Two suggestions
+    with the same box share one stored image, which is why the key is not unique here.
+
+    Not an `evidence_artifacts` row: that needs a reading as its owner, and a part's picture belongs
+    to the suggestion. One per suggestion, and append-only: the first picture cut stands. A part a
+    person confirms keeps its suggestion's picture.
+    """
+
+    __tablename__ = "part_pictures"
+
+    part_proposal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("part_proposals.id", ondelete="RESTRICT")
+    )
+    """The suggestion it is a picture of, a person's own addition included (#882)."""
+
+    storage_key: Mapped[str] = mapped_column(String(1000))
+    sha256: Mapped[str] = mapped_column(String(64))
+    media_type: Mapped[str] = mapped_column(String(200))
+
+    margin_pt: Mapped[Decimal] = mapped_column(Numeric())
+    """How far past the part's outline the picture reaches on every side, in PDF points."""
+
+    dpi: Mapped[int] = mapped_column()
+    """The resolution the vendor's page was rendered at to cut it."""
+
+    shows_gv_marks: Mapped[bool | None] = mapped_column()
+    """Whether markup drawn in colour lies in the picture, wholly or in part (#921): GV's own marks
+    baked into the vendor's drawing, which the vendor-only render cannot strip.
+
+    Answered once, when the picture is cut, by the agreement gate's own test of a crop
+    (`workflow/stages.py:crop_shows_a_gv_mark`, #901) on the picture's own pixels. **`None` is "not
+    checked"**, never "no marks": a picture cut before the check existed (migration 0062 adds the
+    column and fills in nothing), or one whose page's coloured markup could not be read. The Measure
+    page warns only under a picture where this is true."""
+
+    __table_args__ = (
+        UniqueConstraint("part_proposal_id", name="uq_part_pictures_part_proposal_id"),
+        CheckConstraint("storage_key !~ '^[[:space:]]*$'", name="part_picture_key_not_blank"),
+        CheckConstraint(f"sha256 ~ '{SHA256_PATTERN}'", name="part_picture_sha256"),
+        CheckConstraint("media_type !~ '^[[:space:]]*$'", name="part_picture_media_not_blank"),
+        # Below infinity excludes NaN too, which PostgreSQL sorts above every number.
+        CheckConstraint(
+            "margin_pt > 0 AND margin_pt < 'Infinity'::numeric", name="part_picture_margin"
+        ),
+        CheckConstraint("dpi > 0", name="part_picture_dpi"),
     )
 
 

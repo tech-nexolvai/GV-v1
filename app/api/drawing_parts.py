@@ -9,11 +9,19 @@ decides more than one suggestion.
 
 The rules about which drawing may have parts, and what is kept, are `app/evidence/parts.py`'s.
 
-Source: issue #882; #748 plan, step 4. Verification: tests/api/test_drawing_parts.py.
+**Each part's picture (#897)** is served from where the worker stored it, checked against its
+recorded digest first. Adding a part asks the worker to cut the new part's picture, in the same
+transaction as the part, through the outbox: this module may not render a page itself
+(`tests/api/test_no_heavy_work.py`). Each part says what its picture was found to show of GV's own
+coloured marks when it was cut (#921), so the page can warn under one that shows them.
+
+Source: issues #882, #897 and #921; #748 plan, step 4. Verification:
+tests/api/test_drawing_parts.py.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Final
@@ -43,9 +51,13 @@ from app.evidence.parts import (
     revision_parts,
     withdraw_listed_part,
 )
-from app.models import PartConfirmation
+from app.models import PartConfirmation, PartPicture
+from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
 from vocabulary.part_kinds import PartKind
+from workflow.outbox import enqueue
+from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW, GvMarks
+from workflow.part_pictures import part_picture as recorded_picture
 
 router = APIRouter(tags=["drawing parts"])
 
@@ -104,10 +116,25 @@ class PartOut(BaseModel):
         description="The left end of the line that defines it, or null when no line did."
     )
     right_end: PointOut | None
+    has_picture: bool = Field(
+        description=(
+            "Whether its own picture is stored: the vendor's drawing around its outline (#897). "
+            "False until the worker has cut it, or where the page could not be rendered."
+        )
+    )
+    picture_gv_marks: GvMarks | None = Field(
+        description=(
+            "What its picture was found to show of GV's own coloured marks when it was cut (#921): "
+            "`shown` where markup drawn in colour lies in it, so the page warns under it; "
+            "`not_shown` where it was checked and none does; `not_checked` for a picture cut "
+            "before the check existed or whose page's coloured markup could not be read. Null "
+            "when no picture is stored."
+        )
+    )
     has_crop: bool = Field(
         description=(
-            "Whether a picture is stored for it. Today that is the crop of the reading its code "
-            "came from, so a suggestion with no code has none."
+            "Whether the crop of the reading its code came from is stored, so a suggestion with no "
+            "code has none."
         )
     )
     decision: DecisionOut | None = Field(
@@ -187,6 +214,8 @@ def _part_out(drawing: DrawingParts, listed: ListedPart) -> PartOut:
         added_by_a_person=proposal.source == ADDED_BY_A_PERSON,
         left_end=None if ends is None else PointOut(x=ends[0][0], y=ends[0][1]),
         right_end=None if ends is None else PointOut(x=ends[1][0], y=ends[1][1]),
+        has_picture=listed.has_picture,
+        picture_gv_marks=listed.picture_gv_marks,
         has_crop=listed.has_crop,
         decision=_decision(listed.decision),
     )
@@ -270,16 +299,77 @@ def list_parts(
     return PartsOut(drawings=[_drawing_out(d) for d in revision_parts(session, revision.id)])
 
 
+def _verified_picture(store: ArtifactStore, picture: PartPicture) -> bytes:
+    """A part's picture, only while its stored bytes still match the digest recorded for them."""
+    try:
+        with store.get(picture.storage_key) as stored:
+            content = stored.read()
+    except (ArtifactCorrupt, FileNotFoundError, IntegrityRecordMissing) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the stored picture of this part is unavailable, so it cannot be shown",
+        ) from error
+    if hashlib.sha256(content).hexdigest() != picture.sha256:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the stored picture of this part does not match its recorded digest, so it "
+            "cannot be shown",
+        )
+    return content
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/picture",
+    response_class=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "The integrity-checked picture of this part (#897).",
+        }
+    },
+    summary="View the picture of one suggested part, cut from the vendor's drawing",
+)
+def part_picture(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+    project_id: UUID,
+    package_id: UUID,
+    proposal_id: UUID,
+) -> Response:
+    """The part's own picture: the vendor's drawing around its outline, checked against its
+    recorded digest. For a person's eyes only; nothing reads a value from it.
+
+    The suggestion must be on this package's current revision, so another project's part looks
+    absent (404), as every other absence does.
+    """
+    revision = _revision(session, project_id, package_id)
+    proposal = listed_proposal(session, revision.id, proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    picture = recorded_picture(session, proposal.id)
+    if picture is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no picture of this part is stored yet",
+        )
+    return Response(
+        content=_verified_picture(store, picture),
+        media_type=picture.media_type,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get(
     "/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/crop",
     response_class=Response,
     responses={
         status.HTTP_200_OK: {
             "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}},
-            "description": "The integrity-checked picture stored for this suggestion.",
+            "description": "The integrity-checked crop of the reading the code came from.",
         }
     },
-    summary="View the picture stored for one suggested part",
+    summary="View the crop of the reading one suggested part's code came from",
 )
 def part_crop(
     _access: Annotated[Principal, Depends(require_project_access)],
@@ -306,7 +396,7 @@ def part_crop(
     if artifact is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="no picture is stored for this part",
+            detail="no crop of this part's code is stored",
         )
     content = _verified_crop_content(store, artifact)
     return Response(
@@ -389,12 +479,14 @@ def add_part_endpoint(
     view_id: UUID,
     body: AddPartIn,
 ) -> PartOut:
-    """File the person's own suggestion and confirm it, in one transaction."""
+    """File the person's own suggestion and confirm it, in one transaction, and ask the worker to
+    cut its picture (#897) in the same one: the part and the request commit together or not at all.
+    The list shows the part at once and its picture once the worker has cut it."""
     revision = _revision(session, project_id, package_id)
     first, second = body.ends
-    confirmation = _decide(
-        session,
-        lambda: add_part(
+
+    def add_and_ask_for_its_picture() -> PartConfirmation | PartRefused:
+        outcome = add_part(
             session,
             package_revision_id=revision.id,
             view_id=view_id,
@@ -402,6 +494,14 @@ def add_part_endpoint(
             code=body.code,
             ends=((first.x, first.y), (second.x, second.y)),
             actor=principal.id,
-        ),
-    )
+        )
+        if isinstance(outcome, PartConfirmation):
+            enqueue(
+                session,
+                workflow=CUT_PART_PICTURES_WORKFLOW,
+                payload={"package_revision_id": str(revision.id)},
+            )
+        return outcome
+
+    confirmation = _decide(session, add_and_ask_for_its_picture)
     return _listed(session, revision.id, confirmation.part_proposal_id)

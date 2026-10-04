@@ -49,6 +49,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import ColumnElement, Integer, Row, Select, and_, case, func, or_, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql import Subquery
@@ -75,6 +76,7 @@ from app.schemas.findings import (
     FindingPage,
 )
 from verdict.outcomes import Outcome, Severity
+from workflow.changed_values import ChangedValues, changed_values_for_revision
 
 router = APIRouter(tags=["findings"])
 
@@ -252,6 +254,9 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
             Finding.id,
             Finding.check_run_id,
             Finding.package_revision_id,
+            Finding.scope_item_id,
+            Finding.scope_label,
+            Finding.notes,
             Finding.outcome,
             Finding.severity,
             Finding.parameter_set_versions,
@@ -312,6 +317,7 @@ def _as_finding(row: Row[Any]) -> dict[str, Any]:
     tuple half first.
     """
     data = dict(row._mapping)
+    data["scope_label"] = data.get("scope_label") or "Package revision"
     kind = data.pop("reviewer_action_kind", None)
     actor = data.pop("reviewer_action_actor", None)
     note = data.pop("reviewer_action_note", None)
@@ -391,6 +397,48 @@ def _package_is_in_project(session: Session, project_id: UUID, package_id: UUID)
     """
     statement = select(Package.id).where(Package.id == package_id, Package.project_id == project_id)
     return session.execute(statement).first() is not None
+
+
+class ChangedValuesOut(BaseModel):
+    """One pinned check-run summary, or an explicit refusal to claim one."""
+
+    revision_id: UUID
+    status: str
+    message: str | None
+    company_standards_displaced: tuple[str, ...]
+    outstanding: tuple[str, ...]
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/changed-values",
+    response_model=ChangedValuesOut,
+    summary="Read the changed values pinned to this package's current check run",
+)
+def get_changed_values(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> ChangedValuesOut:
+    del principal
+    if not _package_is_in_project(session, project_id, package_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    revision_id = session.scalar(
+        select(PackageRevision.id)
+        .where(PackageRevision.package_id == package_id)
+        .order_by(PackageRevision.revision_number.desc())
+        .limit(1)
+    )
+    if revision_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    summary: ChangedValues = changed_values_for_revision(session, revision_id)
+    return ChangedValuesOut(
+        revision_id=revision_id,
+        status=summary.status,
+        message=summary.message,
+        company_standards_displaced=summary.company_standards_displaced,
+        outstanding=summary.outstanding,
+    )
 
 
 @router.get(

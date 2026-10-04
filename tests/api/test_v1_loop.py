@@ -53,7 +53,7 @@ from app.models import (
 from app.models.runs import WorkflowRun
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from tests.workflow.test_stages import _project_depth_parameters, _publish_rulebook
 from workflow.review import run_all
 from workflow.stages import DatabaseStages
@@ -212,7 +212,7 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
         _factory(session),
         package_revision_id=revision.id,
         workflow_run_id=run_id,
-        stages=DatabaseStages(store),
+        stages=DatabaseStages(store, missing_space=MISSING_SPACE),
     )
     session.expire_all()
 
@@ -269,7 +269,7 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     # 4. The checks run again now that the reading has a meaning, and the report is rebuilt.
     #    Re-running is what a reviewer does after confirming: the first pass had no evidence to
     #    decide from, and `run_checks` supersedes its own previous run rather than adding to it.
-    stages = DatabaseStages(store)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
     stages.run_checks(session, revision.id)
     output_result = stages.generate_outputs(session, revision.id)
     assert output_result["redline"] == {"generated": True, "reason": None}, output_result
@@ -349,10 +349,12 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     assert redline.status_code == 200, redline.text
     assert redline.headers["content-type"] == "application/pdf"
     assert redline.content.startswith(b"%PDF-"), "the evidence-grounded redline is not a PDF"
-    # This drawing-page label reaches the overlay only through the sealed VerdictInput and its
-    # typed canonical reading's stored page region — it proves the result is not a copied source.
+    # The placed label, external callout header and stored-fact note all name this
+    # same finding. The source drawing did not contain any of them.
     drawing_page_text = PdfReader(io.BytesIO(redline.content)).pages[0].extract_text() or ""
-    assert drawing_page_text.count("CT-DEPTH-001") == 1, drawing_page_text
+    assert "02 · CT-DEPTH-001 · PASS" in drawing_page_text
+    assert "02  CT-DEPTH-001 · PASS" in drawing_page_text
+    assert "CT-DEPTH-001 · PASS." in drawing_page_text
 
     # The newest, which is what the endpoint serves. Two reports exist here and both are real: the
     # pipeline wrote one before the reading had a meaning, and the reviewer's confirmation made the
@@ -455,7 +457,7 @@ def test_the_report_is_refused_until_the_package_is_approved(
         _factory(session),
         package_revision_id=revision.id,
         workflow_run_id=run_id,
-        stages=DatabaseStages(store),
+        stages=DatabaseStages(store, missing_space=MISSING_SPACE),
     )
     session.expire_all()
 
@@ -481,7 +483,7 @@ def test_nothing_in_the_loop_types_a_candidate_on_its_own(
         _factory(session),
         package_revision_id=revision.id,
         workflow_run_id=run_id,
-        stages=DatabaseStages(store),
+        stages=DatabaseStages(store, missing_space=MISSING_SPACE),
     )
     session.expire_all()
 

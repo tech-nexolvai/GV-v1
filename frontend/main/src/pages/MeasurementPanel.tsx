@@ -30,6 +30,7 @@ import { AssignmentProgress } from '../components/measure/AssignmentProgress';
 import { DrawingRoles } from '../components/measure/DrawingRoles';
 import { CountertopRuns } from '../components/measure/CountertopRuns';
 import { DrawingParts } from '../components/measure/DrawingParts';
+import { ReadingParts } from '../components/measure/ReadingParts';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { distributionFieldWidthKey } from '../components/measure/fillerDistribution';
 import {
@@ -305,6 +306,8 @@ export function MeasurementPanel({
   const [reload, setReload] = useState(0);
   // Decisions on parts, which change the runs under each countertop (#893).
   const [partsDecided, setPartsDecided] = useState(0);
+  // Readings confirmed here, which a part's width may then be linked to (#913).
+  const [readingsConfirmed, setReadingsConfirmed] = useState(0);
   /**
    * Which fields a model proposed, by field key, with the readings it chose.
    *
@@ -539,6 +542,7 @@ export function MeasurementPanel({
       setCandidates((current) =>
         current.filter((item) => item.candidate_id !== candidate.candidate_id),
       );
+      setReadingsConfirmed((count) => count + 1);
     } catch (caught) {
       setCandidateError(
         caught instanceof ApiError ? caught.message : 'This AI reading could not be confirmed.',
@@ -908,6 +912,17 @@ export function MeasurementPanel({
           and each countertop's run decided by a person. Read again whenever a part is decided. */}
       {packageId && (
         <CountertopRuns key={packageId} packageId={packageId} refresh={reload + partsDecided} />
+      )}
+
+      {/* **Which reading is each part's width** (#913): suggested from the confirmed parts and
+          readings, and each part's link decided by a person. Read again whenever a part is decided
+          or a reading is confirmed here. */}
+      {packageId && (
+        <ReadingParts
+          key={packageId}
+          packageId={packageId}
+          refresh={reload + partsDecided + readingsConfirmed}
+        />
       )}
 
       <section className="enter-values__section">

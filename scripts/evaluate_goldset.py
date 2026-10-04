@@ -85,6 +85,7 @@ from eval.scorecard import render, score_package
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import lines_within
 from extraction.glyph_bands import FractionBarGeometry
+from extraction.reader import MissingSpace
 from verdict.outcomes import Outcome, Severity
 from workflow.association import AssociationSettings, LocalizedOcrSettings
 from workflow.config import READER_RASTER_DPI
@@ -340,6 +341,7 @@ class Arguments(BaseModel):
     fraction_proportion_max: Decimal | None
     fraction_character_gap_pt: Decimal | None
     fraction_turned_aspect_min: Decimal | None
+    missing_space_heights: Decimal | None
 
 
 def _arguments() -> Arguments:
@@ -505,6 +507,11 @@ def _arguments() -> Arguments:
         type=Decimal,
         help="required: how many times taller than wide each character beside a bar across the stamp's baseline must stand, read the way the label would, for the bar to be a turned label's fraction, as a ratio (the stacked-fraction detector, #869)",
     )
+    parser.add_argument(
+        "--missing-space-heights",
+        type=Decimal,
+        help="required: the share of the text's height at which a gap inside the inches is a space the file left out, which leaves the label blank (the reader, #912)",
+    )
     return Arguments.model_validate(vars(parser.parse_args()))
 
 
@@ -578,6 +585,17 @@ def _association_settings(arguments: Arguments) -> AssociationSettings:
             turned_aspect_min=arguments.fraction_turned_aspect_min,
         ),
     )
+
+
+def _missing_space_setting(arguments: Arguments) -> MissingSpace:
+    """The reader's missing-space setting (#912), which every page read needs and which has no
+    default: a run without it is refused, as one without the association settings is."""
+    if arguments.missing_space_heights is None:
+        raise ValueError(
+            "the reader's missing-space setting is required to measure the production path; "
+            "missing --missing-space-heights"
+        )
+    return MissingSpace(gap_heights=arguments.missing_space_heights)
 
 
 def _localized_ocr_settings(arguments: Arguments) -> LocalizedOcrSettings | None:
@@ -669,6 +687,7 @@ def _run_pipeline(
     dpi: int,
     association: AssociationSettings,
     localized_ocr: LocalizedOcrSettings | None,
+    missing_space: MissingSpace,
     vendor_stamps_only: bool,
     seed_project_parameters: Callable[[Session, Any, Any], None] | None = None,
     project_id: UUID | None = None,
@@ -817,6 +836,7 @@ def _run_pipeline(
             dpi=dpi,
             association=association,
             localized_ocr=localized_ocr,
+            missing_space=missing_space,
         )
         stages.extract_pages(session, revision.id)
         session.commit()
@@ -1087,6 +1107,7 @@ def main() -> int:
     try:
         association = _association_settings(arguments)
         localized_ocr = _localized_ocr_settings(arguments)
+        missing_space = _missing_space_setting(arguments)
     except ValueError as refused:
         print(f"the package was refused: {refused}", file=sys.stderr)
         return 2
@@ -1101,6 +1122,7 @@ def main() -> int:
             dpi=arguments.dpi,
             association=association,
             localized_ocr=localized_ocr,
+            missing_space=missing_space,
             vendor_stamps_only=arguments.vendor_stamps_only,
         )
         print(

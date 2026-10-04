@@ -33,8 +33,10 @@ from app.models import (
     DrawingView,
     PartProposal,
 )
+from app.verdicts.rulebook import snapshot_store
 from tests.app.postgres_fixture import alembic_config
 from tests.db.test_drawing_models import _page, _view
+from tests.workflow.test_stages import _publish_rulebook
 from vocabulary.part_kinds import PartKind
 from workflow import countertop_runs as runs
 from workflow.countertop_runs import (
@@ -369,12 +371,15 @@ def _count(session: Session, model: type) -> int:
 
 
 def _confirm(session: Session, drawing: Drawing, members: list[UUID]) -> CountertopRunDecision:
+    if snapshot_store(session).latest("CT-WIDTH-001") is None:
+        _publish_rulebook(session)
     return confirm_countertop_run(
         session,
         countertop_item_id=drawing.top,
         member_item_ids=members,
         edge_tolerance=TOLERANCE,
         actor=ACTOR,
+        wall_config="back_left_right",
     )
 
 
@@ -490,6 +495,7 @@ def test_two_countertops_runs_are_read_independently(session: Session) -> None:
         member_item_ids=[drawing.wall],
         edge_tolerance=TOLERANCE,
         actor=ACTOR,
+        wall_config="back_left_right",
     )
 
     withdraw_countertop_run(session, countertop_item_id=drawing.top, actor=ACTOR)
@@ -519,6 +525,7 @@ def test_the_writer_refuses_what_a_person_could_not_have_meant(
     session: Session, case: str, said: str
 ) -> None:
     drawing = Drawing(session)
+    _publish_rulebook(session)
     countertop, members, actor = drawing.top, list(drawing.row), ACTOR
     if case == "no-parts":
         members = []
@@ -542,6 +549,7 @@ def test_the_writer_refuses_what_a_person_could_not_have_meant(
             member_item_ids=members,
             edge_tolerance=TOLERANCE,
             actor=actor,
+            wall_config="back_left_right",
         )
     assert _count(session, CountertopRunDecision) == 0
     assert _count(session, CountertopRun) == 0

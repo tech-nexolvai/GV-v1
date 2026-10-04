@@ -8,11 +8,16 @@ it under `data/`, which is never committed.
 
     python scripts/agent_scorecard.py --key data/goldset/reading-key-2026-09-30 \\
         --reader-settings scripts/demo.sh --stage-dpi 300 --sharper-dpi 450 \\
-        --label-gap-pt 4 --max-label-pt 40 --max-steps 6 \\
+        --label-gap-pt 4 --max-label-pt 40 --max-steps 6 --budget-usd 0.50 \\
         --output data/goldset/reading-key-2026-09-30/agent_scorecard.md
 
 Give `--key` once per key — one key per drawing (#867) — and every key's crops are scored into one
 scorecard, each on its own drawing. A crop id two keys share is refused.
+
+**A pair reader shown an upright, sharper picture (#907)** needs `--sharper-picture-dpi`, the
+deployment's `GV_VISION_SHARPER_PICTURE_DPI`; it has no default. **`--budget-usd` is required**: the
+run stops before any call once it has spent that much, writes what it scored, and says it stopped.
+`--pair-only` scores the reader pair without the agent.
 """
 
 from __future__ import annotations
@@ -48,8 +53,10 @@ from extraction.agent.tools import VlmRole
 #: account (#716); the others are paced well under their published limits.
 CALLS_PER_MINUTE = {
     "bedrock-nova-2-lite": 18,
+    "bedrock-nova-2-lite-taught": 18,
     "bedrock-ministral-3-3b": 60,
     "bedrock-mistral-large-3": 30,
+    "bedrock-qwen3-vl-235b": 30,
 }
 
 
@@ -85,11 +92,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--label-gap-pt", type=Decimal, required=True)
     parser.add_argument("--max-label-pt", type=Decimal, required=True)
     parser.add_argument("--max-steps", type=int, required=True)
-    parser.add_argument("--pair", default="bedrock-nova-2-lite,bedrock-ministral-3-3b")
+    parser.add_argument("--pair", default="bedrock-qwen3-vl-235b,bedrock-nova-2-lite-taught")
     parser.add_argument("--primary", default="bedrock-nova-2-lite")
     parser.add_argument("--escalation", default="bedrock-mistral-large-3", help="#757 D-A2")
     parser.add_argument("--rates", type=Path, default=Path("deploy/model_rates.us-east-1.json"))
     parser.add_argument("--only", help="comma-separated crop ids, for a dry run")
+    parser.add_argument(
+        "--sharper-picture-dpi",
+        type=int,
+        help="GV_VISION_SHARPER_PICTURE_DPI, for a pair reader shown an upright, sharper picture",
+    )
+    parser.add_argument("--budget-usd", type=Decimal, required=True, help="stop before exceeding")
+    parser.add_argument("--pair-only", action="store_true", help="score the pair without the agent")
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -98,9 +112,15 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     from app.runs.rates import call_cost_micros, load_model_rates
+    from eval.experiments.agent_scorecard import Pacer, SpendCap, SpendCapReached
     from extraction.glyph_bands import FractionBarGeometry
-    from extraction.models.nova import vision_config_for_extractor
-    from scripts.glyph_inventory import read_reader_settings
+    from extraction.models.nova import (
+        INFERENCE_PROFILE_PREFIX,
+        ReaderPicture,
+        vision_config_for_extractor,
+    )
+    from scripts.glyph_inventory import read_missing_space, read_reader_settings
+    from workflow.reader_pictures import PictureSettings
     from workflow.reading_agent import ReadingAgentSettings
     from workflow.stages import VISION_CROP_CONTEXT_MARGIN_PT
 
@@ -120,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
                 character_gap_pt=Decimal(reader["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
                 turned_aspect_min=Decimal(reader["GV_READER_FRACTION_TURNED_ASPECT_MIN"]),
             ),
+            # The pages' printed text is read as the stage reads it (#907, #912).
+            missing_space=read_missing_space(args.reader_settings),
         )
         settings = ReadingAgentSettings(
             max_steps=args.max_steps,
@@ -130,13 +152,54 @@ def main(argv: list[str] | None = None) -> int:
             label_gap_pt=args.label_gap_pt,
             maximum_label_pt=args.max_label_pt,
         )
-        readers: dict[str, BedrockCropReader] = {}
-        for name in {*args.pair.split(","), args.primary, args.escalation}:
+        rates = load_model_rates(args.rates)
+        if not args.budget_usd.is_finite() or args.budget_usd <= 0:
+            raise ScorecardError("--budget-usd must be more than zero dollars")
+        cap = SpendCap(
+            cap_micros=int(args.budget_usd * 1_000_000),
+            price=lambda model, tokens_in, tokens_out: call_cost_micros(
+                rates, model, tokens_in, tokens_out
+            ),
+        )
+        first, second = args.pair.split(",")
+        names = (
+            {first, second} if args.pair_only else {first, second, args.primary, args.escalation}
+        )
+        configs = {}
+        for name in names:
             config = vision_config_for_extractor(name)
             if config is None:
                 raise ScorecardError(f"{name} is not a defined reader with a measured space")
-            readers[name] = BedrockCropReader(config, calls_per_minute=CALLS_PER_MINUTE[name])
-        first, second = args.pair.split(",")
+            if rates.rate_for(config.model_id) is None:
+                raise ScorecardError(f"{args.rates} has no price for {config.model_id}")
+            configs[name] = config
+        # **One quota per model**, whichever reader asks it: Nova 2 Lite's two readers share one.
+        pacers: dict[str, Pacer] = {}
+        readers: dict[str, BedrockCropReader] = {}
+        for name, config in sorted(configs.items()):
+            model = config.model_id.removeprefix(INFERENCE_PROFILE_PREFIX)
+            shared = [other for other, c in configs.items() if c.model_id == config.model_id]
+            if model not in pacers:
+                pacers[model] = Pacer(min(CALLS_PER_MINUTE[other] for other in shared))
+            readers[name] = BedrockCropReader(
+                config, calls_per_minute=CALLS_PER_MINUTE[name], pacer=pacers[model], cap=cap
+            )
+        sharper = sorted(
+            name
+            for name in (first, second)
+            if configs[name].picture is ReaderPicture.UPRIGHT_SHARPER
+        )
+        pictures = (
+            None
+            if args.sharper_picture_dpi is None
+            else PictureSettings(sharper_dpi=args.sharper_picture_dpi)
+        )
+        if sharper and pictures is None:
+            raise ScorecardError(
+                f"{sharper} are shown an upright, sharper picture: state --sharper-picture-dpi"
+            )
+        if pictures is not None and pictures.sharper_dpi <= args.stage_dpi:
+            raise ScorecardError("--sharper-picture-dpi must be above --stage-dpi")
         keys: list[LoadedKey] = []
         seen: dict[str, Path] = {}
         for directory in args.key:
@@ -169,7 +232,6 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 )
             )
-        rates = load_model_rates(args.rates)
     except (ScorecardError, OSError, KeyError, ValueError) as error:
         print(error, file=sys.stderr)
         return 2
@@ -177,34 +239,85 @@ def main(argv: list[str] | None = None) -> int:
     from storage.local import LocalStore
 
     results = []
+    unplaced: dict[str, str] = {}
+    stopped: str | None = None
     total = sum(len(key.crops) for key in keys)
     with tempfile.TemporaryDirectory() as directory:
         store = LocalStore(root=Path(directory), ticket_secret=b"scorecard crops are never served")
         for key in keys:
             for crop in key.crops:
-                result = score_crop(
-                    crop,
-                    key.pages[crop.page_index],
-                    store=store,
-                    pair=(readers[first], readers[second]),
-                    readers={
-                        VlmRole.PRIMARY: readers[args.primary],
-                        VlmRole.ESCALATION: readers[args.escalation],
-                    },
-                    settings=settings,
-                    key_dpi=key.key_dpi,
-                    margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
-                )
+                try:
+                    result = score_crop(
+                        crop,
+                        key.pages[crop.page_index],
+                        store=store,
+                        pair=(readers[first], readers[second]),
+                        readers=(
+                            {}
+                            if args.pair_only
+                            else {
+                                VlmRole.PRIMARY: readers[args.primary],
+                                VlmRole.ESCALATION: readers[args.escalation],
+                            }
+                        ),
+                        settings=settings,
+                        key_dpi=key.key_dpi,
+                        margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
+                        pictures=pictures,
+                        run_agent=not args.pair_only,
+                    )
+                except SpendCapReached as error:
+                    stopped = str(error)
+                    break
+                except ScorecardError as error:
+                    # A crop the stage could not cut — narrower than its own margin, or off its
+                    # page — is reported, never scored and never the end of the run.
+                    unplaced[crop.crop_id] = str(error)
+                    print(f"{crop.crop_id} not scored: {error}", file=sys.stderr, flush=True)
+                    continue
+                if cap.tripped:
+                    # Cut inside the agent's graph, which turned the refusal into an abstention.
+                    stopped = "the cap was reached inside the agent's run on this crop"
+                    break
                 results.append(result)
-                print(f"{len(results)}/{total} {crop.crop_id}", file=sys.stderr, flush=True)
+                print(
+                    f"{len(results)}/{total} {crop.crop_id} "
+                    f"${Decimal(cap.spent_micros) / 1_000_000}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            if stopped is not None:
+                break
 
+    spent = Decimal(cap.spent_micros) / 1_000_000
     header = (
         f"## Reading agent scorecard — {datetime.datetime.now().astimezone().date().isoformat()}\n\n"
-        f"Pair: {first} + {second}. Agent: primary {args.primary}, escalation {args.escalation}; "
-        f"{args.max_steps} steps; sharper look at {args.sharper_dpi} dpi; whole label gathered "
-        f"within {args.label_gap_pt} pt, at most {args.max_label_pt} pt. Crops cut as the stage "
-        f"cuts them, at {args.stage_dpi} dpi. Reader thresholds: {args.reader_settings}. "
-        f"Keys: {', '.join(directory.name for directory in args.key)}."
+        f"Pair: {first} + {second}"
+        + (
+            " (pair only, no agent). "
+            if args.pair_only
+            else (
+                f". Agent: primary {args.primary}, escalation {args.escalation}; "
+                f"{args.max_steps} steps; sharper look at {args.sharper_dpi} dpi; whole label "
+                f"gathered within {args.label_gap_pt} pt, at most {args.max_label_pt} pt. "
+            )
+        )
+        + f"Crops cut as the stage cuts them, at {args.stage_dpi} dpi"
+        + (
+            f"; readers shown the label upright and sharper ({', '.join(sharper)}) see it "
+            f"rendered at {pictures.sharper_dpi} dpi"
+            if pictures is not None and sharper
+            else ""
+        )
+        + f". Reader thresholds: {args.reader_settings}. "
+        f"Keys: {', '.join(directory.name for directory in args.key)}. "
+        f"Spent ${spent} in {cap.calls} calls, under a cap of ${args.budget_usd}."
+        + (f"\n\n**STOPPED at the cap after {len(results)} crops: {stopped}.**" if stopped else "")
+        + (
+            f"\n\nNot scored, because the stage could not cut them: {', '.join(sorted(unplaced))}."
+            if unplaced
+            else ""
+        )
     )
 
     def cost(model: str, tokens_in: int, tokens_out: int) -> int:
@@ -214,9 +327,12 @@ def main(argv: list[str] | None = None) -> int:
         return micros
 
     args.output.write_text(render_markdown(results, rates=cost, header=header), encoding="utf-8")
-    args.output.with_suffix(".json").write_text(
-        json.dumps(results_json(results), indent=1), encoding="utf-8"
-    )
+    # An unplaced crop is in the working file with no reading, so a replay of it sees the key's
+    # every crop and that this one was read by nobody.
+    rows = results_json(results) + [
+        {"crop": crop_id, "pair": [], "not_scored": reason} for crop_id, reason in unplaced.items()
+    ]
+    args.output.with_suffix(".json").write_text(json.dumps(rows, indent=1), encoding="utf-8")
     print(f"wrote {args.output} and {args.output.with_suffix('.json')}", file=sys.stderr)
     return 0
 

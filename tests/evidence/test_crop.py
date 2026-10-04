@@ -15,9 +15,11 @@ import pytest
 
 from evidence.coordinates import StoredPoint
 from evidence.crop import (
+    BoxCropSpec,
     CropSpec,
     CropStatus,
     RenderedPage,
+    crop_pixel_box,
     decode_rgb_png,
     encode_png,
     generate_crop,
@@ -243,3 +245,97 @@ def test_polygon_must_be_pinned_to_the_same_document_version() -> None:
 
     assert result.status is CropStatus.REVIEW_REQUIRED
     assert result.reason == "crop and polygon belong to different document versions"
+
+
+# -- a box a polygon cannot describe (#897) -------------------------------------------------------
+
+
+def box(
+    document_id: UUID = DOCUMENT_A,
+    *,
+    left: Decimal = Decimal("0.4"),
+    top: Decimal = Decimal("0.4"),
+    right: Decimal = Decimal("0.6"),
+    bottom: Decimal = Decimal("0.6"),
+    page: int = 0,
+) -> BoxCropSpec:
+    return BoxCropSpec(document_id, page, left, top, right, bottom, Decimal(1), 72)
+
+
+def test_a_box_cuts_exactly_what_the_same_polygon_cuts(tmp_path: Path) -> None:
+    """Input: the red centre as a box, and as the polygon round it. Outcome: the same pixel box and
+    the same stored bytes, so a box is a second way to name a region, not a second crop."""
+    store = LocalStore(tmp_path)
+
+    by_box = generate_crop(rendered(), box(), store)
+    by_polygon = generate_crop(rendered(), spec(), store)
+
+    assert crop_pixel_box(rendered(), box()) == crop_pixel_box(rendered(), spec()) == (3, 3, 7, 7)
+    assert by_box.artifact is not None
+    assert by_box.artifact == by_polygon.artifact
+
+
+def test_a_box_with_no_height_is_its_line_and_the_margin_round_it(tmp_path: Path) -> None:
+    """Input: a line across the page, which no polygon can describe (a part a person added by its
+    two ends, #882). Outcome: a crop the margin above and below it, and nothing invented beyond."""
+    store = LocalStore(tmp_path)
+    line = box(top=Decimal("0.5"), bottom=Decimal("0.5"))
+
+    result = generate_crop(rendered(), line, store)
+
+    assert result.status is CropStatus.AVAILABLE and result.artifact is not None
+    assert crop_pixel_box(rendered(), line) == (3, 4, 7, 6)
+    width, height, _ = png_rgb(store.get(result.artifact.key).read())
+    assert (width, height) == (4, 2)
+
+
+@pytest.mark.parametrize(
+    ("changes", "error"),
+    [
+        ({"left": 0.4}, TypeError),
+        ({"bottom": Decimal("1.1")}, ValueError),
+        ({"top": Decimal(-1)}, ValueError),
+        ({"right": Decimal("NaN")}, ValueError),
+        ({"left": Decimal("0.7")}, ValueError),
+        ({"top": Decimal("0.7")}, ValueError),
+        ({"page": -1}, ValueError),
+        ({"page": True}, TypeError),
+    ],
+)
+def test_a_box_off_the_page_or_inside_out_is_refused(
+    changes: dict[str, object], error: type[Exception]
+) -> None:
+    """Input: a float, a side outside 0..1, NaN, a left past its right or a top below its bottom,
+    or a page that is not one. Outcome: construction fails before anything is cut."""
+    with pytest.raises(error):
+        box(**changes)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("margin", "dpi", "error"),
+    [
+        (Decimal(0), 72, ValueError),
+        (Decimal("Infinity"), 72, ValueError),
+        (1.0, 72, TypeError),
+        (Decimal(1), 0, ValueError),
+        (Decimal(1), True, TypeError),
+    ],
+)
+def test_a_box_states_its_margin_and_resolution_like_a_polygon(
+    margin: object, dpi: object, error: type[Exception]
+) -> None:
+    with pytest.raises(error):
+        BoxCropSpec(
+            DOCUMENT_A, 0, Decimal("0.4"), Decimal("0.4"), Decimal("0.6"), Decimal("0.6"), margin, dpi  # type: ignore[arg-type]
+        )
+
+
+def test_a_box_must_be_pinned_to_the_same_document_and_page() -> None:
+    """Input: a box from another version, or another page. Outcome: REVIEW_REQUIRED, saying so."""
+
+    other_version = generate_crop(rendered(DOCUMENT_A), box(DOCUMENT_B), FailingStore())
+    other_page = generate_crop(rendered(DOCUMENT_A), box(page=1), FailingStore())
+
+    assert other_version.status is CropStatus.REVIEW_REQUIRED
+    assert other_version.reason == "crop and box belong to different document versions"
+    assert other_page.reason == "crop and box belong to different pages"

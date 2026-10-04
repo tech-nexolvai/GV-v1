@@ -35,10 +35,19 @@ from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from uuid import UUID
 
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import exists, select, update
+from sqlalchemy.orm import Session, aliased
 
 from app.db.base import utc_now
+from app.models import (
+    DrawingItem,
+    DrawingView,
+    PackageRevisionDocument,
+    Page,
+    PartConfirmation,
+    PartDecision,
+    ViewRole,
+)
 from app.models.rules import RuleSnapshot as RuleSnapshotRow
 from app.models.verdicts import CheckRun, VerdictInput
 from app.models.verdicts import Finding as FindingRow
@@ -47,6 +56,7 @@ from units.measurement import Measurement
 from verdict.finding import Finding
 from verdict.operands import QUALIFIED_STATUSES, VerdictOperand
 from verdict.outcomes import DECISIVE_OUTCOMES, Outcome
+from vocabulary.part_kinds import PartKind
 
 __all__ = ["EvidenceMissing", "record_finding", "supersede_runs"]
 
@@ -92,7 +102,11 @@ def record_finding(
     finding: Finding,
     operands: Mapping[str, VerdictOperand],
     parameter_set_ids: Mapping[str, str],
+    defaults_set_id: str | None = None,
+    defaults_canonical_json: str | None = None,
     missing: Mapping[str, str] | None = None,
+    scope_item_id: UUID | None = None,
+    scope_label: str | None = None,
 ) -> FindingRow:
     """Write one decision: its run, the operands it was computed from, and the finding itself.
 
@@ -113,6 +127,36 @@ def record_finding(
             "citing a snapshot the database does not hold could never be reproduced."
         )
 
+    if (scope_item_id is None) != (scope_label is None):
+        raise EvidenceMissing("a countertop finding needs both its confirmed item and plain name")
+    if scope_item_id is not None:
+        if not scope_label or not scope_label.strip():
+            raise EvidenceMissing("a countertop finding needs a plain name")
+        later = aliased(PartConfirmation)
+        scoped = session.scalar(
+            select(DrawingItem.id)
+            .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
+            .join(Page, Page.id == DrawingView.page_id)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .join(PartConfirmation, PartConfirmation.drawing_item_id == DrawingItem.id)
+            .where(
+                DrawingItem.id == scope_item_id,
+                DrawingItem.item_type == PartKind.COUNTERTOP.item_type.value,
+                DrawingView.role == ViewRole.SHOP.value,
+                PartConfirmation.decision == PartDecision.CONFIRMED.value,
+                ~exists().where(later.supersedes_id == PartConfirmation.id),
+                PackageRevisionDocument.package_revision_id == package_revision_id,
+            )
+            .limit(1)
+        )
+        if scoped is None:
+            raise EvidenceMissing(
+                "the finding's countertop is not confirmed on this vendor revision"
+            )
+
     sealed = {
         name: operand
         for name, operand in operands.items()
@@ -131,6 +175,8 @@ def record_finding(
         package_revision_id=package_revision_id,
         rule_snapshot_id=snapshot_row.id,
         engine_version=finding.engine_version,
+        defaults_set_id=defaults_set_id,
+        defaults_canonical_json=defaults_canonical_json,
     )
     session.add(run)
     session.flush()
@@ -159,6 +205,8 @@ def record_finding(
         check_run_id=run.id,
         # Explicit, and the composite foreign key checks it against the run's own.
         package_revision_id=package_revision_id,
+        scope_item_id=scope_item_id,
+        scope_label=scope_label,
         outcome=finding.outcome.value,
         severity=finding.severity.value,
         trace=(

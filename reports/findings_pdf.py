@@ -28,6 +28,7 @@ from reportlab.pdfbase.pdfmetrics import stringWidth  # type: ignore[import-unty
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from reports.spreadsheet import NOT_RECORDED, StoredFinding
+from workflow.changed_values import ChangedValues
 
 __all__ = ["FINDINGS_PDF_MEDIA_TYPE", "FindingsPdfInput", "write_findings_pdf"]
 
@@ -55,6 +56,7 @@ class FindingsPdfInput:
     revision_number: int
     vendor: str | None
     findings: tuple[StoredFinding, ...]
+    changed_values: ChangedValues | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.package_revision_id, UUID):
@@ -234,6 +236,13 @@ class _Document:
             f"{finding.outcome} - {finding.severity}",
         )
         self.y -= 18
+        self._field("Subject", finding.scope_label or "Package revision")
+        layout = next(
+            (note for note in (finding.notes or ()) if note.startswith("Wall layout:")),
+            None,
+        )
+        if layout is not None:
+            self._field("Wall layout", layout)
         self._field("Approved value (ARCH)", _source_values(finding, "ARCH"))
         self._field("Vendor value (SHOP)", _source_values(finding, "SHOP"))
         self._field("Recorded comparison", _text(finding.trace.get("comparison")))
@@ -295,8 +304,54 @@ class _Document:
         self._footer()
         self.canvas.showPage()
 
+    def changed_values(self) -> None:
+        summary = self.source.changed_values
+        if summary is None:
+            return
+        self.page_number += 1
+        self.y = _PAGE_HEIGHT - _MARGIN
+
+        def new_page() -> None:
+            self._footer()
+            self.canvas.showPage()
+            self.page_number += 1
+            self.y = _PAGE_HEIGHT - _MARGIN
+
+        def line(value: str, *, heading: bool = False) -> None:
+            self.canvas.setFont(_BOLD_FONT if heading else _BODY_FONT, 10 if heading else 8)
+            for part in _wrapped(
+                value,
+                width=_CONTENT_WIDTH,
+                font=_BOLD_FONT if heading else _BODY_FONT,
+                size=10 if heading else 8,
+            ):
+                if self.y < 60:
+                    new_page()
+                self.canvas.drawString(_MARGIN, self.y, part)
+                self.y -= 15 if heading else 12
+            self.y -= 6
+
+        line("PROJECT VALUES THAT DIFFER FROM GV STANDARDS", heading=True)
+        if summary.message is not None:
+            line(summary.message)
+        else:
+            if summary.company_standards_displaced:
+                for value in summary.company_standards_displaced:
+                    line(value)
+            else:
+                line("None")
+            line("REQUIRED VALUES NOT SET", heading=True)
+            if summary.outstanding:
+                for value in summary.outstanding:
+                    line(value)
+            else:
+                line("None")
+        self._footer()
+        self.canvas.showPage()
+
     def build(self) -> bytes:
         self.cover()
+        self.changed_values()
         self._new_findings_page()
         for index, finding in enumerate(self.source.findings, start=1):
             self._finding(index, finding)

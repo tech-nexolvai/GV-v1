@@ -85,6 +85,8 @@ export type FindingChain =
   Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings/{finding_id}/chain'>;
 export type FindingCounts =
   Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings/summary'>;
+export type ChangedValues =
+  Get<'/api/v1/projects/{project_id}/packages/{package_id}/changed-values'>;
 export type ReviewSessionPage = Get<'/api/v1/projects/{project_id}/review-sessions'>;
 export type RuleList = Get<'/api/v1/rules'>;
 export type Rule = RuleList[number];
@@ -109,6 +111,12 @@ export function listPackages(projectId: string, query?: { cursor?: string; limit
 
 export function getPackage(projectId: string, packageId: string) {
   return request<PackageDetail>(`/projects/${projectId}/packages/${packageId}`);
+}
+
+export function getChangedValues(projectId: string, packageId: string) {
+  return request<ChangedValues>(
+    `/projects/${projectId}/packages/${packageId}/changed-values`,
+  );
 }
 
 export function listFindings(
@@ -701,8 +709,38 @@ export function addDrawingPart(
 }
 
 /**
- * The picture stored for one suggested part (#882): today, the crop of the reading its code came
- * from. Checked against its recorded digest by the server before it is sent.
+ * The picture of one suggested part (#897): the vendor's drawing round its outline, cut by the
+ * worker. Checked against its recorded digest by the server before it is sent. For a person's eyes
+ * only: nothing reads a value from it.
+ */
+export async function downloadPartPicture(
+  projectId: string,
+  packageId: string,
+  proposalId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/parts/${proposalId}/picture`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The part's picture could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
+/**
+ * The crop of the reading one suggested part's code came from (#882), so a person can check the
+ * code itself. Checked against its recorded digest by the server before it is sent.
  */
 export async function downloadPartCrop(
   projectId: string,
@@ -720,7 +758,7 @@ export async function downloadPartCrop(
     } catch {
       envelope = {
         error: 'unreadable_response',
-        message: `The part's picture could not be loaded (HTTP ${response.status}).`,
+        message: `The crop of the part's code could not be loaded (HTTP ${response.status}).`,
         request_id: response.headers.get('x-request-id') ?? 'unknown',
       };
     }
@@ -747,13 +785,14 @@ export function confirmCountertopRun(
   packageId: string,
   countertopItemId: string,
   partIds: string[],
+  wallConfig: string,
 ) {
   return request<CountertopRunOut>(
     `/projects/${projectId}/packages/${packageId}/countertop-runs/${countertopItemId}/confirm`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ part_ids: partIds }),
+      body: JSON.stringify({ part_ids: partIds, wall_config: wallConfig }),
     },
   );
 }
@@ -762,6 +801,44 @@ export function confirmCountertopRun(
 export function withdrawCountertopRun(projectId: string, packageId: string, countertopItemId: string) {
   return request<CountertopRunOut>(
     `/projects/${projectId}/packages/${packageId}/countertop-runs/${countertopItemId}/withdraw`,
+    { method: 'POST' },
+  );
+}
+
+/**
+ * Each confirmed part of this package, the confirmed reading the computer suggests is its width,
+ * the readings a person may pick instead, and what a person decided (#913). Listing writes nothing:
+ * a suggestion is worked out on each call.
+ */
+export function listReadingParts(projectId: string, packageId: string) {
+  return request<ReadingPartsOut>(`/projects/${projectId}/packages/${packageId}/reading-parts`);
+}
+
+/**
+ * Say which confirmed reading is one part's width (#913): the suggestion, or another reading on the
+ * same drawing as a correction. Any other reading linked to the part is taken back by the server.
+ * There is deliberately no call that decides more than one part's link.
+ */
+export function confirmReadingPart(
+  projectId: string,
+  packageId: string,
+  itemId: string,
+  readingId: string,
+) {
+  return request<ReadingPartOut>(
+    `/projects/${projectId}/packages/${packageId}/reading-parts/${itemId}/confirm`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reading_id: readingId }),
+    },
+  );
+}
+
+/** Take back the link between one part and its reading (#913). Links nothing. */
+export function withdrawReadingPart(projectId: string, packageId: string, itemId: string) {
+  return request<ReadingPartOut>(
+    `/projects/${projectId}/packages/${packageId}/reading-parts/${itemId}/withdraw`,
     { method: 'POST' },
   );
 }
@@ -804,6 +881,8 @@ export type DrawingPartOut = DrawingPartsOut['drawings'][number]['parts'][number
 export type PartKind = components['schemas']['PartKind'];
 export type CountertopRunsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/countertop-runs'>;
 export type CountertopRunOut = CountertopRunsOut['drawings'][number]['countertops'][number];
+export type ReadingPartsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/reading-parts'>;
+export type ReadingPartOut = ReadingPartsOut['drawings'][number]['parts'][number];
 export type PartPoint = components['schemas']['PointOut'];
 export type CompanySettings = Get<'/api/v1/company-settings'>;
 export type ConfirmedOut =

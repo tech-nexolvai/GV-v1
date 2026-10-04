@@ -68,15 +68,18 @@ this module, and the Measure page's listing and endpoints.
 `tests/api/test_no_heavy_work.py` keeps `app/api/` away from anything that reads a PDF. That is why
 the suggestion here repeats `extraction/model/assembly.py`'s span test rather than calling it.
 
+Where a confirmed part lies (`PlacedPart`, `live_part`, `live_parts_on`) is read in
+`workflow/parts.py`, which this module and the link between a reading and its part (#913) share.
+
 Source: issue #893; #748 plan, step 5. Verification: tests/workflow/test_countertop_runs.py,
 tests/db/test_drawing_models.py, tests/api/test_countertop_runs.py.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Final, cast
 from uuid import UUID, uuid4
 
@@ -87,12 +90,20 @@ from app.audit.events import AuditCategory, emit
 from app.models import (
     CountertopRun,
     CountertopRunDecision,
-    DrawingItem,
-    PartConfirmation,
     PartDecision,
 )
+from app.verdicts.rulebook import snapshot_store
+from rules.schema import Applicability
+from rules.semantic_types import SemanticType
 from vocabulary.part_kinds import PartKind
-from workflow.parts import live_part_item_ids
+from workflow.parts import (
+    PlacedPart,
+    check_edge_tolerance,
+    live_part,
+    live_part_item_ids,
+    live_parts_on,
+)
+from workflow.parts import across as _across
 
 __all__ = [
     "MEMBER_KINDS",
@@ -108,6 +119,7 @@ __all__ = [
     "live_parts_on",
     "live_run_rows",
     "propose_run",
+    "published_wall_layouts",
     "withdraw_countertop_run",
 ]
 
@@ -121,53 +133,6 @@ MEMBER_KINDS: Final = frozenset({PartKind.CABINET, PartKind.FILLER})
 #: How many places the numbers in a sentence for a person are shown to. Display only: every
 #: comparison is made on the exact stored values.
 _SHOWN: Final = ".4f"
-
-
-@dataclass(frozen=True, slots=True)
-class PlacedPart:
-    """A confirmed part as a run is decided from it: which item, what kind, which drawing, and the
-    box around its outline in stored page space, where `y` grows down the page."""
-
-    item_id: UUID
-    kind: PartKind
-    view_id: UUID
-    left: Decimal
-    right: Decimal
-    top: Decimal
-    bottom: Decimal
-
-    @classmethod
-    def from_extent(
-        cls, *, item_id: UUID, kind: PartKind, view_id: UUID, extent: Mapping[str, object]
-    ) -> PlacedPart:
-        """The box around a stored outline, `{"space": "stored", "points": [[x, y], ...]}`, read
-        exactly. Refuses an outline in any other space, with no points, or with a point that is not
-        a finite number, rather than placing the part somewhere it is not."""
-        if extent.get("space") != "stored":
-            raise ValueError("a part's outline must be in stored page space")
-        raw = extent.get("points")
-        if not isinstance(raw, list) or not raw:
-            raise ValueError("a part's outline must have points")
-        points: list[tuple[Decimal, Decimal]] = []
-        for point in cast(list[object], raw):
-            if not isinstance(point, list) or len(point) != 2:
-                raise ValueError("a part's outline holds a point that is not an x and a y")
-            try:
-                x, y = Decimal(str(point[0])), Decimal(str(point[1]))
-            except InvalidOperation as error:
-                raise ValueError("a part's outline holds a point that is not a number") from error
-            if not (x.is_finite() and y.is_finite()):
-                raise ValueError("a part's outline holds a point that is not a finite number")
-            points.append((x, y))
-        return cls(
-            item_id=item_id,
-            kind=kind,
-            view_id=view_id,
-            left=min(x for x, _ in points),
-            right=max(x for x, _ in points),
-            top=min(y for _, y in points),
-            bottom=max(y for _, y in points),
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,21 +164,6 @@ class RunProposal:
     """Where the suggested run does not cover the countertop as one unbroken row, in plain English.
     Said, never repaired."""
     edge_tolerance: Decimal
-
-
-def check_edge_tolerance(tolerance: object) -> Decimal:
-    """The tolerance, refused unless it is an exact, finite, non-negative number.
-
-    A float would let binary rounding decide whether a part lies along the countertop. NaN fails
-    every comparison and infinity passes every one, so neither loosens the tests: both remove them.
-    """
-    if not isinstance(tolerance, Decimal):
-        raise TypeError("edge_tolerance must be a Decimal")
-    if not tolerance.is_finite():
-        raise ValueError("edge_tolerance must be a finite number")
-    if tolerance < 0:
-        raise ValueError("edge_tolerance cannot be negative")
-    return tolerance
 
 
 def propose_run(
@@ -263,12 +213,6 @@ def _below(part: PlacedPart, countertop: PlacedPart, tolerance: Decimal) -> bool
     edge, and where this fails.
     """
     return part.top >= countertop.top - tolerance
-
-
-def _across(part: PlacedPart) -> tuple[Decimal, Decimal, Decimal, Decimal, str]:
-    """Left end, then right end, then top and bottom; the item id breaks only exact ties, so the
-    order never depends on which part was listed or clicked first."""
-    return part.left, part.right, part.top, part.bottom, str(part.item_id)
 
 
 def _span(part: PlacedPart) -> str:
@@ -333,45 +277,6 @@ def _warnings(
 
 
 # ---------------------------------------------------------------------------
-# Reading the confirmed parts
-# ---------------------------------------------------------------------------
-
-
-def _live_parts_query() -> Select[tuple[DrawingItem, str | None]]:
-    """Each item a person's current decision confirmed, with the kind they confirmed. A
-    confirmation always names its kind (`part_confirmation_decision_shape`)."""
-    later = aliased(PartConfirmation)
-    return (
-        select(DrawingItem, PartConfirmation.kind)
-        .join(PartConfirmation, PartConfirmation.drawing_item_id == DrawingItem.id)
-        .where(
-            PartConfirmation.decision == PartDecision.CONFIRMED.value,
-            ~exists().where(later.supersedes_id == PartConfirmation.id),
-        )
-    )
-
-
-def _placed(item: DrawingItem, kind: str | None) -> PlacedPart:
-    if kind is None:
-        raise ValueError("a confirmed part names the kind it was confirmed as")
-    return PlacedPart.from_extent(
-        item_id=item.id, kind=PartKind(kind), view_id=item.drawing_view_id, extent=item.extent
-    )
-
-
-def live_part(session: Session, item_id: UUID) -> PlacedPart | None:
-    """The confirmed part this item is, while a person stands by it; `None` for any other id."""
-    row = session.execute(_live_parts_query().where(DrawingItem.id == item_id)).one_or_none()
-    return None if row is None else _placed(*row)
-
-
-def live_parts_on(session: Session, view_id: UUID) -> tuple[PlacedPart, ...]:
-    """Every confirmed part on one drawing that a person stands by."""
-    rows = session.execute(_live_parts_query().where(DrawingItem.drawing_view_id == view_id))
-    return tuple(sorted((_placed(*row) for row in rows), key=_across))
-
-
-# ---------------------------------------------------------------------------
 # The decision, and what a reader may read
 # ---------------------------------------------------------------------------
 
@@ -413,6 +318,17 @@ def live_run_rows() -> Select[tuple[CountertopRun]]:
     )
 
 
+def published_wall_layouts(session: Session) -> tuple[str, ...]:
+    """Only the wall-layout choices in the currently published width check."""
+    snapshot = snapshot_store(session).latest("CT-WIDTH-001")
+    if snapshot is None or not isinstance(snapshot.rule.applicability, Applicability):
+        return ()
+    applicability = snapshot.rule.applicability
+    if applicability.discriminator != SemanticType.WALL_CONFIG.value:
+        return ()
+    return tuple(variant.when for variant in applicability.variants)
+
+
 def confirm_countertop_run(
     session: Session,
     *,
@@ -420,6 +336,7 @@ def confirm_countertop_run(
     member_item_ids: Collection[UUID],
     edge_tolerance: Decimal,
     actor: str,
+    wall_config: str | None,
 ) -> CountertopRunDecision:
     """A person saying which parts make up the run beneath one countertop. **The only code that
     writes `countertop_runs`.**
@@ -434,6 +351,10 @@ def confirm_countertop_run(
     twice, or a part that is not what it is named as.
     """
     _require_actor(actor)
+    if not wall_config:
+        raise ValueError("Choose this countertop's wall layout before confirming its run.")
+    if wall_config not in published_wall_layouts(session):
+        raise ValueError("Choose a wall layout offered by the published countertop width check.")
     tolerance = check_edge_tolerance(edge_tolerance)
     wanted = list(member_item_ids)
     if not wanted:
@@ -461,6 +382,7 @@ def confirm_countertop_run(
         decision=PartDecision.CONFIRMED.value,
         run_id=run_id,
         confirmed_by=actor,
+        wall_config=wall_config,
     )
     _record(session, decision, actor)
     ordered = sorted((cast(PlacedPart, part) for part in members), key=_across)

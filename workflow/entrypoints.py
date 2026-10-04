@@ -243,7 +243,8 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
 
     A missing token is refused before the worker is built. `Hatchet()` would raise anyway, but the
     message it gives is a Pydantic validation error about `ClientConfig`, which reads like a bug in this
-    code rather than a missing environment variable.
+    code rather than a missing environment variable. So is a missing reader setting (#912): a worker
+    that started without it would fail on the first page it was given to read.
     """
     if not settings.hatchet_token:
         logger.error(
@@ -254,7 +255,13 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
 
     from workflow.findings_bedrock import configured_findings_composer
     from workflow.hatchet_app import build_worker
-    from workflow.stages import DatabaseStages
+    from workflow.stages import DatabaseStages, missing_space_from_environment
+
+    try:
+        missing_space = missing_space_from_environment()
+    except ValueError as error:
+        logger.error("cannot start the worker: %s", error)
+        return EXIT_MISCONFIGURED
 
     # **The worker gets the real stages.** It resolved `NoStages()` until now, because nothing was
     # ever passed — so a deployed worker ran the whole pipeline and recorded that it had implemented
@@ -263,7 +270,10 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
     worker = build_worker(
         settings,
         factory=factory,
-        stages=DatabaseStages(findings_composer=configured_findings_composer(settings)),
+        stages=DatabaseStages(
+            findings_composer=configured_findings_composer(settings),
+            missing_space=missing_space,
+        ),
     )
     logger.info("worker starting")
     worker.start()

@@ -53,7 +53,7 @@ from extraction.reader import read_pages
 from storage.hashing import ArtifactCorrupt
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from tests.workflow.test_view_roles import _confirmed_part
 from vocabulary.part_kinds import PartKind
 from workflow.idempotency import stage_idempotency_key
@@ -207,7 +207,7 @@ def test_a_real_pdf_runs_the_whole_mechanical_pipeline(
     "exactly 1,133 candidates" would then fail for a reason that has nothing to do with the pipeline.
     """
     revision = _revision(session, store, data=pdf_bytes)
-    stages = DatabaseStages(store)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
 
     ingested = stages.ingest(session, revision.id)
     assert ingested["ran"] is True
@@ -246,7 +246,7 @@ def test_every_crop_is_a_real_png_of_a_real_region(
     they need it most.
     """
     revision = _revision(session, store, data=pdf_bytes)
-    stages = DatabaseStages(store)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
     stages.extract_pages(session, revision.id)
     stages.validate_evidence(session, revision.id)
 
@@ -280,7 +280,7 @@ def test_nothing_in_the_pipeline_gives_a_candidate_a_meaning(
     dashboard and be a fabricated fact in a review.
     """
     revision = _revision(session, store, data=pdf_bytes)
-    stages = DatabaseStages(store)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
     stages.extract_pages(session, revision.id)
     stages.validate_evidence(session, revision.id)
     stages.match(session, revision.id)
@@ -302,7 +302,7 @@ def test_match_finds_nothing_and_says_why_rather_than_reporting_success(
     and there was nothing" and "we cannot look yet".
     """
     revision = _revision(session, store, data=pdf_bytes)
-    stages = DatabaseStages(store)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
     stages.extract_pages(session, revision.id)
 
     result = stages.match(session, revision.id)
@@ -338,7 +338,7 @@ def test_ingest_halts_the_package_when_a_document_is_not_the_one_uploaded(
     )
 
     with pytest.raises(ArtifactCorrupt, match="not the one that was submitted"):
-        DatabaseStages(store).ingest(session, revision.id)
+        DatabaseStages(store, missing_space=MISSING_SPACE).ingest(session, revision.id)
 
 
 def test_ingest_reports_an_unreadable_document(session: Session, store: LocalStore) -> None:
@@ -387,7 +387,7 @@ def test_ingest_reports_an_unreadable_document(session: Session, store: LocalSto
     session.flush()
     store.put(key, io.BytesIO(broken), content_type="application/pdf")
 
-    result = DatabaseStages(store).ingest(session, revision.id)
+    result = DatabaseStages(store, missing_space=MISSING_SPACE).ingest(session, revision.id)
 
     assert result["verified"] == 0
     assert len(list(result["unreadable"])) == 1
@@ -408,7 +408,7 @@ def test_running_the_stages_twice_does_not_double_the_rows(
     the guard this raises an `IntegrityError` and takes the whole transaction with it.
     """
     revision = _revision(session, store, data=pdf_bytes)
-    stages = DatabaseStages(store)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
     stages.extract_pages(session, revision.id)
     first = stages.validate_evidence(session, revision.id)
     crops_after_one_pass = _count(session, EvidenceArtifact)
@@ -508,7 +508,7 @@ def test_match_writes_real_candidates_when_items_exist(session: Session, store: 
     )
     right = _drawn_item(session, revision, kind="shop", tag="E", part=PartKind.CABINET, mark="C-12")
 
-    result = DatabaseStages(store).match(session, revision.id)
+    result = DatabaseStages(store, missing_space=MISSING_SPACE).match(session, revision.id)
 
     assert int(result["items"]) >= 2
     assert int(result["candidates"]) == 1
@@ -533,7 +533,7 @@ def test_match_does_not_pair_items_of_different_types(session: Session, store: L
     )
     _drawn_item(session, revision, kind="shop", tag="E", part=PartKind.CABINET, mark="C-12")
 
-    result = DatabaseStages(store).match(session, revision.id)
+    result = DatabaseStages(store, missing_space=MISSING_SPACE).match(session, revision.id)
 
     assert int(result["candidates"]) == 0
     assert _count(session, MatchCandidateRow) == 0
@@ -561,7 +561,7 @@ def test_an_item_whose_only_identifier_is_a_catalogue_number_is_still_reported(
     )
     _drawn_item(session, revision, kind="shop", tag="E", part=PartKind.CABINET, mark="SKU-9")
 
-    result = DatabaseStages(store).match(session, revision.id)
+    result = DatabaseStages(store, missing_space=MISSING_SPACE).match(session, revision.id)
 
     assert int(result["items"]) == 2, "the catalogue-only item vanished from the projection"
     assert int(result["candidates"]) == 0, "a catalogue number was used to establish identity"

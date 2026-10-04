@@ -7,7 +7,12 @@ that lets any of these through is one that answers `same_assembly` confidently a
 * an item created already corroborated, becoming a second route into the verdict;
 * an alias edited in place, silently changing how every past match should have been read;
 * a suggested part becoming an item without a person confirming it (#852);
-* a reading measuring two parts at once, or a run whose members are not confirmed parts.
+* a reading measuring two parts at once, or a run whose members are not confirmed parts;
+* a reading linked to a part by anything but a person's decision, or read by a rule (#913);
+* a part's picture edited, doubled, or written by anything but the one function that records it,
+  or a decision about a part written by anything but a person's (#897);
+* a picture cut before the check for GV's coloured marks read as checked, or its answer changed
+  after it was recorded (#921).
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from app.models import (
     Page,
     PartConfirmation,
     PartDecision,
+    PartPicture,
     PartProposal,
     Project,
     ReadingPart,
@@ -65,6 +71,13 @@ from tests.app.postgres_fixture import alembic_config
 from units.measurement import Unit
 from verdict.operands import EvidenceStatus
 from vocabulary.part_kinds import PartKind
+from workflow.part_pictures import (
+    GvMarks,
+    PartPictureSettings,
+    gv_marks,
+    pictured,
+    record_part_picture,
+)
 from workflow.parts import (
     CODE_IDENTIFIER_KIND,
     confirm_part,
@@ -414,6 +427,7 @@ PART_TABLES = (
     "countertop_runs",
     "countertop_run_decisions",
     "reading_parts",
+    "part_pictures",
 )
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTOR = "anant"
@@ -537,6 +551,7 @@ def test_the_part_tables_are_registered_and_append_only() -> None:
         CountertopRun,
         CountertopRunDecision,
         ReadingPart,
+        PartPicture,
     ):
         assert issubclass(model, Immutable)
     assert set(PART_TABLES) <= set(immutable_table_names())
@@ -899,15 +914,22 @@ def test_the_run_guard_leaves_readers_alone(source: str, tmp_path: Path) -> None
     assert [writer for guarded in RUN_WRITERS for writer in _writers(tmp_path, guarded)] == []
 
 
-#: The only shipped code that may mention a run at all until a rule reads one (#748 step 7): the
-#: models and their migrations, the writer, and the Measure page's listing and endpoints.
+#: Step 7 adds only the confirmed-structure resolver to the existing run storage and UI access.
 RUN_AWARE: frozenset[str] = frozenset(
     {
         "alembic/versions/0058_drawing_parts.py",
         "alembic/versions/0060_countertop_run_decisions.py",
+        # Names 0060 only as the revision it follows (#897); it creates `part_pictures` and nothing
+        # about runs.
+        "alembic/versions/0061_part_pictures.py",
+        "alembic/versions/0064_countertop_run_wall_layout.py",
+        # Names 0064 only as the revision it follows; the migration adds
+        # check-run defaults columns and cannot read countertop structure.
+        "alembic/versions/0065_check_run_defaults_citation.py",
         "app/models/__init__.py",
         "app/models/drawing.py",
         "workflow/countertop_runs.py",
+        "workflow/part_operands.py",
         "app/evidence/countertop_runs.py",
         "app/api/countertop_runs.py",
         "app/main.py",
@@ -917,9 +939,9 @@ RUN_AWARE: frozenset[str] = frozenset(
 _RUN_WORDS = re.compile(r"countertop_run|CountertopRun|live_run_rows")
 
 
-def _mentions_a_run(root: Path) -> set[str]:
-    """Every shipped file whose code, as opposed to its prose, names a run: an import, a model, a
-    reader or a table. Docstrings and comments are not code, so they are skipped."""
+def _mentions(root: Path, words: re.Pattern[str]) -> set[str]:
+    """Every shipped file whose code, as opposed to its prose, says one of `words`: an import, a
+    model, a reader or a table. Docstrings and comments are not code, so they are skipped."""
     found: set[str] = set()
     for path in _source_files(root):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -945,16 +967,18 @@ def _mentions_a_run(root: Path) -> set[str]:
                 )
             else:
                 continue
-            if _RUN_WORDS.search(text):
+            if words.search(text):
                 found.add(path.relative_to(root).as_posix())
                 break
     return found
 
 
-def test_no_rule_input_reads_a_run_yet() -> None:
-    """**Done when, 4.** No rule reads runs until step 7, so nothing that builds a rule's inputs —
-    `rules/`, `verdict/`, `evidence/`, the evidence stage, matching — may name one. A file that
-    starts to is either step 7, which updates this list on purpose, or a leak."""
+def _mentions_a_run(root: Path) -> set[str]:
+    return _mentions(root, _RUN_WORDS)
+
+
+def test_only_the_confirmed_structure_resolver_reads_runs_for_rules() -> None:
+    """Step 7 adds one consumer, not access for the engine, evidence stage or other resolvers."""
     assert _mentions_a_run(REPO_ROOT) == RUN_AWARE
 
 
@@ -972,6 +996,219 @@ def test_the_run_reader_guard_sees_a_reader(tmp_path: Path) -> None:
     )
 
     assert _mentions_a_run(tmp_path) == {"workflow/operands.py"}
+
+
+# -- the one writer of a reading's link to its part (#913) ----------------------
+
+#: Which reading is each confirmed part's width.
+LINK_ROWS = _Guarded(tables=frozenset({"reading_parts"}), models=frozenset({"ReadingPart"}))
+
+#: The one function that constructs a link row, and the only two that may call it: a person
+#: confirming a link and a person taking one back. Nothing else, and the suggestion least of all.
+LINK_WRITER = ("workflow/reading_parts.py", "_write_link")
+LINK_DECISIONS = frozenset(
+    {
+        ("workflow/reading_parts.py", "confirm_reading_part"),
+        ("workflow/reading_parts.py", "withdraw_reading_part"),
+    }
+)
+
+#: Every form in `WRITING_FORMS`, aimed at the link table instead of the item tables.
+LINK_WRITING_FORMS: dict[str, str] = {
+    name: source.replace("DrawingItem", "ReadingPart")
+    .replace("ItemIdentifier", "ReadingPart")
+    .replace("drawing_items", "reading_parts")
+    .replace("item_identifiers", "reading_parts")
+    for name, source in WRITING_FORMS.items()
+}
+
+#: Reading a link, and suggesting one, write nothing.
+LINK_READING_FORMS: dict[str, str] = {
+    "an-orm-read": (
+        "from app.models import ReadingPart\n"
+        "from sqlalchemy import select\n"
+        "def go(session):\n"
+        "    return session.scalars(select(ReadingPart)).all()\n"
+    ),
+    "the-live-reader": (
+        "from workflow.reading_parts import live_reading_parts\n"
+        "def go(session):\n"
+        "    return session.scalars(live_reading_parts()).all()\n"
+    ),
+    "the-suggestion": (
+        "from workflow.reading_parts import suggest_links\n"
+        "def go(parts, readings, tolerance):\n"
+        "    return suggest_links(parts, readings, edge_tolerance=tolerance)\n"
+    ),
+    "a-raw-read": (
+        "from sqlalchemy import text\n"
+        "def go(session):\n"
+        "    return session.execute(text('SELECT drawing_item_id FROM reading_parts'))\n"
+    ),
+}
+
+
+def _callers(root: Path, function: str) -> set[tuple[str, str]]:
+    """Every `(file, enclosing function)` outside `tests/` that calls `function`, by its name or as
+    an attribute, so `reading_parts._write_link(...)` is caught as well as `_write_link(...)`."""
+    found: set[tuple[str, str]] = set()
+    for path in _source_files(root):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for enclosing, node in _nodes_by_function(tree):
+            if isinstance(node, ast.Call):
+                called = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                if called == function:
+                    found.add((path.relative_to(root).as_posix(), enclosing))
+    return found
+
+
+def test_only_a_persons_decision_writes_a_link() -> None:
+    """**Done when, 1.** A suggested link writes nothing: one function constructs a `reading_parts`
+    row, and only a person's confirmation or withdrawal calls it.
+
+    The suggestion (`suggest_links`), the listing and the endpoints are absent from both sets, so if
+    any of them ever wrote a row, or called the writer, this fails naming where."""
+    writers = {writer[:2] for writer in _writers(REPO_ROOT, LINK_ROWS)}
+    assert writers == {LINK_WRITER}, sorted(writers)
+    assert _callers(REPO_ROOT, LINK_WRITER[1]) == LINK_DECISIONS
+
+
+@pytest.mark.parametrize("source", list(LINK_WRITING_FORMS.values()), ids=list(LINK_WRITING_FORMS))
+def test_the_link_guard_catches_every_way_of_writing_one(source: str, tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "elsewhere.py").write_text(source, encoding="utf-8")
+
+    assert [writer[:2] for writer in _writers(tmp_path, LINK_ROWS)] == [
+        ("workflow/elsewhere.py", "go")
+    ]
+
+
+@pytest.mark.parametrize("source", list(LINK_READING_FORMS.values()), ids=list(LINK_READING_FORMS))
+def test_the_link_guard_leaves_readers_alone(source: str, tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "reader.py").write_text(source, encoding="utf-8")
+
+    assert _writers(tmp_path, LINK_ROWS) == []
+    assert _callers(tmp_path, LINK_WRITER[1]) == set()
+
+
+@pytest.mark.parametrize(
+    "call",
+    ["_write_link(session)", "reading_parts._write_link(session)"],
+    ids=["by-name", "as-an-attribute"],
+)
+def test_the_link_guard_sees_a_new_caller_of_the_writer(call: str, tmp_path: Path) -> None:
+    """A suggestion that reached the writer would write a link no person decided, without
+    constructing a row itself; the caller check is what sees it."""
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "suggest.py").write_text(
+        "from workflow import reading_parts\n"
+        "from workflow.reading_parts import _write_link\n"
+        f"def suggest(session):\n    {call}\n",
+        encoding="utf-8",
+    )
+
+    assert _callers(tmp_path, LINK_WRITER[1]) == {("workflow/suggest.py", "suggest")}
+
+
+#: Step 7 adds only the confirmed-structure resolver to the existing link storage and UI access.
+LINK_AWARE: frozenset[str] = frozenset(
+    {
+        "alembic/versions/0058_drawing_parts.py",
+        "app/models/__init__.py",
+        "app/models/drawing.py",
+        "workflow/reading_parts.py",
+        "workflow/part_operands.py",
+        "app/evidence/reading_parts.py",
+        "app/api/reading_parts.py",
+        "app/main.py",
+    }
+)
+
+_LINK_WORDS = re.compile(r"reading_part|ReadingPart")
+
+
+def test_only_the_confirmed_structure_resolver_reads_links_for_rules() -> None:
+    """Step 7's resolver alone gains read access; every writer and negative guard stays intact."""
+    assert _mentions(REPO_ROOT, _LINK_WORDS) == LINK_AWARE
+
+
+def test_the_link_reader_guard_sees_a_reader(tmp_path: Path) -> None:
+    """And it is not blind: an import of the reader, in a module about rule inputs, is caught; the
+    same words in a docstring are not."""
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "operands.py").write_text(
+        '"""Mentions reading_parts in prose only."""\n'
+        "from workflow.reading_parts import live_reading_parts as links\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "workflow" / "prose.py").write_text(
+        '"""Mentions reading_parts in prose only."""\n', encoding="utf-8"
+    )
+
+    assert _mentions(tmp_path, _LINK_WORDS) == {"workflow/operands.py"}
+
+
+# -- the one writer of a part's picture, and of a decision about a part (#897) ------------------
+
+PICTURE_ROWS = _Guarded(tables=frozenset({"part_pictures"}), models=frozenset({"PartPicture"}))
+DECISION_ROWS = _Guarded(
+    tables=frozenset({"part_confirmations"}), models=frozenset({"PartConfirmation"})
+)
+
+#: Who may write each: the worker records a picture through one function, which writes nothing
+#: else; only a person's confirmation or withdrawal writes a decision about a part.
+PICTURE_WRITERS: dict[_Guarded, set[tuple[str, str]]] = {
+    PICTURE_ROWS: {("workflow/part_pictures.py", "record_part_picture")},
+    DECISION_ROWS: {("workflow/parts.py", "confirm_part"), ("workflow/parts.py", "withdraw_part")},
+}
+
+#: Every form in `WRITING_FORMS`, aimed at the picture and decision tables.
+PICTURE_WRITING_FORMS: dict[str, str] = {
+    name: source.replace("DrawingItem", "PartPicture")
+    .replace("ItemIdentifier", "PartConfirmation")
+    .replace("drawing_items", "part_pictures")
+    .replace("item_identifiers", "part_confirmations")
+    for name, source in WRITING_FORMS.items()
+}
+
+
+def test_only_the_recorder_writes_a_picture_and_only_a_person_writes_a_decision() -> None:
+    """**Done when, 3.** The worker that cuts the pictures writes `part_pictures` through one
+    function, and nothing but a person's decision writes `part_confirmations`. With #852's guard on
+    items and #893's and #913's on runs and links, the worker can write no part, no decision and no
+    run: if the cutter ever did, this fails naming where."""
+    for guarded, expected in PICTURE_WRITERS.items():
+        writers = {writer[:2] for writer in _writers(REPO_ROOT, guarded)}
+        assert writers == expected, (guarded.tables, sorted(writers))
+    assert _callers(REPO_ROOT, "record_part_picture") == {("workflow/stages.py", "_cut_pictures")}
+
+
+@pytest.mark.parametrize(
+    "source", list(PICTURE_WRITING_FORMS.values()), ids=list(PICTURE_WRITING_FORMS)
+)
+def test_the_picture_guard_catches_every_way_of_writing_one(source: str, tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "elsewhere.py").write_text(source, encoding="utf-8")
+
+    found = [writer[:2] for guarded in PICTURE_WRITERS for writer in _writers(tmp_path, guarded)]
+
+    assert found == [("workflow/elsewhere.py", "go")]
+
+
+def test_the_picture_guard_leaves_readers_alone(tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "reader.py").write_text(
+        "from app.models import PartPicture\n"
+        "from sqlalchemy import select\n"
+        "from workflow.part_pictures import part_picture\n"
+        "def go(session, proposal):\n"
+        "    session.scalars(select(PartPicture)).all()\n"
+        "    return part_picture(session, proposal)\n",
+        encoding="utf-8",
+    )
+
+    assert [writer for guarded in PICTURE_WRITERS for writer in _writers(tmp_path, guarded)] == []
 
 
 # -- against a real database --------------------------------------------------
@@ -1315,7 +1552,7 @@ def test_a_malformed_suggestion_is_refused(
 
 
 def _one_of_each(session: Session) -> None:
-    """One row in each of the four tables, written the way each will be."""
+    """One row in each of the part tables, written the way each will be."""
     page = _page(session)
     view = _view(session, page)
     countertop = _confirmed(session, view, PartKind.COUNTERTOP)
@@ -1343,6 +1580,24 @@ def _one_of_each(session: Session) -> None:
         )
     )
     session.flush()
+    _picture(session, session.scalars(select(PartProposal)).first())
+
+
+#: How the pictures here are said to be cut: an inch round each part, at 150 dpi.
+PICTURES = PartPictureSettings(margin_pt=Decimal(72), dpi=150)
+
+
+def _picture(session: Session, proposal: PartProposal | None) -> PartPicture:
+    """A picture recorded the way the worker records one."""
+    assert proposal is not None
+    return record_part_picture(
+        session,
+        proposal=proposal,
+        storage_key=f"evidence-crops/{uuid4()}/pages/0/{HASH}.png",
+        sha256=HASH,
+        settings=PICTURES,
+        shows_gv_marks=False,
+    )
 
 
 @pytest.mark.parametrize("table", PART_TABLES)
@@ -1681,3 +1936,229 @@ def test_a_run_row_belongs_to_a_decision_about_its_own_countertop(
             _decided(session, _confirmed(session, view, PartKind.COUNTERTOP).id, run)
         session.add(_member(countertop, _confirmed(session, view).id, run=run, position=0))
         session.flush()
+
+
+# -- a part's picture (#897) --------------------------------------------------------------------
+
+
+def test_a_picture_is_recorded_once_per_suggestion(postgres_engine: Engine) -> None:
+    """The first picture cut stands: recording again returns it, and a second row for the same
+    suggestion is refused by the database itself."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        proposal = _proposal(session, _view(session, _page(session)))
+        first = _picture(session, proposal)
+        again = record_part_picture(
+            session,
+            proposal=proposal,
+            storage_key="evidence-crops/another/pages/0/other.png",
+            sha256="d" * 64,
+            settings=PartPictureSettings(margin_pt=Decimal(9), dpi=300),
+            shows_gv_marks=True,
+        )
+        assert again.id == first.id
+        assert (
+            again.storage_key,
+            again.sha256,
+            again.margin_pt,
+            again.dpi,
+            again.shows_gv_marks,
+        ) == (first.storage_key, HASH, Decimal(72), 150, False)
+        proposal_id = proposal.id
+    with (
+        pytest.raises(IntegrityError, match="uq_part_pictures_part_proposal_id"),
+        unit_of_work(factory) as session,
+    ):
+        session.add(
+            PartPicture(
+                part_proposal_id=proposal_id,
+                storage_key="evidence-crops/x/pages/0/y.png",
+                sha256=HASH,
+                media_type="image/png",
+                margin_pt=Decimal(72),
+                dpi=150,
+            )
+        )
+        session.flush()
+
+
+@pytest.mark.parametrize(
+    ("changes", "constraint"),
+    [
+        ({"storage_key": " "}, "part_picture_key_not_blank"),
+        ({"sha256": "not-a-digest"}, "part_picture_sha256"),
+        ({"sha256": "C" * 64}, "part_picture_sha256"),
+        ({"media_type": ""}, "part_picture_media_not_blank"),
+        ({"margin_pt": Decimal(0)}, "part_picture_margin"),
+        ({"margin_pt": Decimal(-1)}, "part_picture_margin"),
+        ({"margin_pt": Decimal("NaN")}, "part_picture_margin"),
+        ({"margin_pt": Decimal("Infinity")}, "part_picture_margin"),
+        ({"dpi": 0}, "part_picture_dpi"),
+    ],
+)
+def test_a_malformed_picture_is_refused(
+    postgres_engine: Engine, changes: dict[str, object], constraint: str
+) -> None:
+    """A picture is a pointer and a digest of its bytes, cut at a stated margin and resolution;
+    the database refuses one missing any of them."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError, match=constraint), unit_of_work(factory) as session:
+        proposal = _proposal(session, _view(session, _page(session)))
+        values: dict[str, object] = {
+            "part_proposal_id": proposal.id,
+            "storage_key": "evidence-crops/x/pages/0/y.png",
+            "sha256": HASH,
+            "media_type": "image/png",
+            "margin_pt": Decimal(72),
+            "dpi": 150,
+            **changes,
+        }
+        session.add(PartPicture(**values))
+        session.flush()
+
+
+def test_a_picture_holds_a_pointer_never_the_image() -> None:
+    """No column could hold the bytes: the table names where they are and what they hash to."""
+    columns = Base.metadata.tables["part_pictures"].columns
+
+    assert {column.name for column in columns} == {
+        "id",
+        "created_at",
+        "part_proposal_id",
+        "storage_key",
+        "sha256",
+        "media_type",
+        "margin_pt",
+        "dpi",
+        "shows_gv_marks",
+    }
+    assert not any("LargeBinary" in type(column.type).__name__ for column in columns)
+
+
+# -- whether a picture shows GV's coloured marks (#921) -------------------------------------------
+
+#: The migration before the check existed: a picture recorded there has never been checked.
+BEFORE_THE_CHECK = "0061_part_pictures"
+
+
+def _migrate(engine: Engine, revision: str, *, down: bool = False) -> None:
+    config = alembic_config()
+    config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
+    (command.downgrade if down else command.upgrade)(config, revision)
+
+
+def _columns(session: Session) -> set[str]:
+    return set(
+        session.scalars(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'part_pictures'"
+            )
+        )
+    )
+
+
+def test_a_picture_cut_before_the_check_reads_not_checked_and_stays_append_only(
+    postgres_engine: Engine,
+) -> None:
+    """**0062 is append-only safe.** A picture recorded at 0061, before the check existed, keeps
+    its row, its pointer and its digest through the upgrade; it reads null, "not checked", never
+    clean; the answer cannot be written into it afterwards, because the table still refuses every
+    update; and the downgrade drops only the answers."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    try:
+        _migrate(postgres_engine, BEFORE_THE_CHECK, down=True)
+        with unit_of_work(factory) as session:
+            assert "shows_gv_marks" not in _columns(session)
+            proposal = _proposal(session, _view(session, _page(session)))
+            proposal_id = proposal.id
+            # Written as the 0061 worker wrote it: the model now has a column this schema lacks.
+            session.execute(
+                text(
+                    "INSERT INTO part_pictures (id, created_at, part_proposal_id, storage_key, "
+                    "sha256, media_type, margin_pt, dpi) VALUES (:id, now(), :proposal, :key, "
+                    ":sha256, 'image/png', 72, 150)"
+                ),
+                {
+                    "id": uuid4(),
+                    "proposal": proposal_id,
+                    "key": "evidence-crops/old/pages/0/old.png",
+                    "sha256": HASH,
+                },
+            )
+
+        _migrate(postgres_engine, "head")
+        with unit_of_work(factory) as session:
+            picture = session.scalars(select(PartPicture)).one()
+            assert (picture.storage_key, picture.sha256, picture.margin_pt, picture.dpi) == (
+                "evidence-crops/old/pages/0/old.png",
+                HASH,
+                Decimal(72),
+                150,
+            )
+            assert picture.shows_gv_marks is None
+            assert pictured(session, [proposal_id]) == {proposal_id: GvMarks.NOT_CHECKED}
+        for answer in ("true", "false"):
+            with pytest.raises(DBAPIError, match="append-only"), unit_of_work(factory) as session:
+                session.execute(text(f"UPDATE part_pictures SET shows_gv_marks = {answer}"))
+
+        _migrate(postgres_engine, BEFORE_THE_CHECK, down=True)
+        with unit_of_work(factory) as session:
+            assert "shows_gv_marks" not in _columns(session)
+            assert session.scalar(text("SELECT count(*) FROM part_pictures")) == 1
+            assert session.scalar(text("SELECT sha256 FROM part_pictures")) == HASH
+    finally:
+        _migrate(postgres_engine, "head")
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [(True, GvMarks.SHOWN), (False, GvMarks.NOT_SHOWN), (None, GvMarks.NOT_CHECKED)],
+    ids=["shown", "not-shown", "not-checked"],
+)
+def test_a_new_picture_keeps_the_answer_it_was_recorded_with(
+    postgres_engine: Engine, answer: bool | None, said: GvMarks
+) -> None:
+    """The answer is written with the picture, in the same insert, and read back as recorded; `None`
+    is "not checked", never "clean"."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        proposal = _proposal(session, _view(session, _page(session)))
+        picture = record_part_picture(
+            session,
+            proposal=proposal,
+            storage_key=f"evidence-crops/{uuid4()}/pages/0/{HASH}.png",
+            sha256=HASH,
+            settings=PICTURES,
+            shows_gv_marks=answer,
+        )
+        proposal_id = proposal.id
+        assert picture.shows_gv_marks is answer
+    with unit_of_work(factory) as session:
+        assert session.scalars(select(PartPicture.shows_gv_marks)).one() is answer
+        assert pictured(session, [proposal_id]) == {proposal_id: said}
+        assert gv_marks(answer) is said
+
+
+@pytest.mark.parametrize("answer", [1, 0, "yes", "true"])
+def test_an_answer_that_is_not_true_false_or_none_is_refused(
+    postgres_engine: Engine, answer: object
+) -> None:
+    """A truthy number or word is not an answer: refused before anything is written."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(TypeError, match="shows_gv_marks"), unit_of_work(factory) as session:
+        record_part_picture(
+            session,
+            proposal=_proposal(session, _view(session, _page(session))),
+            storage_key=f"evidence-crops/{uuid4()}/pages/0/{HASH}.png",
+            sha256=HASH,
+            settings=PICTURES,
+            shows_gv_marks=answer,  # type: ignore[arg-type]
+        )
+    with unit_of_work(factory) as session:
+        assert _count(session, PartPicture) == 0

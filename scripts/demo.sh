@@ -64,7 +64,11 @@ with Session(create_engine(Settings().database_url)) as session:
 PY
 
 say "5/6  a synthetic uploaded drawing with inspectable evidence"
-PROJECT_ID="$(GV_DATABASE_URL="$BARE_URL" "$PYTHON" scripts/seed_demo.py --with-evidence 2>/dev/null \
+# The seed reads its synthetic drawing with the real reader, so it is given the worker's
+# `GV_READER_MISSING_SPACE_HEIGHTS` (#912), the same value; `tests/scripts/test_settings_construction.py`
+# holds the two equal.
+PROJECT_ID="$(GV_DATABASE_URL="$BARE_URL" GV_READER_MISSING_SPACE_HEIGHTS=0.1 \
+  "$PYTHON" scripts/seed_demo.py --with-evidence 2>/dev/null \
   | awk '/^package /{print $2}')"
 if [ -z "$PROJECT_ID" ]; then
   echo "  seed produced no package — run '$PYTHON scripts/seed_demo.py' to see why" >&2
@@ -96,7 +100,9 @@ say "6/6  the API, review worker, and UI"
 # suggested and no run can be confirmed. The demo states the reader's own `GV_READER_WITNESS_TOLERANCE`
 # below, not a new number: it is the tolerance the part suggester already used to decide that a
 # countertop's ends meet its cabinets' (#868), and a second number for that question could disagree
-# with the first. `tests/api/test_countertop_runs.py` holds the two equal.
+# with the first. `tests/api/test_countertop_runs.py` holds the two equal. The same number decides
+# which reading is suggested as each confirmed part's width (#913): whether a reading's ends meet the
+# part's is the same question about two ends drawn on the page.
 GV_DATABASE_URL="$BARE_URL" \
 GV_MODEL_RATES_FILE="deploy/model_rates.us-east-1.json" \
 GV_DEV_PRINCIPAL="demo reviewer" \
@@ -113,6 +119,13 @@ API_PID=$!
 # The four dimension-line values were measured against `AI_Set 2` p13 (#179) and are this demo's,
 # not anybody else's. `CROSSING_MARGIN` is the one that separates a dimension from the box it
 # measures; raise it toward `WITNESS_TOLERANCE` and every real dimension on that sheet is rejected.
+#
+# **`MINIMUM_SPAN` stays 0.01, measured again in #926.** A narrow filler's own dimension line on
+# `AI_Set 2` is 0.0093 of the page, so it is never offered and its number fell to the next
+# cabinet's line. The largest span that finds those six lines also finds 64 other strokes on
+# `AI_Set 2` (41 of them the edges of the white boxes behind one page's labels) and 23 on `AI_Set 1`,
+# and attaches eight more pieces of text wrongly, five of them numbers. Instead, a stroke that short
+# now only ever takes an attachment of the drawing's own text away (`workflow/stages.py`).
 #
 # **`LINE_MINIMUM_PT` was 50 and that discarded every dimension line on every drawing we have.**
 # It is the shortest stroke the reader will consider line-work at all, applied before the detector
@@ -167,6 +180,17 @@ API_PID=$!
 # wide. The 27 fractions found before are unchanged. On `AI_Set 1` its 22 are unchanged too, and it
 # gains 5 false alarms, none of them a label: its labels are text the detector cannot see (#738).
 #
+# **`MISSING_SPACE_HEIGHTS` is the reader's own (#912).** Where a drawing's software sets the
+# space in `[1 3/16]` as a gap instead of a space character, the inches read as one number,
+# `[13/16]`: a proper inch fraction, exact and wrong. A gap at least this share of the text's height
+# between two characters read as one number inside the inches sets the label aside, blank, for a
+# person. Measured on both client drawings, every reading of every page: a space is 0.228 to 0.296
+# of the text's height across their fonts (1,903 spaces), and the two characters either side of one
+# inside the inches are 0.274 to 0.284 apart (21 labels); two characters read as one number inside
+# the inches are -0.018 to 0.022 apart (582 pairs). 0.1 is 4.5 times the widest of those and under
+# half the narrowest space. Every value from 0.023 to below 1 reads both drawings exactly as before;
+# at 0.02, thirteen labels on `AI_Set_1` go blank.
+#
 # **The two Bedrock vision readers, and what turning them on costs (#651).** They were built in
 # #622/#623 and PC.3 and this flag is the only thing that starts them; until it was set here the
 # whole reading rebuild had never executed, and the demo ran the vector+OCR path alone. They are
@@ -185,10 +209,22 @@ API_PID=$!
 # two wrong values for a person to catch, and read nothing the pair had missed — so it is on here to
 # be tried on real drawings, and nowhere else. About 40% more model cost per crop. Every setting is
 # required; `workflow/reading_agent.py` says what each one is.
-# **Ministral reads first (#787).** Nova 2 Lite is held to 20 requests a minute on this account and
-# AWS declined to raise it (#716), so Nova reads only the crops Ministral found a value in — about 83
-# of 1,009 on AI_Set_2, which is minutes of Nova's quota instead of 50. Nothing that could be
-# confirmed is lost: a confirmation is two readers' values agreeing (#775).
+# **The reader pair is Qwen3-VL + Nova 2 Lite (#907)** — the admin's decision of 2026-10-04, after
+# the trial on both new answer keys (#728). Qwen3-VL (a third vendor) refuses forced tool use with a
+# picture, so it answers one JSON object that Bedrock holds to a schema, taught how these drawings
+# write a dimension, on the crop as cut. Nova 2 Lite is read the way the trial measured it: taught,
+# answering JSON in words, and shown the label turned upright where the drawing's own text, or the
+# way its drawn characters run, says it is sideways, and rendered from the vector page at 900 dpi —
+# the size the trial measured (300 dpi × 3), drawn rather than enlarged. Measured through the production path before this was switched on: of the
+# 47 labels a person read on the two keys, the pair agreed right on 25 — 24 that can be confirmed,
+# one stacked fraction that stays a pre-fill — and wrong on none; today's Nova 2 Lite + Ministral 3B,
+# measured the same way, agreed on 2. All three agreements on GV's own red number were held back by
+# the GV-mark guard (#901). Ministral 3B leaves the pair and stays defined. The pair cost about
+# $0.0005 a label there.
+#
+# **Qwen reads first (#787).** Nova 2 Lite is held to 20 requests a minute on this account and AWS
+# declined to raise it (#716), so Nova reads only the crops the gate reader found a value in.
+# Nothing that could be confirmed is lost: a confirmation is two readers' values agreeing (#775).
 #
 # **The phrase index is on (#849).** After extraction the worker joins each line's words into
 # passages (#836), which is what `workflow/parameter_proposals.py` searches when it looks for the
@@ -203,10 +239,24 @@ API_PID=$!
 # a different vendor's model asked for the digits alone. Only where the two agree on every piece is
 # the value written, and only as a pre-fill a person ticks: it keeps the stacked-fraction flag, so no
 # agreement ever seals it (#726). On `AI_Set 2` it pre-filled 11 labels, all right, and refused 2;
-# 28 Ministral calls, $0.0007. The four drawing sizes were measured in #848: every piece read at a
+# 28 Ministral calls, $0.0007. Since #907 the gate reader is Qwen3-VL, so Qwen reads the digits, in
+# plain JSON. The four drawing sizes were measured in #848: every piece read at a
 # height of 30–56 px, a stroke of 2–8 px and a margin of 16–96 px; the vendor's labels have no
 # curves, so the Bezier step count changes nothing. The route refuses to start without a gate reader.
-GV_VISION_GATE_READER=bedrock-ministral-3-3b \
+#
+# **Every suggested part has its own picture (#897)** — the admin's decision of 2026-10-04. The worker
+# cuts one per suggestion from the vendor's page (the reviewer's markup left out, as for every
+# reader's crop, #742): the box round the part's outline and `GV_PART_PICTURE_MARGIN_PT` either side,
+# rendered at `GV_PART_PICTURE_DPI`. Neither has a default, and the worker refuses to start without
+# them whenever it suggests parts. Chosen by eye on `AI_Set 2`, not measured against a key: 18 of its
+# 29 suggested cabinets have a box only 9 to 17 pt tall, the strip of their dimension row, and at a
+# margin of 36 pt their picture shows the row and little of the cabinet above it; at 72 pt (an inch) it
+# shows the cabinet's doors and drawers too. At 150 dpi the vendor's 5.4 pt digits are about 11 px
+# tall and readable, with a quarter of the pixels 300 dpi would cost. A picture is for a person to
+# look at; nothing reads a value from it.
+GV_BEDROCK_VISION_READERS=qwen3-vl-235b,nova-2-lite-taught \
+GV_VISION_GATE_READER=bedrock-qwen3-vl-235b \
+GV_VISION_SHARPER_PICTURE_DPI=900 \
 GV_READING_AGENT=1 \
 GV_AGENT_MAX_STEPS=6 \
 GV_AGENT_MAX_ESCALATIONS=1 \
@@ -240,12 +290,15 @@ GV_READER_FRACTION_GLYPH_MAX_PT=12 \
 GV_READER_FRACTION_PROPORTION_MAX=2.5 \
 GV_READER_FRACTION_CHARACTER_GAP_PT=4 \
 GV_READER_FRACTION_TURNED_ASPECT_MIN=1.1 \
+GV_READER_MISSING_SPACE_HEIGHTS=0.1 \
 GV_PHRASE_GAP_LINE_HEIGHTS=0.34 \
 GV_FRACTION_PARTS=1 \
 GV_FRACTION_PARTS_HEIGHT_PX=40 \
 GV_FRACTION_PARTS_STROKE_PX=4 \
 GV_FRACTION_PARTS_MARGIN_PX=32 \
 GV_FRACTION_PARTS_BEZIER_STEPS=8 \
+GV_PART_PICTURE_MARGIN_PT=72 \
+GV_PART_PICTURE_DPI=150 \
   "$PYTHON" scripts/drain_outbox.py --watch &
 WORKER_PID=$!
 

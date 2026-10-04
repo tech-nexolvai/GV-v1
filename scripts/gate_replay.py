@@ -5,10 +5,12 @@
 from runs' databases, each read inside a read-only transaction, and from agent scorecard working
 files; `--database` and `--scorecard` may each be given more than once. The drawing is read for its
 geometry and its coloured markup only, by the stage's own code
-(`eval.experiments.agent_scorecard.ScorecardPage`, `extraction.stamp_text.coloured_text`), with
-every threshold taken from a `scripts/demo.sh`-style file — none has a default. **Whether a crop
-shows a GV mark is the production gate's own function** (`workflow.stages.gv_mark_in_crop`, #901),
-so the replay and the gate cannot disagree about it.
+(`eval.experiments.agent_scorecard.ScorecardPage`, `workflow.stages.coloured_markup`), with every
+threshold taken from a `scripts/demo.sh`-style file — none has a default. **Whether a crop shows a
+GV mark, and whether it cuts the label off, are the production gate's own functions**
+(`workflow.stages.gv_mark_in_crop`, #901, #929; `workflow.stages.cut_label_refusal`, #919), over
+the markup the stage's own function gathers, so the replay and the gate cannot disagree about
+either.
 
     python scripts/gate_replay.py data/goldset/reading-key-2026-09-30 \\
         --key-dpi 600 --key-margin-pt 9 --reader-settings scripts/demo.sh --stage-dpi 300 \\
@@ -65,8 +67,8 @@ from eval.experiments.gate_replay import (
 )
 from extraction.agent.geometry import LabelReach
 from extraction.glyph_bands import FractionBarGeometry
-from extraction.stamp_text import coloured_text
-from workflow.stages import ColouredMarkup, gv_mark_in_crop
+from extraction.reader import MissingSpace
+from workflow.stages import ColouredMarkup, coloured_markup, cut_label_refusal, gv_mark_in_crop
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine
@@ -74,6 +76,10 @@ if TYPE_CHECKING:
 #: The reading agent's label lengths, which `scripts/glyph_inventory.READER_SETTINGS` does not read.
 #: Required like the rest: they decide where a label ends, so whether a crop cut it.
 AGENT_SETTINGS: Final = ("GV_AGENT_LABEL_GAP_PT", "GV_AGENT_MAX_LABEL_PT")
+
+#: The text reader's setting (#912), which `scripts/glyph_inventory.READER_SETTINGS` does not read
+#: either: the coloured text a crop may show is read by the reader, and it has no default.
+TEXT_READER_SETTINGS: Final = ("GV_READER_MISSING_SPACE_HEIGHTS",)
 
 #: Every stored reading of one drawing, with where it was recorded. Selects nothing it does not use.
 ROWS_SQL: Final = """
@@ -95,7 +101,7 @@ VERSIONS_SQL: Final = """
 
 
 def read_settings(path: Path) -> dict[str, str]:
-    """The reader settings and the agent's label lengths; every one required."""
+    """The reader settings, the text reader's and the agent's label lengths; every one required."""
     from scripts.glyph_inventory import InventoryError, read_reader_settings
 
     try:
@@ -103,7 +109,7 @@ def read_settings(path: Path) -> dict[str, str]:
     except InventoryError as error:
         raise ReplayError(str(error)) from error
     text = path.read_text(encoding="utf-8")
-    for name in AGENT_SETTINGS:
+    for name in (*AGENT_SETTINGS, *TEXT_READER_SETTINGS):
         match = re.search(rf"^\s*{name}=(\S+)", text, flags=re.MULTILINE)
         if match is None:
             raise ReplayError(f"{path} does not state {name}, and it has no default")
@@ -126,16 +132,29 @@ def _geometry(reader: dict[str, str]) -> PageGeometry:
             character_gap_pt=Decimal(reader["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
             turned_aspect_min=Decimal(reader["GV_READER_FRACTION_TURNED_ASPECT_MIN"]),
         ),
+        missing_space=MissingSpace(gap_heights=Decimal(reader["GV_READER_MISSING_SPACE_HEIGHTS"])),
     )
 
 
-def markup_of(pdf: bytes, page: ScorecardPage, *, version_id: UUID, dpi: int) -> ColouredMarkup:
-    """The page's markup drawn in colour, gathered as the stage gathers it (`_coloured_markup`):
-    the coloured text in its pasted drawings, and the glyph paths its layers read."""
-    return ColouredMarkup(
-        text=coloured_text(pdf, page.page.index, document_version_id=version_id, dpi=dpi),
-        paths=page.layers.glyph_paths,
+def markup_of(
+    pdf: bytes,
+    page: ScorecardPage,
+    *,
+    version_id: UUID,
+    dpi: int,
+    missing_space: MissingSpace,
+) -> ColouredMarkup:
+    """The page's markup drawn in colour and the stamps pasted onto its drawings, gathered by the
+    stage's own function (`workflow.stages.coloured_markup`, #929) from what the stage hands it: the
+    page's transform and the glyph paths its layers read."""
+    return coloured_markup(
+        pdf,
+        page.page.index,
+        document_version_id=version_id,
+        dpi=dpi,
+        missing_space=missing_space,
         transform=page.transform,
+        glyph_paths=page.layers.glyph_paths,
     )
 
 
@@ -144,15 +163,28 @@ def facts_of(
     markup: ColouredMarkup,
     box_px: tuple[int, int, int, int],
     margin_pt: Decimal,
+    reach: LabelReach,
 ) -> Facts:
-    """A region's geometry, by `workflow.stages.region_facts` through the scorecard's page, and
-    whether the crop production cuts round it shows a GV mark, by the gate's own function."""
+    """A region's geometry, by `workflow.stages.region_facts` through the scorecard's page; and
+    whether the crop production cuts round it shows a GV mark, or cuts the label off, by the gate's
+    own functions, handed what the stage hands them."""
     found, _ = page.facts(box_px, (), margin_pt)
+    left, top, right, bottom = box_px
+    polygon = page.polygon(box_px)
     return Facts(
-        cut_at_edge=found.cut_at_edge,
+        cut_at_edge=cut_label_refusal(
+            # The region's corners as the stage stores a polygon, and `page.facts` places one.
+            [[left, top], [right, top], [right, bottom], [left, bottom]],
+            rendered=page.rendered,
+            polygon=polygon,
+            transform=page.transform,
+            reach=reach,
+            page_glyphs=page.layers.glyph_paths,
+        )
+        is not None,
         sideways=found.rotation_degrees != 0,
         stacked=found.stacked_fraction,
-        gv_mark=gv_mark_in_crop(page.polygon(box_px), page.rendered, markup),
+        gv_mark=gv_mark_in_crop(polygon, page.rendered, markup),
     )
 
 
@@ -269,14 +301,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             geometry=geometry,
             reach=reach,
         )
+        missing_space = geometry.missing_space
         markup = {
-            index: markup_of(pdf, page, version_id=version_id, dpi=args.stage_dpi)
+            index: markup_of(
+                pdf,
+                page,
+                version_id=version_id,
+                dpi=args.stage_dpi,
+                missing_space=missing_space,
+            )
             for index, page in pages.items()
         }
 
         def geometry_of(page_index: int, box: Box) -> Facts:
             return facts_of(
-                pages[page_index], markup[page_index], pixels(box, args.stage_dpi), margin
+                pages[page_index], markup[page_index], pixels(box, args.stage_dpi), margin, reach
             )
 
         key_facts = {

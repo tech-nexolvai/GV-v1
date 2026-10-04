@@ -270,3 +270,31 @@
   border-radius: 0;
   box-shadow: none;
 }
+
+.review-page__changed-values {
+  margin: var(--space-3) var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--color-primary);
+  background: var(--bg-surface);
+  max-height: 14rem;
+  overflow: auto;
+}
+
+.review-page__changed-values h2,
+.review-page__changed-values h3 {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0 0 var(--space-2);
+}
+
+.review-page__changed-values h3 {
+  margin-top: var(--space-3);
+}
+
+.review-page__changed-values p,
+.review-page__changed-values li {
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}

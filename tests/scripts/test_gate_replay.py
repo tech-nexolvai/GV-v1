@@ -17,7 +17,6 @@ from sqlalchemy import Engine, event, text
 
 import scripts.gate_replay as gate_replay_script
 from eval.experiments.gate_replay import Guard, ReplayError
-from extraction import stamp_text
 from scripts.gate_replay import (
     ROWS_SQL,
     VERSIONS_SQL,
@@ -186,6 +185,30 @@ RED_PATHS = _pdf(
     extra_objects=[_appearance(b"1 0 0 RG\n1 w 105 515 m 205 515 l S\n" + _content(LABEL))],
 )
 
+#: The sheet's `10192"` in the vendor's black, with a red line the whole width of the stamp running
+#: through it (#929): appearance `y = 524`, page `y = 74`, inside the key crop; and the same in black.
+#: The label is drawn after the line, in black, so only the line is coloured.
+LONG_RED_LINE = _pdf(
+    annotations=[_stamp(appearance_object=6)],
+    extra_objects=[
+        _appearance(
+            b"q 1 0 0 RG 1 w 100 524 m 400 524 l S Q\n"
+            + b"1 w 105 515 m 205 515 l S\n"
+            + _content(LABEL)
+        )
+    ],
+)
+LONG_BLACK_LINE = _pdf(
+    annotations=[_stamp(appearance_object=6)],
+    extra_objects=[
+        _appearance(
+            b"q 0 0 0 RG 1 w 100 524 m 400 524 l S Q\n"
+            + b"1 w 105 515 m 205 515 l S\n"
+            + _content(LABEL)
+        )
+    ],
+)
+
 #: Font text `36"` over `38"` in a pasted drawing, the lower one black or red, with the key crop
 #: round the lower one: 41–99 × 227–265 pt at 600 dpi.
 BLACK_TEXT = _text_sheet(b'(36") Tj 0 -20 Td (38") Tj')
@@ -198,8 +221,9 @@ ROUND_THE_TEXT = {"left_px": "342", "top_px": "1892", "right_px": "825", "bottom
     [
         (BLACK_PATHS, RED_PATHS, ROUND_THE_LABEL),
         (BLACK_TEXT, RED_TEXT, ROUND_THE_TEXT),
+        (LONG_BLACK_LINE, LONG_RED_LINE, ROUND_THE_LABEL),
     ],
-    ids=["paths", "text"],
+    ids=["paths", "text", "long-line"],
 )
 def test_a_gv_mark_drawn_in_colour_holds_its_crops_agreement_back(
     tmp_path: Path, black: bytes, red: bytes, crop: dict[str, str]
@@ -233,7 +257,7 @@ def test_the_replay_asks_the_production_gate_whether_a_crop_shows_a_gv_mark(
     that function says about a crop is what the replay's guard does with it. Here it is made to say
     "a mark" about the all-black sheet, and the agreement is held back."""
     assert gate_replay_script.gv_mark_in_crop is stages.gv_mark_in_crop
-    assert gate_replay_script.coloured_text is stamp_text.coloured_text
+    assert gate_replay_script.coloured_markup is stages.coloured_markup
     asked: list[bool] = []
 
     def spy(*arguments: object) -> bool:
@@ -253,4 +277,96 @@ def test_the_replay_asks_the_production_gate_whether_a_crop_shows_a_gv_mark(
     assert asked == [False], "asked once, for the key's one crop, which shows no mark"
     report = output.read_text(encoding="utf-8")
     assert f"| {Guard.GV_MARK.value} | 0 |" in report
+    assert f"| {Guard.NONE.value} | 1 |" in report
+
+
+def test_the_replay_gathers_the_markup_by_the_stage_s_own_function(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**One function, not two copies of it (#929).** The markup the replay asks about is
+    `workflow.stages.coloured_markup`'s, the function the gate and the part pictures gather theirs
+    by, handed the page's transform and glyph paths at the stage's dpi. Made to find nothing on the
+    sheet with the long red line, the replay holds nothing back."""
+    calls: list[int] = []
+
+    def nothing(*arguments: object, **keywords: object) -> stages.ColouredMarkup:
+        found = stages.coloured_markup(*arguments, **keywords)  # type: ignore[arg-type]
+        assert found.coloured_paths, "the real function finds the red line"
+        calls.append(int(keywords["dpi"]))  # type: ignore[call-overload]
+        return stages.ColouredMarkup(
+            text=(), paths=(), transform=None, coloured_paths=(), pasted_stamps=()
+        )
+
+    monkeypatch.setattr(gate_replay_script, "coloured_markup", nothing)
+    pair: list[list[str | None]] = [
+        ["bedrock-nova-2-lite", '12"', None],
+        ["bedrock-ministral-3-3b", '12"', None],
+    ]
+    key, settings, scorecard = _setup(tmp_path, pair, sheet=LONG_RED_LINE)
+    output = tmp_path / "data" / "replay.md"
+
+    assert _run(key, settings, scorecard, output) == 0
+
+    assert calls == [150], "once for the key's one page, at the stage's dpi"
+    assert f"| {Guard.GV_MARK.value} | 1 |" in output.read_text(encoding="utf-8")
+
+
+#: A key crop round the label's last two digits and its inch mark only: its region, 9 pt in on each
+#: side, is 78–91 × 221–230 pt, so the crop production cuts round it starts after the label does.
+ROUND_THE_LAST_DIGITS = {"left_px": "575", "top_px": "1767", "right_px": "834", "bottom_px": "1992"}
+
+
+@pytest.mark.parametrize(
+    ("crop", "agreed"),
+    [(ROUND_THE_LABEL, 1), (ROUND_THE_LAST_DIGITS, 0)],
+    ids=["whole-label", "cut-label"],
+)
+def test_a_crop_that_cuts_the_label_holds_its_agreement_back(
+    tmp_path: Path, crop: dict[str, str], agreed: int
+) -> None:
+    """**The row the admin's decision rests on (#919).** The same pair, agreeing on the same value:
+    held back by the cut-label guard, and by the gate as it now is, where production's crop round
+    the region cuts the label the sheet draws; kept where it holds all of it."""
+    pair: list[list[str | None]] = [
+        ["bedrock-qwen3-vl-235b", '12"', None],
+        ["bedrock-nova-2-lite-taught", '12"', None],
+    ]
+    key, settings, scorecard = _setup(tmp_path, pair, crop=crop)
+    output = tmp_path / "data" / "replay.md"
+
+    assert _run(key, settings, scorecard, output) == 0
+
+    report = output.read_text(encoding="utf-8")
+    assert f"| {Guard.NONE.value} | 1 |" in report
+    assert f"| {Guard.CUT.value} | {agreed} |" in report
+    assert f"| {Guard.GATE.value} | {agreed} |" in report
+
+
+def test_the_replay_asks_the_production_gate_whether_a_crop_cuts_the_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**One test, not two copies of it (#919).** The replay's cut fact is the production gate's own
+    `workflow.stages.cut_label_refusal`, handed what the stage hands it: whatever that function says
+    about a crop is what the replay's guard does with it. Here it is made to refuse the crop round
+    the whole label, and the agreement is held back."""
+    assert gate_replay_script.cut_label_refusal is stages.cut_label_refusal
+    asked: list[str | None] = []
+
+    def spy(*arguments: object, **named: object) -> str | None:
+        asked.append(stages.cut_label_refusal(*arguments, **named))  # type: ignore[arg-type]
+        return "held back"
+
+    monkeypatch.setattr(gate_replay_script, "cut_label_refusal", spy)
+    pair: list[list[str | None]] = [
+        ["bedrock-qwen3-vl-235b", '12"', None],
+        ["bedrock-nova-2-lite-taught", '12"', None],
+    ]
+    key, settings, scorecard = _setup(tmp_path, pair)
+    output = tmp_path / "data" / "replay.md"
+
+    assert _run(key, settings, scorecard, output) == 0
+
+    assert asked == [None], "asked once, for the key's one crop, which holds the whole label"
+    report = output.read_text(encoding="utf-8")
+    assert f"| {Guard.CUT.value} | 0 |" in report
     assert f"| {Guard.NONE.value} | 1 |" in report

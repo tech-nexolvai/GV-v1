@@ -10,7 +10,8 @@ Crop bytes are encoded deterministically and stored below a document-version nam
 The content hash makes reruns idempotent, while the namespace prevents identical pixels
 from two document versions from claiming the same provenance.
 
-Source: ``docs/DESIGN_EXTRACTION.md`` section 5 and issue #171.
+Source: ``docs/DESIGN_EXTRACTION.md`` section 5 and issue #171; the box a polygon cannot
+describe, issue #897.
 Verification: ``tests/evidence/test_crop.py``.
 """
 
@@ -110,18 +111,69 @@ class CropSpec:
     def __post_init__(self) -> None:
         if not isinstance(self.polygon, Polygon):
             raise TypeError("polygon must be a Polygon")
-        if isinstance(self.context_margin_pt, float):
-            raise TypeError("context_margin_pt must be a Decimal, never a float")
-        if not isinstance(self.context_margin_pt, Decimal):
-            raise TypeError("context_margin_pt must be a Decimal")
-        if not self.context_margin_pt.is_finite():
-            raise ValueError("context_margin_pt must be finite")
-        if self.context_margin_pt <= 0:
-            raise ValueError("context_margin_pt must be greater than zero")
-        if isinstance(self.dpi, bool) or not isinstance(self.dpi, int):
-            raise TypeError("dpi must be an integer")
-        if self.dpi <= 0:
-            raise ValueError("dpi must be greater than zero")
+        _require_margin_and_dpi(self.context_margin_pt, self.dpi)
+
+
+@dataclass(frozen=True, slots=True)
+class BoxCropSpec:
+    """A box on one page in stored space, and the context around it (#897).
+
+    For a region a polygon cannot describe. A part a person adds by its two ends has a line for an
+    outline (#882): no height, so no area, and `Polygon` refuses it. Its picture is still a region of
+    the page, the line and the stated margin around it, and this says which. The space is a
+    polygon's: `0..1` across and down the rotation-applied page.
+
+    A box with no width or no height is allowed; a box with neither, once the margin is added, is
+    still at least the margin across, and `crop_pixel_box` refuses one that cuts no pixel.
+    """
+
+    document_version_id: UUID
+    page: int
+    left: Decimal
+    top: Decimal
+    right: Decimal
+    bottom: Decimal
+    context_margin_pt: Decimal
+    dpi: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.document_version_id, UUID):
+            raise TypeError("document_version_id must be a UUID")
+        if isinstance(self.page, bool) or not isinstance(self.page, int):
+            raise TypeError("page must be an integer")
+        if self.page < 0:
+            raise ValueError("page must be zero or greater")
+        for name, value in (
+            ("left", self.left),
+            ("top", self.top),
+            ("right", self.right),
+            ("bottom", self.bottom),
+        ):
+            if not isinstance(value, Decimal):
+                raise TypeError(f"{name} must be a Decimal, never a float")
+            if not value.is_finite() or not Decimal(0) <= value <= Decimal(1):
+                raise ValueError(f"{name} must lie within stored page bounds 0..1")
+        if self.left > self.right or self.top > self.bottom:
+            raise ValueError(
+                "a box's left must not lie past its right, nor its top below its bottom"
+            )
+        _require_margin_and_dpi(self.context_margin_pt, self.dpi)
+
+
+def _require_margin_and_dpi(context_margin_pt: object, dpi: object) -> None:
+    """The two numbers every crop states: how much context, and at what resolution."""
+    if isinstance(context_margin_pt, float):
+        raise TypeError("context_margin_pt must be a Decimal, never a float")
+    if not isinstance(context_margin_pt, Decimal):
+        raise TypeError("context_margin_pt must be a Decimal")
+    if not context_margin_pt.is_finite():
+        raise ValueError("context_margin_pt must be finite")
+    if context_margin_pt <= 0:
+        raise ValueError("context_margin_pt must be greater than zero")
+    if isinstance(dpi, bool) or not isinstance(dpi, int):
+        raise TypeError("dpi must be an integer")
+    if dpi <= 0:
+        raise ValueError("dpi must be greater than zero")
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,14 +295,36 @@ def decode_rgb_png(data: bytes) -> tuple[int, int, bytes]:
     )
 
 
-def crop_pixel_box(rendered: RenderedPage, spec: CropSpec) -> tuple[int, int, int, int]:
+def _stored_extent(
+    spec: CropSpec | BoxCropSpec,
+) -> tuple[tuple[Decimal, ...], tuple[Decimal, ...]]:
+    """The stored `x`s and `y`s a crop is cut around: a polygon's points, or a box's sides."""
+    if isinstance(spec, BoxCropSpec):
+        return (spec.left, spec.right), (spec.top, spec.bottom)
+    return (
+        tuple(point.x for point in spec.polygon.points),
+        tuple(point.y for point in spec.polygon.points),
+    )
+
+
+def _pinned_to(spec: CropSpec | BoxCropSpec) -> tuple[UUID, int, str]:
+    """The document version and page a spec's region is on, and what to call the region."""
+    if isinstance(spec, BoxCropSpec):
+        return spec.document_version_id, spec.page, "box"
+    return spec.polygon.document_version_id, spec.polygon.page, "polygon"
+
+
+def crop_pixel_box(
+    rendered: RenderedPage, spec: CropSpec | BoxCropSpec
+) -> tuple[int, int, int, int]:
     """The page pixels `(left, top, right, bottom)` a crop under `spec` is cut from.
 
     Public because a caller deciding something about what a crop *shows* must use the rectangle the
     crop was actually cut by, not a second computation of it that could round differently (#735).
     """
-    xs = tuple(point.x * Decimal(rendered.width_px) for point in spec.polygon.points)
-    ys = tuple(point.y * Decimal(rendered.height_px) for point in spec.polygon.points)
+    stored_xs, stored_ys = _stored_extent(spec)
+    xs = tuple(x * Decimal(rendered.width_px) for x in stored_xs)
+    ys = tuple(y * Decimal(rendered.height_px) for y in stored_ys)
     margin = spec.context_margin_pt * Decimal(spec.dpi) / POINTS_PER_INCH
     left = max(0, int((min(xs) - margin).to_integral_value(rounding=ROUND_FLOOR)))
     top = max(0, int((min(ys) - margin).to_integral_value(rounding=ROUND_FLOOR)))
@@ -280,7 +354,7 @@ def _crop_rgb(rendered: RenderedPage, box: tuple[int, int, int, int]) -> bytes:
 
 def generate_crop(
     rendered: RenderedPage,
-    spec: CropSpec,
+    spec: CropSpec | BoxCropSpec,
     store: ArtifactStore,
 ) -> CropResult:
     """Crop, encode and immutably store evidence with surrounding context.
@@ -293,18 +367,19 @@ def generate_crop(
 
     if not isinstance(rendered, RenderedPage):
         raise TypeError("rendered must be a RenderedPage")
-    if not isinstance(spec, CropSpec):
-        raise TypeError("spec must be a CropSpec")
+    if not isinstance(spec, (CropSpec, BoxCropSpec)):
+        raise TypeError("spec must be a CropSpec or a BoxCropSpec")
     if not isinstance(store, ArtifactStore):
         raise TypeError("store must implement ArtifactStore")
 
     try:
         if rendered.render_failed:
             raise ValueError("the source page did not render")
-        if rendered.document_version_id != spec.polygon.document_version_id:
-            raise ValueError("crop and polygon belong to different document versions")
-        if rendered.page_index != spec.polygon.page:
-            raise ValueError("crop and polygon belong to different pages")
+        document_version_id, page, region = _pinned_to(spec)
+        if rendered.document_version_id != document_version_id:
+            raise ValueError(f"crop and {region} belong to different document versions")
+        if rendered.page_index != page:
+            raise ValueError(f"crop and {region} belong to different pages")
         if rendered.dpi != spec.dpi:
             raise ValueError("crop specification DPI does not match the rendered pixels")
 

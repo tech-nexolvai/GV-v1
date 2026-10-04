@@ -57,7 +57,10 @@ from app.schemas.findings import (
     validate_sort_orders,
 )
 from tests.app.postgres_fixture import alembic_config
+from tests.workflow.test_stages import _publish_rulebook
 from verdict.outcomes import ABSTAINING_OUTCOMES, Outcome, Severity
+from workflow.changed_values import changed_values_for_revision
+from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -626,6 +629,50 @@ def test_a_package_in_another_project_is_not_found(session: Session) -> None:
     assert str(other.id) not in response.text
 
 
+def test_changed_values_endpoint_distinguishes_no_run_from_legacy_unverifiable_run(
+    session: Session,
+) -> None:
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    url = f"{API_PREFIX}/projects/{PROJECT_A}/packages/{package.id}/changed-values"
+    client = _client(session, PROJECT_A)
+    empty = client.get(url)
+    assert empty.status_code == 200
+    assert empty.json()["revision_id"] == str(revision.id)
+    assert empty.json()["message"] == "Run checks to see changed values"
+
+    _finding(session, revision, _snapshot(session), Outcome.FAIL)
+    legacy = client.get(url)
+    assert legacy.status_code == 200
+    assert legacy.json()["message"] == (
+        "Not available for this check run; re-run the checks to see it"
+    )
+    assert legacy.json()["company_standards_displaced"] == []
+    assert legacy.json()["outstanding"] == []
+
+
+def test_changed_values_endpoint_is_the_same_pinned_result_as_the_exports(
+    session: Session,
+) -> None:
+    _project(session, PROJECT_A)
+    package = _package(session, PROJECT_A)
+    revision = _revision(session, package.id)
+    _publish_rulebook(session)
+    DatabaseStages().run_checks(session, revision.id)
+    expected = changed_values_for_revision(session, revision.id)
+
+    response = _client(session, PROJECT_A).get(
+        f"{API_PREFIX}/projects/{PROJECT_A}/packages/{package.id}/changed-values"
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == expected.status
+    assert response.json()["company_standards_displaced"] == list(
+        expected.company_standards_displaced
+    )
+    assert response.json()["outstanding"] == list(expected.outstanding)
+
+
 def test_a_package_that_does_not_exist_is_refused_in_the_same_words(session: Session) -> None:
     """ "No such package" and "not your package" must be indistinguishable, or the difference between
     them is the disclosure the 404 was chosen to avoid."""
@@ -716,6 +763,8 @@ def test_a_finding_comes_back_with_the_versions_that_explain_it(session: Session
     assert item["parameter_set_versions"] == {"countertop": "3"}
     assert item["revision_number"] == 4
     assert item["package_revision_id"] == str(revision.id)
+    assert item["scope_item_id"] is None
+    assert item["scope_label"] == "Package revision"
 
 
 def test_the_list_does_not_carry_calculation_traces(session: Session) -> None:

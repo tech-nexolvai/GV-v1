@@ -43,7 +43,7 @@ from app.models import (
 from app.models.runs import TaskRun, WorkflowRun
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import DatabaseStages
@@ -156,7 +156,7 @@ def _by_text(session: Session) -> dict[str, ObservationCandidate]:
 
 def _read(session: Session, store: LocalStore, *tokens: str) -> dict[str, ObservationCandidate]:
     revision = _revision(session, store, data=_drawing(*tokens))
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
     return _by_text(session)
 
 

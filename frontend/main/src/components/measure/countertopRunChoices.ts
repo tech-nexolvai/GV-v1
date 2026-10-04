@@ -14,6 +14,13 @@ export type RunPart = components['schemas']['RunPartOut'];
 
 type Kind = components['schemas']['PartKind'];
 
+export function wallLayoutLabel(value: string): string {
+  if (value === 'back_left_right') return 'Walls at both ends';
+  if (value === 'back_only') return 'Back wall only';
+  if (value === 'island') return 'Island';
+  return value;
+}
+
 /**
  * A part as "Parts of each drawing" names it: by its number in that list and the kind a person
  * confirmed. A part not listed there (rare: one confirmed before its suggestion was replaced) is
@@ -68,5 +75,8 @@ export function runDecisionLabel(countertop: RunCountertop): string {
     return `Said not to be this countertop's run by ${decision.decided_by}.`;
   }
   const members = decision.members.map((member) => partLabel(member)).join(', ');
-  return `Confirmed by ${decision.decided_by}: ${members}, left to right.`;
+  const layout = decision.wall_config
+    ? ` Wall layout: ${wallLayoutLabel(decision.wall_config)}, chosen by ${decision.decided_by}.`
+    : ' Wall layout not recorded; reconfirm this run to choose it.';
+  return `Confirmed by ${decision.decided_by}: ${members}, left to right.${layout}`;
 }

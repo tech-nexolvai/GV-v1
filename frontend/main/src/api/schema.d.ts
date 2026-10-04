@@ -304,6 +304,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/changed-values": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the changed values pinned to this package's current check run */
+        get: operations["get_changed_values_api_v1_projects__project_id__packages__package_id__changed_values_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/chat": {
         parameters: {
             query?: never;
@@ -830,13 +847,37 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * View the picture stored for one suggested part
+         * View the crop of the reading one suggested part's code came from
          * @description The crop of the reading the part's code came from, checked against its recorded digest.
          *
          *     The same picture the Measure page shows for that reading, through the same project boundary:
          *     the suggestion must be on this package's current revision, and so must the reading.
          */
         get: operations["part_crop_api_v1_projects__project_id__packages__package_id__parts__proposal_id__crop_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the picture of one suggested part, cut from the vendor's drawing
+         * @description The part's own picture: the vendor's drawing around its outline, checked against its
+         *     recorded digest. For a person's eyes only; nothing reads a value from it.
+         *
+         *     The suggestion must be on this package's current revision, so another project's part looks
+         *     absent (404), as every other absence does.
+         */
+        get: operations["part_picture_api_v1_projects__project_id__packages__package_id__parts__proposal_id__picture_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -859,6 +900,67 @@ export interface paths {
          * @description Record that it is not a part. Makes nothing; a part it had made stops being read.
          */
         post: operations["withdraw_part_endpoint_api_v1_projects__project_id__packages__package_id__parts__proposal_id__withdraw_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Each confirmed part, the reading suggested as its width, and what a person decided
+         * @description Read only: a suggestion is worked out on each call and never stored.
+         */
+        get: operations["list_reading_parts_api_v1_projects__project_id__packages__package_id__reading_parts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts/{item_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say which confirmed reading is one part's width
+         * @description Record a person's link, as suggested or corrected. Audited, and correctable by confirming
+         *     another reading: the latest decision is the one that counts, and every earlier one is kept.
+         */
+        post: operations["confirm_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts/{item_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Take back the link between one part and its reading
+         * @description Record that the reading is not the part's width. Links nothing; the link stops being read.
+         */
+        post: operations["withdraw_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__withdraw_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1008,7 +1110,9 @@ export interface paths {
         put?: never;
         /**
          * Add a part the suggestions missed, by its two ends on the drawing
-         * @description File the person's own suggestion and confirm it, in one transaction.
+         * @description File the person's own suggestion and confirm it, in one transaction, and ask the worker to
+         *     cut its picture (#897) in the same one: the part and the request commit together or not at all.
+         *     The list shows the part at once and its picture once the worker has cut it.
          */
         post: operations["add_part_endpoint_api_v1_projects__project_id__packages__package_id__views__view_id__parts_post"];
         delete?: never;
@@ -1786,6 +1890,25 @@ export interface components {
             total: number;
         };
         /**
+         * ChangedValuesOut
+         * @description One pinned check-run summary, or an explicit refusal to claim one.
+         */
+        ChangedValuesOut: {
+            /** Company Standards Displaced */
+            company_standards_displaced: string[];
+            /** Message */
+            message: string | null;
+            /** Outstanding */
+            outstanding: string[];
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+            /** Status */
+            status: string;
+        };
+        /**
          * ChatModelChoice
          * @description One selectable model: the exact Bedrock id, and the name a reviewer reads.
          */
@@ -1919,6 +2042,15 @@ export interface components {
              */
             semantic_type: string;
         };
+        /** ConfirmLinkIn */
+        ConfirmLinkIn: {
+            /**
+             * Reading Id
+             * Format: uuid
+             * @description The confirmed reading that is this part's width: the suggestion or another.
+             */
+            reading_id: string;
+        };
         /** ConfirmPartIn */
         ConfirmPartIn: {
             /**
@@ -1943,6 +2075,11 @@ export interface components {
              * @description The drawing items the run holds, in any order: the server orders them across the drawing, never by the order they were picked in.
              */
             part_ids: string[];
+            /**
+             * Wall Config
+             * @description Required: one of the published CT-WIDTH-001 wall-layout choices.
+             */
+            wall_config: string | null;
         };
         /** ConfirmedMemberOut */
         ConfirmedMemberOut: {
@@ -2451,6 +2588,10 @@ export interface components {
                 [key: string]: string;
             };
             rule_snapshot: components["schemas"]["RuleSnapshotRecord"];
+            /** Scope Item Id */
+            scope_item_id?: string | null;
+            /** Scope Label */
+            scope_label?: string | null;
             /** Severity */
             severity: string;
             /** Trace */
@@ -2482,10 +2623,10 @@ export interface components {
             total: number;
         };
         /**
-         * FindingExportV1
+         * FindingExportV2
          * @description The export envelope. Version first, so a consumer can check before it parses.
          */
-        FindingExportV1: {
+        FindingExportV2: {
             /** Findings */
             findings: components["schemas"]["ExportedFinding"][];
             /**
@@ -2502,7 +2643,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "1";
+            schema_version: "2";
             summary: components["schemas"]["ExportSummary"];
         };
         /**
@@ -2534,6 +2675,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Notes */
+            notes?: string[] | null;
             outcome: components["schemas"]["Outcome"];
             /**
              * Package Revision Id
@@ -2560,6 +2703,10 @@ export interface components {
             rule_snapshot_id: string;
             /** Rule Version */
             rule_version: string;
+            /** Scope Item Id */
+            scope_item_id?: string | null;
+            /** Scope Label */
+            scope_label?: string | null;
             severity: components["schemas"]["Severity"];
         };
         /**
@@ -2616,6 +2763,13 @@ export interface components {
              */
             scope_id: string;
         };
+        /**
+         * GvMarks
+         * @description What a part's picture was found to show of GV's own coloured marks (#921), as the Measure
+         *     page is told it. Read from `PartPicture.shows_gv_marks` by `gv_marks`.
+         * @enum {string}
+         */
+        GvMarks: "shown" | "not_shown" | "not_checked";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2655,6 +2809,104 @@ export interface components {
             number: number | null;
             /** Reason */
             reason: string;
+        };
+        /** LinkDrawingOut */
+        LinkDrawingOut: {
+            /** Can Confirm */
+            can_confirm: boolean;
+            /** Page Index */
+            page_index: number;
+            /** Parts */
+            parts: components["schemas"]["PartLinkOut"][];
+            /**
+             * Readings
+             * @description The confirmed readings on the drawing, which a link may name, left to right.
+             */
+            readings: components["schemas"]["LinkReadingOut"][];
+            /** Tag */
+            tag: string;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
+            /** Why Not */
+            why_not: string | null;
+        };
+        /**
+         * LinkOut
+         * @description A reading a person linked to the part.
+         */
+        LinkOut: {
+            /**
+             * Decided At
+             * Format: date-time
+             */
+            decided_at: string;
+            /** Decided By */
+            decided_by: string;
+            /**
+             * Read
+             * @description Whether a reader reads this link.
+             */
+            read: boolean;
+            /**
+             * Reading Id
+             * Format: uuid
+             */
+            reading_id: string;
+            /**
+             * Signal
+             * @description Why the reading belongs to the part, in plain English.
+             */
+            signal: string;
+            /** Why Not Read */
+            why_not_read: string | null;
+        };
+        /**
+         * LinkReadingOut
+         * @description A confirmed reading on the drawing, which a person may pick as a part's width.
+         */
+        LinkReadingOut: {
+            /**
+             * Left
+             * @description Its span across the page, exact; null with no span.
+             */
+            left: string | null;
+            /**
+             * Linked To
+             * @description The part it is linked to now, while that part still stands.
+             */
+            linked_to: string | null;
+            /** Linked To Number */
+            linked_to_number: number | null;
+            /**
+             * Placed By
+             * @description `line` when a reading behind it was attached to a dimension line, `region` when none was and the box it is printed in places it; null when neither places it.
+             */
+            placed_by: string | null;
+            /**
+             * Reading Id
+             * Format: uuid
+             */
+            reading_id: string;
+            /** Right */
+            right: string | null;
+            /**
+             * Semantic Type
+             * @description What a person confirmed the reading is.
+             */
+            semantic_type: string;
+            /**
+             * Unplaced
+             * @description Why it spans no part, in plain English, or null.
+             */
+            unplaced: string | null;
+            /**
+             * Value
+             * @description The reading's exact value, as `25 1/2 in`.
+             */
+            value: string;
         };
         /**
          * MeasurementEntry
@@ -2901,6 +3153,51 @@ export interface components {
          */
         PartKind: "cabinet" | "filler" | "countertop";
         /**
+         * PartLinkOut
+         * @description One confirmed part: the reading suggested as its width, and what a person decided.
+         */
+        PartLinkOut: {
+            /** Code */
+            code: string | null;
+            /**
+             * Has Picture
+             * @description Whether its picture is stored, served at `…/parts/{proposal_id}/picture`.
+             */
+            has_picture: boolean;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            kind: components["schemas"]["PartKind"];
+            /**
+             * Left
+             * @description Its left end across the page, exact.
+             */
+            left: string;
+            /**
+             * Links
+             * @description The readings linked to this part now: one, or none. Two only when two people linked different readings at the same moment, and then neither is read.
+             */
+            links: components["schemas"]["LinkOut"][];
+            /**
+             * Number
+             * @description Its number in 'Parts of each drawing', 1 for the leftmost; null if not listed.
+             */
+            number: number | null;
+            /** @description What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown`, `not_shown`, or `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored. */
+            picture_gv_marks: components["schemas"]["GvMarks"] | null;
+            /**
+             * Proposal Id
+             * @description The suggestion it was confirmed from, whose picture is the part's (#897).
+             */
+            proposal_id: string | null;
+            /** Right */
+            right: string;
+            /** @description Null when no tolerance is stated, so nothing can be suggested. */
+            suggestion: components["schemas"]["SuggestedLinkOut"] | null;
+        };
+        /**
          * PartOut
          * @description One suggested part, as a person needs it to decide what it is.
          */
@@ -2914,13 +3211,20 @@ export interface components {
             decision: components["schemas"]["DecisionOut"] | null;
             /**
              * Has Crop
-             * @description Whether a picture is stored for it. Today that is the crop of the reading its code came from, so a suggestion with no code has none.
+             * @description Whether the crop of the reading its code came from is stored, so a suggestion with no code has none.
              */
             has_crop: boolean;
+            /**
+             * Has Picture
+             * @description Whether its own picture is stored: the vendor's drawing around its outline (#897). False until the worker has cut it, or where the page could not be rendered.
+             */
+            has_picture: boolean;
             /** @description The left end of the line that defines it, or null when no line did. */
             left_end: components["schemas"]["PointOut"] | null;
             /** Page Index */
             page_index: number;
+            /** @description What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown` where markup drawn in colour lies in it, so the page warns under it; `not_shown` where it was checked and none does; `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored. */
+            picture_gv_marks: components["schemas"]["GvMarks"] | null;
             /**
              * Position
              * @description Its place on its drawing, 1 for the leftmost.
@@ -3138,6 +3442,15 @@ export interface components {
          * @enum {string}
          */
         PublicationTarget: "development" | "production";
+        /** ReadingPartsOut */
+        ReadingPartsOut: {
+            /** Can Suggest */
+            can_suggest: boolean;
+            /** Drawings */
+            drawings: components["schemas"]["LinkDrawingOut"][];
+            /** Why Not */
+            why_not: string | null;
+        };
         /**
          * RecordAction
          * @description One thing a reviewer did to one finding.
@@ -3549,6 +3862,8 @@ export interface components {
             members: components["schemas"]["ConfirmedMemberOut"][];
             /** Read */
             read: boolean;
+            /** Wall Config */
+            wall_config: string | null;
             /** Why Not Read */
             why_not_read: string | null;
         };
@@ -3600,6 +3915,8 @@ export interface components {
             can_suggest: boolean;
             /** Drawings */
             drawings: components["schemas"]["RunDrawingOut"][];
+            /** Wall Layout Choices */
+            wall_layout_choices: string[];
             /** Why Not */
             why_not: string | null;
         };
@@ -3676,6 +3993,30 @@ export interface components {
             source?: string | null;
             /** Unit */
             unit: string;
+        };
+        /**
+         * SuggestedLinkOut
+         * @description The reading the computer suggests is a part's width. Nothing is written until a person
+         *     confirms it.
+         */
+        SuggestedLinkOut: {
+            /** Edge Tolerance */
+            edge_tolerance: string;
+            /**
+             * Reading Id
+             * @description Null when no single reading spans this part alone; `said` says why.
+             */
+            reading_id: string | null;
+            /**
+             * Said
+             * @description Why this reading, or why none, in plain English.
+             */
+            said: string;
+            /**
+             * Spanning
+             * @description Every confirmed reading on the drawing whose line or region spans the part.
+             */
+            spanning: string[];
         };
         /** SuggestedMemberOut */
         SuggestedMemberOut: {
@@ -4300,6 +4641,38 @@ export interface operations {
             };
         };
     };
+    get_changed_values_api_v1_projects__project_id__packages__package_id__changed_values_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangedValuesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reviewer_chat_api_v1_projects__project_id__packages__package_id__chat_post: {
         parameters: {
             query?: never;
@@ -4707,7 +5080,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["FindingExportV1"];
+                    "application/json": components["schemas"]["FindingExportV2"];
                 };
             };
             /** @description Validation Error */
@@ -5003,7 +5376,40 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The integrity-checked picture stored for this suggestion. */
+            /** @description The integrity-checked crop of the reading the code came from. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    part_picture_api_v1_projects__project_id__packages__package_id__parts__proposal_id__picture_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The integrity-checked picture of this part (#897). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5043,6 +5449,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PartOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_reading_parts_api_v1_projects__project_id__packages__package_id__reading_parts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadingPartsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmLinkIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartLinkOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__withdraw_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartLinkOut"];
                 };
             };
             /** @description Validation Error */

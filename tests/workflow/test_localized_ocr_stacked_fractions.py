@@ -43,11 +43,14 @@ from extraction.glyph_reader import GlyphReading
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
 from tests.extraction.models.test_validation import THIRTY_NINE_AND_A_HALF_LAYOUT, THREE_QUARTERS
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
+from tests.workflow.test_cut_label_guard import whole_labels
 from tests.workflow.test_fraction_parts_route import _copy, _second_reader
 from tests.workflow.test_glyph_route import _glyph_rows, _settings, _templates
 from tests.workflow.test_gv_mark_guard import unmarked_page
 from tests.workflow.test_markup_route import _SilentOcr
+from tests.workflow.test_mixed_fraction_guard import fractions_let_through
 from tests.workflow.test_stacked_fraction_route import PLAIN_SHEET, STACKED_SHEET, _fraction
 from units.normalise import normalise_to_inches
 from units.notation import canonical_notation
@@ -129,6 +132,7 @@ def _extract(
         ocr_engine=_ReadsEachCrop(*texts) if texts else _SilentOcr(),  # type: ignore[arg-type]
         localized_ocr=LOCALIZED,
         glyph_route=glyph_route,
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
     session.commit()
     return dict(result.payload)
@@ -241,7 +245,12 @@ def test_two_readers_agreeing_on_the_flagged_reading_confirm_nothing(
     agreeing = _copy(reading, run_id=second.id, flags=[])
     session.add_all([flagged, agreeing])
     DatabaseStages._apply_cross_route_corroboration(
-        session, page_index=0, candidates=(flagged, agreeing), gv_mark=unmarked_page()
+        session,
+        page_index=0,
+        candidates=(flagged, agreeing),
+        gv_mark=unmarked_page(),
+        cut_label=whole_labels(),
+        mixed_fraction=fractions_let_through(),
     )
     for row in (flagged, agreeing):
         assert (row.corroboration_status, row.corroboration_lane) == (None, None)
@@ -250,7 +259,12 @@ def test_two_readers_agreeing_on_the_flagged_reading_confirm_nothing(
     control = _copy(reading, run_id=second.id, flags=[])
     session.add_all([unflagged, control])
     DatabaseStages._apply_cross_route_corroboration(
-        session, page_index=0, candidates=(unflagged, control), gv_mark=unmarked_page()
+        session,
+        page_index=0,
+        candidates=(unflagged, control),
+        gv_mark=unmarked_page(),
+        cut_label=whole_labels(),
+        mixed_fraction=fractions_let_through(),
     )
     for row in (unflagged, control):
         assert row.corroboration_lane == "SECOND_READER"

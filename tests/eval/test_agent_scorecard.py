@@ -46,7 +46,9 @@ from evidence.crop import decode_rgb_png
 from extraction.agent.tools import VlmRole
 from extraction.agent.trigger import AmbiguityReason
 from extraction.glyph_bands import FractionLayout
+from extraction.models.nova import ReaderPicture
 from storage.local import LocalStore
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import SETTINGS
 from tests.workflow.test_reading_agent import LABEL, SHEET, _settings
 from units.measurement import Measurement, Unit
@@ -128,15 +130,26 @@ def test_an_agent_reading_that_agrees_with_one_pair_reading_confirms_it() -> Non
     assert judgement.agreeing == (MINI, NOVA)
 
 
-def test_a_pair_reading_the_parser_refused_blocks_an_agreement_but_not_a_proposal() -> None:
-    """Outcome: the stage groups every row of the region, so an unparsed row keeps the agent's and
-    the pair's values from confirming each other; the agent's proposal is still handed over."""
+def test_a_pair_reading_the_parser_refused_abstains_from_the_agreement() -> None:
+    """**#924.** Outcome: the stage groups every row of the region, and the unparsed row abstains —
+    it neither confirms nor vetoes — so the agent's look and the pair's other reading, from two
+    vendors, confirm `12"`. Only the two that agreed are named."""
     look = _read(NOVA, '12"', 12)
     judgement = judge(
         (_read(NOVA, "see detail"), _read(MINI, '12"', 12)), looks=(look,), proposal=look
     )
 
-    assert judgement.outcome is Outcome.PROPOSED and judgement.value == _inches(12)
+    assert judgement.outcome is Outcome.CONFIRMED and judgement.value == _inches(12)
+    assert judgement.agreeing == (MINI, NOVA)
+
+
+def test_a_conflict_beside_an_unparsed_pair_reading_still_goes_to_a_reviewer() -> None:
+    """**#924: a conflict is still a conflict.** The unparsed row abstains from the disagreement too."""
+    judgement = judge(
+        (_read(NOVA, "see detail"), _read(MINI, '12"', 12)), looks=(_read(NOVA, '13"', 13),)
+    )
+
+    assert judgement == Judgement(Outcome.TO_REVIEWER, None, conflict=True)
 
 
 def test_two_readers_of_one_vendor_agreeing_confirm_nothing() -> None:
@@ -379,6 +392,7 @@ class _Reader:
     extractor: str
     vendor: str = "Amazon"
     widths: list[int] = field(default_factory=list)
+    picture: ReaderPicture = ReaderPicture.AS_CUT
 
     def read(
         self, png: bytes, *, stacked_label: bool, stacked_layouts: tuple[FractionLayout, ...]
@@ -417,6 +431,7 @@ def test_a_cut_crop_the_pair_refuses_is_widened_by_the_agent_and_proposed_whole(
         glyph_maximum_pt=SETTINGS.glyph_maximum_pt,
         glyph_gap_pt=SETTINGS.glyph_gap_pt,
         fraction_bar=SETTINGS.fraction_bar,
+        missing_space=MISSING_SPACE,
     )
     settings = _settings(sharper_dpi=300, primary_reader=NOVA, escalation_reader=LARGE)
     pages = build_pages(
@@ -438,6 +453,7 @@ def test_a_cut_crop_the_pair_refuses_is_widened_by_the_agent_and_proposed_whole(
         settings=settings,
         key_dpi=KEY_DPI,
         margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
+        pictures=None,
     )
 
     assert result.facts.cut_at_edge

@@ -37,7 +37,41 @@
 }
 
 .drawing-parts__picture {
-  flex: 0 0 10rem;
+  display: flex;
+  flex: 0 0 18rem;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* A part's own picture (#897): the vendor's drawing round it, shrunk to fit and opened full size
+   from its link. */
+.drawing-parts__part-picture {
+  display: block;
+  width: 18rem;
+  max-height: 12rem;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid var(--border-default);
+}
+
+/* A picture that shows GV's own coloured marks (#921): said plainly under it, in the colours a
+   finding needing review uses. */
+.drawing-parts__gv-marks {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  color: var(--status-review);
+  background: var(--status-review-bg);
+  border: 1px solid var(--status-review-border);
+  font-size: var(--text-xs);
+}
+
+.drawing-parts__code-crop {
+  margin: 0;
+}
+
+.drawing-parts__code-crop figcaption {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
 .drawing-parts__crop {
@@ -141,4 +175,22 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
+}
+
+.countertop-runs__layout {
+  display: grid;
+  gap: var(--space-1);
+  max-width: 22rem;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.countertop-runs__layout select {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: var(--space-2);
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
 }

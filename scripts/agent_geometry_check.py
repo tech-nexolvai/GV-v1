@@ -63,6 +63,7 @@ from extraction.geometry.dimension_lines import detect
 from extraction.geometry.text_association import lines_within
 from extraction.glyph_bands import FractionBarGeometry
 from extraction.glyph_reader import gather_label
+from extraction.reader import MissingSpace
 from extraction.vector_first import plan_reads
 from storage.store import ArtifactStore
 
@@ -127,11 +128,12 @@ class CheckCrop:
 
 def read_settings(path: Path) -> dict[str, str]:
     """The reader settings from a `scripts/demo.sh`-style file; every one required."""
-    from scripts.glyph_inventory import read_reader_settings
+    from scripts.glyph_inventory import MISSING_SPACE_SETTING, read_reader_settings
 
     found = read_reader_settings(path)
     text = path.read_text(encoding="utf-8")
-    for name in DETECTOR_SETTINGS:
+    # The text reader's too (#912): the pages are read as the stage reads them, printed text and all.
+    for name in (*DETECTOR_SETTINGS, MISSING_SPACE_SETTING):
         match = re.search(rf"^\s*{name}=(\S+)", text, flags=re.MULTILINE)
         if match is None:
             raise CheckError(f"{path} does not state {name}, and it has no default")
@@ -140,6 +142,8 @@ def read_settings(path: Path) -> dict[str, str]:
 
 
 def _geometry(reader: dict[str, str]) -> PageGeometry:
+    from scripts.glyph_inventory import MISSING_SPACE_SETTING
+
     return PageGeometry(
         line_minimum_pt=Decimal(reader["GV_READER_LINE_MINIMUM_PT"]),
         glyph_maximum_pt=Decimal(reader["GV_READER_GLYPH_MAXIMUM_PT"]),
@@ -154,6 +158,7 @@ def _geometry(reader: dict[str, str]) -> PageGeometry:
             character_gap_pt=Decimal(reader["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
             turned_aspect_min=Decimal(reader["GV_READER_FRACTION_TURNED_ASPECT_MIN"]),
         ),
+        missing_space=MissingSpace(gap_heights=Decimal(reader[MISSING_SPACE_SETTING])),
     )
 
 
