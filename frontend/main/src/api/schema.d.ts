@@ -2547,6 +2547,10 @@ export interface components {
                 [key: string]: string;
             };
             rule_snapshot: components["schemas"]["RuleSnapshotRecord"];
+            /** Scope Item Id */
+            scope_item_id?: string | null;
+            /** Scope Label */
+            scope_label?: string | null;
             /** Severity */
             severity: string;
             /** Trace */
@@ -2578,10 +2582,10 @@ export interface components {
             total: number;
         };
         /**
-         * FindingExportV1
+         * FindingExportV2
          * @description The export envelope. Version first, so a consumer can check before it parses.
          */
-        FindingExportV1: {
+        FindingExportV2: {
             /** Findings */
             findings: components["schemas"]["ExportedFinding"][];
             /**
@@ -2598,7 +2602,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "1";
+            schema_version: "2";
             summary: components["schemas"]["ExportSummary"];
         };
         /**
@@ -2656,6 +2660,10 @@ export interface components {
             rule_snapshot_id: string;
             /** Rule Version */
             rule_version: string;
+            /** Scope Item Id */
+            scope_item_id?: string | null;
+            /** Scope Label */
+            scope_label?: string | null;
             severity: components["schemas"]["Severity"];
         };
         /**
@@ -4993,7 +5001,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["FindingExportV1"];
+                    "application/json": components["schemas"]["FindingExportV2"];
                 };
             };
             /** @description Validation Error */

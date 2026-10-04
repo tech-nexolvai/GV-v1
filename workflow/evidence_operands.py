@@ -242,7 +242,11 @@ def operands_from_evidence(
 
 
 def evidence_operands(
-    session: Session, package_revision_id: UUID, rules: Sequence[Rule]
+    session: Session,
+    package_revision_id: UUID,
+    rules: Sequence[Rule],
+    *,
+    scope_item_id: UUID | None = None,
 ) -> EvidenceOperands:
     """Every rule input this revision has sealed evidence for, and every one withheld as ambiguous.
 
@@ -371,7 +375,25 @@ def evidence_operands(
                 operand = single
 
             operands.setdefault(rule.id, {})[name] = operand
-    selected = part_operands(session, package_revision_id, rules, observations)
+    selected = part_operands(
+        session, package_revision_id, rules, observations, scope_item_id=scope_item_id
+    )
+    if scope_item_id is not None:
+        for rule in rules:
+            # The SHOP widths belong to this item. Every other side of a scoped check also needs
+            # an item association; the revision's labelled readings and form have none.
+            selected.owned[rule.id] = frozenset((rule.inputs or {}).keys())
+            operands[rule.id] = {}
+            ambiguous[rule.id] = {}
+            if (
+                rule.id == "CAB-FILLER-001"
+                and rule.id not in selected.missing
+                and rule.id not in selected.ambiguous
+            ):
+                selected.missing[rule.id] = (
+                    "Confirm the approved-side pairing for this countertop before checking "
+                    "its cabinet and filler distribution."
+                )
     for rule_id, owned in selected.owned.items():
         # Run-owned inputs replace labels even when the run returned no usable widths.
         operands[rule_id] = {

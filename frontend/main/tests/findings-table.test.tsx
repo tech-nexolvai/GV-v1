@@ -54,6 +54,7 @@ assert.doesNotMatch(html, /\|/, 'no markdown pipe ever reaches the screen');
 assert.equal(html.match(/class="ftable__row"/g)?.length, 5, 'one row per finding');
 assert.doesNotMatch(html, /half an inch deeper/, 'narratives are closed by default');
 assert.doesNotMatch(html, /ftable__detail/);
+assert.match(html, /Package revision/, 'old unscoped findings keep a plain subject');
 assert.ok(
   html.indexOf('Countertop depth') < html.indexOf('Countertop width'),
   'the failing check is above the passing one',
@@ -62,6 +63,15 @@ assert.ok(
 // The vendor's value is the highlighted one in a FAIL row, and only there.
 assert.equal(html.match(/data-mismatch="true"/g)?.length, 2, 'both FAIL rows highlight the shop value');
 assert.match(html, /data-mismatch="true">25 1\/2 in</);
+
+const scopedHtml = renderToStaticMarkup(
+  <FindingsTable findings={[
+    { ...finding('top-1', 'REVIEW_REQUIRED', 'Countertop width'), scope_label: 'Countertop on page 2, item 1' },
+    { ...finding('top-2', 'REVIEW_REQUIRED', 'Countertop width'), scope_label: 'Countertop on page 3, item 1' },
+  ]} />,
+);
+assert.match(scopedHtml, /Countertop on page 2, item 1/);
+assert.match(scopedHtml, /Countertop on page 3, item 1/);
 
 // A missing value is a dash with an accessible name, not repeated words.
 assert.match(html, /aria-label="Not recorded">—</);

@@ -524,6 +524,17 @@ def _stored(**overrides: object) -> StoredFinding:
     return StoredFinding(**defaults)  # type: ignore[arg-type]
 
 
+def test_stored_workbook_names_each_finding_subject_without_shifting_columns() -> None:
+    sheet = load_workbook(
+        BytesIO(
+            write_stored_workbook([_stored(scope_label="Countertop on page 2, item 1"), _stored()])
+        )
+    )[FINDINGS_SHEET]
+    subject_column = FINDING_COLUMNS.index("subject") + 1
+    assert sheet.cell(row=2, column=subject_column).value == "Countertop on page 2, item 1"
+    assert sheet.cell(row=3, column=subject_column).value == "Package revision"
+
+
 def test_a_stored_fraction_survives_as_the_text_it_was_written_as() -> None:
     """`25 1/2` reaches the cell as `25 1/2`, not as `25.5`.
 

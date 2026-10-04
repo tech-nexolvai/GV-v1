@@ -2085,6 +2085,29 @@
           "rule_snapshot": {
             "$ref": "#/components/schemas/RuleSnapshotRecord"
           },
+          "scope_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Item Id"
+          },
+          "scope_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Label"
+          },
           "severity": {
             "title": "Severity",
             "type": "string"
@@ -2176,7 +2199,7 @@
         "title": "FindingCounts",
         "type": "object"
       },
-      "FindingExportV1": {
+      "FindingExportV2": {
         "description": "The export envelope. Version first, so a consumer can check before it parses.",
         "properties": {
           "findings": {
@@ -2197,7 +2220,7 @@
             "type": "string"
           },
           "schema_version": {
-            "const": "1",
+            "const": "2",
             "title": "Schema Version",
             "type": "string"
           },
@@ -2212,7 +2235,7 @@
           "summary",
           "findings"
         ],
-        "title": "FindingExportV1",
+        "title": "FindingExportV2",
         "type": "object"
       },
       "FindingOut": {
@@ -2300,6 +2323,29 @@
           "rule_version": {
             "title": "Rule Version",
             "type": "string"
+          },
+          "scope_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Item Id"
+          },
+          "scope_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Label"
           },
           "severity": {
             "$ref": "#/components/schemas/Severity"
@@ -6802,7 +6848,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FindingExportV1"
+                  "$ref": "#/components/schemas/FindingExportV2"
                 }
               }
             },

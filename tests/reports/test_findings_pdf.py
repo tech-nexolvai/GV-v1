@@ -74,6 +74,12 @@ def test_unchanged_stored_facts_produce_identical_content_addressable_pdf_bytes(
     assert FINDINGS_PDF_MEDIA_TYPE == "application/pdf"
 
 
+def test_pdf_names_the_stored_countertop_subject() -> None:
+    document = write_findings_pdf(_source(_finding(scope_label="Countertop on page 2, item 1")))
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(document)).pages)
+    assert "Countertop on page 2, item 1" in text
+
+
 def test_an_absent_arch_or_shop_source_is_reported_not_inferred_from_order() -> None:
     finding = _finding(
         trace={

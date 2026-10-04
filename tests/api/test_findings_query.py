@@ -716,6 +716,8 @@ def test_a_finding_comes_back_with_the_versions_that_explain_it(session: Session
     assert item["parameter_set_versions"] == {"countertop": "3"}
     assert item["revision_number"] == 4
     assert item["package_revision_id"] == str(revision.id)
+    assert item["scope_item_id"] is None
+    assert item["scope_label"] == "Package revision"
 
 
 def test_the_list_does_not_carry_calculation_traces(session: Session) -> None:

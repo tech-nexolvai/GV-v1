@@ -112,6 +112,7 @@ FINDING_COLUMNS: Final = (
     "reason",
     "notes",
     "reviewer_summary",
+    "subject",
 )
 
 #: One row per operand the calculation used. Frozen for the same reason.
@@ -275,6 +276,7 @@ def _finding_row(finding: Finding) -> tuple[object, ...]:
         finding.reason,
         " | ".join(finding.notes),
         finding.reason,
+        "Package revision",
     )
 
 
@@ -427,6 +429,7 @@ class StoredFinding:
     This is presentation only.  It is appended to the frozen findings sheet rather than replacing
     ``reason``, so a reviewer can always compare the narration with the engine's exact words.
     """
+    scope_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,6 +543,7 @@ def _stored_finding_row(finding: StoredFinding) -> tuple[object, ...]:
         reason,
         NOT_RECORDED if finding.notes is None else " | ".join(finding.notes),
         finding.reviewer_summary or reason,
+        finding.scope_label or "Package revision",
     )
 
 
