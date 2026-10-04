@@ -10,6 +10,25 @@ export type PartKind = components['schemas']['PartKind'];
 
 export type PartPoint = components['schemas']['PointOut'];
 
+/** What a part's picture was found to show of GV's own coloured marks when it was cut (#921). */
+export type PictureGvMarks = components['schemas']['GvMarks'];
+
+/**
+ * The warning under a part's picture that shows GV's own coloured marks (#921): GV's marks baked into
+ * the vendor's drawing, which the picture cannot leave out. The admin's words, 2026-10-04.
+ */
+export const GV_MARKS_WARNING =
+  "This picture shows GV's own coloured marks; check the vendor's drawing itself.";
+
+/**
+ * Whether a picture carries the warning: only where the check found GV's marks in it. A picture
+ * checked and found without them carries none, and so does one never checked (cut before the check
+ * existed): the warning says only what the check found, and nothing is guessed either way.
+ */
+export function showsGvMarks(marks: PictureGvMarks | null | undefined): boolean {
+  return marks === 'shown';
+}
+
 export const PART_KINDS: readonly PartKind[] = ['cabinet', 'filler', 'countertop'];
 
 export const KIND_LABEL: Record<PartKind, string> = {

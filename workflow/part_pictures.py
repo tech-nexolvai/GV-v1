@@ -10,6 +10,12 @@ recorded in `part_pictures` (`PartPicture`), which holds a pointer and a digest,
 a decision or a run: `record_part_picture` writes `part_pictures` and nothing else, and it is the
 only code that does (`tests/db/test_drawing_models.py`).
 
+**Whether a picture shows GV's own coloured marks (#921)** is asked when it is cut, by the agreement
+gate's own test (`workflow/stages.py:crop_shows_a_gv_mark`, #901), and recorded with it: GV's marks
+baked into the vendor's drawing cannot be left out of the render, so the Measure page warns under a
+picture that shows them. A picture cut before the check existed, or whose page's coloured markup
+could not be read, is "not checked" (`GvMarks`), never taken to be clean.
+
 **Two settings, and neither has a default.** How far past the outline a picture reaches and the
 resolution it is cut at are a deployment's to state (`PartPictureSettings`); without them no
 picture is cut, and the page says none is stored.
@@ -19,8 +25,9 @@ when a person adds a part, and `tests/api/test_no_heavy_work.py` keeps `app/api/
 anything that reads a PDF. The cutting itself, which renders the page, is
 `workflow/stages.py:DatabaseStages`'s.
 
-Source: issue #897 and the admin's decision on it. Verification: tests/workflow/test_part_pictures.py,
-tests/db/test_drawing_models.py, tests/api/test_drawing_parts.py.
+Source: issues #897 and #921 and the admin's decisions on them. Verification:
+tests/workflow/test_part_pictures.py, tests/db/test_drawing_models.py,
+tests/api/test_drawing_parts.py.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
@@ -39,7 +47,9 @@ from app.models import DrawingView, Page, PartPicture, PartProposal
 __all__ = [
     "CUT_PART_PICTURES_WORKFLOW",
     "PNG",
+    "GvMarks",
     "PartPictureSettings",
+    "gv_marks",
     "pages_without_pictures",
     "part_picture",
     "pictured",
@@ -53,6 +63,26 @@ CUT_PART_PICTURES_WORKFLOW: Final = "cut_part_pictures"
 
 #: The one format a picture is stored in, as `evidence/crop.py` encodes it.
 PNG: Final = "image/png"
+
+
+class GvMarks(StrEnum):
+    """What a part's picture was found to show of GV's own coloured marks (#921), as the Measure
+    page is told it. Read from `PartPicture.shows_gv_marks` by `gv_marks`."""
+
+    #: Markup drawn in colour lies in the picture, wholly or in part: the page warns under it.
+    SHOWN = "shown"
+    #: The picture was checked and no markup drawn in colour lies in it.
+    NOT_SHOWN = "not_shown"
+    #: Nobody knows: the picture was cut before the check existed, or its page's coloured markup
+    #: could not be read. Never taken to mean the picture is clean.
+    NOT_CHECKED = "not_checked"
+
+
+def gv_marks(shows_gv_marks: bool | None) -> GvMarks:
+    """What a recorded answer says, in the Measure page's words: `None` is not checked."""
+    if shows_gv_marks is None:
+        return GvMarks.NOT_CHECKED
+    return GvMarks.SHOWN if shows_gv_marks else GvMarks.NOT_SHOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,13 +116,20 @@ def record_part_picture(
     storage_key: str,
     sha256: str,
     settings: PartPictureSettings,
+    shows_gv_marks: bool | None,
 ) -> PartPicture:
     """Record where one suggestion's picture is stored. **The only code that writes
     `part_pictures`**, and it writes nothing else.
 
+    `shows_gv_marks` is what the check for GV's coloured marks said of the picture's pixels (#921),
+    or `None` where it could not be asked. **Required**, so no caller records a picture without
+    saying whether it was checked.
+
     A suggestion that already has a picture keeps it, and that picture is returned: the first one
     cut stands, so a redelivered job adds no second row.
     """
+    if shows_gv_marks is not None and not isinstance(shows_gv_marks, bool):
+        raise TypeError("shows_gv_marks must be True, False or None")
     existing = part_picture(session, proposal.id)
     if existing is not None:
         return existing
@@ -103,6 +140,7 @@ def record_part_picture(
         media_type=PNG,
         margin_pt=settings.margin_pt,
         dpi=settings.dpi,
+        shows_gv_marks=shows_gv_marks,
     )
     session.add(picture)
     session.flush()
@@ -116,17 +154,19 @@ def part_picture(session: Session, proposal_id: UUID) -> PartPicture | None:
     ).scalar_one_or_none()
 
 
-def pictured(session: Session, proposal_ids: Sequence[UUID]) -> set[UUID]:
-    """Which of these suggestions have a picture recorded."""
+def pictured(session: Session, proposal_ids: Sequence[UUID]) -> dict[UUID, GvMarks]:
+    """Which of these suggestions have a picture recorded, each with what the check for GV's
+    coloured marks said of it (#921). A suggestion with no picture is absent."""
     if not proposal_ids:
-        return set()
-    return set(
-        session.scalars(
-            select(PartPicture.part_proposal_id).where(
+        return {}
+    return {
+        proposal_id: gv_marks(shows)
+        for proposal_id, shows in session.execute(
+            select(PartPicture.part_proposal_id, PartPicture.shows_gv_marks).where(
                 PartPicture.part_proposal_id.in_(list(proposal_ids))
             )
         )
-    )
+    }
 
 
 def unpictured_proposals(session: Session, page_id: UUID) -> list[PartProposal]:

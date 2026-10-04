@@ -2712,6 +2712,13 @@ export interface components {
              */
             scope_id: string;
         };
+        /**
+         * GvMarks
+         * @description What a part's picture was found to show of GV's own coloured marks (#921), as the Measure
+         *     page is told it. Read from `PartPicture.shows_gv_marks` by `gv_marks`.
+         * @enum {string}
+         */
+        GvMarks: "shown" | "not_shown" | "not_checked";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -3127,6 +3134,8 @@ export interface components {
              * @description Its number in 'Parts of each drawing', 1 for the leftmost; null if not listed.
              */
             number: number | null;
+            /** @description What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown`, `not_shown`, or `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored. */
+            picture_gv_marks: components["schemas"]["GvMarks"] | null;
             /**
              * Proposal Id
              * @description The suggestion it was confirmed from, whose picture is the part's (#897).
@@ -3163,6 +3172,8 @@ export interface components {
             left_end: components["schemas"]["PointOut"] | null;
             /** Page Index */
             page_index: number;
+            /** @description What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown` where markup drawn in colour lies in it, so the page warns under it; `not_shown` where it was checked and none does; `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored. */
+            picture_gv_marks: components["schemas"]["GvMarks"] | null;
             /**
              * Position
              * @description Its place on its drawing, 1 for the leftmost.
