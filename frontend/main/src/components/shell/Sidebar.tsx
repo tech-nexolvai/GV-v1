@@ -85,7 +85,16 @@ export function Sidebar({
     setMore(null);
   }, [refreshKey]);
 
-  const items = first.status === 'ready' ? [...first.data.items, ...(more?.items ?? [])] : [];
+  // A refreshed first page can overlap an older cursor page. Keep the newest copy of each
+  // package so React never renders two navigation entries with the same identity.
+  const seenPackageIds = new Set<string>();
+  const items = first.status === 'ready'
+    ? [...first.data.items, ...(more?.items ?? [])].filter((item) => {
+        if (seenPackageIds.has(item.id)) return false;
+        seenPackageIds.add(item.id);
+        return true;
+      })
+    : [];
   const nextCursor = more
     ? more.cursor
     : first.status === 'ready'
