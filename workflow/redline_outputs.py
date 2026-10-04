@@ -48,6 +48,7 @@ from reports.redline import (
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore, StoredArtifact
 from verdict.outcomes import Outcome, Severity, is_decision
+from workflow.changed_values import ChangedValues
 
 __all__ = ["RedlineOutput", "render_evidence_grounded_redline"]
 
@@ -66,6 +67,7 @@ def render_evidence_grounded_redline(
     *,
     package_revision_id: UUID,
     findings: Sequence[tuple[FindingRow, CheckRun, str, str]],
+    changed_values: ChangedValues | None = None,
 ) -> RedlineOutput:
     """Render one internal redline only when a finding has a typed, stored location.
 
@@ -97,7 +99,12 @@ def render_evidence_grounded_redline(
     # Internal mode is intentional: generation precedes approval.  The normal artifact-download
     # gate still refuses any output before sign-off, and vendor publication remains the separately
     # approved route in reports.publication.
-    return RedlineOutput(render_redline(package, rendered, ReportMode.INTERNAL, store), None)
+    return RedlineOutput(
+        render_redline(
+            package, rendered, ReportMode.INTERNAL, store, changed_values=changed_values
+        ),
+        None,
+    )
 
 
 def _typed_references(
@@ -278,6 +285,7 @@ def _stored_finding(
         or (trace_reason if isinstance(trace_reason, str) else None)
         or "No reason was recorded."
     )
+    comparison_value = row.trace.get("comparison")
     return RedlineFinding(
         rule_id=rule_id,
         outcome=outcome,
@@ -289,4 +297,7 @@ def _stored_finding(
         # never rebuilds an operand or intermediate from display text just to repeat a number.
         calculation_available=is_decision(outcome),
         evidence_refs=tuple(references),
+        scope_label=row.scope_label,
+        comparison=comparison_value if isinstance(comparison_value, str) else None,
+        notes=tuple(row.notes or ()),
     )

@@ -2,10 +2,12 @@ import { useState, useEffect, useRef } from 'react';
 import { ChatThread } from '../components/chat/ChatThread';
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
+import { ChangedValuesPanel } from '../components/output/ChangedValuesPanel';
 import { StatusBadge } from '../components/ui/Badge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
   getPackage,
+  getChangedValues,
   askReviewerChat,
   streamReviewerChat,
   getChatModels,
@@ -58,6 +60,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
     );
     return { detail, found, session: open ?? null };
   }, [packageId]);
+  const changedValues = useAsync(
+    () => getChangedValues(projectId(), packageId),
+    [packageId],
+  );
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
@@ -631,6 +637,12 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
           <p>{actionError}</p>
         </div>
       )}
+
+      <ChangedValuesPanel
+        state={changedValues.status}
+        value={changedValues.status === 'ready' ? changedValues.data : null}
+        currentRevisionId={remote.status === 'ready' ? remote.data.detail.current_revision_id : null}
+      />
 
       {/* View Tabs */}
       <div className="review-page__tabs">

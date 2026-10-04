@@ -93,6 +93,10 @@ class CheckRun(Base, TimestampedUUID):
     that can move a result without any input moving, and `eval/regression.py` needs to be able to
     attribute that."""
 
+    defaults_set_id: Mapped[str | None] = mapped_column(String(71), nullable=True, default=None)
+    defaults_canonical_json: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    """Exact synthetic GLOBAL defaults for this run. Null means legacy/unverifiable, not empty."""
+
     superseded_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None, nullable=True)
     """When a later run replaced this one, or `NULL` while it is the current answer.
 
@@ -109,6 +113,14 @@ class CheckRun(Base, TimestampedUUID):
 
     __table_args__ = (
         CheckConstraint("engine_version <> ''", name="check_run_engine_version_present"),
+        CheckConstraint(
+            "(defaults_set_id IS NULL) = (defaults_canonical_json IS NULL)",
+            name="check_run_defaults_paired",
+        ),
+        CheckConstraint(
+            "defaults_set_id IS NULL OR defaults_set_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="check_run_defaults_digest_shape",
+        ),
         # Lets a child carry the revision and have the database prove it is the run's own.
         UniqueConstraint("id", "package_revision_id", name="uq_check_runs_id_revision"),
         Index("ix_check_runs_revision_snapshot", "package_revision_id", "rule_snapshot_id"),

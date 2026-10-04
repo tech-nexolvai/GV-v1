@@ -85,6 +85,8 @@ export type FindingChain =
   Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings/{finding_id}/chain'>;
 export type FindingCounts =
   Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings/summary'>;
+export type ChangedValues =
+  Get<'/api/v1/projects/{project_id}/packages/{package_id}/changed-values'>;
 export type ReviewSessionPage = Get<'/api/v1/projects/{project_id}/review-sessions'>;
 export type RuleList = Get<'/api/v1/rules'>;
 export type Rule = RuleList[number];
@@ -109,6 +111,12 @@ export function listPackages(projectId: string, query?: { cursor?: string; limit
 
 export function getPackage(projectId: string, packageId: string) {
   return request<PackageDetail>(`/projects/${projectId}/packages/${packageId}`);
+}
+
+export function getChangedValues(projectId: string, packageId: string) {
+  return request<ChangedValues>(
+    `/projects/${projectId}/packages/${packageId}/changed-values`,
+  );
 }
 
 export function listFindings(
