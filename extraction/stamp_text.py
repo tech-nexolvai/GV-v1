@@ -38,31 +38,55 @@ paths count (`path_ink`): the reader puts a stacked fraction whose words came ap
 round the bar drawn between its numerator and denominator (#880), and only a black or grey path is
 taken for that bar.
 
+**Where GV's marks are, for the agreement gate and the part pictures (#901, #929).** The same rule
+finds what a reader shown the vendor's drawing may still see of somebody's markup: text set in colour
+(`coloured_text`), every line, rectangle, curve and fill drawn in colour, of any size
+(`coloured_paths`), and a stamp pasted onto one of the page's pasted drawings (`pasted_stamps`). None
+of these is ever read as a value; they are only places.
+
 Source: formats phase 1 · Verification: `tests/extraction/test_stamp_text.py`
 """
 
 from __future__ import annotations
 
 import io
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
+from fractions import Fraction
 from typing import Any, Final
 from uuid import UUID
 
 import pdfplumber
 import pikepdf
 
-from extraction.reader import MissingSpace, PageContents, UnreadablePdf, read_page_contents
+from evidence.coordinates import ImagePoint, PdfPoint
+from extraction.reader import (
+    MissingSpace,
+    PageContents,
+    UnreadablePdf,
+    page_frame,
+    pixel_placement,
+    read_page_contents,
+)
 
 __all__ = [
+    "ColouredPath",
+    "PixelBox",
     "StampCharacters",
     "StampText",
+    "coloured_paths",
     "coloured_text",
     "drawing_ink",
+    "pasted_stamps",
     "path_ink",
     "read_stamp_text",
     "stamp_character_counts",
     "stamps_only",
 ]
+
+#: A box in a page's pixels: `(left, top, right, bottom)`, edges included.
+type PixelBox = tuple[int, int, int, int]
 
 #: What pdfminer writes for a character its font maps to nothing.
 _UNMAPPED: Final = "(cid:"
@@ -275,3 +299,293 @@ def coloured_text(
 def stamp_character_counts(data: bytes, page_index: int) -> StampCharacters:
     """The characters inside the page's pasted drawings, counted for the survey."""
     return _character_counts(stamps_only(data, page_index), page_index)
+
+
+def _boxes_meet(first: PixelBox, second: PixelBox) -> bool:
+    """Whether two boxes share any point, edges included."""
+    return (
+        first[0] <= second[2]
+        and second[0] <= first[2]
+        and first[1] <= second[3]
+        and second[1] <= first[3]
+    )
+
+
+def _line_meets(line: tuple[int, int, int, int], box: PixelBox) -> bool:
+    """Whether a straight line from `(x0, y0)` to `(x1, y1)` has any point in `box`, edges included.
+
+    The line is clipped to the box one edge at a time (Liang and Barsky's method), in whole pixels
+    and exact fractions, so a line that only passes near a corner is not counted and one that grazes
+    an edge is.
+    """
+    x0, y0, x1, y1 = line
+    left, top, right, bottom = box
+    across, down = x1 - x0, y1 - y0
+    enters, leaves = Fraction(0), Fraction(1)
+    for step, room in (
+        (-across, x0 - left),
+        (across, right - x0),
+        (-down, y0 - top),
+        (down, bottom - y0),
+    ):
+        if step == 0:
+            if room < 0:
+                return False
+            continue
+        at = Fraction(room, step)
+        if step < 0:
+            enters = max(enters, at)
+        else:
+            leaves = min(leaves, at)
+        if enters > leaves:
+            return False
+    return True
+
+
+def _box_of(points: Sequence[ImagePoint]) -> PixelBox:
+    return (
+        min(point.x for point in points),
+        min(point.y for point in points),
+        max(point.x for point in points),
+        max(point.y for point in points),
+    )
+
+
+#: A sub-path's corners in a page's pixels, in drawing order; it closes back to its first.
+type Ring = tuple[tuple[int, int], ...]
+
+
+def _covers(point: tuple[int, int], rings: tuple[Ring, ...], even_odd: bool) -> bool:
+    """Whether a fill of `rings` covers `point`, by the fill's own rule: the non-zero winding rule,
+    or the even-odd rule where the file fills by it (PDF 32000-1 §8.5.3.3). Whole pixels only.
+
+    A ray runs from the point along the row; each side it crosses upwards or downwards turns the
+    count, by which side of the edge the point lies.
+    """
+    x, y = point
+    winding = crossings = 0
+    for ring in rings:
+        for (x0, y0), (x1, y1) in zip(ring, ring[1:] + ring[:1], strict=True):
+            side = (x1 - x0) * (y - y0) - (x - x0) * (y1 - y0)
+            if y0 <= y < y1 and side > 0:
+                winding += 1
+                crossings += 1
+            elif y1 <= y < y0 and side < 0:
+                winding -= 1
+                crossings += 1
+    return crossings % 2 == 1 if even_odd else winding != 0
+
+
+@dataclass(frozen=True, slots=True)
+class ColouredPath:
+    """One path the page's pasted drawings draw in colour, in the page's pixels at the dpi it was
+    read at (#929): what of the page it can show.
+
+    `lines` are its straight pieces, `(x0, y0, x1, y1)`: a stroked path's, and a filled path's
+    outline with each sub-path closed, as a fill closes it. `areas` are boxes it may cover anywhere
+    inside: the box of a curve's ends and control points, which holds the curve, or, where the
+    path's pieces cannot be told apart, the whole path's box. `rings` are a filled path's sub-paths,
+    corner by corner, for whether the fill covers a place none of its outline reaches; `even_odd`
+    is the rule it is filled by. A path only stroked has no rings.
+
+    What the file draws, rounded to whole pixels as the text boxes are; a curve's box is wider than
+    the curve, never narrower. The width of a line is not counted: a line running just outside a
+    crop, closer than half its own width, is not in it.
+    """
+
+    lines: tuple[tuple[int, int, int, int], ...]
+    areas: tuple[PixelBox, ...]
+    rings: tuple[Ring, ...]
+    even_odd: bool
+
+    def meets(self, box: PixelBox) -> bool:
+        """Whether any part of the path lies in `box`, edges included.
+
+        Its outline is asked first: a line or a curve's box in the box. A box no part of the
+        outline reaches lies wholly inside the fill or wholly outside it, so one of its corners
+        answers for all of it; a curve has been ruled out there, so its chord stands in for it.
+        """
+        if any(_boxes_meet(area, box) for area in self.areas) or any(
+            _line_meets(line, box) for line in self.lines
+        ):
+            return True
+        return bool(self.rings) and _covers((box[0], box[1]), self.rings, self.even_odd)
+
+
+def _pieces(
+    commands: Sequence[Any], place: Callable[[object, object], ImagePoint]
+) -> tuple[list[tuple[int, int, int, int]], list[PixelBox], list[list[tuple[int, int]]]] | None:
+    """A path's straight lines, its curves' boxes and its sub-paths' corners, from the commands
+    pdfplumber keeps (`m`, `l`, `c`, `v`, `y`, `h`); `None` where a command is not one of those, or
+    comes before the path has started."""
+    lines: list[tuple[int, int, int, int]] = []
+    areas: list[PixelBox] = []
+    rings: list[list[tuple[int, int]]] = []
+    start: ImagePoint | None = None
+    here: ImagePoint | None = None
+    for command in commands:
+        operator, points = command[0], [place(x, top) for x, top in command[1:]]
+        if operator == "m" and len(points) == 1:
+            start = here = points[0]
+            rings.append([(here.x, here.y)])
+        elif here is None or start is None:
+            return None
+        elif operator == "l" and len(points) == 1:
+            lines.append((here.x, here.y, points[0].x, points[0].y))
+            here = points[0]
+            rings[-1].append((here.x, here.y))
+        elif operator in ("c", "v", "y") and points:
+            areas.append(_box_of([here, *points]))
+            here = points[-1]
+            rings[-1].append((here.x, here.y))
+        elif operator == "h" and not points:
+            lines.append((here.x, here.y, start.x, start.y))
+            here = start
+            rings[-1].append((here.x, here.y))
+            rings.append([(here.x, here.y)])
+        else:
+            return None
+    return lines, areas, [ring for ring in rings if len(ring) > 1]
+
+
+def _coloured_path(
+    path: dict[str, Any], place: Callable[[object, object], ImagePoint]
+) -> ColouredPath:
+    """What one line, rectangle or curve drawn in colour can show, in the page's pixels."""
+    commands = path.get("path") or ()
+    points = [place(x, top) for command in commands for x, top in command[1:]]
+    if not points:
+        points = [
+            place(path["x0"], path["top"]),
+            place(path["x1"], path["bottom"]),
+        ]
+    whole = ColouredPath(lines=(), areas=(_box_of(points),), rings=(), even_odd=False)
+    pieces = _pieces(commands, place) if commands else None
+    if pieces is None:
+        return whole
+    lines, areas, rings = pieces
+    if not path.get("fill"):
+        return (
+            ColouredPath(lines=tuple(lines), areas=tuple(areas), rings=(), even_odd=False)
+            if lines or areas
+            else whole
+        )
+    # Filled, every sub-path is closed and its inside shows; a stroke round it lies on its outline.
+    for ring in rings:
+        if ring[-1] != ring[0]:
+            lines.append((*ring[-1], *ring[0]))
+    if not rings:
+        return whole
+    return ColouredPath(
+        lines=tuple(lines),
+        areas=tuple(areas),
+        rings=tuple(tuple(ring) for ring in rings),
+        even_odd=bool(path.get("evenodd")),
+    )
+
+
+def coloured_paths(data: bytes, page_index: int, *, dpi: int) -> tuple[ColouredPath, ...]:
+    """Every line, rectangle and curve the page's pasted drawings draw in colour, of any size and
+    stroked or filled, in the page's pixels at `dpi` (#929).
+
+    **Read as the coloured text is read**: from the same copy of the page that holds only its
+    pasted drawings (`stamps_only`), placed on the page's pixels as every text run is
+    (`reader.pixel_placement`). A drawing nested inside the snapshot's own drawings is read too.
+
+    **Coloured by the one rule** (`path_ink`): a path that shows its line, its fill or both, and
+    shows any of them in something other than black or grey. A path drawn neither way shows nothing
+    and is not a mark. GV's long red lines and outlines, its yellow fills and the coloured stamps it
+    pastes are all found; so is anything the vendor drew in colour, which this cannot tell apart.
+    """
+    flattened = stamps_only(data, page_index)
+    try:
+        with pdfplumber.open(io.BytesIO(flattened)) as document:
+            page = document.pages[page_index]
+            place = pixel_placement(page, dpi)
+            return tuple(
+                _coloured_path(path, place)
+                for path in (*page.lines, *page.rects, *page.curves)
+                if (path.get("stroke") or path.get("fill")) and not path_ink(path)
+            )
+    except UnreadablePdf:
+        raise
+    except Exception as error:
+        raise UnreadablePdf(
+            f"page {page_index}'s pasted drawings could not be read for their paths: {error}"
+        ) from error
+
+
+def _stamp_rect(annotation: dict[str, Any]) -> tuple[Decimal, Decimal, Decimal, Decimal] | None:
+    """A `/Stamp` annotation's rectangle in PDF space, `(left, bottom, right, top)`; `None` for any
+    other annotation. A stamp whose rectangle cannot be read raises `UnreadablePdf`."""
+    data = annotation.get("data") or {}
+    if getattr(data.get("Subtype"), "name", None) != "Stamp":
+        return None
+    values = data.get("Rect")
+    try:
+        x0, y0, x1, y1 = (Decimal(str(value)) for value in values or ())
+    except (TypeError, ValueError, ArithmeticError) as error:
+        raise UnreadablePdf(f"a pasted drawing's rectangle {values!r} cannot be read") from error
+    if not all(value.is_finite() for value in (x0, y0, x1, y1)):
+        raise UnreadablePdf(f"a pasted drawing's rectangle {values!r} cannot be read")
+    return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+
+
+def _within(
+    inner: tuple[Decimal, Decimal, Decimal, Decimal],
+    outer: tuple[Decimal, Decimal, Decimal, Decimal],
+) -> bool:
+    return (
+        outer[0] <= inner[0]
+        and inner[2] <= outer[2]
+        and outer[1] <= inner[1]
+        and inner[3] <= outer[3]
+    )
+
+
+def pasted_stamps(data: bytes, page_index: int, *, dpi: int) -> tuple[PixelBox, ...]:
+    """Where a stamp is pasted onto one of the page's pasted drawings: each such stamp's rectangle,
+    in the page's pixels at `dpi` (#929).
+
+    **A pasted drawing is a `/Stamp`, and so is anything pasted onto one.** On the client's sets each
+    drawing — the ID set's and the vendor's — is a snapshot stamp, and GV's reviewer pasted small
+    stamps of their own onto them: outlet symbols, a yellow fill in a red outline, about 13 by 7
+    points. The file marks them no differently (same subject, same author), and the vendor-only
+    render keeps every stamp (#742), so a reader is shown them.
+
+    **Told apart by where they lie: a stamp wholly inside another stamp's rectangle**, edges
+    included, is pasted onto that drawing and is not a drawing of its own. Measured on both client
+    sets, no drawing lies inside another (AI_Set_1's drawings overlap at their margins, which does
+    not count), and the five stamps that do, all on AI_Set_2, are outlet symbols pasted onto its
+    drawings. Two stamps with the same rectangle each lie inside the other, so both count: nothing
+    tells which is the drawing. A stamp pasted across a drawing's edge is not inside it and is not
+    found here; drawn in colour, `coloured_paths` still finds it.
+
+    Whatever it holds, black or coloured, it counts.
+    """
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as document:
+            try:
+                page = document.pages[page_index]
+            except IndexError as error:
+                raise UnreadablePdf(
+                    f"page {page_index} is beyond the {len(document.pages)} pages in this document"
+                ) from error
+            transform, _ = page_frame(page, dpi)
+            rects = [rect for annotation in page.annots if (rect := _stamp_rect(annotation))]
+    except UnreadablePdf:
+        raise
+    except Exception as error:
+        raise UnreadablePdf(
+            f"page {page_index}'s pasted drawings could not be read for their places: {error}"
+        ) from error
+    return tuple(
+        _box_of(
+            [
+                transform.to_image(PdfPoint(x=x, y=y))
+                for x, y in ((rect[0], rect[1]), (rect[2], rect[3]))
+            ]
+        )
+        for index, rect in enumerate(rects)
+        if any(other != index and _within(rect, rects[other]) for other in range(len(rects)))
+    )
