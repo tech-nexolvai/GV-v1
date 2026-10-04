@@ -20,9 +20,11 @@ in the one call. A second-reader agreement is what counts, because it is the onl
 geometry and readings before the gate is asked. Four can only hold an agreement back; the fifth asks
 what a label's own millimetres would add if they could confirm its inches, on the file's own text
 only (#691). The admin decided on 2026-10-03, before any of this was counted, that a kind of reading
-whose readers agree on a wrong value always goes to a person. **One guard is now the production
-gate's: a GV mark in the crop** (#901). Its test is the stage's own `workflow.stages.gv_mark_in_crop`,
-which `scripts/gate_replay.py` calls for `Facts.gv_mark`; the other four are wired in nowhere.
+whose readers agree on a wrong value always goes to a person. **Two guards are now the production
+gate's: a GV mark in the crop** (#901) **and a crop that cuts the label** (#919). Their tests are the
+stage's own `workflow.stages.gv_mark_in_crop` and `workflow.stages.cut_label_refusal`, which
+`scripts/gate_replay.py` calls for `Facts.gv_mark` and `Facts.cut_at_edge`; the gate as it now is,
+both together, is measured as one more guard. The other three are wired in nowhere.
 
 **Zero wrong is not safe.** With no wrong agreement among n, the true rate is only known to be
 below about 3/n, with about 95% confidence (the rule of three): nine agreements bound it below a
@@ -204,7 +206,8 @@ class Facts:
     """What the file's own geometry says about a region: all a guard reads but the readings."""
 
     cut_at_edge: bool
-    """The crop production cuts round it cuts a label (`RegionFacts.cut_at_edge`)."""
+    """The crop production cuts round it cuts a label off, or cannot be shown not to. Decided by
+    the production gate's own test, `workflow.stages.cut_label_refusal` (#919)."""
 
     sideways: bool
     """The label runs up the page (`RegionFacts.rotation_degrees` is not 0)."""
@@ -486,12 +489,14 @@ def gate(
 
 
 class Guard(StrEnum):
-    """A candidate pre-filter on the gate. **`GV_MARK` is what production does since #901**;
-    `NONE` is the readers' agreement alone, which is what it did before."""
+    """A candidate pre-filter on the gate. **`GATE` is what production does since #919**: `GV_MARK`
+    (#901) and `CUT` (#919) together. `NONE` is the readers' agreement alone, which is what it did
+    before #901; `GV_MARK` alone is what it did from #901 to #919."""
 
     NONE = "agreement alone (the gate before #901)"
     CUT = "held back where the crop cuts the label"
-    GV_MARK = "held back where a GV mark is in the crop (the gate since #901)"
+    GV_MARK = "held back where a GV mark is in the crop (the gate from #901 to #919)"
+    GATE = "the gate since #919: held back where a GV mark is in the crop or it cuts the label"
     PROMOTED_NUMERATOR = "held back where a reading is `n n/d`"
     SIDEWAYS = "a sideways label needs a third reader"
     MM_ON_FILE_TEXT = "a label's mm confirms its inches, on the file's own text only"
@@ -516,6 +521,8 @@ def held_back(region: Region, facts: Facts, guard: Guard) -> bool:
         return facts.cut_at_edge
     if guard is Guard.GV_MARK:
         return facts.gv_mark
+    if guard is Guard.GATE:
+        return facts.gv_mark or facts.cut_at_edge
     if guard is Guard.PROMOTED_NUMERATOR:
         return any(
             reading.value is not None and promoted_numerator(reading.value)

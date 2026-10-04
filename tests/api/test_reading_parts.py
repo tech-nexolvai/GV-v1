@@ -48,7 +48,9 @@ from tests.api.test_v1_loop import _settings
 from tests.workflow.test_part_proposals_route import DRAWING, _extract, _sheet, _upgrade
 from tests.workflow.test_reading_parts import _replace_in_review
 from workflow import reading_parts as workflow_links
+from workflow.part_pictures import PartPictureSettings
 from workflow.reading_parts import REPLACED, WITHDRAWN, live_reading_parts
+from workflow.stages import DatabaseStages
 from workflow.view_roles import confirm_view_role, revision_views
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -227,6 +229,34 @@ def test_each_part_is_suggested_its_own_width_and_listing_writes_nothing(sheet: 
         assert suggestion["edge_tolerance"] == "0.004"
     assert [part["number"] for part in drawing["parts"]] == [1, 2, 3]
     assert all(part["links"] == [] for part in drawing["parts"])
+    assert _count(sheet.session, ReadingPart) == 0
+
+
+def test_each_confirmed_part_shows_the_picture_of_the_suggestion_it_was_confirmed_from(
+    sheet: Sheet,
+) -> None:
+    """**#897.** A confirmed part's picture is its suggestion's: each part names that suggestion and
+    says whether its picture is stored. Cutting the pictures changes nothing else in the list."""
+    before = sheet.drawing()["parts"]
+    DatabaseStages(
+        store=sheet.store,
+        dpi=150,
+        part_pictures=PartPictureSettings(margin_pt=Decimal(36), dpi=150),
+    ).cut_part_pictures(sheet.session, sheet.revision.id)
+    sheet.session.commit()
+    after = sheet.drawing()["parts"]
+    picture = sheet.client().get(f"{sheet.base}/parts/{after[0]['proposal_id']}/picture")
+
+    assert [part["proposal_id"] for part in before] == [
+        sheet.proposals[name] for name in ("left", "top", "right")
+    ]
+    assert [part["has_picture"] for part in before] == [False, False, False]
+    assert [part["has_picture"] for part in after] == [True, True, True]
+    unchanged = ("item_id", "proposal_id", "number", "suggestion", "links")
+    assert [{key: part[key] for key in unchanged} for part in after] == [
+        {key: part[key] for key in unchanged} for part in before
+    ]
+    assert picture.status_code == 200 and picture.headers["content-type"] == "image/png"
     assert _count(sheet.session, ReadingPart) == 0
 
 

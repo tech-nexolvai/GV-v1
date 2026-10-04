@@ -9,10 +9,15 @@ invented code `XQ24`) and a countertop. **Every code here is invented.**
 
 **The outcome that matters most is a count of zero**: listing the suggestions, however often, makes
 no part. A suggestion becomes a part only through a person's confirmation (#852).
+
+**Each part's own picture (#897)** is served checked against its digest, through the same project
+boundary, and adding a part asks the worker to cut one in the same transaction.
 """
 
 from __future__ import annotations
 
+import hashlib
+import io
 import tempfile
 from collections.abc import Iterator
 from decimal import Decimal
@@ -32,9 +37,11 @@ from app.models import (
     DrawingItem,
     DrawingView,
     ItemIdentifier,
+    OutboxEntry,
     Package,
     PackageRevision,
     PartConfirmation,
+    PartPicture,
     PartProposal,
     ViewRole,
 )
@@ -44,6 +51,11 @@ from tests.workflow.test_part_proposals_route import _extract, _upgrade
 from tests.workflow.test_view_roles import _document_version, _item
 from tests.workflow.test_view_roles import _revision as _bare_revision
 from workflow import parts as workflow_parts
+from workflow.part_pictures import (
+    CUT_PART_PICTURES_WORKFLOW,
+    PartPictureSettings,
+    record_part_picture,
+)
 from workflow.stages import DatabaseStages, _matchable_items
 from workflow.view_roles import confirm_view_role
 
@@ -51,6 +63,9 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 
 #: An invented code, corrected as a person might read it, with the spacing they typed.
 CORRECTED_CODE = " xq-24/B "
+
+#: How the worker is told to cut each part's picture here (#897).
+PICTURES = PartPictureSettings(margin_pt=Decimal(36), dpi=150)
 
 
 @pytest.fixture
@@ -97,6 +112,22 @@ def _vendors(session: Session, role: ViewRole = ViewRole.SHOP) -> DrawingView:
 
 def _count(session: Session, model: type) -> int:
     return int(session.scalar(select(func.count()).select_from(model)) or 0)
+
+
+def _cut_pictures(session: Session, store: LocalStore, revision: PackageRevision) -> None:
+    """What the worker does when a part is added: cut every picture still missing (#897)."""
+    DatabaseStages(store=store, dpi=150, part_pictures=PICTURES).cut_part_pictures(
+        session, revision.id
+    )
+    session.commit()
+
+
+def _cut_jobs(session: Session) -> list[OutboxEntry]:
+    return list(
+        session.scalars(
+            select(OutboxEntry).where(OutboxEntry.workflow == CUT_PART_PICTURES_WORKFLOW)
+        )
+    )
 
 
 def _nothing_decided(session: Session) -> None:
@@ -149,6 +180,7 @@ def test_the_suggestions_are_listed_left_to_right_with_what_each_one_needs(
     assert all(part["reason"].strip() for part in parts)
     assert not any(part["added_by_a_person"] for part in parts)
     # Nothing has cut the pictures yet, so none is offered.
+    assert [part["has_picture"] for part in parts] == [False, False, False]
     assert [part["has_crop"] for part in parts] == [False, False, False]
     # The label suggests the vendor's drawing; nobody has said so, so nothing can be confirmed yet.
     assert drawing["role"] is None
@@ -176,6 +208,108 @@ def test_the_picture_is_the_stored_crop_of_the_code_reading(
     assert crops[0].headers["content-type"] == "image/png"
     assert crops[0].content.startswith(b"\x89PNG\r\n\x1a\n")
     assert [response.status_code for response in crops[1:]] == [404, 404]
+
+
+def test_every_suggestion_shows_its_own_picture(session: Session, store: LocalStore) -> None:
+    """**Done when, 4 (#897).** Once the worker has cut them, every suggestion has a picture, coded
+    or not, served as the stored PNG after its digest is checked, and never cached."""
+    revision, project_id, package_id = _sheet(session, store)
+    _cut_pictures(session, store, revision)
+    client = _client(session, store, project_id)
+
+    parts = _drawing(client, project_id, package_id)["parts"]
+    responses = [
+        client.get(f"{_base(project_id, package_id)}/parts/{p['proposal_id']}/picture")
+        for p in parts
+    ]
+
+    assert [part["has_picture"] for part in parts] == [True, True, True]
+    for part, response in zip(parts, responses, strict=True):
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"] == "image/png"
+        assert response.headers["cache-control"] == "no-store"
+        picture = session.scalars(
+            select(PartPicture).where(PartPicture.part_proposal_id == UUID(part["proposal_id"]))
+        ).one()
+        assert hashlib.sha256(response.content).hexdigest() == picture.sha256
+        assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+    _nothing_decided(session)
+
+
+def test_a_part_without_a_picture_says_so(session: Session, store: LocalStore) -> None:
+    """Before the worker has cut it, a part's picture is absent, in words a person can read, and is
+    never some other region."""
+    _, project_id, package_id = _sheet(session, store)
+    client = _client(session, store, project_id)
+    first = _drawing(client, project_id, package_id)["parts"][0]
+
+    response = client.get(f"{_base(project_id, package_id)}/parts/{first['proposal_id']}/picture")
+
+    assert response.status_code == 404
+    assert response.json()["message"] == "no picture of this part is stored yet"
+
+
+def _record_a_picture_of(
+    session: Session, store: LocalStore, proposal_id: str, *, stored: bytes, recorded: bytes
+) -> None:
+    """A picture whose stored bytes are `stored`, recorded as the digest of `recorded`."""
+    key = f"evidence-crops/{uuid4()}/pages/0/picture.png"
+    if stored:
+        store.put(key, io.BytesIO(stored), content_type="image/png")
+    record_part_picture(
+        session,
+        proposal=session.get_one(PartProposal, UUID(proposal_id)),
+        storage_key=key,
+        sha256=hashlib.sha256(recorded).hexdigest(),
+        settings=PICTURES,
+    )
+    session.commit()
+
+
+@pytest.mark.parametrize(
+    ("stored", "said"),
+    [
+        (
+            b"\x89PNG\r\n\x1a\nnot the bytes the worker recorded",
+            "does not match its recorded digest",
+        ),
+        (b"", "is unavailable"),
+    ],
+    ids=["changed", "missing"],
+)
+def test_a_picture_that_is_not_what_was_recorded_is_not_shown(
+    session: Session, store: LocalStore, stored: bytes, said: str
+) -> None:
+    """A stored picture whose bytes no longer hash to the recorded digest, or that is gone, is
+    refused (409) rather than shown as the part."""
+    _, project_id, package_id = _sheet(session, store)
+    client = _client(session, store, project_id)
+    first = _drawing(client, project_id, package_id)["parts"][0]
+    _record_a_picture_of(
+        session, store, first["proposal_id"], stored=stored, recorded=b"the worker's picture"
+    )
+
+    response = client.get(f"{_base(project_id, package_id)}/parts/{first['proposal_id']}/picture")
+
+    assert response.status_code == 409
+    assert said in response.json()["message"]
+
+
+def test_a_person_outside_the_project_cannot_see_a_parts_picture(
+    session: Session, store: LocalStore
+) -> None:
+    """**Done when, 4.** Project access is checked first: someone who is not in the project is told
+    nothing exists, even though the picture does."""
+    revision, project_id, package_id = _sheet(session, store)
+    _cut_pictures(session, store, revision)
+    first = _drawing(_client(session, store, project_id), project_id, package_id)["parts"][0]
+
+    response = _client(session, store, uuid4()).get(
+        f"{_base(project_id, package_id)}/parts/{first['proposal_id']}/picture"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["message"] == "Not found"
 
 
 # -- which drawings may have parts -----------------------------------------------------------------
@@ -404,6 +538,63 @@ def test_a_person_adds_a_missing_part_by_its_two_ends(session: Session, store: L
     assert [part["proposal_id"] for part in after].count(body["proposal_id"]) == 1
 
 
+def test_adding_a_part_asks_the_worker_for_its_picture(session: Session, store: LocalStore) -> None:
+    """**Done when, 1, for an added part (#897).** The part and the request for its picture are
+    one transaction: one outbox row naming the revision. The list shows the part with no picture
+    until the worker has cut it, and with its own picture after."""
+    revision, project_id, package_id = _sheet(session, store)
+    _vendors(session)
+    client = _client(session, store, project_id)
+    drawing = _drawing(client, project_id, package_id)
+    first, _, second = drawing["parts"]
+
+    response = client.post(
+        f"{_base(project_id, package_id)}/views/{drawing['view_id']}/parts",
+        json={"kind": "filler", "ends": [first["left_end"], second["right_end"]]},
+    )
+    assert response.status_code == 201, response.text
+    added = response.json()
+    (job,) = _cut_jobs(session)
+
+    assert job.payload == {"package_revision_id": str(revision.id)}
+    assert job.dispatched_at is None
+    assert added["has_picture"] is False
+
+    _cut_pictures(session, store, revision)
+    listed = {
+        part["proposal_id"]: part for part in _drawing(client, project_id, package_id)["parts"]
+    }
+    picture = client.get(f"{_base(project_id, package_id)}/parts/{added['proposal_id']}/picture")
+
+    assert listed[added["proposal_id"]]["has_picture"] is True
+    assert picture.status_code == 200 and picture.content.startswith(b"\x89PNG")
+
+
+def test_no_picture_is_asked_for_a_part_that_was_not_added(
+    session: Session, store: LocalStore
+) -> None:
+    """A refused addition asks for nothing, and confirming or withdrawing a suggestion asks for
+    nothing either: its picture is the one the page stage cuts."""
+    _, project_id, package_id = _sheet(session, store)
+    _vendors(session)
+    client = _client(session, store, project_id)
+    drawing = _drawing(client, project_id, package_id)
+    first, top, _ = drawing["parts"]
+    base = _base(project_id, package_id)
+
+    refused = client.post(
+        f"{base}/views/{drawing['view_id']}/parts",
+        json={"kind": "cabinet", "ends": _one_above_the_other(first["left_end"], top["left_end"])},
+    )
+    confirmed = client.post(
+        f"{base}/parts/{first['proposal_id']}/confirm", json={"kind": "cabinet"}
+    )
+    withdrawn = client.post(f"{base}/parts/{top['proposal_id']}/withdraw")
+
+    assert [refused.status_code, confirmed.status_code, withdrawn.status_code] == [422, 201, 201]
+    assert _cut_jobs(session) == []
+
+
 def _off_the_page(left: dict[str, str], top: dict[str, str]) -> list[dict[str, str]]:
     return [{"x": "2", "y": left["y"]}, left]
 
@@ -504,8 +695,9 @@ def test_someone_who_cannot_confirm_evidence_cannot_decide_a_part(
 
 def test_another_projects_part_is_not_found(session: Session, store: LocalStore) -> None:
     """**Done when, 6.** A part of project A, asked for through project B's own package, is absent:
-    in the list, its picture, every decision, and adding to A's drawing through B."""
-    _, project_a, package_a = _sheet(session, store)
+    in the list, its pictures, every decision, and adding to A's drawing through B."""
+    revision_a, project_a, package_a = _sheet(session, store)
+    _cut_pictures(session, store, revision_a)
     _vendors(session)
     proposal_id = _drawing(_client(session, store, project_a), project_a, package_a)["parts"][0][
         "proposal_id"
@@ -517,6 +709,7 @@ def test_another_projects_part_is_not_found(session: Session, store: LocalStore)
 
     responses = [
         client.get(f"{base}/parts/{proposal_id}/crop"),
+        client.get(f"{base}/parts/{proposal_id}/picture"),
         client.post(f"{base}/parts/{proposal_id}/confirm", json={"kind": "cabinet"}),
         client.post(f"{base}/parts/{proposal_id}/withdraw"),
         client.post(
@@ -526,7 +719,8 @@ def test_another_projects_part_is_not_found(session: Session, store: LocalStore)
         client.get(f"{_base(project_a, package_a)}/parts"),
     ]
 
-    assert [response.status_code for response in responses] == [404, 404, 404, 404, 404]
+    assert [response.status_code for response in responses] == [404, 404, 404, 404, 404, 404]
+    assert responses[1].json()["message"] == "Not found"
     assert proposal_id not in {
         part["proposal_id"] for part in _drawing(client, project_b, package_b)["parts"]
     }

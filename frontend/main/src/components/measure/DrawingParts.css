@@ -37,7 +37,30 @@
 }
 
 .drawing-parts__picture {
-  flex: 0 0 10rem;
+  display: flex;
+  flex: 0 0 18rem;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* A part's own picture (#897): the vendor's drawing round it, shrunk to fit and opened full size
+   from its link. */
+.drawing-parts__part-picture {
+  display: block;
+  width: 18rem;
+  max-height: 12rem;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid var(--border-default);
+}
+
+.drawing-parts__code-crop {
+  margin: 0;
+}
+
+.drawing-parts__code-crop figcaption {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
 .drawing-parts__crop {

@@ -42,6 +42,8 @@ const two: LinkReading = {
 const cabinet: LinkPart = {
   item_id: 'cabinet',
   number: 1,
+  proposal_id: 'p-cabinet',
+  has_picture: true,
   kind: 'cabinet',
   code: null,
   left: '0.25',
@@ -52,6 +54,8 @@ const cabinet: LinkPart = {
 const filler: LinkPart = {
   item_id: 'filler',
   number: 2,
+  proposal_id: 'p-filler',
+  has_picture: false,
   kind: 'filler',
   code: null,
   left: '0.5',
@@ -77,9 +81,25 @@ const drawing: LinkDrawing = {
 
 const links: ReadingLinks = { can_suggest: true, why_not: null, drawings: [drawing] };
 
+const pictured: string[] = [];
 const html = renderToStaticMarkup(
-  <ReadingPartsList links={links} saving={null} onConfirm={() => undefined} onWithdraw={() => undefined} />,
+  <ReadingPartsList
+    links={links}
+    saving={null}
+    renderPicture={(_drawing, shown) => {
+      pictured.push(shown.item_id);
+      return <img className="test-picture" data-part={shown.proposal_id ?? ''} alt="" />;
+    }}
+    onConfirm={() => undefined}
+    onWithdraw={() => undefined}
+  />,
 );
+
+// **Each confirmed part shows its picture (#897)**, the one cut for the suggestion it was confirmed
+// from; a part with none says so rather than showing another.
+assert.deepEqual(pictured, ['cabinet']);
+assert.match(html, /data-part="p-cabinet"/);
+assert.equal((html.match(/No picture of this part is stored yet\./g) ?? []).length, 1);
 
 // The question is asked, and how much is left is stated.
 assert.match(html, /Which reading is each part&#x27;s width/);
@@ -161,6 +181,7 @@ const notReadHtml = renderToStaticMarkup(
   <ReadingPartsList
     links={{ ...links, drawings: [{ ...linkedDrawing, parts: [notRead, filler] }] }}
     saving={null}
+    renderPicture={() => <img alt="" />}
     onConfirm={() => undefined}
     onWithdraw={() => undefined}
   />,
@@ -185,6 +206,7 @@ const closed = renderToStaticMarkup(
       ],
     }}
     saving={null}
+    renderPicture={() => <img alt="" />}
     onConfirm={() => undefined}
     onWithdraw={() => undefined}
   />,

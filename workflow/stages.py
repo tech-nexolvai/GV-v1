@@ -41,7 +41,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
-from functools import partial
+from functools import cache, partial
 from io import BytesIO
 from typing import Final, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
@@ -105,7 +105,14 @@ from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint, StoredPoint
 from evidence.corroborate import corroborate
-from evidence.crop import CropSpec, CropStatus, RenderedPage, crop_pixel_box, generate_crop
+from evidence.crop import (
+    BoxCropSpec,
+    CropSpec,
+    CropStatus,
+    RenderedPage,
+    crop_pixel_box,
+    generate_crop,
+)
 from evidence.polygon import Polygon
 from extraction.agent.geometry import (
     Box,
@@ -262,7 +269,13 @@ from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
-from workflow.parts import live_part_item_ids, record_part_proposal
+from workflow.part_pictures import (
+    PartPictureSettings,
+    pages_without_pictures,
+    record_part_picture,
+    unpictured_proposals,
+)
+from workflow.parts import live_part_item_ids, outline_box, record_part_proposal
 from workflow.reader_pictures import (
     PictureSettings,
     PrintedRun,
@@ -802,6 +815,8 @@ VIEW_MATCH_ROLES: Mapping[str, MatchDocumentRole] = {
 __all__ = [
     "DatabaseStages",
     "crop_shows_a_stacked_fraction",
+    "cut_label_refusal",
+    "gv_mark_in_crop",
     "page_transform",
     "region_facts",
     "stacked_layouts_shown",
@@ -1295,6 +1310,35 @@ def _held_to_their_regions(
     return AssociationResult(associated=tuple(attached), unassociated=tuple(refused))
 
 
+@dataclass
+class _PartPictures:
+    """What cutting parts' pictures did (#897): how many were cut, and how many were refused and
+    why, in a person's words."""
+
+    cut: int = 0
+    refused: int = 0
+    refusals: list[str] = field(default_factory=list)
+
+    def refuse(self, count: int, reason: str) -> _PartPictures:
+        self.refused += count
+        self.refusals.append(reason)
+        return self
+
+    def add(self, other: _PartPictures) -> None:
+        self.cut += other.cut
+        self.refused += other.refused
+        self.refusals.extend(other.refusals)
+
+    def as_payload(self) -> dict[str, object]:
+        """Capped, because a payload is persisted as JSON and a page that will not render would
+        otherwise put one sentence per suggestion into it. The counts are exact."""
+        return {
+            "cut": self.cut,
+            "refused": self.refused,
+            "refusals": self.refusals[:REPORTED_REFUSALS],
+        }
+
+
 class DatabaseStages:
     """The pipeline as far as it is built: checks run, everything else still says it did not.
 
@@ -1329,6 +1373,7 @@ class DatabaseStages:
         fraction_parts: PieceDrawing | None = None,
         reader_pictures: PictureSettings | None = None,
         missing_space: MissingSpace | None = None,
+        part_pictures: PartPictureSettings | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -1449,6 +1494,12 @@ class DatabaseStages:
                 "(GV_VISION_GATE_READER), which these stages do not have"
             )
         self._fraction_parts = fraction_parts
+        # **A picture of every suggested part (#897), cut only where a deployment states how.** The
+        # margin and the resolution have no default; without them no picture is cut, which the page
+        # result records as not run, and the Measure page says no picture is stored.
+        if part_pictures is not None and not isinstance(part_pictures, PartPictureSettings):
+            raise TypeError("part_pictures must be PartPictureSettings")
+        self._part_pictures = part_pictures
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
             if (bounded_agent is not None or reading_agent is not None)
@@ -1487,6 +1538,20 @@ class DatabaseStages:
                 f"({MISSING_SPACE_ENV}), so they read no page's text. It has no default"
             )
         return self._missing_space
+
+    def _label_reach(self) -> LabelReach | None:
+        """How a label is gathered from the drawing's own characters: the reading agent's stated
+        label lengths with the association settings' run gap, or `None` where either is not stated.
+
+        One computation, for the agent's facts (#757), the vision readers' upright turn (#907),
+        the agreement gate's cut-label guard (#919) and which way an AI reading's region reads when
+        it is attached to a line (#918): a second one could judge a label's end differently from the
+        first. Where it is `None` no AI reading is placed by its region: a direction is never
+        defaulted.
+        """
+        if self._reading_agent is None or self._association is None:
+            return None
+        return self._reading_agent.reach(self._association.glyph_gap_pt)
 
     def _text_run_config(self) -> str:
         """The identity of a run that reads the file's own text, the page's or its pasted drawings':
@@ -1987,12 +2052,21 @@ class DatabaseStages:
                     layers=layers,
                 )
 
-            # **The agreement gate's GV-mark guard (#901)**, one per page and asked by both passes
-            # below: an agreement whose crop shows markup drawn in colour stays a pre-fill a person
-            # ticks. Nothing is read or rendered for it unless some region's readers agree.
+            # **The agreement gate's guards**, one each per page and asked by both passes below: an
+            # agreement whose crop shows markup drawn in colour (#901), or cuts the label off at its
+            # edge (#919), stays a pre-fill a person ticks. Nothing is read or rendered for either
+            # unless some region's readers agree, and the page is rendered for them once at most.
+            vendor_render = cache(partial(self._vendor_render, data, page, version_id))
             gv_mark = _GvMarkGuard(
                 markup=partial(self._coloured_markup, data, page, version_id, layers),
-                render=partial(self._vendor_render, data, page, version_id),
+                render=vendor_render,
+            )
+            cut_label = _CutLabelGuard(
+                reach=self._label_reach(),
+                transform=page_transform(page, self._dpi),
+                # `None` where the page's drawing could not be read at all: nothing rules a cut out.
+                glyphs=None if layers is None else layers.glyph_paths,
+                render=vendor_render,
             )
             self._apply_cross_route_corroboration(
                 session,
@@ -2009,6 +2083,7 @@ class DatabaseStages:
                     + fraction_rows
                 ),
                 gv_mark=gv_mark,
+                cut_label=cut_label,
             )
             agent = self._run_bounded_agent_for_ambiguous_regions(
                 session,
@@ -2038,7 +2113,11 @@ class DatabaseStages:
                     + agent_rows
                 )
                 self._apply_cross_route_corroboration(
-                    session, page_index=page.index, candidates=page_rows, gv_mark=gv_mark
+                    session,
+                    page_index=page.index,
+                    candidates=page_rows,
+                    gv_mark=gv_mark,
+                    cut_label=cut_label,
                 )
                 self._mark_regions_the_agent_contradicted(
                     session, page_index=page.index, candidates=page_rows, agent_rows=agent_rows
@@ -2123,6 +2202,10 @@ class DatabaseStages:
                     + (layers.drawing_segments if layers is not None else ())
                 ),
             )
+            # **And a picture of each (#897)**, for a person to look at while deciding what it is.
+            # Every suggestion on the page's drawings that has none yet, so a re-read also cuts the
+            # pictures a person's own additions are still missing.
+            part_pictures = self._cut_page_part_pictures(session, page=page, data=data)
             results.append(
                 PageResult(
                     index=page.index,
@@ -2256,12 +2339,15 @@ class DatabaseStages:
                             None if self._vision_gate is None else vision_held_back
                         ),
                         "vision_refusals": vision_refusals[:REPORTED_REFUSALS],
-                        # Regions whose readers agreed and were not confirmed (#901): the crop shows
-                        # markup drawn in colour (a GV mark baked into the vendor's drawing), or could
-                        # not be checked for it. Each stays a pre-fill a person ticks; each reason
-                        # says which.
-                        "agreement_refusals": len(gv_mark.refused),
-                        "agreement_refusal_reasons": gv_mark.reasons(REPORTED_REFUSALS),
+                        # Regions whose readers agreed and were not confirmed: the crop shows markup
+                        # drawn in colour, a GV mark baked into the vendor's drawing (#901); or it
+                        # cuts the label off at its edge (#919); or it could not be checked for one
+                        # of them. Each stays a pre-fill a person ticks; each reason says which. A
+                        # region is refused by one guard at most, so the two counts add up.
+                        "agreement_refusals": len(gv_mark.refused) + len(cut_label.refused),
+                        "agreement_refusal_reasons": agreement_refusal_reasons(
+                            (gv_mark, cut_label), REPORTED_REFUSALS
+                        ),
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
                         "associations": associated,
@@ -2285,6 +2371,9 @@ class DatabaseStages:
                         # The parts suggested in this page's vendor drawings (#868), counted; `None`
                         # when no association settings were stated, which is not the same as none.
                         "part_proposals": parts,
+                        # Their pictures (#897): cut, and refused with each reason. `None` when no
+                        # picture settings were stated, which is not the same as none cut.
+                        "part_pictures": part_pictures,
                         "has_vector_text": page.has_vector_text,
                         # Which route read this page. Two readings of the same page by different
                         # routes are the basis of corroboration, so the route has to be visible.
@@ -2475,6 +2564,7 @@ class DatabaseStages:
         page_index: int,
         candidates: Sequence[ObservationCandidate],
         gv_mark: _GvMarkGuard,
+        cut_label: _CutLabelGuard,
     ) -> None:
         """Run the second-reader lane across same-region readings before first insert.
 
@@ -2483,10 +2573,17 @@ class DatabaseStages:
 
         **An agreement whose crop shows a GV mark confirms nothing (#901).** In every scorecard run
         on the 51-crop key the two readers agreed on GV's own number, baked into the vendor's drawing
-        in colour (#851). Where `gv_mark` holds a region's agreement back, its readings keep no lane
-        — pre-fills a person ticks — and the guard records why. **Only an agreement is held back**:
-        a conflict is still recorded as one, so the guard can take a confirmation away and never
-        make one.
+        in colour (#851).
+
+        **Nor does one whose crop cuts the label off at its edge (#919)**, the admin's decision of
+        2026-10-04: both readers of the new pair agreed on a label running past their crop's edge on
+        AI_Set_2 (#907), and a cut `12 3/4"` read by both as `12"` would be a confirmed wrong number.
+
+        Where either guard holds a region's agreement back, its readings keep no lane — pre-fills a
+        person ticks — and the guard records why; the cut is asked about only where the GV mark let
+        the agreement through, so each refusal has one reason. **Only an agreement is held back**: a
+        conflict is still recorded as one, so the guards can take a confirmation away and never make
+        one.
         """
 
         pending_ids = {row.id for row in candidates if inspect(row).pending}
@@ -2522,7 +2619,7 @@ class DatabaseStages:
             if (
                 result.lane is CorroborationLane.SECOND_READER
                 and result.status is not EvidenceStatus.CONFLICTING
-                and gv_mark.holds_back(rows[0])
+                and (gv_mark.holds_back(rows[0]) or cut_label.holds_back(rows[0]))
             ):
                 continue
             for row in rows:
@@ -2698,11 +2795,7 @@ class DatabaseStages:
 
         settings = self._reading_agent
         transform = page_transform(page, self._dpi)
-        reach = (
-            settings.reach(self._association.glyph_gap_pt)
-            if settings is not None and self._association is not None
-            else None
-        )
+        reach = self._label_reach()
         fractions = () if layers is None else layers.stacked_fractions
         page_glyphs = () if layers is None else layers.glyph_paths
 
@@ -2997,15 +3090,6 @@ class DatabaseStages:
         # As `_text_run_config` does: written out past the column, a fingerprint of all of it.
         return f"dpi={self._dpi};run={hashlib.sha256(written.encode()).hexdigest()[:16]}"
 
-    def _label_reach(self) -> LabelReach | None:
-        """How a label is gathered from the vendor's paths: the reading agent's two lengths and the
-        run gap the page's regions were formed by — the reach the vision readers' upright turn reads
-        a label by (#907). `None` where either is not stated, and nothing then decides a direction.
-        """
-        if self._reading_agent is None or self._association is None:
-            return None
-        return self._reading_agent.reach(self._association.glyph_gap_pt)
-
     def _ai_region_inputs(
         self,
         *,
@@ -3262,6 +3346,147 @@ class DatabaseStages:
                     counts["with_code"] += 1
             counts["nested_views"] = len(proposed.nested)
         return counts
+
+    def _cut_page_part_pictures(
+        self, session: Session, *, page: Page, data: bytes
+    ) -> dict[str, object] | None:
+        """Cut a picture of every suggestion on the page's drawings that has none yet (#897).
+
+        Returns what was cut and what was refused, or `None` when no picture settings were stated
+        or no store is configured: then nothing was asked for, which is not the same as nothing cut.
+        """
+        if self._part_pictures is None or self._store is None:
+            return None
+        return self._cut_pictures(
+            session, page=page, data=data, settings=self._part_pictures, store=self._store
+        ).as_payload()
+
+    @staticmethod
+    def _cut_pictures(
+        session: Session,
+        *,
+        page: Page,
+        data: bytes,
+        settings: PartPictureSettings,
+        store: ArtifactStore,
+    ) -> _PartPictures:
+        """The pictures still missing on one page, cut and recorded.
+
+        **The vendor's drawing alone.** The page is rendered with the reviewer's markup removed, as
+        every reader's crop is (#742), so the person deciding sees the vendor's part and not GV's
+        note about it. A picture is for that person's eyes: nothing reads a value from it.
+
+        **The box around the outline and the stated margin**, at the stated resolution. A part a
+        person added by its two ends has a line for an outline (#882), so its picture is that line
+        and the margin around it; nothing here invents a height the person did not give.
+
+        **It writes a picture and nothing else**: never a part, a decision or a run. A suggestion
+        whose picture cannot be cut keeps its place on the page without one, and the reason is in
+        the result.
+        """
+        outcome = _PartPictures()
+        proposals = unpictured_proposals(session, page.id)
+        if not proposals:
+            return outcome
+        if page.render_failed:
+            return outcome.refuse(
+                len(proposals), f"page {page.index}: the manifest recorded a failed render"
+            )
+        try:
+            rendered = render_page(
+                data,
+                page.index,
+                document_version_id=page.document_version_id,
+                page_content_hash=page.content_hash,
+                dpi=settings.dpi,
+                maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                # **The vendor's drawing only (#742).** A person confirms the vendor's part; GV's own
+                # notes painted into its picture would put a reviewer's word where the vendor's is.
+                vendor_only=True,
+            )
+        except (PageTooLarge, UnreadablePdf, ValueError) as error:
+            reason = str(error).strip() or type(error).__name__
+            return outcome.refuse(len(proposals), f"page {page.index}: {reason}")
+
+        for proposal in proposals:
+            try:
+                left, top, right, bottom = outline_box(proposal.extent)
+                spec = BoxCropSpec(
+                    document_version_id=page.document_version_id,
+                    page=page.index,
+                    left=left,
+                    top=top,
+                    right=right,
+                    bottom=bottom,
+                    context_margin_pt=settings.margin_pt,
+                    dpi=settings.dpi,
+                )
+            except (TypeError, ValueError) as error:
+                outcome.refuse(1, f"page {page.index}: {error}")
+                continue
+            result = generate_crop(rendered, spec, store)
+            if result.status is not CropStatus.AVAILABLE or result.artifact is None:
+                outcome.refuse(1, f"page {page.index}: {result.reason}")
+                continue
+            record_part_picture(
+                session,
+                proposal=proposal,
+                storage_key=result.artifact.key,
+                sha256=result.artifact.sha256,
+                settings=settings,
+            )
+            outcome.cut += 1
+        return outcome
+
+    def cut_part_pictures(
+        self, session: Session, package_revision_id: UUID
+    ) -> Mapping[str, object]:
+        """Cut the pictures still missing on this revision's drawings (#897).
+
+        The work a person adding a part asks for (`CUT_PART_PICTURES_WORKFLOW`): the page stage cuts
+        a picture of each suggestion as it makes it, and a part a person adds afterwards is cut
+        here. Every suggestion still without one is cut, on whichever page it is.
+
+        **It writes pictures and nothing else**, and asking twice cuts nothing twice. A document
+        whose bytes no longer match their recorded digest is not rendered: its pictures are refused,
+        and the reason says why.
+        """
+        if self._store is None:
+            return {"ran": False, "reason": "no artifact store is configured"}
+        if self._part_pictures is None:
+            return {"ran": False, "reason": "no part picture settings are stated"}
+        documents = {
+            version: (key, sha256)
+            for version, key, sha256, _ in _document_records_for(session, package_revision_id)
+        }
+        outcome = _PartPictures()
+        loaded: dict[UUID, bytes | None] = {}
+        for page in pages_without_pictures(session, list(documents)):
+            if page.document_version_id not in loaded:
+                key, sha256 = documents[page.document_version_id]
+                data = _fetch(self._store, key)
+                loaded[page.document_version_id] = (
+                    data if hashlib.sha256(data).hexdigest() == sha256 else None
+                )
+            document = loaded[page.document_version_id]
+            if document is None:
+                outcome.refuse(
+                    len(unpictured_proposals(session, page.id)),
+                    f"page {page.index}: the document does not match the digest recorded when it "
+                    "was uploaded, so it was not rendered",
+                )
+                continue
+            outcome.add(
+                self._cut_pictures(
+                    session,
+                    page=page,
+                    data=document,
+                    settings=self._part_pictures,
+                    store=self._store,
+                )
+            )
+        session.flush()
+        return {"ran": True, **outcome.as_payload()}
 
     def _read_page_markup(
         self,
@@ -4033,11 +4258,7 @@ class DatabaseStages:
             return tuple(tuple(int(value) for value in point) for point in polygon)
 
         transform = page_transform(page, self._dpi)
-        reach = (
-            self._reading_agent.reach(self._association.glyph_gap_pt)
-            if self._reading_agent is not None and self._association is not None
-            else None
-        )
+        reach = self._label_reach()
         page_glyphs = () if layers is None else layers.glyph_paths
         turns: dict[UUID, int] = {}
 
@@ -4220,11 +4441,8 @@ class DatabaseStages:
         settings = self._reader_pictures
         assert settings is not None  # the constructor refuses a sharper reader without them
         # The turn reads the glyph paths by the agent's reach where it is configured.
-        reach = (
-            self._reading_agent.reach(self._association.glyph_gap_pt).config_hash
-            if self._reading_agent is not None and self._association is not None
-            else "-"
-        )
+        stated = self._label_reach()
+        reach = "-" if stated is None else stated.config_hash
         # The turn reads which way a label's text runs from the file's own readings, which the
         # missing-space setting decides (#912): a label it sets aside is turned by its paths alone.
         everything = (
@@ -5624,27 +5842,15 @@ def gv_mark_in_crop(
     return crop_shows_a_gv_mark(crop_box, markup)
 
 
-class _GvMarkGuard:
-    """The agreement gate's GV-mark guard on one page, and the agreements it refused (#901).
+class _AgreementGuard:
+    """One check of the agreement gate on one page, and the agreements it refused.
 
-    **Looked up only when asked.** The page's coloured markup is read, and the page rendered, the
-    first time an agreement on it needs checking, so a page whose readers agreed on nothing pays for
-    neither. A page whose pasted drawings cannot be read, or which cannot be rendered, cannot be
-    shown free of a mark, so every agreement on it is held back with a reason saying so.
+    Asked about a region only once its readers agree (`_apply_cross_route_corroboration`), and
+    asked again about the same region once the reading agent has looked: **each region is refused
+    once**, and its reason is kept for the page result.
     """
 
-    def __init__(
-        self,
-        *,
-        markup: Callable[[], ColouredMarkup | None],
-        render: Callable[[], RenderedPage | None],
-    ) -> None:
-        self._markup_source = markup
-        self._render_source = render
-        self._markup: ColouredMarkup | None = None
-        self._rendered: RenderedPage | None = None
-        self._markup_read = False
-        self._render_tried = False
+    def __init__(self) -> None:
         self.refused: dict[tuple[tuple[int, int], ...], str] = {}
         """Each region an agreement was refused on, by its polygon, and why: counted once."""
 
@@ -5661,10 +5867,46 @@ class _GvMarkGuard:
 
     def reasons(self, limit: int) -> list[str]:
         """The refusals by reason, most frequent first, as the page result lists every route's."""
-        return [
-            f"{count} × {reason}"
-            for reason, count in Counter(self.refused.values()).most_common(limit)
-        ]
+        return agreement_refusal_reasons((self,), limit)
+
+    def _reason(self, region: ObservationCandidate) -> str | None:
+        raise NotImplementedError
+
+
+def agreement_refusal_reasons(guards: Sequence[_AgreementGuard], limit: int) -> list[str]:
+    """Every guard's refusals on a page by reason, most frequent first (#901, #919).
+
+    A region is refused by one guard at most — the gate asks the next only where the one before
+    let the agreement through — so the counts add up to the page's `agreement_refusals`.
+    """
+    counts: Counter[str] = Counter()
+    for guard in guards:
+        counts.update(guard.refused.values())
+    return [f"{count} × {reason}" for reason, count in counts.most_common(limit)]
+
+
+class _GvMarkGuard(_AgreementGuard):
+    """The agreement gate's GV-mark guard on one page, and the agreements it refused (#901).
+
+    **Looked up only when asked.** The page's coloured markup is read, and the page rendered, the
+    first time an agreement on it needs checking, so a page whose readers agreed on nothing pays for
+    neither. A page whose pasted drawings cannot be read, or which cannot be rendered, cannot be
+    shown free of a mark, so every agreement on it is held back with a reason saying so.
+    """
+
+    def __init__(
+        self,
+        *,
+        markup: Callable[[], ColouredMarkup | None],
+        render: Callable[[], RenderedPage | None],
+    ) -> None:
+        super().__init__()
+        self._markup_source = markup
+        self._render_source = render
+        self._markup: ColouredMarkup | None = None
+        self._rendered: RenderedPage | None = None
+        self._markup_read = False
+        self._render_tried = False
 
     def _reason(self, region: ObservationCandidate) -> str | None:
         if not self._markup_read:
@@ -5683,6 +5925,128 @@ class _GvMarkGuard:
         if polygon is None:
             return GV_MARK_UNCHECKED_REASON
         return GV_MARK_REASON if gv_mark_in_crop(polygon, self._rendered, self._markup) else None
+
+
+#: Why the agreement gate did not confirm what two readers agreed on (#919), as the page result says.
+CUT_LABEL_REASON: Final = (
+    "two readers agreed, but the crop they were shown cuts the label off at its edge, so a person "
+    "confirms the reading"
+)
+CUT_LABEL_UNCHECKED_REASON: Final = (
+    "two readers agreed, but whether the crop cuts the label off could not be checked, so a person "
+    "confirms the reading"
+)
+CUT_LABEL_UNSTATED_REASON: Final = (
+    "two readers agreed, but whether the crop cuts the label off cannot be checked without the "
+    "reading agent's label lengths and the association settings, which are not stated, so a person "
+    "confirms the reading"
+)
+
+
+def cut_label_refusal(
+    polygon_px: Sequence[Sequence[int]],
+    *,
+    rendered: RenderedPage | None,
+    polygon: Polygon | None,
+    transform: PageTransform | None,
+    reach: LabelReach | None,
+    page_glyphs: Sequence[VectorPath] | None,
+) -> str | None:
+    """Why two readers' agreement on a region must not confirm it, the crop they were shown cutting
+    its label off or perhaps doing so (#919); `None` where the crop shows the whole label.
+
+    **The test the gate replay measured** ("held back where the crop cuts the label", #851), moved
+    here so the replay and the gate are one function and cannot disagree. The cut is
+    `region_label_geometry`'s, the one computation the reading agent's facts and the vision readers'
+    upright turn use: the label's characters gathered from the vendor's glyph paths, and the vision
+    readers' crop (`VISION_CROP_CONTEXT_MARGIN_PT` round the region) cutting it where the label is
+    not wholly inside the crop — touching its edge counts. Its arguments are
+    `region_label_geometry`'s.
+
+    **Where it cannot check, the agreement is held back**, because the guard can only take a
+    confirmation away:
+
+    - no label lengths or association settings are stated (`reach` is `None`): nothing can gather
+      a label, so nothing rules a cut out;
+    - the page's glyph paths could not be read (`page_glyphs` is `None`), it was not rendered, its
+      transform was not recorded, or the region cannot be placed on it as a crop: the same.
+
+    **Its limit, as measured:** the geometry sees only labels drawn as glyph paths. Where no glyph
+    path lies in the region — a label set in font text, or a scanned one — `label_geometry` finds
+    no label and nothing is cut; a page with no glyph paths at all is that, everywhere on it.
+    """
+    if reach is None:
+        return CUT_LABEL_UNSTATED_REASON
+    if page_glyphs is None:
+        return CUT_LABEL_UNCHECKED_REASON
+    if not page_glyphs:
+        return None
+    if rendered is None or polygon is None or transform is None:
+        return CUT_LABEL_UNCHECKED_REASON
+    try:
+        found = region_label_geometry(
+            polygon_px,
+            rendered=rendered,
+            polygon=polygon,
+            transform=transform,
+            reach=reach,
+            page_glyphs=page_glyphs,
+        )
+    except ValueError:
+        # `crop_box_px` refuses a polygon that gives no crop: no crop can be shown free of a cut.
+        return CUT_LABEL_UNCHECKED_REASON
+    if found is None:
+        raise AssertionError("every input the label's geometry needs was given")
+    geometry, _ = found
+    return CUT_LABEL_REASON if geometry.cut_at_edge else None
+
+
+class _CutLabelGuard(_AgreementGuard):
+    """The agreement gate's cut-label guard on one page, and the agreements it refused (#919).
+
+    **The admin's decision, 2026-10-04:** a label cut off at its crop's edge is never confirmed by
+    agreement; it is only pre-filled for a person. With the Qwen3-VL + Nova 2 Lite pair both readers
+    agreed on a label running past the right edge of their crop on AI_Set_2 (#907). A cut `12 3/4"`
+    read by both as `12"` would be a confirmed wrong number.
+
+    **Rendered only when it must be.** Where the label lengths are not stated, the glyph paths were
+    not read, or the page has none, `cut_label_refusal` answers without a page; otherwise the page is
+    rendered once, the first time an agreement needs it, as the vision readers are shown it.
+    """
+
+    def __init__(
+        self,
+        *,
+        reach: LabelReach | None,
+        transform: PageTransform | None,
+        glyphs: Sequence[VectorPath] | None,
+        render: Callable[[], RenderedPage | None],
+    ) -> None:
+        super().__init__()
+        self._reach = reach
+        self._transform = transform
+        self._glyphs = glyphs
+        self._render_source = render
+        self._rendered: RenderedPage | None = None
+        self._render_tried = False
+
+    def _reason(self, region: ObservationCandidate) -> str | None:
+        rendered: RenderedPage | None = None
+        # Only where the answer turns on the crop; `cut_label_refusal` gives the same answer for
+        # every other page without looking at a rendering.
+        if self._reach is not None and self._glyphs:
+            if not self._render_tried:
+                self._rendered = self._render_source()
+                self._render_tried = True
+            rendered = self._rendered
+        return cut_label_refusal(
+            region.polygon,
+            rendered=rendered,
+            polygon=None if rendered is None else stored_polygon(region, rendered),
+            transform=self._transform,
+            reach=self._reach,
+            page_glyphs=self._glyphs,
+        )
 
 
 def _vision_pre_call_refusal(

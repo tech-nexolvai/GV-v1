@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 
 import { ApiError, confirmReadingPart, listReadingParts, withdrawReadingPart } from '../../api/client';
 import { projectId } from '../../api/config';
-import { type LinkPart, type ReadingLinks } from './readingPartChoices.js';
+import { PartPicture } from './PartPicture.js';
+import { partName, type LinkPart, type ReadingLinks } from './readingPartChoices.js';
 import { ReadingPartsList } from './ReadingPartsList.js';
 import './DrawingParts.css';
 
@@ -65,7 +66,21 @@ export function ReadingParts({ packageId, refresh }: { packageId: string; refres
   }
   return (
     <>
-      <ReadingPartsList links={links} saving={saving} onConfirm={confirm} onWithdraw={withdraw} />
+      <ReadingPartsList
+        links={links}
+        saving={saving}
+        renderPicture={(drawing, part) =>
+          part.proposal_id ? (
+            <PartPicture
+              packageId={packageId}
+              proposalId={part.proposal_id}
+              alt={`${partName(part)} on page ${drawing.page_index + 1}, as the vendor drew it`}
+            />
+          ) : null
+        }
+        onConfirm={confirm}
+        onWithdraw={withdraw}
+      />
       {error && (
         <p className="enter-values__error" role="alert">
           {error}

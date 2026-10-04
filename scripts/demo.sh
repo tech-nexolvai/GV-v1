@@ -236,6 +236,17 @@ API_PID=$!
 # plain JSON. The four drawing sizes were measured in #848: every piece read at a
 # height of 30–56 px, a stroke of 2–8 px and a margin of 16–96 px; the vendor's labels have no
 # curves, so the Bezier step count changes nothing. The route refuses to start without a gate reader.
+#
+# **Every suggested part has its own picture (#897)** — the admin's decision of 2026-10-04. The worker
+# cuts one per suggestion from the vendor's page (the reviewer's markup left out, as for every
+# reader's crop, #742): the box round the part's outline and `GV_PART_PICTURE_MARGIN_PT` either side,
+# rendered at `GV_PART_PICTURE_DPI`. Neither has a default, and the worker refuses to start without
+# them whenever it suggests parts. Chosen by eye on `AI_Set 2`, not measured against a key: 18 of its
+# 29 suggested cabinets have a box only 9 to 17 pt tall, the strip of their dimension row, and at a
+# margin of 36 pt their picture shows the row and little of the cabinet above it; at 72 pt (an inch) it
+# shows the cabinet's doors and drawers too. At 150 dpi the vendor's 5.4 pt digits are about 11 px
+# tall and readable, with a quarter of the pixels 300 dpi would cost. A picture is for a person to
+# look at; nothing reads a value from it.
 GV_BEDROCK_VISION_READERS=qwen3-vl-235b,nova-2-lite-taught \
 GV_VISION_GATE_READER=bedrock-qwen3-vl-235b \
 GV_VISION_SHARPER_PICTURE_DPI=900 \
@@ -279,6 +290,8 @@ GV_FRACTION_PARTS_HEIGHT_PX=40 \
 GV_FRACTION_PARTS_STROKE_PX=4 \
 GV_FRACTION_PARTS_MARGIN_PX=32 \
 GV_FRACTION_PARTS_BEZIER_STEPS=8 \
+GV_PART_PICTURE_MARGIN_PT=72 \
+GV_PART_PICTURE_DPI=150 \
   "$PYTHON" scripts/drain_outbox.py --watch &
 WORKER_PID=$!
 

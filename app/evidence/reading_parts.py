@@ -130,6 +130,10 @@ class ListedPart:
     part: PlacedPart
     number: int | None
     """Its number in "Parts of each drawing", `1` for the leftmost; `None` if it is not listed."""
+    proposal_id: UUID | None
+    """The suggestion a person confirmed it from, whose picture is the part's (#897)."""
+    has_picture: bool
+    """Whether that suggestion's picture is stored."""
     code: str | None
     suggestion: LinkSuggestion | None
     """`None` when no tolerance is stated."""
@@ -165,6 +169,7 @@ def revision_links(
         if not placed:
             continue
         numbers = {listed.proposal.id: listed.position for listed in drawing.parts}
+        pictured = {listed.proposal.id for listed in drawing.parts if listed.has_picture}
         decided = {
             listed.decision.drawing_item_id: listed.decision
             for listed in drawing.parts
@@ -217,6 +222,12 @@ def revision_links(
                     numbers.get(decided[part.item_id].part_proposal_id)
                     if part.item_id in decided
                     else None
+                ),
+                proposal_id=(
+                    decided[part.item_id].part_proposal_id if part.item_id in decided else None
+                ),
+                has_picture=(
+                    part.item_id in decided and decided[part.item_id].part_proposal_id in pictured
                 ),
                 code=decided[part.item_id].code_as_printed if part.item_id in decided else None,
                 suggestion=suggestions.get(part.item_id),

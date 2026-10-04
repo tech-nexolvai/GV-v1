@@ -11,6 +11,7 @@ import {
 import { projectId } from '../../api/config';
 import { type PartDrawing, type PartKind, type SuggestedPart } from './drawingPartChoices.js';
 import { DrawingPartsList, type NewPart } from './DrawingPartsList.js';
+import { PartPicture } from './PartPicture.js';
 import './DrawingParts.css';
 
 /**
@@ -91,6 +92,13 @@ export function DrawingParts({
       <DrawingPartsList
         drawings={drawings}
         saving={saving}
+        renderPicture={(_drawing, part) => (
+          <PartPicture
+            packageId={packageId}
+            proposalId={part.proposal_id}
+            alt={`Part ${part.position} on page ${part.page_index + 1}, as the vendor drew it`}
+          />
+        )}
         renderCrop={(_drawing, part) => <PartCrop packageId={packageId} part={part} />}
         onConfirm={confirm}
         onWithdraw={withdraw}
@@ -105,7 +113,7 @@ export function DrawingParts({
   );
 }
 
-/** The stored picture of one part, loaded when it is shown. */
+/** The stored crop of the reading one part's code came from, loaded when it is shown. */
 function PartCrop({ packageId, part }: { packageId: string; part: SuggestedPart }) {
   const [state, setState] = useState<{ url?: string; error?: string }>({});
 
@@ -118,7 +126,7 @@ function PartCrop({ packageId, part }: { packageId: string; part: SuggestedPart 
         if (live) setState({ url });
       },
       () => {
-        if (live) setState({ error: 'The stored picture of this part could not be loaded.' });
+        if (live) setState({ error: "The crop of this part's code could not be loaded." });
       },
     );
     return () => {
