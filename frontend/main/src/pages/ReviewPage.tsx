@@ -33,11 +33,13 @@ interface ReviewPageProps {
   sessionId: string;
   onEvidenceChange: (panel: React.ReactNode) => void;
   onBackToDocuments: () => void;
+  /** Reports the vendor once the package has loaded, for the header title. */
+  onTitleChange?: (title: string) => void;
   initialMessage?: string;
   onMessageConsumed?: () => void;
 }
 
-export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, initialMessage, onMessageConsumed }: ReviewPageProps) {
+export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onTitleChange, initialMessage, onMessageConsumed }: ReviewPageProps) {
   // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
   const packageId = sessionId;
 
@@ -91,6 +93,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, ini
     };
   }, [packageId]);
   const isLoading = remote.status === 'loading';
+
+  // The header shows the vendor, which is what a reviewer calls a document set.
+  const loadedVendor = remote.status === 'ready' ? remote.data.detail.vendor ?? 'Untitled document set' : null;
+  useEffect(() => {
+    if (loadedVendor !== null) onTitleChange?.(loadedVendor);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadedVendor]);
 
   // The fetched findings are the starting point; reviewer actions below are applied on top, so they
   // are not thrown away every time this re-renders.

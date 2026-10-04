@@ -1,44 +1,44 @@
-import { PanelLeft } from 'lucide-react';
+import { Menu } from 'lucide-react';
 import { GVMark } from '../brand/GVMark';
 import './Topbar.css';
 
 interface TopbarProps {
-  onToggleSidebar: () => void;
-  sidebarCollapsed: boolean;
+  /** What this screen is — the review's vendor, or the page name. */
+  title: string;
+  /** Opens the sidebar drawer; only shown under 768px. */
+  onOpenMenu: () => void;
+  /** Where the current screen places its own actions (see `ShellHeader`). */
+  actionsRef: (element: HTMLDivElement | null) => void;
+  /** Where the current screen places a line beside its title (status, revision). */
+  titleRef: (element: HTMLDivElement | null) => void;
 }
 
-export function Topbar({
-  onToggleSidebar,
-  sidebarCollapsed,
-}: TopbarProps) {
+/**
+ * The header: the screen's title on the left, Graniti Vicentia in the centre, the screen's own
+ * actions on the right — the client's brief, and the shape of every chat product they have used.
+ */
+export function Topbar({ title, onOpenMenu, actionsRef, titleRef }: TopbarProps) {
   return (
-    <header className="topbar" role="banner">
+    <header className="topbar">
       <div className="topbar__left">
         <button
-          className="btn btn--subtle btn--icon topbar__menu-btn interactive"
-          onClick={onToggleSidebar}
-          aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          data-tooltip={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          type="button"
+          className="topbar__menu"
+          onClick={onOpenMenu}
+          aria-label="Open menu"
         >
-          <PanelLeft size={16} className="topbar__menu-icon" data-collapsed={sidebarCollapsed} />
+          <Menu size={20} />
         </button>
-
-        <div className="topbar__brand">
-          <GVMark size={28} />
-          <div className="topbar__wordmark">
-            <span className="topbar__name">Graniti Vicentia</span>
-            <span className="topbar__product">Review Platform</span>
-          </div>
-        </div>
+        <h1 className="topbar__title" title={title}>{title}</h1>
+        <div className="topbar__title-extra" ref={titleRef} />
       </div>
 
-      {/* The build partner, set apart from the product name rather than run into it. It was
-          "× Nexolv · Review Platform" on one line, which read as a single four-part product name. */}
-      <div className="topbar__right">
-        <span className="topbar__partner">
-          built with <strong>Nexolv</strong>
-        </span>
+      <div className="topbar__brand" aria-label="Graniti Vicentia">
+        <GVMark size={24} />
+        <span className="topbar__brand-name">Graniti Vicentia</span>
       </div>
+
+      <div className="topbar__right" ref={actionsRef} />
     </header>
   );
 }
