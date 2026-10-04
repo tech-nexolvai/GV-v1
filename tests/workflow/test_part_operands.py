@@ -41,8 +41,9 @@ from tests.workflow.test_stages import _publish_rulebook
 from units.measurement import Measurement, Unit
 from verdict.operands import EvidenceStatus, VerdictOperand
 from vocabulary.part_kinds import PartKind
-from workflow.countertop_runs import confirm_countertop_run, withdraw_countertop_run
+from workflow.countertop_runs import confirm_countertop_run, live_run_rows, withdraw_countertop_run
 from workflow.evidence_operands import evidence_operands
+from workflow.part_operands import part_operands
 from workflow.parts import confirm_part, withdraw_part
 from workflow.reading_parts import confirm_reading_part, withdraw_reading_part
 from workflow.stages import DatabaseStages
@@ -288,6 +289,29 @@ def test_incomplete_run_blocks_passing_form_and_labels(
     assert finding.outcome == "NOT_FOUND", finding.reason
     assert "run" in (finding.reason or "").lower()
     assert not evidence_operands(session, assembly.revision.id, _rules()).operands.get(RULE)
+
+
+def test_withdrawn_run_is_refused_by_each_selection_layer(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    assert assembly.decision is not None
+    old_run_id = assembly.decision.run_id
+    assert old_run_id is not None
+    withdraw_countertop_run(session, countertop_item_id=assembly.parts[0], actor="reviewer")
+
+    selected = part_operands(
+        session,
+        assembly.revision.id,
+        _rules(),
+        {},
+        scope_item_id=assembly.parts[0],
+    )
+    assert "withdrawn" in selected.missing[RULE]
+    assert not selected.operands.get(RULE)
+
+    rows = list(session.scalars(live_run_rows().where(CountertopRun.run_id == old_run_id)))
+    assert rows == []
 
 
 def test_complete_run_order_and_every_reading_provenance(
