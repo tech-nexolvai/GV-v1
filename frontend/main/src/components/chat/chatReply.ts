@@ -117,3 +117,8 @@ export function explanationUnavailable(message: ChatMessage, reason: string): Ch
     narration: { mode: 'structured_fallback', fallbackReason: reason },
   };
 }
+
+/** Attach only a stage the server actually sent to the pending answer. */
+export function withStreamStage(message: ChatMessage, stage: string): ChatMessage {
+  return { ...message, streamStage: stage };
+}

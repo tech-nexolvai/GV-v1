@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { parseSseFrames } from '../src/api/sse.js';
-import { explanationUnavailable, factsMessage, replyMessage } from '../src/components/chat/chatReply.js';
+import { explanationUnavailable, factsMessage, replyMessage, withStreamStage } from '../src/components/chat/chatReply.js';
 import type { ReviewerChatReply } from '../src/api/chatStreamTypes.js';
 import type { Finding } from '../src/data/types.js';
 
@@ -51,6 +51,10 @@ const source = [finding('a', 'FAIL'), finding('b', 'PASS'), finding('c', 'REVIEW
   assert.equal(shown.narrating, true, 'the thread can say an explanation is coming');
   assert.equal(shown.narration, undefined, 'no provenance badge before there is prose');
   assert.equal(shown.content, 'Showing 2 of 3 recorded findings.');
+  assert.equal(shown.streamStage, undefined, 'the facts frame cannot claim an unreported stage');
+  const staged = withStreamStage(shown, 'narrating');
+  assert.equal(staged.streamStage, 'narrating', 'the emitted stage is kept verbatim');
+  assert.equal(shown.streamStage, undefined, 'the original recorded facts are unchanged');
 }
 
 const llmReply = {

@@ -152,6 +152,8 @@ export interface ChatMessage {
    * writing. Cleared when the guarded narration arrives, or when it cannot be produced.
    */
   narrating?: boolean;
+  /** A progress stage actually emitted by the chat stream, never inferred from elapsed time. */
+  streamStage?: string;
   /** Explicit disclosure of whether Bedrock narration was accepted for this response. The
    * deterministic findings and verdicts remain the backing record in either mode. */
   narration?: {

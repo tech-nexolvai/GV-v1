@@ -23,12 +23,13 @@ import {
   downloadReport,
 } from '../api/client';
 import type { ReviewSession, ReviewerChatReply } from '../api/client';
-import { explanationUnavailable, factsMessage, replyMessage } from '../components/chat/chatReply';
+import { explanationUnavailable, factsMessage, replyMessage, withStreamStage } from '../components/chat/chatReply';
 import { MeasurementPanel } from './MeasurementPanel';
 import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
-import { ArrowLeft, FileText, CheckSquare, Download, Info } from 'lucide-react';
+import { ArrowLeft, CheckSquare, Download } from 'lucide-react';
+import { ReviewPackageDetails } from './ReviewPackageDetails';
 import './ReviewPage.css';
 
 interface ReviewPageProps {
@@ -211,6 +212,11 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
               factsShown = true;
               const shown = factsMessage(facts, source, replyId, now());
               setMessages(prev => prev.filter(m => !m.is_typing).concat(shown));
+            },
+            onStage: (stage) => {
+              setMessages(prev => prev.map(m => m.id === replyId
+                ? withStreamStage(m, stage.stage)
+                : m));
             },
           },
           selectedModel || undefined,
@@ -518,7 +524,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             aria-label="Back to documents"
           >
             <ArrowLeft size={13} />
-            Documents
+            <span>Documents</span>
           </button>
           <div className="review-page__pkg-info">
             <span className="review-page__pkg-vendor">{pkg.vendor}</span>
@@ -526,33 +532,15 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
               <span className="review-page__pkg-summary">
                 Reviewer package{pkg.revision === null ? '' : ` · Revision ${pkg.revision}`}
               </span>
-              <details className="review-page__record-ids">
-                <summary>Record IDs</summary>
-                <span><FileText size={11} /> Package {pkg.id}</span>
-                <span>Project {pkg.project}</span>
-              </details>
             </div>
           </div>
           <StatusBadge status={pkg.status} />
-          <ReviewProgress status={pkg.status} />
+          <ReviewPackageDetails packageId={pkg.id} projectId={pkg.project}>
+            <ReviewProgress status={pkg.status} />
+          </ReviewPackageDetails>
         </div>
 
         <div className="review-page__header-right">
-          {/* The same sentence was on screen three times: here permanently, under the chat input,
-              and again on the welcome screen. The claim matters, so it is kept — but as something
-              available on demand rather than as two lines of standing text in a header whose job is
-              to show the state of this package. The input's disclosure is the one that is always
-              visible, because that is where a verdict is being asked about. */}
-          <span
-            className="review-page__method"
-            tabIndex={0}
-            role="note"
-            aria-label="How this review works: recorded values, then deterministic checks, then optional AI narration"
-            data-tooltip="Recorded values → deterministic checks → optional AI narration"
-          >
-            <Info size={13} aria-hidden="true" />
-            How this works
-          </span>
           <div className="review-page__progress">
             <span className="review-page__progress-text">
               {actioned} / {findings.filter(f => f.outcome !== 'PASS' && f.outcome !== 'NO_APPLICABLE_RULE').length} reviewed
@@ -678,6 +666,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
               findings: m.findings?.map(f => findings.find(rf => rf.id === f.id) ?? f),
             }))}
             selectedFinding={selectedFindingId}
+            recordedFindingCount={findings.length}
             onViewEvidence={handleViewEvidence}
             onAction={handleAction}
             onCorrect={handleCorrect}

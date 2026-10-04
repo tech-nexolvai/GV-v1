@@ -12,6 +12,7 @@
   gap: var(--space-6);
   max-width: 100%;
   width: 100%;
+  align-items: center;
 
   /* A thin visible scrollbar rather than a hidden one. The thread is the longest scroll in the
      product and hiding the bar removed the only cue for how much of a review is above you. */
@@ -35,7 +36,30 @@
   display: flex;
   gap: var(--space-3);
   align-items: flex-start;
+  width: min(100%, 768px);
 }
+
+.chat-thread__empty {
+  width: min(100%, 768px);
+  margin: auto 0;
+  padding: var(--space-6) var(--space-2);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.chat-thread__empty-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  font-weight: var(--weight-semi);
+}
+
+.chat-thread__empty h2 { color: var(--text-primary); font-size: var(--text-xl); }
+.chat-thread__empty p { max-width: 52ch; margin-inline: auto; line-height: var(--leading-loose); }
 
 .chat-message--user {
   flex-direction: row-reverse;
@@ -88,8 +112,8 @@
   font-size: var(--text-xs);
   font-weight: var(--weight-semi);
   color: var(--text-primary);
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 .chat-message__time {
@@ -175,8 +199,8 @@
 /* The reviewer's own question is boxed and brand-tinted, which is what separates the two voices
    now that the assistant's side has no container of its own. */
 .chat-message--user .chat-message__text {
-  background: var(--color-primary-dim);
-  border: 1px solid var(--color-primary-border);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-lg) var(--radius-sm) var(--radius-lg) var(--radius-lg);
   padding: var(--space-3) var(--space-4);
   color: var(--text-primary);
@@ -200,8 +224,8 @@
   line-height: var(--leading-normal);
 }
 
-.narration--llm        { border-left-color: var(--gv-crimson); }
-.narration--structured_fallback { border-left-color: var(--status-review); }
+.narration--llm,
+.narration--structured_fallback { border-left-color: var(--border-strong); }
 
 .narration__icon {
   display: grid;
@@ -209,8 +233,7 @@
   margin-top: 2px;
   flex-shrink: 0;
 }
-.narration--llm .narration__icon { color: var(--gv-crimson); }
-.narration--structured_fallback .narration__icon { color: var(--status-review); }
+.narration__icon { color: var(--text-primary); }
 
 .narration__body {
   display: flex;
