@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -104,7 +105,7 @@ from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint, StoredPoint
-from evidence.corroborate import corroborate
+from evidence.corroborate import corroborate, is_consistent_dual_label
 from evidence.crop import (
     BoxCropSpec,
     CropSpec,
@@ -817,6 +818,7 @@ __all__ = [
     "crop_shows_a_stacked_fraction",
     "cut_label_refusal",
     "gv_mark_in_crop",
+    "mixed_fraction_refusal",
     "page_transform",
     "region_facts",
     "stacked_layouts_shown",
@@ -2068,6 +2070,9 @@ class DatabaseStages:
                 glyphs=None if layers is None else layers.glyph_paths,
                 render=vendor_render,
             )
+            # **And a whole number and a fraction (#924)**, the kind two readers have agreed on wrongly
+            # twice: purely textual, so it reads and renders nothing.
+            mixed_fraction = _MixedFractionGuard()
             self._apply_cross_route_corroboration(
                 session,
                 page_index=page.index,
@@ -2084,6 +2089,7 @@ class DatabaseStages:
                 ),
                 gv_mark=gv_mark,
                 cut_label=cut_label,
+                mixed_fraction=mixed_fraction,
             )
             agent = self._run_bounded_agent_for_ambiguous_regions(
                 session,
@@ -2118,6 +2124,7 @@ class DatabaseStages:
                     candidates=page_rows,
                     gv_mark=gv_mark,
                     cut_label=cut_label,
+                    mixed_fraction=mixed_fraction,
                 )
                 self._mark_regions_the_agent_contradicted(
                     session, page_index=page.index, candidates=page_rows, agent_rows=agent_rows
@@ -2342,11 +2349,16 @@ class DatabaseStages:
                         # Regions whose readers agreed and were not confirmed: the crop shows markup
                         # drawn in colour, a GV mark baked into the vendor's drawing (#901); or it
                         # cuts the label off at its edge (#919); or it could not be checked for one
-                        # of them. Each stays a pre-fill a person ticks; each reason says which. A
-                        # region is refused by one guard at most, so the two counts add up.
-                        "agreement_refusals": len(gv_mark.refused) + len(cut_label.refused),
+                        # of them; or the readers agreed on a whole number and a fraction (#924).
+                        # Each stays a pre-fill a person ticks; each reason says which. A region is
+                        # refused by one guard at most, so the counts add up.
+                        "agreement_refusals": (
+                            len(gv_mark.refused)
+                            + len(cut_label.refused)
+                            + len(mixed_fraction.refused)
+                        ),
                         "agreement_refusal_reasons": agreement_refusal_reasons(
-                            (gv_mark, cut_label), REPORTED_REFUSALS
+                            (gv_mark, cut_label, mixed_fraction), REPORTED_REFUSALS
                         ),
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
@@ -2565,6 +2577,7 @@ class DatabaseStages:
         candidates: Sequence[ObservationCandidate],
         gv_mark: _GvMarkGuard,
         cut_label: _CutLabelGuard,
+        mixed_fraction: _MixedFractionGuard,
     ) -> None:
         """Run the second-reader lane across same-region readings before first insert.
 
@@ -2579,11 +2592,20 @@ class DatabaseStages:
         2026-10-04: both readers of the new pair agreed on a label running past their crop's edge on
         AI_Set_2 (#907), and a cut `12 3/4"` read by both as `12"` would be a confirmed wrong number.
 
-        Where either guard holds a region's agreement back, its readings keep no lane — pre-fills a
-        person ticks — and the guard records why; the cut is asked about only where the GV mark let
-        the agreement through, so each refusal has one reason. **Only an agreement is held back**: a
-        conflict is still recorded as one, so the guards can take a confirmation away and never make
-        one.
+        **Nor does an agreement on a whole number and a fraction (#924)** — `18 3/4"`, `3 3/4"` —
+        the kind two readers of different vendors have twice agreed on wrongly, by the admin's
+        standing rule that such a kind goes to a person. A dual label agreed on both its halves is
+        let through (`mixed_fraction_refusal`).
+
+        Where a guard holds a region's agreement back, its readings keep no lane — pre-fills a person
+        ticks — and the guard records why. They are asked in that order, each only where the ones
+        before let the agreement through, so each refusal has one reason. **Only an agreement is held
+        back**: a conflict is still recorded as one, so the guards can take a confirmation away and
+        never make one.
+
+        **A reading with no value abstains (#924)**: `corroborate` judges a region among the readings
+        that have one, and only those that agreed are given the lane. One that abstained keeps none,
+        and is grouped again with the reading agent's looks.
         """
 
         pending_ids = {row.id for row in candidates if inspect(row).pending}
@@ -2616,16 +2638,29 @@ class DatabaseStages:
             )
             if result.lane is None:
                 continue
-            if (
-                result.lane is CorroborationLane.SECOND_READER
-                and result.status is not EvidenceStatus.CONFLICTING
-                and (gv_mark.holds_back(rows[0]) or cut_label.holds_back(rows[0]))
+            # **A reading with no value abstains (#924)**: an agreement is marked on the readings that
+            # agreed, never on one that had nothing to agree with, which keeps no lane. A conflict is
+            # the whole region's, as `_mark_regions_the_agent_contradicted` marks it.
+            agreed = set(result.supported_by)
+            if result.lane is CorroborationLane.SECOND_READER and (
+                result.status is not EvidenceStatus.CONFLICTING
             ):
-                continue
+                # The guards are asked about a reading that agreed: every one shares its polygon and
+                # its value, and the whole-number-and-fraction guard reads the value.
+                first_agreed = next(row for row in rows if str(row.id) in agreed)
+                if (
+                    gv_mark.holds_back(first_agreed)
+                    or cut_label.holds_back(first_agreed)
+                    or mixed_fraction.holds_back(first_agreed)
+                ):
+                    continue
             for row in rows:
-                if row.id in pending_ids:
-                    row.corroboration_status = result.status.value
-                    row.corroboration_lane = result.lane.value
+                if row.id not in pending_ids:
+                    continue
+                if result.status is not EvidenceStatus.CONFLICTING and str(row.id) not in agreed:
+                    continue
+                row.corroboration_status = result.status.value
+                row.corroboration_lane = result.lane.value
 
     def _coloured_markup(
         self, data: bytes, page: Page, version_id: UUID, layers: PageLayers | None
@@ -6047,6 +6082,60 @@ class _CutLabelGuard(_AgreementGuard):
             reach=self._reach,
             page_glyphs=self._glyphs,
         )
+
+
+#: Why the agreement gate did not confirm what two readers agreed on (#924), as the page result says.
+MIXED_FRACTION_REASON: Final = (
+    "two readers agreed on a whole number and a fraction, a kind of number two readers have agreed "
+    "on wrongly before, so a person confirms the reading"
+)
+
+#: A reading written in millimetres: its inch value is a conversion, never written as a fraction.
+_WRITTEN_IN_MILLIMETRES: Final = re.compile(r"\bmm\b", re.IGNORECASE)
+
+
+def mixed_fraction_refusal(value: Measurement | None, text: str) -> str | None:
+    """Why two readers' agreement on `value`, read from `text`, must not confirm it, the value being
+    a whole number and a fraction (#924); `None` where it may.
+
+    **The admin's standing rule** (2026-10-03, #728): where two readers ever agree on a wrong number
+    of some kind, that whole kind goes to a person. Twice two readers of different vendors agreed on
+    a wrong whole number and a fraction: a stacked `3/4"` read as `3 3/4"` (#726), and a two-line
+    `18 [3/4]` (18 mm over 3/4 inch) read as `18 3/4"` (#924).
+
+    **What it covers: the value, however it was written.** An inch value with a whole part of at
+    least one and a fraction left over — `18 3/4"`, `18-3/4"`, `18¾"`, `18.75"`, `1'-6 3/4"` —
+    because the mistake is in the reading, not in its notation. A value below one (`3/4"`), a whole
+    number, and a reading written in millimetres (whose inches are a conversion) are not this kind.
+
+    **A dual label agreed on both its halves is let through.** `corroborate` agrees a dual label only
+    where every reader read the same millimetres and the same inches, and each reader's millimetres
+    agree with its inches within rounding (`check_dual`); that cross-check is evidence the fraction
+    was read right, which a plain inch reading has none of. `text` is checked for that shape here,
+    so a reading that is not one is held back.
+
+    Purely textual: nothing is rendered, and no threshold is involved.
+    """
+    if value is None or value.unit is not Unit.INCH:
+        return None
+    whole, part = divmod(value.exact, 1)
+    if whole < 1 or part == 0:
+        return None
+    if is_consistent_dual_label(value, text):
+        return None
+    # Millimetres alone, never beside bracketed inches: a dual label is let through only above.
+    if _WRITTEN_IN_MILLIMETRES.search(text) and "[" not in text:
+        return None
+    return MIXED_FRACTION_REASON
+
+
+class _MixedFractionGuard(_AgreementGuard):
+    """The agreement gate's whole-number-and-fraction guard on one page, and the agreements it
+    refused (#924). Asked about a reading that agreed: every reading of an agreement shares its
+    value, and is a dual label or is not, so one tells for all."""
+
+    def _reason(self, region: ObservationCandidate) -> str | None:
+        return mixed_fraction_refusal(_stored_measurement(region), region.raw_text)
 
 
 def _vision_pre_call_refusal(

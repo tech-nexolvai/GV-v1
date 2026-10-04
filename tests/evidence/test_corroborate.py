@@ -376,3 +376,248 @@ def test_a_stacked_fraction_is_never_agreed_into_evidence() -> None:
     assert result.status is EvidenceStatus.RAW_CANDIDATE
     assert result.lane is None
     assert result.conflicts_with == ()
+
+
+# ---------------------------------------------------------------------------
+# Both halves of a dual label, and a reading with no value (#924)
+# ---------------------------------------------------------------------------
+
+#: The issue's label: 914 mm over 36 inches. 36" is 914.4 mm, inside 914's rounding.
+DUAL = "914 [36]"
+
+
+def _dual(
+    candidate_id: str, reader: tuple[str, str], text: str = DUAL, inches: Fraction = Fraction(36)
+) -> ObservationCandidate:
+    """A model's reading of a dual label, valued as the stage values it: its inches (Q12)."""
+    return _model(candidate_id, reader, exact=inches, unit=Unit.INCH, raw_text=text)
+
+
+def _blank(candidate_id: str, reader: tuple[str, str], text: str = "914") -> ObservationCandidate:
+    """A reading the stage stored with no value — half a label, `914`, with no unit."""
+    from dataclasses import replace
+
+    return replace(_model(candidate_id, reader, raw_text=text), parsed_value=None)
+
+
+def test_two_vendors_agreeing_on_both_halves_of_a_dual_label_confirm_it() -> None:
+    """**#924, decision 1.** Input: Qwen3-VL and Nova 2 Lite (two vendors) both read `914 [36]`.
+    Outcome: the second-reader lane, as for any agreement. Why: two independent readers agree on the
+    millimetres and the inches, and each reader's own halves agree within rounding."""
+    result = corroborate((_dual("a", QWEN3_VL), _dual("b", NOVA_2_LITE_TAUGHT)))
+
+    assert result == CorroborationResult(
+        EvidenceStatus.CORROBORATED, ("a", "b"), (), CorroborationLane.SECOND_READER
+    )
+
+
+def test_a_dual_label_written_with_its_unit_word_is_the_same_label() -> None:
+    """Input: `914mm [36"]` and `914 [36]`. Outcome: agreed — the notation module reads both as the
+    same two halves, as it valued them."""
+    result = corroborate(
+        (_dual("a", QWEN3_VL, '914mm [36"]'), _dual("b", NOVA_2_LITE_TAUGHT, DUAL))
+    )
+
+    assert result.lane is CorroborationLane.SECOND_READER
+    assert result.status is EvidenceStatus.CORROBORATED
+
+
+def test_one_vendor_agreeing_on_a_dual_label_confirms_nothing() -> None:
+    """Input: Nova 2 Lite asked two ways reads `914 [36]` both times. Outcome: RAW with no lane — one
+    vendor is one witness (#775), on a dual label as on any other."""
+    result = corroborate((_dual("a", NOVA_2_LITE), _dual("b", NOVA_2_LITE_TAUGHT)))
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None)
+
+
+def test_the_same_inches_with_different_millimetres_confirm_nothing() -> None:
+    """Input: `914 [36]` and `915 [36]` — both consistent, the same inches. Outcome: RAW with no lane,
+    and no conflict. Why: agreement on the inches alone does not confirm; a reader who misread one
+    half may have misread the other."""
+    result = corroborate((_dual("a", QWEN3_VL), _dual("b", NOVA_2_LITE_TAUGHT, "915 [36]")))
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None)
+
+
+def test_the_inches_of_a_dual_label_beside_a_plain_inch_reading_confirm_nothing() -> None:
+    """Input: `914 [36]` and `36"`. Outcome: RAW with no lane. Why: the millimetres are missing from
+    one reading, so the two agree on the inches alone."""
+    inches = _model("b", NOVA_2_LITE_TAUGHT, exact=Fraction(36), unit=Unit.INCH, raw_text='36"')
+
+    result = corroborate((_dual("a", QWEN3_VL), inches))
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None)
+
+
+def test_millimetres_inconsistent_with_their_inches_confirm_nothing() -> None:
+    """Input: both readers read `914 [38]` — the same halves, but 38" is 965.2 mm, outside 914's and
+    38's rounding. Outcome: RAW with no lane. Why: `check_dual` fails, so the millimetres do not
+    show the inches were read right, however many readers agree on them."""
+    result = corroborate(
+        (
+            _dual("a", QWEN3_VL, "914 [38]", Fraction(38)),
+            _dual("b", NOVA_2_LITE_TAUGHT, "914 [38]", Fraction(38)),
+        )
+    )
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None)
+
+
+def test_a_dual_label_whose_inches_differ_is_a_conflict() -> None:
+    """Input: `914 [36]` and `889 [35]`, each consistent on its own. Outcome: CONFLICTING. Why: the
+    inches are the value, and different values are a conflict, whatever else agrees."""
+    result = corroborate(
+        (_dual("a", QWEN3_VL), _dual("b", NOVA_2_LITE_TAUGHT, "889 [35]", Fraction(35)))
+    )
+
+    assert result == CorroborationResult(
+        EvidenceStatus.CONFLICTING, ("a", "b"), ("a", "b"), CorroborationLane.SECOND_READER
+    )
+
+
+def test_a_dual_labels_inches_and_a_plain_inch_reading_that_differ_are_a_conflict() -> None:
+    """Input: `914 [36]` and `35"`. Outcome: CONFLICTING. Why: a dual label's inches are inches as
+    written, so they are compared with an inch reading like any other."""
+    inches = _model("b", NOVA_2_LITE_TAUGHT, exact=Fraction(35), unit=Unit.INCH, raw_text='35"')
+
+    assert corroborate((_dual("a", QWEN3_VL), inches)).status is EvidenceStatus.CONFLICTING
+
+
+def test_a_millimetre_reading_is_never_compared_with_a_dual_labels_inches() -> None:
+    """Input: `914 [36]` and `914 mm`, valued as its exact conversion. Outcome: RAW with no lane and
+    no conflict — a conversion is not a second reading, as before."""
+    millimetres = _model(
+        "b",
+        NOVA_2_LITE_TAUGHT,
+        exact=Fraction(914) * Fraction(5, 127),
+        unit=Unit.INCH,
+        raw_text="914 mm",
+    )
+
+    result = corroborate((_dual("a", QWEN3_VL), millimetres))
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None)
+
+
+def test_a_reading_with_no_value_abstains_from_an_agreement() -> None:
+    """**#924, decision 2: the measured case.** Input: Qwen3-VL and the taught Nova read
+    `914 [36]`, and the forced-tool Nova returns half the label, `914`, with no value. Outcome: the
+    two agree; the third is not among the readings that support it. Why: a reading with no value
+    neither confirms nor vetoes."""
+    result = corroborate(
+        (_blank("c", NOVA_2_LITE), _dual("a", QWEN3_VL), _dual("b", NOVA_2_LITE_TAUGHT))
+    )
+
+    assert result == CorroborationResult(
+        EvidenceStatus.CORROBORATED, ("a", "b"), (), CorroborationLane.SECOND_READER
+    )
+
+
+def test_a_reading_with_no_value_abstains_from_a_plain_agreement_too() -> None:
+    """Input: two vendors read `24"`, a third reading has no value. Outcome: CORROBORATED by the two."""
+    result = corroborate(
+        (
+            _model("a", QWEN3_VL, exact=Fraction(24), unit=Unit.INCH, raw_text='24"'),
+            _blank("b", MINISTRAL_3B, "24"),
+            _model("c", NOVA_2_LITE, exact=Fraction(24), unit=Unit.INCH, raw_text='24"'),
+        )
+    )
+
+    assert result == CorroborationResult(
+        EvidenceStatus.CORROBORATED, ("a", "c"), (), CorroborationLane.SECOND_READER
+    )
+
+
+def test_a_reading_with_no_value_never_makes_a_second_vendor() -> None:
+    """Input: Nova 2 Lite asked two ways agree on `914 [36]`; Qwen3-VL returns no value. Outcome: RAW
+    with no lane. Why: an abstaining reader is no witness — the agreement still needs two vendors
+    among the readings with a value."""
+    result = corroborate(
+        (_dual("a", NOVA_2_LITE), _dual("b", NOVA_2_LITE_TAUGHT), _blank("c", QWEN3_VL))
+    )
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b", "c"), (), None)
+
+
+def test_one_value_beside_a_reading_with_none_decides_nothing() -> None:
+    """Input: one reading with a value and one without. Outcome: RAW with no lane — one value is not
+    an agreement, and the empty one is no conflict."""
+    result = corroborate((_dual("a", QWEN3_VL), _blank("b", NOVA_2_LITE_TAUGHT)))
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None)
+
+
+def test_a_region_where_no_reading_has_a_value_stays_raw() -> None:
+    result = corroborate((_blank("a", QWEN3_VL), _blank("b", NOVA_2_LITE_TAUGHT)))
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None)
+
+
+def test_different_values_beside_a_reading_with_none_are_still_a_conflict() -> None:
+    """**#924: a conflict is still a conflict.** Input: `24"` and `25"` from two vendors, and a third
+    reading with no value. Outcome: CONFLICTING among the two with values. Why: the empty reading
+    abstains, so it cannot hide their disagreement either."""
+    result = corroborate(
+        (
+            _model("a", QWEN3_VL, exact=Fraction(24), unit=Unit.INCH, raw_text='24"'),
+            _blank("b", NOVA_2_LITE),
+            _model("c", NOVA_2_LITE_TAUGHT, exact=Fraction(25), unit=Unit.INCH, raw_text='25"'),
+        )
+    )
+
+    assert result == CorroborationResult(
+        EvidenceStatus.CONFLICTING, ("a", "c"), ("a", "c"), CorroborationLane.SECOND_READER
+    )
+
+
+def test_a_stacked_fraction_is_never_agreed_on_a_dual_label_either() -> None:
+    """**#726, still first.** Input: two vendors agree on both halves of `629 [24 3/4]`, one reading
+    flagged stacked. Outcome: RAW with no lane."""
+    from dataclasses import replace
+
+    first = _dual("a", QWEN3_VL, "629 [24 3/4]", Fraction(99, 4))
+    second = _dual("b", NOVA_2_LITE_TAUGHT, "629 [24 3/4]", Fraction(99, 4))
+    assert corroborate((first, second)).lane is CorroborationLane.SECOND_READER  # the control
+
+    stacked = replace(second, ambiguity_flags=(STACKED_FRACTION_FLAG,))
+
+    assert corroborate((first, stacked)) == CorroborationResult(
+        EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None
+    )
+
+
+def test_a_stacked_reading_with_no_value_still_keeps_the_group_raw() -> None:
+    """Input: two vendors agree on `24"`; a third reading over a stacked fraction has no value.
+    Outcome: RAW with no lane. Why: the stacked check comes before any reading abstains."""
+    from dataclasses import replace
+
+    stacked = replace(_blank("c", MINISTRAL_3B, "24"), ambiguity_flags=(STACKED_FRACTION_FLAG,))
+    result = corroborate(
+        (
+            _model("a", QWEN3_VL, exact=Fraction(24), unit=Unit.INCH, raw_text='24"'),
+            _model("b", NOVA_2_LITE, exact=Fraction(24), unit=Unit.INCH, raw_text='24"'),
+            stacked,
+        )
+    )
+
+    assert result == CorroborationResult(EvidenceStatus.RAW_CANDIDATE, ("a", "b", "c"), (), None)
+
+
+def test_a_dual_label_is_one_whichever_of_a_readings_texts_states_it() -> None:
+    """Input: two vendors' readings that say `914 [36]` and `915 [36]`, each valued by the canonical
+    token `36"`, as the scorecards value a reading. Outcome: RAW with no lane. Why: the label is a
+    dual one whichever text says so, and agreement on its inches alone confirms nothing."""
+    from dataclasses import replace
+
+    def token_valued(candidate: ObservationCandidate) -> ObservationCandidate:
+        return replace(candidate, parsed_value=Measurement(Fraction(36), Unit.INCH, '36"'))
+
+    first = token_valued(_dual("a", QWEN3_VL))
+    second = token_valued(_dual("b", NOVA_2_LITE_TAUGHT, "915 [36]"))
+    assert corroborate((first, token_valued(_dual("b", NOVA_2_LITE_TAUGHT)))).lane is (
+        CorroborationLane.SECOND_READER
+    )  # the control: both halves agree
+
+    assert corroborate((first, second)) == CorroborationResult(
+        EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None
+    )

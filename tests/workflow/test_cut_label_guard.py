@@ -52,6 +52,7 @@ from workflow.stages import (
     _AgentPageOutcome,
     _AgreementGuard,
     _CutLabelGuard,
+    _MixedFractionGuard,
     agreement_refusal_reasons,
     cut_label_refusal,
 )
@@ -566,6 +567,7 @@ def test_a_gv_mark_and_a_cut_label_are_each_refused_once_and_counted_together(
             candidates=rows,
             gv_mark=gv_mark,  # type: ignore[arg-type]
             cut_label=cut_label,  # type: ignore[arg-type]
+            mixed_fraction=_MixedFractionGuard(),
         )
 
     assert _lanes(rows) == {MARKED: {None}, CUT: {None}, PLAIN: {"SECOND_READER"}}

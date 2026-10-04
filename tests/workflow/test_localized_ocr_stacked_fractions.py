@@ -50,6 +50,7 @@ from tests.workflow.test_fraction_parts_route import _copy, _second_reader
 from tests.workflow.test_glyph_route import _glyph_rows, _settings, _templates
 from tests.workflow.test_gv_mark_guard import unmarked_page
 from tests.workflow.test_markup_route import _SilentOcr
+from tests.workflow.test_mixed_fraction_guard import fractions_let_through
 from tests.workflow.test_stacked_fraction_route import PLAIN_SHEET, STACKED_SHEET, _fraction
 from units.normalise import normalise_to_inches
 from units.notation import canonical_notation
@@ -249,6 +250,7 @@ def test_two_readers_agreeing_on_the_flagged_reading_confirm_nothing(
         candidates=(flagged, agreeing),
         gv_mark=unmarked_page(),
         cut_label=whole_labels(),
+        mixed_fraction=fractions_let_through(),
     )
     for row in (flagged, agreeing):
         assert (row.corroboration_status, row.corroboration_lane) == (None, None)
@@ -262,6 +264,7 @@ def test_two_readers_agreeing_on_the_flagged_reading_confirm_nothing(
         candidates=(unflagged, control),
         gv_mark=unmarked_page(),
         cut_label=whole_labels(),
+        mixed_fraction=fractions_let_through(),
     )
     for row in (unflagged, control):
         assert row.corroboration_lane == "SECOND_READER"

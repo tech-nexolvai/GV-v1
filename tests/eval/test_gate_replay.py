@@ -39,7 +39,6 @@ from eval.experiments.gate_replay import (
     join,
     judge,
     outcome,
-    promoted_numerator,
     regions_from_scorecard,
     render_markdown,
     rule_of_three,
@@ -198,8 +197,8 @@ def test_the_gate_is_the_one_in_evidence() -> None:
 def test_the_gate_is_asked_about_every_reading_of_a_region_in_one_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """**Unchanged, and asked as the stage asks it.** One call with every reading — so the OCR row
-    with no value blocks the pair, exactly as it does in the stage's first pass."""
+    """**Asked as the stage asks it.** One call with every reading. The OCR row with no value
+    abstains (#924), as it does in the stage, so the pair's agreement on `4"` is the region's."""
     calls: list[tuple[tuple[str, str | None], ...]] = []
     real = evidence.corroborate.corroborate
 
@@ -220,8 +219,25 @@ def test_the_gate_is_asked_about_every_reading_of_a_region_in_one_call(
     monkeypatch.setattr(gate_replay, "corroborate", spy)
     readings = (_read(OCR, "4", None), _read(MINI, '4"', 4), _read(NOVA, '4"', 4))
 
-    assert gate(readings) is None
+    assert gate(readings) == gate_replay.Agreement(
+        _inches(4), CorroborationLane.SECOND_READER, '4"'
+    ), "the text of a reading that agreed, never the blank one's"
     assert calls == [((OCR[0], None), (MINI[0], "4"), (NOVA[0], "4"))]
+
+
+def test_two_vendors_agreeing_on_both_halves_of_a_models_dual_label_agree_it() -> None:
+    """**#924, as the gate decides it.** The pair's `914 [36]`, beside the forced-tool reader's `914`
+    with no value: agreed on the inches. The same inches with other millimetres: nothing."""
+    pair = (
+        Reading(NOVA[0], NOVA[1], "914 [36]", _inches(36)),
+        Reading(MINI[0], MINI[1], "914 [36]", _inches(36)),
+    )
+    blank = _read(LARGE, "914", None)
+
+    assert gate((blank, *pair)) == gate_replay.Agreement(
+        _inches(36), CorroborationLane.SECOND_READER, "914 [36]"
+    )
+    assert gate((pair[0], Reading(MINI[0], MINI[1], "915 [36]", _inches(36)))) is None
 
 
 def test_the_replay_follows_the_gate_and_never_overrules_it(
@@ -246,7 +262,7 @@ def test_two_readers_from_one_vendor_agree_nothing() -> None:
     """The gate's own rule (#775), which the replay inherits rather than restates."""
     assert gate((_read(MINI, "2'", 24), _read(LARGE, "2'", 24))) is None
     assert gate((_read(NOVA, "2'", 24), _read(MINI, "2'", 24))) == gate_replay.Agreement(
-        _inches(24), CorroborationLane.SECOND_READER
+        _inches(24), CorroborationLane.SECOND_READER, "2'"
     )
 
 
@@ -256,7 +272,7 @@ def test_a_text_routes_own_dual_label_is_judged_alone_as_production_judges_it() 
     stamp = Reading(STAMP[0], STAMP[1], "381 [15]", _inches(15))
 
     assert gate((stamp, _read(NOVA, '15"', 15), _read(MINI, '15"', 15))) == gate_replay.Agreement(
-        _inches(15), CorroborationLane.SECOND_READER
+        _inches(15), CorroborationLane.SECOND_READER, '15"'
     )
 
 
@@ -277,12 +293,42 @@ def test_a_models_dual_reading_is_never_judged_by_its_own_millimetres() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_promoted_numerator_is_the_shape_n_n_over_d() -> None:
-    assert promoted_numerator(_inches(Fraction(15, 4)))  # 3 3/4
-    assert promoted_numerator(_inches(Fraction(3, 2)))  # 1 1/2, a real label it would also stop
-    assert not promoted_numerator(_inches(Fraction(23, 4)))  # 5 3/4
-    assert not promoted_numerator(_inches(Fraction(3, 4)))
-    assert not promoted_numerator(_inches(12))
+def test_the_whole_number_and_fraction_guard_is_the_production_gates_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**One test, not two copies of it (#924).** The replay asks `workflow.stages`'s own
+    `mixed_fraction_refusal` about what the gate agreed, handed the agreed value and the text of a
+    reading that agreed: whatever it says is what the replay's guard does."""
+    from workflow import stages
+
+    assert vars(gate_replay)["mixed_fraction_refusal"] is stages.mixed_fraction_refusal
+    region = _agreeing("r1", '12"', 12)
+    asked: list[tuple[Fraction, str]] = []
+
+    def refuses(value: object, text: str) -> str:
+        asked.append((value.exact, text))  # type: ignore[attr-defined]
+        return "refused"
+
+    monkeypatch.setattr(gate_replay, "mixed_fraction_refusal", refuses)
+
+    assert judge(region, PLAIN, Guard.MIXED_FRACTION) is None
+    assert judge(region, PLAIN, Guard.GATE) is None
+    assert judge(region, PLAIN, Guard.GATE_919) is not None, "the gate before #924 never asks it"
+    assert asked == [(Fraction(12), '12"'), (Fraction(12), '12"')]
+
+
+def test_the_guard_holds_back_a_whole_number_and_a_fraction_and_lets_a_dual_label_through() -> None:
+    """`3 3/4"` agreed is held back; `724 [28 1/2]` agreed on both halves is not."""
+    mixed = _agreeing("r1", '3 3/4"', Fraction(15, 4))
+    dual = _region(
+        "r2",
+        Reading(NOVA[0], NOVA[1], "724 [28 1/2]", _inches(Fraction(57, 2))),
+        Reading(MINI[0], MINI[1], "724 [28 1/2]", _inches(Fraction(57, 2))),
+    )
+
+    assert judge(mixed, PLAIN, Guard.NONE) is not None
+    assert judge(mixed, PLAIN, Guard.MIXED_FRACTION) is None
+    assert judge(dual, PLAIN, Guard.MIXED_FRACTION) is not None
 
 
 def test_the_sideways_guard_needs_a_third_reader_with_a_value() -> None:
@@ -336,8 +382,9 @@ GUARDED = [
         (Guard.NONE, 3, 2),
         (Guard.CUT, 2, 2),
         (Guard.GV_MARK, 3, 1),
-        (Guard.GATE, 2, 1),
-        (Guard.PROMOTED_NUMERATOR, 3, 1),
+        (Guard.GATE_919, 2, 1),
+        (Guard.MIXED_FRACTION, 3, 1),
+        (Guard.GATE, 2, 0),
         (Guard.SIDEWAYS, 2, 2),
         (Guard.MM_ON_FILE_TEXT, 4, 2),
     ],

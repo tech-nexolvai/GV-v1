@@ -23,6 +23,7 @@ import io
 import tempfile
 from collections.abc import Iterator
 from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -96,6 +97,13 @@ DEPTH_TYPE = "CT010"
 EXACT_DEPTH = "648 [25 1/2]"
 WRONG_DEPTH = "641 [25 1/4]"
 EXACT_DEPTH_SINGLE_UNIT = '25.5"'
+
+#: The depth the automatic lane's two readers agree on: a whole inch, against a 2" overhang.
+#:
+#: Not `25.5"`: two readers agreeing on a whole number and a fraction confirm nothing (#924) — the kind
+#: two readers of different vendors have agreed on wrongly — so it would leave this lane nothing to type.
+AGREED_DEPTH = '26"'
+AGREED_OVERHANG = Fraction(2)
 
 
 class _AgreeingVisionReader:
@@ -326,9 +334,7 @@ def test_without_a_confirmation_the_check_still_abstains(
 
 def _exact_tag_pair(session: Session, store: LocalStore) -> tuple[PackageRevision, UUID]:
     """A shop depth reading and the exact `CT010` beside it, both attached to one line and cropped."""
-    revision, candidate_id = _extract(
-        session, store, token=EXACT_DEPTH_SINGLE_UNIT, second_reader=True
-    )
+    revision, candidate_id = _extract(session, store, token=AGREED_DEPTH, second_reader=True)
     reading = session.get(ObservationCandidate, candidate_id)
     assert reading is not None
     source_run = session.get(ExtractionRun, reading.extraction_run_id)
@@ -401,7 +407,7 @@ def test_exact_vector_tag_on_same_line_becomes_operand_without_a_reviewer_typing
     """
     revision, candidate_id = _exact_tag_pair(session, store)
     _publish_rulebook(session)
-    _project_depth_parameters(session, revision)
+    _project_depth_parameters(session, revision, overhang=AGREED_OVERHANG)
 
     result = DatabaseStages(
         store,
@@ -460,7 +466,7 @@ def test_the_automatic_lane_types_nothing_on_a_drawing_nobody_has_confirmed(
     revision, _candidate_id = _exact_tag_pair(session, store)
     _the_page_is_one_drawing(session, revision, None)
     _publish_rulebook(session)
-    _project_depth_parameters(session, revision)
+    _project_depth_parameters(session, revision, overhang=AGREED_OVERHANG)
 
     result = DatabaseStages(
         store,
@@ -481,7 +487,7 @@ def test_the_automatic_lane_takes_the_confirmed_drawings_side_over_the_uploads(
     revision, _candidate_id = _exact_tag_pair(session, store)
     _the_page_is_one_drawing(session, revision, ViewRole.ARCH)
     _publish_rulebook(session)
-    _project_depth_parameters(session, revision)
+    _project_depth_parameters(session, revision, overhang=AGREED_OVERHANG)
 
     result = DatabaseStages(
         store,
@@ -718,9 +724,7 @@ def test_automatic_typing_counts_two_readers_of_one_vendor_as_one(
     both are recorded as Mistral models — the lane counts vendors as `corroborate` does."""
     from app.evidence.automatic_typing import _second_reader_candidate_ids
 
-    _revision_row, candidate_id = _extract(
-        session, store, token=EXACT_DEPTH_SINGLE_UNIT, second_reader=True
-    )
+    _revision_row, candidate_id = _extract(session, store, token=AGREED_DEPTH, second_reader=True)
     reading = session.get(ObservationCandidate, candidate_id)
     assert reading is not None
     assert len(_second_reader_candidate_ids(session, reading)) == 2
