@@ -63,7 +63,7 @@ from evidence.coordinates import ImagePoint
 from extraction.models.nova import NovaConfig, NovaRequest
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from tests.workflow.test_stages import (
     _outcome_for,
     _project_depth_parameters,
@@ -223,7 +223,9 @@ def _extract(
     """Read the drawing and return the revision with the candidate carrying its dimension."""
     revision = _revision(session, store, token=token)
     readers = (_AgreeingVisionReader(token),) if second_reader else ()
-    DatabaseStages(store, vision_readers=readers).extract_pages(session, revision.id)
+    DatabaseStages(store, vision_readers=readers, missing_space=MISSING_SPACE).extract_pages(
+        session, revision.id
+    )
     version_id = session.execute(
         select(PackageRevisionDocument.document_version_id).where(
             PackageRevisionDocument.package_revision_id == revision.id
@@ -272,7 +274,7 @@ def test_a_confirmed_reading_becomes_a_verdict_without_anyone_retyping_it(
     )
     assert not isinstance(confirmed, ConfirmationRefused), confirmed
 
-    DatabaseStages(store).run_checks(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).run_checks(session, revision.id)
 
     assert _outcome_for(session, revision, "CT-DEPTH-001") == "PASS"
 
@@ -293,7 +295,7 @@ def test_the_verdict_follows_the_drawing_and_not_the_confirmation(
     confirm_candidate_type(
         session, candidate_id=candidate_id, semantic_type=DEPTH_TYPE, confirmed_by="a reviewer"
     )
-    DatabaseStages(store).run_checks(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).run_checks(session, revision.id)
 
     assert _outcome_for(session, revision, "CT-DEPTH-001") == "FAIL"
 
@@ -310,7 +312,7 @@ def test_without_a_confirmation_the_check_still_abstains(
     _publish_rulebook(session)
     _project_depth_parameters(session, revision)
 
-    DatabaseStages(store).run_checks(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).run_checks(session, revision.id)
 
     assert _outcome_for(session, revision, "CT-DEPTH-001") != "PASS"
 
@@ -397,6 +399,7 @@ def test_exact_vector_tag_on_same_line_becomes_operand_without_a_reviewer_typing
     result = DatabaseStages(
         store,
         automatic_typing=AutomaticTypingSettings(frozenset({SemanticType.CT010})),
+        missing_space=MISSING_SPACE,
     ).run_checks(session, revision.id)
 
     assert result["automatic_types_qualified"] == 1
@@ -455,6 +458,7 @@ def test_the_automatic_lane_types_nothing_on_a_drawing_nobody_has_confirmed(
     result = DatabaseStages(
         store,
         automatic_typing=AutomaticTypingSettings(frozenset({SemanticType.CT010})),
+        missing_space=MISSING_SPACE,
     ).run_checks(session, revision.id)
 
     assert result["automatic_types_qualified"] == 0
@@ -475,6 +479,7 @@ def test_the_automatic_lane_takes_the_confirmed_drawings_side_over_the_uploads(
     result = DatabaseStages(
         store,
         automatic_typing=AutomaticTypingSettings(frozenset({SemanticType.CT010})),
+        missing_space=MISSING_SPACE,
     ).run_checks(session, revision.id)
 
     assert result["automatic_types_qualified"] == 1

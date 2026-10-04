@@ -76,7 +76,7 @@ from extraction.glyph_shapes import (
     subpaths,
 )
 from extraction.rasterise import VISION_CROP_DPI
-from extraction.reader import page_boxes_in_pdf_space
+from extraction.reader import MissingSpace, page_boxes_in_pdf_space
 from extraction.vector_first import plan_reads
 
 INVENTORY: Final = "inventory.json"
@@ -140,6 +140,13 @@ class InventoryError(Exception):
     """The inventory could not be made, or the labelled sheet could not be trusted."""
 
 
+#: The text reader's setting (#912): the share of the text's height at which a gap inside the
+#: inches is a space the file left out. This script plans no region with it; the scripts that read
+#: a page's printed text, as `eval/experiments/agent_scorecard.ScorecardPage` does since #907, read
+#: it from the same file (`read_missing_space`). No default.
+MISSING_SPACE_SETTING: Final = "GV_READER_MISSING_SPACE_HEIGHTS"
+
+
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
@@ -158,6 +165,25 @@ def read_reader_settings(path: Path) -> dict[str, str]:
             raise InventoryError(f"{path} does not state {name}, and it has no default")
         found[name] = match.group(1).rstrip("\\").strip()
     return found
+
+
+def read_missing_space(path: Path) -> MissingSpace:
+    """The text reader's missing-space setting from a demo.sh-style file (#912): required, and
+    refused unless it is a share of the text's height the setting accepts."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise InventoryError(f"could not read the reader settings in {path}: {error}") from error
+    match = re.search(rf"^\s*{MISSING_SPACE_SETTING}=(\S+)", text, flags=re.MULTILINE)
+    if match is None:
+        raise InventoryError(
+            f"{path} does not state {MISSING_SPACE_SETTING}, and it has no default"
+        )
+    raw = match.group(1).rstrip("\\").strip()
+    try:
+        return MissingSpace(gap_heights=Decimal(raw))
+    except (ArithmeticError, TypeError, ValueError) as error:
+        raise InventoryError(f"{path} states {MISSING_SPACE_SETTING}={raw}: {error}") from error
 
 
 # ---------------------------------------------------------------------------

@@ -235,7 +235,11 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
     from storage.local import LocalStore
     from workflow.findings_bedrock import configured_findings_composer
-    from workflow.stages import DatabaseStages, fraction_parts_from_environment
+    from workflow.stages import (
+        DatabaseStages,
+        fraction_parts_from_environment,
+        missing_space_from_environment,
+    )
 
     # A LocalStore needs a signing key to satisfy its interface, but this worker never issues upload
     # tickets.  It only reads already-confirmed objects from the same explicitly configured dev root.
@@ -271,6 +275,10 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         # The dpi an upright, sharper picture is rendered at (#907). No default: a stage with a
         # reader shown one refuses to start without it.
         reader_pictures=picture_settings_from_environment(),
+        # Always required: how wide a gap inside the inches is a space the file left out (#912).
+        # Unstated, building the stages fails with an error naming the variable, so no page is
+        # read without it.
+        missing_space=missing_space_from_environment(),
     )
 
 

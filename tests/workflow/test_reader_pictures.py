@@ -44,7 +44,7 @@ from extraction.rasterise import render_page, render_region
 from extraction.reader import TextItem, read_page_contents, read_pages
 from extraction.vector_first import upright_png
 from storage.local import LocalStore
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from tests.workflow.test_gv_mark_guard import _revision, _upgrade
 from units.measurement import Unit
 from workflow.reader_pictures import (
@@ -328,7 +328,9 @@ def _crop_boxes(dpi: int) -> dict[str, tuple[int, int, int, int]]:
         vendor_only=True,
     )
     boxes: dict[str, tuple[int, int, int, int]] = {}
-    for item in read_page_contents(SHEET, 0, document_version_id=version, dpi=dpi).texts:
+    for item in read_page_contents(
+        SHEET, 0, document_version_id=version, dpi=dpi, missing_space=MISSING_SPACE
+    ).texts:
         region = _VisionRegion(
             id=uuid4(),
             polygon=[[point.x, point.y] for point in item.image_extent],
@@ -348,7 +350,9 @@ def test_each_reader_is_shown_its_own_measured_picture(session: Session, store: 
     crops, at the stage's dpi."""
     qwen, nova = _pair()
     revision = _revision(session, store, SHEET)
-    stages = DatabaseStages(store, vision_readers=(qwen, nova), reader_pictures=SHARPER)
+    stages = DatabaseStages(
+        store, vision_readers=(qwen, nova), reader_pictures=SHARPER, missing_space=MISSING_SPACE
+    )
 
     stages.extract_pages(session, revision.id)
 
@@ -382,9 +386,9 @@ def test_the_picture_is_part_of_the_reading_run_s_identity(
     qwen, nova = _pair()
     revision = _revision(session, store, SHEET)
 
-    DatabaseStages(store, vision_readers=(qwen, nova), reader_pictures=SHARPER).extract_pages(
-        session, revision.id
-    )
+    DatabaseStages(
+        store, vision_readers=(qwen, nova), reader_pictures=SHARPER, missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
 
     runs = {
         run.extractor: run.config_hash

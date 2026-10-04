@@ -42,7 +42,7 @@ from extraction.models.nova import (
 )
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from units.measurement import Unit
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
@@ -212,6 +212,7 @@ def test_two_routes_agreeing_on_one_region_get_the_second_reader_lane(
     DatabaseStages(
         store,
         vision_readers=(_reader("bedrock-nova-pro", "amazon.nova-pro-v1:0"),),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     rows = _candidate_runs(session)
@@ -236,6 +237,7 @@ def test_two_routes_disagreeing_on_one_region_become_conflicting_without_a_winne
                 confidence=Decimal("0.99"),
             ),
         ),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     rows = _candidate_runs(session)
@@ -249,7 +251,7 @@ def test_single_route_region_keeps_no_corroboration_lane(
 ) -> None:
     revision = _revision(session, store)
 
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
 
     rows = _candidate_runs(session)
     assert {run.extractor for _, run in rows} == {"pdfplumber"}
@@ -266,6 +268,7 @@ def test_two_versions_of_the_same_extractor_do_not_count_as_independent(
     DatabaseStages(
         store,
         vision_readers=(_reader("same-reader", "same-reader/v2"),),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     rows = _candidate_runs(session)

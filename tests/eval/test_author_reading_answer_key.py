@@ -164,6 +164,8 @@ SETTINGS: Final = {
     "GV_READER_FRACTION_CHARACTER_GAP_PT": "4",
     # Which bars across a stamp's baseline are a turned label's (#869). Stated for the same reason.
     "GV_READER_FRACTION_TURNED_ASPECT_MIN": "1.1",
+    # The text reader's (#912): the pages are read as the stage reads them, printed text and all.
+    "GV_READER_MISSING_SPACE_HEIGHTS": "0.1",
 }
 
 

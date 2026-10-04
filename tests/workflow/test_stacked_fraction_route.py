@@ -34,6 +34,7 @@ from extraction.ocr import OcrItem
 from storage.local import LocalStore
 from tests.extraction.models.test_validation import THIRTY_NINE_AND_A_HALF_LAYOUT, THREE_QUARTERS
 from tests.extraction.test_annotations import STACKED_APPEARANCE, _appearance, _pdf, _stamp
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from units.measurement import Unit
 from workflow.stages import (
@@ -178,6 +179,7 @@ def _vision_result_for(
         ocr_engine=_WholeCropOcr(ocr_text),
         localized_ocr=LOCALIZED,
         vision_readers=(reader,),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
     session.commit()
     return reader.requests, dict(result.payload)

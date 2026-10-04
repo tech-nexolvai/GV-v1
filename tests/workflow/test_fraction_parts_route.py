@@ -59,6 +59,7 @@ from extraction.ocr import OcrItem
 from storage.local import LocalStore
 from tests.extraction.models.test_nova import FakeBedrock
 from tests.extraction.test_annotations import STACKED_APPEARANCE, _appearance, _pdf, _stamp
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from tests.workflow.test_gv_mark_guard import unmarked_page
 from tests.workflow.test_stacked_fraction_route import DIMENSION_LINE, STACKED_SHEET
@@ -215,6 +216,7 @@ def _extract(
         vision_gate=SECOND_EXTRACTOR,
         ai_budget_usd=ai_budget_usd,
         fraction_parts=fraction_parts,
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
     session.commit()
     return dict(result.payload)
@@ -596,7 +598,9 @@ def test_the_route_cannot_be_on_without_the_detector(tmp_path: Path) -> None:
     there could never read anything; it is refused rather than left on and silent."""
     store = LocalStore(root=tmp_path, ticket_secret=b"a secret only this test knows")
     with pytest.raises(ValueError, match="association settings"):
-        DatabaseStages(store, fraction_parts=DRAWING, vision_readers=())
+        DatabaseStages(
+            store, fraction_parts=DRAWING, vision_readers=(), missing_space=MISSING_SPACE
+        )
 
 
 def test_the_route_cannot_be_on_without_its_second_reader(tmp_path: Path) -> None:
@@ -609,6 +613,7 @@ def test_the_route_cannot_be_on_without_its_second_reader(tmp_path: Path) -> Non
             association=ASSOCIATION,
             fraction_parts=DRAWING,
             vision_readers=(_Gate(),),  # type: ignore[arg-type]
+            missing_space=MISSING_SPACE,
         )
 
 
@@ -623,6 +628,7 @@ def test_the_run_identity_names_every_reader_and_fits_its_column(tmp_path: Path)
         fraction_parts=DRAWING,
         vision_readers=(gate,),  # type: ignore[arg-type]
         vision_gate=SECOND_EXTRACTOR,
+        missing_space=MISSING_SPACE,
     )
     other_gate = _Gate()
     other_gate.config = replace(gate.config, model_id="amazon.another-second-v1")

@@ -51,7 +51,7 @@ from uuid import UUID
 import pdfplumber
 import pikepdf
 
-from extraction.reader import PageContents, UnreadablePdf, read_page_contents
+from extraction.reader import MissingSpace, PageContents, UnreadablePdf, read_page_contents
 
 __all__ = [
     "StampCharacters",
@@ -194,9 +194,16 @@ def _character_counts(flattened: bytes, page_index: int) -> StampCharacters:
 
 
 def read_stamp_text(
-    data: bytes, page_index: int, *, document_version_id: UUID, dpi: int
+    data: bytes,
+    page_index: int,
+    *,
+    document_version_id: UUID,
+    dpi: int,
+    missing_space: MissingSpace,
 ) -> StampText:
-    """The readable text runs inside this page's pasted drawings, exactly as the file holds them."""
+    """The readable text runs inside this page's pasted drawings, exactly as the file holds them.
+
+    `missing_space` is the reader's, and has no default there either (#912)."""
     flattened = stamps_only(data, page_index)
     characters = _character_counts(flattened, page_index)
     if not characters.readable:
@@ -209,6 +216,7 @@ def read_stamp_text(
         page_index,
         document_version_id=document_version_id,
         dpi=dpi,
+        missing_space=missing_space,
         keep_char=drawing_ink,
         keep_path=path_ink,
     )
@@ -226,7 +234,12 @@ def read_stamp_text(
 
 
 def coloured_text(
-    data: bytes, page_index: int, *, document_version_id: UUID, dpi: int
+    data: bytes,
+    page_index: int,
+    *,
+    document_version_id: UUID,
+    dpi: int,
+    missing_space: MissingSpace,
 ) -> tuple[tuple[int, int, int, int], ...]:
     """Where the page's pasted drawings set text in colour: `(left, top, right, bottom)` of each run,
     in the page's pixels at `dpi`.
@@ -241,6 +254,7 @@ def coloured_text(
         page_index,
         document_version_id=document_version_id,
         dpi=dpi,
+        missing_space=missing_space,
         keep_char=lambda char: not drawing_ink(char),
     )
     extents = [item.image_extent for item in contents.texts] + [

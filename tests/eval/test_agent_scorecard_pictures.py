@@ -46,6 +46,7 @@ from extraction.reader import read_page_contents
 from extraction.vector_first import upright_png
 from storage.local import LocalStore
 from tests.eval.test_agent_scorecard import _cut_crop, _read
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import SETTINGS
 from tests.workflow.test_reader_pictures import SHEET
 from tests.workflow.test_reading_agent import _settings
@@ -89,7 +90,9 @@ def _key_crop(text: str, *, ticked_sideways: bool) -> KeyCrop:
     """The key's crop round one printed label, cut with the stage's margin at the key's 600 dpi."""
     item = next(
         item
-        for item in read_page_contents(SHEET, 0, document_version_id=DOCUMENT, dpi=KEY_DPI).texts
+        for item in read_page_contents(
+            SHEET, 0, document_version_id=DOCUMENT, dpi=KEY_DPI, missing_space=MISSING_SPACE
+        ).texts
         if item.text == text
     )
     margin = int(VISION_CROP_CONTEXT_MARGIN_PT * KEY_DPI / 72)
@@ -119,6 +122,7 @@ def _score(store: LocalStore, crop: KeyCrop) -> tuple[CropResult, _Shown, _Shown
         glyph_maximum_pt=SETTINGS.glyph_maximum_pt,
         glyph_gap_pt=SETTINGS.glyph_gap_pt,
         fraction_bar=SETTINGS.fraction_bar,
+        missing_space=MISSING_SPACE,
     )
     settings = _settings(sharper_dpi=450, primary_reader=NOVA, escalation_reader=QWEN)
     pages = build_pages(
@@ -193,6 +197,7 @@ def test_the_sharper_picture_is_the_page_area_rendered_not_the_crop_enlarged(
         glyph_maximum_pt=SETTINGS.glyph_maximum_pt,
         glyph_gap_pt=SETTINGS.glyph_gap_pt,
         fraction_bar=SETTINGS.fraction_bar,
+        missing_space=MISSING_SPACE,
     )
     settings = _settings(sharper_dpi=450, primary_reader=NOVA, escalation_reader=QWEN)
     page = build_pages(
@@ -374,3 +379,35 @@ def test_two_readers_of_one_model_share_its_quota() -> None:
     pacer.wait()
 
     assert slept == [3.0, 3.0]
+
+
+def test_a_scorecard_page_reads_its_printed_text_with_the_stated_missing_space_setting() -> None:
+    """**As the stage reads it** (#912). A scorecard page turns a label by the text the file prints,
+    read with the setting its geometry states: a sideways `[1 3/16]` whose space is a gap is set
+    aside at the demo's 0.1, so no direction is read from it, and is read at a wider setting."""
+    from extraction.reader import MissingSpace
+    from tests.extraction.test_reader import _pdf
+
+    sheet = _pdf(b"BT /F1 3 Tf 0 1 -1 0 150 10 Tm [(984 [1) -278 (3/16])] TJ ET\n")
+
+    def printed(gap_heights: str) -> tuple[object, ...]:
+        geometry = PageGeometry(
+            line_minimum_pt=SETTINGS.line_minimum_pt,
+            glyph_maximum_pt=SETTINGS.glyph_maximum_pt,
+            glyph_gap_pt=SETTINGS.glyph_gap_pt,
+            fraction_bar=SETTINGS.fraction_bar,
+            missing_space=MissingSpace(gap_heights=Decimal(gap_heights)),
+        )
+        settings = _settings(sharper_dpi=450, primary_reader=NOVA, escalation_reader=QWEN)
+        (page,) = build_pages(
+            sheet,
+            [0],
+            version_id=DOCUMENT,
+            dpi=STAGE_DPI,
+            geometry=geometry,
+            reach=settings.reach(geometry.glyph_gap_pt),
+        ).values()
+        return page.printed
+
+    assert printed("0.1") == ()
+    assert [run.rotation_degrees for run in printed("0.5")] == [90]  # type: ignore[attr-defined]

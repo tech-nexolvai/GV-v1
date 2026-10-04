@@ -51,7 +51,7 @@ from extraction.models.nova import (
 from extraction.models.validation import ValidationRejection
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from units.measurement import Unit
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
@@ -255,7 +255,9 @@ def test_two_bedrock_readers_emit_raw_candidates_under_distinct_extractors(
         _reader("bedrock-claude-haiku-4-5", "anthropic.claude-haiku-4-5-20251001-v1:0"),
     )
 
-    result = DatabaseStages(store, vision_readers=readers).extract_pages(session, revision.id)
+    result = DatabaseStages(
+        store, vision_readers=readers, missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
 
     assert result[0].payload["vision_candidates"] % len(readers) == 0
     assert result[0].payload["vision_candidates"] >= len(readers)
@@ -285,6 +287,7 @@ def test_a_single_vision_reader_corroborates_the_vector_reading_without_sealing(
     DatabaseStages(
         store,
         vision_readers=(_reader("bedrock-nova-pro", "amazon.nova-pro-v1:0"),),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     candidates = _vision_candidates(session)
@@ -315,6 +318,7 @@ def test_refusal_or_timeout_records_an_invocation_without_a_candidate(
         vision_readers=(
             _reader("bedrock-nova-pro", "amazon.nova-pro-v1:0", outcome=adapter_outcome),
         ),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     assert result[0].payload["vision_candidates"] == 0
@@ -341,6 +345,7 @@ def test_malformed_model_payload_records_rejection_without_a_candidate(
                 outcome=NovaInvocationOutcome.REJECTED,
             ),
         ),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
 
     assert _vision_candidates(session) == []

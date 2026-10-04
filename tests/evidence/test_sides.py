@@ -54,7 +54,7 @@ from tests.api.test_drawing_views import _client
 from tests.evidence.test_bridge import _upgrade
 from tests.extraction.test_annotations import _free_text
 from tests.extraction.test_annotations import _pdf as _annotated_pdf
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from vocabulary.semantic_types import DocumentRole
 from workflow.idempotency import stage_idempotency_key
 from workflow.propose import assignment_readings
@@ -190,7 +190,7 @@ def _read(
             )
         )
         session.flush()
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
     return revision
 
 

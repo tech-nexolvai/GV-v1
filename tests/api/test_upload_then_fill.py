@@ -54,6 +54,7 @@ from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_annotations import _pdf, _stamp
 from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.extraction.test_stamp_text import HELVETICA, _text_appearance
 from tests.workflow.test_stages import _publish_rulebook
 from workflow.association import AssociationSettings
@@ -257,7 +258,9 @@ def test_a_package_uploaded_through_the_ui_can_be_filled_by_a_model(
         sessionmaker(bind=session.get_bind(), expire_on_commit=False),
         package_revision_id=revision_id,
         workflow_run_id=workflow_run.id,
-        stages=DatabaseStages(store=store, dpi=150, association=SETTINGS),
+        stages=DatabaseStages(
+            store=store, dpi=150, association=SETTINGS, missing_space=MISSING_SPACE
+        ),
     )
     session.expire_all()
 
@@ -332,7 +335,9 @@ def test_the_worker_fills_the_form_before_a_reviewer_opens_it(
         sessionmaker(bind=session.get_bind(), expire_on_commit=False),
         package_revision_id=revision_id,
         workflow_run_id=workflow_run.id,
-        stages=DatabaseStages(store=store, dpi=150, association=SETTINGS),
+        stages=DatabaseStages(
+            store=store, dpi=150, association=SETTINGS, missing_space=MISSING_SPACE
+        ),
     )
     session.expire_all()
 
@@ -389,7 +394,9 @@ def test_a_second_proposal_replaces_the_first_on_the_form(
         sessionmaker(bind=session.get_bind(), expire_on_commit=False),
         package_revision_id=revision_id,
         workflow_run_id=workflow_run.id,
-        stages=DatabaseStages(store=store, dpi=150, association=SETTINGS),
+        stages=DatabaseStages(
+            store=store, dpi=150, association=SETTINGS, missing_space=MISSING_SPACE
+        ),
     )
     session.expire_all()
 

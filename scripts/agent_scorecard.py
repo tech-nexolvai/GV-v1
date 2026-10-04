@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         ReaderPicture,
         vision_config_for_extractor,
     )
-    from scripts.glyph_inventory import read_reader_settings
+    from scripts.glyph_inventory import read_missing_space, read_reader_settings
     from workflow.reader_pictures import PictureSettings
     from workflow.reading_agent import ReadingAgentSettings
     from workflow.stages import VISION_CROP_CONTEXT_MARGIN_PT
@@ -140,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
                 character_gap_pt=Decimal(reader["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
                 turned_aspect_min=Decimal(reader["GV_READER_FRACTION_TURNED_ASPECT_MIN"]),
             ),
+            # The pages' printed text is read as the stage reads it (#907, #912).
+            missing_space=read_missing_space(args.reader_settings),
         )
         settings = ReadingAgentSettings(
             max_steps=args.max_steps,

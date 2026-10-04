@@ -79,6 +79,7 @@ from extraction.agent.trigger import AmbiguityReason
 from extraction.glyph_bands import FractionBarGeometry, FractionLayout
 from extraction.manifest import PageRecord
 from extraction.models.nova import ReaderPicture
+from extraction.reader import MissingSpace
 from storage.store import ArtifactStore
 from units.measurement import Measurement
 from units.notation import is_compound
@@ -436,6 +437,10 @@ class PageGeometry:
     glyph_maximum_pt: Decimal
     glyph_gap_pt: Decimal
     fraction_bar: FractionBarGeometry
+    missing_space: MissingSpace
+    """The text reader's setting (#912): the page's printed text, which says which way a label runs
+    for a reader shown it upright (#907), is read as the stage reads it, with the gap inside the
+    inches at which a label is set aside."""
 
 
 class ScorecardPage:
@@ -487,10 +492,11 @@ class ScorecardPage:
             glyph_gap_pt=geometry.glyph_gap_pt,
             fraction_bar=geometry.fraction_bar,
         )
-        self.printed = self._printed(dpi)
+        self.printed = self._printed(dpi, geometry.missing_space)
 
-    def _printed(self, dpi: int) -> tuple[PrintedRun, ...]:
-        """The page's own text and its pasted drawings' font text, as the stage reads both (#907)."""
+    def _printed(self, dpi: int, missing_space: MissingSpace) -> tuple[PrintedRun, ...]:
+        """The page's own text and its pasted drawings' font text, as the stage reads both (#907),
+        with the stage's missing-space setting (#912)."""
         from extraction.reader import UnreadablePdf, read_page_contents
         from extraction.stamp_text import read_stamp_text
         from workflow.reader_pictures import printed_runs
@@ -498,14 +504,22 @@ class ScorecardPage:
         texts: list[object] = []
         try:
             texts += read_page_contents(
-                self._data, self._record.index, document_version_id=self._version_id, dpi=dpi
+                self._data,
+                self._record.index,
+                document_version_id=self._version_id,
+                dpi=dpi,
+                missing_space=missing_space,
             ).texts
         except UnreadablePdf:
             pass
         if self.layers.vendor_stamps:
             try:
                 texts += read_stamp_text(
-                    self._data, self._record.index, document_version_id=self._version_id, dpi=dpi
+                    self._data,
+                    self._record.index,
+                    document_version_id=self._version_id,
+                    dpi=dpi,
+                    missing_space=missing_space,
                 ).contents.texts
             except UnreadablePdf:
                 pass

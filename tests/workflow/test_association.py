@@ -61,6 +61,7 @@ from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_annotations import BOTH_LAYERS, _appearance, _free_text, _pdf, _stamp
 from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.extraction.test_reader import _pdf as _content_pdf
 from tests.workflow.test_markup_route import _SilentOcr
 from units.measurement import Unit
@@ -370,6 +371,7 @@ def _stages(
         ocr_engine=ocr_engine or _SilentOcr(),  # type: ignore[arg-type]
         association=association,
         localized_ocr=localized_ocr,
+        missing_space=MISSING_SPACE,
     )
 
 
@@ -494,6 +496,7 @@ def test_vision_readings_are_associated_through_their_source_region(
         association=SETTINGS,
         ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
         vision_readers=(_association_vision_reader(),),
+        missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
     session.commit()
 

@@ -214,6 +214,41 @@ def test_the_demo_worker_reads_stacked_fractions_piece_by_piece(
 
 
 # ---------------------------------------------------------------------------
+# A space the file left out inside the inches (#912)
+# ---------------------------------------------------------------------------
+
+
+def test_the_demo_worker_reads_with_the_measured_missing_space_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**Stated in the demo's worker block, at the 0.1 measured on both client drawings** (#912).
+    Built the way the worker builds it, from what the block states."""
+    from extraction.reader import MissingSpace
+    from workflow.stages import missing_space_from_environment
+
+    _demo_reader_environment(monkeypatch)
+
+    assert missing_space_from_environment() == MissingSpace(gap_heights=Decimal("0.1"))
+
+
+@pytest.mark.parametrize("stated", [None, "", "a tenth", "0", "1", "-0.1"])
+def test_the_worker_refuses_to_guess_the_missing_space_setting(
+    monkeypatch: pytest.MonkeyPatch, stated: str | None
+) -> None:
+    """**No default.** Unstated, or not a share of the text's height above 0 and below 1, the
+    setting is refused with the variable named: the stages are never built without it."""
+    from workflow.stages import MISSING_SPACE_ENV, missing_space_from_environment
+
+    if stated is None:
+        monkeypatch.delenv(MISSING_SPACE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(MISSING_SPACE_ENV, stated)
+
+    with pytest.raises(ValueError, match=MISSING_SPACE_ENV):
+        missing_space_from_environment()
+
+
+# ---------------------------------------------------------------------------
 # The reader pair, Qwen3-VL + Nova 2 Lite, on in the demo (#907)
 # ---------------------------------------------------------------------------
 
@@ -302,7 +337,8 @@ def test_every_vision_run_identity_fits_its_column_on_the_demo_s_settings(
     """**A run's identity is 200 characters at most** (`extraction_runs.config_hash`). Written
     out, the demo's settings, a gate and an upright, sharper picture ran past it — 262 characters,
     which the database would have refused on the first page the demo read. Every defined reader,
-    gated or not, on the settings the demo's worker block states, fits."""
+    gated or not, on the settings the demo's worker block states, fits; so do the runs that read
+    the file's own text, which carry the reader's missing-space setting too (#912)."""
     import scripts.drain_outbox as worker
     from app.models import ExtractionRun
     from extraction.models.nova import (
@@ -312,7 +348,12 @@ def test_every_vision_run_identity_fits_its_column_on_the_demo_s_settings(
     )
     from workflow.reader_pictures import picture_settings_from_environment
     from workflow.reading_agent import reading_agent_from_environment
-    from workflow.stages import RUN_IDENTITY_CHARACTERS, BedrockVisionReader, DatabaseStages
+    from workflow.stages import (
+        RUN_IDENTITY_CHARACTERS,
+        BedrockVisionReader,
+        DatabaseStages,
+        missing_space_from_environment,
+    )
 
     _demo_reader_environment(monkeypatch)
     for name, value in _demo_worker_settings(
@@ -342,8 +383,10 @@ def test_every_vision_run_identity_fits_its_column_on_the_demo_s_settings(
         vision_readers=readers,
         reading_agent=reading_agent_from_environment(),
         reader_pictures=picture_settings_from_environment(),
+        missing_space=missing_space_from_environment(),
     )
     limit = ExtractionRun.__table__.c.config_hash.type.length
+    assert stages._text_run_config() == "dpi=300;missing_space>=0.1"
     assert limit == RUN_IDENTITY_CHARACTERS
     longest_gate = max((reader.config.extractor for reader in readers), key=len)
 
@@ -363,3 +406,64 @@ def test_every_vision_run_identity_fits_its_column_on_the_demo_s_settings(
     assert stages._vision_run_config(sharper, gate=None) != stages._vision_run_config(
         sharper, gate=longest_gate
     ), "a gated reader's run is another run, whatever its picture"
+
+
+def test_every_run_identity_fits_its_column_whatever_the_missing_space_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**#907's identities and #912's setting together.** The setting is part of every run that
+    reads the file's own text, and of the fingerprint of a reader shown an upright, sharper picture,
+    whose turn reads that text. Stated with digits enough to run past the column, a text run's
+    identity is a fingerprint instead, never cut short; another value is always another run; and a
+    reader shown the crop as cut keeps the identity it had, which the setting does not touch."""
+    from decimal import Decimal
+
+    import scripts.drain_outbox as worker
+    from app.models import ExtractionRun
+    from extraction.models.nova import VISION_READERS, ReaderPicture, vision_config_for_extractor
+    from extraction.reader import MissingSpace
+    from workflow.reader_pictures import picture_settings_from_environment
+    from workflow.stages import BedrockVisionReader, DatabaseStages
+
+    _demo_reader_environment(monkeypatch)
+    monkeypatch.setenv(
+        "GV_VISION_SHARPER_PICTURE_DPI",
+        _demo_worker_settings("GV_VISION_SHARPER_PICTURE_DPI")["GV_VISION_SHARPER_PICTURE_DPI"],
+    )
+    association, localized = worker._reader_configuration()
+    readers = [
+        BedrockVisionReader(config)
+        for definition in VISION_READERS
+        if (config := vision_config_for_extractor(definition.extractor)) is not None
+    ]
+    limit = ExtractionRun.__table__.c.config_hash.type.length
+
+    def stages(gap_heights: str) -> DatabaseStages:
+        return DatabaseStages(
+            None,
+            association=association,  # type: ignore[arg-type]
+            localized_ocr=localized,  # type: ignore[arg-type]
+            vision_readers=readers,
+            reader_pictures=picture_settings_from_environment(),
+            missing_space=MissingSpace(gap_heights=Decimal(gap_heights)),
+        )
+
+    demo, other, long = stages("0.1"), stages("0.12"), stages("0." + "1" * 300)
+    identities = {
+        name: (
+            built._text_run_config(),
+            {r: built._vision_run_config(r, gate=None) for r in readers},
+        )
+        for name, built in (("demo", demo), ("other", other), ("long", long))
+    }
+    for text, vision in identities.values():
+        assert len(text) <= limit
+        assert all(len(identity) <= limit for identity in vision.values())
+    assert identities["long"][0].startswith("dpi=300;run=")
+    assert len({text for text, _ in identities.values()}) == 3, "another value is another run"
+    for reader in readers:
+        seen = {vision[reader] for _, vision in identities.values()}
+        if reader.config.picture is ReaderPicture.UPRIGHT_SHARPER:
+            assert len(seen) == 3, "the turn reads the text the setting decides"
+        else:
+            assert len(seen) == 1, "a reader shown the crop as cut keeps its identity"

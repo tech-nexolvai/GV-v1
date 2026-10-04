@@ -50,6 +50,7 @@ from scripts.evaluate_goldset import (
     make_fixture,
 )
 from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
+from tests.extraction.test_reader import MISSING_SPACE
 from workflow.association import AssociationSettings
 from workflow.config import READER_RASTER_DPI
 
@@ -100,6 +101,9 @@ ASSOCIATION_ARGUMENTS = [
     "4",
     "--fraction-turned-aspect-min",
     "1.1",
+    # The reader's own (#912), required with the rest: every page is read with it.
+    "--missing-space-heights",
+    str(MISSING_SPACE.gap_heights),
 ]
 
 
@@ -288,6 +292,7 @@ def test_the_extraction_stage_never_receives_the_reviewer_answer(
             dpi=150,
             association=association,
             localized_ocr=None,
+            missing_space=MISSING_SPACE,
             vendor_stamps_only=True,
         )
         candidates = list(result.session.scalars(select(ObservationCandidate)))
@@ -730,6 +735,19 @@ def test_the_grader_refuses_to_guess_association_settings(
     assert "association settings are required" in error
     assert "--proximity-limit" in error
     assert "--ambiguity-margin" in error
+
+
+def test_the_grader_refuses_to_guess_the_reader_setting(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A package run without the reader's missing-space setting stops (#912): the grader would
+    otherwise score a reader no deployment runs."""
+    directory = make_fixture(tmp_path / "package")
+    without = ASSOCIATION_ARGUMENTS[: ASSOCIATION_ARGUMENTS.index("--missing-space-heights")]
+
+    assert main_with(["--database-url", "postgresql://unused", *without, str(directory)]) == 2
+
+    assert "--missing-space-heights" in capsys.readouterr().err
 
 
 def test_no_arguments_asks_for_a_package_rather_than_guessing(

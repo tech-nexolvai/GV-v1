@@ -47,6 +47,7 @@ from evidence.polygon import Polygon
 from extraction.annotations import PathSegment, SegmentKind, VectorPath
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
+from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_cross_route_corroboration import _Reader, _reader
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
@@ -424,7 +425,9 @@ def _extract(
     readers = tuple(
         _reader(reader.config.extractor, reader.config.model_id, reading=reading) for reader in PAIR
     )
-    (result,) = DatabaseStages(store, vision_readers=readers).extract_pages(session, revision.id)
+    (result,) = DatabaseStages(
+        store, vision_readers=readers, missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
     rows = [
         (row, extractor)
         for row, extractor in session.execute(
@@ -545,6 +548,7 @@ def test_the_new_pair_agreeing_on_a_gv_mark_s_number_is_held_back(
         store,
         vision_readers=_new_pair('24"'),
         reader_pictures=PictureSettings(sharper_dpi=900),
+        missing_space=MISSING_SPACE,
     )
 
     (result,) = stages.extract_pages(session, revision.id)

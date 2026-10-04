@@ -44,7 +44,7 @@ from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Prove
 from rules.schema import Quantity
 from storage.local import LocalStore
 from tests.evidence.test_bridge import _upgrade
-from tests.extraction.test_reader import _pdf
+from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from tests.workflow.test_identifier_pairing import _finding, _rules
 from tests.workflow.test_stages import _publish_rulebook
 from units.measurement import Unit
@@ -193,7 +193,7 @@ def _labelled(
         _drawing('45"', '2"', '18"', '20"', '3"'),
         _drawing('15"'),
     )
-    DatabaseStages(store).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
     _label(session, revision, '45"', "countertop_overall_width")
     _label(session, revision, '18"', "cabinet_width")
     _label(session, revision, '20"', "cabinet_width")
@@ -206,9 +206,9 @@ def _labelled(
 
 def _checked(session: Session, store: LocalStore, revision: PackageRevision) -> object:
     _publish_rulebook(session)
-    DatabaseStages(store, discriminators={"wall_config": "back_left_right"}).run_checks(
-        session, revision.id
-    )
+    DatabaseStages(
+        store, discriminators={"wall_config": "back_left_right"}, missing_space=MISSING_SPACE
+    ).run_checks(session, revision.id)
     return _finding(session, revision, RULE)
 
 
