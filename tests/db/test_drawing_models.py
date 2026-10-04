@@ -914,8 +914,7 @@ def test_the_run_guard_leaves_readers_alone(source: str, tmp_path: Path) -> None
     assert [writer for guarded in RUN_WRITERS for writer in _writers(tmp_path, guarded)] == []
 
 
-#: The only shipped code that may mention a run at all until a rule reads one (#748 step 7): the
-#: models and their migrations, the writer, and the Measure page's listing and endpoints.
+#: Step 7 adds only the confirmed-structure resolver to the existing run storage and UI access.
 RUN_AWARE: frozenset[str] = frozenset(
     {
         "alembic/versions/0058_drawing_parts.py",
@@ -926,6 +925,7 @@ RUN_AWARE: frozenset[str] = frozenset(
         "app/models/__init__.py",
         "app/models/drawing.py",
         "workflow/countertop_runs.py",
+        "workflow/part_operands.py",
         "app/evidence/countertop_runs.py",
         "app/api/countertop_runs.py",
         "app/main.py",
@@ -973,10 +973,8 @@ def _mentions_a_run(root: Path) -> set[str]:
     return _mentions(root, _RUN_WORDS)
 
 
-def test_no_rule_input_reads_a_run_yet() -> None:
-    """**Done when, 4.** No rule reads runs until step 7, so nothing that builds a rule's inputs —
-    `rules/`, `verdict/`, `evidence/`, the evidence stage, matching — may name one. A file that
-    starts to is either step 7, which updates this list on purpose, or a leak."""
+def test_only_the_confirmed_structure_resolver_reads_runs_for_rules() -> None:
+    """Step 7 adds one consumer, not access for the engine, evidence stage or other resolvers."""
     assert _mentions_a_run(REPO_ROOT) == RUN_AWARE
 
 
@@ -1109,14 +1107,14 @@ def test_the_link_guard_sees_a_new_caller_of_the_writer(call: str, tmp_path: Pat
     assert _callers(tmp_path, LINK_WRITER[1]) == {("workflow/suggest.py", "suggest")}
 
 
-#: The only shipped code that may mention a link at all until a rule reads one (#748 step 7): the
-#: models and their migration, the writer, and the Measure page's listing and endpoints.
+#: Step 7 adds only the confirmed-structure resolver to the existing link storage and UI access.
 LINK_AWARE: frozenset[str] = frozenset(
     {
         "alembic/versions/0058_drawing_parts.py",
         "app/models/__init__.py",
         "app/models/drawing.py",
         "workflow/reading_parts.py",
+        "workflow/part_operands.py",
         "app/evidence/reading_parts.py",
         "app/api/reading_parts.py",
         "app/main.py",
@@ -1126,10 +1124,8 @@ LINK_AWARE: frozenset[str] = frozenset(
 _LINK_WORDS = re.compile(r"reading_part|ReadingPart")
 
 
-def test_no_rule_input_reads_a_link_yet() -> None:
-    """**Done when, 3.** No rule reads a reading's part until step 7, so nothing that builds a
-    rule's inputs — `rules/`, `verdict/`, `evidence/`, the evidence stage, matching — may name a
-    link. A file that starts to is either step 7, which updates this list on purpose, or a leak."""
+def test_only_the_confirmed_structure_resolver_reads_links_for_rules() -> None:
+    """Step 7's resolver alone gains read access; every writer and negative guard stays intact."""
     assert _mentions(REPO_ROOT, _LINK_WORDS) == LINK_AWARE
 
 

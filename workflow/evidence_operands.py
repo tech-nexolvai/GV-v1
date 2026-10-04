@@ -27,6 +27,10 @@ reading carries its cabinet's identifier or its place in a confirmed run yet (#7
 the order readings were labelled, compared position by position, passed two swapped cabinets — in
 the pairing check and again in the filler check. The form still supplies both runs, in the order
 the reviewer states.
+
+**Confirmed structure is the narrow exception** (#932). The parts resolver supplies complete,
+sealed SHOP widths in the confirmed run order, or withholds them with no form/label fallback.
+It does not establish approved-to-shop pairing. Project parameters and the no-run path stay as before.
 """
 
 from __future__ import annotations
@@ -59,6 +63,7 @@ from rules.semantic_types import DocumentRole, SemanticType
 from units.measurement import Measurement, Unit
 from verdict.operands import VerdictOperand
 from verdict.operations import POSITION_SENSITIVE_OPERATIONS
+from workflow.part_operands import part_operands
 
 __all__ = [
     "DRAWINGS_SPANNED",
@@ -207,6 +212,23 @@ class EvidenceOperands:
     """Keyed by rule id, then input name."""
     ambiguous: dict[str, dict[str, str]] = field(default_factory=dict)
     """Inputs whose readings were found and not used, keyed by rule id then input name, with why."""
+    owned: dict[str, frozenset[str]] = field(default_factory=dict)
+    """Inputs reserved to confirmed structure, even when withheld; form values cannot replace them."""
+    missing: dict[str, str] = field(default_factory=dict)
+    notes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def merge(
+        self, rule_id: str, supplied: Mapping[str, VerdictOperand]
+    ) -> dict[str, VerdictOperand]:
+        """Keep explicit project inputs, but never bypass a complete-or-abstain width decision."""
+        return {
+            **self.operands.get(rule_id, {}),
+            **{
+                name: value
+                for name, value in supplied.items()
+                if name not in self.owned.get(rule_id, ())
+            },
+        }
 
 
 def operands_from_evidence(
@@ -243,6 +265,7 @@ def evidence_operands(
 
     # Grouped by what a rule asks for: the document's role and the quantity's semantic type.
     by_need: dict[tuple[str, str], list[tuple[DomainObservation, UUID, _Drawing]]] = {}
+    observations: dict[UUID, tuple[DomainObservation, _Drawing]] = {}
     sides = ReadingSides(session)
     for row, page in rows:
         page_index = page.index
@@ -287,6 +310,7 @@ def evidence_operands(
         by_need.setdefault((row.document_role, row.semantic_type), []).append(
             (observation, row.id, drawing)
         )
+        observations[row.id] = observation, drawing
 
     operands: dict[str, dict[str, VerdictOperand]] = {}
     ambiguous: dict[str, dict[str, str]] = {}
@@ -347,7 +371,24 @@ def evidence_operands(
                 operand = single
 
             operands.setdefault(rule.id, {})[name] = operand
-    return EvidenceOperands(operands=operands, ambiguous=ambiguous)
+    selected = part_operands(session, package_revision_id, rules, observations)
+    for rule_id, owned in selected.owned.items():
+        # Run-owned inputs replace labels even when the run returned no usable widths.
+        operands[rule_id] = {
+            name: value for name, value in operands.get(rule_id, {}).items() if name not in owned
+        }
+        ambiguous[rule_id] = {
+            name: why for name, why in ambiguous.get(rule_id, {}).items() if name not in owned
+        }
+        operands[rule_id].update(selected.operands.get(rule_id, {}))
+        ambiguous[rule_id].update(selected.ambiguous.get(rule_id, {}))
+    return EvidenceOperands(
+        operands=operands,
+        ambiguous=ambiguous,
+        owned=selected.owned,
+        missing=selected.missing,
+        notes=selected.notes,
+    )
 
 
 def _spanning(
