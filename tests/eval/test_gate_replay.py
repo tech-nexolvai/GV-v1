@@ -336,6 +336,7 @@ GUARDED = [
         (Guard.NONE, 3, 2),
         (Guard.CUT, 2, 2),
         (Guard.GV_MARK, 3, 1),
+        (Guard.GATE, 2, 1),
         (Guard.PROMOTED_NUMERATOR, 3, 1),
         (Guard.SIDEWAYS, 2, 2),
         (Guard.MM_ON_FILE_TEXT, 4, 2),

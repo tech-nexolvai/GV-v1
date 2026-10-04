@@ -64,6 +64,7 @@ from extraction.models.nova import NovaConfig, NovaRequest
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import MISSING_SPACE, _pdf
+from tests.workflow.test_cut_label_guard import stated_geometry
 from tests.workflow.test_stages import (
     _outcome_for,
     _project_depth_parameters,
@@ -223,9 +224,15 @@ def _extract(
     """Read the drawing and return the revision with the candidate carrying its dimension."""
     revision = _revision(session, store, token=token)
     readers = (_AgreeingVisionReader(token),) if second_reader else ()
-    DatabaseStages(store, vision_readers=readers, missing_space=MISSING_SPACE).extract_pages(
-        session, revision.id
-    )
+    # A second reader's agreement is confirmed only where the gate can see that the reader's crop
+    # holds the whole label, so the drawing's geometry is stated, as in the demo (#919).
+    geometry = stated_geometry(_AgreeingVisionReader.config.extractor) if second_reader else {}
+    DatabaseStages(
+        store,
+        vision_readers=readers,
+        missing_space=MISSING_SPACE,
+        **geometry,  # type: ignore[arg-type]
+    ).extract_pages(session, revision.id)
     version_id = session.execute(
         select(PackageRevisionDocument.document_version_id).where(
             PackageRevisionDocument.package_revision_id == revision.id
