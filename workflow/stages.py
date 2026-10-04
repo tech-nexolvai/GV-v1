@@ -5472,31 +5472,24 @@ class DatabaseStages:
             # number into a form, so a drawing could be read and confirmed and the checks would still
             # be judged on a reviewer's transcription.
             #
-            # A caller's operand still wins where both exist. Supplying one is a deliberate act — the
-            # reviewer entered that number for this run — and evidence is derived, so overriding the
-            # explicit thing with the derived one would take an answer away from the person who gave
-            # it. It also keeps the Q7 form path behaving exactly as it did.
+            # The Q7 form path keeps its precedence unless a confirmed run owns the width input.
+            # For those inputs the complete run is the source, or the check abstains; a form must
+            # not conceal a missing or withdrawn member. Settings keep their existing precedence.
             evidence = evidence_operands(
                 session,
                 package_revision_id,
                 [applicable.snapshot.rule for applicable in resolution.applicable],
             )
-            from_evidence = evidence.operands
-
             for applicable in resolution.applicable:
                 rule_id = applicable.snapshot.rule.id
-                supplied = {
-                    **from_evidence.get(rule_id, {}),
-                    **reviewer_operands.get(rule_id, {}),
-                }
+                supplied = evidence.merge(rule_id, reviewer_operands.get(rule_id, {}))
                 finding = execute(
                     applicable.snapshot,
                     supplied,
                     resolved,
                     discriminators=self._discriminators,
                     # Readings found on more than one drawing (#826). A value typed for the same
-                    # input still wins, as it does over evidence: the engine ignores an ambiguous
-                    # input it was given an operand for.
+                    # input still wins unless the run owns that input; merge() enforces that boundary.
                     ambiguous=evidence.ambiguous.get(rule_id, {}),
                 )
                 # A run evidence was not allowed to fill (#794, #833), named in its check's own
@@ -5507,11 +5500,16 @@ class DatabaseStages:
                     {
                         why
                         for name, why in position_sensitive_inputs(applicable.snapshot.rule).items()
-                        if name not in supplied
+                        if name not in supplied and name not in evidence.owned.get(rule_id, ())
                     }
                 )
                 if finding.outcome is Outcome.NOT_FOUND and unfilled:
                     finding = replace(finding, reason=f"{' '.join(unfilled)} ({finding.reason})")
+                if finding.outcome is Outcome.NOT_FOUND and rule_id in evidence.missing:
+                    finding = replace(
+                        finding, reason=f"{evidence.missing[rule_id]} ({finding.reason})"
+                    )
+                finding = replace(finding, notes=(*finding.notes, *evidence.notes.get(rule_id, ())))
                 record_finding(
                     session,
                     package_revision_id=package_revision_id,
