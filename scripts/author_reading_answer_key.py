@@ -1076,18 +1076,18 @@ def _measurement_payload(value: object, raw: str) -> dict[str, str]:
 
 #: The text reader's setting (#912): the share of the text's height at which a gap inside the
 #: inches is a space the file left out. The frame and the look-again check both read the drawing's
-#: printed text with the reader, so both read it from the settings file; it has no default.
+#: printed text with the reader, so both read it from the settings file, the frame among the
+#: reader's own settings (`_reader_settings`); it has no default.
 MISSING_SPACE_SETTING: Final = "GV_READER_MISSING_SPACE_HEIGHTS"
 
 #: Settings the dimension-first frame reads beyond the reader's own: the association's ambiguity
-#: margin, which decides whether one dimension line is clearly the nearest, the reading agent's
-#: two label lengths, which decide where a label ends and so whether a crop cut it, and the text
-#: reader's missing-space setting. Read from the same file, like the rest; none has a default.
+#: margin, which decides whether one dimension line is clearly the nearest, and the reading agent's
+#: two label lengths, which decide where a label ends and so whether a crop cut it. Read from the
+#: same file, like the rest; none has a default.
 FRAME_SETTINGS: Final = (
     "GV_READER_AMBIGUITY_MARGIN",
     "GV_AGENT_LABEL_GAP_PT",
     "GV_AGENT_MAX_LABEL_PT",
-    MISSING_SPACE_SETTING,
 )
 
 #: Where a run agreed, on the drawing with this content hash. **Place only**: the query selects the

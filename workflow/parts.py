@@ -17,16 +17,21 @@ the API (`app/api/drawing_parts.py`), and `tests/api/test_no_heavy_work.py` keep
 from anything that reads a PDF. The stage that suggests parts (#868) passes plain values to
 `record_part_proposal`.
 
-Source: issues #852, #868 and #882; #748 plan, steps 2 to 4. Verification:
+**Where a confirmed part lies** (`PlacedPart`, `live_part`, `live_parts_on`) is read here too, for
+everything decided from the parts: the run beneath each countertop (#893) and which reading is each
+part's width (#913). It reads outlines and kinds, never a width.
+
+Source: issues #852, #868, #882, #893 and #913; #748 plan, steps 2 to 6. Verification:
 tests/db/test_drawing_models.py, tests/workflow/test_part_proposals_route.py,
-tests/api/test_drawing_parts.py.
+tests/api/test_drawing_parts.py, tests/workflow/test_countertop_runs.py.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from decimal import Decimal
-from typing import Final
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+from typing import Final, cast
 from uuid import UUID
 
 from sqlalchemy import Select, exists, select
@@ -44,9 +49,13 @@ from vocabulary.part_kinds import PartKind
 
 __all__ = [
     "CODE_IDENTIFIER_KIND",
+    "PlacedPart",
+    "check_edge_tolerance",
     "confirm_part",
     "current_decision",
+    "live_part",
     "live_part_item_ids",
+    "live_parts_on",
     "record_part_proposal",
     "withdraw_part",
 ]
@@ -226,6 +235,116 @@ def withdraw_part(session: Session, *, proposal: PartProposal, actor: str) -> Pa
 def _require_actor(actor: str) -> None:
     if not isinstance(actor, str) or not actor.strip():
         raise ValueError("a decision on a part needs the person who made it")
+
+
+# ---------------------------------------------------------------------------
+# Where a confirmed part lies
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class PlacedPart:
+    """A confirmed part as the decisions made from it read it: which item, what kind, which drawing,
+    and the box around its outline in stored page space, where `y` grows down the page.
+
+    A part a person added has a two-point outline (#882): its box is that line, `top == bottom`.
+    """
+
+    item_id: UUID
+    kind: PartKind
+    view_id: UUID
+    left: Decimal
+    right: Decimal
+    top: Decimal
+    bottom: Decimal
+
+    @classmethod
+    def from_extent(
+        cls, *, item_id: UUID, kind: PartKind, view_id: UUID, extent: Mapping[str, object]
+    ) -> PlacedPart:
+        """The box around a stored outline, `{"space": "stored", "points": [[x, y], ...]}`, read
+        exactly. Refuses an outline in any other space, with no points, or with a point that is not
+        a finite number, rather than placing the part somewhere it is not."""
+        if extent.get("space") != "stored":
+            raise ValueError("a part's outline must be in stored page space")
+        raw = extent.get("points")
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("a part's outline must have points")
+        points: list[tuple[Decimal, Decimal]] = []
+        for point in cast(list[object], raw):
+            if not isinstance(point, list) or len(point) != 2:
+                raise ValueError("a part's outline holds a point that is not an x and a y")
+            try:
+                x, y = Decimal(str(point[0])), Decimal(str(point[1]))
+            except InvalidOperation as error:
+                raise ValueError("a part's outline holds a point that is not a number") from error
+            if not (x.is_finite() and y.is_finite()):
+                raise ValueError("a part's outline holds a point that is not a finite number")
+            points.append((x, y))
+        return cls(
+            item_id=item_id,
+            kind=kind,
+            view_id=view_id,
+            left=min(x for x, _ in points),
+            right=max(x for x, _ in points),
+            top=min(y for _, y in points),
+            bottom=max(y for _, y in points),
+        )
+
+
+def check_edge_tolerance(tolerance: object) -> Decimal:
+    """The tolerance, refused unless it is an exact, finite, non-negative number.
+
+    A float would let binary rounding decide whether two ends drawn on the page meet. NaN fails
+    every comparison and infinity passes every one, so neither loosens the tests: both remove them.
+    """
+    if not isinstance(tolerance, Decimal):
+        raise TypeError("edge_tolerance must be a Decimal")
+    if not tolerance.is_finite():
+        raise ValueError("edge_tolerance must be a finite number")
+    if tolerance < 0:
+        raise ValueError("edge_tolerance cannot be negative")
+    return tolerance
+
+
+def across(part: PlacedPart) -> tuple[Decimal, Decimal, Decimal, Decimal, str]:
+    """Left end, then right end, then top and bottom; the item id breaks only exact ties, so the
+    order never depends on which part was listed or clicked first."""
+    return part.left, part.right, part.top, part.bottom, str(part.item_id)
+
+
+def _live_parts_query() -> Select[tuple[DrawingItem, str | None]]:
+    """Each item a person's current decision confirmed, with the kind they confirmed. A
+    confirmation always names its kind (`part_confirmation_decision_shape`)."""
+    later = aliased(PartConfirmation)
+    return (
+        select(DrawingItem, PartConfirmation.kind)
+        .join(PartConfirmation, PartConfirmation.drawing_item_id == DrawingItem.id)
+        .where(
+            PartConfirmation.decision == PartDecision.CONFIRMED.value,
+            ~exists().where(later.supersedes_id == PartConfirmation.id),
+        )
+    )
+
+
+def _placed(item: DrawingItem, kind: str | None) -> PlacedPart:
+    if kind is None:
+        raise ValueError("a confirmed part names the kind it was confirmed as")
+    return PlacedPart.from_extent(
+        item_id=item.id, kind=PartKind(kind), view_id=item.drawing_view_id, extent=item.extent
+    )
+
+
+def live_part(session: Session, item_id: UUID) -> PlacedPart | None:
+    """The confirmed part this item is, while a person stands by it; `None` for any other id."""
+    row = session.execute(_live_parts_query().where(DrawingItem.id == item_id)).one_or_none()
+    return None if row is None else _placed(*row)
+
+
+def live_parts_on(session: Session, view_id: UUID) -> tuple[PlacedPart, ...]:
+    """Every confirmed part on one drawing that a person stands by, left to right."""
+    rows = session.execute(_live_parts_query().where(DrawingItem.drawing_view_id == view_id))
+    return tuple(sorted((_placed(*row) for row in rows), key=across))
 
 
 def _record(session: Session, confirmation: PartConfirmation, actor: str) -> PartConfirmation:

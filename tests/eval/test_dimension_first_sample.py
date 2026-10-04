@@ -507,7 +507,7 @@ def test_both_scripts_take_several_keys() -> None:
         [
             *("--key", "a", "--key", "b", "--reader-settings", "demo.sh", "--stage-dpi", "300"),
             *("--sharper-dpi", "450", "--label-gap-pt", "4", "--max-label-pt", "40"),
-            *("--max-steps", "6", "--output", "out.md"),
+            *("--max-steps", "6", "--budget-usd", "0.50", "--output", "out.md"),
         ]
     )
 

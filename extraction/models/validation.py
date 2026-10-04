@@ -21,9 +21,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
-from typing import Final, Protocol
+from typing import Annotated, Final, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
+from pydantic.types import StringConstraints
 
 from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
@@ -117,11 +118,39 @@ class DigitsToolPayload(BaseModel):
     )
 
 
+class ReadingOnlyPayload(BaseModel):
+    """What a reader on the plain-JSON answer path may answer: its reading, or `null` (#907).
+
+    **No rectangle.** The stage places a vision reading at the region it sent and never where a
+    model says it is (`workflow.stages._record_vision_candidate`), so a rectangle was only ever a
+    bounds check — and asking a reader whose answer space was never measured for one is how a
+    rectangle in the wrong units passes that check (#664). So a reader on this path is asked for
+    none, and its candidate is placed at the whole crop it was shown (`CoordinateMode.CROP`).
+
+    **`null` is an answer.** The reader saying there is no dimension it can read here — cut off,
+    unclear, or none — which the teaching prompt asks for rather than a guess. It is recorded as
+    an abstention under `READER_GAVE_NO_READING`, never turned into a reading.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reading: Annotated[StrictStr, StringConstraints(min_length=1)] | None = Field(
+        description="The dimension exactly as printed, or null when there is none to read."
+    )
+
+
+#: Why a reader on the plain-JSON path gave no candidate when it answered `null` (#907).
+READER_GAVE_NO_READING: Final = "reader_gave_no_reading"
+
+
 class CoordinateMode(StrEnum):
     """How the model's rectangle coordinates should be read."""
 
     PIXELS = "pixels"
     NOVA_GRID = "nova_grid"
+    CROP = "crop"
+    """No rectangle was asked for (#907): the reader answers on the plain-JSON path
+    (`ReadingOnlyPayload`), and its candidate is placed at the whole crop it was shown."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,6 +489,16 @@ def _rectangle_polygon(
     )
 
 
+def _crop_polygon(crop_size: CropSize) -> tuple[ImagePoint, ...]:
+    """The whole crop, for a reader asked for no rectangle: where it read is all it was shown."""
+    return (
+        ImagePoint(0, 0),
+        ImagePoint(crop_size.width_px, 0),
+        ImagePoint(crop_size.width_px, crop_size.height_px),
+        ImagePoint(0, crop_size.height_px),
+    )
+
+
 def validate_payload(
     payload: object,
     *,
@@ -483,6 +522,12 @@ def validate_payload(
     they contradict is refused under `STACKED_LAYOUT_REASON` (`stacked_layout_refusal`). Layouts
     with `stacked_label` `False` contradict each other; that is the caller's mistake, not the
     model's, so it raises `ValueError` rather than recording a refusal of the reading.
+
+    **`CoordinateMode.CROP` is the plain-JSON answer path (#907)**: the payload is a
+    `ReadingOnlyPayload`, a `null` reading is recorded under `READER_GAVE_NO_READING`, and the
+    candidate is placed at the whole crop. Every check of the reading itself — floats, compounds,
+    the shape check, both stacked-fraction refusals — is the same one, in the same order, whichever
+    path the answer came by.
     """
     if stacked_layouts and not stacked_label:
         raise ValueError(
@@ -500,8 +545,13 @@ def validate_payload(
             errors=(str(error),),
         )
 
+    validated: NovaToolPayload | ReadingOnlyPayload
     try:
-        validated = NovaToolPayload.model_validate(payload)
+        validated = (
+            ReadingOnlyPayload.model_validate(payload)
+            if coordinate_mode is CoordinateMode.CROP
+            else NovaToolPayload.model_validate(payload)
+        )
     except ValidationError as error:
         return _record_rejection(
             payload=payload,
@@ -511,13 +561,27 @@ def validate_payload(
             errors=_validation_errors(error),
         )
 
-    try:
-        unit = Unit(validated.unit_guess) if validated.unit_guess is not None else None
-        polygon = _rectangle_polygon(
-            validated,
-            crop_size=crop_size,
-            coordinate_mode=coordinate_mode,
+    if validated.reading is None:
+        return _record_rejection(
+            payload=payload,
+            context=context,
+            recorder=recorder,
+            reason=READER_GAVE_NO_READING,
+            errors=("the reader answered that there is no dimension it can read in this crop",),
         )
+    reading = validated.reading
+
+    try:
+        if isinstance(validated, ReadingOnlyPayload):
+            unit = None
+            polygon = _crop_polygon(crop_size)
+        else:
+            unit = Unit(validated.unit_guess) if validated.unit_guess is not None else None
+            polygon = _rectangle_polygon(
+                validated,
+                crop_size=crop_size,
+                coordinate_mode=coordinate_mode,
+            )
     except (TypeError, ValueError) as error:
         return _record_rejection(
             payload=payload,
@@ -535,26 +599,26 @@ def validate_payload(
     # operator: there is no single value to accept or refuse, and a reviewer's next action — read both
     # — differs from the one "not a dimension" asks for. Adding them up would put arithmetic we did
     # into a reading the model did not make.
-    if is_compound(validated.reading):
+    if is_compound(reading):
         return _record_rejection(
             payload=payload,
             context=context,
             recorder=recorder,
             reason="not_a_single_value",
-            errors=(f"reading {validated.reading!r} is two dimensions and an operator",),
+            errors=(f"reading {reading!r} is two dimensions and an operator",),
         )
 
     # Before the candidate exists, because a candidate is a reading somebody may act on.
-    refusal = _reading_refusal(validated.reading)
+    refusal = _reading_refusal(reading)
     # A dimension, or a bare fraction — which on a stacked crop may be the right reading (see below).
     dimension_shaped = refusal is None or bool(
-        _BARE_FRACTION_RE.match(canonical_notation(validated.reading)[0])
+        _BARE_FRACTION_RE.match(canonical_notation(reading)[0])
     )
 
     # **Before the general stacked refusal, because it says more** (#834): this reading is not only
     # sent to a reviewer, the drawing rules it out. Only for a dimension-shaped reading, for the
     # reason given below: a reading that is not a dimension at all keeps that, truer, reason.
-    layout_refusal = stacked_layout_refusal(validated.reading, stacked_layouts)
+    layout_refusal = stacked_layout_refusal(reading, stacked_layouts)
     if layout_refusal is not None and dimension_shaped:
         return _record_rejection(
             payload=payload,
@@ -570,7 +634,7 @@ def validate_payload(
     # the bare-fraction guard would otherwise refuse it as suspect on its face. Only a reading that is
     # not a dimension at all keeps that reason: it is the truer one, and most of the detector's false
     # alarms — hatching beside a label — land there.
-    stacked_refusal = _stacked_fraction_refusal(validated.reading, stacked=stacked_label)
+    stacked_refusal = _stacked_fraction_refusal(reading, stacked=stacked_label)
     if stacked_refusal is not None and dimension_shaped:
         return _record_rejection(
             payload=payload,
@@ -593,7 +657,7 @@ def validate_payload(
         candidate_id=context.candidate_id,
         extractor=context.extractor,
         extractor_version=context.extractor_version,
-        raw_text=validated.reading,
+        raw_text=reading,
         parsed_value=None,
         unit_guess=unit,
         semantic_guess=None,
@@ -606,7 +670,11 @@ def validate_payload(
         # corrects the misnomer without moving anything that already depended on it.
         ambiguity_flags=(
             f"{context.extractor}_model_reading",
-            f"{context.extractor}_rectangle_polygon_derived",
+            (
+                f"{context.extractor}_crop_polygon"
+                if coordinate_mode is CoordinateMode.CROP
+                else f"{context.extractor}_rectangle_polygon_derived"
+            ),
         ),
     )
 

@@ -865,6 +865,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Each confirmed part, the reading suggested as its width, and what a person decided
+         * @description Read only: a suggestion is worked out on each call and never stored.
+         */
+        get: operations["list_reading_parts_api_v1_projects__project_id__packages__package_id__reading_parts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts/{item_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say which confirmed reading is one part's width
+         * @description Record a person's link, as suggested or corrected. Audited, and correctable by confirming
+         *     another reading: the latest decision is the one that counts, and every earlier one is kept.
+         */
+        post: operations["confirm_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts/{item_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Take back the link between one part and its reading
+         * @description Record that the reading is not the part's width. Links nothing; the link stops being read.
+         */
+        post: operations["withdraw_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__withdraw_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/redline.pdf": {
         parameters: {
             query?: never;
@@ -1919,6 +1980,15 @@ export interface components {
              */
             semantic_type: string;
         };
+        /** ConfirmLinkIn */
+        ConfirmLinkIn: {
+            /**
+             * Reading Id
+             * Format: uuid
+             * @description The confirmed reading that is this part's width: the suggestion or another.
+             */
+            reading_id: string;
+        };
         /** ConfirmPartIn */
         ConfirmPartIn: {
             /**
@@ -2656,6 +2726,104 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** LinkDrawingOut */
+        LinkDrawingOut: {
+            /** Can Confirm */
+            can_confirm: boolean;
+            /** Page Index */
+            page_index: number;
+            /** Parts */
+            parts: components["schemas"]["PartLinkOut"][];
+            /**
+             * Readings
+             * @description The confirmed readings on the drawing, which a link may name, left to right.
+             */
+            readings: components["schemas"]["LinkReadingOut"][];
+            /** Tag */
+            tag: string;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
+            /** Why Not */
+            why_not: string | null;
+        };
+        /**
+         * LinkOut
+         * @description A reading a person linked to the part.
+         */
+        LinkOut: {
+            /**
+             * Decided At
+             * Format: date-time
+             */
+            decided_at: string;
+            /** Decided By */
+            decided_by: string;
+            /**
+             * Read
+             * @description Whether a reader reads this link.
+             */
+            read: boolean;
+            /**
+             * Reading Id
+             * Format: uuid
+             */
+            reading_id: string;
+            /**
+             * Signal
+             * @description Why the reading belongs to the part, in plain English.
+             */
+            signal: string;
+            /** Why Not Read */
+            why_not_read: string | null;
+        };
+        /**
+         * LinkReadingOut
+         * @description A confirmed reading on the drawing, which a person may pick as a part's width.
+         */
+        LinkReadingOut: {
+            /**
+             * Left
+             * @description Its span across the page, exact; null with no span.
+             */
+            left: string | null;
+            /**
+             * Linked To
+             * @description The part it is linked to now, while that part still stands.
+             */
+            linked_to: string | null;
+            /** Linked To Number */
+            linked_to_number: number | null;
+            /**
+             * Placed By
+             * @description `line` when a reading behind it was attached to a dimension line, `region` when none was and the box it is printed in places it; null when neither places it.
+             */
+            placed_by: string | null;
+            /**
+             * Reading Id
+             * Format: uuid
+             */
+            reading_id: string;
+            /** Right */
+            right: string | null;
+            /**
+             * Semantic Type
+             * @description What a person confirmed the reading is.
+             */
+            semantic_type: string;
+            /**
+             * Unplaced
+             * @description Why it spans no part, in plain English, or null.
+             */
+            unplaced: string | null;
+            /**
+             * Value
+             * @description The reading's exact value, as `25 1/2 in`.
+             */
+            value: string;
+        };
         /**
          * MeasurementEntry
          * @description One dimension a reviewer read off a drawing, and which check input it is.
@@ -2901,6 +3069,39 @@ export interface components {
          */
         PartKind: "cabinet" | "filler" | "countertop";
         /**
+         * PartLinkOut
+         * @description One confirmed part: the reading suggested as its width, and what a person decided.
+         */
+        PartLinkOut: {
+            /** Code */
+            code: string | null;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            kind: components["schemas"]["PartKind"];
+            /**
+             * Left
+             * @description Its left end across the page, exact.
+             */
+            left: string;
+            /**
+             * Links
+             * @description The readings linked to this part now: one, or none. Two only when two people linked different readings at the same moment, and then neither is read.
+             */
+            links: components["schemas"]["LinkOut"][];
+            /**
+             * Number
+             * @description Its number in 'Parts of each drawing', 1 for the leftmost; null if not listed.
+             */
+            number: number | null;
+            /** Right */
+            right: string;
+            /** @description Null when no tolerance is stated, so nothing can be suggested. */
+            suggestion: components["schemas"]["SuggestedLinkOut"] | null;
+        };
+        /**
          * PartOut
          * @description One suggested part, as a person needs it to decide what it is.
          */
@@ -3138,6 +3339,15 @@ export interface components {
          * @enum {string}
          */
         PublicationTarget: "development" | "production";
+        /** ReadingPartsOut */
+        ReadingPartsOut: {
+            /** Can Suggest */
+            can_suggest: boolean;
+            /** Drawings */
+            drawings: components["schemas"]["LinkDrawingOut"][];
+            /** Why Not */
+            why_not: string | null;
+        };
         /**
          * RecordAction
          * @description One thing a reviewer did to one finding.
@@ -3676,6 +3886,30 @@ export interface components {
             source?: string | null;
             /** Unit */
             unit: string;
+        };
+        /**
+         * SuggestedLinkOut
+         * @description The reading the computer suggests is a part's width. Nothing is written until a person
+         *     confirms it.
+         */
+        SuggestedLinkOut: {
+            /** Edge Tolerance */
+            edge_tolerance: string;
+            /**
+             * Reading Id
+             * @description Null when no single reading spans this part alone; `said` says why.
+             */
+            reading_id: string | null;
+            /**
+             * Said
+             * @description Why this reading, or why none, in plain English.
+             */
+            said: string;
+            /**
+             * Spanning
+             * @description Every confirmed reading on the drawing whose line or region spans the part.
+             */
+            spanning: string[];
         };
         /** SuggestedMemberOut */
         SuggestedMemberOut: {
@@ -5043,6 +5277,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PartOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_reading_parts_api_v1_projects__project_id__packages__package_id__reading_parts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadingPartsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmLinkIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartLinkOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_reading_part_endpoint_api_v1_projects__project_id__packages__package_id__reading_parts__item_id__withdraw_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartLinkOut"];
                 };
             };
             /** @description Validation Error */

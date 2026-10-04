@@ -1,6 +1,6 @@
 {
-  "source": "AWS Bedrock public price list (pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-east-1/index.json), us-east-1, standard on-demand, per 1,000 tokens",
-  "retrieved": "2026-09-30",
+  "source": "AWS Bedrock public price list (pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-east-1/index.json, publication 2026-10-03T00:11:38Z), us-east-1, standard on-demand, per 1,000 tokens. Every rate below was read from that file on the retrieved date; the ones first read on 2026-09-30 were unchanged",
+  "retrieved": "2026-10-04",
   "currency": "USD",
   "rates": {
     "amazon.nova-pro-v1:0": {
@@ -30,6 +30,10 @@
     "mistral.mistral-large-3-675b-instruct": {
       "input_per_1k_tokens": "0.0005",
       "output_per_1k_tokens": "0.0015"
+    },
+    "qwen.qwen3-vl-235b-a22b": {
+      "input_per_1k_tokens": "0.00053",
+      "output_per_1k_tokens": "0.00266"
     }
   }
 }

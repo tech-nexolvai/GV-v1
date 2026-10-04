@@ -35,10 +35,6 @@ from workflow import stages
 
 AGENT = "GV_AGENT_LABEL_GAP_PT=4 \\\nGV_AGENT_MAX_LABEL_PT=40 \\\n"
 
-#: The text reader's setting (#912), which the replay reads with the rest: the coloured text a crop
-#: may show is read by the reader, and it has no default.
-TEXT_READER = "GV_READER_MISSING_SPACE_HEIGHTS=0.1 \\\n"
-
 
 #: The made-up sheet's `10192"` label with the key crop round it: 46–119 × 201–244 pt at 600 dpi,
 #: so its region, 9 pt in on each side, holds the label.
@@ -56,7 +52,7 @@ def _setup(
     if sheet is not None:
         (key / "sheet.pdf").write_bytes(sheet)
     settings = tmp_path / "demo.sh"
-    settings.write_text(SETTINGS + AGENT + TEXT_READER, encoding="utf-8")
+    settings.write_text(SETTINGS + AGENT, encoding="utf-8")
     scorecard = tmp_path / "data" / "scorecard.json"
     scorecard.write_text(json.dumps([{"crop": "k0", "pair": pair}]), encoding="utf-8")
     return key, settings, scorecard

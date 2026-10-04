@@ -33,6 +33,7 @@ with for a crop's coordinates to land where the reviewer is looking.
 from __future__ import annotations
 
 import io
+import math
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final
 from uuid import UUID
@@ -42,10 +43,16 @@ import pypdfium2 as pdfium  # type: ignore[import-untyped]
 import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
 from evidence.coordinates import SUPPORTED_ROTATIONS
-from evidence.crop import RenderedPage
+from evidence.crop import RenderedPage, encode_png
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
-__all__ = ["VISION_CROP_DPI", "PageTooLarge", "drop_reviewer_layers", "render_page"]
+__all__ = [
+    "VISION_CROP_DPI",
+    "PageTooLarge",
+    "drop_reviewer_layers",
+    "render_page",
+    "render_region",
+]
 
 #: PDF user space is 72 units to the inch. Not a tunable.
 _POINTS_PER_INCH: Final = 72
@@ -223,6 +230,109 @@ def render_page(
     )
 
 
+def render_region(
+    data: bytes,
+    page_index: int,
+    *,
+    box_px: tuple[int, int, int, int],
+    dpi: int,
+    maximum_pixels: int,
+    vendor_only: bool,
+) -> bytes:
+    """One rectangle of a page at `dpi`, as PNG: that place of `render_page` at `dpi`, drawn alone (#907).
+
+    **Why it exists: a sharper picture of one label, without the whole sheet.** The vision readers
+    are shown crops of a page rendered at the stage's 300 dpi. Nova 2 Lite reads far better shown
+    the same label larger, and these sheets are vector, so a sharper picture is the page rendered
+    again at a higher dpi, never the crop upscaled. A whole A3 sheet at 900 dpi is 156 million
+    pixels, which `render_page` refuses against any budget this system has; one label's box at 900
+    dpi is a few hundred thousand.
+
+    **The same place, at the same scale.** pdfium draws the whole page into a bitmap the size of
+    `box_px`, offset by the box's corner, the way `render_page` draws it at the origin — the same
+    scale, the same page size, the same flags, the same reframing of a non-zero crop box — so each
+    pixel lies where `render_page(dpi)` puts it. Where nothing is partly covered the two are equal
+    byte for byte. **Where an edge is shaded they can differ slightly**, because pdfium rounds its
+    anti-aliasing against the bitmap it draws into: measured, at most two levels of 255 on a stroke
+    (one on every `AI_Set_2` key crop), and on a few edge pixels of small font text, whose glyphs it
+    hints (`AI_Set_1`'s, at 300 dpi). `tests/extraction/test_rasterise.py` holds both. A part of the
+    box past the page's edge is page background, white, as `render_page` fills it.
+
+    `box_px` is `(left, top, right, bottom)` in that frame. `maximum_pixels` bounds the box's own
+    pixels, with no default, for the reason `render_page` gives. `vendor_only` likewise.
+    """
+    if not isinstance(data, bytes):
+        raise TypeError("data must be the PDF's bytes")
+    if isinstance(dpi, bool) or not isinstance(dpi, int) or dpi <= 0:
+        raise ValueError("dpi must be a positive integer")
+    if isinstance(maximum_pixels, bool) or not isinstance(maximum_pixels, int):
+        raise TypeError("maximum_pixels must be an integer")
+    if maximum_pixels <= 0:
+        raise ValueError("maximum_pixels must be positive: it is the caller's memory budget")
+    if not isinstance(vendor_only, bool):
+        raise TypeError("vendor_only must be a bool: say whether a model or a person will look")
+    if (
+        not isinstance(box_px, tuple)
+        or len(box_px) != 4
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in box_px)
+    ):
+        raise TypeError("box_px must be four integers: left, top, right, bottom")
+    left, top, right, bottom = box_px
+    if left < 0 or top < 0 or right <= left or bottom <= top:
+        raise ValueError(f"box_px {box_px} is not a rectangle on the page")
+    width, height = right - left, bottom - top
+    if width * height > maximum_pixels:
+        raise PageTooLarge(
+            f"a {width}x{height} region of page {page_index} at {dpi} dpi is over the budget of "
+            f"{maximum_pixels} pixels"
+        )
+
+    document = None
+    try:
+        document = pdfium.PdfDocument(data)
+        page_count = len(document)
+        if isinstance(page_index, bool) or not isinstance(page_index, int) or page_index < 0:
+            raise ValueError("page_index must be a non-negative integer")
+        if page_index >= page_count:
+            raise UnreadablePdf(
+                f"page {page_index} is beyond the {page_count} pages in this document"
+            )
+        page = document[page_index]
+        _rotation_of(page)
+        if vendor_only:
+            drop_reviewer_layers(page)
+        scale = dpi / _POINTS_PER_INCH
+        # What `PdfPage.render(scale=...)` sizes the whole page to, which `render_page` uses.
+        page_width = math.ceil(page.get_width() * scale)
+        page_height = math.ceil(page.get_height() * scale)
+        x_offset, y_offset = _reframe_offset(
+            page, declared_crop_box=_declared_crop_box(data, page_index), dpi=dpi
+        )
+        bitmap = pdfium.PdfBitmap.new_native(
+            width, height, pdfium_raw.FPDFBitmap_BGR, rev_byteorder=True
+        )
+        bitmap.fill_rect((255, 255, 255, 255), 0, 0, width, height)
+        pdfium_raw.FPDF_RenderPageBitmap(
+            bitmap,
+            page,
+            -(left + x_offset),
+            -(top + y_offset),
+            page_width,
+            page_height,
+            0,
+            pdfium_raw.FPDF_ANNOT | pdfium_raw.FPDF_REVERSE_BYTE_ORDER,
+        )
+        rgb = _packed_rgb(bitmap)
+    except (UnreadablePdf, PageTooLarge):
+        raise
+    except Exception as error:
+        raise UnreadablePdf(f"page {page_index} could not be rendered: {error}") from error
+    finally:
+        if document is not None:
+            document.close()
+    return encode_png(width, height, rgb)
+
+
 def _declared_crop_box(data: bytes, page_index: int) -> tuple[Decimal, Decimal, Decimal, Decimal]:
     """Read the page's declared PDF-space CropBox before PDFium translates it.
 
@@ -260,14 +370,7 @@ def _reframe_visible_page(
     pixels OCR saw.  Missing edge pixels are white page background; no drawing pixels are invented.
     """
     raw = _packed_rgb(bitmap)
-    crop_left, crop_bottom, _, crop_top = declared_crop_box
-    if crop_left == 0 and crop_bottom == 0:
-        return raw
-
-    bbox_left, _, _, bbox_top = (Decimal(str(value)) for value in page.get_bbox())
-    scale = Decimal(dpi) / _POINTS_PER_INCH
-    x_offset = int(((crop_left - bbox_left) * scale).to_integral_value(ROUND_HALF_UP))
-    y_offset = int(((bbox_top - crop_top) * scale).to_integral_value(ROUND_HALF_UP))
+    x_offset, y_offset = _reframe_offset(page, declared_crop_box=declared_crop_box, dpi=dpi)
     if x_offset == 0 and y_offset == 0:
         return raw
 
@@ -288,6 +391,28 @@ def _reframe_visible_page(
         destination = (destination_y * width + destination_left) * 3
         reframed[destination : destination + row_bytes] = raw[source : source + row_bytes]
     return bytes(reframed)
+
+
+def _reframe_offset(
+    page: Any,
+    *,
+    declared_crop_box: tuple[Decimal, Decimal, Decimal, Decimal],
+    dpi: int,
+) -> tuple[int, int]:
+    """How far PDFium's bitmap is shifted from the declared visible frame, in pixels at `dpi`.
+
+    `(0, 0)` for a crop box at the origin. One computation, used by both renderers, so a region
+    renders where the whole page renders it.
+    """
+    crop_left, crop_bottom, _, crop_top = declared_crop_box
+    if crop_left == 0 and crop_bottom == 0:
+        return 0, 0
+    bbox_left, _, _, bbox_top = (Decimal(str(value)) for value in page.get_bbox())
+    scale = Decimal(dpi) / _POINTS_PER_INCH
+    return (
+        int(((crop_left - bbox_left) * scale).to_integral_value(ROUND_HALF_UP)),
+        int(((bbox_top - crop_top) * scale).to_integral_value(ROUND_HALF_UP)),
+    )
 
 
 def _is_digest(value: object) -> bool:

@@ -131,6 +131,7 @@ def _geometry(reader: dict[str, str]) -> PageGeometry:
             character_gap_pt=Decimal(reader["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
             turned_aspect_min=Decimal(reader["GV_READER_FRACTION_TURNED_ASPECT_MIN"]),
         ),
+        missing_space=MissingSpace(gap_heights=Decimal(reader["GV_READER_MISSING_SPACE_HEIGHTS"])),
     )
 
 
@@ -287,9 +288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             geometry=geometry,
             reach=reach,
         )
-        missing_space = MissingSpace(
-            gap_heights=Decimal(settings["GV_READER_MISSING_SPACE_HEIGHTS"])
-        )
+        missing_space = geometry.missing_space
         markup = {
             index: markup_of(
                 pdf,

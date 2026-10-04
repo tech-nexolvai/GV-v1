@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     """`GV_RUN_EDGE_TOLERANCE`: how far, in stored page units, a part may stray past a countertop's
     ends and top and still be suggested as part of the run beneath it (#893).
 
+    **The same question decides which reading is suggested as a part's width (#913)**: whether the
+    ends of a reading's dimension line, or of the region it is printed in, meet the part's two ends,
+    and whether a reading is printed between the ends of its own line. Each asks whether two places
+    drawn on the page are one, so one number answers all of them; a second could disagree with the
+    first. Only the suggestion uses it there: a link records no tolerance, and unset, no reading is
+    suggested though a person may still pick one.
+
     **Unset means no run is suggested and none can be confirmed**, and the Measure page says so.
     There is no default number: whether a part a hair past the countertop's end belongs to its run
     is a question about the drawings, and a guessed tolerance would decide it for every package. It
