@@ -105,7 +105,14 @@ from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
 from evidence.corroborate import corroborate
-from evidence.crop import CropSpec, CropStatus, RenderedPage, crop_pixel_box, generate_crop
+from evidence.crop import (
+    BoxCropSpec,
+    CropSpec,
+    CropStatus,
+    RenderedPage,
+    crop_pixel_box,
+    generate_crop,
+)
 from evidence.polygon import Polygon
 from extraction.agent.geometry import Box, LabelGeometry, LabelReach, label_geometry
 from extraction.agent.graph import (
@@ -250,7 +257,13 @@ from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
-from workflow.parts import live_part_item_ids, record_part_proposal
+from workflow.part_pictures import (
+    PartPictureSettings,
+    pages_without_pictures,
+    record_part_picture,
+    unpictured_proposals,
+)
+from workflow.parts import live_part_item_ids, outline_box, record_part_proposal
 from workflow.reader_pictures import (
     PictureSettings,
     PrintedRun,
@@ -1140,6 +1153,35 @@ def _vision_association_inputs(
     return tuple(items), tuple(rows)
 
 
+@dataclass
+class _PartPictures:
+    """What cutting parts' pictures did (#897): how many were cut, and how many were refused and
+    why, in a person's words."""
+
+    cut: int = 0
+    refused: int = 0
+    refusals: list[str] = field(default_factory=list)
+
+    def refuse(self, count: int, reason: str) -> _PartPictures:
+        self.refused += count
+        self.refusals.append(reason)
+        return self
+
+    def add(self, other: _PartPictures) -> None:
+        self.cut += other.cut
+        self.refused += other.refused
+        self.refusals.extend(other.refusals)
+
+    def as_payload(self) -> dict[str, object]:
+        """Capped, because a payload is persisted as JSON and a page that will not render would
+        otherwise put one sentence per suggestion into it. The counts are exact."""
+        return {
+            "cut": self.cut,
+            "refused": self.refused,
+            "refusals": self.refusals[:REPORTED_REFUSALS],
+        }
+
+
 class DatabaseStages:
     """The pipeline as far as it is built: checks run, everything else still says it did not.
 
@@ -1174,6 +1216,7 @@ class DatabaseStages:
         fraction_parts: PieceDrawing | None = None,
         reader_pictures: PictureSettings | None = None,
         missing_space: MissingSpace | None = None,
+        part_pictures: PartPictureSettings | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -1294,6 +1337,12 @@ class DatabaseStages:
                 "(GV_VISION_GATE_READER), which these stages do not have"
             )
         self._fraction_parts = fraction_parts
+        # **A picture of every suggested part (#897), cut only where a deployment states how.** The
+        # margin and the resolution have no default; without them no picture is cut, which the page
+        # result records as not run, and the Measure page says no picture is stored.
+        if part_pictures is not None and not isinstance(part_pictures, PartPictureSettings):
+            raise TypeError("part_pictures must be PartPictureSettings")
+        self._part_pictures = part_pictures
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
             if (bounded_agent is not None or reading_agent is not None)
@@ -1947,6 +1996,10 @@ class DatabaseStages:
                     + (layers.drawing_segments if layers is not None else ())
                 ),
             )
+            # **And a picture of each (#897)**, for a person to look at while deciding what it is.
+            # Every suggestion on the page's drawings that has none yet, so a re-read also cuts the
+            # pictures a person's own additions are still missing.
+            part_pictures = self._cut_page_part_pictures(session, page=page, data=data)
             results.append(
                 PageResult(
                     index=page.index,
@@ -2092,6 +2145,9 @@ class DatabaseStages:
                         # The parts suggested in this page's vendor drawings (#868), counted; `None`
                         # when no association settings were stated, which is not the same as none.
                         "part_proposals": parts,
+                        # Their pictures (#897): cut, and refused with each reason. `None` when no
+                        # picture settings were stated, which is not the same as none cut.
+                        "part_pictures": part_pictures,
                         "has_vector_text": page.has_vector_text,
                         # Which route read this page. Two readings of the same page by different
                         # routes are the basis of corroboration, so the route has to be visible.
@@ -2977,6 +3033,147 @@ class DatabaseStages:
                     counts["with_code"] += 1
             counts["nested_views"] = len(proposed.nested)
         return counts
+
+    def _cut_page_part_pictures(
+        self, session: Session, *, page: Page, data: bytes
+    ) -> dict[str, object] | None:
+        """Cut a picture of every suggestion on the page's drawings that has none yet (#897).
+
+        Returns what was cut and what was refused, or `None` when no picture settings were stated
+        or no store is configured: then nothing was asked for, which is not the same as nothing cut.
+        """
+        if self._part_pictures is None or self._store is None:
+            return None
+        return self._cut_pictures(
+            session, page=page, data=data, settings=self._part_pictures, store=self._store
+        ).as_payload()
+
+    @staticmethod
+    def _cut_pictures(
+        session: Session,
+        *,
+        page: Page,
+        data: bytes,
+        settings: PartPictureSettings,
+        store: ArtifactStore,
+    ) -> _PartPictures:
+        """The pictures still missing on one page, cut and recorded.
+
+        **The vendor's drawing alone.** The page is rendered with the reviewer's markup removed, as
+        every reader's crop is (#742), so the person deciding sees the vendor's part and not GV's
+        note about it. A picture is for that person's eyes: nothing reads a value from it.
+
+        **The box around the outline and the stated margin**, at the stated resolution. A part a
+        person added by its two ends has a line for an outline (#882), so its picture is that line
+        and the margin around it; nothing here invents a height the person did not give.
+
+        **It writes a picture and nothing else**: never a part, a decision or a run. A suggestion
+        whose picture cannot be cut keeps its place on the page without one, and the reason is in
+        the result.
+        """
+        outcome = _PartPictures()
+        proposals = unpictured_proposals(session, page.id)
+        if not proposals:
+            return outcome
+        if page.render_failed:
+            return outcome.refuse(
+                len(proposals), f"page {page.index}: the manifest recorded a failed render"
+            )
+        try:
+            rendered = render_page(
+                data,
+                page.index,
+                document_version_id=page.document_version_id,
+                page_content_hash=page.content_hash,
+                dpi=settings.dpi,
+                maximum_pixels=MAXIMUM_RENDER_PIXELS,
+                # **The vendor's drawing only (#742).** A person confirms the vendor's part; GV's own
+                # notes painted into its picture would put a reviewer's word where the vendor's is.
+                vendor_only=True,
+            )
+        except (PageTooLarge, UnreadablePdf, ValueError) as error:
+            reason = str(error).strip() or type(error).__name__
+            return outcome.refuse(len(proposals), f"page {page.index}: {reason}")
+
+        for proposal in proposals:
+            try:
+                left, top, right, bottom = outline_box(proposal.extent)
+                spec = BoxCropSpec(
+                    document_version_id=page.document_version_id,
+                    page=page.index,
+                    left=left,
+                    top=top,
+                    right=right,
+                    bottom=bottom,
+                    context_margin_pt=settings.margin_pt,
+                    dpi=settings.dpi,
+                )
+            except (TypeError, ValueError) as error:
+                outcome.refuse(1, f"page {page.index}: {error}")
+                continue
+            result = generate_crop(rendered, spec, store)
+            if result.status is not CropStatus.AVAILABLE or result.artifact is None:
+                outcome.refuse(1, f"page {page.index}: {result.reason}")
+                continue
+            record_part_picture(
+                session,
+                proposal=proposal,
+                storage_key=result.artifact.key,
+                sha256=result.artifact.sha256,
+                settings=settings,
+            )
+            outcome.cut += 1
+        return outcome
+
+    def cut_part_pictures(
+        self, session: Session, package_revision_id: UUID
+    ) -> Mapping[str, object]:
+        """Cut the pictures still missing on this revision's drawings (#897).
+
+        The work a person adding a part asks for (`CUT_PART_PICTURES_WORKFLOW`): the page stage cuts
+        a picture of each suggestion as it makes it, and a part a person adds afterwards is cut
+        here. Every suggestion still without one is cut, on whichever page it is.
+
+        **It writes pictures and nothing else**, and asking twice cuts nothing twice. A document
+        whose bytes no longer match their recorded digest is not rendered: its pictures are refused,
+        and the reason says why.
+        """
+        if self._store is None:
+            return {"ran": False, "reason": "no artifact store is configured"}
+        if self._part_pictures is None:
+            return {"ran": False, "reason": "no part picture settings are stated"}
+        documents = {
+            version: (key, sha256)
+            for version, key, sha256, _ in _document_records_for(session, package_revision_id)
+        }
+        outcome = _PartPictures()
+        loaded: dict[UUID, bytes | None] = {}
+        for page in pages_without_pictures(session, list(documents)):
+            if page.document_version_id not in loaded:
+                key, sha256 = documents[page.document_version_id]
+                data = _fetch(self._store, key)
+                loaded[page.document_version_id] = (
+                    data if hashlib.sha256(data).hexdigest() == sha256 else None
+                )
+            document = loaded[page.document_version_id]
+            if document is None:
+                outcome.refuse(
+                    len(unpictured_proposals(session, page.id)),
+                    f"page {page.index}: the document does not match the digest recorded when it "
+                    "was uploaded, so it was not rendered",
+                )
+                continue
+            outcome.add(
+                self._cut_pictures(
+                    session,
+                    page=page,
+                    data=document,
+                    settings=self._part_pictures,
+                    store=self._store,
+                )
+            )
+        session.flush()
+        return {"ran": True, **outcome.as_payload()}
 
     def _read_page_markup(
         self,

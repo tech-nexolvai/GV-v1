@@ -3147,6 +3147,11 @@
             ],
             "title": "Code"
           },
+          "has_picture": {
+            "description": "Whether its picture is stored, served at `\u2026/parts/{proposal_id}/picture`.",
+            "title": "Has Picture",
+            "type": "boolean"
+          },
           "item_id": {
             "format": "uuid",
             "title": "Item Id",
@@ -3180,6 +3185,19 @@
             "description": "Its number in 'Parts of each drawing', 1 for the leftmost; null if not listed.",
             "title": "Number"
           },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The suggestion it was confirmed from, whose picture is the part's (#897).",
+            "title": "Proposal Id"
+          },
           "right": {
             "title": "Right",
             "type": "string"
@@ -3199,6 +3217,8 @@
         "required": [
           "item_id",
           "number",
+          "proposal_id",
+          "has_picture",
           "kind",
           "code",
           "left",
@@ -3229,8 +3249,13 @@
             "description": "The decision nothing has replaced, or null while nobody has decided."
           },
           "has_crop": {
-            "description": "Whether a picture is stored for it. Today that is the crop of the reading its code came from, so a suggestion with no code has none.",
+            "description": "Whether the crop of the reading its code came from is stored, so a suggestion with no code has none.",
             "title": "Has Crop",
+            "type": "boolean"
+          },
+          "has_picture": {
+            "description": "Whether its own picture is stored: the vendor's drawing around its outline (#897). False until the worker has cut it, or where the page could not be rendered.",
+            "title": "Has Picture",
             "type": "boolean"
           },
           "left_end": {
@@ -3305,6 +3330,7 @@
           "added_by_a_person",
           "left_end",
           "right_end",
+          "has_picture",
           "has_crop",
           "decision"
         ],
@@ -7304,7 +7330,7 @@
                 }
               }
             },
-            "description": "The integrity-checked picture stored for this suggestion."
+            "description": "The integrity-checked crop of the reading the code came from."
           },
           "422": {
             "content": {
@@ -7317,7 +7343,72 @@
             "description": "Validation Error"
           }
         },
-        "summary": "View the picture stored for one suggested part",
+        "summary": "View the crop of the reading one suggested part's code came from",
+        "tags": [
+          "drawing parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/picture": {
+      "get": {
+        "description": "The part's own picture: the vendor's drawing around its outline, checked against its\nrecorded digest. For a person's eyes only; nothing reads a value from it.\n\nThe suggestion must be on this package's current revision, so another project's part looks\nabsent (404), as every other absence does.",
+        "operationId": "part_picture_api_v1_projects__project_id__packages__package_id__parts__proposal_id__picture_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The integrity-checked picture of this part (#897)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View the picture of one suggested part, cut from the vendor's drawing",
         "tags": [
           "drawing parts"
         ]
@@ -7893,7 +7984,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/parts": {
       "post": {
-        "description": "File the person's own suggestion and confirm it, in one transaction.",
+        "description": "File the person's own suggestion and confirm it, in one transaction, and ask the worker to\ncut its picture (#897) in the same one: the part and the request commit together or not at all.\nThe list shows the part at once and its picture once the worker has cut it.",
         "operationId": "add_part_endpoint_api_v1_projects__project_id__packages__package_id__views__view_id__parts_post",
         "parameters": [
           {

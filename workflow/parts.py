@@ -56,6 +56,7 @@ __all__ = [
     "live_part",
     "live_part_item_ids",
     "live_parts_on",
+    "outline_box",
     "record_part_proposal",
     "withdraw_part",
 ]
@@ -262,34 +263,50 @@ class PlacedPart:
     def from_extent(
         cls, *, item_id: UUID, kind: PartKind, view_id: UUID, extent: Mapping[str, object]
     ) -> PlacedPart:
-        """The box around a stored outline, `{"space": "stored", "points": [[x, y], ...]}`, read
-        exactly. Refuses an outline in any other space, with no points, or with a point that is not
-        a finite number, rather than placing the part somewhere it is not."""
-        if extent.get("space") != "stored":
-            raise ValueError("a part's outline must be in stored page space")
-        raw = extent.get("points")
-        if not isinstance(raw, list) or not raw:
-            raise ValueError("a part's outline must have points")
-        points: list[tuple[Decimal, Decimal]] = []
-        for point in cast(list[object], raw):
-            if not isinstance(point, list) or len(point) != 2:
-                raise ValueError("a part's outline holds a point that is not an x and a y")
-            try:
-                x, y = Decimal(str(point[0])), Decimal(str(point[1]))
-            except InvalidOperation as error:
-                raise ValueError("a part's outline holds a point that is not a number") from error
-            if not (x.is_finite() and y.is_finite()):
-                raise ValueError("a part's outline holds a point that is not a finite number")
-            points.append((x, y))
+        """The box around a stored outline, read exactly by `outline_box`."""
+        left, top, right, bottom = outline_box(extent)
         return cls(
             item_id=item_id,
             kind=kind,
             view_id=view_id,
-            left=min(x for x, _ in points),
-            right=max(x for x, _ in points),
-            top=min(y for _, y in points),
-            bottom=max(y for _, y in points),
+            left=left,
+            right=right,
+            top=top,
+            bottom=bottom,
         )
+
+
+def outline_box(extent: Mapping[str, object]) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """`(left, top, right, bottom)` of a stored outline, `{"space": "stored", "points": [[x, y],
+    ...]}`, read exactly, `y` growing down the page.
+
+    Refuses an outline in any other space, with no points, or with a point that is not a finite
+    number, rather than placing the part somewhere it is not. A part a person added has a two-point
+    outline (#882), so its box has no height. What is decided from the parts reads this, and so does
+    the picture of each one (#897).
+    """
+    if extent.get("space") != "stored":
+        raise ValueError("a part's outline must be in stored page space")
+    raw = extent.get("points")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("a part's outline must have points")
+    points: list[tuple[Decimal, Decimal]] = []
+    for point in cast(list[object], raw):
+        if not isinstance(point, list) or len(point) != 2:
+            raise ValueError("a part's outline holds a point that is not an x and a y")
+        try:
+            x, y = Decimal(str(point[0])), Decimal(str(point[1]))
+        except InvalidOperation as error:
+            raise ValueError("a part's outline holds a point that is not a number") from error
+        if not (x.is_finite() and y.is_finite()):
+            raise ValueError("a part's outline holds a point that is not a finite number")
+        points.append((x, y))
+    return (
+        min(x for x, _ in points),
+        min(y for _, y in points),
+        max(x for x, _ in points),
+        max(y for _, y in points),
+    )
 
 
 def check_edge_tolerance(tolerance: object) -> Decimal:

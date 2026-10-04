@@ -22,13 +22,15 @@ from eval.experiments.agent_scorecard import PageGeometry
 from extraction.glyph_bands import FractionBarGeometry
 from extraction.reader import MissingSpace
 from workflow.association import AssociationSettings, LocalizedOcrSettings
+from workflow.part_pictures import PartPictureSettings
 from workflow.reader_pictures import PictureSettings
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SCRIPTS = REPOSITORY / "scripts"
 #: `PictureSettings` since #907: the dpi a reader's upright, sharper picture is rendered at;
 #: `MissingSpace` since #912: how wide a gap inside the inches is a space the file left out; and
-#: `PageGeometry`, which carries it to the pages a scorecard reads as the stage does (#907, #912).
+#: `PageGeometry`, which carries it to the pages a scorecard reads as the stage does (#907, #912);
+#: `PartPictureSettings` since #897: how each suggested part's picture is cut has no default either.
 GUARDED = (
     FractionBarGeometry,
     AssociationSettings,
@@ -36,6 +38,7 @@ GUARDED = (
     PictureSettings,
     MissingSpace,
     PageGeometry,
+    PartPictureSettings,
 )
 
 #: The reader's functions that read a page's text, each of which requires the reader's setting
