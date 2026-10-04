@@ -1058,10 +1058,23 @@
             "maxItems": 200,
             "title": "Part Ids",
             "type": "array"
+          },
+          "wall_config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required: one of the published CT-WIDTH-001 wall-layout choices.",
+            "title": "Wall Config"
           }
         },
         "required": [
-          "part_ids"
+          "part_ids",
+          "wall_config"
         ],
         "title": "ConfirmRunIn",
         "type": "object"
@@ -2273,6 +2286,20 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
           },
           "outcome": {
             "$ref": "#/components/schemas/Outcome"
@@ -4510,6 +4537,17 @@
             "title": "Read",
             "type": "boolean"
           },
+          "wall_config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Config"
+          },
           "why_not_read": {
             "anyOf": [
               {
@@ -4529,7 +4567,8 @@
           "members",
           "read",
           "why_not_read",
-          "edge_tolerance"
+          "edge_tolerance",
+          "wall_config"
         ],
         "title": "RunDecisionOut",
         "type": "object"
@@ -4649,6 +4688,13 @@
             "title": "Drawings",
             "type": "array"
           },
+          "wall_layout_choices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Wall Layout Choices",
+            "type": "array"
+          },
           "why_not": {
             "anyOf": [
               {
@@ -4664,6 +4710,7 @@
         "required": [
           "can_suggest",
           "why_not",
+          "wall_layout_choices",
           "drawings"
         ],
         "title": "RunsOut",

@@ -59,6 +59,7 @@ from workflow.countertop_runs import (
     live_parts_on,
     live_run_rows,
     propose_run,
+    published_wall_layouts,
     withdraw_countertop_run,
 )
 
@@ -89,6 +90,7 @@ class RunRefusalReason(StrEnum):
     DRAWING_NOT_VENDORS = "drawing_not_vendors"
     #: `GV_RUN_EDGE_TOLERANCE` is not set.
     TOLERANCE_NOT_STATED = "tolerance_not_stated"
+    NO_LAYOUT = "no_layout"
     NO_PARTS = "no_parts"
     PART_TWICE = "part_twice"
     #: A part named is not a confirmed cabinet or filler on the countertop's drawing.
@@ -217,6 +219,7 @@ def confirm_listed_run(
     member_item_ids: Sequence[UUID],
     edge_tolerance: Decimal | None,
     actor: str,
+    wall_config: str | None,
 ) -> CountertopRunDecision | RunRefused:
     """A person saying which parts make up the run beneath one countertop of this revision.
 
@@ -232,6 +235,16 @@ def confirm_listed_run(
         return refused
     if edge_tolerance is None:
         return RunRefused(RunRefusalReason.TOLERANCE_NOT_STATED, NO_TOLERANCE)
+    if not wall_config:
+        return RunRefused(
+            RunRefusalReason.NO_LAYOUT,
+            "Choose this countertop's wall layout before confirming its run.",
+        )
+    if wall_config not in published_wall_layouts(session):
+        return RunRefused(
+            RunRefusalReason.NO_LAYOUT,
+            "Choose a wall layout offered by the published countertop width check.",
+        )
     if not member_item_ids:
         return RunRefused(
             RunRefusalReason.NO_PARTS,
@@ -255,6 +268,7 @@ def confirm_listed_run(
         member_item_ids=member_item_ids,
         edge_tolerance=edge_tolerance,
         actor=actor,
+        wall_config=wall_config,
     )
 
 

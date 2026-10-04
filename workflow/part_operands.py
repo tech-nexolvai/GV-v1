@@ -31,7 +31,7 @@ from rules.schema import Rule
 from units.measurement import Measurement
 from verdict.operands import VerdictOperand
 from vocabulary.part_kinds import PartKind
-from workflow.countertop_runs import live_run_rows
+from workflow.countertop_runs import current_run_decision, live_run_rows
 from workflow.parts import live_part, live_part_item_ids
 from workflow.reading_parts import current_links_to, live_reading_parts
 
@@ -51,6 +51,42 @@ class PartOperands:
 class CountertopScope:
     item_id: UUID
     label: str
+
+
+@dataclass(frozen=True)
+class WallLayoutChoice:
+    value: str
+    provenance: str
+
+
+def wall_layout_name(value: str) -> str:
+    """Plain label for a published layout; never used to select a rule variant."""
+    return {
+        "back_left_right": "walls at both ends",
+        "back_only": "back wall only",
+        "island": "island",
+    }.get(value, value)
+
+
+def current_wall_layout(session: Session, countertop_item_id: UUID) -> WallLayoutChoice | None:
+    """The choice on this countertop's current, complete confirmed run, never an older one."""
+    decision = current_run_decision(session, countertop_item_id)
+    if (
+        decision is None
+        or decision.decision != PartDecision.CONFIRMED.value
+        or decision.run_id is None
+        or decision.wall_config is None
+    ):
+        return None
+    if not session.scalar(live_run_rows().where(CountertopRun.run_id == decision.run_id).limit(1)):
+        return None
+    return WallLayoutChoice(
+        value=decision.wall_config,
+        provenance=(
+            f"Wall layout: {wall_layout_name(decision.wall_config)}, chosen by {decision.confirmed_by} "
+            f"on {decision.created_at.isoformat()} (run decision {decision.id})."
+        ),
+    )
 
 
 def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopScope, ...] | None:

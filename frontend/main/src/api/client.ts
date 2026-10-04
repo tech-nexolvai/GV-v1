@@ -777,13 +777,14 @@ export function confirmCountertopRun(
   packageId: string,
   countertopItemId: string,
   partIds: string[],
+  wallConfig: string,
 ) {
   return request<CountertopRunOut>(
     `/projects/${projectId}/packages/${packageId}/countertop-runs/${countertopItemId}/confirm`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ part_ids: partIds }),
+      body: JSON.stringify({ part_ids: partIds, wall_config: wallConfig }),
     },
   );
 }

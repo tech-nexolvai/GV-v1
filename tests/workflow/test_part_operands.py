@@ -31,6 +31,7 @@ from app.models import (
 )
 from app.models.parameters import to_rows
 from app.models.verdicts import Finding
+from app.verdicts.rulebook import snapshot_store
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
 from rules.schema import Quantity
 from storage.local import LocalStore
@@ -51,6 +52,11 @@ from workflow.view_roles import confirm_view_role
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 RULE = "CT-WIDTH-001"
+
+
+def _ensure_rulebook(session: Session) -> None:
+    if snapshot_store(session).latest(RULE) is None:
+        _publish_rulebook(session)
 
 
 @pytest.fixture
@@ -77,6 +83,7 @@ class Assembly:
         refusal: bool = False,
         six_parts: bool = False,
     ) -> None:
+        _ensure_rulebook(session)
         self.revision = _revision(session, store, _drawing("synthetic"))
         version = session.scalars(
             select(PackageRevisionDocument).where(
@@ -155,10 +162,11 @@ class Assembly:
                 member_item_ids=list(reversed(self.parts[1:])),
                 edge_tolerance=Decimal(0),
                 actor="reviewer",
+                wall_config="back_left_right",
             )
 
     def check(self, session: Session, store: LocalStore, *, form: bool = True) -> Finding:
-        _publish_rulebook(session)
+        _ensure_rulebook(session)
         DatabaseStages(
             store,
             discriminators={"wall_config": "back_left_right"},
@@ -182,6 +190,40 @@ def form_widths() -> dict[str, VerdictOperand]:
         )
         for name, value in values.items()
     }
+
+
+def _legacy_null_layout(session: Session, assembly: Assembly) -> CountertopRunDecision:
+    """A migrated confirmation: append a current decision with no pre-0064 layout field."""
+    previous = assembly.decision
+    assert previous is not None and previous.run_id is not None
+    run_id = uuid4()
+    legacy = CountertopRunDecision(
+        countertop_item_id=previous.countertop_item_id,
+        supersedes_id=previous.id,
+        decision="confirmed",
+        run_id=run_id,
+        confirmed_by="legacy reviewer",
+        wall_config=None,
+    )
+    session.add(legacy)
+    session.flush()
+    for member in session.scalars(
+        select(CountertopRun).where(CountertopRun.run_id == previous.run_id)
+    ):
+        session.add(
+            CountertopRun(
+                run_id=run_id,
+                countertop_item_id=member.countertop_item_id,
+                position=member.position,
+                member_item_id=member.member_item_id,
+                signal=member.signal,
+                proposal_source=member.proposal_source,
+                edge_tolerance=member.edge_tolerance,
+                confirmed_by="legacy reviewer",
+            )
+        )
+    session.flush()
+    return legacy
 
 
 def _second_complete_run(session: Session, assembly: Assembly) -> tuple[UUID, list[UUID]]:
@@ -241,6 +283,7 @@ def _second_complete_run(session: Session, assembly: Assembly) -> tuple[UUID, li
         member_item_ids=list(reversed(members)),
         edge_tolerance=Decimal(0),
         actor="reviewer",
+        wall_config="back_only",
     )
     return top_id, members
 
@@ -347,8 +390,9 @@ def test_multiple_runs_are_not_combined(session: Session, store: LocalStore) -> 
         member_item_ids=assembly.parts[1:],
         edge_tolerance=Decimal(0),
         actor="reviewer",
+        wall_config="back_left_right",
     )
-    _publish_rulebook(session)
+    _ensure_rulebook(session)
     DatabaseStages(
         store,
         discriminators={"wall_config": "back_left_right"},
@@ -369,7 +413,9 @@ def test_multiple_runs_are_not_combined(session: Session, store: LocalStore) -> 
     )
     assert len(findings) == 2
     assert {finding.scope_item_id for finding in findings} == {assembly.parts[0], second}
-    assert all(finding.outcome not in {"PASS", "FAIL"} for finding in findings)
+    by_subject = {finding.scope_item_id: finding for finding in findings}
+    assert by_subject[assembly.parts[0]].outcome == "PASS"
+    assert by_subject[second].outcome == "NOT_FOUND"
 
 
 def test_one_countertop_finding_names_its_subject(session: Session, store: LocalStore) -> None:
@@ -387,6 +433,7 @@ def test_one_countertop_finding_names_its_subject(session: Session, store: Local
     assert len(listed) == 1
     assert listed[0]["scope_item_id"] == assembly.parts[0]
     assert listed[0]["scope_label"] == finding.scope_label
+    assert any("walls at both ends" in note for note in listed[0]["notes"])
     run = session.get_one(CheckRun, finding.check_run_id)
     snapshot = session.get_one(RuleSnapshot, run.rule_snapshot_id)
     definition = session.get_one(RuleDefinition, snapshot.rule_definition_id)
@@ -395,12 +442,138 @@ def test_one_countertop_finding_names_its_subject(session: Session, store: Local
     assert chain.scope_label == finding.scope_label
 
 
-def test_two_countertops_abstain_on_layout_and_missing_run(
+def test_a_legacy_run_without_layout_abstains_until_reconfirmed(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    _legacy_null_layout(session, assembly)
+    DatabaseStages(store, operands={}).run_checks(session, assembly.revision.id)
+    pending = _finding(session, assembly.revision, RULE)
+    assert pending.outcome == "REVIEW_REQUIRED"
+    assert "choose the wall layout" in pending.reason.lower()
+
+    confirm_countertop_run(
+        session,
+        countertop_item_id=assembly.parts[0],
+        member_item_ids=assembly.parts[1:],
+        edge_tolerance=Decimal(0),
+        actor="new reviewer",
+        wall_config="back_left_right",
+    )
+    DatabaseStages(store, operands={}).run_checks(session, assembly.revision.id)
+    decided = session.scalars(
+        select(Finding)
+        .join(CheckRun, CheckRun.id == Finding.check_run_id)
+        .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+        .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+        .where(
+            Finding.package_revision_id == assembly.revision.id,
+            CheckRun.superseded_at.is_(None),
+            RuleDefinition.rule_id == RULE,
+        )
+    ).one()
+    assert decided.outcome == "PASS"
+    assert "chosen by new reviewer" in " ".join(decided.notes)
+
+
+def test_single_countertop_revision_layout_is_labelled_as_fallback(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    _legacy_null_layout(session, assembly)
+    DatabaseStages(
+        store, discriminators={"wall_config": "back_left_right"}, operands={}
+    ).run_checks(session, assembly.revision.id)
+    finding = _finding(session, assembly.revision, RULE)
+    assert finding.outcome == "PASS"
+    assert "revision-wide choice" in " ".join(finding.notes)
+
+
+def test_own_layout_precedes_a_conflicting_revision_wide_choice(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    DatabaseStages(store, discriminators={"wall_config": "back_only"}, operands={}).run_checks(
+        session, assembly.revision.id
+    )
+    finding = _finding(session, assembly.revision, RULE)
+    assert finding.outcome == "PASS"
+    assert finding.variant == "back_left_right"
+    assert "chosen by reviewer" in " ".join(finding.notes)
+    assert "revision-wide choice" not in " ".join(finding.notes)
+
+
+def test_a_corrected_layout_replaces_the_old_one_and_withdrawal_removes_it(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    confirm_countertop_run(
+        session,
+        countertop_item_id=assembly.parts[0],
+        member_item_ids=assembly.parts[1:],
+        edge_tolerance=Decimal(0),
+        actor="correcting reviewer",
+        wall_config="back_only",
+    )
+    DatabaseStages(store, operands={}).run_checks(session, assembly.revision.id)
+    changed = _finding(session, assembly.revision, RULE)
+    assert changed.outcome == "FAIL"
+    assert changed.variant == "back_only"
+    assert "chosen by correcting reviewer" in " ".join(changed.notes)
+    assert "chosen by reviewer on" not in " ".join(changed.notes)
+
+    withdraw_countertop_run(session, countertop_item_id=assembly.parts[0], actor="reviewer")
+    DatabaseStages(store, operands={}).run_checks(session, assembly.revision.id)
+    withdrawn = session.scalars(
+        select(Finding)
+        .join(CheckRun, CheckRun.id == Finding.check_run_id)
+        .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+        .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+        .where(
+            Finding.package_revision_id == assembly.revision.id,
+            CheckRun.superseded_at.is_(None),
+            RuleDefinition.rule_id == RULE,
+        )
+    ).one()
+    assert withdrawn.outcome == "NOT_FOUND"
+    assert not any(note.startswith("Wall layout:") for note in withdrawn.notes)
+
+
+def test_two_countertops_never_borrow_revision_or_another_runs_layout(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    _legacy_null_layout(session, assembly)
+    second, _ = _second_complete_run(session, assembly)
+    DatabaseStages(
+        store, discriminators={"wall_config": "back_left_right"}, operands={}
+    ).run_checks(session, assembly.revision.id)
+    live = list(
+        session.scalars(
+            select(Finding)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+            .where(
+                Finding.package_revision_id == assembly.revision.id,
+                CheckRun.superseded_at.is_(None),
+                RuleDefinition.rule_id == RULE,
+                Finding.scope_item_id.in_([assembly.parts[0], second]),
+            )
+        )
+    )
+    by_subject = {finding.scope_item_id: finding for finding in live}
+    assert by_subject[assembly.parts[0]].outcome == "REVIEW_REQUIRED"
+    assert "choose the wall layout" in by_subject[assembly.parts[0]].reason.lower()
+    assert by_subject[second].outcome == "PASS"
+
+
+def test_a_chosen_layout_decides_only_its_countertop_while_another_run_is_missing(
     session: Session, store: LocalStore
 ) -> None:
     assembly = Assembly(session, store)
     _, other = _confirmed(session, assembly.view, PartKind.COUNTERTOP, "0.82", "0.94")
-    _publish_rulebook(session)
+    _ensure_rulebook(session)
     DatabaseStages(
         store,
         discriminators={"wall_config": "back_left_right"},
@@ -419,13 +592,11 @@ def test_two_countertops_abstain_on_layout_and_missing_run(
             )
         )
     )
-    width = {row.scope_item_id: row for row in live if row.scope_item_id and row.outcome != "PASS"}
-    assert assembly.parts[0] in width, [
-        (row.scope_item_id, row.outcome, row.reason) for row in live
-    ]
+    width = {row.scope_item_id: row for row in live if row.scope_item_id}
+    assert assembly.parts[0] in width
     assert other in width
-    assert width[assembly.parts[0]].outcome == "REVIEW_REQUIRED", width[assembly.parts[0]].reason
-    assert "choose the wall layout for this countertop" in width[assembly.parts[0]].reason.lower()
+    assert width[assembly.parts[0]].outcome == "PASS", width[assembly.parts[0]].reason
+    assert "walls at both ends" in " ".join(width[assembly.parts[0]].notes)
     assert width[other].outcome == "NOT_FOUND"
     assert "confirm this countertop's run" in width[other].reason.lower()
 
@@ -435,7 +606,7 @@ def test_two_complete_countertops_keep_distinct_widths_and_supersede(
 ) -> None:
     assembly = Assembly(session, store)
     second, second_members = _second_complete_run(session, assembly)
-    _publish_rulebook(session)
+    _ensure_rulebook(session)
     stages = DatabaseStages(
         store,
         discriminators={"wall_config": "back_left_right"},
@@ -459,8 +630,9 @@ def test_two_complete_countertops_keep_distinct_widths_and_supersede(
         assert len(live) == 2
         by_subject = {finding.scope_item_id: finding for finding in live}
         assert set(by_subject) == {assembly.parts[0], second}
-        assert all(finding.outcome == "REVIEW_REQUIRED" for finding in live)
-        assert all("wall layout" in finding.reason.lower() for finding in live)
+        assert all(finding.outcome == "PASS" for finding in live)
+        assert by_subject[assembly.parts[0]].variant == "back_left_right"
+        assert by_subject[second].variant == "back_only"
         first_notes = " ".join(by_subject[assembly.parts[0]].notes)
         second_notes = " ".join(by_subject[second].notes)
         assert str(assembly.readings[0]) in first_notes

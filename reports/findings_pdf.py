@@ -235,6 +235,12 @@ class _Document:
         )
         self.y -= 18
         self._field("Subject", finding.scope_label or "Package revision")
+        layout = next(
+            (note for note in (finding.notes or ()) if note.startswith("Wall layout:")),
+            None,
+        )
+        if layout is not None:
+            self._field("Wall layout", layout)
         self._field("Approved value (ARCH)", _source_values(finding, "ARCH"))
         self._field("Vendor value (SHOP)", _source_values(finding, "SHOP"))
         self._field("Recorded comparison", _text(finding.trace.get("comparison")))

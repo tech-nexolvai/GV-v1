@@ -176,3 +176,21 @@
   align-items: center;
   gap: var(--space-1);
 }
+
+.countertop-runs__layout {
+  display: grid;
+  gap: var(--space-1);
+  max-width: 22rem;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.countertop-runs__layout select {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: var(--space-2);
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}

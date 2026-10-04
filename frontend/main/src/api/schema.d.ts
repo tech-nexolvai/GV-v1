@@ -2039,6 +2039,11 @@ export interface components {
              * @description The drawing items the run holds, in any order: the server orders them across the drawing, never by the order they were picked in.
              */
             part_ids: string[];
+            /**
+             * Wall Config
+             * @description Required: one of the published CT-WIDTH-001 wall-layout choices.
+             */
+            wall_config: string | null;
         };
         /** ConfirmedMemberOut */
         ConfirmedMemberOut: {
@@ -2634,6 +2639,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Notes */
+            notes?: string[] | null;
             outcome: components["schemas"]["Outcome"];
             /**
              * Package Revision Id
@@ -3819,6 +3826,8 @@ export interface components {
             members: components["schemas"]["ConfirmedMemberOut"][];
             /** Read */
             read: boolean;
+            /** Wall Config */
+            wall_config: string | null;
             /** Why Not Read */
             why_not_read: string | null;
         };
@@ -3870,6 +3879,8 @@ export interface components {
             can_suggest: boolean;
             /** Drawings */
             drawings: components["schemas"]["RunDrawingOut"][];
+            /** Wall Layout Choices */
+            wall_layout_choices: string[];
             /** Why Not */
             why_not: string | null;
         };

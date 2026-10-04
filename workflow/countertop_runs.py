@@ -92,6 +92,9 @@ from app.models import (
     CountertopRunDecision,
     PartDecision,
 )
+from app.verdicts.rulebook import snapshot_store
+from rules.schema import Applicability
+from rules.semantic_types import SemanticType
 from vocabulary.part_kinds import PartKind
 from workflow.parts import (
     PlacedPart,
@@ -116,6 +119,7 @@ __all__ = [
     "live_parts_on",
     "live_run_rows",
     "propose_run",
+    "published_wall_layouts",
     "withdraw_countertop_run",
 ]
 
@@ -314,6 +318,17 @@ def live_run_rows() -> Select[tuple[CountertopRun]]:
     )
 
 
+def published_wall_layouts(session: Session) -> tuple[str, ...]:
+    """Only the wall-layout choices in the currently published width check."""
+    snapshot = snapshot_store(session).latest("CT-WIDTH-001")
+    if snapshot is None or not isinstance(snapshot.rule.applicability, Applicability):
+        return ()
+    applicability = snapshot.rule.applicability
+    if applicability.discriminator != SemanticType.WALL_CONFIG.value:
+        return ()
+    return tuple(variant.when for variant in applicability.variants)
+
+
 def confirm_countertop_run(
     session: Session,
     *,
@@ -321,6 +336,7 @@ def confirm_countertop_run(
     member_item_ids: Collection[UUID],
     edge_tolerance: Decimal,
     actor: str,
+    wall_config: str | None,
 ) -> CountertopRunDecision:
     """A person saying which parts make up the run beneath one countertop. **The only code that
     writes `countertop_runs`.**
@@ -335,6 +351,10 @@ def confirm_countertop_run(
     twice, or a part that is not what it is named as.
     """
     _require_actor(actor)
+    if not wall_config:
+        raise ValueError("Choose this countertop's wall layout before confirming its run.")
+    if wall_config not in published_wall_layouts(session):
+        raise ValueError("Choose a wall layout offered by the published countertop width check.")
     tolerance = check_edge_tolerance(edge_tolerance)
     wanted = list(member_item_ids)
     if not wanted:
@@ -362,6 +382,7 @@ def confirm_countertop_run(
         decision=PartDecision.CONFIRMED.value,
         run_id=run_id,
         confirmed_by=actor,
+        wall_config=wall_config,
     )
     _record(session, decision, actor)
     ordered = sorted((cast(PlacedPart, part) for part in members), key=_across)

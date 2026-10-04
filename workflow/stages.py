@@ -244,7 +244,7 @@ from rules.applicability import Abstention, CheckContext, resolve
 from rules.parameters import ParameterSet, resolve_all
 from rules.project import ProjectScope
 from rules.required_inputs import DiscriminatorNeed, required_inputs
-from rules.semantic_types import ProductType
+from rules.semantic_types import ProductType, SemanticType
 from rules.snapshot import RuleSnapshot
 from storage.hashing import ArtifactCorrupt, content_key, sha256_stream
 from storage.store import ArtifactStore
@@ -277,7 +277,12 @@ from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
-from workflow.part_operands import CountertopScope, countertop_scopes
+from workflow.part_operands import (
+    CountertopScope,
+    countertop_scopes,
+    current_wall_layout,
+    wall_layout_name,
+)
 from workflow.part_pictures import (
     PartPictureSettings,
     pages_without_pictures,
@@ -5459,6 +5464,9 @@ class DatabaseStages:
                     # rather than attached to an arbitrary rule.
                     skipped += 1
                     continue
+                if countertop_subjects is not None and abstention.rule_id == "CT-WIDTH-001":
+                    # This rule must resolve its variant separately for each confirmed countertop.
+                    continue
                 snapshot = store.latest(abstention.rule_id)
                 if snapshot is None:
                     skipped += 1
@@ -5539,6 +5547,8 @@ class DatabaseStages:
             )
             for applicable in resolution.applicable:
                 rule_id = applicable.snapshot.rule.id
+                if countertop_subjects is not None and rule_id == "CT-WIDTH-001":
+                    continue
                 subjects: tuple[CountertopScope | None, ...] = (
                     countertop_subjects
                     if countertop_subjects is not None and rule_id in scoped_rules
@@ -5643,6 +5653,129 @@ class DatabaseStages:
                         missing=_declared_inputs(applicable.snapshot.rule),
                         scope_item_id=None if subject is None else subject.item_id,
                         scope_label=None if subject is None else subject.label,
+                    )
+                    written += 1
+
+        if countertop_subjects is not None:
+            width_snapshot = store.latest("CT-WIDTH-001")
+            if width_snapshot is not None:
+                if not countertop_subjects:
+                    record_finding(
+                        session,
+                        package_revision_id=package_revision_id,
+                        finding=Finding(
+                            rule_id="CT-WIDTH-001",
+                            outcome=Outcome.NOT_FOUND,
+                            severity=width_snapshot.rule.severity,
+                            reason="No live confirmed countertop run remains for this check.",
+                            snapshot_id=width_snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        ),
+                        operands={},
+                        parameter_set_ids=cited,
+                    )
+                    written += 1
+                for subject in countertop_subjects:
+                    selected = evidence_operands(
+                        session,
+                        package_revision_id,
+                        [width_snapshot.rule],
+                        scope_item_id=subject.item_id,
+                    )
+                    own_layout = current_wall_layout(session, subject.item_id)
+                    layout = own_layout.value if own_layout is not None else None
+                    provenance = own_layout.provenance if own_layout is not None else None
+                    if layout is None and len(countertop_subjects) == 1:
+                        revision_layout = self._discriminators.get(SemanticType.WALL_CONFIG.value)
+                        if revision_layout is not None:
+                            layout = revision_layout
+                            provenance = (
+                                f"Wall layout: {wall_layout_name(layout)}, revision-wide choice."
+                            )
+                    discriminators = dict(self._discriminators)
+                    # A revision-wide value must never leak into either of two live countertops.
+                    discriminators.pop(SemanticType.WALL_CONFIG.value, None)
+                    if layout is not None:
+                        discriminators[SemanticType.WALL_CONFIG.value] = layout
+                    scoped_resolution = resolve(
+                        store,
+                        CheckContext(
+                            product_type=ProductType.COUNTERTOP,
+                            project=scope,
+                            discriminators=discriminators,
+                        ),
+                    )
+                    applicable_width = next(
+                        (
+                            entry
+                            for entry in scoped_resolution.applicable
+                            if entry.snapshot.rule.id == "CT-WIDTH-001"
+                        ),
+                        None,
+                    )
+                    refused_width = next(
+                        (
+                            entry
+                            for entry in scoped_resolution.abstentions
+                            if entry.rule_id == "CT-WIDTH-001"
+                        ),
+                        None,
+                    )
+                    supplied = selected.merge("CT-WIDTH-001", {})
+                    if "CT-WIDTH-001" in selected.missing:
+                        finding = Finding(
+                            rule_id="CT-WIDTH-001",
+                            outcome=Outcome.NOT_FOUND,
+                            severity=width_snapshot.rule.severity,
+                            reason=selected.missing["CT-WIDTH-001"],
+                            snapshot_id=width_snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        )
+                    elif layout is None:
+                        finding = Finding(
+                            rule_id="CT-WIDTH-001",
+                            outcome=Outcome.REVIEW_REQUIRED,
+                            severity=width_snapshot.rule.severity,
+                            reason="Choose the wall layout for this countertop before checking its width.",
+                            snapshot_id=width_snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        )
+                    elif applicable_width is not None:
+                        finding = execute(
+                            applicable_width.snapshot,
+                            supplied,
+                            resolved,
+                            discriminators=discriminators,
+                            ambiguous=selected.ambiguous.get("CT-WIDTH-001", {}),
+                        )
+                    elif refused_width is not None:
+                        finding = _unresolved(width_snapshot, refused_width)
+                    else:
+                        finding = Finding(
+                            rule_id="CT-WIDTH-001",
+                            outcome=Outcome.REVIEW_REQUIRED,
+                            severity=width_snapshot.rule.severity,
+                            reason="The published countertop width check did not resolve for this layout.",
+                            snapshot_id=width_snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        )
+                    finding = replace(
+                        finding,
+                        notes=(
+                            *finding.notes,
+                            *selected.notes.get("CT-WIDTH-001", ()),
+                            *((provenance,) if provenance is not None else ()),
+                        ),
+                    )
+                    record_finding(
+                        session,
+                        package_revision_id=package_revision_id,
+                        finding=finding,
+                        operands=supplied,
+                        parameter_set_ids=cited,
+                        missing=_declared_inputs(width_snapshot.rule),
+                        scope_item_id=subject.item_id,
+                        scope_label=subject.label,
                     )
                     written += 1
 

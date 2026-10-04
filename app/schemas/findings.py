@@ -158,6 +158,8 @@ class FindingOut(BaseModel):
     package_revision_id: UUID
     scope_item_id: UUID | None = None
     scope_label: str | None = None
+    notes: list[str] | None = None
+    """Persisted check provenance, including a person's scoped wall-layout choice."""
     revision_number: int
     """Which revision of the package this finding is about.
 
