@@ -43,6 +43,7 @@ from extraction.models.nova import (
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import MISSING_SPACE, _pdf
+from tests.workflow.test_cut_label_guard import stated_geometry
 from units.measurement import Unit
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
@@ -213,6 +214,9 @@ def test_two_routes_agreeing_on_one_region_get_the_second_reader_lane(
         store,
         vision_readers=(_reader("bedrock-nova-pro", "amazon.nova-pro-v1:0"),),
         missing_space=MISSING_SPACE,
+        # The drawing's geometry stated: without it nothing rules out that the reader's crop cut
+        # the label, and the agreement is not confirmed (#919).
+        **stated_geometry("bedrock-nova-pro"),  # type: ignore[arg-type]
     ).extract_pages(session, revision.id)
 
     rows = _candidate_runs(session)

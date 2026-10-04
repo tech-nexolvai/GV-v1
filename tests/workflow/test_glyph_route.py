@@ -42,6 +42,7 @@ from workflow.glyph_route import (
     GlyphRoute,
     glyph_route_from_environment,
 )
+from workflow.reading_agent import ReadingAgentSettings
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -124,7 +125,10 @@ def store() -> Iterator[LocalStore]:
 
 
 def _stages(
-    store: LocalStore, route: GlyphRoute | None, vision_readers: tuple[object, ...] = ()
+    store: LocalStore,
+    route: GlyphRoute | None,
+    vision_readers: tuple[object, ...] = (),
+    reading_agent: ReadingAgentSettings | None = None,
 ) -> DatabaseStages:
     return DatabaseStages(
         store,
@@ -135,6 +139,7 @@ def _stages(
         vision_readers=vision_readers,  # type: ignore[arg-type]
         glyph_route=route,
         missing_space=MISSING_SPACE,
+        reading_agent=reading_agent,
     )
 
 
@@ -190,11 +195,14 @@ def _watch_agent(monkeypatch: pytest.MonkeyPatch) -> list[ObservationCandidate]:
 
 
 def _read_with_vision(
-    session: Session, store: LocalStore, readers: tuple[object, ...]
+    session: Session,
+    store: LocalStore,
+    readers: tuple[object, ...],
+    reading_agent: ReadingAgentSettings | None = None,
 ) -> ObservationCandidate:
     revision = _revision(session, store, data=SHEET)
     session.commit()
-    _stages(store, GlyphRoute(_templates(), _settings()), readers).extract_pages(
+    _stages(store, GlyphRoute(_templates(), _settings()), readers, reading_agent).extract_pages(
         session, revision.id
     )
     session.commit()
@@ -221,11 +229,17 @@ def test_a_glyph_reading_is_confirmed_by_another_reader_agreeing_on_its_box(
     session: Session, store: LocalStore
 ) -> None:
     """**The second witness (#756 D2).** The page asks the vision readers about the glyph
-    reading's own box; one that did not use the templates agreeing on `12"` is what confirms it."""
+    reading's own box; one that did not use the templates agreeing on `12"` is what confirms it —
+    with the reading agent's label lengths stated, so the gate can see the box's crop holds the
+    whole label (#919)."""
     from evidence.canonical import CorroborationLane
     from tests.evidence.test_bridge import _AgreeingVisionReader
+    from tests.workflow.test_cut_label_guard import label_lengths
 
-    row = _read_with_vision(session, store, (_AgreeingVisionReader('12"'),))
+    reader = _AgreeingVisionReader('12"')
+    row = _read_with_vision(
+        session, store, (reader,), label_lengths(reader.config.extractor, sharper_dpi=300)
+    )
 
     assert row.corroboration_lane == CorroborationLane.SECOND_READER.value
     assert row.corroboration_status != "CONFLICTING"

@@ -61,6 +61,7 @@ from tests.extraction.models.test_nova import FakeBedrock
 from tests.extraction.test_annotations import STACKED_APPEARANCE, _appearance, _pdf, _stamp
 from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
+from tests.workflow.test_cut_label_guard import whole_labels
 from tests.workflow.test_gv_mark_guard import unmarked_page
 from tests.workflow.test_stacked_fraction_route import DIMENSION_LINE, STACKED_SHEET
 from vocabulary.semantic_types import SemanticType
@@ -430,7 +431,11 @@ def test_two_agreeing_readers_leave_it_unconfirmed_with_no_lane(
     session.add_all([flagged, agreeing])
 
     DatabaseStages._apply_cross_route_corroboration(
-        session, page_index=0, candidates=(flagged, agreeing), gv_mark=unmarked_page()
+        session,
+        page_index=0,
+        candidates=(flagged, agreeing),
+        gv_mark=unmarked_page(),
+        cut_label=whole_labels(),
     )
 
     for row in (flagged, agreeing):
@@ -448,7 +453,11 @@ def test_the_same_agreement_without_the_flag_does_corroborate(
     session.add_all([unflagged, agreeing])
 
     DatabaseStages._apply_cross_route_corroboration(
-        session, page_index=0, candidates=(unflagged, agreeing), gv_mark=unmarked_page()
+        session,
+        page_index=0,
+        candidates=(unflagged, agreeing),
+        gv_mark=unmarked_page(),
+        cut_label=whole_labels(),
     )
 
     for row in (unflagged, agreeing):
