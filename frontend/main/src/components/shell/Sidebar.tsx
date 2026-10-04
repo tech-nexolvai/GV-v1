@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
   BarChart2,
@@ -78,11 +78,15 @@ export function Sidebar({
   const [more, setMore] = useState<{ items: PackageItem[]; cursor: string | null } | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [moreError, setMoreError] = useState<string | null>(null);
+  const pageGeneration = useRef(0);
 
   useEffect(() => {
+    pageGeneration.current += 1;
     // A fresh first page makes appended pages stale; drop them rather than show duplicates.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMore(null);
+    setLoadingMore(false);
+    setMoreError(null);
   }, [refreshKey]);
 
   // A refreshed first page can overlap an older cursor page. Keep the newest copy of each
@@ -103,18 +107,21 @@ export function Sidebar({
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
+    const generation = pageGeneration.current;
     setLoadingMore(true);
     setMoreError(null);
     try {
       const page = await listPackages(projectId(), { cursor: nextCursor, limit: PAGE_SIZE });
+      if (generation !== pageGeneration.current) return;
       setMore((current) => ({
         items: [...(current?.items ?? []), ...page.items],
         cursor: page.next_cursor ?? null,
       }));
     } catch (error) {
+      if (generation !== pageGeneration.current) return;
       setMoreError(error instanceof Error ? error.message : String(error));
     } finally {
-      setLoadingMore(false);
+      if (generation === pageGeneration.current) setLoadingMore(false);
     }
   }
 

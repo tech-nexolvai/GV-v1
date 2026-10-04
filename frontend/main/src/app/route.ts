@@ -23,7 +23,7 @@ export interface Route {
 
 const PAGES: readonly Page[] = ['review', 'documents', 'rulebook', 'settings', 'usage'];
 
-/** `#/review/<id>` → review of that package; `#/documents` → documents; anything else → start. */
+/** Recognised routes are review, documents, rulebook, settings, and usage; unknown or malformed routes open the review start. */
 export function parseRoute(hash: string): Route {
   let parts: string[];
   try {
