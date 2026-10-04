@@ -214,6 +214,128 @@ def test_the_demo_worker_reads_stacked_fractions_piece_by_piece(
 
 
 # ---------------------------------------------------------------------------
+# Every suggested part's picture (#897)
+# ---------------------------------------------------------------------------
+
+
+def _demo_worker_block() -> str:
+    demo = (Path(__file__).resolve().parents[2] / "scripts" / "demo.sh").read_text(encoding="utf-8")
+    return demo[: demo.index("scripts/drain_outbox.py --watch")]
+
+
+def _without_picture_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    import scripts.drain_outbox as worker
+
+    for name in (worker.PART_PICTURE_MARGIN_VARIABLE, worker.PART_PICTURE_DPI_VARIABLE):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_the_demo_worker_states_how_each_parts_picture_is_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**On in the demo** (the admin's decision of 2026-10-04): an inch round each part, at 150 dpi.
+    Built the way the worker builds it, from what the demo's worker block states."""
+    import scripts.drain_outbox as worker
+    from workflow.part_pictures import PartPictureSettings
+
+    stated = dict(
+        re.findall(
+            r"^(GV_PART_PICTURE_[A-Z_]+)=(\S+) \\$", _demo_worker_block(), flags=re.MULTILINE
+        )
+    )
+    assert stated == {
+        worker.PART_PICTURE_MARGIN_VARIABLE: "72",
+        worker.PART_PICTURE_DPI_VARIABLE: "150",
+    }
+    _without_picture_settings(monkeypatch)
+    for name, value in stated.items():
+        monkeypatch.setenv(name, value)
+
+    assert worker._part_picture_configuration(required=True) == PartPictureSettings(
+        margin_pt=Decimal(72), dpi=150
+    )
+
+
+@pytest.mark.parametrize("unset", ["GV_PART_PICTURE_MARGIN_PT", "GV_PART_PICTURE_DPI"])
+def test_a_worker_that_suggests_parts_refuses_to_guess_how_to_picture_them(
+    monkeypatch: pytest.MonkeyPatch, unset: str
+) -> None:
+    """**No default.** Wherever parts are suggested, a worker not told how to cut their pictures
+    refuses to start, naming what is missing, rather than leaving the Measure page without them."""
+    import scripts.drain_outbox as worker
+
+    monkeypatch.setenv(worker.PART_PICTURE_MARGIN_VARIABLE, "72")
+    monkeypatch.setenv(worker.PART_PICTURE_DPI_VARIABLE, "150")
+    monkeypatch.delenv(unset)
+
+    with pytest.raises(ValueError, match=unset):
+        worker._part_picture_configuration(required=True)
+
+
+def test_the_worker_requires_picture_settings_wherever_it_suggests_parts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worker's stages are built with the reader's settings, which is where parts are
+    suggested, so its picture settings are required there; without them it does not start."""
+    import scripts.drain_outbox as worker
+
+    _demo_reader_environment(monkeypatch)
+    _without_picture_settings(monkeypatch)
+    monkeypatch.setenv("GV_DATABASE_URL", "postgresql+psycopg://gv:gv@localhost:5433/never-opened")
+    for name in list(os.environ):
+        if name.startswith(("GV_READING_AGENT", "GV_FRACTION_PARTS", "GV_GLYPH")):
+            monkeypatch.delenv(name)
+
+    with pytest.raises(ValueError, match="GV_PART_PICTURE_MARGIN_PT"):
+        worker._stages()
+
+
+def test_without_suggestions_nothing_asks_for_a_picture_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Where no part is suggested and nothing is stated, no picture is cut: off, not defaulted."""
+    import scripts.drain_outbox as worker
+
+    _without_picture_settings(monkeypatch)
+
+    assert worker._part_picture_configuration(required=False) is None
+
+
+@pytest.mark.parametrize(
+    ("margin", "dpi"),
+    [
+        ("wide", "150"),
+        ("72", "high"),
+        ("72", "150.5"),
+        ("-1", "150"),
+        ("NaN", "150"),
+        ("72", "0"),
+        ("72", ""),
+    ],
+    ids=[
+        "margin-words",
+        "dpi-words",
+        "dpi-fraction",
+        "margin-negative",
+        "margin-nan",
+        "dpi-zero",
+        "half-stated",
+    ],
+)
+def test_a_malformed_picture_setting_is_reported_not_ignored(
+    monkeypatch: pytest.MonkeyPatch, margin: str, dpi: str
+) -> None:
+    """A typo, or one of the two left out, must not look like a deployment that chose no pictures."""
+    import scripts.drain_outbox as worker
+
+    monkeypatch.setenv(worker.PART_PICTURE_MARGIN_VARIABLE, margin)
+    monkeypatch.setenv(worker.PART_PICTURE_DPI_VARIABLE, dpi)
+
+    with pytest.raises(ValueError):
+        worker._part_picture_configuration(required=False)
+
+
+# ---------------------------------------------------------------------------
 # A space the file left out inside the inches (#912)
 # ---------------------------------------------------------------------------
 

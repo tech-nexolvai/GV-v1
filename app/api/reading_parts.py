@@ -110,6 +110,12 @@ class PartLinkOut(BaseModel):
     number: int | None = Field(
         description="Its number in 'Parts of each drawing', 1 for the leftmost; null if not listed."
     )
+    proposal_id: UUID | None = Field(
+        description="The suggestion it was confirmed from, whose picture is the part's (#897)."
+    )
+    has_picture: bool = Field(
+        description="Whether its picture is stored, served at `…/parts/{proposal_id}/picture`."
+    )
     kind: PartKind
     code: str | None
     left: str = Field(description="Its left end across the page, exact.")
@@ -188,6 +194,8 @@ def _part_out(listed: ListedPart) -> PartLinkOut:
     return PartLinkOut(
         item_id=listed.part.item_id,
         number=listed.number,
+        proposal_id=listed.proposal_id,
+        has_picture=listed.has_picture,
         kind=listed.part.kind,
         code=listed.code,
         left=str(listed.part.left),

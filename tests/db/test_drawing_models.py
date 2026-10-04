@@ -8,7 +8,9 @@ that lets any of these through is one that answers `same_assembly` confidently a
 * an alias edited in place, silently changing how every past match should have been read;
 * a suggested part becoming an item without a person confirming it (#852);
 * a reading measuring two parts at once, or a run whose members are not confirmed parts;
-* a reading linked to a part by anything but a person's decision, or read by a rule (#913).
+* a reading linked to a part by anything but a person's decision, or read by a rule (#913);
+* a part's picture edited, doubled, or written by anything but the one function that records it,
+  or a decision about a part written by anything but a person's (#897).
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from app.models import (
     Page,
     PartConfirmation,
     PartDecision,
+    PartPicture,
     PartProposal,
     Project,
     ReadingPart,
@@ -66,6 +69,7 @@ from tests.app.postgres_fixture import alembic_config
 from units.measurement import Unit
 from verdict.operands import EvidenceStatus
 from vocabulary.part_kinds import PartKind
+from workflow.part_pictures import PartPictureSettings, record_part_picture
 from workflow.parts import (
     CODE_IDENTIFIER_KIND,
     confirm_part,
@@ -415,6 +419,7 @@ PART_TABLES = (
     "countertop_runs",
     "countertop_run_decisions",
     "reading_parts",
+    "part_pictures",
 )
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTOR = "anant"
@@ -538,6 +543,7 @@ def test_the_part_tables_are_registered_and_append_only() -> None:
         CountertopRun,
         CountertopRunDecision,
         ReadingPart,
+        PartPicture,
     ):
         assert issubclass(model, Immutable)
     assert set(PART_TABLES) <= set(immutable_table_names())
@@ -906,6 +912,9 @@ RUN_AWARE: frozenset[str] = frozenset(
     {
         "alembic/versions/0058_drawing_parts.py",
         "alembic/versions/0060_countertop_run_decisions.py",
+        # Names 0060 only as the revision it follows (#897); it creates `part_pictures` and nothing
+        # about runs.
+        "alembic/versions/0061_part_pictures.py",
         "app/models/__init__.py",
         "app/models/drawing.py",
         "workflow/countertop_runs.py",
@@ -1130,6 +1139,68 @@ def test_the_link_reader_guard_sees_a_reader(tmp_path: Path) -> None:
     )
 
     assert _mentions(tmp_path, _LINK_WORDS) == {"workflow/operands.py"}
+
+
+# -- the one writer of a part's picture, and of a decision about a part (#897) ------------------
+
+PICTURE_ROWS = _Guarded(tables=frozenset({"part_pictures"}), models=frozenset({"PartPicture"}))
+DECISION_ROWS = _Guarded(
+    tables=frozenset({"part_confirmations"}), models=frozenset({"PartConfirmation"})
+)
+
+#: Who may write each: the worker records a picture through one function, which writes nothing
+#: else; only a person's confirmation or withdrawal writes a decision about a part.
+PICTURE_WRITERS: dict[_Guarded, set[tuple[str, str]]] = {
+    PICTURE_ROWS: {("workflow/part_pictures.py", "record_part_picture")},
+    DECISION_ROWS: {("workflow/parts.py", "confirm_part"), ("workflow/parts.py", "withdraw_part")},
+}
+
+#: Every form in `WRITING_FORMS`, aimed at the picture and decision tables.
+PICTURE_WRITING_FORMS: dict[str, str] = {
+    name: source.replace("DrawingItem", "PartPicture")
+    .replace("ItemIdentifier", "PartConfirmation")
+    .replace("drawing_items", "part_pictures")
+    .replace("item_identifiers", "part_confirmations")
+    for name, source in WRITING_FORMS.items()
+}
+
+
+def test_only_the_recorder_writes_a_picture_and_only_a_person_writes_a_decision() -> None:
+    """**Done when, 3.** The worker that cuts the pictures writes `part_pictures` through one
+    function, and nothing but a person's decision writes `part_confirmations`. With #852's guard on
+    items and #893's and #913's on runs and links, the worker can write no part, no decision and no
+    run: if the cutter ever did, this fails naming where."""
+    for guarded, expected in PICTURE_WRITERS.items():
+        writers = {writer[:2] for writer in _writers(REPO_ROOT, guarded)}
+        assert writers == expected, (guarded.tables, sorted(writers))
+    assert _callers(REPO_ROOT, "record_part_picture") == {("workflow/stages.py", "_cut_pictures")}
+
+
+@pytest.mark.parametrize(
+    "source", list(PICTURE_WRITING_FORMS.values()), ids=list(PICTURE_WRITING_FORMS)
+)
+def test_the_picture_guard_catches_every_way_of_writing_one(source: str, tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "elsewhere.py").write_text(source, encoding="utf-8")
+
+    found = [writer[:2] for guarded in PICTURE_WRITERS for writer in _writers(tmp_path, guarded)]
+
+    assert found == [("workflow/elsewhere.py", "go")]
+
+
+def test_the_picture_guard_leaves_readers_alone(tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "reader.py").write_text(
+        "from app.models import PartPicture\n"
+        "from sqlalchemy import select\n"
+        "from workflow.part_pictures import part_picture\n"
+        "def go(session, proposal):\n"
+        "    session.scalars(select(PartPicture)).all()\n"
+        "    return part_picture(session, proposal)\n",
+        encoding="utf-8",
+    )
+
+    assert [writer for guarded in PICTURE_WRITERS for writer in _writers(tmp_path, guarded)] == []
 
 
 # -- against a real database --------------------------------------------------
@@ -1473,7 +1544,7 @@ def test_a_malformed_suggestion_is_refused(
 
 
 def _one_of_each(session: Session) -> None:
-    """One row in each of the four tables, written the way each will be."""
+    """One row in each of the part tables, written the way each will be."""
     page = _page(session)
     view = _view(session, page)
     countertop = _confirmed(session, view, PartKind.COUNTERTOP)
@@ -1501,6 +1572,23 @@ def _one_of_each(session: Session) -> None:
         )
     )
     session.flush()
+    _picture(session, session.scalars(select(PartProposal)).first())
+
+
+#: How the pictures here are said to be cut: an inch round each part, at 150 dpi.
+PICTURES = PartPictureSettings(margin_pt=Decimal(72), dpi=150)
+
+
+def _picture(session: Session, proposal: PartProposal | None) -> PartPicture:
+    """A picture recorded the way the worker records one."""
+    assert proposal is not None
+    return record_part_picture(
+        session,
+        proposal=proposal,
+        storage_key=f"evidence-crops/{uuid4()}/pages/0/{HASH}.png",
+        sha256=HASH,
+        settings=PICTURES,
+    )
 
 
 @pytest.mark.parametrize("table", PART_TABLES)
@@ -1839,3 +1927,99 @@ def test_a_run_row_belongs_to_a_decision_about_its_own_countertop(
             _decided(session, _confirmed(session, view, PartKind.COUNTERTOP).id, run)
         session.add(_member(countertop, _confirmed(session, view).id, run=run, position=0))
         session.flush()
+
+
+# -- a part's picture (#897) --------------------------------------------------------------------
+
+
+def test_a_picture_is_recorded_once_per_suggestion(postgres_engine: Engine) -> None:
+    """The first picture cut stands: recording again returns it, and a second row for the same
+    suggestion is refused by the database itself."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        proposal = _proposal(session, _view(session, _page(session)))
+        first = _picture(session, proposal)
+        again = record_part_picture(
+            session,
+            proposal=proposal,
+            storage_key="evidence-crops/another/pages/0/other.png",
+            sha256="d" * 64,
+            settings=PartPictureSettings(margin_pt=Decimal(9), dpi=300),
+        )
+        assert again.id == first.id
+        assert (again.storage_key, again.sha256, again.margin_pt, again.dpi) == (
+            first.storage_key,
+            HASH,
+            Decimal(72),
+            150,
+        )
+        proposal_id = proposal.id
+    with (
+        pytest.raises(IntegrityError, match="uq_part_pictures_part_proposal_id"),
+        unit_of_work(factory) as session,
+    ):
+        session.add(
+            PartPicture(
+                part_proposal_id=proposal_id,
+                storage_key="evidence-crops/x/pages/0/y.png",
+                sha256=HASH,
+                media_type="image/png",
+                margin_pt=Decimal(72),
+                dpi=150,
+            )
+        )
+        session.flush()
+
+
+@pytest.mark.parametrize(
+    ("changes", "constraint"),
+    [
+        ({"storage_key": " "}, "part_picture_key_not_blank"),
+        ({"sha256": "not-a-digest"}, "part_picture_sha256"),
+        ({"sha256": "C" * 64}, "part_picture_sha256"),
+        ({"media_type": ""}, "part_picture_media_not_blank"),
+        ({"margin_pt": Decimal(0)}, "part_picture_margin"),
+        ({"margin_pt": Decimal(-1)}, "part_picture_margin"),
+        ({"margin_pt": Decimal("NaN")}, "part_picture_margin"),
+        ({"margin_pt": Decimal("Infinity")}, "part_picture_margin"),
+        ({"dpi": 0}, "part_picture_dpi"),
+    ],
+)
+def test_a_malformed_picture_is_refused(
+    postgres_engine: Engine, changes: dict[str, object], constraint: str
+) -> None:
+    """A picture is a pointer and a digest of its bytes, cut at a stated margin and resolution;
+    the database refuses one missing any of them."""
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with pytest.raises(IntegrityError, match=constraint), unit_of_work(factory) as session:
+        proposal = _proposal(session, _view(session, _page(session)))
+        values: dict[str, object] = {
+            "part_proposal_id": proposal.id,
+            "storage_key": "evidence-crops/x/pages/0/y.png",
+            "sha256": HASH,
+            "media_type": "image/png",
+            "margin_pt": Decimal(72),
+            "dpi": 150,
+            **changes,
+        }
+        session.add(PartPicture(**values))
+        session.flush()
+
+
+def test_a_picture_holds_a_pointer_never_the_image() -> None:
+    """No column could hold the bytes: the table names where they are and what they hash to."""
+    columns = Base.metadata.tables["part_pictures"].columns
+
+    assert {column.name for column in columns} == {
+        "id",
+        "created_at",
+        "part_proposal_id",
+        "storage_key",
+        "sha256",
+        "media_type",
+        "margin_pt",
+        "dpi",
+    }
+    assert not any("LargeBinary" in type(column.type).__name__ for column in columns)

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import {
   isTheSuggestion,
@@ -25,16 +25,22 @@ import {
  *
  * **One part at a time.** Each part has its own list and buttons, and there is deliberately no
  * "confirm all".
+ *
+ * **Each part shows its picture (#897)**, the one cut for the suggestion it was confirmed from, so
+ * the person picking its width sees the part; a part with none says so.
  */
 export function ReadingPartsList({
   links,
   saving,
+  renderPicture,
   onConfirm,
   onWithdraw,
 }: {
   links: ReadingLinks;
   /** The part being saved, so its buttons cannot be pressed twice. */
   saving: string | null;
+  /** The part's picture, for a part that has one. */
+  renderPicture: (drawing: LinkDrawing, part: LinkPart) => ReactNode;
   onConfirm: (part: LinkPart, readingId: string) => void;
   onWithdraw: (part: LinkPart) => void;
 }) {
@@ -68,6 +74,7 @@ export function ReadingPartsList({
                 drawing={drawing}
                 part={part}
                 saving={saving === part.item_id}
+                picture={part.has_picture && part.proposal_id ? renderPicture(drawing, part) : null}
                 onConfirm={onConfirm}
                 onWithdraw={onWithdraw}
               />
@@ -83,12 +90,14 @@ function PartLinkRow({
   drawing,
   part,
   saving,
+  picture,
   onConfirm,
   onWithdraw,
 }: {
   drawing: LinkDrawing;
   part: LinkPart;
   saving: boolean;
+  picture: ReactNode;
   onConfirm: (part: LinkPart, readingId: string) => void;
   onWithdraw: (part: LinkPart) => void;
 }) {
@@ -102,6 +111,9 @@ function PartLinkRow({
 
   return (
     <li className="drawing-parts__item" data-decided={part.links.length > 0}>
+      <div className="drawing-parts__picture">
+        {picture ?? <p className="drawing-parts__no-picture">No picture of this part is stored yet.</p>}
+      </div>
       <div className="drawing-parts__facts">
         <strong>{name}</strong>
         {suggestion && (
