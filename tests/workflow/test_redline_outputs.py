@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import uuid4
 
+import pytest
+
+from workflow import redline_outputs
 from workflow.redline_outputs import _stored_finding
 
 
@@ -43,3 +47,21 @@ def test_missing_stored_fields_do_not_become_display_values() -> None:
     assert presented.comparison is None
     assert presented.notes == ()
     assert presented.reason == "Could not decide."
+
+
+def test_no_typed_location_never_reaches_pdf_assembly(monkeypatch: pytest.MonkeyPatch) -> None:
+    finding = SimpleNamespace(id=uuid4())
+    monkeypatch.setattr(redline_outputs, "_typed_references", lambda *_: {})
+
+    def forbidden(*_: object) -> None:
+        raise AssertionError("an untyped finding reached drawing assembly")
+
+    monkeypatch.setattr(redline_outputs, "_source_package", forbidden)
+    result = redline_outputs.render_evidence_grounded_redline(
+        SimpleNamespace(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        package_revision_id=uuid4(),
+        findings=((finding, SimpleNamespace(), "CT-WIDTH-001", "sha256:recorded"),),  # type: ignore[arg-type]
+    )
+    assert result.artifact is None
+    assert "typed canonical reading" in (result.reason or "")
