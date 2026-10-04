@@ -267,3 +267,50 @@ def test_a_failed_hunt_takes_back_its_own_rows_and_nothing_else(
         session.scalar(select(Project.id).where(Project.name == "written by a failing hunt"))
         is None
     )
+
+
+class _PictureStages:
+    """Records the one call the picture job makes."""
+
+    def __init__(self) -> None:
+        self.asked: list[object] = []
+
+    def cut_part_pictures(self, session: Session, package_revision_id: object) -> dict[str, object]:
+        del session
+        self.asked.append(package_revision_id)
+        return {"ran": True, "cut": 1, "refused": 0, "refusals": []}
+
+
+def test_a_request_for_a_parts_picture_is_consumed_by_the_picture_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**#897.** The row a person adding a part enqueues is consumed here, by cutting the pictures
+    still missing on that revision, and by nothing else."""
+    import scripts.drain_outbox as worker
+    from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
+
+    stages = _PictureStages()
+    monkeypatch.setattr(worker, "_stages", lambda **_: stages)
+    revision_id = uuid4()
+
+    result = worker._consume(
+        object(),
+        workflow=CUT_PART_PICTURES_WORKFLOW,
+        payload={"package_revision_id": str(revision_id)},
+        idempotency_key=str(uuid4()),
+    )
+
+    assert stages.asked == [revision_id]
+    assert result == {"ran": True, "cut": 1, "refused": 0, "refusals": []}
+
+
+def test_a_workflow_with_no_local_consumer_is_left_for_its_worker() -> None:
+    import scripts.drain_outbox as worker
+
+    with pytest.raises(NotImplementedError, match="no local consumer"):
+        worker._consume(
+            object(),
+            workflow="somebody_elses_work",
+            payload={"package_revision_id": str(uuid4())},
+            idempotency_key=str(uuid4()),
+        )

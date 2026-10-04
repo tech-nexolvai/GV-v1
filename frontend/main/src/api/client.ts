@@ -701,8 +701,38 @@ export function addDrawingPart(
 }
 
 /**
- * The picture stored for one suggested part (#882): today, the crop of the reading its code came
- * from. Checked against its recorded digest by the server before it is sent.
+ * The picture of one suggested part (#897): the vendor's drawing round its outline, cut by the
+ * worker. Checked against its recorded digest by the server before it is sent. For a person's eyes
+ * only: nothing reads a value from it.
+ */
+export async function downloadPartPicture(
+  projectId: string,
+  packageId: string,
+  proposalId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/parts/${proposalId}/picture`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The part's picture could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
+/**
+ * The crop of the reading one suggested part's code came from (#882), so a person can check the
+ * code itself. Checked against its recorded digest by the server before it is sent.
  */
 export async function downloadPartCrop(
   projectId: string,
@@ -720,7 +750,7 @@ export async function downloadPartCrop(
     } catch {
       envelope = {
         error: 'unreadable_response',
-        message: `The part's picture could not be loaded (HTTP ${response.status}).`,
+        message: `The crop of the part's code could not be loaded (HTTP ${response.status}).`,
         request_id: response.headers.get('x-request-id') ?? 'unknown',
       };
     }

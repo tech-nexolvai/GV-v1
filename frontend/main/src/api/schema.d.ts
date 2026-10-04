@@ -830,13 +830,37 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * View the picture stored for one suggested part
+         * View the crop of the reading one suggested part's code came from
          * @description The crop of the reading the part's code came from, checked against its recorded digest.
          *
          *     The same picture the Measure page shows for that reading, through the same project boundary:
          *     the suggestion must be on this package's current revision, and so must the reading.
          */
         get: operations["part_crop_api_v1_projects__project_id__packages__package_id__parts__proposal_id__crop_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the picture of one suggested part, cut from the vendor's drawing
+         * @description The part's own picture: the vendor's drawing around its outline, checked against its
+         *     recorded digest. For a person's eyes only; nothing reads a value from it.
+         *
+         *     The suggestion must be on this package's current revision, so another project's part looks
+         *     absent (404), as every other absence does.
+         */
+        get: operations["part_picture_api_v1_projects__project_id__packages__package_id__parts__proposal_id__picture_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1069,7 +1093,9 @@ export interface paths {
         put?: never;
         /**
          * Add a part the suggestions missed, by its two ends on the drawing
-         * @description File the person's own suggestion and confirm it, in one transaction.
+         * @description File the person's own suggestion and confirm it, in one transaction, and ask the worker to
+         *     cut its picture (#897) in the same one: the part and the request commit together or not at all.
+         *     The list shows the part at once and its picture once the worker has cut it.
          */
         post: operations["add_part_endpoint_api_v1_projects__project_id__packages__package_id__views__view_id__parts_post"];
         delete?: never;
@@ -3076,6 +3102,11 @@ export interface components {
             /** Code */
             code: string | null;
             /**
+             * Has Picture
+             * @description Whether its picture is stored, served at `…/parts/{proposal_id}/picture`.
+             */
+            has_picture: boolean;
+            /**
              * Item Id
              * Format: uuid
              */
@@ -3096,6 +3127,11 @@ export interface components {
              * @description Its number in 'Parts of each drawing', 1 for the leftmost; null if not listed.
              */
             number: number | null;
+            /**
+             * Proposal Id
+             * @description The suggestion it was confirmed from, whose picture is the part's (#897).
+             */
+            proposal_id: string | null;
             /** Right */
             right: string;
             /** @description Null when no tolerance is stated, so nothing can be suggested. */
@@ -3115,9 +3151,14 @@ export interface components {
             decision: components["schemas"]["DecisionOut"] | null;
             /**
              * Has Crop
-             * @description Whether a picture is stored for it. Today that is the crop of the reading its code came from, so a suggestion with no code has none.
+             * @description Whether the crop of the reading its code came from is stored, so a suggestion with no code has none.
              */
             has_crop: boolean;
+            /**
+             * Has Picture
+             * @description Whether its own picture is stored: the vendor's drawing around its outline (#897). False until the worker has cut it, or where the page could not be rendered.
+             */
+            has_picture: boolean;
             /** @description The left end of the line that defines it, or null when no line did. */
             left_end: components["schemas"]["PointOut"] | null;
             /** Page Index */
@@ -5237,7 +5278,40 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The integrity-checked picture stored for this suggestion. */
+            /** @description The integrity-checked crop of the reading the code came from. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    part_picture_api_v1_projects__project_id__packages__package_id__parts__proposal_id__picture_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The integrity-checked picture of this part (#897). */
             200: {
                 headers: {
                     [name: string]: unknown;

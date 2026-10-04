@@ -18,9 +18,11 @@ import pytest
 
 from extraction.glyph_bands import FractionBarGeometry
 from workflow.association import AssociationSettings, LocalizedOcrSettings
+from workflow.part_pictures import PartPictureSettings
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
-GUARDED = (FractionBarGeometry, AssociationSettings, LocalizedOcrSettings)
+#: `PartPictureSettings` since #897: how each suggested part's picture is cut has no default either.
+GUARDED = (FractionBarGeometry, AssociationSettings, LocalizedOcrSettings, PartPictureSettings)
 
 
 def _required(cls: type) -> frozenset[str]:

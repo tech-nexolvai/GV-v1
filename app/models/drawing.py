@@ -806,6 +806,63 @@ class ReadingPart(Base, TimestampedUUID, Immutable):
     )
 
 
+#: What a stored digest looks like: lowercase SHA-256 hex, as every other stored artifact's.
+SHA256_PATTERN: Final = "^[0-9a-f]{64}$"
+
+
+class PartPicture(Base, TimestampedUUID, Immutable):
+    """A picture of one suggested part, cut from the vendor's drawing for a person to look at (#897).
+
+    So a person can decide what a suggestion is without opening the PDF. The worker that suggests
+    the parts cuts one per suggestion: the box around the part's outline and a stated margin, at a
+    stated resolution, both recorded here.
+
+    **For a person's eyes only.** Nothing reads a value from it: a part's width is a reading linked
+    to it (`ReadingPart`), its code is what a person confirmed, and this is how the person sees the
+    part they are deciding on.
+
+    **The vendor's drawing alone.** Cut from the page rendered with the reviewer's markup removed, as
+    every reader's crop is (#742), so a person confirms the vendor's part and not GV's note about it.
+
+    **A pointer and a digest, never the bytes.** The image is in the object store under a
+    content-addressed key; whoever shows it checks the bytes against `sha256` first. Two suggestions
+    with the same box share one stored image, which is why the key is not unique here.
+
+    Not an `evidence_artifacts` row: that needs a reading as its owner, and a part's picture belongs
+    to the suggestion. One per suggestion, and append-only: the first picture cut stands. A part a
+    person confirms keeps its suggestion's picture.
+    """
+
+    __tablename__ = "part_pictures"
+
+    part_proposal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("part_proposals.id", ondelete="RESTRICT")
+    )
+    """The suggestion it is a picture of, a person's own addition included (#882)."""
+
+    storage_key: Mapped[str] = mapped_column(String(1000))
+    sha256: Mapped[str] = mapped_column(String(64))
+    media_type: Mapped[str] = mapped_column(String(200))
+
+    margin_pt: Mapped[Decimal] = mapped_column(Numeric())
+    """How far past the part's outline the picture reaches on every side, in PDF points."""
+
+    dpi: Mapped[int] = mapped_column()
+    """The resolution the vendor's page was rendered at to cut it."""
+
+    __table_args__ = (
+        UniqueConstraint("part_proposal_id", name="uq_part_pictures_part_proposal_id"),
+        CheckConstraint("storage_key !~ '^[[:space:]]*$'", name="part_picture_key_not_blank"),
+        CheckConstraint(f"sha256 ~ '{SHA256_PATTERN}'", name="part_picture_sha256"),
+        CheckConstraint("media_type !~ '^[[:space:]]*$'", name="part_picture_media_not_blank"),
+        # Below infinity excludes NaN too, which PostgreSQL sorts above every number.
+        CheckConstraint(
+            "margin_pt > 0 AND margin_pt < 'Infinity'::numeric", name="part_picture_margin"
+        ),
+        CheckConstraint("dpi > 0", name="part_picture_dpi"),
+    )
+
+
 def duplicate_identifiers(kind: str = "vendor_unique") -> Select[tuple[str, int]]:
     """Identifiers of one kind that appear on more than one item.
 
