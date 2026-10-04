@@ -21,6 +21,7 @@
  */
 
 import { openReviewSession } from './client';
+import { IncompletePackageUpload } from './uploadState';
 
 const BASE = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '');
 
@@ -124,7 +125,7 @@ export async function uploadDocument(
   });
   if (!written.ok) {
     throw new Error(
-      `The drawing could not be written to storage (${written.status}). Nothing has been recorded.`,
+      `The drawing could not be written to storage (${written.status}).`,
     );
   }
 
@@ -172,17 +173,22 @@ export async function createPackage(
   if (input.architectural) files.push([input.architectural, 'architectural']);
   if (input.shop) files.push([input.shop, 'shop']);
 
-  for (const [file, kind] of files) {
-    await uploadDocument(projectId, created.id, file, kind, onProgress);
+  try {
+    for (const [file, kind] of files) {
+      await uploadDocument(projectId, created.id, file, kind, onProgress);
+    }
+
+    if (input.architectural && input.shop) {
+      onProgress?.({ step: 'Queuing AI reading' });
+      await startExtraction(projectId, created.id);
+    }
+
+    onProgress?.({ step: 'Opening review' });
+    const session = await openReviewSession(projectId, created.id, created.current_revision_id);
+
+    return { packageId: created.id, reviewSessionId: session.id };
+  } catch (failure) {
+    // A package was already recorded. Never tell the reviewer that a failed later step erased it.
+    throw new IncompletePackageUpload(created.id, failure);
   }
-
-  if (input.architectural && input.shop) {
-    onProgress?.({ step: 'Queuing AI reading' });
-    await startExtraction(projectId, created.id);
-  }
-
-  onProgress?.({ step: 'Opening review' });
-  const session = await openReviewSession(projectId, created.id, created.current_revision_id);
-
-  return { packageId: created.id, reviewSessionId: session.id };
 }
