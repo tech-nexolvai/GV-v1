@@ -138,19 +138,19 @@ def test_the_schema_version_is_present_and_pinned(session: Session) -> None:
     project_id, package_id, _ = _seed(session)
     payload = _export(session, project_id, package_id)
 
-    assert payload["schema_version"] == "1"
+    assert payload["schema_version"] == "2"
 
 
 def test_the_version_cannot_be_anything_else(session: Session) -> None:
-    """`Literal["1"]` rather than `str`, so an accidental change is a validation error rather than a value
+    """`Literal["2"]` rather than `str`, so an accidental change is a validation error rather than a value
     a consumer has to interpret."""
-    from app.api.finding_export import FindingExportV1
+    from app.api.finding_export import FindingExportV2
 
-    field = FindingExportV1.model_fields["schema_version"]
+    field = FindingExportV2.model_fields["schema_version"]
     assert field.annotation is not str, "a free-form version string is a version nobody can rely on"
     with pytest.raises(ValueError, match="schema_version"):
-        FindingExportV1(
-            schema_version="2",  # type: ignore[arg-type]
+        FindingExportV2(
+            schema_version="1",  # type: ignore[arg-type]
             project_id=uuid4(),
             package_id=uuid4(),
             summary={"findings": 0, "decisions": 0, "abstentions": 0, "by_outcome": {}},  # type: ignore[arg-type]

@@ -234,6 +234,7 @@ class _Document:
             f"{finding.outcome} - {finding.severity}",
         )
         self.y -= 18
+        self._field("Subject", finding.scope_label or "Package revision")
         self._field("Approved value (ARCH)", _source_values(finding, "ARCH"))
         self._field("Vendor value (SHOP)", _source_values(finding, "SHOP"))
         self._field("Recorded comparison", _text(finding.trace.get("comparison")))

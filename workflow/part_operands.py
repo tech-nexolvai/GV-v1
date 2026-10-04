@@ -32,7 +32,7 @@ from units.measurement import Measurement
 from verdict.operands import VerdictOperand
 from vocabulary.part_kinds import PartKind
 from workflow.countertop_runs import live_run_rows
-from workflow.parts import live_part
+from workflow.parts import live_part, live_part_item_ids
 from workflow.reading_parts import current_links_to, live_reading_parts
 
 
@@ -45,6 +45,65 @@ class PartOperands:
     missing: dict[str, str] = field(default_factory=dict)
     ambiguous: dict[str, dict[str, str]] = field(default_factory=dict)
     notes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CountertopScope:
+    item_id: UUID
+    label: str
+
+
+def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopScope, ...] | None:
+    """Current confirmed vendor countertops, or None for the untouched legacy form path.
+
+    A withdrawn decision still opts the revision into scoped checking. Otherwise withdrawing a
+    broken run would restore the unscoped form widths and could turn an abstention into PASS.
+    """
+    decided = session.scalar(
+        select(CountertopRunDecision.id)
+        .join(DrawingItem, DrawingItem.id == CountertopRunDecision.countertop_item_id)
+        .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
+        .join(Page, Page.id == DrawingView.page_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == Page.document_version_id,
+        )
+        .where(PackageRevisionDocument.package_revision_id == revision_id)
+        .limit(1)
+    )
+    if decided is None:
+        return None
+    rows = session.execute(
+        select(DrawingItem.id, Page.index)
+        .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
+        .join(Page, Page.id == DrawingView.page_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == Page.document_version_id,
+        )
+        .where(
+            PackageRevisionDocument.package_revision_id == revision_id,
+            DrawingItem.id.in_(live_part_item_ids()),
+            DrawingItem.item_type == PartKind.COUNTERTOP.item_type.value,
+            DrawingView.role == ViewRole.SHOP.value,
+        )
+    ).all()
+    placed = [(page_index, live_part(session, item_id)) for item_id, page_index in rows]
+    ordered = sorted(
+        ((page_index, part) for page_index, part in placed if part is not None),
+        key=lambda entry: (entry[0], entry[1].left, entry[1].top, str(entry[1].item_id)),
+    )
+    counts: dict[int, int] = {}
+    scopes: list[CountertopScope] = []
+    for page_index, part in ordered:
+        counts[page_index] = counts.get(page_index, 0) + 1
+        scopes.append(
+            CountertopScope(
+                item_id=part.item_id,
+                label=f"Countertop on page {page_index + 1}, item {counts[page_index]}",
+            )
+        )
+    return tuple(scopes)
 
 
 _INPUTS = {
@@ -62,12 +121,14 @@ def part_operands(
     revision_id: UUID,
     rules: Sequence[Rule],
     observations: Mapping[UUID, tuple[DomainObservation, tuple[str, UUID]]],
+    *,
+    scope_item_id: UUID | None = None,
 ) -> PartOperands:
     """Select one complete run for this revision, or explicitly withhold its owned inputs.
 
     Current decisions include withdrawals and invalidated parts. Filtering those out at discovery
     would mistake a revoked decision for no decision and restore stale form/label widths.
-    Multiple countertops have no per-top check scope yet, so they are ambiguous, never concatenated.
+    A scoped call selects one countertop; an unscoped multi-run call refuses to concatenate them.
     """
     result = PartOperands()
     relevant = [rule for rule in rules if rule.id in _INPUTS]
@@ -91,7 +152,7 @@ def part_operands(
             .order_by(CountertopRunDecision.id)
         )
     )
-    if not decisions:
+    if not decisions and scope_item_id is None:
         return result
     for rule in relevant:
         result.owned[rule.id] = frozenset(_INPUTS[rule.id])
@@ -106,6 +167,12 @@ def part_operands(
                 result.missing[rule.id] = reason
         return result
 
+    if scope_item_id is not None:
+        decisions = [
+            decision for decision in decisions if decision.countertop_item_id == scope_item_id
+        ]
+        if not decisions:
+            return refuse("Confirm this countertop's run and width links before checking.")
     if len(decisions) != 1:
         return refuse(
             "More than one countertop run has no single check scope; choose the "

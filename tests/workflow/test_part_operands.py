@@ -11,9 +11,12 @@ import pytest
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
+from app.api.finding_chain import build_chain
+from app.api.findings import _as_finding, _base_query
 from app.db.session import session_factory
 from app.models import (
     CanonicalObservation,
+    CheckRun,
     CountertopRun,
     CountertopRunDecision,
     DrawingView,
@@ -22,6 +25,8 @@ from app.models import (
     Page,
     PartProposal,
     ReadingPart,
+    RuleDefinition,
+    RuleSnapshot,
     ViewRole,
 )
 from app.models.parameters import to_rows
@@ -178,6 +183,67 @@ def form_widths() -> dict[str, VerdictOperand]:
     }
 
 
+def _second_complete_run(session: Session, assembly: Assembly) -> tuple[UUID, list[UUID]]:
+    """Another made-up countertop on its own page, with its own linked widths."""
+    page = Page(
+        document_version_id=assembly.page.document_version_id,
+        index=1,
+        content_hash="b" * 64,
+        width_pt=400,
+        height_pt=100,
+        rotation=0,
+        has_vector_text=True,
+        render_failed=False,
+    )
+    session.add(page)
+    session.flush()
+    view = DrawingView(page_id=page.id, tag="SECOND", region=REGION)
+    session.add(view)
+    session.flush()
+    confirm_view_role(session, view=view, role=ViewRole.SHOP, actor="reviewer")
+    members: list[UUID] = []
+    top_id: UUID | None = None
+    for kind, left, right, value in (
+        (PartKind.COUNTERTOP, "0.20", "0.80", 41),
+        (PartKind.FILLER, "0.20", "0.25", 2),
+        (PartKind.CABINET, "0.25", "0.45", 17),
+        (PartKind.CABINET, "0.45", "0.75", 19),
+        (PartKind.FILLER, "0.75", "0.80", 3),
+    ):
+        _, item = _confirmed(session, view, kind, left, right)
+        reading = CanonicalObservation(
+            document_version_id=page.document_version_id,
+            page_id=page.id,
+            document_role="SHOP",
+            coordinate_space="stored",
+            polygon=[[left, "0.30"], [right, "0.30"], [right, "0.31"], [left, "0.31"]],
+            semantic_type=kind.item_type.value,
+            value_numerator=value,
+            value_denominator=1,
+            unit="in",
+            status="HUMAN_CONFIRMED",
+            authority="AUTHORITATIVE",
+        )
+        session.add(reading)
+        session.flush()
+        confirm_reading_part(
+            session, observation_id=reading.id, item_id=item, edge_tolerance=None, actor="reviewer"
+        )
+        if kind is PartKind.COUNTERTOP:
+            top_id = item
+        else:
+            members.append(item)
+    assert top_id is not None
+    confirm_countertop_run(
+        session,
+        countertop_item_id=top_id,
+        member_item_ids=list(reversed(members)),
+        edge_tolerance=Decimal(0),
+        actor="reviewer",
+    )
+    return top_id, members
+
+
 @pytest.mark.parametrize(
     "broken",
     [
@@ -250,7 +316,7 @@ def test_never_configured_keeps_existing_form_path(session: Session, store: Loca
 
 def test_multiple_runs_are_not_combined(session: Session, store: LocalStore) -> None:
     assembly = Assembly(session, store)
-    _, second = _confirmed(session, assembly.view, PartKind.COUNTERTOP, "0.20", "0.80")
+    _, second = _confirmed(session, assembly.view, PartKind.COUNTERTOP, "0.82", "0.94")
     confirm_countertop_run(
         session,
         countertop_item_id=second,
@@ -258,8 +324,148 @@ def test_multiple_runs_are_not_combined(session: Session, store: LocalStore) -> 
         edge_tolerance=Decimal(0),
         actor="reviewer",
     )
+    _publish_rulebook(session)
+    DatabaseStages(
+        store,
+        discriminators={"wall_config": "back_left_right"},
+        operands={RULE: form_widths()},
+    ).run_checks(session, assembly.revision.id)
+    findings = list(
+        session.scalars(
+            select(Finding)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+            .where(
+                Finding.package_revision_id == assembly.revision.id,
+                CheckRun.superseded_at.is_(None),
+                RuleDefinition.rule_id == RULE,
+            )
+        )
+    )
+    assert len(findings) == 2
+    assert {finding.scope_item_id for finding in findings} == {assembly.parts[0], second}
+    assert all(finding.outcome not in {"PASS", "FAIL"} for finding in findings)
+
+
+def test_one_countertop_finding_names_its_subject(session: Session, store: LocalStore) -> None:
+    assembly = Assembly(session, store)
     finding = assembly.check(session, store)
-    assert finding.outcome == "REVIEW_REQUIRED", finding.reason
+    assert finding.scope_item_id == assembly.parts[0]
+    assert finding.scope_label == "Countertop on page 1, item 1"
+    assert finding.outcome == "PASS"
+    package = session.get_one(Package, assembly.revision.package_id)
+    listed = [
+        _as_finding(row)
+        for row in session.execute(_base_query(package.project_id, package.id))
+        if row.rule_id == RULE
+    ]
+    assert len(listed) == 1
+    assert listed[0]["scope_item_id"] == assembly.parts[0]
+    assert listed[0]["scope_label"] == finding.scope_label
+    run = session.get_one(CheckRun, finding.check_run_id)
+    snapshot = session.get_one(RuleSnapshot, run.rule_snapshot_id)
+    definition = session.get_one(RuleDefinition, snapshot.rule_definition_id)
+    chain = build_chain(session, finding, run, snapshot, definition)
+    assert chain.scope_item_id == assembly.parts[0]
+    assert chain.scope_label == finding.scope_label
+
+
+def test_two_countertops_abstain_on_layout_and_missing_run(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    _, other = _confirmed(session, assembly.view, PartKind.COUNTERTOP, "0.82", "0.94")
+    _publish_rulebook(session)
+    DatabaseStages(
+        store,
+        discriminators={"wall_config": "back_left_right"},
+        operands={RULE: form_widths()},
+    ).run_checks(session, assembly.revision.id)
+    live = list(
+        session.scalars(
+            select(Finding)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+            .where(
+                Finding.package_revision_id == assembly.revision.id,
+                CheckRun.superseded_at.is_(None),
+                RuleDefinition.rule_id == RULE,
+            )
+        )
+    )
+    width = {row.scope_item_id: row for row in live if row.scope_item_id and row.outcome != "PASS"}
+    assert assembly.parts[0] in width, [
+        (row.scope_item_id, row.outcome, row.reason) for row in live
+    ]
+    assert other in width
+    assert width[assembly.parts[0]].outcome == "REVIEW_REQUIRED", width[assembly.parts[0]].reason
+    assert "choose the wall layout for this countertop" in width[assembly.parts[0]].reason.lower()
+    assert width[other].outcome == "NOT_FOUND"
+    assert "confirm this countertop's run" in width[other].reason.lower()
+
+
+def test_two_complete_countertops_keep_distinct_widths_and_supersede(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    second, second_members = _second_complete_run(session, assembly)
+    _publish_rulebook(session)
+    stages = DatabaseStages(
+        store,
+        discriminators={"wall_config": "back_left_right"},
+        operands={RULE: form_widths()},
+    )
+    for attempt in range(2):
+        stages.run_checks(session, assembly.revision.id)
+        live = list(
+            session.scalars(
+                select(Finding)
+                .join(CheckRun, CheckRun.id == Finding.check_run_id)
+                .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+                .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+                .where(
+                    Finding.package_revision_id == assembly.revision.id,
+                    CheckRun.superseded_at.is_(None),
+                    RuleDefinition.rule_id == RULE,
+                )
+            )
+        )
+        assert len(live) == 2
+        by_subject = {finding.scope_item_id: finding for finding in live}
+        assert set(by_subject) == {assembly.parts[0], second}
+        assert all(finding.outcome == "REVIEW_REQUIRED" for finding in live)
+        assert all("wall layout" in finding.reason.lower() for finding in live)
+        first_notes = " ".join(by_subject[assembly.parts[0]].notes)
+        second_notes = " ".join(by_subject[second].notes)
+        assert str(assembly.readings[0]) in first_notes
+        assert str(assembly.readings[0]) not in second_notes
+        assert str(second_members[0]) in second_notes
+        assert str(second_members[0]) not in first_notes
+        filler = list(
+            session.scalars(
+                select(Finding)
+                .join(CheckRun, CheckRun.id == Finding.check_run_id)
+                .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+                .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+                .where(
+                    Finding.package_revision_id == assembly.revision.id,
+                    CheckRun.superseded_at.is_(None),
+                    RuleDefinition.rule_id == "CAB-FILLER-001",
+                )
+            )
+        )
+        assert {finding.scope_item_id for finding in filler} == {assembly.parts[0], second}
+        assert all(finding.outcome == "NOT_FOUND" for finding in filler)
+        assert all("approved-side pairing" in finding.reason for finding in filler)
+        if attempt == 1:
+            historic = list(
+                session.scalars(
+                    select(Finding).where(Finding.package_revision_id == assembly.revision.id)
+                )
+            )
+            assert len(historic) > len(live)
 
 
 def test_unlink_after_confirmation_costs_the_whole_run(session: Session, store: LocalStore) -> None:
@@ -367,7 +573,7 @@ def test_ambiguous_storage_never_uses_passing_form(
         )
         session.flush()
     finding = assembly.check(session, store)
-    assert finding.outcome == "REVIEW_REQUIRED", finding.reason
+    assert finding.outcome in {"REVIEW_REQUIRED", "NOT_FOUND"}, finding.reason
 
 
 def test_replaced_reading_requires_a_new_link(session: Session, store: LocalStore) -> None:

@@ -277,6 +277,7 @@ from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import record_layout_proposal
 from workflow.measurements import run_parameters_for
+from workflow.part_operands import CountertopScope, countertop_scopes
 from workflow.part_pictures import (
     PartPictureSettings,
     pages_without_pictures,
@@ -5205,6 +5206,7 @@ class DatabaseStages:
                 delta=_delta_text(finding),
                 variant=finding.variant,
                 notes=None if finding.notes is None else tuple(finding.notes),
+                scope_label=finding.scope_label,
             )
             stored_findings.append(stored_finding)
             try:
@@ -5415,6 +5417,9 @@ class DatabaseStages:
             parameter_set=project_layer if project_layer is not None else _empty_project(package),
         )
 
+        countertop_subjects = countertop_scopes(session, package_revision_id)
+        scoped_rules = frozenset({"CT-WIDTH-001", "CAB-FILLER-001"})
+
         # **Every product type, not one.** The resolver keys candidates on an exact product-type
         # match, so asking about countertops alone would leave the cabinet rules unrun — and unrun is
         # indistinguishable from passing once the reviewer is looking at the list. A package carries
@@ -5458,6 +5463,58 @@ class DatabaseStages:
                 if snapshot is None:
                     skipped += 1
                     continue
+                if countertop_subjects is not None and abstention.rule_id in scoped_rules:
+                    if not countertop_subjects:
+                        record_finding(
+                            session,
+                            package_revision_id=package_revision_id,
+                            finding=replace(
+                                _unresolved(snapshot, abstention),
+                                outcome=Outcome.NOT_FOUND,
+                                reason="No live confirmed countertop run remains for this check.",
+                            ),
+                            operands={},
+                            parameter_set_ids=cited,
+                        )
+                        written += 1
+                    for scoped_subject in countertop_subjects:
+                        scoped_evidence = evidence_operands(
+                            session,
+                            package_revision_id,
+                            [snapshot.rule],
+                            scope_item_id=scoped_subject.item_id,
+                        )
+                        if abstention.rule_id in scoped_evidence.missing:
+                            scoped_finding = Finding(
+                                rule_id=snapshot.rule.id,
+                                outcome=Outcome.NOT_FOUND,
+                                severity=snapshot.rule.severity,
+                                reason=scoped_evidence.missing[abstention.rule_id],
+                                snapshot_id=snapshot.snapshot_id,
+                                engine_version=ENGINE_VERSION,
+                                notes=scoped_evidence.notes.get(abstention.rule_id, ()),
+                            )
+                        else:
+                            scoped_finding = _unresolved(snapshot, abstention)
+                            if (
+                                abstention.rule_id == "CT-WIDTH-001"
+                                and len(countertop_subjects) > 1
+                            ):
+                                scoped_finding = replace(
+                                    scoped_finding,
+                                    reason="Choose the wall layout for this countertop before checking its width.",
+                                )
+                        record_finding(
+                            session,
+                            package_revision_id=package_revision_id,
+                            finding=scoped_finding,
+                            operands=scoped_evidence.operands.get(abstention.rule_id, {}),
+                            parameter_set_ids=cited,
+                            scope_item_id=scoped_subject.item_id,
+                            scope_label=scoped_subject.label,
+                        )
+                        written += 1
+                    continue
                 record_finding(
                     session,
                     package_revision_id=package_revision_id,
@@ -5482,43 +5539,112 @@ class DatabaseStages:
             )
             for applicable in resolution.applicable:
                 rule_id = applicable.snapshot.rule.id
-                supplied = evidence.merge(rule_id, reviewer_operands.get(rule_id, {}))
-                finding = execute(
-                    applicable.snapshot,
-                    supplied,
-                    resolved,
-                    discriminators=self._discriminators,
-                    # Readings found on more than one drawing (#826). A value typed for the same
-                    # input still wins unless the run owns that input; merge() enforces that boundary.
-                    ambiguous=evidence.ambiguous.get(rule_id, {}),
+                subjects: tuple[CountertopScope | None, ...] = (
+                    countertop_subjects
+                    if countertop_subjects is not None and rule_id in scoped_rules
+                    else (None,)
                 )
-                # A run evidence was not allowed to fill (#794, #833), named in its check's own
-                # sentence — otherwise "could not resolve 'shop_cabinets'" reads as though labelling
-                # a cabinet would fix it, when it is the tag, or the order along the wall, that is
-                # missing. Sorted so that a rule with two such sentences reads the same every run.
-                unfilled = sorted(
-                    {
-                        why
-                        for name, why in position_sensitive_inputs(applicable.snapshot.rule).items()
-                        if name not in supplied and name not in evidence.owned.get(rule_id, ())
-                    }
-                )
-                if finding.outcome is Outcome.NOT_FOUND and unfilled:
-                    finding = replace(finding, reason=f"{' '.join(unfilled)} ({finding.reason})")
-                if finding.outcome is Outcome.NOT_FOUND and rule_id in evidence.missing:
-                    finding = replace(
-                        finding, reason=f"{evidence.missing[rule_id]} ({finding.reason})"
+                if not subjects:
+                    record_finding(
+                        session,
+                        package_revision_id=package_revision_id,
+                        finding=Finding(
+                            rule_id=rule_id,
+                            outcome=Outcome.NOT_FOUND,
+                            severity=applicable.snapshot.rule.severity,
+                            reason="No live confirmed countertop run remains for this check.",
+                            snapshot_id=applicable.snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        ),
+                        operands={},
+                        parameter_set_ids=cited,
                     )
-                finding = replace(finding, notes=(*finding.notes, *evidence.notes.get(rule_id, ())))
-                record_finding(
-                    session,
-                    package_revision_id=package_revision_id,
-                    finding=finding,
-                    operands=supplied,
-                    parameter_set_ids=cited,
-                    missing=_declared_inputs(applicable.snapshot.rule),
-                )
-                written += 1
+                    written += 1
+                for subject in subjects:
+                    scoped = subject is not None
+                    selected = (
+                        evidence_operands(
+                            session,
+                            package_revision_id,
+                            [applicable.snapshot.rule],
+                            scope_item_id=subject.item_id,
+                        )
+                        if subject is not None
+                        else evidence
+                    )
+                    supplied = selected.merge(
+                        rule_id, {} if scoped else reviewer_operands.get(rule_id, {})
+                    )
+                    if scoped and rule_id in selected.missing:
+                        finding = Finding(
+                            rule_id=rule_id,
+                            outcome=Outcome.NOT_FOUND,
+                            severity=applicable.snapshot.rule.severity,
+                            reason=selected.missing[rule_id],
+                            snapshot_id=applicable.snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        )
+                    elif (
+                        scoped
+                        and rule_id == "CT-WIDTH-001"
+                        and countertop_subjects is not None
+                        and len(countertop_subjects) > 1
+                    ):
+                        finding = Finding(
+                            rule_id=rule_id,
+                            outcome=Outcome.REVIEW_REQUIRED,
+                            severity=applicable.snapshot.rule.severity,
+                            reason="Choose the wall layout for this countertop before checking its width.",
+                            snapshot_id=applicable.snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        )
+                    else:
+                        finding = execute(
+                            applicable.snapshot,
+                            supplied,
+                            resolved,
+                            discriminators=self._discriminators,
+                            ambiguous=selected.ambiguous.get(rule_id, {}),
+                        )
+                    # A run evidence was not allowed to fill (#794, #833), named in its check's own
+                    # sentence — otherwise "could not resolve 'shop_cabinets'" reads as though labelling
+                    # a cabinet would fix it, when it is the tag, or the order along the wall, that is
+                    # missing. Sorted so that a rule with two such sentences reads the same every run.
+                    unfilled = sorted(
+                        {
+                            why
+                            for name, why in position_sensitive_inputs(
+                                applicable.snapshot.rule
+                            ).items()
+                            if name not in supplied and name not in selected.owned.get(rule_id, ())
+                        }
+                    )
+                    if finding.outcome is Outcome.NOT_FOUND and unfilled:
+                        finding = replace(
+                            finding, reason=f"{' '.join(unfilled)} ({finding.reason})"
+                        )
+                    if (
+                        finding.outcome is Outcome.NOT_FOUND
+                        and rule_id in selected.missing
+                        and not scoped
+                    ):
+                        finding = replace(
+                            finding, reason=f"{selected.missing[rule_id]} ({finding.reason})"
+                        )
+                    finding = replace(
+                        finding, notes=(*finding.notes, *selected.notes.get(rule_id, ()))
+                    )
+                    record_finding(
+                        session,
+                        package_revision_id=package_revision_id,
+                        finding=finding,
+                        operands=supplied,
+                        parameter_set_ids=cited,
+                        missing=_declared_inputs(applicable.snapshot.rule),
+                        scope_item_id=None if subject is None else subject.item_id,
+                        scope_label=None if subject is None else subject.label,
+                    )
+                    written += 1
 
         return {
             "implemented": True,

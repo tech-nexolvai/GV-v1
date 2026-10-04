@@ -83,6 +83,8 @@ export interface Finding {
   id: string;
   /** `rule_id` on the wire. */
   check_id: string;
+  scope_item_id?: string | null;
+  scope_label?: string | null;
   name: string;
   outcome: Outcome;
   severity: Severity;

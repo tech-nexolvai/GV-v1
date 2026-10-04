@@ -197,6 +197,13 @@ class Finding(Base, TimestampedUUID, Immutable):
     package B, and the record would misstate what was reviewed.
     """
 
+    scope_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("drawing_items.id", ondelete="RESTRICT", name="fk_findings_scope_item"),
+        default=None,
+    )
+    scope_label: Mapped[str | None] = mapped_column(Text, default=None)
+    """The confirmed countertop and frozen plain name, or both null for a revision-level result."""
+
     outcome: Mapped[str] = mapped_column(String(32), index=True)
     severity: Mapped[str] = mapped_column(String(16))
     trace: Mapped[dict[str, object]] = mapped_column(JSONB)
@@ -276,6 +283,12 @@ class Finding(Base, TimestampedUUID, Immutable):
         CheckConstraint("reason IS NULL OR reason <> ''", name="finding_reason"),
         CheckConstraint("variant IS NULL OR variant <> ''", name="finding_variant"),
         CheckConstraint(f"severity IN ({SEVERITY_VALUES})", name="finding_severity"),
+        CheckConstraint(
+            "(scope_item_id IS NULL AND scope_label IS NULL) OR "
+            "(scope_item_id IS NOT NULL AND scope_label IS NOT NULL AND scope_label <> '')",
+            name="finding_scope_pair",
+        ),
+        Index("ix_findings_revision_scope", "package_revision_id", "scope_item_id"),
         Index("ix_findings_outcome_severity", "outcome", "severity"),
     )
 

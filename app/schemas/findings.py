@@ -156,6 +156,8 @@ class FindingOut(BaseModel):
     id: UUID
     check_run_id: UUID
     package_revision_id: UUID
+    scope_item_id: UUID | None = None
+    scope_label: str | None = None
     revision_number: int
     """Which revision of the package this finding is about.
 

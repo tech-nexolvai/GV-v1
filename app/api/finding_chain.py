@@ -223,6 +223,8 @@ class FindingChain(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     finding_id: UUID
+    scope_item_id: UUID | None = None
+    scope_label: str | None = None
     outcome: str
     severity: str
     rule_snapshot: RuleSnapshotRecord
@@ -436,6 +438,8 @@ def _assemble(
     )
     return FindingChain(
         finding_id=finding.id,
+        scope_item_id=finding.scope_item_id,
+        scope_label=finding.scope_label or "Package revision",
         outcome=finding.outcome,
         severity=finding.severity,
         rule_snapshot=RuleSnapshotRecord(

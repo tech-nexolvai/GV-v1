@@ -4,7 +4,7 @@
 `docs/DESIGN_PRODUCT.md` §3.1: reports, spreadsheets and any eventual front end need the same data in a
 stable shape. Two things make that shape safe rather than merely stable.
 
-**The version is explicit.** `schema_version` is a literal, so a consumer that pins `"1"` breaks loudly the
+**The version is explicit.** `schema_version` is a literal, so a consumer that pins `"2"` breaks loudly the
 day the shape changes instead of silently reading a moved field as absent.
 
 **Abstentions are labelled, and counted.** Only `PASS` and `FAIL` are decisions; `NOT_FOUND`,
@@ -67,7 +67,7 @@ logger = logging.getLogger("gv.api.finding_export")
 
 #: The only schema version this module emits. A literal rather than a free string: a consumer pinning "1"
 #: must fail on a change, and a version field that could hold anything is a version field nobody trusts.
-SCHEMA_VERSION: Literal["1"] = "1"
+SCHEMA_VERSION: Literal["2"] = "2"
 
 NOT_FOUND_DETAIL = "Not found"
 
@@ -118,12 +118,12 @@ class ExportSummary(BaseModel):
     by_outcome: dict[str, int]
 
 
-class FindingExportV1(BaseModel):
+class FindingExportV2(BaseModel):
     """The export envelope. Version first, so a consumer can check before it parses."""
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: Literal["1"]
+    schema_version: Literal["2"]
     project_id: UUID
     package_id: UUID
     summary: ExportSummary
@@ -179,7 +179,7 @@ def _operands_by_run(
 
 @router.get(
     "/projects/{project_id}/packages/{package_id}/findings/export",
-    response_model=FindingExportV1,
+    response_model=FindingExportV2,
     summary="Export a package's findings in a versioned shape",
 )
 def export_findings(
@@ -187,7 +187,7 @@ def export_findings(
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
-) -> FindingExportV1:
+) -> FindingExportV2:
     """Every finding for one package, with its chain, labelled and counted.
 
     The project boundary is established by the dependency and then again in SQL, the same belt-and-braces
@@ -290,7 +290,7 @@ def export_findings(
         # would pair a finding with another finding's verdict — mislabelling rather than failing.
         for (finding, run, snapshot, definition), (_, decided) in zip(rows, classified, strict=True)
     )
-    return FindingExportV1(
+    return FindingExportV2(
         schema_version=SCHEMA_VERSION,
         project_id=project_id,
         package_id=package_id,

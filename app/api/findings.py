@@ -252,6 +252,8 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
             Finding.id,
             Finding.check_run_id,
             Finding.package_revision_id,
+            Finding.scope_item_id,
+            Finding.scope_label,
             Finding.outcome,
             Finding.severity,
             Finding.parameter_set_versions,
@@ -312,6 +314,7 @@ def _as_finding(row: Row[Any]) -> dict[str, Any]:
     tuple half first.
     """
     data = dict(row._mapping)
+    data["scope_label"] = data.get("scope_label") or "Package revision"
     kind = data.pop("reviewer_action_kind", None)
     actor = data.pop("reviewer_action_actor", None)
     note = data.pop("reviewer_action_note", None)
