@@ -326,10 +326,11 @@ export function createPackage(projectId: string, vendor: string | null) {
  * the sink's front offset off the drawing once even though three rules consume it. `consumers` says
  * which inputs each value feeds.
  */
-export function getRequiredInputs(projectId: string, packageId: string) {
+export function getRequiredInputs(projectId: string, packageId: string, pageNumber?: number) {
   type Needed =
     paths['/api/v1/projects/{project_id}/packages/{package_id}/required-inputs']['get']['responses']['200']['content']['application/json'];
-  return request<Needed>(`/projects/${projectId}/packages/${packageId}/required-inputs`);
+  const query = pageNumber === undefined ? '' : `?page_number=${pageNumber}`;
+  return request<Needed>(`/projects/${projectId}/packages/${packageId}/required-inputs${query}`);
 }
 
 /** One frame of the assignment stream. The server's own type — see `AssignmentEvent`. */
@@ -358,12 +359,18 @@ export type ProposedField = components['schemas']['ProposedFieldOut'];
 export async function proposeMeasurements(
   projectId: string,
   packageId: string,
+  pageNumber: number,
   onStep: (step: AssignmentStep) => void,
   signal?: AbortSignal,
 ): Promise<ProposedMeasurements> {
   const response = await fetch(
     `${BASE}/projects/${projectId}/packages/${packageId}/measurements/propose`,
-    { method: 'POST', headers: { Accept: 'text/event-stream' }, signal },
+    {
+      method: 'POST',
+      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page_number: pageNumber }),
+      signal,
+    },
   );
 
   if (!response.ok || !response.body) {
@@ -591,9 +598,9 @@ export function completeReviewSession(projectId: string, reviewSessionId: string
  * Only readings that carry a value: a token with no unit was recorded without one, deliberately, and
  * there is nothing for a reviewer to confirm about a bare number.
  */
-export function listCandidates(projectId: string, packageId: string) {
+export function listCandidates(projectId: string, packageId: string, pageNumber: number) {
   return request<CandidatesOut>(
-    `/projects/${projectId}/packages/${packageId}/candidates`,
+    `/projects/${projectId}/packages/${packageId}/candidates?page_number=${pageNumber}`,
   );
 }
 

@@ -264,7 +264,9 @@ def test_a_package_uploaded_through_the_ui_can_be_filled_by_a_model(
     )
     session.expire_all()
 
-    listed = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates")
+    listed = client.get(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates?page_number=1"
+    )
     assert listed.status_code == 200, listed.text
     values = [item["value"] for item in listed.json()["candidates"]]
     assert "15 in" in values and "36 in" in values, values
@@ -276,7 +278,8 @@ def test_a_package_uploaded_through_the_ui_can_be_filled_by_a_model(
     endpoint.configured_assignment_model = lambda _settings: model  # type: ignore[assignment]
     try:
         streamed = client.post(
-            f"/api/v1/projects/{PROJECT}/packages/{package_id}/measurements/propose"
+            f"/api/v1/projects/{PROJECT}/packages/{package_id}/measurements/propose",
+            json={"page_number": 1},
         )
     finally:
         endpoint.configured_assignment_model = original  # type: ignore[assignment]
@@ -400,7 +403,9 @@ def test_a_second_proposal_replaces_the_first_on_the_form(
     )
     session.expire_all()
 
-    listed = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates").json()
+    listed = client.get(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates?page_number=1"
+    ).json()
     first = listed["candidates"][0]["candidate_id"]
     second = listed["candidates"][1]["candidate_id"]
 

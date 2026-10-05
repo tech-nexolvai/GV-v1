@@ -79,6 +79,23 @@ def test_a_well_formed_assignment_is_accepted() -> None:
     assert result.assignments[0].candidate_ids == ("c1",)
 
 
+def test_a_reading_from_another_page_cannot_fill_a_page_scoped_field() -> None:
+    """A cross-page number is not a candidate for a field scoped to the selected sheet."""
+    field = Field(
+        key="SHOP:CT010",
+        name="countertop_depth",
+        source="SHOP",
+        many=False,
+        page_number=2,
+    )
+    context = _context(_reading("c1", "25 1/2 in"), fields=(field,))
+
+    result = _guard(context, ProposedAssignment("SHOP:CT010", ("c1",)))
+
+    assert isinstance(result, AssignmentRefused)
+    assert "page 2" in result.reason
+
+
 def test_a_run_drawn_as_one_chain_in_order_is_accepted() -> None:
     """**The case the geometry exists to permit.** Input: three readings along one chain, in order.
 
@@ -291,6 +308,7 @@ def test_the_rule_arithmetic_is_not_something_a_field_can_carry() -> None:
         "source",
         "many",
         "description",
+        "page_number",
     }
 
     with pytest.raises(TypeError):

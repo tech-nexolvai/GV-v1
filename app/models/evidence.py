@@ -482,6 +482,10 @@ class MeasurementProposal(Base, TimestampedUUID, Immutable):
 
     package_revision_id: Mapped[UUID] = mapped_column(index=True)
 
+    page_number: Mapped[int | None] = mapped_column(default=None)
+    """One-based page scope for a reviewer-requested proposal. ``None`` keeps legacy and worker
+    proposals readable without pretending they were requested for one page."""
+
     proposal_id: Mapped[UUID] = mapped_column(index=True)
     """Which run of the step produced this row. Append-only means a re-proposal is a second set of
     rows beside the first, and this is what tells them apart — the newest set is the current answer
@@ -514,6 +518,10 @@ class MeasurementProposal(Base, TimestampedUUID, Immutable):
     configuration that produced it rather than to "the AI"."""
 
     __table_args__ = (
+        CheckConstraint(
+            "page_number IS NULL OR page_number > 0",
+            name="measurement_proposal_page_number_positive",
+        ),
         # One reading per position per field per run. A second row would be two answers to one
         # slot, and nothing downstream could say which was meant.
         UniqueConstraint(

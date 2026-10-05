@@ -234,7 +234,7 @@ export interface paths {
         };
         /**
          * What the extractor read, waiting for somebody to say what it is
-         * @description Every reading of this package that carries a value, with its crop.
+         * @description Every reading on one page that carries a value, with its crop.
          *
          *     **Only readings that carry a value.** A token with no unit was recorded without one — deliberately,
          *     because a bare `38` is a dimension whose unit is unknown — and there is nothing for a reviewer to
@@ -1923,11 +1923,13 @@ export interface components {
         };
         /**
          * CandidatesOut
-         * @description Everything read for this package that nobody has yet said the meaning of.
+         * @description Every reading still to label on one complete page.
          */
         CandidatesOut: {
             /** Candidates */
             candidates: components["schemas"]["CandidateOut"][];
+            /** Page Number */
+            page_number: number;
             /** Total */
             total: number;
         };
@@ -2174,6 +2176,8 @@ export interface components {
         ConfirmedReadingOut: {
             /** Key */
             key: string;
+            /** Page Index */
+            page_index: number;
             /**
              * Qualification
              * @enum {string}
@@ -3129,6 +3133,14 @@ export interface components {
             ordering: string;
         };
         /**
+         * PageProposalIn
+         * @description Request a proposal for exactly one drawing page.
+         */
+        PageProposalIn: {
+            /** Page Number */
+            page_number: number;
+        };
+        /**
          * ParameterEntry
          * @description One setting a reviewer supplies for this job — a cabinet depth, an overhang, a sink interior.
          *
@@ -3386,6 +3398,8 @@ export interface components {
             fields_total: number;
             /** Model Id */
             model_id?: string | null;
+            /** Page Number */
+            page_number: number;
             /** Readings Attached */
             readings_attached: number;
             /** Readings Considered */
@@ -3534,6 +3548,11 @@ export interface components {
             confirmed_readings: components["schemas"]["ConfirmedReadingOut"][];
             /** Discriminators */
             discriminators: components["schemas"]["DiscriminatorOut"][];
+            /**
+             * Page Numbers
+             * @default []
+             */
+            page_numbers: number[];
             /** Parameters */
             parameters: components["schemas"]["ParameterOut"][];
             /**
@@ -4621,7 +4640,9 @@ export interface operations {
     };
     list_candidates_api_v1_projects__project_id__packages__package_id__candidates_get: {
         parameters: {
-            query?: never;
+            query: {
+                page_number: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -5319,7 +5340,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PageProposalIn"];
+            };
+        };
         responses: {
             /** @description A stream of `AssignmentEvent` frames: one per phase as it begins, then the result. Each frame is one `data:` line. */
             200: {
@@ -5768,7 +5793,9 @@ export interface operations {
     };
     read_required_inputs_api_v1_projects__project_id__packages__package_id__required_inputs_get: {
         parameters: {
-            query?: never;
+            query?: {
+                page_number?: number | null;
+            };
             header?: never;
             path: {
                 project_id: string;
