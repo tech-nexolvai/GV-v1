@@ -616,6 +616,18 @@
             "description": "Storage key of the crop of this reading's region, when one was cut.",
             "title": "Crop Key"
           },
+          "crop_shows_gv_mark": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whether the checked crop shows a GV coloured mark. Null means no crop or not checked.",
+            "title": "Crop Shows Gv Mark"
+          },
           "page_index": {
             "title": "Page Index",
             "type": "integer"

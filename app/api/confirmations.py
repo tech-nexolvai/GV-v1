@@ -81,6 +81,12 @@ class CandidateOut(BaseModel):
         default=None,
         description="Storage key of the crop of this reading's region, when one was cut.",
     )
+    crop_shows_gv_mark: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the checked crop shows a GV coloured mark. Null means no crop or not checked."
+        ),
+    )
     confidence: str | None = Field(
         default=None,
         description="The extractor confidence as recorded; it is not a semantic-type confidence.",
@@ -169,6 +175,7 @@ def list_candidates(
             ObservationCandidate,
             Page.index,
             EvidenceArtifact.storage_key,
+            EvidenceArtifact.shows_gv_marks,
         )
         .join(Page, Page.id == ObservationCandidate.page_id)
         .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
@@ -176,7 +183,11 @@ def list_candidates(
             PackageRevisionDocument,
             PackageRevisionDocument.document_version_id == DocumentVersion.id,
         )
-        .outerjoin(EvidenceArtifact, EvidenceArtifact.candidate_id == ObservationCandidate.id)
+        .outerjoin(
+            EvidenceArtifact,
+            (EvidenceArtifact.candidate_id == ObservationCandidate.id)
+            & (EvidenceArtifact.kind == EvidenceArtifactKind.CROP.value),
+        )
         .where(
             PackageRevisionDocument.package_revision_id == revision.id,
             ObservationCandidate.value_numerator.is_not(None),
@@ -221,13 +232,14 @@ def list_candidates(
                     f"{row.unit}"
                 ),
                 crop_key=crop_key,
+                crop_shows_gv_mark=crop_shows_gv_mark,
                 confidence=None if row.confidence is None else str(row.confidence),
                 corroboration_status=row.corroboration_status,
                 corroboration_lane=row.corroboration_lane,
                 source=placed[row.id][0],
                 source_refusal=placed[row.id][1],
             )
-            for row, page_index, crop_key in rows
+            for row, page_index, crop_key, crop_shows_gv_mark in rows
         ),
         total=len(rows),
     )
