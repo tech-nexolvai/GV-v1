@@ -42,6 +42,7 @@ import { layoutChoiceDefaults } from './layoutChoices';
 import { settingMissingASource, type SettingSource } from '../components/measure/settingSources';
 import { SettingCitation } from '../components/measure/SettingCitation';
 import { candidateCropWarning } from '../components/measure/candidateCropWarning';
+import { packageChanged } from './measureRefreshState';
 import {
   citingPointer,
   settingEntry,
@@ -319,32 +320,36 @@ export function MeasurementPanel({
    */
   const [aiFilled, setAiFilled] = useState<Record<string, string[]>>({});
   const reviewerEditedSinglesRef = useRef<Set<string>>(new Set());
+  const resetPackageIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
     let poll: ReturnType<typeof window.setTimeout> | undefined;
-    // A package switch must never leave the prior package's fields enabled while the new contract is
-    // loading. The reviewer could otherwise submit a value against the wrong drawing pair.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPackageId('');
-    setNeeded(null);
-    setRuns({});
-    setSingles({});
-    const freshEdits = new Set<string>();
-    reviewerEditedSinglesRef.current = freshEdits;
-    setReviewerEditedSingles(freshEdits);
-    setChoices({});
-    setSourceChoices({});
-    setReferences({});
-    setDeclinedCitations({});
-    setCandidates([]);
-    setSemanticTypes([]);
-    setCandidateError(null);
-    setLoadError(null);
-    setProposalSteps([]);
-    setProposal(null);
-    setProposalError(null);
-    setAiFilled({});
+    // Polling refreshes the data for the current package. Clearing the contract here would replace
+    // the whole Measure screen with its loading state, unmounting placement, run, link, and value
+    // editors while a reviewer is working. Only a real package switch resets that local work.
+    if (packageChanged(resetPackageIdRef.current, selectedPackageId)) {
+      resetPackageIdRef.current = selectedPackageId;
+      setPackageId('');
+      setLoadError(null);
+      setNeeded(null);
+      setRuns({});
+      setSingles({});
+      const freshEdits = new Set<string>();
+      reviewerEditedSinglesRef.current = freshEdits;
+      setReviewerEditedSingles(freshEdits);
+      setChoices({});
+      setSourceChoices({});
+      setReferences({});
+      setDeclinedCitations({});
+      setCandidates([]);
+      setSemanticTypes([]);
+      setCandidateError(null);
+      setProposalSteps([]);
+      setProposal(null);
+      setProposalError(null);
+      setAiFilled({});
+    }
     const applyRequiredInputs = (required: Needed) => {
       const confirmedByKey = required.confirmed_readings.reduce<Record<string, string[]>>(
         (grouped, reading) => ({

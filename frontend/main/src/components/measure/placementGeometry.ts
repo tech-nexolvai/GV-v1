@@ -30,7 +30,16 @@ export function nearestPlacementSnap(
   if (tolerance === null) return null;
   const limit = Number(tolerance);
   if (!Number.isFinite(limit) || limit < 0) return null;
-  const ranked = candidates.map((candidate) => ({
+  // A shared physical endpoint can arrive once as a dimension endpoint and once as an extension
+  // endpoint. Those are duplicate descriptions of one place, not competing snap choices. Preserve
+  // the first description (the server orders dimension points before extensions) and keep the
+  // ambiguity refusal for genuinely distinct points at equal distance.
+  const physical = new Map<string, PlacementSnapPoint>();
+  for (const candidate of candidates) {
+    const key = `${Number(candidate.x)},${Number(candidate.y)}`;
+    if (!physical.has(key)) physical.set(key, candidate);
+  }
+  const ranked = [...physical.values()].map((candidate) => ({
     candidate,
     distance: Math.hypot(Number(candidate.x) - Number(point.x), Number(candidate.y) - Number(point.y)),
   })).sort((a, b) => a.distance - b.distance);

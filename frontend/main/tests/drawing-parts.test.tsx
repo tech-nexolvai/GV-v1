@@ -298,6 +298,15 @@ const near = { x: '0.503', y: '0.5', source: 'extension' };
 assert.equal(nearestPlacementSnap({ x: '0.5', y: '0.5' }, [near], '0.004'), near);
 assert.equal(nearestPlacementSnap({ x: '0.5', y: '0.5' }, [near], '0.002'), null);
 assert.equal(nearestPlacementSnap({ x: '0.5', y: '0.5' }, [near], null), null);
+const samePhysicalSnap = [
+  { x: '0.5', y: '0.5', source: 'dimension' },
+  { x: '0.5', y: '0.5', source: 'extension' },
+];
+assert.deepEqual(
+  nearestPlacementSnap({ x: '0.5', y: '0.5' }, samePhysicalSnap, '0.004'),
+  samePhysicalSnap[0],
+  'the same physical endpoint reported as both dimension and extension is one snap, not an ambiguity',
+);
 assert.equal(
   nearestPlacementSnap(
     { x: '0.5', y: '0.5' },
