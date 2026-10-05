@@ -588,6 +588,21 @@
   border: 1px solid var(--border-default);
 }
 
+.ai-proposal__crop-figure { margin: 0; }
+
+.ai-proposal__mark-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  max-width: 30rem;
+  margin-top: var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.ai-proposal__mark-warning svg { flex: 0 0 auto; margin-top: 0.1rem; }
+
 .ai-proposal__type {
   display: grid;
   gap: var(--space-1);

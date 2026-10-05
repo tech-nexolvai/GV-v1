@@ -4993,18 +4993,56 @@ class DatabaseStages:
         if not rows:
             return {"implemented": True, "ran": True, "candidates": 0, "crops": 0}
 
-        # **Which candidates already have a crop.** `evidence_artifacts` is append-only and unique on
-        # (storage_key, sha256), and a crop's key is content-addressed — so re-running this stage on
-        # the same page would regenerate byte-identical crops and collide. A redelivery is not a
-        # second reading, exactly as `record_candidates` says of its own rows.
-        existing = session.execute(
-            select(
-                EvidenceArtifact.candidate_id,
-                EvidenceArtifact.storage_key,
-                EvidenceArtifact.sha256,
-            ).where(EvidenceArtifact.document_version_id.in_(list(keys)))
+        # **A crop is shared by bytes, but owned by a reading.** Each candidate gets its own
+        # append-only evidence row; the immutable content-addressed object itself is stored once.
+        existing = session.scalars(
+            select(EvidenceArtifact)
+            .where(
+                EvidenceArtifact.document_version_id.in_(list(keys)),
+                EvidenceArtifact.kind == EvidenceArtifactKind.CROP.value,
+            )
+            .order_by(EvidenceArtifact.created_at, EvidenceArtifact.id)
         ).all()
-        already = {candidate_id for candidate_id, _, _ in existing}
+        already = {
+            artifact.candidate_id for artifact in existing if artifact.candidate_id is not None
+        }
+        candidate_by_id = {candidate.id: candidate for candidate, _ in rows}
+
+        # Repair earlier first-writer crops only when both readings identify the same exact region.
+        backfilled = 0
+        for candidate, page in rows:
+            if candidate.id in already:
+                continue
+            source = next(
+                (
+                    artifact
+                    for artifact in existing
+                    if artifact.candidate_id is not None
+                    and (owner := candidate_by_id.get(artifact.candidate_id)) is not None
+                    and owner.document_version_id == candidate.document_version_id
+                    and owner.page_id == candidate.page_id == page.id
+                    and owner.coordinate_space == candidate.coordinate_space
+                    and owner.polygon == candidate.polygon
+                ),
+                None,
+            )
+            if source is None:
+                continue
+            copied = EvidenceArtifact(
+                candidate_id=candidate.id,
+                canonical_observation_id=None,
+                document_version_id=source.document_version_id,
+                page_id=source.page_id,
+                kind=EvidenceArtifactKind.CROP.value,
+                storage_key=source.storage_key,
+                sha256=source.sha256,
+                media_type=source.media_type,
+                coordinate_space=source.coordinate_space,
+                shows_gv_marks=source.shows_gv_marks,
+            )
+            session.add(copied)
+            already.add(candidate.id)
+            backfilled += 1
 
         by_page: dict[UUID, list[ObservationCandidate]] = {}
         pages: dict[UUID, Page] = {}
@@ -5015,12 +5053,6 @@ class DatabaseStages:
         written = 0
         abstained: list[str] = []
         skipped = 0
-        # **Seeded from the database, not empty.** Two candidates whose crops are byte-identical
-        # share one content-addressed key, so only the first gets a row and the second is skipped
-        # without one. On the next pass that second candidate is not in `already` — it has no
-        # artifact — and regenerating its crop collides with the row its twin wrote. An in-memory set
-        # cannot see that, because the collision is with work from a previous call.
-        seen: set[tuple[str, str]] = {(key, digest) for _, key, digest in existing}
         documents: dict[UUID, bytes] = {}
         for page_id, candidates in by_page.items():
             page = pages[page_id]
@@ -5054,6 +5086,21 @@ class DatabaseStages:
                 skipped += len(candidates)
                 continue
 
+            try:
+                layers = self._read_layers(
+                    documents[page.document_version_id], page.index, page.document_version_id
+                )
+            except UnreadablePdf:
+                layers = None
+            try:
+                markup = self._coloured_markup(
+                    documents[page.document_version_id], page, page.document_version_id, layers
+                )
+            except ValueError:
+                # The reading pipeline may be configured without the markup text setting. A crop
+                # still remains useful evidence, but it cannot be called clean without the check.
+                markup = None
+
             for candidate in candidates:
                 if candidate.id in already:
                     skipped += 1
@@ -5065,13 +5112,10 @@ class DatabaseStages:
                         "this rendering"
                     )
                     continue
-                result = generate_crop(
-                    rendered,
-                    CropSpec(
-                        polygon=polygon, context_margin_pt=CROP_CONTEXT_MARGIN_PT, dpi=self._dpi
-                    ),
-                    self._store,
+                spec = CropSpec(
+                    polygon=polygon, context_margin_pt=CROP_CONTEXT_MARGIN_PT, dpi=self._dpi
                 )
+                result = generate_crop(rendered, spec, self._store)
                 if result.status is not CropStatus.AVAILABLE or result.artifact is None:
                     # `generate_crop` abstains rather than raising, and the reason is a sentence. It
                     # is carried through rather than counted, because "17 crops failed" tells a
@@ -5079,18 +5123,11 @@ class DatabaseStages:
                     abstained.append(f"page {page.index}: {result.reason}")
                     continue
                 artifact = result.artifact
-                identity = (artifact.key, artifact.sha256)
-                if identity in seen:
-                    # Two candidates whose crops are byte-identical — the same region read twice, or
-                    # two identical labels in the same place. The image is stored once and belongs to
-                    # whichever candidate reached it first; this one gets no artifact row, because
-                    # the unique constraint on (storage_key, sha256) permits only one. That is a
-                    # real limit rather than a tidy outcome: a reviewer following the second
-                    # candidate finds no picture. Fixing it means letting two rows share one stored
-                    # object, which is a schema decision and not this change's to make.
-                    skipped += 1
-                    continue
-                seen.add(identity)
+                mark_state = (
+                    None
+                    if markup is None
+                    else crop_shows_a_gv_mark(crop_pixel_box(rendered, spec), markup)
+                )
                 session.add(
                     EvidenceArtifact(
                         candidate_id=candidate.id,
@@ -5104,8 +5141,10 @@ class DatabaseStages:
                         # The crop is pixels of a rendered page, so the space it is expressed in is
                         # the image's, not the normalised one the polygon was converted to.
                         coordinate_space="image",
+                        shows_gv_marks=mark_state,
                     )
                 )
+                already.add(candidate.id)
                 written += 1
 
         session.flush()
@@ -5125,7 +5164,8 @@ class DatabaseStages:
             "implemented": True,
             "ran": True,
             "candidates": len(rows),
-            "crops": written,
+            "crops": written + backfilled,
+            "backfilled_exact_region": backfilled,
             "already_had_one": skipped,
             "refused": len(abstained),
             "automatic_types_qualified": 0 if typing is None else len(typing.qualified),

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime
 from fractions import Fraction
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import Engine, Float, select
+from sqlalchemy import Engine, Float, select, text
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -112,6 +114,25 @@ def test_artifact_hash_detects_changed_retrieved_content() -> None:
 
     assert artifact.content_matches(original) is True
     assert artifact.content_matches(b"changed crop bytes") is False
+
+
+def test_crop_mark_state_is_explicitly_tristate() -> None:
+    """A legacy crop is unknown, not clean; new checks may record either answer."""
+
+    assert "shows_gv_marks" in EvidenceArtifact.__table__.columns
+    assert (
+        EvidenceArtifact(
+            candidate_id=UUID(int=1),
+            document_version_id=UUID(int=2),
+            page_id=UUID(int=3),
+            kind=EvidenceArtifactKind.CROP.value,
+            storage_key="evidence/crops/unknown.png",
+            sha256=HASH,
+            media_type="image/png",
+            coordinate_space="image",
+        ).shows_gv_marks
+        is None
+    )
 
 
 def _upgrade(engine: Engine) -> None:
@@ -234,6 +255,124 @@ def _canonical(
         authority=Authority.AUTHORITATIVE,
         evidence_crop_uri=None,
     )
+
+
+def test_evidence_crop_sharing_migration_downgrades_cleanly(
+    postgres_engine: Engine,
+) -> None:
+    """No shared digest means the old uniqueness rule can be restored without data loss."""
+
+    _upgrade(postgres_engine)
+    config = alembic_config()
+    config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+
+    command.downgrade(config, "0065_check_run_defaults_citation")
+
+    inspector = sa_inspect(postgres_engine)
+    assert "shows_gv_marks" not in {
+        column["name"] for column in inspector.get_columns("evidence_artifacts")
+    }
+    assert any(
+        set(item["column_names"]) == {"storage_key", "sha256"}
+        for item in inspector.get_unique_constraints("evidence_artifacts")
+    )
+    command.upgrade(config, "head")
+
+
+def test_evidence_crop_migration_leaves_legacy_rows_untouched(
+    postgres_engine: Engine,
+) -> None:
+    """A crop row inserted under the old schema survives upgrade with an unknown mark state."""
+
+    _upgrade(postgres_engine)
+    config = alembic_config()
+    config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+    command.downgrade(config, "0065_check_run_defaults_citation")
+
+    factory = session_factory(postgres_engine)
+    artifact_id = uuid4()
+    crop_key = "evidence/crops/legacy.png"
+    with unit_of_work(factory) as session:
+        version_id, page_id, extraction_id = _persist_context(session)
+        candidate = _candidate(version_id, page_id, extraction_id, "legacy crop")
+        session.add(candidate)
+        session.flush()
+        session.execute(
+            text(
+                "INSERT INTO evidence_artifacts "
+                "(id, created_at, candidate_id, canonical_observation_id, "
+                "document_version_id, page_id, kind, storage_key, sha256, media_type, "
+                "coordinate_space) VALUES (:id, :created_at, :candidate_id, NULL, "
+                ":document_version_id, :page_id, 'crop', :storage_key, :sha256, "
+                "'image/png', 'image')"
+            ),
+            {
+                "id": artifact_id,
+                "created_at": datetime.now(UTC),
+                "candidate_id": candidate.id,
+                "document_version_id": version_id,
+                "page_id": page_id,
+                "storage_key": crop_key,
+                "sha256": HASH,
+            },
+        )
+
+    command.upgrade(config, "head")
+    with session_factory(postgres_engine)() as session:
+        row = session.get(EvidenceArtifact, artifact_id)
+        assert row is not None
+        assert row.storage_key == crop_key
+        assert row.sha256 == HASH
+        assert row.shows_gv_marks is None
+
+
+def test_evidence_crop_sharing_migration_refuses_downgrade_without_touching_rows(
+    postgres_engine: Engine,
+) -> None:
+    """Shared objects block restoration of uniqueness; no row may be merged or removed."""
+
+    from sqlalchemy import func
+
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    shared_key = "evidence/crops/shared.png"
+    with unit_of_work(factory) as session:
+        version_id, page_id, extraction_id = _persist_context(session)
+        first = _candidate(version_id, page_id, extraction_id, "first")
+        second = _candidate(version_id, page_id, extraction_id, "second")
+        session.add_all((first, second))
+        session.flush()
+        session.add_all(
+            EvidenceArtifact(
+                candidate_id=candidate.id,
+                canonical_observation_id=None,
+                document_version_id=version_id,
+                page_id=page_id,
+                kind=EvidenceArtifactKind.CROP.value,
+                storage_key=shared_key,
+                sha256=HASH,
+                media_type="image/png",
+                coordinate_space="image",
+                shows_gv_marks=None,
+            )
+            for candidate in (first, second)
+        )
+
+    config = alembic_config()
+    config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+    with pytest.raises(RuntimeError, match="cannot downgrade.*shared evidence crop"):
+        command.downgrade(config, "0065_check_run_defaults_citation")
+
+    with session_factory(postgres_engine)() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EvidenceArtifact)
+                .where(EvidenceArtifact.storage_key == shared_key)
+            )
+            == 2
+        )
+    command.upgrade(config, "head")
 
 
 def test_fraction_round_trips_as_a_normalized_integer_pair(postgres_engine: Engine) -> None:
