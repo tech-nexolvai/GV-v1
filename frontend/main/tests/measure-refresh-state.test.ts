@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { packageChanged } from '../src/pages/measureRefreshState.js';
+import { packageChanged, refreshFailureIsFatal } from '../src/pages/measureRefreshState.js';
 
 // Drafts owned by the Measure sections must survive every data refresh while the selected package
 // stays the same. This exercises the package-reset boundary used by MeasurementPanel, not just the
@@ -50,4 +50,7 @@ assert.equal(retainedDrafts?.typedValue, '39 1/2 in');
 // A genuine package switch still resets the form; retaining one package's drafts in another would
 // risk submitting values against the wrong drawing pair.
 assert.equal(packageChanged('package-1', 'package-2'), true);
+assert.equal(refreshFailureIsFatal('package-1', 'package-1'), false);
+assert.equal(refreshFailureIsFatal('package-1', 'package-2'), true);
+assert.equal(refreshFailureIsFatal(null, 'package-1'), true);
 console.log('Measure refresh draft-retention tests passed');
