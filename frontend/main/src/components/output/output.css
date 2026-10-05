@@ -202,6 +202,9 @@
    ============================================================ */
 
 .ftable-wrap {
+  container-type: inline-size;
+  max-width: 100%;
+  min-width: 0;
   margin-top: var(--space-3);
   overflow-x: auto;
   border: 1px solid var(--border-default);
@@ -316,6 +319,8 @@
 
 /* Muted but visible in both themes: --text-faint nearly vanishes on the dark background. */
 .ftable__empty { color: var(--text-muted); opacity: 0.7; }
+.ftable__cell-label,
+.ftable__action-label { display: none; }
 
 .ftable__actions {
   text-align: right !important;
@@ -355,6 +360,48 @@
   color: var(--text-body);
 }
 .ftable__narrative--empty { color: var(--text-muted); font-style: italic; }
+
+/* The same semantic table and mounted detail reflow within a narrow chat column. */
+@container (max-width: 679px) {
+  .ftable { display: block; min-width: 0; }
+  .ftable thead {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  .ftable tbody { display: block; }
+  .ftable__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: 'outcome outcome' 'check check' 'shop arch' 'sheet sheet' 'actions actions';
+    border-bottom: 1px solid var(--border-default);
+  }
+  .ftable__row td,
+  .ftable__row th { min-width: 0; border-bottom: 0; padding: var(--space-2) var(--space-3); }
+  .ftable__row .ftable__outcome { grid-area: outcome; padding-bottom: var(--space-1); }
+  .ftable__row .ftable__check { grid-area: check; padding-top: 0; overflow-wrap: anywhere; }
+  .ftable__rule { white-space: normal; overflow-wrap: anywhere; }
+  .ftable__value--shop { grid-area: shop; }
+  .ftable__value--arch { grid-area: arch; }
+  .ftable__sheet { grid-area: sheet; }
+  .ftable__value,
+  .ftable__sheet { white-space: normal; overflow-wrap: anywhere; }
+  .ftable__cell-label {
+    display: block; margin-bottom: var(--space-1); color: var(--text-muted);
+    font-size: var(--text-xs); font-weight: var(--weight-regular);
+  }
+  .ftable__sheet .ftable__cell-label { display: inline; margin-right: var(--space-2); }
+  .ftable__actions { grid-area: actions; display: flex; gap: var(--space-2); }
+  .ftable__icon-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+    width: auto; min-width: 44px; min-height: 44px; height: auto; margin: 0;
+    padding: var(--space-2); border-color: var(--border-default); font: inherit;
+    font-size: var(--text-xs); color: var(--text-primary);
+  }
+  .ftable__action-label { display: inline; }
+  .ftable__detail:not([hidden]),
+  .ftable__detail > td { display: block; }
+  .ftable__detail > td { overflow-wrap: anywhere; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .ftable__expand svg { transition: none; }

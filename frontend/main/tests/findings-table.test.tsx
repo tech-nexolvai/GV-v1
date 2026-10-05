@@ -49,7 +49,7 @@ const html = renderToStaticMarkup(
   <FindingsTable findings={findings} narratives={narratives} onViewEvidence={() => undefined} />,
 );
 
-assert.match(html, /<table class="ftable">/);
+assert.match(html, /<table class="ftable" role="table">/, 'semantic table remains after narrow reflow');
 assert.doesNotMatch(html, /\|/, 'no markdown pipe ever reaches the screen');
 assert.equal(html.match(/class="ftable__row"/g)?.length, 5, 'one row per finding');
 assert.doesNotMatch(html, /half an inch deeper/, 'narratives are closed by default');
@@ -62,7 +62,7 @@ assert.ok(
 
 // The vendor's value is the highlighted one in a FAIL row, and only there.
 assert.equal(html.match(/data-mismatch="true"/g)?.length, 2, 'both FAIL rows highlight the shop value');
-assert.match(html, /data-mismatch="true">25 1\/2 in</);
+assert.match(html, /data-mismatch="true"><span class="ftable__cell-label" aria-hidden="true">Shop<\/span>25 1\/2 in</);
 
 const scopedHtml = renderToStaticMarkup(
   <FindingsTable findings={[
@@ -72,6 +72,12 @@ const scopedHtml = renderToStaticMarkup(
 );
 assert.match(scopedHtml, /Countertop on page 2, item 1/);
 assert.match(scopedHtml, /Countertop on page 3, item 1/);
+
+const abstained = renderToStaticMarkup(<FindingsTable findings={[{
+  ...finding('abstain', 'NOT_FOUND', 'Needs a layout'),
+  trace: { kind: 'abstention', operation: 'missing input', operands: [], comparison: 'A reviewer must choose a layout.' },
+}]} />);
+assert.doesNotMatch(abstained, /A reviewer must choose a layout/, 'an abstention reason is not a compared value');
 
 // A missing value is a dash with an accessible name, not repeated words.
 assert.match(html, /aria-label="Not recorded">—</);

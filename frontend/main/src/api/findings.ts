@@ -25,6 +25,7 @@ export function toFinding(listed: Listed): Finding {
     check_id: listed.rule_id,
     scope_item_id: listed.scope_item_id,
     scope_label: listed.scope_label,
+    notes: listed.notes ?? [],
     // The rule id until the snapshot's human name is on the wire. Better a real identifier than a
     // placeholder sentence nobody can look up.
     name: listed.rule_id,
@@ -47,16 +48,22 @@ export function withChain(finding: Finding, chain: Chain): Finding {
       ? chain.trace.operands.map((operand) => [operand.name, operand.source])
       : [],
   );
+  const tracedValues = new Map(
+    chain.trace.kind === 'calculation'
+      ? chain.trace.operands.map((operand) => [operand.name, operand.value])
+      : [],
+  );
   const evidence = operands
     .map((operand) => operand.evidence)
     .filter((item): item is NonNullable<typeof item> => item !== null);
   const recordedOperands = operands.map((operand) => ({
     name: operand.name,
-    // These are the immutable exact fields from the finding chain.  Do not turn them into a
-    // JavaScript number: the evidence view is explanatory and must not silently round a value.
-    value: operand.denominator === '1'
+    // Prefer the engine's own exact rendering when it recorded this operand (for example a mixed
+    // fraction); otherwise render the immutable rational. Never use JavaScript floating point or
+    // parse display text to manufacture a comparison value.
+    value: tracedValues.get(operand.name) ?? (operand.denominator === '1'
       ? `${operand.numerator} ${operand.unit}`
-      : `${operand.numerator}/${operand.denominator} ${operand.unit}`,
+      : `${operand.numerator}/${operand.denominator} ${operand.unit}`),
     source: tracedSources.get(operand.name) ?? operand.evidence?.document_role ?? 'RECORDED',
     status: operand.evidence_status,
     hasEvidence: operand.evidence !== null,
@@ -75,6 +82,7 @@ export function withChain(finding: Finding, chain: Chain): Finding {
   const trace: Trace =
     source.kind === 'calculation'
       ? {
+          kind: 'calculation',
           operation: source.operation,
           // These strings come from the persisted deterministic calculation trace.  They are
           // displayed verbatim: the UI never reconstructs an exact value from a display value or
@@ -88,6 +96,7 @@ export function withChain(finding: Finding, chain: Chain): Finding {
           comparison: source.comparison ?? '',
         }
       : {
+          kind: source.kind,
           operation: source.kind === 'abstention' ? source.cause : 'unrecognised trace',
           operands: [],
           comparison:
@@ -98,6 +107,7 @@ export function withChain(finding: Finding, chain: Chain): Finding {
 
   return {
     ...finding,
+    reason: source.kind === 'abstention' ? (source.reason ?? finding.reason) : finding.reason,
     recorded_operands: recordedOperands,
     trace,
     arch_evidence: _evidenceFor(evidence, 'ARCH'),
