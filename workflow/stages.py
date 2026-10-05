@@ -112,6 +112,7 @@ from evidence.crop import (
     CropStatus,
     RenderedPage,
     crop_pixel_box,
+    encode_png,
     generate_crop,
 )
 from evidence.polygon import Polygon
@@ -300,6 +301,15 @@ from workflow.reader_pictures import (
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
+from workflow.vendor_page_pictures import (
+    PNG as VENDOR_PAGE_PNG,
+)
+from workflow.vendor_page_pictures import (
+    pages_without_pictures as pages_without_vendor_pictures,
+)
+from workflow.vendor_page_pictures import (
+    record_page_picture,
+)
 from workflow.view_roles import record_panel_view, revision_views
 
 #: What produced these readings, recorded on the extraction run so a candidate can say what read it.
@@ -3769,6 +3779,114 @@ class DatabaseStages:
             )
         session.flush()
         return {"ran": True, **outcome.as_payload()}
+
+    def render_vendor_page_pictures(
+        self, session: Session, package_revision_id: UUID
+    ) -> Mapping[str, object]:
+        """Render any missing vendor-only full-page pictures for click-to-place (#948).
+
+        This is geometry and rendering only: it makes no model calls and creates no part. Existing
+        package revisions are handled by the same idempotent worker job as new ones. Bytes are
+        content-addressed in the configured store; one immutable database row pins each page image.
+        """
+        if self._store is None:
+            return {"ran": False, "reason": "no artifact store is configured"}
+        documents = {
+            version: (key, sha256)
+            for version, key, sha256, _ in _document_records_for(session, package_revision_id)
+        }
+        if not documents:
+            return {"ran": True, "rendered": 0, "refused": 0}
+        pages = list(
+            session.scalars(
+                select(Page)
+                .distinct()
+                .join(DrawingView, DrawingView.page_id == Page.id)
+                .join(
+                    PackageRevisionDocument,
+                    PackageRevisionDocument.document_version_id == Page.document_version_id,
+                )
+                .where(
+                    PackageRevisionDocument.package_revision_id == package_revision_id,
+                    DrawingView.role == ViewRole.SHOP,
+                )
+                .order_by(Page.index, Page.id)
+            )
+        )
+        pending = set(pages_without_vendor_pictures(session, [page.id for page in pages]))
+        rendered_count = 0
+        refused: list[str] = []
+        loaded: dict[UUID, bytes | None] = {}
+        for page in pages:
+            if page.id not in pending:
+                continue
+            if page.document_version_id not in loaded:
+                key, expected_hash = documents[page.document_version_id]
+                fetched_data = _fetch(self._store, key)
+                loaded[page.document_version_id] = (
+                    fetched_data
+                    if hashlib.sha256(fetched_data).hexdigest() == expected_hash
+                    else None
+                )
+            data = loaded[page.document_version_id]
+            if data is None:
+                refused.append(f"page {page.index}: document digest did not match")
+                continue
+            try:
+                image = self._vendor_render(data, page, page.document_version_id)
+                if image is None:
+                    raise ValueError("vendor-only page could not be rendered")
+                transform = page_transform(page, image.dpi)
+                if transform is None:
+                    raise ValueError("page transform is not recorded")
+                png = encode_png(image.width_px, image.height_px, image.rgb_bytes)
+                digest = hashlib.sha256(png).hexdigest()
+                key = content_key(f"vendor-pages/{page.document_version_id}", digest, suffix=".png")
+                self._store.put(key, BytesIO(png), content_type=VENDOR_PAGE_PNG)
+                snap_points: list[dict[str, str]] = []
+                if self._association is not None:
+                    layers = self._read_layers(data, page.index, page.document_version_id)
+                    detected = detect(
+                        layers.drawing_segments,
+                        witness_tolerance=self._association.witness_tolerance,
+                        minimum_span=self._association.minimum_span,
+                        straightness=self._association.straightness,
+                        crossing_margin=self._association.crossing_margin,
+                    )
+                    seen: set[tuple[str, str, str]] = set()
+                    for dimension in detected.lines:
+                        geometries = (("dimension", dimension.extent),) + tuple(
+                            ("extension", line) for line in dimension.witness_lines
+                        )
+                        for source, segment in geometries:
+                            for point in (segment.start, segment.end):
+                                identity = (str(point.x), str(point.y), source)
+                                if identity not in seen:
+                                    seen.add(identity)
+                                    snap_points.append(
+                                        {"x": str(point.x), "y": str(point.y), "source": source}
+                                    )
+                record_page_picture(
+                    session,
+                    page_id=page.id,
+                    storage_key=key,
+                    sha256=digest,
+                    media_type=VENDOR_PAGE_PNG,
+                    dpi=image.dpi,
+                    width_px=image.width_px,
+                    height_px=image.height_px,
+                    snap_points=snap_points,
+                    snap_tolerance=(
+                        None
+                        if self._association is None
+                        else str(self._association.witness_tolerance)
+                    ),
+                )
+                rendered_count += 1
+            except (PageTooLarge, UnreadablePdf, ValueError) as error:
+                refused.append(f"page {page.index}: {str(error).strip() or type(error).__name__}")
+        session.flush()
+        return {"ran": True, "rendered": rendered_count, "refused": refused}
 
     def _picture_markup(self, data: bytes, page: Page, dpi: int) -> ColouredMarkup | None:
         """The page's markup drawn in colour, at a picture's `dpi`, for the job that cuts pictures

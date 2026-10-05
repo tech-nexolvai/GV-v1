@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { DrawingPartsList } from '../src/components/measure/DrawingPartsList.js';
+import { clickToStoredPoint, nearestPlacementSnap } from '../src/components/measure/placementGeometry.js';
 import {
   GV_MARKS_WARNING,
   codeToSend,
@@ -71,6 +72,7 @@ const vendors: PartDrawing = {
   role: 'shop',
   can_confirm: true,
   why_not: null,
+  page_picture: null,
   parts,
 };
 
@@ -78,6 +80,7 @@ const pictures: string[] = [];
 const crops: string[] = [];
 const html = renderToStaticMarkup(
   <DrawingPartsList
+    loadPagePicture={() => Promise.reject(new Error('not used during static render'))}
     drawings={[vendors]}
     saving={null}
     renderPicture={(_drawing, shown) => {
@@ -134,6 +137,7 @@ assert.ok(html.indexOf(warning) < html.indexOf('2. Suggested as a countertop'));
 // does a part with no picture, whatever it says.
 const unchecked = renderToStaticMarkup(
   <DrawingPartsList
+    loadPagePicture={() => Promise.reject(new Error('not used during static render'))}
     drawings={[
       {
         ...vendors,
@@ -164,17 +168,19 @@ assert.ok(html.indexOf('1. Suggested as a cabinet') < html.indexOf('2. Suggested
 assert.ok(html.indexOf('2. Suggested as a countertop') < html.indexOf('3. Suggested as a cabinet'));
 assert.match(html, /Code read on the drawing: “XQ24”/);
 assert.match(html, /value="XQ24"/);
+assert.match(html, /Preparing the vendor-only drawing picture for placement/);
 
 // **There is no "confirm all".** Every decision button belongs to one part: three kinds and "Not a
-// part" on each, and the only other button adds one part.
+// part" on each. Add controls appear once the stored vendor page image is ready.
 assert.doesNotMatch(html, /confirm all|accept all|confirm every/i);
 for (const label of ['Cabinet', 'Filler', 'Countertop', 'Not a part']) {
   assert.equal((html.match(new RegExp(`>${label}</button>`, 'g')) ?? []).length, 3, label);
 }
-assert.equal((html.match(/<button/g) ?? []).length, 3 * 4 + 1);
+assert.equal((html.match(/<button/g) ?? []).length, 3 * 4);
 assert.equal((html.match(/role="group"/g) ?? []).length, 3);
-// Adding waits until a person has picked both ends.
-assert.match(html, /disabled=""[^>]*>Add this part<\/button>/);
+// Adding is click-to-place on the vendor-only drawing, not a selection of existing part ends.
+assert.match(html, /mark its two ends on the vendor&#x27;s drawing/);
+assert.doesNotMatch(html, /Pick where it starts and where it stops/);
 
 // Nothing is pressed until a person presses it.
 assert.doesNotMatch(html, /aria-pressed="true"/);
@@ -182,6 +188,7 @@ assert.doesNotMatch(html, /aria-pressed="true"/);
 // A decision is shown as the pressed answer, with the code exactly as it was kept.
 const decided = renderToStaticMarkup(
   <DrawingPartsList
+    loadPagePicture={() => Promise.reject(new Error('not used during static render'))}
     drawings={[
       {
         ...vendors,
@@ -224,9 +231,8 @@ assert.match(decided, /aria-pressed="true"[^>]*>Filler<\/button>/);
 assert.match(decided, /aria-pressed="true"[^>]*>Not a part<\/button>/);
 assert.match(decided, /Confirmed as a filler, code “ xq-24\/B ”, by reviewer@example\.com\./);
 assert.match(decided, /value=" xq-24\/B "/);
-// The part being saved cannot be decided twice: its four buttons and its code box are disabled,
-// and nothing else is but the add button, which waits for two ends.
-assert.equal((decided.match(/disabled=""/g) ?? []).length, 5 + 1);
+// The part being saved cannot be decided twice: its four buttons and its code box are disabled.
+assert.equal((decided.match(/disabled=""/g) ?? []).length, 5);
 assert.equal(
   (decided.match(/disabled=""[^>]*>(Cabinet|Filler|Countertop|Not a part)<\/button>/g) ?? []).length,
   4,
@@ -236,6 +242,7 @@ assert.equal(
 // confirmed or added, and saying one is not a part is still offered.
 const unconfirmed = renderToStaticMarkup(
   <DrawingPartsList
+    loadPagePicture={() => Promise.reject(new Error('not used during static render'))}
     drawings={[
       {
         ...vendors,
@@ -281,5 +288,35 @@ assert.equal(startingCode(parts[1]), '');
 assert.equal(codeToSend(' B24 '), ' B24 ');
 assert.equal(codeToSend(''), null);
 assert.equal(decisionLabel(parts[1]), 'Not decided yet.');
+
+// The browser click follows the published top-left rendered-pixel normalization contract.
+assert.deepEqual(
+  clickToStoredPoint(150, 75, { left: 50, top: 25, width: 200, height: 100 }, { width_px: 400, height_px: 200 }),
+  { x: '0.5', y: '0.5' },
+);
+const near = { x: '0.503', y: '0.5', source: 'extension' };
+assert.equal(nearestPlacementSnap({ x: '0.5', y: '0.5' }, [near], '0.004'), near);
+assert.equal(nearestPlacementSnap({ x: '0.5', y: '0.5' }, [near], '0.002'), null);
+assert.equal(nearestPlacementSnap({ x: '0.5', y: '0.5' }, [near], null), null);
+const samePhysicalSnap = [
+  { x: '0.5', y: '0.5', source: 'dimension' },
+  { x: '0.5', y: '0.5', source: 'extension' },
+];
+assert.deepEqual(
+  nearestPlacementSnap({ x: '0.5', y: '0.5' }, samePhysicalSnap, '0.004'),
+  samePhysicalSnap[0],
+  'the same physical endpoint reported as both dimension and extension is one snap, not an ambiguity',
+);
+assert.equal(
+  nearestPlacementSnap(
+    { x: '0.5', y: '0.5' },
+    [
+      { x: '0.499', y: '0.5', source: 'dimension' },
+      { x: '0.501', y: '0.5', source: 'extension' },
+    ],
+    '0.004',
+  ),
+  null,
+);
 
 console.log('drawing-parts: ok');

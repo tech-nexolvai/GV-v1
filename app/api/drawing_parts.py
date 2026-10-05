@@ -27,8 +27,9 @@ from datetime import datetime
 from typing import Annotated, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -51,13 +52,19 @@ from app.evidence.parts import (
     revision_parts,
     withdraw_listed_part,
 )
-from app.models import PartConfirmation, PartPicture
+from app.models import OutboxEntry, Page, PartConfirmation, PartPicture, VendorPagePicture
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
 from vocabulary.part_kinds import PartKind
 from workflow.outbox import enqueue
 from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW, GvMarks
 from workflow.part_pictures import part_picture as recorded_picture
+from workflow.vendor_page_pictures import (
+    RENDER_VENDOR_PAGE_PICTURES_WORKFLOW,
+)
+from workflow.vendor_page_pictures import (
+    page_picture as recorded_page_picture,
+)
 
 router = APIRouter(tags=["drawing parts"])
 
@@ -155,6 +162,33 @@ class DrawingOut(BaseModel):
     why_not: str | None
     """Why not, in plain English, when `can_confirm` is false."""
     parts: list[PartOut]
+    page_picture: VendorPagePictureOut | None = None
+
+
+class SnapPointOut(BaseModel):
+    x: str
+    y: str
+    source: str
+
+
+class VendorPagePictureOut(BaseModel):
+    url: str
+    dpi: int
+    width_px: int
+    height_px: int
+    rotation: int
+    media_box: list[str]
+    crop_box: list[str]
+    snap_tolerance: str | None
+    snap_points: list[SnapPointOut]
+
+
+class PreparePagePicturesOut(BaseModel):
+    queued: bool
+    reason: str | None = None
+
+
+DrawingOut.model_rebuild()
 
 
 class PartsOut(BaseModel):
@@ -221,7 +255,9 @@ def _part_out(drawing: DrawingParts, listed: ListedPart) -> PartOut:
     )
 
 
-def _drawing_out(drawing: DrawingParts) -> DrawingOut:
+def _drawing_out(
+    drawing: DrawingParts, session: Session, request: Request, project_id: UUID, package_id: UUID
+) -> DrawingOut:
     return DrawingOut(
         view_id=drawing.view.id,
         page_index=drawing.page_index,
@@ -230,6 +266,39 @@ def _drawing_out(drawing: DrawingParts) -> DrawingOut:
         can_confirm=drawing.refusal is None,
         why_not=None if drawing.refusal is None else drawing.refusal.detail,
         parts=[_part_out(drawing, listed) for listed in drawing.parts],
+        page_picture=_vendor_page_picture_out(
+            session, request, drawing.view.id, drawing.view.page_id, project_id, package_id
+        ),
+    )
+
+
+def _vendor_page_picture_out(
+    session: Session,
+    request: Request,
+    view_id: UUID,
+    page_id: UUID,
+    project_id: UUID,
+    package_id: UUID,
+) -> VendorPagePictureOut | None:
+    picture = recorded_page_picture(session, page_id)
+    page = session.get(Page, page_id)
+    if picture is None or page is None or page.media_box is None or page.crop_box is None:
+        return None
+    return VendorPagePictureOut(
+        url=request.url_for(
+            "vendor_page_picture",
+            project_id=str(project_id),
+            package_id=str(package_id),
+            view_id=str(view_id),
+        ).path,
+        dpi=picture.dpi,
+        width_px=picture.width_px,
+        height_px=picture.height_px,
+        rotation=page.rotation,
+        media_box=page.media_box,
+        crop_box=page.crop_box,
+        snap_tolerance=picture.snap_tolerance,
+        snap_points=[SnapPointOut(**point) for point in picture.snap_points],
     )
 
 
@@ -289,6 +358,7 @@ def _decide(
     summary="The parts suggested in each drawing, left to right, and what a person said of each",
 )
 def list_parts(
+    request: Request,
     _access: Annotated[Principal, Depends(require_project_access)],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
@@ -296,7 +366,117 @@ def list_parts(
 ) -> PartsOut:
     """Read only: listing never makes a part, however many times it is called."""
     revision = _revision(session, project_id, package_id)
-    return PartsOut(drawings=[_drawing_out(d) for d in revision_parts(session, revision.id)])
+    return PartsOut(
+        drawings=[
+            _drawing_out(d, session, request, project_id, package_id)
+            for d in revision_parts(session, revision.id)
+        ]
+    )
+
+
+@router.post(
+    "/projects/{project_id}/packages/{package_id}/parts/page-pictures",
+    response_model=PreparePagePicturesOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Prepare missing vendor-only page pictures for placement",
+)
+def prepare_page_pictures(
+    _principal: Annotated[Principal, Depends(require_project_access)],
+    _action: Annotated[Principal, Depends(require_action(Action.CONFIRM_EVIDENCE))],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> PreparePagePicturesOut:
+    """Ask the worker to fill missing full-page pictures; rendering never happens in the API."""
+    revision = _revision(session, project_id, package_id)
+    vendor_drawings = [
+        drawing for drawing in revision_parts(session, revision.id) if drawing.view.role == "shop"
+    ]
+    missing = [
+        drawing
+        for drawing in vendor_drawings
+        if recorded_page_picture(session, drawing.view.page_id) is None
+    ]
+    if not missing:
+        return PreparePagePicturesOut(
+            queued=False,
+            reason=(
+                "confirm a vendor drawing first" if not vendor_drawings else "pictures are ready"
+            ),
+        )
+    pending = session.scalar(
+        select(OutboxEntry.id)
+        .where(
+            OutboxEntry.workflow == RENDER_VENDOR_PAGE_PICTURES_WORKFLOW,
+            OutboxEntry.dispatched_at.is_(None),
+            OutboxEntry.payload["package_revision_id"].as_string() == str(revision.id),
+        )
+        .limit(1)
+    )
+    if pending is None:
+        enqueue(
+            session,
+            workflow=RENDER_VENDOR_PAGE_PICTURES_WORKFLOW,
+            payload={"package_revision_id": str(revision.id)},
+        )
+        session.commit()
+    return PreparePagePicturesOut(queued=True)
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/views/{view_id}/picture",
+    response_class=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}}
+        }
+    },
+    summary="View a vendor-only drawing page",
+)
+def vendor_page_picture(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    store: Annotated[ArtifactStore, Depends(get_artifact_store)],
+    project_id: UUID,
+    package_id: UUID,
+    view_id: UUID,
+) -> Response:
+    revision = _revision(session, project_id, package_id)
+    drawing = next(
+        (entry for entry in revision_parts(session, revision.id) if entry.view.id == view_id), None
+    )
+    if drawing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    if drawing.view.role != "shop":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="confirm this as the vendor drawing first"
+        )
+    picture = recorded_page_picture(session, drawing.view.page_id)
+    if picture is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="the vendor page picture is not ready yet"
+        )
+    content = _verified_page_picture(store, picture)
+    return Response(
+        content=content, media_type=picture.media_type, headers={"Cache-Control": "no-store"}
+    )
+
+
+def _verified_page_picture(store: ArtifactStore, picture: VendorPagePicture) -> bytes:
+    try:
+        with store.get(picture.storage_key) as stored:
+            content = stored.read()
+    except (ArtifactCorrupt, FileNotFoundError, IntegrityRecordMissing) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the stored vendor page picture is unavailable",
+        ) from error
+    if hashlib.sha256(content).hexdigest() != picture.sha256:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the stored vendor page picture failed its integrity check",
+        )
+    return content
 
 
 def _verified_picture(store: ArtifactStore, picture: PartPicture) -> bytes:

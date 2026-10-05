@@ -42,6 +42,7 @@ import { layoutChoiceDefaults } from './layoutChoices';
 import { settingMissingASource, type SettingSource } from '../components/measure/settingSources';
 import { SettingCitation } from '../components/measure/SettingCitation';
 import { candidateCropWarning } from '../components/measure/candidateCropWarning';
+import { packageChanged, refreshFailureIsFatal } from './measureRefreshState';
 import {
   citingPointer,
   settingEntry,
@@ -319,32 +320,40 @@ export function MeasurementPanel({
    */
   const [aiFilled, setAiFilled] = useState<Record<string, string[]>>({});
   const reviewerEditedSinglesRef = useRef<Set<string>>(new Set());
+  const resetPackageIdRef = useRef<string | undefined>(undefined);
+  const loadedDataPackageIdRef = useRef<string | null>(null);
+  const [refreshUnavailable, setRefreshUnavailable] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     let poll: ReturnType<typeof window.setTimeout> | undefined;
-    // A package switch must never leave the prior package's fields enabled while the new contract is
-    // loading. The reviewer could otherwise submit a value against the wrong drawing pair.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPackageId('');
-    setNeeded(null);
-    setRuns({});
-    setSingles({});
-    const freshEdits = new Set<string>();
-    reviewerEditedSinglesRef.current = freshEdits;
-    setReviewerEditedSingles(freshEdits);
-    setChoices({});
-    setSourceChoices({});
-    setReferences({});
-    setDeclinedCitations({});
-    setCandidates([]);
-    setSemanticTypes([]);
-    setCandidateError(null);
-    setLoadError(null);
-    setProposalSteps([]);
-    setProposal(null);
-    setProposalError(null);
-    setAiFilled({});
+    // Polling refreshes the data for the current package. Clearing the contract here would replace
+    // the whole Measure screen with its loading state, unmounting placement, run, link, and value
+    // editors while a reviewer is working. Only a real package switch resets that local work.
+    if (packageChanged(resetPackageIdRef.current, selectedPackageId)) {
+      resetPackageIdRef.current = selectedPackageId;
+      loadedDataPackageIdRef.current = null;
+      setPackageId('');
+      setLoadError(null);
+      setRefreshUnavailable(false);
+      setNeeded(null);
+      setRuns({});
+      setSingles({});
+      const freshEdits = new Set<string>();
+      reviewerEditedSinglesRef.current = freshEdits;
+      setReviewerEditedSingles(freshEdits);
+      setChoices({});
+      setSourceChoices({});
+      setReferences({});
+      setDeclinedCitations({});
+      setCandidates([]);
+      setSemanticTypes([]);
+      setCandidateError(null);
+      setProposalSteps([]);
+      setProposal(null);
+      setProposalError(null);
+      setAiFilled({});
+    }
     const applyRequiredInputs = (required: Needed) => {
       const confirmedByKey = required.confirmed_readings.reduce<Record<string, string[]>>(
         (grouped, reading) => ({
@@ -419,8 +428,10 @@ export function MeasurementPanel({
         if (cancelled) return;
         const required = fields as unknown as Needed;
         setPackageId(selectedPackageId);
+        loadedDataPackageIdRef.current = selectedPackageId;
         setNeeded(required);
         setCandidates(read.candidates);
+        setRefreshUnavailable(false);
         if (includeVocabulary) {
           setSemanticTypes(vocabulary);
         }
@@ -430,7 +441,14 @@ export function MeasurementPanel({
         }
       } catch (caught) {
         if (!cancelled) {
-          setLoadError(caught instanceof ApiError ? caught.message : String(caught));
+          // A transient poll failure must not replace the loaded form with the fatal load state:
+          // doing so unmounts every Measure editor and loses the reviewer's local draft. Initial
+          // loads and package switches still fail closed because there is no loaded form to keep.
+          if (!refreshFailureIsFatal(loadedDataPackageIdRef.current, selectedPackageId)) {
+            setRefreshUnavailable(true);
+          } else {
+            setLoadError(caught instanceof ApiError ? caught.message : String(caught));
+          }
         }
       }
     };
@@ -886,6 +904,12 @@ export function MeasurementPanel({
           check can only fail to decide for a reason you can see — never because a field was
           missing.
         </p>
+        {refreshUnavailable && (
+          <p className="enter-values__hint" role="status">
+            Could not refresh the drawing data just now. Your unsaved measurements are still here;
+            this page will try again.
+          </p>
+        )}
       </header>
 
       {/* **Before any reading can fill a field on a combined sheet** (#795): a reading is used only on

@@ -884,6 +884,41 @@ class PartPicture(Base, TimestampedUUID, Immutable):
     )
 
 
+class VendorPagePicture(Base, TimestampedUUID, Immutable):
+    """A full vendor-only page image prepared for reviewer placement (#948).
+
+    The content-addressed image is stored outside the database. This row pins its digest and render
+    dimensions to the immutable page manifest so browser clicks can use the same stored-space
+    transform as extraction. It carries no readings and is never an extraction input.
+    """
+
+    __tablename__ = "vendor_page_pictures"
+
+    page_id: Mapped[UUID] = mapped_column(ForeignKey("pages.id", ondelete="RESTRICT"))
+    storage_key: Mapped[str] = mapped_column(String(1000))
+    sha256: Mapped[str] = mapped_column(String(64))
+    media_type: Mapped[str] = mapped_column(String(200))
+    dpi: Mapped[int] = mapped_column()
+    width_px: Mapped[int] = mapped_column()
+    height_px: Mapped[int] = mapped_column()
+    snap_points: Mapped[list[dict[str, str]]] = mapped_column(JSONB, default=list)
+    """Geometry-only detected endpoints with source labels; no dimension text or meaning."""
+    snap_tolerance: Mapped[str | None] = mapped_column(String(64), default=None)
+
+    __table_args__ = (
+        UniqueConstraint("page_id", name="uq_vendor_page_pictures_page_id"),
+        CheckConstraint("dpi > 0", name="vendor_page_picture_dpi_positive"),
+        CheckConstraint("width_px > 0 AND height_px > 0", name="vendor_page_picture_size_positive"),
+        CheckConstraint(
+            "storage_key !~ '^[[:space:]]*$'", name="vendor_page_picture_key_not_blank"
+        ),
+        CheckConstraint(
+            "media_type !~ '^[[:space:]]*$'", name="vendor_page_picture_media_not_blank"
+        ),
+        CheckConstraint(f"sha256 ~ '{SHA256_PATTERN}'", name="vendor_page_picture_sha256"),
+    )
+
+
 def duplicate_identifiers(kind: str = "vendor_unique") -> Select[tuple[str, int]]:
     """Identifiers of one kind that appear on more than one item.
 

@@ -656,6 +656,40 @@ export function listDrawingParts(projectId: string, packageId: string) {
   return request<DrawingPartsOut>(`/projects/${projectId}/packages/${packageId}/parts`);
 }
 
+/** Ask the worker to render missing vendor-only page pictures; safe to repeat. */
+export function prepareVendorPagePictures(projectId: string, packageId: string) {
+  return request<components['schemas']['PreparePagePicturesOut']>(
+    `/projects/${projectId}/packages/${packageId}/parts/page-pictures`,
+    { method: 'POST' },
+  );
+}
+
+/** Download a stored, digest-checked full vendor-only page image. */
+export async function downloadVendorPagePicture(
+  projectId: string,
+  packageId: string,
+  viewId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/views/${viewId}/picture`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The vendor drawing picture could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
 /**
  * Say what one suggested part is (#882). The only way a part is made, one at a time: there is
  * deliberately no call that decides more than one suggestion.

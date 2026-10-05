@@ -818,6 +818,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/page-pictures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare missing vendor-only page pictures for placement
+         * @description Ask the worker to fill missing full-page pictures; rendering never happens in the API.
+         */
+        post: operations["prepare_page_pictures_api_v1_projects__project_id__packages__package_id__parts_page_pictures_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/confirm": {
         parameters: {
             query?: never;
@@ -1115,6 +1135,23 @@ export interface paths {
          *     The list shows the part at once and its picture once the worker has cut it.
          */
         post: operations["add_part_endpoint_api_v1_projects__project_id__packages__package_id__views__view_id__parts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** View a vendor-only drawing page */
+        get: operations["vendor_page_picture_api_v1_projects__project_id__packages__package_id__views__view_id__picture_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2320,6 +2357,7 @@ export interface components {
             can_confirm: boolean;
             /** Page Index */
             page_index: number;
+            page_picture?: components["schemas"]["VendorPagePictureOut"] | null;
             /** Parts */
             parts: components["schemas"]["PartOut"][];
             /** Role */
@@ -3273,6 +3311,13 @@ export interface components {
             /** Y */
             y: string;
         };
+        /** PreparePagePicturesOut */
+        PreparePagePicturesOut: {
+            /** Queued */
+            queued: boolean;
+            /** Reason */
+            reason?: string | null;
+        };
         /**
          * PresignedUpload
          * @description Where to send the bytes, how, and until when.
@@ -3957,6 +4002,15 @@ export interface components {
          * @enum {string}
          */
         Severity: "FLAG" | "CRITICAL" | "MAJOR" | "MINOR" | "ADVISORY";
+        /** SnapPointOut */
+        SnapPointOut: {
+            /** Source */
+            source: string;
+            /** X */
+            x: string;
+            /** Y */
+            y: string;
+        };
         /**
          * SourceOut
          * @description One source a setting may come from, and what choosing it means (#827).
@@ -4148,6 +4202,27 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** VendorPagePictureOut */
+        VendorPagePictureOut: {
+            /** Crop Box */
+            crop_box: string[];
+            /** Dpi */
+            dpi: number;
+            /** Height Px */
+            height_px: number;
+            /** Media Box */
+            media_box: string[];
+            /** Rotation */
+            rotation: number;
+            /** Snap Points */
+            snap_points: components["schemas"]["SnapPointOut"][];
+            /** Snap Tolerance */
+            snap_tolerance: string | null;
+            /** Url */
+            url: string;
+            /** Width Px */
+            width_px: number;
         };
         /**
          * ViewOut
@@ -5331,6 +5406,38 @@ export interface operations {
             };
         };
     };
+    prepare_page_pictures_api_v1_projects__project_id__packages__package_id__parts_page_pictures_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparePagePicturesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     confirm_part_endpoint_api_v1_projects__project_id__packages__package_id__parts__proposal_id__confirm_post: {
         parameters: {
             query?: never;
@@ -5783,6 +5890,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PartOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vendor_page_picture_api_v1_projects__project_id__packages__package_id__views__view_id__picture_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                view_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
                 };
             };
             /** @description Validation Error */
