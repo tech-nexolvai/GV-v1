@@ -28,9 +28,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
+from app.api.drawing_parts import _verified_page_picture
 from app.audit.events import AuditEvent
 from app.db.session import session_factory
 from app.evidence.parts import ADDED_BY_A_PERSON
@@ -42,14 +44,20 @@ from app.models import (
     OutboxEntry,
     Package,
     PackageRevision,
+    Page,
     PartConfirmation,
     PartPicture,
     PartProposal,
+    VendorPagePicture,
     ViewRole,
 )
+from app.models.runs import ModelInvocation
+from evidence.crop import decode_rgb_png
+from extraction.rasterise import render_page
 from storage.local import LocalStore
 from tests.api.test_drawing_views import _client
 from tests.extraction.test_reader import MISSING_SPACE
+from tests.workflow.test_association import SETTINGS as ASSOCIATION_SETTINGS
 from tests.workflow.test_part_pictures import MARKED_SHEET
 from tests.workflow.test_part_proposals_route import _extract, _upgrade
 from tests.workflow.test_view_roles import _document_version, _item
@@ -60,7 +68,8 @@ from workflow.part_pictures import (
     PartPictureSettings,
     record_part_picture,
 )
-from workflow.stages import DatabaseStages, _matchable_items
+from workflow.stages import MAXIMUM_RENDER_PIXELS, DatabaseStages, _matchable_items
+from workflow.vendor_page_pictures import RENDER_VENDOR_PAGE_PICTURES_WORKFLOW
 from workflow.view_roles import confirm_view_role
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -825,3 +834,134 @@ def test_a_picture_says_what_was_recorded_and_an_unchecked_one_says_not_checked(
         None,
     ]
     assert served.status_code == 200 and served.content == picture
+
+
+def test_vendor_page_picture_backfill_is_idempotent_and_model_free(
+    session: Session, store: LocalStore
+) -> None:
+    revision, _, _ = _sheet(session, store, MARKED_SHEET)
+    view = _vendors(session)
+    stages = DatabaseStages(store=store, dpi=150)
+    before_invocations = session.scalars(select(ModelInvocation.id)).all()
+    before_proposals = session.scalars(select(PartProposal.id)).all()
+    before_confirmations = session.scalars(select(PartConfirmation.id)).all()
+
+    first = stages.render_vendor_page_pictures(session, revision.id)
+    session.commit()
+    second = stages.render_vendor_page_pictures(session, revision.id)
+    session.commit()
+
+    assert first["rendered"] == 1
+    assert second["rendered"] == 0
+    row = session.scalars(select(VendorPagePicture)).one()
+    assert row.page_id == view.page_id
+    assert row.width_px > 0 and row.height_px > 0
+    assert row.snap_points == []
+    assert row.snap_tolerance is None
+    assert session.scalars(select(ModelInvocation.id)).all() == before_invocations
+    assert session.scalars(select(PartProposal.id)).all() == before_proposals
+    assert session.scalars(select(PartConfirmation.id)).all() == before_confirmations
+
+
+def test_backfill_stores_pixels_from_the_vendor_only_page(
+    session: Session, store: LocalStore
+) -> None:
+    revision, _, _ = _sheet(session, store, MARKED_SHEET)
+    _vendors(session)
+    stages = DatabaseStages(store=store, dpi=150)
+
+    result = stages.render_vendor_page_pictures(session, revision.id)
+    session.commit()
+    assert result["rendered"] == 1
+
+    picture = session.scalars(select(VendorPagePicture)).one()
+    page = session.get_one(Page, picture.page_id)
+    vendor = render_page(
+        MARKED_SHEET,
+        page.index,
+        document_version_id=page.document_version_id,
+        page_content_hash=page.content_hash,
+        dpi=picture.dpi,
+        maximum_pixels=MAXIMUM_RENDER_PIXELS,
+        vendor_only=True,
+    )
+    full = render_page(
+        MARKED_SHEET,
+        page.index,
+        document_version_id=page.document_version_id,
+        page_content_hash=page.content_hash,
+        dpi=picture.dpi,
+        maximum_pixels=MAXIMUM_RENDER_PIXELS,
+        vendor_only=False,
+    )
+    with store.get(picture.storage_key) as stored:
+        width, height, pixels = decode_rgb_png(stored.read())
+
+    assert (width, height, pixels) == (vendor.width_px, vendor.height_px, vendor.rgb_bytes)
+    assert pixels != full.rgb_bytes
+
+
+def test_page_picture_is_requested_through_outbox_and_served_with_transform(
+    session: Session, store: LocalStore
+) -> None:
+    revision, project_id, package_id = _sheet(session, store, MARKED_SHEET)
+    view = _vendors(session)
+    client = _client(session, store, project_id)
+
+    queued = client.post(f"{_base(project_id, package_id)}/parts/page-pictures")
+    assert queued.status_code == 202, queued.text
+    assert queued.json() == {"queued": True, "reason": None}
+    repeated = client.post(f"{_base(project_id, package_id)}/parts/page-pictures")
+    assert repeated.status_code == 202, repeated.text
+    assert repeated.json() == {"queued": True, "reason": None}
+    job = session.scalars(
+        select(OutboxEntry).where(OutboxEntry.workflow == RENDER_VENDOR_PAGE_PICTURES_WORKFLOW)
+    ).one()
+    assert job.payload["package_revision_id"] == str(revision.id)
+
+    # Rendering is done by the worker, not the API. Once stored, list metadata uses the same page
+    # transform and the picture endpoint returns the digest-verified bytes.
+    DatabaseStages(store=store, dpi=150).render_vendor_page_pictures(session, revision.id)
+    session.commit()
+    drawing = _drawing(client, project_id, package_id)
+    assert drawing["page_picture"]["width_px"] > 0
+    assert drawing["page_picture"]["snap_tolerance"] is None
+    assert drawing["page_picture"]["url"] == (
+        f"{_base(project_id, package_id)}/views/{view.id}/picture"
+    )
+    served = client.get(f"{_base(project_id, package_id)}/views/{view.id}/picture")
+    assert served.status_code == 200
+    assert served.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_a_page_picture_with_a_mismatched_digest_is_refused(
+    session: Session, store: LocalStore
+) -> None:
+    revision, _, _ = _sheet(session, store, MARKED_SHEET)
+    _vendors(session)
+    DatabaseStages(store=store, dpi=150).render_vendor_page_pictures(session, revision.id)
+    session.commit()
+    picture = session.scalars(select(VendorPagePicture)).one()
+    picture.sha256 = "0" * 64
+
+    with pytest.raises(HTTPException) as error:
+        _verified_page_picture(store, picture)
+
+    assert error.value.status_code == 409
+
+
+def test_backfill_publishes_only_detected_dimension_and_extension_endpoints(
+    session: Session, store: LocalStore
+) -> None:
+    revision, _, _ = _sheet(session, store, MARKED_SHEET)
+    _vendors(session)
+    stages = DatabaseStages(store=store, dpi=150, association=ASSOCIATION_SETTINGS)
+
+    result = stages.render_vendor_page_pictures(session, revision.id)
+    session.commit()
+
+    assert result["rendered"] == 1, result
+    picture = session.scalars(select(VendorPagePicture)).one()
+    assert picture.snap_tolerance == str(ASSOCIATION_SETTINGS.witness_tolerance)
+    assert picture.snap_points
+    assert {point["source"] for point in picture.snap_points} <= {"dimension", "extension"}

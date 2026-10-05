@@ -94,7 +94,7 @@ def test_every_marked_table_is_covered() -> None:
 
 def test_the_list_is_not_empty() -> None:
     """A passing comparison of two empty lists would be the quietest possible failure."""
-    assert len(_migration_tables()) >= 28
+    assert len(_migration_tables()) >= 29
 
 
 # ---------------------------------------------------------------------------

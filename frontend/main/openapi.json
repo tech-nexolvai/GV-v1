@@ -1578,6 +1578,16 @@
             "title": "Page Index",
             "type": "integer"
           },
+          "page_picture": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VendorPagePictureOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "parts": {
             "items": {
               "$ref": "#/components/schemas/PartOut"
@@ -3539,6 +3549,30 @@
         "title": "PointOut",
         "type": "object"
       },
+      "PreparePagePicturesOut": {
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "PreparePagePicturesOut",
+        "type": "object"
+      },
       "PresignedUpload": {
         "description": "Where to send the bytes, how, and until when.\n\nReplay `method` and `required_headers` exactly. On a backend that signs headers, the same bytes\nsent with a different verb or a different `Content-Type` is a different request and is refused \u2014\nwhich is the ticket being narrow, not the storage being awkward.",
         "properties": {
@@ -4818,6 +4852,29 @@
         "title": "Severity",
         "type": "string"
       },
+      "SnapPointOut": {
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "x": {
+            "title": "X",
+            "type": "string"
+          },
+          "y": {
+            "title": "Y",
+            "type": "string"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "source"
+        ],
+        "title": "SnapPointOut",
+        "type": "object"
+      },
       "SourceOut": {
         "description": "One source a setting may come from, and what choosing it means (#827).",
         "properties": {
@@ -5210,6 +5267,75 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VendorPagePictureOut": {
+        "properties": {
+          "crop_box": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Crop Box",
+            "type": "array"
+          },
+          "dpi": {
+            "title": "Dpi",
+            "type": "integer"
+          },
+          "height_px": {
+            "title": "Height Px",
+            "type": "integer"
+          },
+          "media_box": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Media Box",
+            "type": "array"
+          },
+          "rotation": {
+            "title": "Rotation",
+            "type": "integer"
+          },
+          "snap_points": {
+            "items": {
+              "$ref": "#/components/schemas/SnapPointOut"
+            },
+            "title": "Snap Points",
+            "type": "array"
+          },
+          "snap_tolerance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snap Tolerance"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "width_px": {
+            "title": "Width Px",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "url",
+          "dpi",
+          "width_px",
+          "height_px",
+          "rotation",
+          "media_box",
+          "crop_box",
+          "snap_tolerance",
+          "snap_points"
+        ],
+        "title": "VendorPagePictureOut",
         "type": "object"
       },
       "ViewOut": {
@@ -7450,6 +7576,60 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/page-pictures": {
+      "post": {
+        "description": "Ask the worker to fill missing full-page pictures; rendering never happens in the API.",
+        "operationId": "prepare_page_pictures_api_v1_projects__project_id__packages__package_id__parts_page_pictures_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparePagePicturesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare missing vendor-only page pictures for placement",
+        "tags": [
+          "drawing parts"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/confirm": {
       "post": {
         "description": "Record a person's decision, which makes the part. Audited, and correctable by deciding again:\nthe latest decision is the one that counts, and every earlier one is kept.",
@@ -8291,6 +8471,70 @@
           }
         },
         "summary": "Add a part the suggestions missed, by its two ends on the drawing",
+        "tags": [
+          "drawing parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/picture": {
+      "get": {
+        "operationId": "vendor_page_picture_api_v1_projects__project_id__packages__package_id__views__view_id__picture_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "view_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "View Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View a vendor-only drawing page",
         "tags": [
           "drawing parts"
         ]

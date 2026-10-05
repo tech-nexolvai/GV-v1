@@ -457,6 +457,16 @@ def _cut_part_pictures(session: object, package_revision_id: UUID) -> Mapping[st
     return cut
 
 
+def _render_vendor_page_pictures(
+    session: object, package_revision_id: UUID
+) -> Mapping[str, object]:
+    """Prepare stored vendor-only pages for click-to-place, without invoking any reader."""
+    stages = _stages()
+    return stages.render_vendor_page_pictures(  # type: ignore[attr-defined]
+        session, package_revision_id
+    )
+
+
 def _propose_measurements(session: object, package_revision_id: UUID) -> Mapping[str, object]:
     """Ask a model which reading fills which field, check it, and file what survived.
 
@@ -553,6 +563,7 @@ def _consume(
     whichever worker does consume it.
     """
     from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
+    from workflow.vendor_page_pictures import RENDER_VENDOR_PAGE_PICTURES_WORKFLOW
 
     revision_id = UUID(str(payload["package_revision_id"]))
     if workflow == "extract_package":
@@ -567,6 +578,8 @@ def _consume(
     if workflow == CUT_PART_PICTURES_WORKFLOW:
         # A person added a part (#897): cut its picture, and any other still missing.
         return _cut_part_pictures(session, revision_id)
+    if workflow == RENDER_VENDOR_PAGE_PICTURES_WORKFLOW:
+        return _render_vendor_page_pictures(session, revision_id)
     print(f"  no local consumer for {workflow!r} — leaving it for its worker")
     raise NotImplementedError(f"no local consumer for {workflow!r}")
 
