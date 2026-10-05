@@ -20,6 +20,7 @@ export function PartPicture({
   alt: string;
 }) {
   const [state, setState] = useState<{ url?: string; error?: string }>({});
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -37,9 +38,9 @@ export function PartPicture({
       live = false;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [packageId, proposalId]);
+  }, [packageId, proposalId, attempt]);
 
-  if (state.error) return <p className="drawing-parts__no-picture">{state.error}</p>;
+  if (state.error) return <p className="drawing-parts__no-picture">{state.error} <button type="button" className="btn btn--sm btn--subtle" onClick={() => { setState({}); setAttempt((count) => count + 1); }}>Retry picture</button></p>;
   if (!state.url) return <p className="drawing-parts__no-picture">Loading the picture…</p>;
   return (
     <a href={state.url} target="_blank" rel="noreferrer" title="Open the picture at full size">

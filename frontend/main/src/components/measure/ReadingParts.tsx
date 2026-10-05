@@ -4,6 +4,7 @@ import { ApiError, confirmReadingPart, listReadingParts, withdrawReadingPart } f
 import { projectId } from '../../api/config';
 import { PartPicture } from './PartPicture.js';
 import { partName, type LinkPart, type ReadingLinks } from './readingPartChoices.js';
+import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { ReadingPartsList } from './ReadingPartsList.js';
 import './DrawingParts.css';
 
@@ -18,35 +19,30 @@ import './DrawingParts.css';
  */
 export function ReadingParts({ packageId, refresh }: { packageId: string; refresh: number }) {
   const [links, setLinks] = useState<ReadingLinks | null>(null);
-  const [saving, setSaving] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
+  const [saveDecision] = useState(createDecisionSaver);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [decided, setDecided] = useState(0);
 
   useEffect(() => {
     let live = true;
     listReadingParts(projectId(), packageId)
       .then((result) => {
-        if (live) setLinks(result);
+        if (live) { setLinks(result); setLoadError(null); }
       })
       .catch((caught: unknown) => {
-        if (live) setError(caught instanceof ApiError ? caught.message : String(caught));
+        if (live) setLoadError(caught instanceof ApiError ? caught.message : String(caught));
       });
     return () => {
       live = false;
     };
-  }, [packageId, refresh, decided]);
+  }, [packageId, refresh, decided, loadAttempt]);
 
   async function save(part: LinkPart, decide: () => Promise<unknown>) {
-    setSaving(part.item_id);
-    setError(null);
-    try {
-      await decide();
-      setDecided((count) => count + 1);
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : String(caught));
-    } finally {
-      setSaving(null);
-    }
+    await saveDecision(part.item_id, decide, (item, state) => {
+      setFeedback((current) => ({ ...current, [item]: state }));
+    }, () => setDecided((count) => count + 1));
   }
 
   function confirm(part: LinkPart, readingId: string) {
@@ -58,9 +54,10 @@ export function ReadingParts({ packageId, refresh }: { packageId: string; refres
   }
 
   if (links === null || links.drawings.length === 0) {
-    return error ? (
+    return loadError ? (
       <p className="enter-values__error" role="alert">
-        Which reading is each part&apos;s width could not be listed: {error}
+        Which reading is each part&apos;s width could not be listed: {loadError}{' '}
+        <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
       </p>
     ) : null;
   }
@@ -68,7 +65,8 @@ export function ReadingParts({ packageId, refresh }: { packageId: string; refres
     <>
       <ReadingPartsList
         links={links}
-        saving={saving}
+        saving={null}
+        feedback={feedback}
         renderPicture={(drawing, part) =>
           part.proposal_id ? (
             <PartPicture
@@ -81,9 +79,10 @@ export function ReadingParts({ packageId, refresh }: { packageId: string; refres
         onConfirm={confirm}
         onWithdraw={withdraw}
       />
-      {error && (
+      {loadError && (
         <p className="enter-values__error" role="alert">
-          {error}
+          The width links could not refresh: {loadError}{' '}
+          <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
         </p>
       )}
     </>

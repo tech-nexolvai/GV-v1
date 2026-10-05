@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Calculator, CheckCircle2 } from 'lucide-react';
 
 import {
@@ -14,6 +14,8 @@ import {
 } from './fillerDistribution.js';
 import { ElevationDiagram } from '../output/ElevationDiagram.js';
 import { buildElevation } from '../output/elevation.js';
+import { DistributionProvenance } from './DistributionProvenance.js';
+import { distributionInputKey, distributionIsCurrent, type DistributionSnapshot } from './distributionSnapshot.js';
 
 
 const DESIGN_CABINET_KEY = 'ARCH:cabinet_width';
@@ -64,9 +66,12 @@ export function FillerDistributionPanel({
   // they choose: nothing here guesses a type from a width, and the request is withheld until every
   // cabinet has one.
   const [cabinetTypes, setCabinetTypes] = useState<CabinetTypeName[]>([]);
-  const [result, setResult] = useState<FillerDistributionResponse | null>(initialResult);
+  const [snapshot, setSnapshot] = useState<DistributionSnapshot | null>(() => initialResult
+    ? { result: initialResult, request: null, inputKey: null } : null);
+  const result = snapshot?.result ?? null;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const pending = useRef(false);
 
   const cabinetWidths = useMemo(
     () => valueRun(quantities, singles, runs, DESIGN_CABINET_KEY).filter((width) => width.trim()),
@@ -90,17 +95,21 @@ export function FillerDistributionPanel({
   );
 
   async function calculate() {
-    if (built.request === null) return;
+    if (built.request === null || pending.current) return;
+    const request = built.request;
+    const inputKey = distributionInputKey(request);
+    pending.current = true;
     setBusy(true);
     setError(null);
-    setResult(null);
     try {
-      setResult(await onCalculate(built.request));
+      const response = await onCalculate(request);
+      setSnapshot({ result: response, request, inputKey });
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : 'The distribution could not be calculated.',
       );
     } finally {
+      pending.current = false;
       setBusy(false);
     }
   }
@@ -114,9 +123,8 @@ export function FillerDistributionPanel({
         <div>
           <h2 id="distribution-heading">Filler distribution</h2>
           <p className="enter-values__hint">
-            Enter the site field width and classify each cabinet. Equipment cabinets keep their
-            width; the difference the fillers cannot absorb is divided equally between the regular
-            ones. The proposal below is returned by the backend calculation.
+            Preview a distribution using the approved cabinet and filler widths above, the site
+            field width, and the limits in Settings. This preview does not save measurements.
           </p>
         </div>
         <Calculator size={18} aria-hidden="true" />
@@ -195,8 +203,10 @@ export function FillerDistributionPanel({
         </div>
       )}
 
-      {result && (
+      {result && snapshot && (
         <div className="distribution-result" data-outcome={result.outcome}>
+          <DistributionProvenance request={snapshot.request}
+            current={distributionIsCurrent(snapshot, built.request)} busy={busy} />
           <div className="distribution-result__status" role="status">
             {result.outcome === 'PASS' ? (
               <CheckCircle2 size={15} aria-hidden="true" />

@@ -15,6 +15,7 @@ import {
   type SuggestedPart,
 } from './drawingPartChoices.js';
 import { GvMarksWarning } from './GvMarksWarning.js';
+import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
 
 /** A part a person adds, as the form hands it over. */
 export interface NewPart {
@@ -44,6 +45,7 @@ export interface NewPart {
 export function DrawingPartsList({
   drawings,
   saving,
+  feedback,
   renderPicture,
   renderCrop,
   onConfirm,
@@ -53,6 +55,7 @@ export function DrawingPartsList({
   drawings: readonly PartDrawing[];
   /** The part (or, while adding, the drawing) being saved, so its buttons cannot be pressed twice. */
   saving: string | null;
+  feedback?: Readonly<Record<string, DecisionFeedback>>;
   /** The part's own picture, for a part that has one. */
   renderPicture: (drawing: PartDrawing, part: SuggestedPart) => ReactNode;
   /** The crop of the reading a part's code came from, for a part that has one. */
@@ -88,6 +91,7 @@ export function DrawingPartsList({
                   drawing={drawing}
                   part={part}
                   saving={saving === part.proposal_id}
+                  feedback={feedback?.[part.proposal_id]}
                   picture={part.has_picture ? renderPicture(drawing, part) : null}
                   crop={part.has_crop ? renderCrop(drawing, part) : null}
                   onConfirm={onConfirm}
@@ -97,7 +101,7 @@ export function DrawingPartsList({
             </ol>
           )}
           {drawing.can_confirm && (
-            <AddPartForm drawing={drawing} saving={saving === drawing.view_id} onAdd={onAdd} />
+            <AddPartForm drawing={drawing} saving={saving === drawing.view_id || feedback?.[drawing.view_id]?.kind === 'saving'} feedback={feedback?.[drawing.view_id]} onAdd={onAdd} />
           )}
         </article>
       ))}
@@ -109,6 +113,7 @@ function PartRow({
   drawing,
   part,
   saving,
+  feedback,
   picture,
   crop,
   onConfirm,
@@ -117,6 +122,7 @@ function PartRow({
   drawing: PartDrawing;
   part: SuggestedPart;
   saving: boolean;
+  feedback?: DecisionFeedback;
   picture: ReactNode;
   crop: ReactNode;
   onConfirm: (part: SuggestedPart, kind: PartKind, code: string | null) => void;
@@ -125,6 +131,7 @@ function PartRow({
   const [code, setCode] = useState(() => startingCode(part));
   const page = drawing.page_index + 1;
   const confirmedKind = part.decision?.decision === 'confirmed' ? part.decision.kind : null;
+  const pending = saving || feedback?.kind === 'saving';
   return (
     <li className="drawing-parts__item" data-decided={part.decision !== null}>
       <div className="drawing-parts__picture">
@@ -159,7 +166,7 @@ function PartRow({
           type="text"
           value={code}
           maxLength={200}
-          disabled={!drawing.can_confirm || saving}
+          disabled={!drawing.can_confirm || pending}
           onChange={(event) => setCode(event.target.value)}
         />
       </label>
@@ -174,7 +181,7 @@ function PartRow({
             type="button"
             className={`btn btn--sm ${confirmedKind === kind ? 'btn--primary' : 'btn--subtle'}`}
             aria-pressed={confirmedKind === kind}
-            disabled={!drawing.can_confirm || saving}
+            disabled={!drawing.can_confirm || pending}
             onClick={() => onConfirm(part, kind, codeToSend(code))}
           >
             {KIND_LABEL[kind]}
@@ -184,12 +191,13 @@ function PartRow({
           type="button"
           className={`btn btn--sm ${part.decision?.decision === 'withdrawn' ? 'btn--primary' : 'btn--subtle'}`}
           aria-pressed={part.decision?.decision === 'withdrawn'}
-          disabled={saving}
+          disabled={pending}
           onClick={() => onWithdraw(part)}
         >
           Not a part
         </button>
       </div>
+      {feedback && <p className="drawing-parts__feedback" role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedbackText(feedback)}</p>}
     </li>
   );
 }
@@ -203,10 +211,12 @@ function PartRow({
 function AddPartForm({
   drawing,
   saving,
+  feedback,
   onAdd,
 }: {
   drawing: PartDrawing;
   saving: boolean;
+  feedback?: DecisionFeedback;
   onAdd: (drawing: PartDrawing, part: NewPart) => void;
 }) {
   const ends = endChoices(drawing);
@@ -286,6 +296,7 @@ function AddPartForm({
       >
         Add this part
       </button>
+      {feedback && <p className="drawing-parts__feedback" role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedbackText(feedback)}</p>}
     </form>
   );
 }

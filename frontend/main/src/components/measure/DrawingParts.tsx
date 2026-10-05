@@ -10,6 +10,7 @@ import {
 } from '../../api/client';
 import { projectId } from '../../api/config';
 import { type PartDrawing, type PartKind, type SuggestedPart } from './drawingPartChoices.js';
+import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { DrawingPartsList, type NewPart } from './DrawingPartsList.js';
 import { PartPicture } from './PartPicture.js';
 import './DrawingParts.css';
@@ -34,36 +35,33 @@ export function DrawingParts({
   onDecided?: () => void;
 }) {
   const [drawings, setDrawings] = useState<PartDrawing[] | null>(null);
-  const [saving, setSaving] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
+  const [saveDecision] = useState(createDecisionSaver);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [decided, setDecided] = useState(0);
 
   useEffect(() => {
     let live = true;
     listDrawingParts(projectId(), packageId)
       .then((result) => {
-        if (live) setDrawings(result.drawings);
+        if (live) { setDrawings(result.drawings); setLoadError(null); }
       })
       .catch((caught: unknown) => {
-        if (live) setError(caught instanceof ApiError ? caught.message : String(caught));
+        if (live) setLoadError(caught instanceof ApiError ? caught.message : String(caught));
       });
     return () => {
       live = false;
     };
-  }, [packageId, refresh, decided]);
+  }, [packageId, refresh, decided, loadAttempt]);
 
   async function save(key: string, decide: () => Promise<unknown>) {
-    setSaving(key);
-    setError(null);
-    try {
-      await decide();
+    await saveDecision(key, decide, (item, state) => {
+      setFeedback((current) => ({ ...current, [item]: state }));
+    }, () => {
       setDecided((count) => count + 1);
       onDecided?.();
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : String(caught));
-    } finally {
-      setSaving(null);
-    }
+    });
   }
 
   function confirm(part: SuggestedPart, kind: PartKind, code: string | null) {
@@ -81,9 +79,10 @@ export function DrawingParts({
   }
 
   if (drawings === null || drawings.length === 0) {
-    return error ? (
+    return loadError ? (
       <p className="enter-values__error" role="alert">
-        The parts of these drawings could not be listed: {error}
+        The parts of these drawings could not be listed: {loadError}{' '}
+        <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
       </p>
     ) : null;
   }
@@ -91,7 +90,8 @@ export function DrawingParts({
     <>
       <DrawingPartsList
         drawings={drawings}
-        saving={saving}
+        saving={null}
+        feedback={feedback}
         renderPicture={(_drawing, part) => (
           <PartPicture
             packageId={packageId}
@@ -104,9 +104,10 @@ export function DrawingParts({
         onWithdraw={withdraw}
         onAdd={add}
       />
-      {error && (
+      {loadError && (
         <p className="enter-values__error" role="alert">
-          {error}
+          The parts list could not refresh: {loadError}{' '}
+          <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
         </p>
       )}
     </>
@@ -116,6 +117,7 @@ export function DrawingParts({
 /** The stored crop of the reading one part's code came from, loaded when it is shown. */
 function PartCrop({ packageId, part }: { packageId: string; part: SuggestedPart }) {
   const [state, setState] = useState<{ url?: string; error?: string }>({});
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -133,9 +135,9 @@ function PartCrop({ packageId, part }: { packageId: string; part: SuggestedPart 
       live = false;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [packageId, part.proposal_id]);
+  }, [packageId, part.proposal_id, attempt]);
 
-  if (state.error) return <p className="drawing-parts__no-picture">{state.error}</p>;
+  if (state.error) return <p className="drawing-parts__no-picture">{state.error} <button type="button" className="btn btn--sm btn--subtle" onClick={() => { setState({}); setAttempt((count) => count + 1); }}>Retry code crop</button></p>;
   if (!state.url) return <p className="drawing-parts__no-picture">Loading the picture…</p>;
   return (
     <img

@@ -4,6 +4,7 @@ import { ApiError, confirmDrawingRole, listDrawingViews } from '../../api/client
 import { projectId } from '../../api/config';
 import { type DrawingRole, type DrawingView } from './drawingRoleChoices.js';
 import { DrawingRolesList } from './DrawingRolesList.js';
+import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 
 /**
  * Loads a package's drawings and saves a reviewer's answer about each (#795).
@@ -20,8 +21,10 @@ export function DrawingRoles({
   onConfirmed: () => void;
 }) {
   const [views, setViews] = useState<DrawingView[] | null>(null);
-  const [saving, setSaving] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
+  const [saveDecision] = useState(createDecisionSaver);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   // Loaded once per mount; the page mounts one per package (`key`), so a package switch starts empty
   // rather than showing the last package's drawings while the next one's load.
@@ -29,45 +32,40 @@ export function DrawingRoles({
     let live = true;
     listDrawingViews(projectId(), packageId)
       .then((result) => {
-        if (live) setViews(result.views);
+        if (live) { setViews(result.views); setLoadError(null); }
       })
       .catch((caught: unknown) => {
-        if (live) setError(caught instanceof ApiError ? caught.message : String(caught));
+        if (live) setLoadError(caught instanceof ApiError ? caught.message : String(caught));
       });
     return () => {
       live = false;
     };
-  }, [packageId]);
+  }, [packageId, loadAttempt]);
 
   async function choose(view: DrawingView, role: DrawingRole) {
-    setSaving(view.view_id);
-    setError(null);
-    try {
+    await saveDecision(view.view_id, async () => {
       const updated = await confirmDrawingRole(projectId(), packageId, view.view_id, role);
       setViews((current) =>
         current ? current.map((item) => (item.view_id === updated.view_id ? updated : item)) : current,
       );
-      onConfirmed();
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : String(caught));
-    } finally {
-      setSaving(null);
-    }
+    }, (item, state) => setFeedback((current) => ({ ...current, [item]: state })), onConfirmed);
   }
 
   if (views === null || views.length === 0) {
-    return error ? (
+    return loadError ? (
       <p className="enter-values__error" role="alert">
-        The drawings on these sheets could not be listed: {error}
+        The drawings on these sheets could not be listed: {loadError}{' '}
+        <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
       </p>
     ) : null;
   }
   return (
     <>
-      <DrawingRolesList views={views} saving={saving} onChoose={(view, role) => void choose(view, role)} />
-      {error && (
+      <DrawingRolesList views={views} saving={null} feedback={feedback} onChoose={(view, role) => void choose(view, role)} />
+      {loadError && (
         <p className="enter-values__error" role="alert">
-          {error}
+          The drawing roles could not refresh: {loadError}{' '}
+          <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
         </p>
       )}
     </>
