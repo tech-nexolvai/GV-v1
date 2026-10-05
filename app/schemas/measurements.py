@@ -258,6 +258,7 @@ class ConfirmedReadingOut(BaseModel):
     semantic_type: str
     #: Exact normalized display text, e.g. ``25 1/2 in``.  The browser never computes this value.
     value: str
+    page_index: int
     #: Why this value has a semantic type.  ``exact_vector_tag`` is the only automatic type route.
     qualification: Literal["reviewer_confirmed", "exact_vector_tag"]
 
@@ -374,6 +375,8 @@ class RequiredInputsOut(BaseModel):
     """
 
     quantities: tuple[QuantityOut, ...]
+    #: One-based page numbers available for page-scoped review.
+    page_numbers: tuple[int, ...] = ()
     #: Readings a reviewer already confirmed on the mechanical crop for this exact package revision.
     #: They are returned separately from rule requirements so the UI can make their provenance visible.
     confirmed_readings: tuple[ConfirmedReadingOut, ...] = ()
@@ -419,6 +422,14 @@ class CheckRequest(BaseModel):
     discriminators: dict[str, str] = Field(default_factory=dict)
 
 
+class PageProposalIn(BaseModel):
+    """Request a proposal for exactly one drawing page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    page_number: int = Field(ge=1)
+
+
 class ProposedMeasurementsOut(BaseModel):
     """What survived every structural check, and enough counts to say so honestly.
 
@@ -428,6 +439,7 @@ class ProposedMeasurementsOut(BaseModel):
     """
 
     assignments: tuple[ProposedFieldOut, ...]
+    page_number: int = Field(ge=1)
     #: Every field the published rulebook asks for. The denominator of "filled".
     fields_total: int
     #: How many of them this proposal fills. The one genuine completion figure on the screen.

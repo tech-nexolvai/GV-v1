@@ -246,7 +246,9 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     session.expire_all()
 
     # 2. The reviewer sees what was read, with the value and the crop.
-    listed = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates")
+    listed = client.get(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates?page_number=1"
+    )
     assert listed.status_code == 200, listed.text
     readings = listed.json()["candidates"]
     assert readings, "the reviewer was shown nothing to confirm"
@@ -291,7 +293,9 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     # The request commits its canonical observation.  Reloading the proposal queue must not offer
     # the same raw candidate for a second type — that would be an apparent successful confirmation
     # followed by a duplicate/conflicting reviewer action on the next page load.
-    reloaded = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates")
+    reloaded = client.get(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates?page_number=1"
+    )
     assert reloaded.status_code == 200, reloaded.text
     assert depth["candidate_id"] not in {
         item["candidate_id"] for item in reloaded.json()["candidates"]

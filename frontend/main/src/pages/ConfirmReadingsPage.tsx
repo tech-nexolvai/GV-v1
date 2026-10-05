@@ -4,6 +4,7 @@ import {
   ApiError,
   confirmCandidate,
   downloadCandidateCrop,
+  getRequiredInputs,
   listCandidates,
   listSemanticTypes,
   type CandidateOut,
@@ -46,35 +47,59 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
   const [failed, setFailed] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [pageNumbers, setPageNumbers] = useState<number[]>([]);
+  const [selectedPageNumber, setSelectedPageNumber] = useState(1);
 
   useEffect(() => {
     let live = true;
     let retry: number | undefined;
-    const load = () => Promise.all([listCandidates(projectId(), packageId), listSemanticTypes()])
-      .then(([read, vocabulary]) => {
+    const load = async () => {
+      try {
+        const [required, vocabulary] = await Promise.all([
+          getRequiredInputs(projectId(), packageId, selectedPageNumber),
+          listSemanticTypes(),
+        ]);
+        if (!live) return;
+        setPageNumbers(required.page_numbers);
+        setTypes(vocabulary);
+        // Upload and extraction are asynchronous. Do not ask the page endpoint for page 1 before
+        // the worker has stored any pages (it correctly refuses an unknown page with 404).
+        // Likewise, if the next package starts at a later available page, move the selector first
+        // and let the effect fetch that page on its next pass.
+        if (required.page_numbers.length && !required.page_numbers.includes(selectedPageNumber)) {
+          setCandidates([]);
+          setSelectedPageNumber(required.page_numbers[0]);
+          return;
+        }
+        if (!required.page_numbers.includes(selectedPageNumber)) {
+          setCandidates([]);
+          if (required.still_reading) retry = window.setTimeout(load, 2_000);
+          return;
+        }
+        const read = await listCandidates(projectId(), packageId, selectedPageNumber);
         if (!live) return;
         setCandidates(read.candidates);
-        setTypes(vocabulary);
         // The upload screen moves straight into this review step, while extraction is deliberately
         // asynchronous. Poll only an empty proposal list: once a reading arrives the UI is stable;
         // when none ever arrives the reviewer can immediately continue with manual values.
-        if (read.candidates.length === 0) retry = window.setTimeout(load, 2_000);
-      })
-      .catch((cause: unknown) => {
+        if (read.candidates.length === 0 && required.still_reading) {
+          retry = window.setTimeout(load, 2_000);
+        }
+      } catch (cause: unknown) {
         if (!live) return;
         setError(
           cause instanceof ApiError ? cause.message : 'The readings could not be loaded.',
         );
-      })
-      .finally(() => {
+      } finally {
         if (live) setLoading(false);
-      });
+      }
+    };
     void load();
     return () => {
       live = false;
       if (retry !== undefined) window.clearTimeout(retry);
     };
-  }, [packageId]);
+  }, [packageId, selectedPageNumber]);
 
   async function confirm(candidate: CandidateOut) {
     const semanticType = chosen[candidate.candidate_id];
@@ -111,6 +136,23 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
     return (
       <div className="readings">
         <h1 className="readings__title">Confirm what was read</h1>
+        <label className="readings__page-picker">
+          Review page
+          <select
+            aria-label="Review readings on page"
+            value={selectedPageNumber}
+            onChange={(event) => {
+              setCandidates([]);
+              setError('');
+              setLoading(true);
+              setSelectedPageNumber(Number(event.currentTarget.value));
+            }}
+          >
+            {(pageNumbers.length ? pageNumbers : [selectedPageNumber]).map((page) => (
+              <option key={page} value={page}>Page {page}</option>
+            ))}
+          </select>
+        </label>
         <p className="readings__status">
           Waiting for exact AI readings from the drawing. If none are proposed, the reviewer can
           continue now and supply only the values AI abstained on.
@@ -127,6 +169,23 @@ export function ConfirmReadingsPage({ packageId, onDone }: Props) {
   return (
     <div className="readings">
       <h1 className="readings__title">Confirm what was read</h1>
+      <label className="readings__page-picker">
+        Review page
+        <select
+          aria-label="Review readings on page"
+          value={selectedPageNumber}
+          onChange={(event) => {
+            setCandidates([]);
+            setError('');
+            setLoading(true);
+            setSelectedPageNumber(Number(event.currentTarget.value));
+          }}
+        >
+          {(pageNumbers.length ? pageNumbers : [selectedPageNumber]).map((page) => (
+            <option key={page} value={page}>Page {page}</option>
+          ))}
+        </select>
+      </label>
       <p className="readings__lede">
         AI proposed {candidates.length} exact reading{candidates.length === 1 ? '' : 's'} from the
         drawing. Check each mechanical crop, then say which quantity it is. AI did not choose a type;

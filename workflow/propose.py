@@ -92,7 +92,9 @@ def quantity_description(semantic_type: str) -> str | None:
     return None if code is None else code.description
 
 
-def assignment_fields(session: Session) -> tuple[tuple[Field, ...], int]:
+def assignment_fields(
+    session: Session, *, page_number: int | None = None
+) -> tuple[tuple[Field, ...], int]:
     """The rulebook's fields as an assignment context takes them, and how many rules published them.
 
     The name is the rulebook's own readable one — `cabinet_widths`, not `CT004` — taken from the
@@ -116,13 +118,19 @@ def assignment_fields(session: Session) -> tuple[tuple[Field, ...], int]:
             source=quantity.source,
             many=quantity.many,
             description=quantity_description(quantity.semantic_type),
+            page_number=page_number,
         )
         for quantity in needs.quantities
     )
     return fields, len(rules)
 
 
-def assignment_readings(session: Session, revision: PackageRevision) -> tuple[Reading, ...]:
+def assignment_readings(
+    session: Session,
+    revision: PackageRevision,
+    *,
+    page_number: int | None = None,
+) -> tuple[Reading, ...]:
     """Every reading of this package that could fill a field, with what the geometry established.
 
     Unconfirmed only, for the reason `list_candidates` gives: a confirmed reading already has a
@@ -138,7 +146,7 @@ def assignment_readings(session: Session, revision: PackageRevision) -> tuple[Re
     on its configuration, so a second row is a re-association under different thresholds rather than
     a competing opinion, and the later thresholds are the deployment's current ones.
     """
-    rows = session.execute(
+    reading_query = (
         select(ObservationCandidate, Page.index, ObservationAssociation)
         .join(Page, Page.id == ObservationCandidate.page_id)
         .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
@@ -161,7 +169,10 @@ def assignment_readings(session: Session, revision: PackageRevision) -> tuple[Re
             ObservationCandidate.id,
             ObservationAssociation.created_at,
         )
-    ).all()
+    )
+    if page_number is not None:
+        reading_query = reading_query.where(Page.index == page_number - 1)
+    rows = session.execute(reading_query).all()
 
     readings: dict[UUID, Reading] = {}
     sides = ReadingSides(session)
@@ -210,11 +221,14 @@ def assignment_readings(session: Session, revision: PackageRevision) -> tuple[Re
 
 
 def assignment_context(
-    session: Session, revision: PackageRevision
+    session: Session, revision: PackageRevision, *, page_number: int | None = None
 ) -> tuple[AssignmentContext, int]:
-    """Everything a model is given for this revision, and how many rules published the fields."""
-    fields, rules_published = assignment_fields(session)
-    readings = assignment_readings(session, revision)
+    """Everything a model is given for this revision or one requested page."""
+    fields, rules_published = assignment_fields(session, page_number=page_number)
+    readings = assignment_readings(session, revision, page_number=page_number)
+    if page_number is not None:
+        page_sources = {reading.source for reading in readings}
+        fields = tuple(field for field in fields if field.source in page_sources)
     return AssignmentContext(fields=fields, readings=readings), rules_published
 
 
@@ -224,6 +238,7 @@ def record_proposal(
     package_revision_id: UUID,
     assignments: tuple[ProposedAssignment, ...],
     model_id: str,
+    page_number: int | None = None,
     unverified_placement: tuple[str, ...] = (),
 ) -> UUID | None:
     """File an accepted proposal, or file nothing. Returns the proposal id, or `None`.
@@ -249,6 +264,7 @@ def record_proposal(
             session.add(
                 MeasurementProposal(
                     package_revision_id=package_revision_id,
+                    page_number=page_number,
                     proposal_id=proposal_id,
                     field_key=assignment.field_key,
                     position=position,
@@ -262,13 +278,43 @@ def record_proposal(
     return proposal_id
 
 
-def stored_proposal(session: Session, package_revision_id: UUID) -> tuple[MeasurementProposal, ...]:
+def stored_proposal(
+    session: Session, package_revision_id: UUID, *, page_number: int | None = None
+) -> tuple[MeasurementProposal, ...]:
     """The newest proposal's rows for this revision, in field and position order.
 
     Newest by `created_at`, then by `proposal_id` so two written in the same recorded instant still
     order deterministically — a form whose fields reorder between loads is one a reviewer loses
     their place in.
     """
+    if page_number is not None:
+        scoped_rows = list(
+            session.execute(
+                select(MeasurementProposal, Page.index)
+                .join(
+                    ObservationCandidate,
+                    ObservationCandidate.id == MeasurementProposal.candidate_id,
+                )
+                .join(Page, Page.id == ObservationCandidate.page_id)
+                .where(
+                    MeasurementProposal.package_revision_id == package_revision_id,
+                    Page.index == page_number - 1,
+                    (MeasurementProposal.page_number == page_number)
+                    | MeasurementProposal.page_number.is_(None),
+                )
+                .order_by(
+                    MeasurementProposal.created_at.desc(),
+                    MeasurementProposal.proposal_id.desc(),
+                )
+            ).all()
+        )
+        if not scoped_rows:
+            return ()
+        latest = scoped_rows[0][0].proposal_id
+        return tuple(
+            proposal for proposal, _page_index in scoped_rows if proposal.proposal_id == latest
+        )
+
     rows = list(
         session.execute(
             select(MeasurementProposal)

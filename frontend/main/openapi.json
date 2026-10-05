@@ -682,7 +682,7 @@
         "type": "object"
       },
       "CandidatesOut": {
-        "description": "Everything read for this package that nobody has yet said the meaning of.",
+        "description": "Every reading still to label on one complete page.",
         "properties": {
           "candidates": {
             "items": {
@@ -691,6 +691,10 @@
             "title": "Candidates",
             "type": "array"
           },
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
           "total": {
             "title": "Total",
             "type": "integer"
@@ -698,7 +702,8 @@
         },
         "required": [
           "candidates",
-          "total"
+          "total",
+          "page_number"
         ],
         "title": "CandidatesOut",
         "type": "object"
@@ -1225,6 +1230,10 @@
             "title": "Key",
             "type": "string"
           },
+          "page_index": {
+            "title": "Page Index",
+            "type": "integer"
+          },
           "qualification": {
             "enum": [
               "reviewer_confirmed",
@@ -1251,6 +1260,7 @@
           "source",
           "semantic_type",
           "value",
+          "page_index",
           "qualification"
         ],
         "title": "ConfirmedReadingOut",
@@ -3143,6 +3153,22 @@
         "title": "PackagePage",
         "type": "object"
       },
+      "PageProposalIn": {
+        "additionalProperties": false,
+        "description": "Request a proposal for exactly one drawing page.",
+        "properties": {
+          "page_number": {
+            "minimum": 1.0,
+            "title": "Page Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "page_number"
+        ],
+        "title": "PageProposalIn",
+        "type": "object"
+      },
       "ParameterEntry": {
         "additionalProperties": false,
         "description": "One setting a reviewer supplies for this job \u2014 a cabinet depth, an overhang, a sink interior.\n\n**`scope` decides which layer it lands in and it is not cosmetic.** A `project` setting applies to\nevery review of the job; a `run` setting was true for this one \u2014 the sink on this cut sheet, the\nroom as measured today. `rules/parameters.py` draws the same line, and filing a run value as a\nproject setting would make a stale sink dimension look authoritative on the next review.\n\nThe rulebook says which each parameter is, so a caller should send back what\n`GET .../required-inputs` reported rather than choosing.",
@@ -3688,6 +3714,11 @@
             ],
             "title": "Model Id"
           },
+          "page_number": {
+            "minimum": 1.0,
+            "title": "Page Number",
+            "type": "integer"
+          },
           "readings_attached": {
             "title": "Readings Attached",
             "type": "integer"
@@ -3710,6 +3741,7 @@
         },
         "required": [
           "assignments",
+          "page_number",
           "fields_total",
           "fields_filled",
           "readings_considered",
@@ -3959,6 +3991,14 @@
               "$ref": "#/components/schemas/DiscriminatorOut"
             },
             "title": "Discriminators",
+            "type": "array"
+          },
+          "page_numbers": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Page Numbers",
             "type": "array"
           },
           "parameters": {
@@ -6044,7 +6084,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/candidates": {
       "get": {
-        "description": "Every reading of this package that carries a value, with its crop.\n\n**Only readings that carry a value.** A token with no unit was recorded without one \u2014 deliberately,\nbecause a bare `38` is a dimension whose unit is unknown \u2014 and there is nothing for a reviewer to\nconfirm about it. They are still in the database, and a reviewer who wants to see what was thrown\naway is asking a different question than this one.\n\nOrdered by page and then by when it was read, so the list follows the drawing rather than the\ndatabase's insertion order, and two loads put the same reading in the same place.",
+        "description": "Every reading on one page that carries a value, with its crop.\n\n**Only readings that carry a value.** A token with no unit was recorded without one \u2014 deliberately,\nbecause a bare `38` is a dimension whose unit is unknown \u2014 and there is nothing for a reviewer to\nconfirm about it. They are still in the database, and a reviewer who wants to see what was thrown\naway is asking a different question than this one.\n\nOrdered by page and then by when it was read, so the list follows the drawing rather than the\ndatabase's insertion order, and two loads put the same reading in the same place.",
         "operationId": "list_candidates_api_v1_projects__project_id__packages__package_id__candidates_get",
         "parameters": [
           {
@@ -6065,6 +6105,16 @@
               "format": "uuid",
               "title": "Package Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_number",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Page Number",
+              "type": "integer"
             }
           }
         ],
@@ -7428,6 +7478,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PageProposalIn"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8254,6 +8314,23 @@
               "format": "uuid",
               "title": "Package Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_number",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page Number"
             }
           }
         ],

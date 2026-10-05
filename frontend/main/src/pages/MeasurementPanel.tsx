@@ -115,6 +115,7 @@ type ConfirmedReading = {
   source: string;
   semantic_type: string;
   value: string;
+  page_index: number;
   qualification: 'reviewer_confirmed' | 'exact_vector_tag';
 };
 
@@ -136,6 +137,7 @@ type ProposedField = {
   values: { candidate_id: string; value: string; page_index: number }[];
 };
 type Needed = {
+  page_numbers: number[];
   quantities: Quantity[];
   confirmed_readings: ConfirmedReading[];
   proposed_readings: ProposedField[];
@@ -276,6 +278,7 @@ export function MeasurementPanel({
   onChoosePackage?: () => void;
 }) {
   const [needed, setNeeded] = useState<Needed | null>(null);
+  const [selectedPageNumber, setSelectedPageNumber] = useState(1);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [packageId, setPackageId] = useState<string | null>(null);
   /** Single-valued quantities and parameters, keyed by quantity key or parameter name. */
@@ -337,6 +340,7 @@ export function MeasurementPanel({
       setLoadError(null);
       setRefreshUnavailable(false);
       setNeeded(null);
+      setSelectedPageNumber(1);
       setRuns({});
       setSingles({});
       const freshEdits = new Set<string>();
@@ -355,7 +359,10 @@ export function MeasurementPanel({
       setAiFilled({});
     }
     const applyRequiredInputs = (required: Needed) => {
-      const confirmedByKey = required.confirmed_readings.reduce<Record<string, string[]>>(
+      const pageConfirmed = required.confirmed_readings.filter(
+        (reading) => reading.page_index === selectedPageNumber - 1,
+      );
+      const confirmedByKey = pageConfirmed.reduce<Record<string, string[]>>(
         (grouped, reading) => ({
           ...grouped,
           [reading.key]: [...(grouped[reading.key] ?? []), reading.value],
@@ -378,7 +385,10 @@ export function MeasurementPanel({
         }
         for (const field of required.proposed_readings ?? []) {
           if (field.many) continue;
-          const values = field.values.map((reading) => reading.value);
+          const pageValues = field.values.filter(
+            (reading) => reading.page_index === selectedPageNumber - 1,
+          );
+          const values = pageValues.map((reading) => reading.value);
           if (!values.length) continue;
           if (confirmedByKey[field.field_key]?.length) continue;
           if (reviewerEditedSinglesRef.current.has(field.field_key)) continue;
@@ -399,12 +409,15 @@ export function MeasurementPanel({
         }
         for (const field of required.proposed_readings ?? []) {
           if (!field.many) continue;
-          const values = field.values.map((reading) => reading.value).filter((value) => value.trim());
+          const pageValues = field.values.filter(
+            (reading) => reading.page_index === selectedPageNumber - 1,
+          );
+          const values = pageValues.map((reading) => reading.value).filter((value) => value.trim());
           if (!values.length) continue;
           if (confirmedByKey[field.field_key]?.length) continue;
           if ((next[field.field_key] ?? []).some((value) => value.trim())) continue;
           next[field.field_key] = values;
-          nextMarks[field.field_key] = field.values.map((reading) => reading.candidate_id);
+          nextMarks[field.field_key] = pageValues.map((reading) => reading.candidate_id);
         }
         return next;
       });
@@ -420,17 +433,34 @@ export function MeasurementPanel({
     const load = async (includeVocabulary: boolean) => {
       try {
         if (!selectedPackageId) return;
-        const [fields, read, vocabulary] = await Promise.all([
-          getRequiredInputs(projectId(), selectedPackageId),
-          listCandidates(projectId(), selectedPackageId),
+        const [fields, vocabulary] = await Promise.all([
+          getRequiredInputs(projectId(), selectedPackageId, selectedPageNumber),
           includeVocabulary ? listSemanticTypes() : Promise.resolve<string[]>([]),
         ]);
         if (cancelled) return;
         const required = fields as unknown as Needed;
+        if (
+          required.page_numbers.length > 0 &&
+          !required.page_numbers.includes(selectedPageNumber)
+        ) {
+          setSelectedPageNumber(required.page_numbers[0]);
+          setCandidates([]);
+        } else if (required.page_numbers.includes(selectedPageNumber)) {
+          const read = await listCandidates(
+            projectId(),
+            selectedPackageId,
+            selectedPageNumber,
+          );
+          if (cancelled) return;
+          setCandidates(read.candidates);
+        } else {
+          // Pages are written asynchronously after upload. Keep showing the in-progress state and
+          // poll the contract; requesting an unknown page would be a correct 404, not an empty list.
+          setCandidates([]);
+        }
         setPackageId(selectedPackageId);
         loadedDataPackageIdRef.current = selectedPackageId;
         setNeeded(required);
-        setCandidates(read.candidates);
         setRefreshUnavailable(false);
         if (includeVocabulary) {
           setSemanticTypes(vocabulary);
@@ -458,7 +488,7 @@ export function MeasurementPanel({
       if (poll !== undefined) window.clearTimeout(poll);
     };
     // Re-fetch only when the selected package changes, never on a keystroke within its form.
-  }, [selectedPackageId, reload]);
+  }, [selectedPackageId, selectedPageNumber, reload]);
 
   /**
    * Go back and look while the drawings are still being read.
@@ -530,6 +560,7 @@ export function MeasurementPanel({
         source: candidate.source,
         semantic_type: result.semantic_type,
         value: candidate.value,
+        page_index: candidate.page_index,
         qualification: 'reviewer_confirmed',
       };
 
@@ -729,7 +760,7 @@ export function MeasurementPanel({
     setProposal(null);
     setProposalError(null);
     try {
-      const result = await proposeMeasurements(projectId(), packageId, (step) =>
+      const result = await proposeMeasurements(projectId(), packageId, selectedPageNumber, (step) =>
         setProposalSteps((prior) => [...prior, step]),
       );
       setProposal(result);
@@ -951,7 +982,27 @@ export function MeasurementPanel({
       )}
 
       <section className="enter-values__section">
-        <h2>Measurements</h2>
+        <div className="measure-page-picker">
+          <label htmlFor="measure-page-number">Review one page</label>
+          <select
+            id="measure-page-number"
+            className="value-input"
+            value={selectedPageNumber}
+            onChange={(event) => {
+              setCandidates([]);
+              setProposalSteps([]);
+              setProposal(null);
+              setProposalError(null);
+              setSelectedPageNumber(Number(event.currentTarget.value));
+            }}
+          >
+            {(needed.page_numbers.length ? needed.page_numbers : [selectedPageNumber]).map((page) => (
+              <option key={page} value={page}>Page {page}</option>
+            ))}
+          </select>
+          <p>Readings and Fill with AI are limited to this page.</p>
+        </div>
+        <h2>Measurements — page {selectedPageNumber}</h2>
 
         {/* **One line, one bar, three counts.**
             This was five stat tiles and a paragraph, and a reviewer opening the page could not tell

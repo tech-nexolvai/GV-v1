@@ -479,7 +479,7 @@ def test_the_measure_page_is_told_each_readings_side_and_why_one_has_none(
     assert package is not None
 
     response = _client(session, store, package.project_id).get(
-        f"/api/v1/projects/{package.project_id}/packages/{package.id}/candidates"
+        f"/api/v1/projects/{package.project_id}/packages/{package.id}/candidates?page_number=1"
     )
 
     assert response.status_code == 200, response.text
@@ -574,7 +574,7 @@ def test_the_measure_page_says_a_markup_reading_is_neither_drawing(
     assert package is not None
 
     response = _client(session, store, package.project_id).get(
-        f"/api/v1/projects/{package.project_id}/packages/{package.id}/candidates"
+        f"/api/v1/projects/{package.project_id}/packages/{package.id}/candidates?page_number=1"
     )
 
     assert response.status_code == 200, response.text
