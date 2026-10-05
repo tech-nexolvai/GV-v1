@@ -873,6 +873,7 @@ export type CandidatesOut = Get<'/api/v1/projects/{project_id}/packages/{package
 // clients working if the backend adds the new `source` field after a schema refresh.
 export type CandidateOut = CandidatesOut['candidates'][number] & {
   source?: string | null;
+  crop_shows_gv_mark?: boolean | null;
 };
 export type DrawingViewsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/views'>;
 export type DrawingViewOut = DrawingViewsOut['views'][number];

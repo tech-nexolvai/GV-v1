@@ -1859,6 +1859,11 @@ export interface components {
              * @description Storage key of the crop of this reading's region, when one was cut.
              */
             crop_key?: string | null;
+            /**
+             * Crop Shows Gv Mark
+             * @description Whether the checked crop shows a GV coloured mark. Null means no crop or not checked.
+             */
+            crop_shows_gv_mark?: boolean | null;
             /** Page Index */
             page_index: number;
             /** Raw Text */

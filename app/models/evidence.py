@@ -19,6 +19,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Integer,
@@ -266,6 +267,7 @@ class EvidenceArtifact(Base, TimestampedUUID, Immutable):
     sha256: Mapped[str] = mapped_column(String(64))
     media_type: Mapped[str] = mapped_column(String(200))
     coordinate_space: Mapped[str] = mapped_column(String(32))
+    shows_gv_marks: Mapped[bool | None] = mapped_column(Boolean, default=None)
 
     __table_args__ = (
         CheckConstraint(
@@ -278,7 +280,6 @@ class EvidenceArtifact(Base, TimestampedUUID, Immutable):
         CheckConstraint(f"sha256 ~ '{SHA256_PATTERN}'", name="evidence_artifact_sha256"),
         CheckConstraint("media_type <> ''", name="evidence_artifact_media_type"),
         CheckConstraint("coordinate_space IN ('image', 'stored')", name="evidence_artifact_space"),
-        UniqueConstraint("storage_key", "sha256"),
     )
 
     def content_matches(self, content: bytes) -> bool:

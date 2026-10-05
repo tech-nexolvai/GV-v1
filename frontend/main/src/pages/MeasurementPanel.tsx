@@ -41,6 +41,7 @@ import {
 import { layoutChoiceDefaults } from './layoutChoices';
 import { settingMissingASource, type SettingSource } from '../components/measure/settingSources';
 import { SettingCitation } from '../components/measure/SettingCitation';
+import { candidateCropWarning } from '../components/measure/candidateCropWarning';
 import {
   citingPointer,
   settingEntry,
@@ -892,7 +893,7 @@ export function MeasurementPanel({
           a package of two separate PDFs. Each answer re-reads the readings, which now have a side. */}
       {packageId && (
         <DrawingRoles
-          key={packageId}
+          key={`${packageId}-drawing-roles`}
           packageId={packageId}
           onConfirmed={() => setReload((count) => count + 1)}
         />
@@ -901,7 +902,7 @@ export function MeasurementPanel({
       {/* **The parts of each vendor drawing** (#882): suggested, and each one decided by a person. */}
       {packageId && (
         <DrawingParts
-          key={packageId}
+          key={`${packageId}-drawing-parts`}
           packageId={packageId}
           refresh={reload}
           onDecided={() => setPartsDecided((count) => count + 1)}
@@ -911,7 +912,7 @@ export function MeasurementPanel({
       {/* **Which parts sit under each countertop** (#893): suggested from the confirmed parts above,
           and each countertop's run decided by a person. Read again whenever a part is decided. */}
       {packageId && (
-        <CountertopRuns key={packageId} packageId={packageId} refresh={reload + partsDecided} />
+        <CountertopRuns key={`${packageId}-countertop-runs`} packageId={packageId} refresh={reload + partsDecided} />
       )}
 
       {/* **Which reading is each part's width** (#913): suggested from the confirmed parts and
@@ -919,7 +920,7 @@ export function MeasurementPanel({
           or a reading is confirmed here. */}
       {packageId && (
         <ReadingParts
-          key={packageId}
+          key={`${packageId}-reading-parts`}
           packageId={packageId}
           refresh={reload + partsDecided + readingsConfirmed}
         />
@@ -1140,7 +1141,11 @@ export function MeasurementPanel({
                         candidates and zero values on the real drawing. #720. */}
                   </div>
                   {candidate.crop_key && packageId ? (
-                    <MeasureCandidateCrop candidate={candidate} packageId={packageId} />
+                    inspecting ? (
+                      <MeasureCandidateCrop candidate={candidate} packageId={packageId} />
+                    ) : (
+                      <p className="ai-proposal__crop-loading">Open the reading list to load its crop.</p>
+                    )
                   ) : (
                     <p className="ai-proposal__no-crop">
                       No crop is available, so this reading cannot be confirmed here.
@@ -1647,8 +1652,30 @@ function AiReadings({
 
 function MeasureCandidateCrop({ candidate, packageId }: { candidate: CandidateOut; packageId: string }) {
   const [state, setState] = useState<{ url: string } | { error: string } | null>(null);
+  const [inView, setInView] = useState(false);
+  const placeholderRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
+    const placeholder = placeholderRef.current;
+    if (!placeholder) return;
+    if (typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setInView(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(placeholder);
+    return () => observer.disconnect();
+  }, []);
+
+  const shouldLoad = inView || typeof IntersectionObserver === 'undefined';
+
+  useEffect(() => {
+    if (!shouldLoad) return;
     let live = true;
     let objectUrl: string | null = null;
     void downloadCandidateCrop(projectId(), packageId, candidate.candidate_id).then(
@@ -1665,20 +1692,32 @@ function MeasureCandidateCrop({ candidate, packageId }: { candidate: CandidateOu
       live = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [candidate.candidate_id, packageId]);
+  }, [candidate.candidate_id, packageId, shouldLoad]);
 
   if (state && 'error' in state) {
     return <span className="ai-proposal__no-crop">{state.error}</span>;
   }
   if (!state || !('url' in state)) {
-    return <span className="ai-proposal__crop-loading"><ScanLine size={14} aria-hidden="true" /> Loading crop…</span>;
+    return (
+      <span ref={placeholderRef} className="ai-proposal__crop-loading">
+        {shouldLoad ? <><ScanLine size={14} aria-hidden="true" /> Loading crop…</> : 'Scroll this reading into view to load its crop.'}
+      </span>
+    );
   }
+  const warning = candidateCropWarning(candidate.crop_shows_gv_mark);
   return (
-    <img
-      className="ai-proposal__crop"
-      src={state.url}
-      alt={`Mechanical crop for ${candidate.raw_text} on page ${candidate.page_index + 1}`}
-    />
+    <figure className="ai-proposal__crop-figure">
+      <img
+        className="ai-proposal__crop"
+        src={state.url}
+        alt={`Mechanical crop for ${candidate.raw_text} on page ${candidate.page_index + 1}`}
+      />
+      {warning && (
+        <figcaption className="ai-proposal__mark-warning" role="status">
+          <AlertTriangle size={14} aria-hidden="true" /> {warning}
+        </figcaption>
+      )}
+    </figure>
   );
 }
 

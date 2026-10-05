@@ -421,6 +421,154 @@ def test_running_the_stages_twice_does_not_double_the_rows(
     assert _count(session, EvidenceArtifact) == crops_after_one_pass
 
 
+def test_byte_identical_candidate_crops_get_separate_rows_and_mark_state(
+    session: Session, store: LocalStore, pdf_bytes: bytes
+) -> None:
+    """Two readings of the exact same region both retain the same inspectable crop."""
+
+    revision = _revision(session, store, data=pdf_bytes)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
+    stages.extract_pages(session, revision.id)
+    first = session.execute(
+        select(ObservationCandidate)
+        .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
+        .limit(1)
+    ).scalar_one()
+    second = ObservationCandidate(
+        document_version_id=first.document_version_id,
+        page_id=first.page_id,
+        extraction_run_id=first.extraction_run_id,
+        raw_text=f"duplicate of {first.raw_text}",
+        value_numerator=first.value_numerator,
+        value_denominator=first.value_denominator,
+        unit=first.unit,
+        unit_guess=first.unit_guess,
+        semantic_guess=first.semantic_guess,
+        polygon=[list(point) for point in first.polygon],
+        coordinate_space=first.coordinate_space,
+        confidence=first.confidence,
+        ambiguity_flags=list(first.ambiguity_flags),
+    )
+    session.add(second)
+    session.flush()
+
+    result = stages.validate_evidence(session, revision.id)
+
+    first_crop = session.execute(
+        select(EvidenceArtifact).where(
+            EvidenceArtifact.candidate_id == first.id,
+            EvidenceArtifact.kind == "crop",
+        )
+    ).scalar_one()
+    second_crop = session.execute(
+        select(EvidenceArtifact).where(
+            EvidenceArtifact.candidate_id == second.id,
+            EvidenceArtifact.kind == "crop",
+        )
+    ).scalar_one()
+    assert first_crop.storage_key == second_crop.storage_key
+    assert first_crop.sha256 == second_crop.sha256
+    assert first_crop.shows_gv_marks is False
+    assert second_crop.shows_gv_marks is False
+    assert int(result["crops"]) >= 2
+
+
+def test_legacy_crop_is_backfilled_only_for_an_exact_polygon(
+    session: Session, store: LocalStore, pdf_bytes: bytes
+) -> None:
+    """Older first-writer rows are reused only for the exact same recorded region."""
+
+    revision = _revision(session, store, data=pdf_bytes)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
+    stages.extract_pages(session, revision.id)
+    stages.validate_evidence(session, revision.id)
+    first = session.execute(
+        select(ObservationCandidate)
+        .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
+        .limit(1)
+    ).scalar_one()
+
+    def duplicate(*, offset: int, raw_text: str) -> ObservationCandidate:
+        return ObservationCandidate(
+            document_version_id=first.document_version_id,
+            page_id=first.page_id,
+            extraction_run_id=first.extraction_run_id,
+            raw_text=raw_text,
+            value_numerator=first.value_numerator,
+            value_denominator=first.value_denominator,
+            unit=first.unit,
+            unit_guess=first.unit_guess,
+            semantic_guess=first.semantic_guess,
+            polygon=[[x + offset, y + offset] for x, y in first.polygon],
+            coordinate_space=first.coordinate_space,
+            confidence=first.confidence,
+            ambiguity_flags=list(first.ambiguity_flags),
+        )
+
+    exact = duplicate(offset=0, raw_text="exact region duplicate")
+    nearby = duplicate(offset=80, raw_text="different nearby region")
+    session.add_all((exact, nearby))
+    session.flush()
+
+    result = stages.validate_evidence(session, revision.id)
+
+    original_crop = session.execute(
+        select(EvidenceArtifact).where(
+            EvidenceArtifact.candidate_id == first.id,
+            EvidenceArtifact.kind == "crop",
+        )
+    ).scalar_one()
+    exact_crop = session.execute(
+        select(EvidenceArtifact).where(
+            EvidenceArtifact.candidate_id == exact.id,
+            EvidenceArtifact.kind == "crop",
+        )
+    ).scalar_one()
+    nearby_crop = session.execute(
+        select(EvidenceArtifact).where(
+            EvidenceArtifact.candidate_id == nearby.id,
+            EvidenceArtifact.kind == "crop",
+        )
+    ).scalar_one()
+    assert int(result["backfilled_exact_region"]) == 1
+    assert exact_crop.storage_key == original_crop.storage_key
+    assert exact_crop.sha256 == original_crop.sha256
+    assert nearby_crop.storage_key != original_crop.storage_key
+
+
+def test_crop_writer_persists_a_detected_gv_mark(
+    session: Session, store: LocalStore, pdf_bytes: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mark result is recorded from the very box cut for the reviewer."""
+
+    from workflow.stages import ColouredMarkup
+
+    revision = _revision(session, store, data=pdf_bytes)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
+    stages.extract_pages(session, revision.id)
+    monkeypatch.setattr(
+        stages,
+        "_coloured_markup",
+        lambda *_args, **_kwargs: ColouredMarkup(
+            text=((0, 0, 10000, 10000),),
+            paths=(),
+            transform=None,
+            coloured_paths=(),
+            pasted_stamps=(),
+        ),
+    )
+
+    stages.validate_evidence(session, revision.id)
+
+    crop = session.execute(
+        select(EvidenceArtifact)
+        .where(EvidenceArtifact.kind == "crop")
+        .order_by(EvidenceArtifact.created_at, EvidenceArtifact.id)
+        .limit(1)
+    ).scalar_one()
+    assert crop.shows_gv_marks is True
+
+
 # ---------------------------------------------------------------------------
 # `match` when there is something to match
 # ---------------------------------------------------------------------------

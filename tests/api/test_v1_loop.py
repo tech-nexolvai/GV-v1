@@ -32,6 +32,7 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
+from app.api.confirmations import _verified_crop_content
 from app.api.dependencies import get_artifact_store, get_session
 from app.api.documents import storage_key
 from app.config import Settings
@@ -40,6 +41,7 @@ from app.main import create_app
 from app.models import (
     Document,
     DocumentVersion,
+    EvidenceArtifact,
     ObservationCandidate,
     OutputArtifact,
     OutputArtifactKind,
@@ -61,6 +63,7 @@ from workflow.stages import DatabaseStages
 pytest_plugins = ("tests.app.postgres_fixture",)
 
 PROJECT = UUID("22222222-2222-2222-2222-222222222222")
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 #: A shop drawing stating one dimension the reader keeps whole, and one it cannot read.
 #:
@@ -76,6 +79,32 @@ DRAWING = _pdf(
 
 #: What `CT-DEPTH-001` reads.
 DEPTH_TYPE = "CT010"
+
+
+def test_crop_endpoint_refuses_bytes_that_do_not_match_the_recorded_digest(
+    tmp_path: Path,
+) -> None:
+    from fastapi import HTTPException
+
+    original = b"recorded crop bytes"
+    changed = b"different crop bytes"
+    key = "evidence/crops/digest-check.png"
+    store = LocalStore(tmp_path)
+    store.put(key, io.BytesIO(changed), content_type="image/png")
+    crop = EvidenceArtifact(
+        candidate_id=UUID(int=1),
+        document_version_id=UUID(int=2),
+        page_id=UUID(int=3),
+        kind="crop",
+        storage_key=key,
+        sha256=hashlib.sha256(original).hexdigest(),
+        media_type="image/png",
+        coordinate_space="image",
+    )
+
+    with pytest.raises(HTTPException, match="recorded digest") as error:
+        _verified_crop_content(store, crop)
+    assert error.value.status_code == 409
 
 
 def _settings() -> Settings:
@@ -225,6 +254,19 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     depth = next(row for row in readings if row["raw_text"] == "648 [25 1/2]")
     assert depth["value"] == "25 1/2 in", depth
     assert depth["source"] == "SHOP"
+    assert depth["crop_key"] is not None
+    assert depth["crop_shows_gv_mark"] is False
+    crop_path = (
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}"
+        f"/candidates/{depth['candidate_id']}/crop"
+    )
+    crop_response = client.get(crop_path)
+    assert crop_response.status_code == 200, crop_response.text
+    assert crop_response.content.startswith(PNG_SIGNATURE)
+    foreign_package = client.get(
+        f"/api/v1/projects/{PROJECT}/packages/{uuid4()}/candidates/" f"{depth['candidate_id']}/crop"
+    )
+    assert foreign_package.status_code == 404
 
     # 3. The reviewer says what one of them is. The value is not re-entered.
     confirmed = client.post(
