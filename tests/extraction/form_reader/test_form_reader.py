@@ -172,6 +172,65 @@ def test_whole_or_partial_components_that_disagree_with_the_text_still_go_to_the
     assert parsed.reason == "reader-components-disagree-with-printed-text"
 
 
+def _dimension_payload(**overrides):
+    payload = {
+        "position": 0,
+        "text": '4"',
+        "whole": "4",
+        "numerator": "",
+        "denominator": "",
+        "stacked": False,
+        "kind": "unknown",
+        "combined": False,
+        "readable": True,
+        "box": [100, 100, 200, 200],
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize(
+    "box",
+    [[1598, 1875, 1615, 1905], [0, 0, 0, 0], [5, 5, 4, 9], ["1", "2", "3", "4"], [1, 2, 3], "x"],
+)
+def test_an_unusable_box_is_dropped_but_the_reading_is_kept(box) -> None:
+    answer = validate_page_answer(
+        {
+            "countertops": [
+                {
+                    "view_title": "",
+                    "overall_scope": "run",
+                    "overall": _dimension_payload(kind="overall", box=box),
+                    "chain": [],
+                }
+            ],
+            "notes": "",
+        },
+        page_index=1,
+    )
+    overall = answer.countertops[0].overall
+    assert overall is not None
+    assert overall.text == '4"' and overall.box is None and overall.kind == "unknown"
+
+
+def test_a_wrong_piece_kind_is_still_malformed() -> None:
+    with pytest.raises(Exception, match="kind"):
+        validate_page_answer(
+            {
+                "countertops": [
+                    {
+                        "view_title": "",
+                        "overall_scope": "run",
+                        "overall": None,
+                        "chain": [_dimension_payload(position=1, kind="countertop")],
+                    }
+                ],
+                "notes": "",
+            },
+            page_index=1,
+        )
+
+
 def test_prompt_v5_array_box_and_component_strings_validate_with_request_page_metadata() -> None:
     answer = validate_page_answer(
         {
