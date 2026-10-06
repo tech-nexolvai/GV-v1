@@ -1313,7 +1313,18 @@ def propose_measurements(
             elif progress.phase in {"refused", "unavailable"}:
                 outcome["unfilled_reason"] = progress.detail
 
-        proposed, unverified = propose_and_guard(context, model, observer=observe)
+        from workflow.timing import timing_recorder_from_environment
+
+        timings = timing_recorder_from_environment()
+        if timings is None:
+            proposed, unverified = propose_and_guard(context, model, observer=observe)
+        else:
+            with timings.measure(
+                "review.fill_with_ai_proposal",
+                run_id=str(revision.id),
+                page_index=page_number - 1,
+            ):
+                proposed, unverified = propose_and_guard(context, model, observer=observe)
         for event in pending:
             yield send(event)
 

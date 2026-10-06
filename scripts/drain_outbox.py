@@ -31,12 +31,15 @@ import pathlib
 import sys
 import time
 from collections.abc import Mapping
+from contextlib import nullcontext
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from app.evidence.automatic_typing import AutomaticTypingSettings
+from workflow.timing import TimingRecorder, timing_recorder_from_environment
 
 #: How long `--watch` sleeps between passes. Two seconds matches `GV_OUTBOX_POLL_SECONDS`'s default,
 #: which `.env.example` describes as "the visible wait between a package being accepted and its
@@ -275,7 +278,11 @@ def _hunt_values(
     return hunt.summary()
 
 
-def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
+def _stages(
+    *,
+    discriminators: Mapping[str, str] | None = None,
+    timings: TimingRecorder | None = None,
+) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
     from storage.local import LocalStore
     from workflow.findings_bedrock import configured_findings_composer
@@ -316,6 +323,7 @@ def _stages(*, discriminators: Mapping[str, str] | None = None) -> object:
         # Off unless GV_FRACTION_PARTS is on, and then every drawing setting is required (#848),
         # and so is the gate reader above: it is the route's second reader (#865).
         fraction_parts=fraction_parts_from_environment(),
+        timings=timings,
         # The dpi an upright, sharper picture is rendered at (#907). No default: a stage with a
         # reader shown one refuses to start without it.
         reader_pictures=picture_settings_from_environment(),
@@ -490,14 +498,18 @@ def _propose_measurements(session: object, package_revision_id: UUID) -> Mapping
 
 
 def _extract_package(
-    session: object, package_revision_id: UUID, idempotency_key: str
+    session: object,
+    package_revision_id: UUID,
+    idempotency_key: str,
+    *,
+    timings: TimingRecorder | None = None,
 ) -> Mapping[str, object]:
     """Run only the pre-verdict stages and leave OCR proposals waiting for human confirmation."""
     from app.lifecycle.side_states import enter_needs_input
     from app.models import PackageState, WorkflowRun
     from workflow.review import run_stage
 
-    stages = _stages()
+    stages = _stages(timings=timings)
     workflow_run_id = UUID(idempotency_key)
     _ensure_workflow_run(session, package_revision_id, workflow_run_id, WorkflowRun)
     results: dict[str, object] = {}
@@ -507,24 +519,44 @@ def _extract_package(
         ("match", PackageState.MATCHING),
         ("validate_evidence", PackageState.VALIDATING_EVIDENCE),
     ):
-        outcome = run_stage(
-            session,
-            stage=stage,
-            state=state,
-            package_revision_id=package_revision_id,
-            workflow_run_id=workflow_run_id,
-            stages=stages,  # type: ignore[arg-type]
+        measure = (
+            timings.measure(
+                f"worker.stage.{stage}", run_id=str(package_revision_id), page_index=None
+            )
+            if timings is not None
+            else nullcontext()
         )
+        with measure:
+            outcome = run_stage(
+                session,
+                stage=stage,
+                state=state,
+                package_revision_id=package_revision_id,
+                workflow_run_id=workflow_run_id,
+                stages=stages,  # type: ignore[arg-type]
+            )
         results[stage] = dict(outcome.payload)
     # **Index the package's own words, once they are all recorded** (#836). Built from the stored
     # rows, so it needs nothing extraction did not already write, and it cannot fail the extraction:
     # `_build_package_text` reports a failure rather than raising one.
-    package_text = _build_package_text(session, package_revision_id)
+    measure = (
+        timings.measure("worker.package_text", run_id=str(package_revision_id))
+        if timings is not None
+        else nullcontext()
+    )
+    with measure:
+        package_text = _build_package_text(session, package_revision_id)
     results["package_text"] = package_text
     # **Then look in it for the settings the rules still need** (#881), off unless switched on. It
     # files pointers a person confirms by typing the number blind, never a setting, and it cannot
     # fail the extraction either.
-    results["value_hunter"] = _hunt_values(session, package_revision_id, package_text)
+    measure = (
+        timings.measure("worker.value_hunter", run_id=str(package_revision_id))
+        if timings is not None
+        else nullcontext()
+    )
+    with measure:
+        results["value_hunter"] = _hunt_values(session, package_revision_id, package_text)
 
     # **Fill the reviewer's form, now, while the facts are in hand.**
     #
@@ -536,7 +568,13 @@ def _extract_package(
     # provider that will not answer leaves the form to be filled by hand, which is exactly what a
     # deployment with no model configured does anyway. `propose_for_revision` catches its own
     # failures and reports them; this only decides what to print.
-    results["propose_measurements"] = _propose_measurements(session, package_revision_id)
+    measure = (
+        timings.measure("worker.fill_with_ai_proposal", run_id=str(package_revision_id))
+        if timings is not None
+        else nullcontext()
+    )
+    with measure:
+        results["propose_measurements"] = _propose_measurements(session, package_revision_id)
 
     # Extraction is deliberately pre-verdict work. Whether it found many readings or none,
     # the next actor is the reviewer: confirm the untyped proposals and supply the values the
@@ -555,7 +593,12 @@ def _extract_package(
 
 
 def _consume(
-    session: object, *, workflow: str, payload: Mapping[str, object], idempotency_key: str
+    session: object,
+    *,
+    workflow: str,
+    payload: Mapping[str, object],
+    idempotency_key: str,
+    timings: TimingRecorder | None = None,
 ) -> Mapping[str, object]:
     """Do the work one outbox row names, in the caller's session. Commits nothing.
 
@@ -585,7 +628,7 @@ def _consume(
         bundle = generate_signed_outputs(session, store, approval_id)
         return {"bundle_id": str(bundle.id)}
     if workflow == "extract_package":
-        return _extract_package(session, revision_id, idempotency_key)
+        return _extract_package(session, revision_id, idempotency_key, timings=timings)
     if workflow == "run_checks":
         raw = payload.get("discriminators")
         # Narrowed rather than cast: the payload is JSON from a database row, so its shape is a
@@ -616,6 +659,7 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = Settings()  # type: ignore[call-arg]
     factory: sessionmaker[Session] = session_factory(create_engine(settings.database_url))
+    timings = timing_recorder_from_environment()
 
     def _start(*, workflow: str, payload: Mapping[str, object], idempotency_key: str) -> None:
         """The starter `dispatch_committed` calls, doing the work in its own session.
@@ -631,12 +675,54 @@ def main(argv: list[str] | None = None) -> int:
         than two.
         """
         revision_id = UUID(str(payload["package_revision_id"]))
+        upload_started_at: datetime | None = None
         try:
             with factory() as session:
+                if workflow == "extract_package":
+                    from sqlalchemy import func, select
+
+                    from app.models.document import Document, PackageRevisionDocument
+
+                    upload_started_at = session.scalar(
+                        select(func.min(Document.created_at))
+                        .join(
+                            PackageRevisionDocument,
+                            PackageRevisionDocument.document_id == Document.id,
+                        )
+                        .where(PackageRevisionDocument.package_revision_id == revision_id)
+                    )
                 result = _consume(
-                    session, workflow=workflow, payload=payload, idempotency_key=idempotency_key
+                    session,
+                    workflow=workflow,
+                    payload=payload,
+                    idempotency_key=idempotency_key,
+                    timings=timings,
                 )
-                session.commit()
+                commit_measure = (
+                    timings.measure("worker.final_commit", run_id=str(revision_id))
+                    if timings is not None
+                    else nullcontext()
+                )
+                with commit_measure:
+                    session.commit()
+            if (
+                workflow == "extract_package"
+                and upload_started_at is not None
+                and timings is not None
+            ):
+                start = (
+                    upload_started_at
+                    if upload_started_at.tzinfo is not None
+                    else upload_started_at.replace(tzinfo=UTC)
+                )
+                timings.record(
+                    operation="worker.upload_to_final_commit",
+                    run_id=str(revision_id),
+                    page_index=None,
+                    started_at=start.isoformat(),
+                    elapsed_ms=max(0.0, (datetime.now(UTC) - start).total_seconds() * 1000),
+                    status="ok",
+                )
         except Exception as error:
             if workflow == "generate_signed_exports":
                 from workflow.signed_outputs import record_publication_failure
