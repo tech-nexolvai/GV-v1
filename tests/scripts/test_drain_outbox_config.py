@@ -382,6 +382,13 @@ def _demo_worker_settings(*names: str) -> dict[str, str]:
     return dict(re.findall(rf"^({pattern})=(\S+) \\$", worker_block, flags=re.MULTILINE))
 
 
+def test_demo_reading_agent_has_no_escalation_reader() -> None:
+    stated = _demo_worker_settings("GV_AGENT_MAX_ESCALATIONS", "GV_AGENT_ESCALATION_READER")
+
+    assert stated["GV_AGENT_MAX_ESCALATIONS"] == "0"
+    assert "GV_AGENT_ESCALATION_READER" not in stated
+
+
 def test_the_demo_worker_runs_the_new_pair_with_qwen_first(monkeypatch: pytest.MonkeyPatch) -> None:
     """**On in the demo** (the admin's decision of 2026-10-04, after the production measurement):
     the worker names Qwen3-VL and Nova 2 Lite as the trial measured it, Qwen reads first (#787),

@@ -66,6 +66,7 @@ _REQUIRED: Final = (
     "GV_AGENT_MAX_LABEL_PT",
 )
 ESCALATION_READER_ENV: Final = "GV_AGENT_ESCALATION_READER"
+_DISABLED_ESCALATION_READER: Final = "bedrock-mistral-large-3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +102,11 @@ class ReadingAgentSettings:
             raise ValueError(
                 "the escalation reader must be a different reader from the primary; the same one "
                 "asked twice is not a second witness"
+            )
+        if self.escalation_reader == _DISABLED_ESCALATION_READER:
+            raise ValueError(
+                "Mistral Large 3 is disabled as the reading agent's escalation reader; "
+                "send the region to human review"
             )
         # The graph's own bounds and the gathering lengths, checked now rather than at the first
         # region a worker reaches.

@@ -420,12 +420,12 @@ def store() -> Iterator[LocalStore]:
         yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
 
 
-def test_a_cut_crop_the_pair_refuses_is_widened_by_the_agent_and_proposed_whole(
+def test_a_cut_crop_is_widened_then_read_by_primary_without_escalation(
     store: LocalStore,
 ) -> None:
     """**End to end, on the stage's own geometry.** Outcome: the pair refuses the cut crop, so alone
-    it hands the reviewer nothing; the file says the crop cut the label, so the agent — as built —
-    widens it, the primary reads `10192"`, and that is proposed, right."""
+    it hands the reviewer nothing; the file says the crop cut the label, so the agent widens it. The
+    primary reads `10192"`, so it is proposed without using an escalation reader."""
     geometry = PageGeometry(
         line_minimum_pt=SETTINGS.line_minimum_pt,
         glyph_maximum_pt=SETTINGS.glyph_maximum_pt,
@@ -433,7 +433,12 @@ def test_a_cut_crop_the_pair_refuses_is_widened_by_the_agent_and_proposed_whole(
         fraction_bar=SETTINGS.fraction_bar,
         missing_space=MISSING_SPACE,
     )
-    settings = _settings(sharper_dpi=300, primary_reader=NOVA, escalation_reader=LARGE)
+    settings = _settings(
+        sharper_dpi=300,
+        primary_reader=NOVA,
+        max_vlm_escalations=0,
+        escalation_reader=None,
+    )
     pages = build_pages(
         SHEET,
         [0],
@@ -442,14 +447,14 @@ def test_a_cut_crop_the_pair_refuses_is_widened_by_the_agent_and_proposed_whole(
         geometry=geometry,
         reach=settings.reach(geometry.glyph_gap_pt),
     )
-    nova, mini, large = _Reader(NOVA), _Reader(MINI, "Mistral"), _Reader(LARGE, "Mistral")
+    nova, mini = _Reader(NOVA), _Reader(MINI, "Mistral")
 
     result = score_crop(
         _cut_crop(),
         pages[0],
         store=store,
         pair=(nova, mini),
-        readers={VlmRole.PRIMARY: nova, VlmRole.ESCALATION: large},
+        readers={VlmRole.PRIMARY: nova},
         settings=settings,
         key_dpi=KEY_DPI,
         margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
@@ -464,8 +469,6 @@ def test_a_cut_crop_the_pair_refuses_is_widened_by_the_agent_and_proposed_whole(
     for arm in (Arm.AGENT, Arm.AGENT_EVERYWHERE):
         assert result.judgements[arm].outcome is Outcome.PROPOSED
         assert result.judgements[arm].value == Measurement(Fraction(10192), Unit.INCH, '10192"')
-    assert large.widths == []
-
     counts = tally([result], Arm.AGENT)
     assert (counts.proposed_right, counts.agent_runs, counts.calls) == (1, 1, 3)
     assert tally([result], Arm.PAIR).to_reviewer == 1
