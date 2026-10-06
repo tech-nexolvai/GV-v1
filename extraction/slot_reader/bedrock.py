@@ -1,0 +1,264 @@
+"""The crop readers: one generic question per code-made crop, asked in parallel (#987).
+
+**Generic on purpose.** The prompt names no client value and no client drawing: its examples are
+invented. It asks only for the label's text as printed and four flags that can hold a reading back;
+it does not ask for whole, numerator and denominator, because those are never used (E2 guard 2).
+
+**Bounded like the form reader.** The same per-model start-rate pacer, the same thread-local Bedrock
+clients, the same concurrency cap and throttle back-off, the same one re-ask for a malformed answer
+and then an abstention — which sends that crop to the person, never the whole set. Kimi K3 is asked
+at low effort, as the form reader asks it (#978).
+
+Source: issue #987 · Verification: `tests/extraction/slot_reader/test_bedrock.py`
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from time import monotonic
+from typing import Any, Final
+
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, ValidationError
+
+from extraction.form_reader.bedrock import (
+    KIMI_EFFORT,
+    KIMI_K3_MODEL,
+    AttemptUsage,
+    ConverseClient,
+    MalformedFormAnswer,
+    _extract_json_object,
+    _response_text,
+    _response_usage,
+)
+from extraction.form_reader.pricing import RateLookup, require_priced_readers
+from extraction.form_reader.runner import ClientProvider, ModelPacer, _is_throttle
+from extraction.slot_reader.seal import ReaderAnswer
+
+__all__ = [
+    "CROP_PROMPT",
+    "CROP_PROMPT_ID",
+    "CropJob",
+    "build_crop_request",
+    "read_crop",
+    "read_crops_parallel",
+]
+
+CROP_PROMPT_ID: Final = "slot-crop-v1"
+
+CROP_PROMPT: Final = (
+    "This picture is cut from a cabinet shop drawing. It shows ONE dimension label with its "
+    "dimension line and tick marks, or something that is not a dimension at all. Copy the label's "
+    'characters EXACTLY as printed, including any inch mark ("). Do not convert, correct, complete '
+    "or add anything. A label in millimetres with inches in brackets is copied with both, for "
+    "example 250 [9 7/8].\n"
+    "Return ONLY this JSON object:\n"
+    '{"text": "the label exactly as printed, or an empty string if there is none",\n'
+    ' "stacked": true if any fraction is drawn stacked (numerator above denominator), else false,\n'
+    ' "combined": true if the label is a sum, an expression, a count or has words, such as '
+    '4"+1" or (6EQ), else false,\n'
+    ' "readable": false if any character is cut off at the picture\'s edge, overlapped, blurred, '
+    "or you are not sure of it; else true,\n"
+    ' "no_dimension": true if the picture shows no dimension label at all (only a symbol, an '
+    "arrow, a letter or a line), else false}"
+)
+
+
+class _CropAnswer(BaseModel):
+    """The answer's shape, checked strictly. Extra keys are ignored: nothing reads them."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    text: StrictStr
+    stacked: StrictBool
+    combined: StrictBool
+    readable: StrictBool
+    no_dimension: StrictBool
+
+
+def _base_model_id(model_id: str) -> str:
+    return model_id.removeprefix("us.").removeprefix("global.")
+
+
+def build_crop_request(*, model_id: str, crop_png: bytes, max_tokens: int) -> dict[str, Any]:
+    """One crop request: the picture first, then the question, as the form reader asks."""
+    if not model_id.strip():
+        raise ValueError("a crop reader model id must be stated")
+    if not crop_png.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("a crop reader is shown a PNG")
+    if isinstance(max_tokens, bool) or max_tokens <= 0:
+        raise ValueError("max_tokens must be a positive integer")
+    request: dict[str, Any] = {
+        "modelId": model_id,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"image": {"format": "png", "source": {"bytes": crop_png}}},
+                    {"text": CROP_PROMPT},
+                ],
+            }
+        ],
+        "inferenceConfig": {"maxTokens": max_tokens},
+    }
+    if _base_model_id(model_id) == KIMI_K3_MODEL:
+        request["outputConfig"] = {"effort": KIMI_EFFORT}
+    else:
+        request["inferenceConfig"]["temperature"] = 0
+    return request
+
+
+def read_crop(
+    client: ConverseClient,
+    *,
+    model_id: str,
+    crop_png: bytes,
+    page_index: int,
+    max_tokens: int,
+    record_attempt: Callable[[AttemptUsage], None],
+) -> ReaderAnswer:
+    """Ask one reader about one crop; re-ask once on a malformed answer, then raise."""
+    for attempt in range(2):
+        request = build_crop_request(model_id=model_id, crop_png=crop_png, max_tokens=max_tokens)
+        if attempt:
+            request["messages"][0]["content"].append(
+                {"text": "Your previous reply was malformed. Return the one JSON object only."}
+            )
+        started = monotonic()
+        try:
+            response = client.converse(**request)
+        except Exception as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    CROP_PROMPT_ID,
+                    CROP_PROMPT_ID,
+                    None,
+                    None,
+                    int((monotonic() - started) * 1000),
+                    False,
+                    type(error).__name__,
+                    page_index,
+                )
+            )
+            raise
+        input_tokens, output_tokens = _response_usage(response)
+        elapsed = int((monotonic() - started) * 1000)
+        try:
+            payload = _extract_json_object(_response_text(response))
+            parsed = _CropAnswer.model_validate(payload)
+        except (MalformedFormAnswer, ValidationError) as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    CROP_PROMPT_ID,
+                    CROP_PROMPT_ID,
+                    input_tokens,
+                    output_tokens,
+                    elapsed,
+                    True,
+                    page_index=page_index,
+                )
+            )
+            if attempt:
+                raise MalformedFormAnswer(
+                    "crop answer remained malformed after one re-ask"
+                ) from error
+            continue
+        record_attempt(
+            AttemptUsage(
+                model_id,
+                CROP_PROMPT_ID,
+                CROP_PROMPT_ID,
+                input_tokens,
+                output_tokens,
+                elapsed,
+                False,
+                page_index=page_index,
+            )
+        )
+        return ReaderAnswer(
+            model_id=model_id,
+            text=parsed.text,
+            readable=parsed.readable,
+            no_dimension=parsed.no_dimension,
+            stacked=parsed.stacked,
+            combined=parsed.combined,
+        )
+    raise AssertionError("unreachable")
+
+
+@dataclass(frozen=True, slots=True)
+class CropJob:
+    """One reader, one crop. `key` is the caller's, to put the answer back where it belongs."""
+
+    key: str
+    model_id: str
+    page_index: int
+    png: bytes
+
+
+def read_crops_parallel(
+    jobs: Sequence[CropJob],
+    *,
+    clients: ClientProvider,
+    rates: RateLookup | None,
+    calls_per_minute: Mapping[str, int],
+    max_concurrent_calls: int,
+    max_tokens: int,
+    max_throttle_retries: int,
+    retry_backoff_seconds: float,
+    record_attempt: Callable[[AttemptUsage], None],
+) -> dict[tuple[str, str], ReaderAnswer | None]:
+    """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
+
+    Refuses to start when any reader has no stated price or pacing limit, as the form reader does.
+    """
+    if isinstance(max_concurrent_calls, bool) or max_concurrent_calls <= 0:
+        raise ValueError("max_concurrent_calls must be a positive integer")
+    if isinstance(max_throttle_retries, bool) or max_throttle_retries < 0:
+        raise ValueError("max_throttle_retries must be a non-negative integer")
+    if retry_backoff_seconds <= 0:
+        raise ValueError("retry_backoff_seconds must be positive")
+    keys = [(job.key, job.model_id) for job in jobs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("each crop is read once by each reader")
+    readers = tuple(sorted({job.model_id for job in jobs}))
+    if not readers:
+        return {}
+    missing = set(readers) - set(calls_per_minute)
+    if missing:
+        raise ValueError(f"missing per-model pacing limits for: {', '.join(sorted(missing))}")
+    require_priced_readers(readers, rates)
+    pacer = ModelPacer(calls_per_minute)
+
+    def invoke(job: CropJob) -> tuple[tuple[str, str], ReaderAnswer | None]:
+        for throttle_attempt in range(max_throttle_retries + 1):
+            pacer.wait(job.model_id)
+            try:
+                answer = read_crop(
+                    clients.for_current_thread(),
+                    model_id=job.model_id,
+                    crop_png=job.png,
+                    page_index=job.page_index,
+                    max_tokens=max_tokens,
+                    record_attempt=record_attempt,
+                )
+                return (job.key, job.model_id), answer
+            except MalformedFormAnswer:
+                return (job.key, job.model_id), None
+            except Exception as error:
+                if not _is_throttle(error) or throttle_attempt >= max_throttle_retries:
+                    raise
+                time.sleep(retry_backoff_seconds * (2**throttle_attempt))
+        raise AssertionError("unreachable")
+
+    answers: dict[tuple[str, str], ReaderAnswer | None] = {}
+    with ThreadPoolExecutor(max_workers=max_concurrent_calls) as executor:
+        futures = [executor.submit(invoke, job) for job in jobs]
+        for future in as_completed(futures):
+            key, answer = future.result()
+            answers[key] = answer
+    return answers
