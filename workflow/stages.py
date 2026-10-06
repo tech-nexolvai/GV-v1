@@ -156,6 +156,7 @@ from extraction.annotations import (
     read_annotation_layers,
     read_markup_layer,
 )
+from extraction.form_reader.bedrock import AttemptUsage
 from extraction.form_reader.runner import ThreadSafeAttemptRecorder
 from extraction.fraction_parts import (
     FRACTION_PARTS_EXTRACTOR,
@@ -232,6 +233,7 @@ from extraction.reader import (
     read_page_contents,
     read_pages,
 )
+from extraction.rows import page_rows_and_ink
 from extraction.stamp_text import (
     ColouredPath,
     PixelBox,
@@ -312,6 +314,13 @@ from workflow.reader_pictures import (
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
+from workflow.slot_reader import (
+    SLOT_READER_VERSION,
+    SlotPage,
+    SlotReaderRuntime,
+    persist_slot_readings,
+    read_slot_pages,
+)
 from workflow.timing import TimingRecorder
 from workflow.vendor_page_pictures import (
     PNG as VENDOR_PAGE_PNG,
@@ -1548,6 +1557,7 @@ class DatabaseStages:
         reader_pictures: PictureSettings | None = None,
         missing_space: MissingSpace | None = None,
         form_reader: FormReaderRuntime | None = None,
+        slot_reader: SlotReaderRuntime | None = None,
         part_pictures: PartPictureSettings | None = None,
         timings: TimingRecorder | None = None,
     ) -> None:
@@ -1571,6 +1581,9 @@ class DatabaseStages:
             raise TypeError("missing_space must be a MissingSpace")
         self._missing_space = missing_space
         self._form_reader = form_reader
+        if slot_reader is not None and form_reader is None:
+            raise ValueError("the slot reader runs only beside the form reader (#987)")
+        self._slot_reader = slot_reader
         # **`None` means the association step does not run, and that is recorded as not run.**
         # Association is inherently thresholded — unlike reading a `/FreeText`, there is no
         # threshold-free version of it — so the five lengths are a deployment's to state. A default
@@ -1967,6 +1980,7 @@ class DatabaseStages:
             )
         )
         images: list[FormPageImage] = []
+        slot_pages: list[SlotPage] = []
         for page in pages:
             rendered = self._vendor_render(data, page, version_id)
             if rendered is None:
@@ -1974,8 +1988,14 @@ class DatabaseStages:
             transform = page_transform(page, rendered.dpi)
             if transform is None:
                 continue
-            markup = self._picture_markup(data, page, rendered.dpi)
             ink = self._page_ink(data, page, rendered.dpi)
+            slot_page = self._slot_page(data, page, version_id, rendered, ink)
+            if slot_page is not None:
+                # A page with a row candidate is read slot by slot (#987); the whole-page reader
+                # stays for the pages where code finds no row.
+                slot_pages.append(slot_page)
+                continue
+            markup = self._picture_markup(data, page, rendered.dpi)
 
             def check_form_label_for_gv_mark(
                 polygon: Polygon,
@@ -2028,8 +2048,16 @@ class DatabaseStages:
                     ink=ink,
                 )
             )
+        count = 0
+        if slot_pages:
+            count += self._read_slots(
+                session,
+                package_revision_id=package_revision_id,
+                pages=slot_pages,
+                task_run_id=task_run_id,
+            )
         if not images:
-            return 0
+            return count
         recorder = ThreadSafeAttemptRecorder()
         readings = read_form_pages(
             images,
@@ -2055,9 +2083,27 @@ class DatabaseStages:
             ),
             dpi=self._dpi,
         )
+        self._record_reader_attempts(session, run.id, recorder.snapshot())
+        count += persist_form_proposals(
+            session,
+            package_revision_id=package_revision_id,
+            extraction_run_id=run.id,
+            reader_ids=runtime.reader_ids,
+            readings=readings,
+            prompt_id=runtime.prompt.prompt_id,
+        )
+        session.flush()
+        return count
+
+    def _record_reader_attempts(
+        self, session: Session, run_id: UUID, attempts: Sequence[AttemptUsage]
+    ) -> None:
+        """Meter and record every form-reader or slot-reader call against its extraction run."""
+        runtime = self._form_reader
+        assert runtime is not None
         from extraction.models.invocations import InvocationRecord
 
-        for attempt in recorder.snapshot():
+        for attempt in attempts:
             input_tokens = attempt.input_tokens or 0
             output_tokens = attempt.output_tokens or 0
             cost = call_cost_micros(runtime.rates, attempt.model_id, input_tokens, output_tokens)
@@ -2067,7 +2113,7 @@ class DatabaseStages:
             record_model_invocation(
                 session,
                 InvocationRecord(
-                    extraction_run_id=run.id,
+                    extraction_run_id=run_id,
                     model_id=attempt.model_id,
                     prompt_id=attempt.prompt_id,
                     template_id=attempt.template_id,
@@ -2085,13 +2131,65 @@ class DatabaseStages:
                 ),
                 flush=False,
             )
-        count = persist_form_proposals(
+
+    def _slot_page(
+        self,
+        data: bytes,
+        page: Page,
+        version_id: UUID,
+        rendered: RenderedPage,
+        ink: PageInk | None,
+    ) -> SlotPage | None:
+        """The page as the slot reader takes it, or `None` where it has no row candidate (or the
+        slot reader is off, or the page's rows cannot be read) — the whole-page reader's pages."""
+        runtime = self._slot_reader
+        if runtime is None:
+            return None
+        try:
+            rows = page_rows_and_ink(
+                data, page.index, dpi=rendered.dpi, settings=runtime.row_settings
+            )
+        except UnreadablePdf:
+            return None
+        if not rows.candidates.rows.candidates:
+            return None
+        return SlotPage(
+            page_index=page.index,
+            page_id=page.id,
+            document_version_id=version_id,
+            rendered=rendered,
+            rows=rows,
+            ink=ink,
+        )
+
+    def _read_slots(
+        self,
+        session: Session,
+        *,
+        package_revision_id: UUID,
+        pages: Sequence[SlotPage],
+        task_run_id: UUID,
+    ) -> int:
+        """Read the slot pages (#987) and persist candidates and candidate-only proposals."""
+        runtime = self._slot_reader
+        assert runtime is not None
+        recorder = ThreadSafeAttemptRecorder()
+        results = read_slot_pages(pages, runtime=runtime, record_attempt=recorder.record)
+        run = open_extraction_run(
+            session,
+            task_run_id=task_run_id,
+            extractor="extraction.form_reader",
+            extractor_version=f"{SLOT_READER_VERSION}-ink-v1",
+            config_hash=f"dpi={self._dpi};{runtime.config_hash}",
+            dpi=self._dpi,
+        )
+        self._record_reader_attempts(session, run.id, recorder.snapshot())
+        count = persist_slot_readings(
             session,
             package_revision_id=package_revision_id,
             extraction_run_id=run.id,
-            reader_ids=runtime.reader_ids,
-            readings=readings,
-            prompt_id=runtime.prompt.prompt_id,
+            reader_ids=runtime.form.reader_ids,
+            results=results,
         )
         session.flush()
         return count
