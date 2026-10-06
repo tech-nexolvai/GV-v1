@@ -772,6 +772,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/pages/pictures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask the worker to render missing page pictures
+         * @description Queue the worker's picture job when any page lacks a picture and none is already queued.
+         */
+        post: operations["prepare_page_pictures_api_v1_projects__project_id__packages__package_id__pages_pictures_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/pages/{page_number}/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View a drawing page (vendor layer only)
+         * @description The stored picture of page `page_number`, or 404 while the worker has not rendered it.
+         */
+        get: operations["page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/parameter-proposals/{proposal_id}/crop": {
         parameters: {
             query?: never;
@@ -3156,6 +3196,11 @@ export interface components {
             /** Ordering */
             ordering: string;
         };
+        /** PagePicturesQueuedOut */
+        PagePicturesQueuedOut: {
+            /** Queued */
+            queued: boolean;
+        };
         /**
          * PageProposalIn
          * @description Request a proposal for exactly one drawing page.
@@ -5390,6 +5435,71 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["AssignmentEvent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_page_pictures_api_v1_projects__project_id__packages__package_id__pages_pictures_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PagePicturesQueuedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                page_number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
                 };
             };
             /** @description Validation Error */

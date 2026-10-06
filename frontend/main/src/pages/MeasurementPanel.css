@@ -1336,4 +1336,44 @@ select.value-input {
 }
 .field-review__pictures img {
   max-width: 100%;
+
+/* The drawing on the left, the form on the right (admin, 2026-10-06). */
+.page-drawing {
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--bg-surface);
+}
+.page-drawing__title {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.page-drawing__status {
+  margin: 0;
+  font-size: 0.85rem;
+}
+.page-drawing__image {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+@media (min-width: 1100px) {
+  .measure-values--with-drawing {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    column-gap: 20px;
+    align-items: start;
+  }
+  .measure-values--with-drawing > * {
+    grid-column: 2;
+  }
+  .measure-values--with-drawing > .page-drawing {
+    grid-column: 1;
+    grid-row: 1 / span 400;
+    position: sticky;
+    top: 8px;
+    max-height: calc(100vh - 16px);
+    overflow: auto;
+  }
 }

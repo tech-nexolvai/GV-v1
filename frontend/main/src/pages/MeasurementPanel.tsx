@@ -30,6 +30,7 @@ import { AssignmentProgress } from '../components/measure/AssignmentProgress';
 import { DrawingRoles } from '../components/measure/DrawingRoles';
 import { CountertopRuns } from '../components/measure/CountertopRuns';
 import { DrawingParts } from '../components/measure/DrawingParts';
+import { PageDrawing } from '../components/measure/PageDrawing';
 import { ReadingParts } from '../components/measure/ReadingParts';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { MeasurementSectionNav } from './MeasurementSectionNav';
@@ -1040,7 +1041,8 @@ export function MeasurementPanel({
       )}
       </div>
 
-      <section className="enter-values__section measure-step-target" id="measure-values">
+      <section className="enter-values__section measure-step-target measure-values--with-drawing" id="measure-values">
+        {packageId && <PageDrawing packageId={packageId} pageNumber={selectedPageNumber} />}
         {candidateLoadError && <p className="enter-values__error" role="alert">Drawing readings could not be refreshed. You can still enter values. {candidateLoadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
         {vocabularyLoadError && <p className="enter-values__error" role="alert">Reading meanings could not be loaded. You can still enter values. {vocabularyLoadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
         <div className="measure-page-picker">
