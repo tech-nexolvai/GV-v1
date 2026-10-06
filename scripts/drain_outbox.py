@@ -301,6 +301,7 @@ def _stages(
     association, localized = _reader_configuration()
     automatic_typing = _automatic_typing_configuration()
     from app.config import Settings
+    from workflow.form_reader import configured_form_reader
     from workflow.glyph_route import glyph_route_from_environment
     from workflow.reader_pictures import picture_settings_from_environment
     from workflow.reading_agent import reading_agent_from_environment
@@ -331,6 +332,7 @@ def _stages(
         # Unstated, building the stages fails with an error naming the variable, so no page is
         # read without it.
         missing_space=missing_space_from_environment(),
+        form_reader=configured_form_reader(Settings()),  # type: ignore[call-arg]
         # Required wherever parts are suggested, which is wherever the reader's settings are (#897).
         part_pictures=_part_picture_configuration(  # type: ignore[arg-type]
             required=association is not None

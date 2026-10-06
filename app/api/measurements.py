@@ -82,6 +82,7 @@ from app.models.parameter_value_citations import ParameterValueCitation, Paramet
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import ParameterValue as StoredParameterValue
 from app.models.parameters import from_rows, to_rows
+from app.models.runs import ExtractionRun
 from app.schemas.measurements import (
     AssignmentEvent,
     AssignmentStepOut,
@@ -1261,6 +1262,80 @@ def propose_measurements(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"page {page_number} is not part of this package revision",
+        )
+
+    # In form-first mode the worker has already compared the two readers and written the accepted
+    # candidate-to-field links. This button is a display/fill action, not another paid assignment
+    # call. The reviewer still has to save the editable form for any value to become measured.
+    if request.app.state.settings.form_reader_enabled:
+        fields, rules_published = assignment_fields(session, page_number=page_number)
+        form_proposals = _stored_proposal_out(session, revision, page_number=page_number)
+        candidate_count = int(
+            session.scalar(
+                select(func.count(func.distinct(ObservationCandidate.id)))
+                .select_from(ObservationCandidate)
+                .join(Page, Page.id == ObservationCandidate.page_id)
+                .join(
+                    PackageRevisionDocument,
+                    PackageRevisionDocument.document_version_id
+                    == ObservationCandidate.document_version_id,
+                )
+                .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
+                .join(Document, Document.id == DocumentVersion.document_id)
+                .join(ExtractionRun, ExtractionRun.id == ObservationCandidate.extraction_run_id)
+                .where(
+                    PackageRevisionDocument.package_revision_id == revision.id,
+                    Page.index == page_number - 1,
+                    Document.kind == "shop",
+                    ExtractionRun.extractor == "extraction.form_reader",
+                )
+            )
+            or 0
+        )
+
+        def stored_frames() -> Iterator[str]:
+            def send(event: AssignmentEvent) -> str:
+                return f"data: {event.model_dump_json()}\n\n"
+
+            yield send(
+                _phase_event(
+                    "rulebook",
+                    f"{len(fields)} field{'' if len(fields) == 1 else 's'} across "
+                    f"{rules_published} published rule{'' if rules_published == 1 else 's'}",
+                )
+            )
+            yield send(_phase_event("readings", f"{candidate_count} form readings available"))
+            yield send(_phase_event("proposing", "Using the worker's saved page proposals"))
+            yield send(_phase_event("checking", "The reviewer will check and save each value"))
+            yield send(
+                _phase_event(
+                    "filling",
+                    f"{len(form_proposals)} of {len(fields)} field"
+                    f"{'' if len(fields) == 1 else 's'} filled",
+                )
+            )
+            yield send(
+                AssignmentEvent(
+                    event="result",
+                    result=ProposedMeasurementsOut(
+                        assignments=form_proposals,
+                        page_number=page_number,
+                        fields_total=len(fields),
+                        fields_filled=len(form_proposals),
+                        readings_considered=candidate_count,
+                        readings_attached=0,
+                        model_id="form-reader-v5",
+                        unfilled_reason=(
+                            "No saved form proposals are available for this page."
+                            if not form_proposals
+                            else None
+                        ),
+                    ),
+                )
+            )
+
+        return EventStreamResponse(
+            stored_frames(), headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
         )
 
     context, rules_published = assignment_context(session, revision, page_number=page_number)

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.review.chat_models import ChatModelChoice
@@ -71,6 +71,17 @@ class Settings(BaseSettings):
     # reach an unapproved or unmetered model. Empty means "only the default `bedrock_model`" — the
     # picker then offers that single model, which is exactly today's behaviour made visible.
     bedrock_chat_models: tuple[ChatModelChoice, ...] = ()
+
+    # Form-first reading is a separate, experimental proposal lane. It defaults off; when enabled,
+    # every operational bound and per-reader throttle rate must be stated rather than inferred.
+    form_reader_enabled: bool = False
+    form_reader_primary_model: str = "us.moonshotai.kimi-k3"
+    form_reader_second_model: str = "qwen.qwen3-vl-235b-a22b"
+    form_reader_max_concurrent_calls: int | None = Field(default=None, ge=1)
+    form_reader_max_tokens: int | None = Field(default=None, ge=1)
+    form_reader_model_rpm: dict[str, int] = Field(default_factory=dict)
+    form_reader_max_throttle_retries: int | None = Field(default=None, ge=0)
+    form_reader_retry_backoff_seconds: float | None = Field(default=None, gt=0)
 
     hatchet_token: str = Field(default="", description="Hatchet client token")
     """Empty by default, and the emptiness is caught where it matters. `workflow/hatchet_app.py` builds a
@@ -155,6 +166,43 @@ class Settings(BaseSettings):
         if value is not None and (not value.is_finite() or value < 0):
             raise ValueError("run_edge_tolerance must be a finite number, zero or more")
         return value
+
+    @model_validator(mode="after")
+    def _form_reader_bounds_are_stated(self) -> Settings:
+        if not self.form_reader_enabled:
+            return self
+        if not self.form_reader_primary_model.strip() or not self.form_reader_second_model.strip():
+            raise ValueError(
+                "GV_FORM_READER_PRIMARY_MODEL and GV_FORM_READER_SECOND_MODEL must be non-empty"
+            )
+        if self.form_reader_primary_model == self.form_reader_second_model:
+            raise ValueError("form reader requires two distinct reader models")
+        missing = [
+            name
+            for name, value in (
+                ("GV_FORM_READER_MAX_CONCURRENT_CALLS", self.form_reader_max_concurrent_calls),
+                ("GV_FORM_READER_MAX_TOKENS", self.form_reader_max_tokens),
+                ("GV_FORM_READER_MAX_THROTTLE_RETRIES", self.form_reader_max_throttle_retries),
+                ("GV_FORM_READER_RETRY_BACKOFF_SECONDS", self.form_reader_retry_backoff_seconds),
+            )
+            if value is None
+        ]
+        missing.extend(
+            model
+            for model in (self.form_reader_primary_model, self.form_reader_second_model)
+            if model not in self.form_reader_model_rpm
+        )
+        if missing:
+            raise ValueError(
+                "GV_FORM_READER_ENABLED requires explicit concurrency, token, retry, backoff, and "
+                f"per-model RPM settings; missing: {', '.join(missing)}"
+            )
+        if any(
+            isinstance(rpm, bool) or not isinstance(rpm, int) or rpm <= 0
+            for rpm in self.form_reader_model_rpm.values()
+        ):
+            raise ValueError("GV_FORM_READER_MODEL_RPM values must be positive whole numbers")
+        return self
 
     @field_validator("database_url")
     @classmethod

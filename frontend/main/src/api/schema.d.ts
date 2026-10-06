@@ -1969,6 +1969,8 @@ export interface components {
             page_index: number;
             /** Raw Text */
             raw_text: string;
+            /** Review Reason */
+            review_reason?: string | null;
             /**
              * Source
              * @description `ARCH` or `SHOP`: which drawing the reading is on, and so which fields it can fill. From the confirmed drawing holding it on a sheet that has drawings, from the upload otherwise (#795). Null when that is not known; `source_refusal` says why.

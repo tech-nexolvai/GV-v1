@@ -156,6 +156,7 @@ from extraction.annotations import (
     read_annotation_layers,
     read_markup_layer,
 )
+from extraction.form_reader.runner import ThreadSafeAttemptRecorder
 from extraction.fraction_parts import (
     FRACTION_PARTS_EXTRACTOR,
     FRACTION_PARTS_VERSION,
@@ -276,6 +277,12 @@ from workflow.findings_composer import (
     FindingsLanguageModel,
     compose_findings,
     reviewer_reason,
+)
+from workflow.form_reader import (
+    FormPageImage,
+    FormReaderRuntime,
+    persist_form_proposals,
+    read_form_pages,
 )
 from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
@@ -1539,6 +1546,7 @@ class DatabaseStages:
         fraction_parts: PieceDrawing | None = None,
         reader_pictures: PictureSettings | None = None,
         missing_space: MissingSpace | None = None,
+        form_reader: FormReaderRuntime | None = None,
         part_pictures: PartPictureSettings | None = None,
         timings: TimingRecorder | None = None,
     ) -> None:
@@ -1561,6 +1569,7 @@ class DatabaseStages:
         if missing_space is not None and not isinstance(missing_space, MissingSpace):
             raise TypeError("missing_space must be a MissingSpace")
         self._missing_space = missing_space
+        self._form_reader = form_reader
         # **`None` means the association step does not run, and that is recorded as not run.**
         # Association is inherently thresholded — unlike reading a `/FreeText`, there is no
         # threshold-free version of it — so the five lengths are a deployment's to state. A default
@@ -1874,6 +1883,7 @@ class DatabaseStages:
         )
 
         results: list[PageResult] = []
+        verified_data: dict[UUID, bytes] = {}
         for version, key, sha256, _ in documents:
             # No `try` around the fetch. An artifact this stage cannot read must fail the stage, not
             # be skipped — see `_fetch`.
@@ -1894,6 +1904,7 @@ class DatabaseStages:
                     session, extraction_run_id=run.id, document_version_id=version
                 )
                 continue
+            verified_data[version] = data
 
             with traced(
                 "extraction.document",
@@ -1924,7 +1935,161 @@ class DatabaseStages:
                             },
                         )
                     )
+        if self._form_reader is not None:
+            for version in _shop_document_versions_for(session, package_revision_id):
+                shop_data = verified_data.get(version)
+                if shop_data is not None:
+                    self._run_form_reader_for_document(
+                        session,
+                        package_revision_id=package_revision_id,
+                        version_id=version,
+                        data=shop_data,
+                        task_run_id=task_run.id,
+                    )
         return tuple(results)
+
+    def _run_form_reader_for_document(
+        self,
+        session: Session,
+        *,
+        package_revision_id: UUID,
+        version_id: UUID,
+        data: bytes,
+        task_run_id: UUID,
+    ) -> int:
+        """Read shop pages as form proposals and persist only candidate-to-field links."""
+        runtime = self._form_reader
+        assert runtime is not None
+        pages = list(
+            session.scalars(
+                select(Page).where(Page.document_version_id == version_id).order_by(Page.index)
+            )
+        )
+        images: list[FormPageImage] = []
+        for page in pages:
+            rendered = self._vendor_render(data, page, version_id)
+            if rendered is None:
+                continue
+            transform = page_transform(page, rendered.dpi)
+            if transform is None:
+                continue
+            markup = self._picture_markup(data, page, rendered.dpi)
+
+            def check_form_label_for_gv_mark(
+                polygon: Polygon,
+                *,
+                page_render: RenderedPage = rendered,
+                page_markup: ColouredMarkup | None = markup,
+            ) -> bool | None:
+                if page_markup is None:
+                    return None
+                return gv_mark_in_crop(polygon, page_render, page_markup)
+
+            regions: list[tuple[str, Polygon]] = []
+            rows = session.execute(
+                select(ObservationCandidate, ExtractionRun.dpi)
+                .join(ExtractionRun, ExtractionRun.id == ObservationCandidate.extraction_run_id)
+                .where(ObservationCandidate.page_id == page.id)
+                .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
+            ).all()
+            for index, (row, source_dpi) in enumerate(rows):
+                if not source_dpi or not row.polygon:
+                    continue
+                source_transform = page_transform(page, source_dpi)
+                if source_transform is None:
+                    continue
+                try:
+                    points = tuple(
+                        source_transform.to_stored(ImagePoint(int(x), int(y)))
+                        for x, y in row.polygon
+                    )
+                    polygon = Polygon(
+                        points=points,
+                        space="stored",
+                        document_version_id=version_id,
+                        page=page.index,
+                    )
+                except (ArithmeticError, IndexError, TypeError, ValueError):
+                    continue
+                regions.append((f"extracted-region-{index}", polygon))
+            images.append(
+                FormPageImage(
+                    page_index=page.index,
+                    png=encode_png(rendered.width_px, rendered.height_px, rendered.rgb_bytes),
+                    width_px=rendered.width_px,
+                    height_px=rendered.height_px,
+                    document_version_id=version_id,
+                    page_id=page.id,
+                    transform=transform,
+                    regions=tuple(regions),
+                    gv_mark_checker=check_form_label_for_gv_mark,
+                )
+            )
+        if not images:
+            return 0
+        recorder = ThreadSafeAttemptRecorder()
+        readings = read_form_pages(
+            images,
+            reader_ids=runtime.reader_ids,
+            clients=runtime.clients,
+            rates=runtime.rates,
+            calls_per_minute=runtime.calls_per_minute,
+            max_concurrent_calls=runtime.max_concurrent_calls,
+            max_tokens=runtime.max_tokens,
+            max_throttle_retries=runtime.max_throttle_retries,
+            retry_backoff_seconds=runtime.retry_backoff_seconds,
+            record_attempt=recorder.record,
+        )
+        run = open_extraction_run(
+            session,
+            task_run_id=task_run_id,
+            extractor="extraction.form_reader",
+            extractor_version="form-reader-v5-gv-mark-v1",
+            config_hash=(
+                f"dpi={self._dpi};readers={runtime.reader_ids[0]}|{runtime.reader_ids[1]};"
+                "gv_mark_guard=v1"
+            ),
+            dpi=self._dpi,
+        )
+        from extraction.models.invocations import InvocationRecord
+
+        for attempt in recorder.snapshot():
+            input_tokens = attempt.input_tokens or 0
+            output_tokens = attempt.output_tokens or 0
+            cost = call_cost_micros(runtime.rates, attempt.model_id, input_tokens, output_tokens)
+            if self._meter is None:
+                raise RuntimeError("form reader cannot run before the drawing-set spend meter")
+            self._meter.add(cost)
+            record_model_invocation(
+                session,
+                InvocationRecord(
+                    extraction_run_id=run.id,
+                    model_id=attempt.model_id,
+                    prompt_id=attempt.prompt_id,
+                    template_id=attempt.template_id,
+                    crop_artifact_id=None,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_micros=cost,
+                    latency_ms=attempt.latency_ms,
+                    outcome=(
+                        "rejected"
+                        if attempt.malformed
+                        else "failed" if attempt.failure_kind else "ok"
+                    ),
+                    rejection_reason=("malformed_form_answer" if attempt.malformed else None),
+                ),
+                flush=False,
+            )
+        count = persist_form_proposals(
+            session,
+            package_revision_id=package_revision_id,
+            extraction_run_id=run.id,
+            reader_ids=runtime.reader_ids,
+            readings=readings,
+        )
+        session.flush()
+        return count
 
     def _measure(
         self, operation: str, *, run_id: str, page_index: int | None = None
@@ -6374,6 +6539,23 @@ def _document_records_for(
         (version_id, storage_key(document_id, sha), sha, page_count)
         for version_id, document_id, sha, page_count in rows
     ]
+
+
+def _shop_document_versions_for(session: Session, package_revision_id: UUID) -> tuple[UUID, ...]:
+    """The uploaded shop slot(s), without requiring a person to confirm page roles first."""
+    return tuple(
+        session.execute(
+            select(PackageRevisionDocument.document_version_id)
+            .join(Document, Document.id == PackageRevisionDocument.document_id)
+            .where(
+                PackageRevisionDocument.package_revision_id == package_revision_id,
+                Document.kind == DocumentKind.SHOP.value,
+            )
+            .order_by(PackageRevisionDocument.document_version_id)
+        )
+        .scalars()
+        .all()
+    )
 
 
 def _layout_discriminators(session: Session) -> tuple[DiscriminatorNeed, ...]:

@@ -313,6 +313,8 @@ def test_a_model_and_the_files_own_text_are_independent() -> None:
         ("bedrock-nova-pro", "global.amazon.nova-pro-v1:0", "vendor:amazon"),
         ("bedrock-ministral-3-3b", "mistral.ministral-3-3b-instruct", "vendor:mistral"),
         ("bedrock-claude-haiku-4-5", "anthropic.claude-haiku-4-5", "vendor:anthropic"),
+        ("bedrock-kimi-k3", "us.moonshotai.kimi-k3", "vendor:moonshot"),
+        ("bedrock-kimi-k3", "moonshotai.kimi-k3", "vendor:moonshot"),
         ("nova", "amazon.nova-lite-v1:0", "vendor:amazon"),
         ("bedrock-new-reader", "someone.model-1", "vendor:unknown"),
         ("openmodel", "openbmb/MiniCPM-V-4", "vendor:unknown"),

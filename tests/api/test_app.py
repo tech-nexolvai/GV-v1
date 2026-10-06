@@ -70,6 +70,31 @@ def test_settings_are_frozen() -> None:
         settings.environment = "production"  # type: ignore[misc]
 
 
+def test_form_reader_is_off_by_default_and_enabled_config_requires_explicit_bounds() -> None:
+    settings = _settings()
+    assert settings.form_reader_enabled is False
+
+    with pytest.raises(ValidationError, match="requires explicit concurrency"):
+        _settings(form_reader_enabled=True)
+
+
+def test_form_reader_accepts_only_a_fully_stated_two_reader_configuration() -> None:
+    settings = _settings(
+        form_reader_enabled=True,
+        form_reader_max_concurrent_calls=2,
+        form_reader_max_tokens=4096,
+        form_reader_model_rpm={
+            "us.moonshotai.kimi-k3": 10,
+            "qwen.qwen3-vl-235b-a22b": 5,
+        },
+        form_reader_max_throttle_retries=2,
+        form_reader_retry_backoff_seconds=1.0,
+    )
+    assert settings.form_reader_enabled
+    assert settings.form_reader_primary_model == "us.moonshotai.kimi-k3"
+    assert settings.form_reader_second_model == "qwen.qwen3-vl-235b-a22b"
+
+
 def test_the_factory_builds_isolated_instances() -> None:
     """A module-level `app` would make every test share one configuration, including the database
     URL — the one thing a test most needs to control."""
