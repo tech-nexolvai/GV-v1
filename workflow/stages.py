@@ -875,8 +875,8 @@ def _agent_readers(
     """The reading agent's primary and escalation readers, found by the extractor each is named by.
 
     A configured vision reader first; otherwise a defined one (`VISION_READERS`), enabled or not.
-    **The escalation reader need not read every region**: mistral-large-3 (#757 D-A2) is defined but
-    off for the vision route, and the agent asks it by name only after the primary.
+    Settings refuse Mistral Large 3 as an escalation reader; with the demo's zero escalation budget,
+    ambiguous regions go to human review without a substitute reader.
 
     **Refused, not guessed, when a name matches nothing** — a worker that started with the agent on
     and quietly asked no reader, or the wrong one, would report readings its settings never chose.

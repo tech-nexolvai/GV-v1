@@ -90,7 +90,7 @@ ENVIRONMENT = {
     "GV_AGENT_MAX_ESCALATIONS": "1",
     "GV_AGENT_SHARPER_DPI": "450",
     "GV_AGENT_PRIMARY_READER": "bedrock-nova-2-lite",
-    "GV_AGENT_ESCALATION_READER": "bedrock-mistral-large-3",
+    "GV_AGENT_ESCALATION_READER": "reader-b",
     "GV_AGENT_LABEL_GAP_PT": "2",
     "GV_AGENT_MAX_LABEL_PT": "40",
 }
@@ -118,7 +118,7 @@ def test_a_configured_agent_records_every_setting_in_its_identity() -> None:
     assert settings is not None
     assert settings.sharper_dpi == 450
     assert "sharper_dpi=450" in settings.config_hash
-    assert "escalation=bedrock-mistral-large-3" in settings.config_text
+    assert "escalation=reader-b" in settings.config_text
     assert settings.config_hash != _settings(label_gap_pt=Decimal(3)).config_hash
     assert settings.limits.max_ocr_retries == 0
 
@@ -130,6 +130,20 @@ def test_an_escalation_needs_a_named_reader_that_is_not_the_primary() -> None:
         _settings(max_vlm_escalations=0)
     with pytest.raises(ValueError, match="not a second witness"):
         _settings(escalation_reader="reader-a")
+
+
+def test_mistral_large_3_is_refused_as_an_escalation_reader() -> None:
+    from extraction.models.nova import MISTRAL_LARGE_3_EXTRACTOR
+
+    with pytest.raises(ValueError, match="Mistral Large 3 is disabled.*human review"):
+        _settings(escalation_reader=MISTRAL_LARGE_3_EXTRACTOR)
+
+    mistral_environment = {
+        **ENVIRONMENT,
+        "GV_AGENT_ESCALATION_READER": MISTRAL_LARGE_3_EXTRACTOR,
+    }
+    with pytest.raises(ValueError, match="Mistral Large 3 is disabled.*human review"):
+        reading_agent_from_environment(mistral_environment)
 
 
 def test_a_budget_outside_the_guardrails_is_refused() -> None:
@@ -706,22 +720,18 @@ def test_an_agent_reading_that_agrees_marks_nothing_conflicting(
     assert all(status != "CONFLICTING" for *_, status, _lane in statuses)
 
 
-def test_the_escalation_reader_can_be_a_defined_one_the_vision_route_does_not_run(
+def test_mistral_cannot_be_selected_as_the_escalation_reader(
     store: LocalStore,
 ) -> None:
-    """**#757 D-A2.** Outcome: the agent's escalation is mistral-large-3, found among the defined
-    readers, while the vision route reads with only the configured pair."""
-    from extraction.agent.tools import VlmRole
+    """An unconfigured reader cannot be silently added as the escalation route."""
     from extraction.models.nova import MISTRAL_LARGE_3_EXTRACTOR
 
-    stages = _stages(
-        store,
-        (_WholeLabelReader(_config("reader-a")),),
-        _settings(escalation_reader=MISTRAL_LARGE_3_EXTRACTOR),
-    )
-
-    assert stages._agent_readers[VlmRole.ESCALATION].config.extractor == MISTRAL_LARGE_3_EXTRACTOR
-    assert [reader.config.extractor for reader in stages._vision_readers] == ["reader-a"]
+    with pytest.raises(ValueError, match="Mistral Large 3 is disabled.*human review"):
+        _stages(
+            store,
+            (_WholeLabelReader(_config("reader-a")),),
+            _settings(escalation_reader=MISTRAL_LARGE_3_EXTRACTOR),
+        )
 
 
 def test_a_contradiction_found_after_the_first_readings_were_saved_still_blocks_the_agreement(

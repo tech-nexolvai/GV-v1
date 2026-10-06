@@ -220,6 +220,28 @@ def test_two_disagreeing_readings_end_with_a_reviewer_never_a_pick() -> None:
     assert "'3/4\"'" in result.abstention.reason and "'3 3/4\"'" in result.abstention.reason
 
 
+def test_zero_escalation_budget_sends_an_ambiguous_region_to_the_reviewer() -> None:
+    """With escalation disabled, disagreement ends at review after the primary read."""
+    limits = GraphLimits(
+        max_steps=6,
+        max_ocr_retries=2,
+        max_primary_vlm_calls=1,
+        max_vlm_escalations=0,
+        max_nearby_text_items=0,
+        max_nearby_geometry_items=0,
+    )
+    tools = _Tools(readings=[_reading('3/4"')])
+    result = BoundedAgentGraph(limits=limits, toolbox=tools.box()).run(
+        CONTEXT,
+        policy_planner(_facts(other_route_values=(_inches(Fraction(15, 4)),)), limits),
+    )
+
+    assert isinstance(result, AbstentionTerminal)
+    assert result.abstention.requires_review
+    assert "disagree" in result.abstention.reason
+    assert _steps(tools) == ["vlm-primary", "abstain"]
+
+
 def test_two_against_one_is_still_a_disagreement_not_a_vote() -> None:
     """**No majority rule.** The primary reads `1 3/4"`, the shape reader and the escalation both
     `3/4"`. Outcome: an abstention — counting votes would be choosing between readings, which is a
