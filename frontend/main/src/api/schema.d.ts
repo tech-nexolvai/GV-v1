@@ -234,7 +234,7 @@ export interface paths {
         };
         /**
          * What the extractor read, waiting for somebody to say what it is
-         * @description Every reading of this package that carries a value, with its crop.
+         * @description Every reading on one page that carries a value, with its crop.
          *
          *     **Only readings that carry a value.** A token with no unit was recorded without one — deliberately,
          *     because a bare `38` is a dimension whose unit is unknown — and there is nothing for a reviewer to
@@ -818,6 +818,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/parts/page-pictures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare missing vendor-only page pictures for placement
+         * @description Ask the worker to fill missing full-page pictures; rendering never happens in the API.
+         */
+        post: operations["prepare_page_pictures_api_v1_projects__project_id__packages__package_id__parts_page_pictures_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/confirm": {
         parameters: {
             query?: never;
@@ -1082,6 +1102,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/signed-exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Status
+         * @description Read availability only; downloading or inspecting never generates files.
+         */
+        get: operations["export_status_api_v1_projects__project_id__packages__package_id__signed_exports_get"];
+        put?: never;
+        /**
+         * Request Exports
+         * @description Explicitly prepare the signed files for an existing approval, without signing again.
+         */
+        post: operations["request_exports_api_v1_projects__project_id__packages__package_id__signed_exports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/views": {
         parameters: {
             query?: never;
@@ -1115,6 +1159,23 @@ export interface paths {
          *     The list shows the part at once and its picture once the worker has cut it.
          */
         post: operations["add_part_endpoint_api_v1_projects__project_id__packages__package_id__views__view_id__parts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/views/{view_id}/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** View a vendor-only drawing page */
+        get: operations["vendor_page_picture_api_v1_projects__project_id__packages__package_id__views__view_id__picture_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1886,11 +1947,13 @@ export interface components {
         };
         /**
          * CandidatesOut
-         * @description Everything read for this package that nobody has yet said the meaning of.
+         * @description Every reading still to label on one complete page.
          */
         CandidatesOut: {
             /** Candidates */
             candidates: components["schemas"]["CandidateOut"][];
+            /** Page Number */
+            page_number: number;
             /** Total */
             total: number;
         };
@@ -2137,6 +2200,8 @@ export interface components {
         ConfirmedReadingOut: {
             /** Key */
             key: string;
+            /** Page Index */
+            page_index: number;
             /**
              * Qualification
              * @enum {string}
@@ -2320,6 +2385,7 @@ export interface components {
             can_confirm: boolean;
             /** Page Index */
             page_index: number;
+            page_picture?: components["schemas"]["VendorPagePictureOut"] | null;
             /** Parts */
             parts: components["schemas"]["PartOut"][];
             /** Role */
@@ -3091,6 +3157,14 @@ export interface components {
             ordering: string;
         };
         /**
+         * PageProposalIn
+         * @description Request a proposal for exactly one drawing page.
+         */
+        PageProposalIn: {
+            /** Page Number */
+            page_number: number;
+        };
+        /**
          * ParameterEntry
          * @description One setting a reviewer supplies for this job — a cabinet depth, an overhang, a sink interior.
          *
@@ -3273,6 +3347,13 @@ export interface components {
             /** Y */
             y: string;
         };
+        /** PreparePagePicturesOut */
+        PreparePagePicturesOut: {
+            /** Queued */
+            queued: boolean;
+            /** Reason */
+            reason?: string | null;
+        };
         /**
          * PresignedUpload
          * @description Where to send the bytes, how, and until when.
@@ -3341,6 +3422,8 @@ export interface components {
             fields_total: number;
             /** Model Id */
             model_id?: string | null;
+            /** Page Number */
+            page_number: number;
             /** Readings Attached */
             readings_attached: number;
             /** Readings Considered */
@@ -3489,6 +3572,11 @@ export interface components {
             confirmed_readings: components["schemas"]["ConfirmedReadingOut"][];
             /** Discriminators */
             discriminators: components["schemas"]["DiscriminatorOut"][];
+            /**
+             * Page Numbers
+             * @default []
+             */
+            page_numbers: number[];
             /** Parameters */
             parameters: components["schemas"]["ParameterOut"][];
             /**
@@ -3957,6 +4045,28 @@ export interface components {
          * @enum {string}
          */
         Severity: "FLAG" | "CRITICAL" | "MAJOR" | "MINOR" | "ADVISORY";
+        /** SignedExportRequestOut */
+        SignedExportRequestOut: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "not_requested" | "preparing" | "ready" | "failed";
+        };
+        /** SnapPointOut */
+        SnapPointOut: {
+            /** Source */
+            source: string;
+            /** X */
+            x: string;
+            /** Y */
+            y: string;
+        };
         /**
          * SourceOut
          * @description One source a setting may come from, and what choosing it means (#827).
@@ -4148,6 +4258,27 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** VendorPagePictureOut */
+        VendorPagePictureOut: {
+            /** Crop Box */
+            crop_box: string[];
+            /** Dpi */
+            dpi: number;
+            /** Height Px */
+            height_px: number;
+            /** Media Box */
+            media_box: string[];
+            /** Rotation */
+            rotation: number;
+            /** Snap Points */
+            snap_points: components["schemas"]["SnapPointOut"][];
+            /** Snap Tolerance */
+            snap_tolerance: string | null;
+            /** Url */
+            url: string;
+            /** Width Px */
+            width_px: number;
         };
         /**
          * ViewOut
@@ -4546,7 +4677,9 @@ export interface operations {
     };
     list_candidates_api_v1_projects__project_id__packages__package_id__candidates_get: {
         parameters: {
-            query?: never;
+            query: {
+                page_number: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -5244,7 +5377,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PageProposalIn"];
+            };
+        };
         responses: {
             /** @description A stream of `AssignmentEvent` frames: one per phase as it begins, then the result. Each frame is one `data:` line. */
             200: {
@@ -5318,6 +5455,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PartsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_page_pictures_api_v1_projects__project_id__packages__package_id__parts_page_pictures_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparePagePicturesOut"];
                 };
             };
             /** @description Validation Error */
@@ -5661,7 +5830,9 @@ export interface operations {
     };
     read_required_inputs_api_v1_projects__project_id__packages__package_id__required_inputs_get: {
         parameters: {
-            query?: never;
+            query?: {
+                page_number?: number | null;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -5714,6 +5885,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewSessionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_status_api_v1_projects__project_id__packages__package_id__signed_exports_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedExportRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_exports_api_v1_projects__project_id__packages__package_id__signed_exports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedExportRequestOut"];
                 };
             };
             /** @description Validation Error */
@@ -5783,6 +6018,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PartOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vendor_page_picture_api_v1_projects__project_id__packages__package_id__views__view_id__picture_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                view_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
                 };
             };
             /** @description Validation Error */

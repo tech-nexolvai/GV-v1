@@ -44,6 +44,7 @@ import { layoutChoiceDefaults } from './layoutChoices';
 import { settingMissingASource, type SettingSource } from '../components/measure/settingSources';
 import { SettingCitation } from '../components/measure/SettingCitation';
 import { candidateCropWarning } from '../components/measure/candidateCropWarning';
+import { packageChanged, refreshFailureIsFatal } from './measureRefreshState';
 import {
   citingPointer,
   settingEntry,
@@ -116,6 +117,7 @@ type ConfirmedReading = {
   source: string;
   semantic_type: string;
   value: string;
+  page_index: number;
   qualification: 'reviewer_confirmed' | 'exact_vector_tag';
 };
 
@@ -137,6 +139,7 @@ type ProposedField = {
   values: { candidate_id: string; value: string; page_index: number }[];
 };
 type Needed = {
+  page_numbers: number[];
   quantities: Quantity[];
   confirmed_readings: ConfirmedReading[];
   proposed_readings: ProposedField[];
@@ -277,6 +280,7 @@ export function MeasurementPanel({
   onChoosePackage?: () => void;
 }) {
   const [needed, setNeeded] = useState<Needed | null>(null);
+  const [selectedPageNumber, setSelectedPageNumber] = useState(1);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [packageId, setPackageId] = useState<string | null>(null);
   /** Single-valued quantities and parameters, keyed by quantity key or parameter name. */
@@ -328,42 +332,51 @@ export function MeasurementPanel({
   const [aiFilled, setAiFilled] = useState<Record<string, string[]>>({});
   const reviewerEditedSinglesRef = useRef<Set<string>>(new Set());
   const reviewerEditedManyRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    // A package switch must never leave the prior package's fields enabled while the new contract is
-    // loading. The reviewer could otherwise submit a value against the wrong drawing pair.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPackageId('');
-    setNeeded(null);
-    setRuns({});
-    setSingles({});
-    const freshEdits = new Set<string>();
-    reviewerEditedSinglesRef.current = freshEdits;
-    setReviewerEditedSingles(freshEdits);
-    reviewerEditedManyRef.current = new Set();
-    setReviewerEditedMany(new Set());
-    setChoices({});
-    setSourceChoices({});
-    setReferences({});
-    setDeclinedCitations({});
-    setCandidates([]);
-    setSemanticTypes([]);
-    setCandidateLoadError(null);
-    setVocabularyLoadError(null);
-    setCandidateError(null);
-    setCandidateChoices({});
-    setCandidateErrors({});
-    setLoadError(null);
-    setProposalSteps([]);
-    setProposal(null);
-    setProposalError(null);
-    setAiFilled({});
-  }, [selectedPackageId]);
+  const resetPackageIdRef = useRef<string | undefined>(undefined);
+  const loadedDataPackageIdRef = useRef<string | null>(null);
+  const [refreshUnavailable, setRefreshUnavailable] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    // Polling refreshes the data for the current package. Clearing the contract here would replace
+    // the whole Measure screen with its loading state, unmounting placement, run, link, and value
+    // editors while a reviewer is working. Only a real package switch resets that local work.
+    if (packageChanged(resetPackageIdRef.current, selectedPackageId)) {
+      resetPackageIdRef.current = selectedPackageId;
+      loadedDataPackageIdRef.current = null;
+      setPackageId('');
+      setLoadError(null);
+      setRefreshUnavailable(false);
+      setNeeded(null);
+      setSelectedPageNumber(1);
+      setRuns({});
+      setSingles({});
+      const freshEdits = new Set<string>();
+      reviewerEditedSinglesRef.current = freshEdits;
+      setReviewerEditedSingles(freshEdits);
+      reviewerEditedManyRef.current = new Set();
+      setReviewerEditedMany(new Set());
+      setChoices({});
+      setSourceChoices({});
+      setReferences({});
+      setDeclinedCitations({});
+      setCandidates([]);
+      setSemanticTypes([]);
+      setCandidateLoadError(null);
+      setVocabularyLoadError(null);
+      setCandidateError(null);
+      setCandidateChoices({});
+      setCandidateErrors({});
+      setProposalSteps([]);
+      setProposal(null);
+      setProposalError(null);
+      setAiFilled({});
+    }
     const applyRequiredInputs = (required: Needed) => {
-      const confirmedByKey = required.confirmed_readings.reduce<Record<string, string[]>>(
+      const pageConfirmed = required.confirmed_readings.filter(
+        (reading) => reading.page_index === selectedPageNumber - 1,
+      );
+      const confirmedByKey = pageConfirmed.reduce<Record<string, string[]>>(
         (grouped, reading) => ({
           ...grouped,
           [reading.key]: [...(grouped[reading.key] ?? []), reading.value],
@@ -386,13 +399,16 @@ export function MeasurementPanel({
         }
         for (const field of required.proposed_readings ?? []) {
           if (field.many) continue;
-          const values = field.values.map((reading) => reading.value);
+          const pageValues = field.values.filter(
+            (reading) => reading.page_index === selectedPageNumber - 1,
+          );
+          const values = pageValues.map((reading) => reading.value);
           if (!values.length) continue;
           if (confirmedByKey[field.field_key]?.length) continue;
           if (reviewerEditedSinglesRef.current.has(field.field_key)) continue;
           if ((next[field.field_key] ?? '').trim()) continue;
           next[field.field_key] = values[0];
-          nextMarks[field.field_key] = field.values.map((reading) => reading.candidate_id);
+          nextMarks[field.field_key] = pageValues.map((reading) => reading.candidate_id);
         }
         return next;
       });
@@ -409,12 +425,15 @@ export function MeasurementPanel({
         for (const field of required.proposed_readings ?? []) {
           if (!field.many) continue;
           if (reviewerEditedManyRef.current.has(field.field_key)) continue;
-          const values = field.values.map((reading) => reading.value).filter((value) => value.trim());
+          const pageValues = field.values.filter(
+            (reading) => reading.page_index === selectedPageNumber - 1,
+          );
+          const values = pageValues.map((reading) => reading.value).filter((value) => value.trim());
           if (!values.length) continue;
           if (confirmedByKey[field.field_key]?.length) continue;
           if ((next[field.field_key] ?? []).some((value) => value.trim())) continue;
           next[field.field_key] = values;
-          nextMarks[field.field_key] = field.values.map((reading) => reading.candidate_id);
+          nextMarks[field.field_key] = pageValues.map((reading) => reading.candidate_id);
         }
         return next;
       });
@@ -430,26 +449,49 @@ export function MeasurementPanel({
     const load = async () => {
       try {
         if (!selectedPackageId) return;
-        const fields = await getRequiredInputs(projectId(), selectedPackageId);
+        const fields = await getRequiredInputs(projectId(), selectedPackageId, selectedPageNumber);
         if (cancelled) return;
         const required = fields as unknown as Needed;
+        if (
+          required.page_numbers.length > 0 &&
+          !required.page_numbers.includes(selectedPageNumber)
+        ) {
+          setSelectedPageNumber(required.page_numbers[0]);
+          setCandidates([]);
+        } else if (required.page_numbers.includes(selectedPageNumber)) {
+          // Optional readings must remain page-scoped. A refused page is not a partial list, and
+          // must not hide the required form or discard a reviewer's in-progress values.
+          void listCandidates(projectId(), selectedPackageId, selectedPageNumber).then(
+            (read) => { if (!cancelled) { setCandidates(read.candidates); setCandidateLoadError(null); } },
+            (caught: unknown) => { if (!cancelled) { setCandidates([]); setCandidateLoadError(caught instanceof ApiError ? caught.message : String(caught)); } },
+          );
+        } else {
+          // Pages are written asynchronously after upload. Keep showing the in-progress state and
+          // poll the contract; requesting an unknown page would be a correct 404, not an empty list.
+          setCandidates([]);
+        }
         setPackageId(selectedPackageId);
+        loadedDataPackageIdRef.current = selectedPackageId;
         setNeeded(required);
         setLoadError(null);
+        setRefreshUnavailable(false);
         applyRequiredInputs(required);
         // Reading suggestions and vocabulary are helpful, not prerequisites for typing a value.
         // A failed optional request must not hide or reset the current form and its drafts.
-        void listCandidates(projectId(), selectedPackageId).then(
-          (read) => { if (!cancelled) { setCandidates(read.candidates); setCandidateLoadError(null); } },
-          (caught: unknown) => { if (!cancelled) setCandidateLoadError(caught instanceof ApiError ? caught.message : String(caught)); },
-        );
         void listSemanticTypes().then(
           (vocabulary) => { if (!cancelled) { setSemanticTypes(vocabulary); setVocabularyLoadError(null); } },
           (caught: unknown) => { if (!cancelled) setVocabularyLoadError(caught instanceof ApiError ? caught.message : String(caught)); },
         );
       } catch (caught) {
         if (!cancelled) {
-          setLoadError(caught instanceof ApiError ? caught.message : String(caught));
+          // A transient poll failure must not replace the loaded form with the fatal load state:
+          // doing so unmounts every Measure editor and loses the reviewer's local draft. Initial
+          // loads and package switches still fail closed because there is no loaded form to keep.
+          if (!refreshFailureIsFatal(loadedDataPackageIdRef.current, selectedPackageId)) {
+            setRefreshUnavailable(true);
+          } else {
+            setLoadError(caught instanceof ApiError ? caught.message : String(caught));
+          }
         }
       }
     };
@@ -458,7 +500,7 @@ export function MeasurementPanel({
       cancelled = true;
     };
     // Re-fetch only when the selected package changes, never on a keystroke within its form.
-  }, [selectedPackageId, reload, resourceRetry]);
+  }, [selectedPackageId, selectedPageNumber, reload, resourceRetry]);
 
   /**
    * Go back and look while the drawings are still being read.
@@ -543,6 +585,7 @@ export function MeasurementPanel({
         source: candidate.source,
         semantic_type: result.semantic_type,
         value: candidate.value,
+        page_index: candidate.page_index,
         qualification: 'reviewer_confirmed',
       };
 
@@ -742,7 +785,7 @@ export function MeasurementPanel({
     setProposal(null);
     setProposalError(null);
     try {
-      const result = await proposeMeasurements(projectId(), packageId, (step) =>
+      const result = await proposeMeasurements(projectId(), packageId, selectedPageNumber, (step) =>
         setProposalSteps((prior) => [...prior, step]),
       );
       setProposal(result);
@@ -918,6 +961,12 @@ export function MeasurementPanel({
           <p>A suggestion is not a confirmed measurement. Values without units are refused. The {needed.rules_published} published rules compare saved values exactly; missing or uncertain inputs can leave a check undecided.</p>
           <p><strong>Save values</strong> records the form without running checks. <strong>Run checks</strong> saves first and queues checks only if saving succeeds.</p>
         </details>
+        {refreshUnavailable && (
+          <p className="enter-values__hint" role="status">
+            Could not refresh the drawing data just now. Your unsaved measurements are still here;
+            this page will try again.
+          </p>
+        )}
       </header>
 
       <MeasurementSectionNav />
@@ -967,9 +1016,29 @@ export function MeasurementPanel({
       </div>
 
       <section className="enter-values__section measure-step-target" id="measure-values">
-        <h2>Measurements</h2>
         {candidateLoadError && <p className="enter-values__error" role="alert">Drawing readings could not be refreshed. You can still enter values. {candidateLoadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
         {vocabularyLoadError && <p className="enter-values__error" role="alert">Reading meanings could not be loaded. You can still enter values. {vocabularyLoadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
+        <div className="measure-page-picker">
+          <label htmlFor="measure-page-number">Review one page</label>
+          <select
+            id="measure-page-number"
+            className="value-input"
+            value={selectedPageNumber}
+            onChange={(event) => {
+              setCandidates([]);
+              setProposalSteps([]);
+              setProposal(null);
+              setProposalError(null);
+              setSelectedPageNumber(Number(event.currentTarget.value));
+            }}
+          >
+            {(needed.page_numbers.length ? needed.page_numbers : [selectedPageNumber]).map((page) => (
+              <option key={page} value={page}>Page {page}</option>
+            ))}
+          </select>
+          <p>Readings and Fill with AI are limited to this page.</p>
+        </div>
+        <h2>Measurements — page {selectedPageNumber}</h2>
 
         {/* **One line, one bar, three counts.**
             This was five stat tiles and a paragraph, and a reviewer opening the page could not tell

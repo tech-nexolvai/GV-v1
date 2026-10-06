@@ -21,7 +21,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
@@ -237,18 +237,93 @@ def _frames(response: Any) -> list[dict[str, Any]]:
     ]
 
 
-def _stream(session: Session, package: UUID, model: Any) -> list[dict[str, Any]]:
+def _stream(
+    session: Session, package: UUID, model: Any, *, page_number: int = 1
+) -> list[dict[str, Any]]:
     import app.api.measurements as endpoint
 
     original = endpoint.configured_assignment_model
     endpoint.configured_assignment_model = lambda _settings: model  # type: ignore[assignment]
     try:
-        response = _client(session).post(PROPOSE.format(project=PROJECT, package=package))
+        response = _client(session).post(
+            PROPOSE.format(project=PROJECT, package=package), json={"page_number": page_number}
+        )
         assert response.status_code == 200, response.text
         assert response.headers["content-type"].startswith("text/event-stream")
         return _frames(response)
     finally:
         endpoint.configured_assignment_model = original  # type: ignore[assignment]
+
+
+def _add_page_readings(
+    session: Session, package: UUID, *, page_number: int, count: int
+) -> tuple[str, ...]:
+    """Add exact, attached readings on one page of the package's existing shop document."""
+    revision = session.execute(
+        select(PackageRevision).where(PackageRevision.package_id == package)
+    ).scalar_one()
+    version_id = session.execute(
+        select(PackageRevisionDocument.document_version_id)
+        .where(PackageRevisionDocument.package_revision_id == revision.id)
+        .limit(1)
+    ).scalar_one()
+    page = session.execute(
+        select(Page).where(
+            Page.document_version_id == version_id,
+            Page.index == page_number - 1,
+        )
+    ).scalar_one_or_none()
+    if page is None:
+        page = Page(
+            document_version_id=version_id,
+            index=page_number - 1,
+            content_hash=f"{page_number:064x}",
+            width_pt=Decimal(612),
+            height_pt=Decimal(792),
+            rotation=0,
+            has_vector_text=True,
+        )
+        session.add(page)
+        session.flush()
+    extraction_run_id = session.execute(
+        select(ObservationCandidate.extraction_run_id)
+        .join(Page, Page.id == ObservationCandidate.page_id)
+        .where(Page.document_version_id == version_id)
+        .limit(1)
+    ).scalar_one()
+
+    ids: list[str] = []
+    for position in range(count):
+        candidate = ObservationCandidate(
+            document_version_id=version_id,
+            page_id=page.id,
+            extraction_run_id=extraction_run_id,
+            raw_text=f"page {page_number} dimension {position}",
+            value_numerator=position + 1,
+            value_denominator=1,
+            unit="in",
+            polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
+            ambiguity_flags=[],
+        )
+        session.add(candidate)
+        session.flush()
+        ids.append(str(candidate.id))
+        session.add(
+            ObservationAssociation(
+                candidate_id=candidate.id,
+                extraction_run_id=extraction_run_id,
+                start_x="0.1",
+                start_y="0.5",
+                end_x="0.2",
+                end_y="0.5",
+                signals=["nearest line"],
+                refusal_reason=None,
+                chain_key=None,
+                chain_position=None,
+            )
+        )
+    session.commit()
+    return tuple(ids)
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +410,84 @@ def test_the_percentage_is_phases_finished_and_never_exceeds_them(session: Sessi
     assert [step["percent"] for step in steps] == [0, 20, 40, 60, 80]
     assert all(step["total"] == 5 for step in steps)
     assert all(step["percent"] <= 100 for step in steps)
+
+
+def test_candidates_return_a_complete_selected_page_when_package_exceeds_500(
+    session: Session,
+) -> None:
+    _publish_rulebook(session)
+    package, _ = _package_with_readings(session, readings=(("base", 1, 1, None, None),))
+    page_two_ids = _add_page_readings(session, package, page_number=2, count=1)
+    _add_page_readings(session, package, page_number=1, count=500)
+
+    response = _client(session).get(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/candidates?page_number=2"
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total"] == 1
+    assert [item["candidate_id"] for item in body["candidates"]] == list(page_two_ids)
+    assert {item["page_index"] for item in body["candidates"]} == {1}
+
+
+def test_candidates_refuse_a_page_over_500_without_returning_a_partial_list(
+    session: Session,
+) -> None:
+    _publish_rulebook(session)
+    package, _ = _package_with_readings(session, readings=(("base", 1, 1, None, None),))
+    _add_page_readings(session, package, page_number=2, count=501)
+
+    response = _client(session).get(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/candidates?page_number=2"
+    )
+
+    assert response.status_code == 413
+    assert "page 2" in response.json()["message"]
+    assert "Nothing is returned" in response.json()["message"]
+
+
+def test_page_proposal_counts_only_selected_page_and_never_sees_other_page_readings(
+    session: Session,
+) -> None:
+    _publish_rulebook(session)
+    package, _ = _package_with_readings(session, readings=(("base", 1, 1, None, None),))
+    _add_page_readings(session, package, page_number=1, count=200)
+    page_two_ids = _add_page_readings(session, package, page_number=2, count=1)
+    model = _StubModel((("SHOP:CT010", (page_two_ids[0],)),))
+
+    frames = _stream(session, package, model, page_number=2)
+    result = next(frame["result"] for frame in frames if frame["event"] == "result")
+
+    assert {reading.candidate_id for reading in model.contexts[0].readings} == {page_two_ids[0]}
+    assert {field.page_number for field in model.contexts[0].fields} == {2}
+    assert result["readings_considered"] == 1
+    assert result["assignments"][0]["values"][0]["candidate_id"] == page_two_ids[0]
+
+    required_page_two = _client(session).get(
+        REQUIRED.format(project=PROJECT, package=package), params={"page_number": 2}
+    )
+    required_page_one = _client(session).get(
+        REQUIRED.format(project=PROJECT, package=package), params={"page_number": 1}
+    )
+    assert required_page_two.status_code == required_page_one.status_code == 200
+    assert required_page_two.json()["page_numbers"] == [1, 2]
+    assert required_page_two.json()["proposed_readings"]
+    assert required_page_one.json()["proposed_readings"] == []
+
+
+def test_page_proposal_refuses_an_over_limit_page_as_a_whole(session: Session) -> None:
+    _publish_rulebook(session)
+    package, _ = _package_with_readings(session, readings=(("base", 1, 1, None, None),))
+    _add_page_readings(session, package, page_number=2, count=201)
+
+    response = _client(session).post(
+        PROPOSE.format(project=PROJECT, package=package), json={"page_number": 2}
+    )
+
+    assert response.status_code == 413, response.text
+    assert "page 2" in response.json()["message"]
+    assert "201" in response.json()["message"]
 
 
 def test_a_retry_repeats_its_phase_rather_than_advancing_the_bar(session: Session) -> None:

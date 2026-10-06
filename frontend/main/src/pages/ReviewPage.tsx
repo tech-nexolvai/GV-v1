@@ -4,6 +4,7 @@ import type { DecisionSaveResult, SimpleReviewAction } from '../components/chat/
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { ChangedValuesPanel } from '../components/output/ChangedValuesPanel';
+import { SignedDownloads } from '../components/output/SignedDownloads';
 import { StatusBadge } from '../components/ui/Badge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
@@ -29,7 +30,7 @@ import { MeasurementPanel } from './MeasurementPanel';
 import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
-import { ArrowLeft, CheckSquare, Download } from 'lucide-react';
+import { ArrowLeft, CheckSquare } from 'lucide-react';
 import { ReviewPackageDetails } from './ReviewPackageDetails';
 import { recordReviewDecision } from './recordReviewDecision';
 import './ReviewPage.css';
@@ -584,35 +585,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
               requires — a review that left the building unsigned is one nobody stands behind
               (ADR-0010). Before then the workbook exists and is deliberately unreachable. */}
           {(approved || pkg.status === 'APPROVED') && (
-            <>
-              <button
-                type="button"
-                className="btn btn--ghost"
-                onClick={() => void handleDownload('pdf')}
-                data-tooltip="Download the signed-off review as a PDF"
-              >
-                <Download size={14} />
-                Download PDF
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost"
-                onClick={() => void handleDownload('workbook')}
-                data-tooltip="Download the signed-off review as a workbook"
-              >
-                <Download size={14} />
-                Download workbook
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost"
-                onClick={() => void handleDownload('redline')}
-                data-tooltip="Download the signed-off evidence-grounded drawing redline"
-              >
-                <Download size={14} />
-                Download redline
-              </button>
-            </>
+            <SignedDownloads projectId={projectId()} packageId={packageId} download={(format) => void handleDownload(format)} />
           )}
         </div>
       </div>

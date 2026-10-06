@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import {
   ApiError,
   addDrawingPart,
   confirmDrawingPart,
   downloadPartCrop,
+  downloadVendorPagePicture,
   listDrawingParts,
+  prepareVendorPagePictures,
   withdrawDrawingPart,
 } from '../../api/client';
 import { projectId } from '../../api/config';
@@ -40,20 +42,40 @@ export function DrawingParts({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [decided, setDecided] = useState(0);
+  const [picturePoll, setPicturePoll] = useState(0);
+  const loadPagePicture = useCallback(
+    (viewId: string) => downloadVendorPagePicture(projectId(), packageId, viewId),
+    [packageId],
+  );
 
   useEffect(() => {
     let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     listDrawingParts(projectId(), packageId)
-      .then((result) => {
-        if (live) { setDrawings(result.drawings); setLoadError(null); }
+      .then(async (result) => {
+        if (!live) return;
+        setDrawings(result.drawings);
+        setLoadError(null);
+        const missingVendorPictures = result.drawings.some(
+          (drawing) => drawing.role === 'shop' && drawing.page_picture === null,
+        );
+        if (missingVendorPictures && picturePoll < 30) {
+          if (picturePoll === 0) {
+            await prepareVendorPagePictures(projectId(), packageId).catch((caught: unknown) => {
+              if (live) setLoadError(caught instanceof ApiError ? caught.message : String(caught));
+            });
+          }
+          timer = setTimeout(() => live && setPicturePoll((count) => count + 1), 1500);
+        }
       })
       .catch((caught: unknown) => {
         if (live) setLoadError(caught instanceof ApiError ? caught.message : String(caught));
       });
     return () => {
       live = false;
+      if (timer) clearTimeout(timer);
     };
-  }, [packageId, refresh, decided, loadAttempt]);
+  }, [packageId, refresh, decided, picturePoll, loadAttempt]);
 
   async function save(key: string, decide: () => Promise<unknown>) {
     await saveDecision(key, decide, (item, state) => {
@@ -89,6 +111,7 @@ export function DrawingParts({
   return (
     <>
       <DrawingPartsList
+        loadPagePicture={loadPagePicture}
         drawings={drawings}
         saving={null}
         feedback={feedback}

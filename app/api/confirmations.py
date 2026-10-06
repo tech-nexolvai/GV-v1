@@ -18,7 +18,7 @@ from fractions import Fraction
 from typing import Annotated, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -111,10 +111,11 @@ class CandidateOut(BaseModel):
 
 
 class CandidatesOut(BaseModel):
-    """Everything read for this package that nobody has yet said the meaning of."""
+    """Every reading still to label on one complete page."""
 
     candidates: tuple[CandidateOut, ...]
     total: int
+    page_number: int
 
 
 class ConfirmIn(BaseModel):
@@ -157,8 +158,9 @@ def list_candidates(
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
+    page_number: Annotated[int, Query(ge=1)],
 ) -> CandidatesOut:
-    """Every reading of this package that carries a value, with its crop.
+    """Every reading on one page that carries a value, with its crop.
 
     **Only readings that carry a value.** A token with no unit was recorded without one — deliberately,
     because a bare `38` is a dimension whose unit is unknown — and there is nothing for a reviewer to
@@ -169,6 +171,25 @@ def list_candidates(
     database's insertion order, and two loads put the same reading in the same place.
     """
     revision = _revision(session, project_id, package_id)
+
+    page_exists = session.execute(
+        select(Page.id)
+        .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(
+            PackageRevisionDocument.package_revision_id == revision.id,
+            Page.index == page_number - 1,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if page_exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"page {page_number} is not part of this package revision",
+        )
 
     rows = session.execute(
         select(
@@ -190,6 +211,7 @@ def list_candidates(
         )
         .where(
             PackageRevisionDocument.package_revision_id == revision.id,
+            Page.index == page_number - 1,
             ObservationCandidate.value_numerator.is_not(None),
             # A confirmation seals this exact candidate as a canonical observation.  It must leave
             # the proposal queue on the next load; showing it again would invite a second type and
@@ -204,7 +226,7 @@ def list_candidates(
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
-                f"this package has more than {MAX_CANDIDATES} readings with values. Nothing is "
+                f"page {page_number} has more than {MAX_CANDIDATES} readings with values. Nothing is "
                 "returned rather than a partial list, because a truncated one cannot be told from a "
                 "complete one."
             ),
@@ -242,6 +264,7 @@ def list_candidates(
             for row, page_index, crop_key, crop_shows_gv_mark in rows
         ),
         total=len(rows),
+        page_number=page_number,
     )
 
 

@@ -457,6 +457,16 @@ def _cut_part_pictures(session: object, package_revision_id: UUID) -> Mapping[st
     return cut
 
 
+def _render_vendor_page_pictures(
+    session: object, package_revision_id: UUID
+) -> Mapping[str, object]:
+    """Prepare stored vendor-only pages for click-to-place, without invoking any reader."""
+    stages = _stages()
+    return stages.render_vendor_page_pictures(  # type: ignore[attr-defined]
+        session, package_revision_id
+    )
+
+
 def _propose_measurements(session: object, package_revision_id: UUID) -> Mapping[str, object]:
     """Ask a model which reading fills which field, check it, and file what survived.
 
@@ -553,8 +563,27 @@ def _consume(
     whichever worker does consume it.
     """
     from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
+    from workflow.vendor_page_pictures import RENDER_VENDOR_PAGE_PICTURES_WORKFLOW
 
     revision_id = UUID(str(payload["package_revision_id"]))
+    if workflow == "generate_signed_exports":
+        from sqlalchemy import select
+
+        from app.models.review import Approval
+        from storage.local import LocalStore
+        from workflow.signed_outputs import generate_signed_outputs
+
+        approval_id = UUID(str(payload["approval_id"]))
+        approval = session.scalar(select(Approval).where(Approval.id == approval_id))
+        if approval is None or approval.package_revision_id != revision_id:
+            raise ValueError("signed export request belongs to a different revision")
+
+        store = LocalStore(
+            root=pathlib.Path(os.environ["GV_DEV_STORAGE"]).resolve(),
+            ticket_secret=b"local-review-worker-never-issues-tickets",
+        )
+        bundle = generate_signed_outputs(session, store, approval_id)
+        return {"bundle_id": str(bundle.id)}
     if workflow == "extract_package":
         return _extract_package(session, revision_id, idempotency_key)
     if workflow == "run_checks":
@@ -567,6 +596,8 @@ def _consume(
     if workflow == CUT_PART_PICTURES_WORKFLOW:
         # A person added a part (#897): cut its picture, and any other still missing.
         return _cut_part_pictures(session, revision_id)
+    if workflow == RENDER_VENDOR_PAGE_PICTURES_WORKFLOW:
+        return _render_vendor_page_pictures(session, revision_id)
     print(f"  no local consumer for {workflow!r} — leaving it for its worker")
     raise NotImplementedError(f"no local consumer for {workflow!r}")
 
@@ -600,11 +631,18 @@ def main(argv: list[str] | None = None) -> int:
         than two.
         """
         revision_id = UUID(str(payload["package_revision_id"]))
-        with factory() as session:
-            result = _consume(
-                session, workflow=workflow, payload=payload, idempotency_key=idempotency_key
-            )
-            session.commit()
+        try:
+            with factory() as session:
+                result = _consume(
+                    session, workflow=workflow, payload=payload, idempotency_key=idempotency_key
+                )
+                session.commit()
+        except Exception as error:
+            if workflow == "generate_signed_exports":
+                from workflow.signed_outputs import record_publication_failure
+
+                record_publication_failure(factory, UUID(str(payload["approval_id"])), error)
+            raise
         print(f"  {workflow} {revision_id}: {dict(result)}")
 
     passes = 0

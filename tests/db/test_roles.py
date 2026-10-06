@@ -124,6 +124,7 @@ def test_the_verdict_role_cannot_read_the_drawing_parts(migrated: Engine) -> Non
         "countertop_run_decisions",
         "reading_parts",
         "part_pictures",
+        "vendor_page_pictures",
     ):
         with pytest.raises(ProgrammingError, match="permission denied"):
             _as_role(migrated, Role.VERDICT, f'SELECT 1 FROM "{schema}"."{table}" LIMIT 1')

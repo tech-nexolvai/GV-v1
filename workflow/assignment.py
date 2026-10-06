@@ -74,6 +74,9 @@ class Field:
     """What the published rule says the check is for. Context for the choice, never a formula —
     see the module docstring on why the arithmetic is withheld."""
 
+    page_number: int | None = None
+    """One-based page scope for an interactive proposal; absent only for legacy worker runs."""
+
 
 @dataclass(frozen=True, slots=True)
 class Reading:
@@ -231,6 +234,12 @@ def guard_assignment(
                 return AssignmentRefused(
                     f"{field.name} is read from the {field.source} drawing, and {reading.value} "
                     f"was read from the {reading.source} one"
+                )
+
+            if field.page_number is not None and reading.page != field.page_number:
+                return AssignmentRefused(
+                    f"{reading.value} is on page {reading.page}, and {field.name} is scoped to "
+                    f"page {field.page_number}"
                 )
 
             # An unattached reading is a number floating on the sheet. `text_association` already

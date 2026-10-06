@@ -61,6 +61,7 @@ from openpyxl.cell.cell import Cell  # type: ignore[import-untyped]
 from openpyxl.styles import Alignment, Font, PatternFill  # type: ignore[import-untyped]
 from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
 
+from reports.signed_review import SignedReview
 from units.measurement import Measurement
 from verdict.finding import Finding
 from verdict.outcomes import Outcome, is_abstention
@@ -320,7 +321,9 @@ def _write_summary(
     title.alignment = Alignment(horizontal="left", vertical="center")
     title.number_format = TEXT_FORMAT
     subtitle = sheet["A2"]
-    subtitle.value = "SHOP DRAWING REVIEW — HUMAN-OPERATED V1"
+    subtitle.value = "SHOP DRAWING REVIEW — " + (
+        "SIGNED REVIEW" if signoff else "BEFORE REVIEW — NOT A FINAL REPORT"
+    )
     subtitle.font = Font(name="Courier New", bold=True, size=11, color=_BLACK)
     subtitle.alignment = Alignment(horizontal="left")
     subtitle.number_format = TEXT_FORMAT
@@ -637,6 +640,7 @@ def write_stored_workbook(
     *,
     signoff: WorkbookSignoff | None = None,
     changed_values: ChangedValues | None = None,
+    signed_review: SignedReview | None = None,
 ) -> bytes:
     """The same workbook, built from stored rows instead of engine values.
 
@@ -651,6 +655,20 @@ def write_stored_workbook(
 
     workbook = Workbook()
     workbook.remove(workbook.active)
+    if signed_review is not None:
+        review_rows = [("Sign-off", signed_review.signoff)]
+        for reviewed_finding in signed_review.findings:
+            label = reviewed_finding.rule_id + (
+                f" / {reviewed_finding.scope_label}" if reviewed_finding.scope_label else ""
+            )
+            review_rows.append((label, reviewed_finding.wording))
+            review_rows.append(("Recorded check outcome (unchanged)", reviewed_finding.outcome))
+            review_rows.append(("Finding id", str(reviewed_finding.finding_id)))
+            for action in reviewed_finding.actions[:-1]:
+                review_rows.append(
+                    ("Earlier recorded action", action.wording(reviewed_finding.outcome))
+                )
+        _write_sheet(workbook, "Signed review", ("Review record", "Recorded detail"), review_rows)
     _write_summary(workbook, findings, signoff=signoff)
     if changed_values is not None:
         rows: list[tuple[str, str]] = []

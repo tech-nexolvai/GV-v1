@@ -15,9 +15,10 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI
@@ -775,8 +776,57 @@ def test_a_reviewer_asks_the_ai_to_fill_the_form(
 
     monkeypatch.setattr(endpoint, "configured_assignment_model", lambda _settings: None)
     package = _package(session)
+    package_id = UUID(package.rsplit("/", 1)[1])
+    revision = session.execute(
+        select(PackageRevision).where(PackageRevision.package_id == package_id)
+    ).scalar_one()
+    from app.models.document import (
+        Document,
+        DocumentKind,
+        DocumentVersion,
+        PackageRevisionDocument,
+        Page,
+        SourceArtifact,
+    )
 
-    response = _calling_as(session, _reviewer()).post(f"{package}/measurements/propose")
+    artifact = SourceArtifact(storage_key=f"auth/{uuid4()}", sha256="0" * 64, size=1)
+    session.add(artifact)
+    session.flush()
+    document = Document(package_id=package_id, kind=DocumentKind.SHOP.value)
+    session.add(document)
+    session.flush()
+    version = DocumentVersion(
+        document_id=document.id,
+        source_artifact_id=artifact.id,
+        sha256=artifact.sha256,
+        page_count=1,
+    )
+    session.add(version)
+    session.flush()
+    session.add(
+        PackageRevisionDocument(
+            package_revision_id=revision.id,
+            package_id=package_id,
+            document_id=document.id,
+            document_version_id=version.id,
+        )
+    )
+    session.add(
+        Page(
+            document_version_id=version.id,
+            index=0,
+            content_hash="0" * 64,
+            width_pt=Decimal(612),
+            height_pt=Decimal(792),
+            rotation=0,
+            has_vector_text=True,
+        )
+    )
+    session.commit()
+
+    response = _calling_as(session, _reviewer()).post(
+        f"{package}/measurements/propose", json={"page_number": 1}
+    )
 
     assert response.status_code == 200, response.text
     frames = [
@@ -806,7 +856,7 @@ def test_entering_values_is_still_refused_to_who_may_not(
     statuses = [
         client.post(f"{package}/measurements", json=VALUES).status_code,
         client.post(f"{package}/checks").status_code,
-        client.post(f"{package}/measurements/propose").status_code,
+        client.post(f"{package}/measurements/propose", json={"page_number": 1}).status_code,
     ]
 
     assert statuses == [404, 404, 404], why

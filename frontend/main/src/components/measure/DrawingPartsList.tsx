@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import {
   KIND_LABEL,
@@ -6,7 +6,6 @@ import {
   codeToSend,
   decisionLabel,
   drawingLabel,
-  endChoices,
   startingCode,
   stillToDecide,
   type PartDrawing,
@@ -16,6 +15,7 @@ import {
 } from './drawingPartChoices.js';
 import { GvMarksWarning } from './GvMarksWarning.js';
 import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
+import { VendorPagePlacement } from './VendorPagePlacement.js';
 
 /** A part a person adds, as the form hands it over. */
 export interface NewPart {
@@ -44,6 +44,7 @@ export interface NewPart {
  */
 export function DrawingPartsList({
   drawings,
+  loadPagePicture,
   saving,
   feedback,
   renderPicture,
@@ -53,6 +54,7 @@ export function DrawingPartsList({
   onAdd,
 }: {
   drawings: readonly PartDrawing[];
+  loadPagePicture: (viewId: string) => Promise<Blob>;
   /** The part (or, while adding, the drawing) being saved, so its buttons cannot be pressed twice. */
   saving: string | null;
   feedback?: Readonly<Record<string, DecisionFeedback>>;
@@ -101,7 +103,13 @@ export function DrawingPartsList({
             </ol>
           )}
           {drawing.can_confirm && (
-            <AddPartForm drawing={drawing} saving={saving === drawing.view_id || feedback?.[drawing.view_id]?.kind === 'saving'} feedback={feedback?.[drawing.view_id]} onAdd={onAdd} />
+            <AddPartForm
+              loadPagePicture={loadPagePicture}
+              drawing={drawing}
+              saving={saving === drawing.view_id || feedback?.[drawing.view_id]?.kind === 'saving'}
+              feedback={feedback?.[drawing.view_id]}
+              onAdd={onAdd}
+            />
           )}
         </article>
       ))}
@@ -203,49 +211,29 @@ function PartRow({
 }
 
 /**
- * A part the suggestions missed, between two ends the drawing's listed parts already have.
- *
- * Only those ends, because no picture of the whole drawing is stored to point at: a person names
- * the part by where it starts and stops among the parts they can see listed.
+ * A part the suggestions missed, placed by its ends on the stored vendor-only page picture.
  */
 function AddPartForm({
+  loadPagePicture,
   drawing,
   saving,
   feedback,
   onAdd,
 }: {
+  loadPagePicture: (viewId: string) => Promise<Blob>;
   drawing: PartDrawing;
   saving: boolean;
   feedback?: DecisionFeedback;
   onAdd: (drawing: PartDrawing, part: NewPart) => void;
 }) {
-  const ends = endChoices(drawing);
   const [kind, setKind] = useState<PartKind>('filler');
   const [code, setCode] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  const start = ends.find((end) => end.key === from);
-  const stop = ends.find((end) => end.key === to);
-
-  if (ends.length < 2) {
-    return (
-      <p className="enter-values__hint">
-        No part is listed on this drawing to take two ends from, so a part cannot be added here yet.
-      </p>
-    );
-  }
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!start || !stop || start.key === stop.key) return;
-    onAdd(drawing, { kind, code: codeToSend(code), ends: [start.point, stop.point] });
-  }
 
   return (
-    <form className="drawing-parts__add" onSubmit={submit}>
+    <div className="drawing-parts__add">
       <h4>Add a part the suggestions missed</h4>
       <p className="enter-values__hint">
-        Pick where it starts and where it stops, from the ends of the parts listed above.
+        Choose what it is, then mark its two ends on the vendor&apos;s drawing.
       </p>
       <label>
         It is a
@@ -253,28 +241,6 @@ function AddPartForm({
           {PART_KINDS.map((option) => (
             <option key={option} value={option}>
               {KIND_LABEL[option].toLowerCase()}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        From the
-        <select value={from} disabled={saving} onChange={(event) => setFrom(event.target.value)}>
-          <option value="">choose an end</option>
-          {ends.map((end) => (
-            <option key={end.key} value={end.key}>
-              {end.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        to the
-        <select value={to} disabled={saving} onChange={(event) => setTo(event.target.value)}>
-          <option value="">choose an end</option>
-          {ends.map((end) => (
-            <option key={end.key} value={end.key}>
-              {end.label}
             </option>
           ))}
         </select>
@@ -289,14 +255,15 @@ function AddPartForm({
           onChange={(event) => setCode(event.target.value)}
         />
       </label>
-      <button
-        type="submit"
-        className="btn btn--sm btn--subtle"
-        disabled={saving || !start || !stop || start.key === stop.key}
-      >
-        Add this part
-      </button>
+      <VendorPagePlacement
+        loadPagePicture={loadPagePicture}
+        drawing={drawing}
+        kind={kind}
+        code={codeToSend(code)}
+        disabled={saving}
+        onAdd={(part) => onAdd(drawing, part)}
+      />
       {feedback && <p className="drawing-parts__feedback" role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedbackText(feedback)}</p>}
-    </form>
+    </div>
   );
 }

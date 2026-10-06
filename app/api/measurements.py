@@ -55,7 +55,7 @@ from fractions import Fraction
 from typing import Annotated, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -89,6 +89,7 @@ from app.schemas.measurements import (
     ConfirmedReadingOut,
     DiscriminatorOut,
     LayoutProposalOut,
+    PageProposalIn,
     ParameterEntry,
     ParameterOut,
     ProposedFieldOut,
@@ -566,7 +567,7 @@ def _store(
 
 
 def _stored_proposal_out(
-    session: Session, revision: PackageRevision
+    session: Session, revision: PackageRevision, *, page_number: int | None = None
 ) -> tuple[ProposedFieldOut, ...]:
     """The filed proposal for this revision, rendered for the form.
 
@@ -578,7 +579,7 @@ def _stored_proposal_out(
     anything stored beside the proposal. `measurement_proposals` records which reading fills which
     slot and nothing else, so there is no second copy of a number here to drift from the first.
     """
-    rows = stored_proposal(session, revision.id)
+    rows = stored_proposal(session, revision.id, page_number=page_number)
     if not rows:
         return ()
 
@@ -672,6 +673,7 @@ def read_required_inputs(
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
+    page_number: Annotated[int | None, Query(ge=1)] = None,
 ) -> RequiredInputsOut:
     """The fields a reviewer must fill, derived from the rules themselves.
 
@@ -699,7 +701,7 @@ def read_required_inputs(
     # Scope through the supporting candidate and revision membership: a canonical observation from a
     # different package (or an older revision containing different documents) must never prefill this
     # review.  Page/candidate ordering makes a MANY field deterministic without assigning meaning.
-    confirmed_rows = session.execute(
+    confirmed_query = (
         select(CanonicalObservation, Page.index, ObservationCandidate.created_at)
         .join(
             EvidenceSupportingCandidate,
@@ -720,13 +722,16 @@ def read_required_inputs(
             CanonicalObservation.status.in_([item.value for item in QUALIFIED_STATUSES]),
         )
         .order_by(Page.index, ObservationCandidate.created_at, CanonicalObservation.id)
-    ).all()
+    )
+    if page_number is not None:
+        confirmed_query = confirmed_query.where(Page.index == page_number - 1)
+    confirmed_rows = session.execute(confirmed_query).all()
 
     seen_observations: set[UUID] = set()
     confirmed_readings_list: list[ConfirmedReadingOut] = []
     # One canonical observation can have a primary candidate plus corroborating candidates.  It is
     # still one qualified reading, especially for a many-valued rule input.
-    for observation, _page_index, _created_at in confirmed_rows:
+    for observation, page_index, _created_at in confirmed_rows:
         if observation.id in seen_observations:
             continue
         seen_observations.add(observation.id)
@@ -735,6 +740,7 @@ def read_required_inputs(
                 key=f"{observation.document_role}:{observation.semantic_type}",
                 source=observation.document_role,
                 semantic_type=observation.semantic_type,
+                page_index=page_index,
                 value=(
                     f"{format_inches(Fraction(observation.value_numerator, observation.value_denominator))} "
                     f"{observation.unit}"
@@ -748,8 +754,24 @@ def read_required_inputs(
         )
     confirmed_readings = tuple(confirmed_readings_list)
 
+    page_numbers = tuple(
+        page_index + 1
+        for page_index in session.scalars(
+            select(Page.index)
+            .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == DocumentVersion.id,
+            )
+            .where(PackageRevisionDocument.package_revision_id == revision.id)
+            .distinct()
+            .order_by(Page.index)
+        )
+    )
+
     return RequiredInputsOut(
-        proposed_readings=_stored_proposal_out(session, revision),
+        page_numbers=page_numbers,
+        proposed_readings=_stored_proposal_out(session, revision, page_number=page_number),
         quantities=tuple(
             QuantityOut(
                 key=quantity.key,
@@ -1202,6 +1224,7 @@ def propose_measurements(
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
+    body: PageProposalIn,
 ) -> EventStreamResponse:
     """Propose which reading fills which field, and stream the phases while it happens.
 
@@ -1220,16 +1243,36 @@ def propose_measurements(
     """
     revision = _revision(session, project_id, package_id)
 
-    context, rules_published = assignment_context(session, revision)
+    page_number = body.page_number
+    page_exists = session.execute(
+        select(Page.id)
+        .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(
+            PackageRevisionDocument.package_revision_id == revision.id,
+            Page.index == page_number - 1,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if page_exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"page {page_number} is not part of this package revision",
+        )
+
+    context, rules_published = assignment_context(session, revision, page_number=page_number)
     fields, readings = context.fields, context.readings
 
     if len(readings) > MAX_ASSIGNMENT_READINGS:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
-                f"this package has {len(readings)} unconfirmed readings, more than the "
-                f"{MAX_ASSIGNMENT_READINGS} this step will propose over. Confirm or discard some "
-                "first: a proposal across that many is one the checks are likely to refuse whole."
+                f"page {page_number} has {len(readings)} eligible unconfirmed readings, more than "
+                f"the {MAX_ASSIGNMENT_READINGS} this step will propose over. Nothing is proposed "
+                "rather than a partial page; review or confirm some readings first."
             ),
         )
 
@@ -1282,6 +1325,7 @@ def propose_measurements(
             record_proposal(
                 session,
                 package_revision_id=revision.id,
+                page_number=page_number,
                 assignments=proposed,
                 model_id=model.config.model_id,
                 unverified_placement=unverified,
@@ -1319,6 +1363,7 @@ def propose_measurements(
                 event="result",
                 result=ProposedMeasurementsOut(
                     assignments=assignments,
+                    page_number=page_number,
                     fields_total=len(fields),
                     fields_filled=len(assignments),
                     readings_considered=len(readings),

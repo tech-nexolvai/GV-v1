@@ -60,6 +60,7 @@ from app.models import (
     ReadingPart,
     SourceArtifact,
     TaskRun,
+    VendorPagePicture,
     ViewRole,
     WorkflowRun,
     duplicate_identifiers,
@@ -1152,6 +1153,9 @@ def test_the_link_reader_guard_sees_a_reader(tmp_path: Path) -> None:
 # -- the one writer of a part's picture, and of a decision about a part (#897) ------------------
 
 PICTURE_ROWS = _Guarded(tables=frozenset({"part_pictures"}), models=frozenset({"PartPicture"}))
+VENDOR_PAGE_PICTURE_ROWS = _Guarded(
+    tables=frozenset({"vendor_page_pictures"}), models=frozenset({"VendorPagePicture"})
+)
 DECISION_ROWS = _Guarded(
     tables=frozenset({"part_confirmations"}), models=frozenset({"PartConfirmation"})
 )
@@ -1160,6 +1164,7 @@ DECISION_ROWS = _Guarded(
 #: else; only a person's confirmation or withdrawal writes a decision about a part.
 PICTURE_WRITERS: dict[_Guarded, set[tuple[str, str]]] = {
     PICTURE_ROWS: {("workflow/part_pictures.py", "record_part_picture")},
+    VENDOR_PAGE_PICTURE_ROWS: {("workflow/vendor_page_pictures.py", "record_page_picture")},
     DECISION_ROWS: {("workflow/parts.py", "confirm_part"), ("workflow/parts.py", "withdraw_part")},
 }
 
@@ -1182,6 +1187,57 @@ def test_only_the_recorder_writes_a_picture_and_only_a_person_writes_a_decision(
         writers = {writer[:2] for writer in _writers(REPO_ROOT, guarded)}
         assert writers == expected, (guarded.tables, sorted(writers))
     assert _callers(REPO_ROOT, "record_part_picture") == {("workflow/stages.py", "_cut_pictures")}
+    assert _callers(REPO_ROOT, "record_page_picture") == {
+        ("workflow/stages.py", "render_vendor_page_pictures")
+    }
+
+
+def test_the_vendor_page_picture_is_a_pointer_to_pixels_and_geometry_only() -> None:
+    columns = Base.metadata.tables["vendor_page_pictures"].columns
+
+    assert {column.name for column in columns} == {
+        "id",
+        "created_at",
+        "page_id",
+        "storage_key",
+        "sha256",
+        "media_type",
+        "dpi",
+        "width_px",
+        "height_px",
+        "snap_points",
+        "snap_tolerance",
+    }
+    assert not any("LargeBinary" in type(column.type).__name__ for column in columns)
+
+
+def test_a_vendor_page_picture_cannot_be_edited_or_deleted(postgres_engine: Engine) -> None:
+    _upgrade(postgres_engine)
+    with session_factory(postgres_engine).begin() as session:
+        page = _page(session)
+        picture = VendorPagePicture(
+            page_id=page.id,
+            storage_key="vendor-pages/test/page.png",
+            sha256=HASH,
+            media_type="image/png",
+            dpi=150,
+            width_px=100,
+            height_px=100,
+            snap_points=[],
+            snap_tolerance=None,
+        )
+        session.add(picture)
+        session.flush()
+
+    for mutation in (
+        "UPDATE vendor_page_pictures SET dpi = 300",
+        "DELETE FROM vendor_page_pictures",
+    ):
+        with (
+            pytest.raises(DBAPIError, match="append-only"),
+            session_factory(postgres_engine).begin() as session,
+        ):
+            session.execute(text(mutation))
 
 
 @pytest.mark.parametrize(

@@ -326,10 +326,11 @@ export function createPackage(projectId: string, vendor: string | null) {
  * the sink's front offset off the drawing once even though three rules consume it. `consumers` says
  * which inputs each value feeds.
  */
-export function getRequiredInputs(projectId: string, packageId: string) {
+export function getRequiredInputs(projectId: string, packageId: string, pageNumber?: number) {
   type Needed =
     paths['/api/v1/projects/{project_id}/packages/{package_id}/required-inputs']['get']['responses']['200']['content']['application/json'];
-  return request<Needed>(`/projects/${projectId}/packages/${packageId}/required-inputs`);
+  const query = pageNumber === undefined ? '' : `?page_number=${pageNumber}`;
+  return request<Needed>(`/projects/${projectId}/packages/${packageId}/required-inputs${query}`);
 }
 
 /** One frame of the assignment stream. The server's own type — see `AssignmentEvent`. */
@@ -358,12 +359,18 @@ export type ProposedField = components['schemas']['ProposedFieldOut'];
 export async function proposeMeasurements(
   projectId: string,
   packageId: string,
+  pageNumber: number,
   onStep: (step: AssignmentStep) => void,
   signal?: AbortSignal,
 ): Promise<ProposedMeasurements> {
   const response = await fetch(
     `${BASE}/projects/${projectId}/packages/${packageId}/measurements/propose`,
-    { method: 'POST', headers: { Accept: 'text/event-stream' }, signal },
+    {
+      method: 'POST',
+      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page_number: pageNumber }),
+      signal,
+    },
   );
 
   if (!response.ok || !response.body) {
@@ -591,9 +598,9 @@ export function completeReviewSession(projectId: string, reviewSessionId: string
  * Only readings that carry a value: a token with no unit was recorded without one, deliberately, and
  * there is nothing for a reviewer to confirm about a bare number.
  */
-export function listCandidates(projectId: string, packageId: string) {
+export function listCandidates(projectId: string, packageId: string, pageNumber: number) {
   return request<CandidatesOut>(
-    `/projects/${projectId}/packages/${packageId}/candidates`,
+    `/projects/${projectId}/packages/${packageId}/candidates?page_number=${pageNumber}`,
   );
 }
 
@@ -654,6 +661,40 @@ export function confirmDrawingRole(
 /** The parts suggested in each drawing of this package, left to right, and each decision (#882). */
 export function listDrawingParts(projectId: string, packageId: string) {
   return request<DrawingPartsOut>(`/projects/${projectId}/packages/${packageId}/parts`);
+}
+
+/** Ask the worker to render missing vendor-only page pictures; safe to repeat. */
+export function prepareVendorPagePictures(projectId: string, packageId: string) {
+  return request<components['schemas']['PreparePagePicturesOut']>(
+    `/projects/${projectId}/packages/${packageId}/parts/page-pictures`,
+    { method: 'POST' },
+  );
+}
+
+/** Download a stored, digest-checked full vendor-only page image. */
+export async function downloadVendorPagePicture(
+  projectId: string,
+  packageId: string,
+  viewId: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/views/${viewId}/picture`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The vendor drawing picture could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
 }
 
 /**
@@ -904,6 +945,19 @@ export function approvePackage(projectId: string, reviewSessionId: string) {
     `/projects/${projectId}/review-sessions/${reviewSessionId}/approve`,
     { method: 'POST' },
   );
+}
+
+export interface SignedExportStatus {
+  approval_id: string;
+  status: 'not_requested' | 'preparing' | 'ready' | 'failed';
+}
+
+export function getSignedExports(projectId: string, packageId: string) {
+  return request<SignedExportStatus>(`/projects/${projectId}/packages/${packageId}/signed-exports`);
+}
+
+export function prepareSignedExports(projectId: string, packageId: string) {
+  return request<SignedExportStatus>(`/projects/${projectId}/packages/${packageId}/signed-exports`, { method: 'POST' });
 }
 
 /**

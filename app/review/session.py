@@ -233,7 +233,12 @@ def complete_session(db: Session, *, review_session_id: UUID) -> ReviewSession:
     Not idempotent on purpose. Completing twice would move `completed_at`, and a timestamp that can
     be moved cannot answer "when did this reviewer stop?".
     """
-    review_session = db.get(ReviewSession, review_session_id)
+    review_session = db.scalar(
+        select(ReviewSession)
+        .where(ReviewSession.id == review_session_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if review_session is None:
         raise NoSuchReviewSession(f"no review session {review_session_id}.")
     if review_session.completed_at is not None:
@@ -282,7 +287,12 @@ def record_action(
             "'edit': a changed mind is a new action, not a rewrite of the old one."
         ) from unknown
 
-    review_session = db.get(ReviewSession, review_session_id)
+    review_session = db.scalar(
+        select(ReviewSession)
+        .where(ReviewSession.id == review_session_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if review_session is None:
         raise NoSuchReviewSession(f"no review session {review_session_id}.")
     if review_session.completed_at is not None:

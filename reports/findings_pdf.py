@@ -27,6 +27,7 @@ from reportlab.lib.pagesizes import A4  # type: ignore[import-untyped]
 from reportlab.pdfbase.pdfmetrics import stringWidth  # type: ignore[import-untyped]
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
+from reports.signed_review import SignedReview, with_review_pdf
 from reports.spreadsheet import NOT_RECORDED, StoredFinding
 from workflow.changed_values import ChangedValues
 
@@ -57,6 +58,7 @@ class FindingsPdfInput:
     vendor: str | None
     findings: tuple[StoredFinding, ...]
     changed_values: ChangedValues | None = None
+    signed_review: SignedReview | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.package_revision_id, UUID):
@@ -259,6 +261,11 @@ class _Document:
         self.canvas.drawString(_MARGIN, _PAGE_HEIGHT - 90, "GRANITI + NEXOLV")
         self.canvas.setFont(_BODY_FONT, 11)
         self.canvas.drawString(_MARGIN, _PAGE_HEIGHT - 116, "SHOP DRAWING REVIEW")
+        self.canvas.drawString(
+            _MARGIN,
+            _PAGE_HEIGHT - 138,
+            "SIGNED REVIEW" if self.source.signed_review else "BEFORE REVIEW — NOT A FINAL REPORT",
+        )
         self.canvas.setFont(_BOLD_FONT, 27)
         self.canvas.drawString(_MARGIN, _PAGE_HEIGHT - 180, "FINDINGS REPORT")
 
@@ -369,4 +376,9 @@ def write_findings_pdf(source: FindingsPdfInput) -> bytes:
     """
     if not isinstance(source, FindingsPdfInput):
         raise TypeError("source must be a FindingsPdfInput")
-    return _Document(source).build()
+    document = _Document(source).build()
+    return (
+        with_review_pdf(document, source.signed_review)
+        if source.signed_review is not None
+        else document
+    )
