@@ -4146,19 +4146,17 @@ class DatabaseStages:
         }
         if not documents:
             return {"ran": True, "rendered": 0, "refused": 0}
+        # Every page of the revision, not only pages with a confirmed vendor drawing (#968): the
+        # Measure screen shows the page under review beside the form, and a combined set has no
+        # confirmed drawing before review. Click-to-place still requires a confirmed vendor drawing.
         pages = list(
             session.scalars(
                 select(Page)
-                .distinct()
-                .join(DrawingView, DrawingView.page_id == Page.id)
                 .join(
                     PackageRevisionDocument,
                     PackageRevisionDocument.document_version_id == Page.document_version_id,
                 )
-                .where(
-                    PackageRevisionDocument.package_revision_id == package_revision_id,
-                    DrawingView.role == ViewRole.SHOP,
-                )
+                .where(PackageRevisionDocument.package_revision_id == package_revision_id)
                 .order_by(Page.index, Page.id)
             )
         )

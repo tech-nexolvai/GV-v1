@@ -30,10 +30,12 @@ import { AssignmentProgress } from '../components/measure/AssignmentProgress';
 import { DrawingRoles } from '../components/measure/DrawingRoles';
 import { CountertopRuns } from '../components/measure/CountertopRuns';
 import { DrawingParts } from '../components/measure/DrawingParts';
+import { PageDrawing } from '../components/measure/PageDrawing';
 import { ReadingParts } from '../components/measure/ReadingParts';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { MeasurementSectionNav } from './MeasurementSectionNav';
 import { measurementValueOrigin } from './measurementValueOrigin';
+import { fieldReview, reviewCounts, type FieldReview, type ReviewedCandidate } from './fieldReview';
 import { distributionFieldWidthKey } from '../components/measure/fillerDistribution';
 import {
   categoryLabel,
@@ -315,6 +317,8 @@ export function MeasurementPanel({
   const [proposing, setProposing] = useState(false);
   /** Whether the crop-inspection list is open. Closed by default; it is the slow route. */
   const [inspecting, setInspecting] = useState(false);
+  /** Review by exception (admin, 2026-10-06): show only the fields that need a look. */
+  const [onlyNeeded, setOnlyNeeded] = useState(true);
   /** Bumped to re-fetch the form while the reader is still working. */
   const [reload, setReload] = useState(0);
   // Decisions on parts, which change the runs under each countertop (#893).
@@ -898,6 +902,27 @@ export function MeasurementPanel({
       ? (runs[quantity.key] ?? []).some((value) => value.trim().length > 0)
       : (singles[quantity.key] ?? '').trim().length > 0;
   const filledFieldCount = needed.quantities.filter(hasValue).length;
+  /** Each reading the form could have been filled from, by id, with what the evidence path says. */
+  const candidatesById = new Map<string, ReviewedCandidate & CandidateOut>(
+    candidates.map((candidate) => [candidate.candidate_id, candidate as ReviewedCandidate & CandidateOut]),
+  );
+  /** Whether the reviewer needs to look at this field, and why — never whether its value is right. */
+  const reviewOf = (quantity: Quantity): FieldReview =>
+    fieldReview({
+      hasValue: hasValue(quantity),
+      reviewerOwned:
+        (quantity.many ? reviewerEditedMany.has(quantity.key) : reviewerEditedSingles.has(quantity.key)) ||
+        (readingsByKey[quantity.key] ?? []).length > 0,
+      proposedCandidateIds: aiFilled[quantity.key] ?? null,
+      candidates: candidatesById,
+      placementUnverified: unverifiedFields.has(quantity.key),
+    });
+  const REVIEW_LABEL: Record<FieldReview['state'], string> = {
+    agreed: '✓ Both AI readers agreed',
+    needs_look: 'Needs a look',
+    done: 'Done',
+    empty: 'Needs a value',
+  };
   const coveragePercent =
     measurementFieldCount === 0
       ? 0
@@ -934,6 +959,7 @@ export function MeasurementPanel({
       .filter((field) => !field.placement_verified)
       .map((field) => field.field_key),
   );
+  const reviewSummary = reviewCounts(needed.quantities.map(reviewOf));
 
   /** Whether a proposal has been asked for at all. What decides who owns the panel's space. */
   const attempted = proposing || proposalSteps.length > 0 || proposal !== null || proposalError !== null;
@@ -1015,7 +1041,8 @@ export function MeasurementPanel({
       )}
       </div>
 
-      <section className="enter-values__section measure-step-target" id="measure-values">
+      <section className="enter-values__section measure-step-target measure-values--with-drawing" id="measure-values">
+        {packageId && <PageDrawing packageId={packageId} pageNumber={selectedPageNumber} />}
         {candidateLoadError && <p className="enter-values__error" role="alert">Drawing readings could not be refreshed. You can still enter values. {candidateLoadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
         {vocabularyLoadError && <p className="enter-values__error" role="alert">Reading meanings could not be loaded. You can still enter values. {vocabularyLoadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
         <div className="measure-page-picker">
@@ -1322,6 +1349,25 @@ export function MeasurementPanel({
             row. Grouped, they fill the shop drawing's fields with the shop drawing open, which is
             how the work is actually done — and the sheet is stated once as a heading instead of
             repeated fourteen times as a label. */}
+        <div className="review-summary" role="status">
+          <span className="review-summary__counts">
+            <strong>{reviewSummary.agreed}</strong> agreed by both AI readers ·{' '}
+            <strong>{reviewSummary.needs_look + reviewSummary.empty}</strong> need a look
+            {reviewSummary.done > 0 && (
+              <>
+                {' '}· <strong>{reviewSummary.done}</strong> done
+              </>
+            )}
+          </span>
+          <label className="review-summary__toggle">
+            <input
+              type="checkbox"
+              checked={onlyNeeded}
+              onChange={(event) => setOnlyNeeded(event.target.checked)}
+            />{' '}
+            Show only what needs a look
+          </label>
+        </div>
         {sheets.map((sheet) => {
           const inSheet = needed.quantities.filter((quantity) => quantity.source === sheet);
           const done = inSheet.filter(hasValue).length;
@@ -1337,8 +1383,16 @@ export function MeasurementPanel({
               </div>
               {inSheet.map((quantity) => {
                 const origin = fieldOrigin(quantity);
+                const review = reviewOf(quantity);
+                if (onlyNeeded && (review.state === 'agreed' || review.state === 'done')) return null;
+                const pictured =
+                  review.state === 'needs_look'
+                    ? (aiFilled[quantity.key] ?? [])
+                        .map((id) => candidatesById.get(id))
+                        .filter((candidate): candidate is ReviewedCandidate & CandidateOut => candidate !== undefined)
+                    : [];
                 return (
-                  <div className="value-field" key={quantity.key} data-origin={origin}>
+                  <div className="value-field" key={quantity.key} data-origin={origin} data-review={review.state}>
                     <label className="value-label" htmlFor={`q-${quantity.key}`}>
                       {/* The rulebook's readable name leads; the code follows it. A reviewer filling
                           this in needs to know it is the sink cabinet width — `CT004` is what they
@@ -1347,6 +1401,9 @@ export function MeasurementPanel({
                       <span className="value-code">{quantity.semantic_type}</span>
                       <span className={`value-origin value-origin--${origin}`}>
                         {ORIGIN_LABEL[origin]}
+                      </span>
+                      <span className={`field-review field-review--${review.state}`}>
+                        {REVIEW_LABEL[review.state]}
                       </span>
                       {quantity.key in aiFilled && (
                         <span className="value-where">
@@ -1368,12 +1425,28 @@ export function MeasurementPanel({
                         it is needed, and the meaning is the field it was clicked under rather than a
                         code chosen from a list. Nothing is filled in automatically: the click is the
                         reviewer saying what the number means. */}
+                    {review.reason && review.state !== 'empty' && (
+                      <p className="field-review__reason">{review.reason}</p>
+                    )}
+                    {pictured.length > 0 && packageId && (
+                      <div className="field-review__pictures">
+                        {pictured.map((candidate) => (
+                          <MeasureCandidateCrop
+                            key={candidate.candidate_id}
+                            candidate={candidate}
+                            packageId={packageId}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {review.state !== 'agreed' && (
                     <AiReadings
                       quantity={quantity}
                       candidates={candidates}
                       busyId={confirming}
                       onUse={(candidate) => void confirmFromMeasure(candidate, quantity.semantic_type)}
                     />
+                    )}
                     {quantity.many ? (
                       <>
                         {(runs[quantity.key] ?? ['']).map((value, index) => (
