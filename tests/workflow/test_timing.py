@@ -53,6 +53,7 @@ def test_jsonl_and_worker_log_receive_the_same_row(
 def test_stage_timing_wrapper_preserves_the_stage_result_and_error(tmp_path: Path) -> None:
     stages = object.__new__(DatabaseStages)
     stages._timings = TimingRecorder(tmp_path / "stage.jsonl")
+    stages._timing_document_version_id = None
 
     result = stages._timed_call(
         "extraction.page.vector_text_and_candidates",
@@ -84,4 +85,12 @@ def test_timing_rows_exclude_document_content(tmp_path: Path) -> None:
         pass
 
     row = json.loads((tmp_path / "timings.jsonl").read_text().splitlines()[0])
-    assert set(row) == {"operation", "run_id", "page_index", "started_at", "elapsed_ms", "status"}
+    assert set(row) == {
+        "operation",
+        "run_id",
+        "page_index",
+        "document_version_id",
+        "started_at",
+        "elapsed_ms",
+        "status",
+    }

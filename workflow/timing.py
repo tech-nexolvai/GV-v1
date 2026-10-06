@@ -29,7 +29,12 @@ class TimingRecorder:
 
     @contextmanager
     def measure(
-        self, operation: str, *, run_id: str, page_index: int | None = None
+        self,
+        operation: str,
+        *,
+        run_id: str,
+        page_index: int | None = None,
+        document_version_id: str | None = None,
     ) -> Iterator[None]:
         """Measure an operation and preserve both its return/exception behavior and result."""
         started_at = datetime.now(UTC)
@@ -46,6 +51,7 @@ class TimingRecorder:
                 operation=operation,
                 run_id=run_id,
                 page_index=page_index,
+                document_version_id=document_version_id,
                 started_at=started_at.isoformat(),
                 elapsed_ms=elapsed_ms,
                 status=status,
@@ -60,12 +66,14 @@ class TimingRecorder:
         started_at: str,
         elapsed_ms: float,
         status: str,
+        document_version_id: str | None = None,
     ) -> None:
         """Best-effort write of a schema-limited row; never raise into measured work."""
         row: dict[str, Any] = {
             "operation": operation,
             "run_id": run_id,
             "page_index": page_index,
+            "document_version_id": document_version_id,
             "started_at": started_at,
             "elapsed_ms": max(0.0, elapsed_ms),
             "status": status,

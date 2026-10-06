@@ -1557,6 +1557,7 @@ class DatabaseStages:
         self._dpi = dpi
         self._timings = timings
         self._timed_first_page_runs: set[UUID] = set()
+        self._timing_document_version_id: str | None = None
         if missing_space is not None and not isinstance(missing_space, MissingSpace):
             raise TypeError("missing_space must be a MissingSpace")
         self._missing_space = missing_space
@@ -1931,7 +1932,12 @@ class DatabaseStages:
         """Return an opt-in timing span without coupling stage work to telemetry."""
         if self._timings is None:
             return nullcontext()
-        return self._timings.measure(operation, run_id=run_id, page_index=page_index)
+        return self._timings.measure(
+            operation,
+            run_id=run_id,
+            page_index=page_index,
+            document_version_id=self._timing_document_version_id,
+        )
 
     def _timed_call(
         self,
@@ -1957,6 +1963,7 @@ class DatabaseStages:
     ) -> list[PageResult]:
         """One document: its manifest, then its text, page by page."""
         run_key = str(package_revision_id)
+        self._timing_document_version_id = str(version_id)
         try:
             with self._measure("extraction.document.pdf_page_load", run_id=run_key):
                 raw_pages = read_pages(data)
@@ -2000,6 +2007,7 @@ class DatabaseStages:
                     operation="ingest.upload_to_first_page_stage",
                     run_id=run_key,
                     page_index=None,
+                    document_version_id=str(version_id),
                     started_at=start.isoformat(),
                     elapsed_ms=max(0.0, (datetime.now(UTC) - start).total_seconds() * 1000),
                     status="ok",
@@ -2332,6 +2340,7 @@ class DatabaseStages:
                     operation="extraction.page.vision",
                     run_id=run_key,
                     page_index=page.index,
+                    document_version_id=str(version_id),
                     started_at=datetime.now(UTC).isoformat(),
                     elapsed_ms=0.0,
                     status="disabled",
@@ -2505,6 +2514,7 @@ class DatabaseStages:
                     operation="extraction.page.association",
                     run_id=run_key,
                     page_index=page.index,
+                    document_version_id=str(version_id),
                     started_at=associated_started_at.isoformat(),
                     elapsed_ms=(time.perf_counter_ns() - associated_started_ns) / 1_000_000,
                     status="ok",
@@ -2536,6 +2546,7 @@ class DatabaseStages:
                     operation="extraction.page.part_proposals",
                     run_id=run_key,
                     page_index=page.index,
+                    document_version_id=str(version_id),
                     started_at=part_proposal_started_at.isoformat(),
                     elapsed_ms=(time.perf_counter_ns() - part_proposal_started_ns) / 1_000_000,
                     status="ok",
@@ -2554,6 +2565,7 @@ class DatabaseStages:
                     operation="extraction.page.part_pictures",
                     run_id=run_key,
                     page_index=page.index,
+                    document_version_id=str(version_id),
                     started_at=picture_started_at.isoformat(),
                     elapsed_ms=(time.perf_counter_ns() - picture_started_ns) / 1_000_000,
                     status="ok",
@@ -2743,6 +2755,7 @@ class DatabaseStages:
                     operation="extraction.page.total",
                     run_id=run_key,
                     page_index=page.index,
+                    document_version_id=str(version_id),
                     started_at=page_started_at.isoformat(),
                     elapsed_ms=(time.perf_counter_ns() - page_started_ns) / 1_000_000,
                     status="ok",
