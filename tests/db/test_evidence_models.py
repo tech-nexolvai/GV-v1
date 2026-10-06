@@ -8,7 +8,7 @@ from fractions import Fraction
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import Engine, Float, select, text
+from sqlalchemy import Engine, Float, insert, select, text
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -295,8 +295,15 @@ def test_evidence_crop_migration_leaves_legacy_rows_untouched(
     with unit_of_work(factory) as session:
         version_id, page_id, extraction_id = _persist_context(session)
         candidate = _candidate(version_id, page_id, extraction_id, "legacy crop")
-        session.add(candidate)
-        session.flush()
+        # This migration test is deliberately running below migration 0070, where the
+        # current ORM model's `review_reason` column does not exist yet. Insert the
+        # legacy row with only the columns present at that historical schema version.
+        legacy_values = {
+            column.name: getattr(candidate, column.name)
+            for column in ObservationCandidate.__table__.columns
+            if column.name != "review_reason"
+        }
+        session.execute(insert(ObservationCandidate.__table__).values(**legacy_values))
         session.execute(
             text(
                 "INSERT INTO evidence_artifacts "
