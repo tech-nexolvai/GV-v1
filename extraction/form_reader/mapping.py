@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
 
 from extraction.form_reader.agreement import ComparedReading
+
+#: Why a reading located on the reviewer's ink goes to the person (#979): the sentence the screen
+#: shows. The reviewer's own text, where there is any, follows it as "reviewer wrote …".
+REVIEWER_MARKUP_REASON: Final = "covered by reviewer markup"
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +114,7 @@ def _review_reason(reading: ComparedReading) -> str:
         "gv-mark": "GV's markup is on this label — check the vendor's own number",
         "label-location-unknown": "label location is unknown; can't rule out GV markup",
         "gv-mark-unchecked": "couldn't check this label for GV markup; review it",
+        "reviewer-markup": REVIEWER_MARKUP_REASON,
     }
     if reading.reason in reasons:
         return reasons[reading.reason]

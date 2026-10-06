@@ -29,6 +29,7 @@ ReviewReason = Literal[
     "gv-mark",
     "label-location-unknown",
     "gv-mark-unchecked",
+    "reviewer-markup",
 ]
 
 

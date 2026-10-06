@@ -19,10 +19,18 @@ from evidence.polygon import Polygon
 from extraction.form_reader.agreement import ComparedReading, compare_page_answers
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.form_reader.locator import LocatedBox, locate_box
-from extraction.form_reader.mapping import FormMapping, map_page_to_fields
+from extraction.form_reader.mapping import (
+    REVIEWER_MARKUP_REASON,
+    FormMapping,
+    map_page_to_fields,
+)
+from extraction.form_reader.parser import parse_dimension
 from extraction.form_reader.prompt_v5 import BUILT_IN_PROMPT, FormPrompt, prompt_from_guidance_file
 from extraction.form_reader.runner import ClientProvider, read_pages_parallel
 from extraction.form_reader.schema import PageFormAnswer
+from extraction.ink import InkClass, PageInk
+from extraction.stamp_text import PixelBox
+from units.measurement import Measurement
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +114,9 @@ class FormPageImage:
     regions: tuple[tuple[str, Polygon], ...]
     gv_mark_checker: Callable[[Polygon], bool | None] | None = None
     """The existing page-mark detector for a located display crop; None means it could not check."""
+    ink: PageInk | None = None
+    """Whose ink each word on the page is (#979), read at `transform`'s dpi; None means the page's
+    ink could not be read, which holds every agreement on it back."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +130,52 @@ class LocatedReading:
     document_version_id: UUID
     page_id: UUID
     image_polygon: tuple[tuple[int, int], ...]
+    ink: InkClass | None = None
+    """Whose ink the located box holds (#979); None where the box or the page's ink is unknown."""
+    reviewer_text: str = ""
+    """What the reviewer wrote at the located box, as context only; empty where nothing."""
+
+
+def apply_ink(
+    comparison: ComparedReading,
+    image_polygon: tuple[tuple[int, int], ...],
+    ink: PageInk | None,
+) -> tuple[ComparedReading, InkClass | None, str]:
+    """Hold a reading back where its located box is on the reviewer's ink (#979).
+
+    A box on `GV` or `COVERED` ink makes the comparison `review_required` with reason
+    `reviewer-markup`, whatever its state was: the readers may have copied the reviewer's number,
+    and the vendor's may be hidden under it. A page whose ink could not be read cannot clear an
+    agreement, so a corroborated reading there becomes `gv-mark-unchecked`. A reading with no
+    located box is left as it is: `guard_located_comparison` has already refused its agreement.
+    Returns the comparison, the ink found, and the reviewer's text there.
+    """
+    if not image_polygon:
+        return comparison, None, ""
+    if ink is None:
+        if comparison.state == "corroborated":
+            return (
+                replace(
+                    comparison, state="review_required", value=None, reason="gv-mark-unchecked"
+                ),
+                None,
+                "",
+            )
+        return comparison, None, ""
+    box: PixelBox = (
+        min(x for x, _ in image_polygon),
+        min(y for _, y in image_polygon),
+        max(x for x, _ in image_polygon),
+        max(y for _, y in image_polygon),
+    )
+    found = ink.at(box)
+    if found.ink is InkClass.VENDOR:
+        return comparison, found.ink, ""
+    return (
+        replace(comparison, state="review_required", value=None, reason="reviewer-markup"),
+        found.ink,
+        found.reviewer_text,
+    )
 
 
 def guard_located_comparison(
@@ -234,6 +291,22 @@ def read_form_pages(
                 location,
                 page.gv_mark_checker,
             )
+            image_polygon: tuple[tuple[int, int], ...] = (
+                ()
+                if location is None
+                else tuple(
+                    (point.x, point.y)
+                    for point in (
+                        page.transform.from_stored(stored) for stored in location.polygon.points
+                    )
+                )
+            )
+            if page.ink is not None and page.ink.dpi != page.transform.dpi:
+                raise ValueError(
+                    f"page {page.page_index}'s ink was read at {page.ink.dpi} dpi but its "
+                    f"transform is at {page.transform.dpi} dpi"
+                )
+            comparison, ink, reviewer_text = apply_ink(comparison, image_polygon, page.ink)
             result.append(
                 LocatedReading(
                     comparison=comparison,
@@ -242,20 +315,63 @@ def read_form_pages(
                     second_countertop_count=len(second.countertops),
                     document_version_id=page.document_version_id,
                     page_id=page.page_id,
-                    image_polygon=(
-                        ()
-                        if location is None
-                        else tuple(
-                            (point.x, point.y)
-                            for point in (
-                                page.transform.from_stored(stored)
-                                for stored in location.polygon.points
-                            )
-                        )
-                    ),
+                    image_polygon=image_polygon,
+                    ink=ink,
+                    reviewer_text=reviewer_text,
                 )
             )
     return tuple(result)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateOutcome:
+    """What one located reading is saved as: its value if any, why it needs a look, and whether
+    it may be offered to a form field."""
+
+    accepted: bool
+    value: Measurement | None
+    review_reason: str | None
+    flags: tuple[str, ...]
+
+
+def candidate_outcome(located: LocatedReading, mapping: FormMapping) -> CandidateOutcome:
+    """Decide what a reading is saved as, from the mapping and whose ink its box is on (#979).
+
+    A reading on the reviewer's ink (`GV` or `COVERED`) is never accepted and carries no value, not
+    even as a suggestion: the readers may have copied the reviewer's number. Its reason is the plain
+    "covered by reviewer markup", followed by what the reviewer wrote there when there is any, so
+    the person sees the reviewer's number as context and types the vendor's. Every other reading is
+    saved as before: its agreed value where the mapping accepted it, the parsed suggestion where it
+    did not, with the mapping's reason.
+    """
+    reading = located.comparison
+    mapped = {id(proposal.reading) for proposal in mapping.proposals}
+    on_reviewer_ink = located.ink is not None and located.ink is not InkClass.VENDOR
+    if on_reviewer_ink:
+        reason = REVIEWER_MARKUP_REASON
+        if located.reviewer_text:
+            reason = f"{reason}; reviewer wrote {located.reviewer_text}"
+        return CandidateOutcome(
+            accepted=False, value=None, review_reason=reason, flags=("reviewer-markup",)
+        )
+    accepted = id(reading) in mapped
+    if accepted:
+        return CandidateOutcome(accepted=True, value=reading.value, review_reason=None, flags=())
+    dimension = reading.qwen_dimension
+    parsed = parse_dimension(dimension) if dimension is not None else None
+    return CandidateOutcome(
+        accepted=False,
+        value=None if parsed is None else parsed.value,
+        review_reason=next(
+            (
+                question.review_reason
+                for question in mapping.questions
+                if question.reading is reading
+            ),
+            "review this reading before assigning it",
+        ),
+        flags=(),
+    )
 
 
 def persist_form_proposals(
@@ -273,7 +389,6 @@ def persist_form_proposals(
     from app.models.document import Page as PageModel
     from app.models.evidence import MeasurementProposal, ObservationCandidate
     from evidence.canonical import CorroborationLane
-    from extraction.form_reader.parser import parse_dimension
     from units.measurement import Unit
 
     if not isinstance(session, Session):
@@ -294,19 +409,20 @@ def persist_form_proposals(
             first_countertop_count=first_count,
             second_countertop_count=second_count,
         )
-        mapped = {id(proposal.reading): proposal for proposal in mapping.proposals}
         proposal_id = uuid4()
         page = session.get(PageModel, page_id)
         if page is None:
             raise ValueError("form-reader page disappeared before proposal persistence")
         candidate_by_reading: dict[int, ObservationCandidate] = {}
+        held_on_ink: set[int] = set()
         for located in page_readings:
             reading = located.comparison
             dimension = reading.qwen_dimension
             raw_text = "" if dimension is None or dimension.text is None else dimension.text
-            parsed = parse_dimension(dimension) if dimension is not None else None
-            accepted = id(reading) in mapped
-            value = reading.value if accepted else (None if parsed is None else parsed.value)
+            outcome = candidate_outcome(located, mapping)
+            value = outcome.value
+            if not outcome.accepted and outcome.flags:
+                held_on_ink.add(id(reading))
             polygon: list[list[int]] = []
             if located.image_polygon:
                 polygon = [list(point) for point in located.image_polygon]
@@ -322,21 +438,12 @@ def persist_form_proposals(
                 polygon=polygon,
                 coordinate_space="image",
                 confidence=None,
-                ambiguity_flags=[],
-                corroboration_status="CORROBORATED" if accepted else None,
-                corroboration_lane=(CorroborationLane.SECOND_READER.value if accepted else None),
-                review_reason=(
-                    None
-                    if accepted
-                    else next(
-                        (
-                            question.review_reason
-                            for question in mapping.questions
-                            if question.reading is reading
-                        ),
-                        "review this reading before assigning it",
-                    )
+                ambiguity_flags=list(outcome.flags),
+                corroboration_status="CORROBORATED" if outcome.accepted else None,
+                corroboration_lane=(
+                    CorroborationLane.SECOND_READER.value if outcome.accepted else None
                 ),
+                review_reason=outcome.review_reason,
             )
             session.add(candidate)
             session.flush()
@@ -345,6 +452,8 @@ def persist_form_proposals(
         page = session.get(PageModel, page_id)
         assert page is not None
         for proposal in mapping.proposals:
+            if id(proposal.reading) in held_on_ink:
+                continue  # never offered to a form field: it sits on the reviewer's ink
             candidate = candidate_by_reading[id(proposal.reading)]
             proposal_rows.append(
                 MeasurementProposal(
