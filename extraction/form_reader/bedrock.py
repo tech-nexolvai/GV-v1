@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any, Protocol
 
@@ -40,6 +40,8 @@ class AttemptUsage:
     malformed: bool
     failure_kind: str | None = None
     page_index: int = 0
+    raw_response_text: str | None = field(default=None, repr=False)
+    attempt_number: int = 1
 
 
 UsageRecorder = Callable[[AttemptUsage], None]
@@ -249,6 +251,7 @@ def read_page(
         response: Mapping[str, Any] | None = None
         input_tokens: int | None = None
         output_tokens: int | None = None
+        raw_response_text: str | None = None
         answer: PageFormAnswer | None = None
         try:
             response = client.converse(**request)
@@ -264,13 +267,14 @@ def read_page(
                     False,
                     type(error).__name__,
                     page_index,
+                    attempt_number=attempt + 1,
                 )
             )
             raise
         input_tokens, output_tokens = _response_usage(response)
         try:
-            text = _response_text(response)
-            payload = _extract_json_object(text)
+            raw_response_text = _response_text(response)
+            payload = _extract_json_object(raw_response_text)
             answer = validate_page_answer(payload, page_index=page_index)
         except (MalformedFormAnswer, ValueError) as error:
             record_attempt(
@@ -283,6 +287,8 @@ def read_page(
                     int((monotonic() - started) * 1000),
                     True,
                     page_index=page_index,
+                    raw_response_text=raw_response_text,
+                    attempt_number=attempt + 1,
                 )
             )
             if attempt:
@@ -302,6 +308,8 @@ def read_page(
                     False,
                     type(error).__name__,
                     page_index,
+                    raw_response_text,
+                    attempt + 1,
                 )
             )
             raise
@@ -315,6 +323,8 @@ def read_page(
                 int((monotonic() - started) * 1000),
                 False,
                 page_index=page_index,
+                raw_response_text=raw_response_text,
+                attempt_number=attempt + 1,
             )
         )
         if answer is None:

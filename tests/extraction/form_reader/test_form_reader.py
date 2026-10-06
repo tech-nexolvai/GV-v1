@@ -651,6 +651,9 @@ def test_malformed_answer_is_reasked_once_and_both_calls_are_recorded() -> None:
     assert answer.page_index == 2
     assert client.calls == 2
     assert [attempt.malformed for attempt in attempts] == [True, False]
+    assert [attempt.raw_response_text for attempt in attempts] == ["not-json", valid]
+    assert [attempt.attempt_number for attempt in attempts] == [1, 2]
+    assert valid not in repr(attempts[1])
 
 
 def test_provider_value_error_is_not_mistaken_for_malformed_output() -> None:
@@ -676,6 +679,8 @@ def test_provider_value_error_is_not_mistaken_for_malformed_output() -> None:
     assert len(attempts) == 1
     assert attempts[0].failure_kind == "ValueError"
     assert not attempts[0].malformed
+    assert attempts[0].raw_response_text is None
+    assert attempts[0].attempt_number == 1
 
 
 def test_parallel_page_results_apply_in_fixed_page_then_reader_order() -> None:
@@ -719,6 +724,54 @@ def test_parallel_page_results_apply_in_fixed_page_then_reader_order() -> None:
         (2, "qwen.qwen3-vl-235b-a22b"),
     ]
     assert len(recorder.snapshot()) == 4
+
+
+def test_transport_retry_keeps_one_attempt_sequence_for_the_reader_page() -> None:
+    class TooManyRequestsException(Exception):
+        pass
+
+    class ThrottleOnce:
+        def __init__(self) -> None:
+            self.calls: dict[str, int] = {}
+
+        def converse(self, **kwargs):
+            model = kwargs["modelId"]
+            self.calls[model] = self.calls.get(model, 0) + 1
+            if model == "us.moonshotai.kimi-k3" and self.calls[model] == 1:
+                raise TooManyRequestsException("slow down")
+            return {
+                "output": {"message": {"content": [{"text": '{"countertops":[],"notes":""}'}]}},
+                "usage": {"inputTokens": 8, "outputTokens": 4},
+            }
+
+    class Rates:
+        def rate_for(self, _model_id):
+            return object()
+
+    readers = ("us.moonshotai.kimi-k3", "qwen.qwen3-vl-235b-a22b")
+    recorder = ThreadSafeAttemptRecorder()
+    read_pages_parallel(
+        [(4, b"\x89PNG\r\n\x1a\npage")],
+        reader_ids=readers,
+        clients=ThreadLocalConverseClients(ThrottleOnce),
+        rates=Rates(),
+        calls_per_minute={reader: 6000 for reader in readers},
+        max_concurrent_calls=1,
+        max_tokens=1024,
+        max_throttle_retries=1,
+        retry_backoff_seconds=0.001,
+        record_attempt=recorder.record,
+    )
+    kimi = [attempt for attempt in recorder.snapshot() if attempt.model_id == readers[0]]
+    assert [attempt.attempt_number for attempt in kimi] == [1, 2]
+    assert [attempt.raw_response_text for attempt in kimi] == [
+        None,
+        '{"countertops":[],"notes":""}',
+    ]
+    assert [attempt.failure_kind for attempt in kimi] == [
+        "TooManyRequestsException",
+        None,
+    ]
 
 
 def test_a_reader_still_malformed_after_its_reask_abstains_on_that_page_only() -> None:
@@ -784,6 +837,11 @@ def test_a_reader_still_malformed_after_its_reask_abstains_on_that_page_only() -
         assert len(by_slot[slot].countertops) == 1
     malformed = [a for a in recorder.snapshot() if a.malformed]
     assert len(malformed) == 2  # the first answer and its one re-ask, both recorded
+    assert [attempt.raw_response_text for attempt in malformed] == [
+        "not json at all",
+        "not json at all",
+    ]
+    assert [attempt.attempt_number for attempt in malformed] == [1, 2]
     readings = compare_page_answers(
         by_slot[(2, reader_ids[0])],
         abstained,

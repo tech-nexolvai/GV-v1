@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
@@ -169,6 +169,13 @@ def read_pages_parallel(
 
     def invoke(job: tuple[int, str, bytes]) -> PageRead:
         page_index, model_id, png = job
+        attempt_number = 0
+
+        def record_job_attempt(attempt: AttemptUsage) -> None:
+            nonlocal attempt_number
+            attempt_number += 1
+            record_attempt(replace(attempt, attempt_number=attempt_number))
+
         for throttle_attempt in range(max_throttle_retries + 1):
             pacer.wait(model_id)
             try:
@@ -178,7 +185,7 @@ def read_pages_parallel(
                     page_png=png,
                     page_index=page_index,
                     max_tokens=max_tokens,
-                    record_attempt=record_attempt,
+                    record_attempt=record_job_attempt,
                     prompt=prompt,
                 )
                 return PageRead(page_index, model_id, answer)

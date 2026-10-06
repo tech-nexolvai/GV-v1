@@ -129,6 +129,15 @@ class _InvocationRecordLike(Protocol):
     def bound_pt(self) -> Decimal | None: ...
 
     @property
+    def private_raw_response(self) -> str | None: ...
+
+    @property
+    def reader_page_index(self) -> int | None: ...
+
+    @property
+    def reader_attempt_number(self) -> int | None: ...
+
+    @property
     def input_tokens(self) -> int: ...
 
     @property
@@ -197,6 +206,9 @@ def record(
             else invocation.assembled_context.as_record()
         ),
         bound_pt=invocation.bound_pt,
+        private_raw_response=invocation.private_raw_response,
+        reader_page_index=invocation.reader_page_index,
+        reader_attempt_number=invocation.reader_attempt_number,
         input_tokens=invocation.input_tokens,
         output_tokens=invocation.output_tokens,
         cost_micros=invocation.cost_micros,

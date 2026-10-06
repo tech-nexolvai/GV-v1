@@ -54,7 +54,7 @@ Design: `docs/DESIGN_AI.md` §4.5 · Verification: `tests/extraction/models/test
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from uuid import UUID
 
@@ -139,6 +139,9 @@ class InvocationRecord:
     candidate_id: UUID | None = None
     assembled_context: AssembledContext | None = None
     bound_pt: Decimal | None = None
+    private_raw_response: str | None = field(default=None, repr=False)
+    reader_page_index: int | None = None
+    reader_attempt_number: int | None = None
 
     def __post_init__(self) -> None:
         """Refuse a count or a cost that is not exactly an integer, before it can be stored."""
@@ -180,3 +183,21 @@ class InvocationRecord:
             or self.bound_pt < 0
         ):
             raise ValueError("bound_pt must be a finite, non-negative Decimal")
+        if self.private_raw_response is not None and not isinstance(self.private_raw_response, str):
+            raise TypeError("private_raw_response must be a string or None")
+        if (self.reader_page_index is None) != (self.reader_attempt_number is None):
+            raise ValueError(
+                "reader_page_index and reader_attempt_number must be recorded together"
+            )
+        if self.reader_page_index is not None and (
+            isinstance(self.reader_page_index, bool)
+            or not isinstance(self.reader_page_index, int)
+            or self.reader_page_index < 0
+        ):
+            raise ValueError("reader_page_index must be a non-negative integer or None")
+        if self.reader_attempt_number is not None and (
+            isinstance(self.reader_attempt_number, bool)
+            or not isinstance(self.reader_attempt_number, int)
+            or self.reader_attempt_number < 1
+        ):
+            raise ValueError("reader_attempt_number must be a positive integer or None")
