@@ -1,6 +1,6 @@
 """Retain each form-reader provider response on its append-only invocation record.
 
-Revision ID: 0071_model_invocation_raw_response
+Revision ID: 0071_invocation_raw_response
 Revises: 0070_candidate_review_reason
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0071_model_invocation_raw_response"
+revision: str = "0071_invocation_raw_response"
 down_revision: str | None = "0070_candidate_review_reason"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
