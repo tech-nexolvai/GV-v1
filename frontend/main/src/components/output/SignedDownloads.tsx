@@ -2,11 +2,14 @@ import { useState } from 'react';
 import { getSignedExports, prepareSignedExports } from '../../api/client';
 import { useAsync } from '../../api/useAsync';
 import { SignedDownloadsView } from './SignedDownloadsView';
+import type { DownloadState } from './reportDownload';
+import './SignedDownloads.css';
 
-export function SignedDownloads({ projectId, packageId, download }: {
+export function SignedDownloads({ projectId, packageId, download, receipt }: {
   projectId: string;
   packageId: string;
   download: (format: 'pdf' | 'workbook' | 'redline') => void;
+  receipt?: DownloadState;
 }) {
   const [refresh, setRefresh] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +28,7 @@ export function SignedDownloads({ projectId, packageId, download }: {
     }
   }
   return <>
-    <SignedDownloadsView status={state.status === 'ready' ? state.data.status : state.status === 'error' ? 'error' : 'loading'} busy={preparing} request={() => void prepare()} refresh={() => setRefresh((count) => count + 1)} download={download} />
+    <SignedDownloadsView status={state.status === 'ready' ? state.data.status : state.status === 'error' ? 'error' : 'loading'} busy={preparing} request={() => void prepare()} refresh={() => setRefresh((count) => count + 1)} download={download} receipt={receipt} />
     {error && <p role="alert">{error}</p>}
   </>;
 }

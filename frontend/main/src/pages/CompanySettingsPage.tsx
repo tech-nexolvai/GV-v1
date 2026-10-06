@@ -17,6 +17,8 @@ import {
 } from '../api/client';
 import { CompanySettingsList } from '../components/settings/CompanySettingsList';
 import { changedValues } from '../components/settings/companySettings';
+import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
+import '../components/ui/PageFrame.css';
 import './CompanySettingsPage.css';
 
 export function CompanySettingsPage() {
@@ -25,6 +27,7 @@ export function CompanySettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -38,7 +41,7 @@ export function CompanySettingsPage() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [attempt]);
 
   const changes = changedValues(drafts);
 
@@ -66,21 +69,20 @@ export function CompanySettingsPage() {
   }
 
   return (
-    <div className="company-settings-page">
-      <header className="company-settings-page__head">
-        <h1>Company settings</h1>
-        <p>
+    <PageFrame title="Company settings" className="company-settings-page" description={<>
           GV&apos;s house rules — the numbers that are the same on every job and written on no
           drawing. Type a value with its unit, <code>24&quot;</code> or <code>610 mm</code>, and save.
-        </p>
-      </header>
-      {error && (
+        </>}>
+      {error && current === null && <PageLoadError title="Company settings could not be loaded" message={error} onRetry={() => { setError(null); setAttempt((value) => value + 1); }} />}
+      {error && current !== null && (
         <p className="company-settings-page__error" role="alert">
           {error}
         </p>
       )}
       {current === null ? (
-        !error && <p className="company-settings-page__loading">Loading…</p>
+        !error && <p className="page-frame__state" role="status">Loading company settings…</p>
+      ) : current.settings.length === 0 ? (
+        <p className="page-frame__state">No company settings are available. No standards are listed to edit.</p>
       ) : (
         <>
           <CompanySettingsList
@@ -105,6 +107,6 @@ export function CompanySettingsPage() {
           </div>
         </>
       )}
-    </div>
+    </PageFrame>
   );
 }
