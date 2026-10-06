@@ -4,6 +4,7 @@ import json
 import re
 import time
 from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
 
@@ -104,6 +105,71 @@ def test_exact_value_is_parsed_from_printed_text_not_model_components() -> None:
     mismatch = parse_dimension(_dimension('5"', whole=4))
     assert mismatch.value is None
     assert mismatch.reason == "reader-components-disagree-with-printed-text"
+
+
+def _parsed_chain_label(text: str, whole: str, numerator: str, denominator: str):
+    answer = validate_page_answer(
+        {
+            "countertops": [
+                {
+                    "view_title": "",
+                    "overall_scope": "run",
+                    "overall": None,
+                    "chain": [
+                        {
+                            "position": 1,
+                            "text": text,
+                            "whole": whole,
+                            "numerator": numerator,
+                            "denominator": denominator,
+                            "stacked": False,
+                            "kind": "filler",
+                            "combined": False,
+                            "readable": True,
+                            "box": None,
+                        }
+                    ],
+                }
+            ],
+            "notes": "",
+        },
+        page_index=1,
+    )
+    return parse_dimension(answer.countertops[0].chain[0])
+
+
+@pytest.mark.parametrize(
+    ("text", "whole", "numerator", "denominator", "inches"),
+    [
+        ('2"', "2", "", "", Fraction(2)),
+        ('3/4"', "", "3", "4", Fraction(3, 4)),
+        ('39 1/2"', "39", "1", "2", Fraction(79, 2)),
+    ],
+)
+def test_empty_component_strings_are_missing_parts_not_a_mismatch(
+    text, whole, numerator, denominator, inches
+) -> None:
+    parsed = _parsed_chain_label(text, whole, numerator, denominator)
+    assert parsed.reason is None
+    assert parsed.value is not None and parsed.value.exact == inches
+
+
+@pytest.mark.parametrize(
+    ("text", "whole", "numerator", "denominator"),
+    [
+        ('2"', "3", "", ""),
+        ('2 1/2"', "2", "", ""),
+        ('2"', "2", "1", ""),
+        ('3/4"', "", "1", "4"),
+        ('3/4"', "3", "3", "4"),
+    ],
+)
+def test_whole_or_partial_components_that_disagree_with_the_text_still_go_to_the_person(
+    text, whole, numerator, denominator
+) -> None:
+    parsed = _parsed_chain_label(text, whole, numerator, denominator)
+    assert parsed.value is None
+    assert parsed.reason == "reader-components-disagree-with-printed-text"
 
 
 def test_prompt_v5_array_box_and_component_strings_validate_with_request_page_metadata() -> None:
