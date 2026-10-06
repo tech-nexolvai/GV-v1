@@ -37,9 +37,12 @@ import hashlib
 import json
 import os
 import re
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from functools import cache, partial
@@ -301,6 +304,7 @@ from workflow.reader_pictures import (
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
+from workflow.timing import TimingRecorder
 from workflow.vendor_page_pictures import (
     PNG as VENDOR_PAGE_PNG,
 )
@@ -1150,6 +1154,7 @@ class _VisionRegion:
 
 #: What an OCR item's geometry is paired with: its recorded row, or the region kept in its place.
 _Source = TypeVar("_Source", ObservationCandidate, _VisionRegion)
+_TimedResult = TypeVar("_TimedResult")
 
 
 def _association_source_items(
@@ -1535,6 +1540,7 @@ class DatabaseStages:
         reader_pictures: PictureSettings | None = None,
         missing_space: MissingSpace | None = None,
         part_pictures: PartPictureSettings | None = None,
+        timings: TimingRecorder | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -1549,6 +1555,9 @@ class DatabaseStages:
         """
         self._store = store
         self._dpi = dpi
+        self._timings = timings
+        self._timed_first_page_runs: set[UUID] = set()
+        self._timing_document_version_id: str | None = None
         if missing_space is not None and not isinstance(missing_space, MissingSpace):
             raise TypeError("missing_space must be a MissingSpace")
         self._missing_space = missing_space
@@ -1917,6 +1926,31 @@ class DatabaseStages:
                     )
         return tuple(results)
 
+    def _measure(
+        self, operation: str, *, run_id: str, page_index: int | None = None
+    ) -> AbstractContextManager[None]:
+        """Return an opt-in timing span without coupling stage work to telemetry."""
+        if self._timings is None:
+            return nullcontext()
+        return self._timings.measure(
+            operation,
+            run_id=run_id,
+            page_index=page_index,
+            document_version_id=self._timing_document_version_id,
+        )
+
+    def _timed_call(
+        self,
+        operation: str,
+        *,
+        run_id: str,
+        page_index: int | None,
+        function: Callable[..., _TimedResult],
+        **kwargs: object,
+    ) -> _TimedResult:
+        with self._measure(operation, run_id=run_id, page_index=page_index):
+            return function(**kwargs)
+
     def _read_document(
         self,
         session: Session,
@@ -1928,8 +1962,11 @@ class DatabaseStages:
         layout_discriminators: Sequence[DiscriminatorNeed],
     ) -> list[PageResult]:
         """One document: its manifest, then its text, page by page."""
+        run_key = str(package_revision_id)
+        self._timing_document_version_id = str(version_id)
         try:
-            raw_pages = read_pages(data)
+            with self._measure("extraction.document.pdf_page_load", run_id=run_key):
+                raw_pages = read_pages(data)
         except UnreadablePdf as error:
             # A document that will not parse is not a document with no dimensions — and until #491 the
             # difference was invisible, because this returned an empty list and the package still
@@ -1943,13 +1980,43 @@ class DatabaseStages:
             )
             return []
 
-        manifest = build_manifest(
-            raw_pages, version_id, minimum_vector_characters=MINIMUM_VECTOR_CHARACTERS
-        )
-        pages = persist_manifest(session, manifest)
+        with self._measure("extraction.document.manifest_build", run_id=run_key):
+            manifest = build_manifest(
+                raw_pages, version_id, minimum_vector_characters=MINIMUM_VECTOR_CHARACTERS
+            )
+        with self._measure("extraction.document.manifest_persist", run_id=run_key):
+            pages = persist_manifest(session, manifest)
+
+        if pages and run.id not in self._timed_first_page_runs:
+            self._timed_first_page_runs.add(run.id)
+            uploaded_at = session.scalar(
+                select(func.min(Document.created_at))
+                .join(
+                    PackageRevisionDocument,
+                    PackageRevisionDocument.document_id == Document.id,
+                )
+                .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+            )
+            if uploaded_at is not None and self._timings is not None:
+                start = (
+                    uploaded_at
+                    if uploaded_at.tzinfo is not None
+                    else uploaded_at.replace(tzinfo=UTC)
+                )
+                self._timings.record(
+                    operation="ingest.upload_to_first_page_stage",
+                    run_id=run_key,
+                    page_index=None,
+                    document_version_id=str(version_id),
+                    started_at=start.isoformat(),
+                    elapsed_ms=max(0.0, (datetime.now(UTC) - start).total_seconds() * 1000),
+                    status="ok",
+                )
 
         results: list[PageResult] = []
         for page in pages:
+            page_started_at = datetime.now(UTC)
+            page_started_ns = time.perf_counter_ns()
             written = 0
             route = "vector"
             vector_rows: list[ObservationCandidate] = []
@@ -1977,13 +2044,18 @@ class DatabaseStages:
                     extractor_version=EXTRACTOR_VERSION,
                 ) as span:
                     try:
-                        contents = read_page_contents(
-                            data,
-                            page.index,
-                            document_version_id=version_id,
-                            dpi=self._dpi,
-                            missing_space=self._stated_missing_space(),
-                        )
+                        with self._measure(
+                            "extraction.page.vector_text",
+                            run_id=run_key,
+                            page_index=page.index,
+                        ):
+                            contents = read_page_contents(
+                                data,
+                                page.index,
+                                document_version_id=version_id,
+                                dpi=self._dpi,
+                                missing_space=self._stated_missing_space(),
+                            )
                     except UnreadablePdf as error:
                         # One page that will not parse, in a document whose other pages might. The
                         # count below stays 0, so without a row this would be indistinguishable from a
@@ -1999,14 +2071,20 @@ class DatabaseStages:
                         )
                         span.set_status(Status(StatusCode.ERROR, "page did not parse"))
                     if contents is not None:
-                        vector_rows = record_candidates(
-                            session,
-                            contents.texts,
-                            document_version_id=version_id,
-                            page_id=page.id,
-                            extraction_run_id=run.id,
+                        vector_rows = self._timed_call(
+                            "extraction.page.candidate_persistence",
+                            run_id=run_key,
                             page_index=page.index,
-                            flush=False,
+                            function=partial(
+                                record_candidates,
+                                session,
+                                contents.texts,
+                                document_version_id=version_id,
+                                page_id=page.id,
+                                extraction_run_id=run.id,
+                                page_index=page.index,
+                                flush=False,
+                            ),
                         )
                         written = len(vector_rows)
                         read = contents
@@ -2020,8 +2098,12 @@ class DatabaseStages:
             # read them; this reads what was written on top, and both are recorded. Where the two
             # disagree — the vendor's own overall width against the reviewer's correction of it —
             # that disagreement is the review signal and neither row is allowed to replace the other.
-            markup_rows, layers = self._read_page_markup(
-                session,
+            markup_rows, layers = self._timed_call(
+                "extraction.page.markup",
+                run_id=run_key,
+                page_index=page.index,
+                function=self._read_page_markup,
+                session=session,
                 version_id=version_id,
                 data=data,
                 page=page,
@@ -2030,8 +2112,12 @@ class DatabaseStages:
             # **The vendor's own text, where its CAD program kept it exactly.** A drawing exported
             # from AutoCAD with SHX fonts draws every string as strokes — the shapes #756 reads — and
             # also keeps each string as an invisible note. Read here, not guessed from the strokes.
-            cad_text_rows = self._read_page_cad_text(
-                session,
+            cad_text_rows = self._timed_call(
+                "extraction.page.cad_text",
+                run_id=run_key,
+                page_index=page.index,
+                function=self._read_page_cad_text,
+                session=session,
                 version_id=version_id,
                 page=page,
                 task_run_id=run.task_run_id,
@@ -2039,8 +2125,12 @@ class DatabaseStages:
             )
             # **The text inside the pasted drawings, read exactly.** #738 took it for unreadable; it
             # is font text a snapshot carried over from the sheet it was taken from (formats phase 1).
-            stamp_texts, stamp_set_aside, stamp_text_rows = self._read_page_stamp_text(
-                session,
+            stamp_texts, stamp_set_aside, stamp_text_rows = self._timed_call(
+                "extraction.page.stamp_text",
+                run_id=run_key,
+                page_index=page.index,
+                function=self._read_page_stamp_text,
+                session=session,
                 version_id=version_id,
                 data=data,
                 page=page,
@@ -2081,8 +2171,12 @@ class DatabaseStages:
                     fraction_rows,
                     fraction_refusals,
                     fraction_invocations,
-                ) = self._read_page_by_fraction_parts(
-                    session,
+                ) = self._timed_call(
+                    "extraction.page.fraction_parts",
+                    run_id=run_key,
+                    page_index=page.index,
+                    function=self._read_page_by_fraction_parts,
+                    session=session,
                     version_id=version_id,
                     page=page,
                     task_run_id=run.task_run_id,
@@ -2092,13 +2186,30 @@ class DatabaseStages:
             # vendor does not choose how its PDF stores numbers; the page result says, so a page whose
             # text sits in a form no route reads is reported as that, not as a page with no numbers.
             try:
-                text_sources: dict[str, object] | None = survey_page(data, page.index).as_payload()
+                surveyed = self._timed_call(
+                    "extraction.page.text_source_survey",
+                    run_id=run_key,
+                    page_index=page.index,
+                    function=partial(survey_page, data, page.index),
+                )
+                text_sources = surveyed.as_payload()
             except UnreadablePdf:
                 text_sources = None
             # **Which drawing is which, on a combined sheet (#710).** Each drawing becomes a view, and
             # the label the sheet prints above it gives a suggestion. Never the role: only a person's
             # confirmation sets that, through the API.
-            panels = None if layers is None else _record_panel_views(session, page, layers)
+            if layers is None:
+                panels = None
+            else:
+                panels = self._timed_call(
+                    "extraction.page.panel_detection",
+                    run_id=run_key,
+                    page_index=page.index,
+                    function=_record_panel_views,
+                    session=session,
+                    page=page,
+                    layers=layers,
+                )
 
             if not page.has_vector_text:
                 # A stamp-only vendor drawing has no content-stream text, but it does have exact
@@ -2113,35 +2224,43 @@ class DatabaseStages:
                     and self._localized_ocr is not None
                     and layers is not None
                 ):
-                    plan = plan_reads(
-                        layers,
+                    plan = self._timed_call(
+                        "extraction.page.localized_region_planning",
+                        run_id=run_key,
+                        page_index=page.index,
+                        function=plan_reads,
+                        layers=layers,
                         proximity_limit=self._association.proximity_limit,
                         minimum_paths=self._localized_ocr.minimum_paths,
                         maximum_span=self._localized_ocr.maximum_span,
                     )
                     if plan.to_read:
                         route = "localized_ocr"
-                        ocr_items, ocr_rows, ocr_fragments, ocr_refusals = (
-                            self._read_page_by_localized_ocr(
-                                session,
+                        ocr_items, ocr_rows, ocr_fragments, ocr_refusals = self._timed_call(
+                            "extraction.page.localized_crop_render_and_ocr",
+                            run_id=run_key,
+                            page_index=page.index,
+                            function=self._read_page_by_localized_ocr,
+                            session=session,
+                            version_id=version_id,
+                            data=data,
+                            page=page,
+                            task_run_id=run.task_run_id,
+                            layers=layers,
+                            regions=tuple(entry.region for entry in plan.to_read),
+                        )
+                        if self._glyph_route is not None:
+                            glyph_rows, glyph_association, glyph_abstentions = self._timed_call(
+                                "extraction.page.glyph_reading",
+                                run_id=run_key,
+                                page_index=page.index,
+                                function=self._read_page_by_glyphs,
+                                session=session,
                                 version_id=version_id,
-                                data=data,
                                 page=page,
                                 task_run_id=run.task_run_id,
                                 layers=layers,
                                 regions=tuple(entry.region for entry in plan.to_read),
-                            )
-                        )
-                        if self._glyph_route is not None:
-                            glyph_rows, glyph_association, glyph_abstentions = (
-                                self._read_page_by_glyphs(
-                                    session,
-                                    version_id=version_id,
-                                    page=page,
-                                    task_run_id=run.task_run_id,
-                                    layers=layers,
-                                    regions=tuple(entry.region for entry in plan.to_read),
-                                )
                             )
                     else:
                         # No line-selected region is an explicit localized abstention. Falling
@@ -2151,8 +2270,12 @@ class DatabaseStages:
                         ocr_items, ocr_rows, ocr_fragments, ocr_refusals = (), [], (), Counter()
                 else:
                     route = "ocr"
-                    ocr_items, ocr_rows, ocr_fragments, ocr_refusals = self._read_page_by_ocr(
-                        session,
+                    ocr_items, ocr_rows, ocr_fragments, ocr_refusals = self._timed_call(
+                        "extraction.page.full_page_render_and_ocr",
+                        run_id=run_key,
+                        page_index=page.index,
+                        function=self._read_page_by_ocr,
+                        session=session,
                         version_id=version_id,
                         data=data,
                         page=page,
@@ -2194,23 +2317,33 @@ class DatabaseStages:
                     vision_refusals,
                     vision_association_links,
                     vision_held_back,
-                ) = self._read_page_by_vision(
-                    session,
+                ) = self._timed_call(
+                    "extraction.page.vision",
+                    run_id=run_key,
+                    page_index=page.index,
+                    function=self._read_page_by_vision,
+                    session=session,
                     version_id=version_id,
                     data=data,
                     page=page,
                     task_run_id=run.task_run_id,
-                    # The shape reader's boxes too (#756 D2): a vision reading of the same box is the
-                    # second witness a glyph reading may be confirmed by.
                     regions=(
                         tuple(_VisionRegion.of(row) for row in vector_rows + ocr_rows + glyph_rows)
                         + fragment_regions
                     ),
                     stacked_fractions=page_stacked,
-                    # Which way each label runs, for a reader shown it upright (#907): the file's
-                    # own text, the page's and its pasted drawings'.
                     printed=printed_runs((read.texts if read is not None else ()) + stamp_texts),
                     layers=layers,
+                )
+            elif self._timings is not None:
+                self._timings.record(
+                    operation="extraction.page.vision",
+                    run_id=run_key,
+                    page_index=page.index,
+                    document_version_id=str(version_id),
+                    started_at=datetime.now(UTC).isoformat(),
+                    elapsed_ms=0.0,
+                    status="disabled",
                 )
 
             # **The agreement gate's guards**, one each per page and asked by both passes below: an
@@ -2232,26 +2365,35 @@ class DatabaseStages:
             # **And a whole number and a fraction (#924)**, the kind two readers have agreed on wrongly
             # twice: purely textual, so it reads and renders nothing.
             mixed_fraction = _MixedFractionGuard()
-            self._apply_cross_route_corroboration(
-                session,
+            self._timed_call(
+                "extraction.page.agreement_gate",
+                run_id=run_key,
                 page_index=page.index,
-                candidates=tuple(
-                    vector_rows
-                    + ocr_rows
-                    + markup_rows
-                    + cad_text_rows
-                    + stamp_text_rows
-                    + vision_rows
-                    + glyph_rows
-                    # Judged with the rest, and its flag keeps every group it is in a raw candidate.
-                    + fraction_rows
+                function=partial(
+                    self._apply_cross_route_corroboration,
+                    session,
+                    page_index=page.index,
+                    candidates=tuple(
+                        vector_rows
+                        + ocr_rows
+                        + markup_rows
+                        + cad_text_rows
+                        + stamp_text_rows
+                        + vision_rows
+                        + glyph_rows
+                        + fraction_rows
+                    ),
+                    gv_mark=gv_mark,
+                    cut_label=cut_label,
+                    mixed_fraction=mixed_fraction,
                 ),
-                gv_mark=gv_mark,
-                cut_label=cut_label,
-                mixed_fraction=mixed_fraction,
             )
-            agent = self._run_bounded_agent_for_ambiguous_regions(
-                session,
+            agent = self._timed_call(
+                "extraction.page.bounded_agent",
+                run_id=run_key,
+                page_index=page.index,
+                function=self._run_bounded_agent_for_ambiguous_regions,
+                session=session,
                 version_id=version_id,
                 data=data,
                 page=page,
@@ -2288,16 +2430,26 @@ class DatabaseStages:
                 self._mark_regions_the_agent_contradicted(
                     session, page_index=page.index, candidates=page_rows, agent_rows=agent_rows
                 )
-            layout_written, layout_refusals = self._classify_page_layouts(
-                session,
-                package_revision_id=package_revision_id,
-                version_id=version_id,
-                data=data,
-                page=page,
-                extraction_run_id=run.id,
-                discriminators=layout_discriminators,
+            with self._measure(
+                "extraction.page.layout_detection",
+                run_id=run_key,
+                page_index=page.index,
+            ):
+                layout_written, layout_refusals = self._classify_page_layouts(
+                    session=session,
+                    package_revision_id=package_revision_id,
+                    version_id=version_id,
+                    data=data,
+                    page=page,
+                    extraction_run_id=run.id,
+                    discriminators=layout_discriminators,
+                )
+            self._timed_call(
+                "extraction.page.persist_flush",
+                run_id=run_key,
+                page_index=page.index,
+                function=session.flush,
             )
-            session.flush()
 
             vision_association_inputs = _vision_association_inputs(
                 vision_association_links, association_sources
@@ -2324,6 +2476,8 @@ class DatabaseStages:
             # sets of geometry would refuse exactly the associations that matter most.
             # `associate` neither knows nor needs to know which layer a line came from: keeping the
             # layers apart is about the authority of a *value*, not about what is near it.
+            associated_started_at = datetime.now(UTC)
+            associated_started_ns = time.perf_counter_ns()
             associated = self._associate_page(
                 session,
                 page=page,
@@ -2356,10 +2510,22 @@ class DatabaseStages:
                     vision_association_links,
                 ),
             )
+            if self._timings is not None:
+                self._timings.record(
+                    operation="extraction.page.association",
+                    run_id=run_key,
+                    page_index=page.index,
+                    document_version_id=str(version_id),
+                    started_at=associated_started_at.isoformat(),
+                    elapsed_ms=(time.perf_counter_ns() - associated_started_ns) / 1_000_000,
+                    status="ok",
+                )
             # **What each vendor drawing's parts might be (#868)**, suggested for a person to confirm
             # and never written as items. The same strokes, and the same readings less the
             # reviewer's markup: a code is what the vendor printed on a part, and a reviewer's note
             # beside it is a reviewer's word about the drawing, not part of it.
+            part_proposal_started_at = datetime.now(UTC)
+            part_proposal_started_ns = time.perf_counter_ns()
             parts = self._propose_page_parts(
                 session,
                 page=page,
@@ -2376,13 +2542,35 @@ class DatabaseStages:
                     + (layers.drawing_segments if layers is not None else ())
                 ),
             )
+            if self._timings is not None:
+                self._timings.record(
+                    operation="extraction.page.part_proposals",
+                    run_id=run_key,
+                    page_index=page.index,
+                    document_version_id=str(version_id),
+                    started_at=part_proposal_started_at.isoformat(),
+                    elapsed_ms=(time.perf_counter_ns() - part_proposal_started_ns) / 1_000_000,
+                    status="ok",
+                )
             # **And a picture of each (#897)**, for a person to look at while deciding what it is.
             # Every suggestion on the page's drawings that has none yet, so a re-read also cuts the
             # pictures a person's own additions are still missing. Each is checked for GV's coloured
             # marks as it is cut (#921), with the glyph paths the page's layers read.
+            picture_started_at = datetime.now(UTC)
+            picture_started_ns = time.perf_counter_ns()
             part_pictures = self._cut_page_part_pictures(
                 session, page=page, data=data, layers=layers
             )
+            if self._timings is not None:
+                self._timings.record(
+                    operation="extraction.page.part_pictures",
+                    run_id=run_key,
+                    page_index=page.index,
+                    document_version_id=str(version_id),
+                    started_at=picture_started_at.isoformat(),
+                    elapsed_ms=(time.perf_counter_ns() - picture_started_ns) / 1_000_000,
+                    status="ok",
+                )
             results.append(
                 PageResult(
                     index=page.index,
@@ -2563,6 +2751,16 @@ class DatabaseStages:
                     },
                 )
             )
+            if self._timings is not None:
+                self._timings.record(
+                    operation="extraction.page.total",
+                    run_id=run_key,
+                    page_index=page.index,
+                    document_version_id=str(version_id),
+                    started_at=page_started_at.isoformat(),
+                    elapsed_ms=(time.perf_counter_ns() - page_started_ns) / 1_000_000,
+                    status="ok",
+                )
         return results
 
     def _classify_page_layouts(
