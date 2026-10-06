@@ -1073,6 +1073,32 @@ export async function downloadEvidenceCrop(
 }
 
 /** The immutable crop behind an untyped AI proposal, before a reviewer names its meaning. */
+/** A picture of one drawing page, vendor layer only, for the Measure screen's left pane. */
+export async function downloadPagePicture(
+  projectId: string,
+  packageId: string,
+  pageNumber: number,
+): Promise<Blob> {
+  const response = await fetch(
+    `${BASE}/projects/${projectId}/packages/${packageId}/pages/${pageNumber}/picture`,
+    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+  );
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The drawing page could not be loaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
 export async function downloadCandidateCrop(
   projectId: string,
   packageId: string,

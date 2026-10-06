@@ -7542,6 +7542,82 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/pages/{page_number}/picture": {
+      "get": {
+        "description": "Page `page_number` (1-based) of this package, as a PNG of the vendor's layer.\n\nWhen the package holds two drawings with that page, the shop drawing's page is shown: the pane\nis where the reviewer reads the vendor's numbers.",
+        "operationId": "page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "page_number",
+            "required": true,
+            "schema": {
+              "title": "Page Number",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dpi",
+            "required": false,
+            "schema": {
+              "default": 110,
+              "maximum": 200,
+              "minimum": 50,
+              "title": "Dpi",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View a drawing page (vendor layer only)",
+        "tags": [
+          "drawings"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/parameter-proposals/{proposal_id}/crop": {
       "get": {
         "description": "The picture a reviewer reads a setting off before typing it, while the form offers it.\n\n**The pixels, never the number** (#866). The reviewer must read the value themselves, so this\nreturns a stored crop of the number's runs and nothing parsed from them. Only a pointer\n`GET .../required-inputs` would offer is served, so a pointer withdrawn since, because its\ndrawing turned out to be the vendor's, shows nothing. The digest is checked before bytes leave,\nas for every other crop.",

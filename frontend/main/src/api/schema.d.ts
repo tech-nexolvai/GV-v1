@@ -772,6 +772,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/pages/{page_number}/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View a drawing page (vendor layer only)
+         * @description Page `page_number` (1-based) of this package, as a PNG of the vendor's layer.
+         *
+         *     When the package holds two drawings with that page, the shop drawing's page is shown: the pane
+         *     is where the reviewer reads the vendor's numbers.
+         */
+        get: operations["page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/parameter-proposals/{proposal_id}/crop": {
         parameters: {
             query?: never;
@@ -5390,6 +5413,41 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["AssignmentEvent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get: {
+        parameters: {
+            query?: {
+                dpi?: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                page_number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
                 };
             };
             /** @description Validation Error */
