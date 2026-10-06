@@ -588,6 +588,78 @@ def test_parallel_page_results_apply_in_fixed_page_then_reader_order() -> None:
     assert len(recorder.snapshot()) == 4
 
 
+def test_a_reader_still_malformed_after_its_reask_abstains_on_that_page_only() -> None:
+    class OneGarbledReader:
+        def converse(self, **kwargs):
+            prompt = kwargs["messages"][0]["content"][1]["text"]
+            page_index = int(re.search(r"Internal page index: (\d+)", prompt).group(1))
+            if kwargs["modelId"] == "qwen.qwen3-vl-235b-a22b" and page_index == 2:
+                text = "not json at all"
+            else:
+                text = json.dumps(
+                    {
+                        "countertops": [
+                            {
+                                "view_title": "",
+                                "overall_scope": "run",
+                                "overall": {
+                                    "text": '4"',
+                                    "position": 0,
+                                    "whole": "4",
+                                    "numerator": "",
+                                    "denominator": "",
+                                    "stacked": False,
+                                    "kind": "unknown",
+                                    "combined": False,
+                                    "readable": True,
+                                    "box": [100, 100, 200, 200],
+                                },
+                                "chain": [],
+                            }
+                        ],
+                        "notes": "",
+                    }
+                )
+            return {
+                "output": {"message": {"content": [{"text": text}]}},
+                "usage": {"inputTokens": 8, "outputTokens": 4},
+            }
+
+    class Rates:
+        def rate_for(self, model_id):
+            return object()
+
+    reader_ids = ("us.moonshotai.kimi-k3", "qwen.qwen3-vl-235b-a22b")
+    recorder = ThreadSafeAttemptRecorder()
+    result = read_pages_parallel(
+        [(1, b"\x89PNG\r\n\x1a\npage"), (2, b"\x89PNG\r\n\x1a\npage")],
+        reader_ids=reader_ids,
+        clients=ThreadLocalConverseClients(OneGarbledReader),
+        rates=Rates(),
+        calls_per_minute={model: 6000 for model in reader_ids},
+        max_concurrent_calls=4,
+        max_tokens=4096,
+        max_throttle_retries=0,
+        retry_backoff_seconds=0.01,
+        record_attempt=recorder.record,
+    )
+    by_slot = {(item.page_index, item.model_id): item.answer for item in result}
+    abstained = by_slot[(2, "qwen.qwen3-vl-235b-a22b")]
+    assert abstained.page_index == 2 and abstained.countertops == []
+    assert "malformed" in abstained.notes
+    for slot in [(1, reader_ids[0]), (1, reader_ids[1]), (2, reader_ids[0])]:
+        assert len(by_slot[slot].countertops) == 1
+    malformed = [a for a in recorder.snapshot() if a.malformed]
+    assert len(malformed) == 2  # the first answer and its one re-ask, both recorded
+    readings = compare_page_answers(
+        by_slot[(2, reader_ids[0])],
+        abstained,
+        first_maker=reader_ids[0],
+        second_maker=reader_ids[1],
+    )
+    assert readings and all(reading.state == "review_required" for reading in readings)
+
+
 def test_unpriced_reader_pair_is_refused_before_a_provider_call() -> None:
     class Rates:
         def rate_for(self, model_id):

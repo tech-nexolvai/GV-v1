@@ -10,7 +10,12 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
-from extraction.form_reader.bedrock import AttemptUsage, ConverseClient, read_page
+from extraction.form_reader.bedrock import (
+    AttemptUsage,
+    ConverseClient,
+    MalformedFormAnswer,
+    read_page,
+)
 from extraction.form_reader.pricing import RateLookup, require_priced_readers
 from extraction.form_reader.schema import PageFormAnswer
 
@@ -78,6 +83,9 @@ class ModelPacer:
             time.sleep(delay)
 
 
+ABSTAINED_NOTE = "answer malformed after one re-ask; nothing from this reader on this page"
+
+
 @dataclass(frozen=True, slots=True)
 class PageRead:
     page_index: int
@@ -121,7 +129,9 @@ def read_pages_parallel(
 
     Calls run in worker threads, but callers should persist results on the owning DB thread after
     this function returns. Throttling retries use exponential backoff; malformed answer retry policy
-    remains inside `read_page` and is never triggered by a rule result.
+    remains inside `read_page` and is never triggered by a rule result. A reader whose answer is
+    still malformed after that one re-ask abstains on that page (an empty answer), so the page's
+    readings go to the person and the rest of the set is still read (#970).
     """
     if len(reader_ids) != 2 or not all(reader.strip() for reader in reader_ids):
         raise ValueError("exactly two named readers are required")
@@ -169,6 +179,12 @@ def read_pages_parallel(
                     record_attempt=record_attempt,
                 )
                 return PageRead(page_index, model_id, answer)
+            except MalformedFormAnswer:
+                return PageRead(
+                    page_index,
+                    model_id,
+                    PageFormAnswer(page_index=page_index, countertops=[], notes=ABSTAINED_NOTE),
+                )
             except Exception as error:
                 if not _is_throttle(error) or throttle_attempt >= max_throttle_retries:
                     raise
