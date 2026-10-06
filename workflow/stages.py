@@ -2082,6 +2082,9 @@ class DatabaseStages:
                         else "failed" if attempt.failure_kind else "ok"
                     ),
                     rejection_reason=("malformed_form_answer" if attempt.malformed else None),
+                    private_raw_response=attempt.raw_response_text,
+                    reader_page_index=attempt.page_index,
+                    reader_attempt_number=attempt.attempt_number,
                 ),
                 flush=False,
             )

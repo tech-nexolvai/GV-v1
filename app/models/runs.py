@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Numeric, String
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -242,6 +242,10 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
     Null is allowed for historic rejected rows, because this table is append-only and a migration may
     not rewrite old invocations to invent a reason they did not record at the time.
     """
+    private_raw_response: Mapped[str | None] = mapped_column(Text(), default=None)
+    """Exact raw provider answer, when returned. Private audit data; never a public response field."""
+    reader_page_index: Mapped[int | None] = mapped_column(Integer(), default=None)
+    reader_attempt_number: Mapped[int | None] = mapped_column(Integer(), default=None)
 
     __table_args__ = (
         CheckConstraint("model_id <> ''", name="model_invocation_model_id"),
@@ -270,6 +274,12 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
         CheckConstraint(
             "rejection_reason IS NULL OR (outcome = 'rejected' AND rejection_reason <> '')",
             name="model_invocation_rejection_reason",
+        ),
+        CheckConstraint(
+            "(reader_page_index IS NULL) = (reader_attempt_number IS NULL) "
+            "AND (reader_page_index IS NULL OR reader_page_index >= 0) "
+            "AND (reader_attempt_number IS NULL OR reader_attempt_number >= 1)",
+            name="model_invocation_reader_attempt_position",
         ),
         # **Exactly one origin, never both and never neither** (ADR-0019). Neither leaves a paid
         # call attributable to nothing, which is the same as not recording it and worse, because

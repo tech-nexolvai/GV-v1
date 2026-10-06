@@ -534,6 +534,74 @@ def test_every_outcome_is_recorded_with_its_full_cost(
         assert stored.template_id == "crop-dimension-v2"
 
 
+def test_private_raw_response_is_persisted_with_its_append_only_invocation(
+    postgres_engine: Engine,
+) -> None:
+    """Input: one exact reader response. Output: same immutable record after reload."""
+
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    response = '{"countertops":[],"notes":"fixture response"}'
+    with unit_of_work(factory) as session:
+        context = _persist_context(session)
+        invocation_id = _record(
+            session,
+            context,
+            private_raw_response=response,
+            reader_page_index=2,
+            reader_attempt_number=3,
+        ).id
+    with unit_of_work(factory) as session:
+        restored = session.get(ModelInvocation, invocation_id)
+        assert restored is not None
+        assert restored.private_raw_response == response
+        assert restored.reader_page_index == 2
+        assert restored.reader_attempt_number == 3
+
+
+def test_raw_response_audit_migration_refuses_to_drop_stored_attempts(
+    postgres_engine: Engine,
+) -> None:
+    """Input: a stored raw attempt. Outcome: downgrade refuses to erase the audit trail."""
+
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        context = _persist_context(session)
+        invocation_id = _record(
+            session,
+            context,
+            private_raw_response="exact private response",
+            reader_page_index=0,
+            reader_attempt_number=1,
+        ).id
+
+    config = alembic_config()
+    config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+    with pytest.raises(RuntimeError, match="preserve the append-only audit records"):
+        command.downgrade(config, "0070_candidate_review_reason")
+
+    with unit_of_work(factory) as session:
+        restored = session.get(ModelInvocation, invocation_id)
+        assert restored is not None
+        assert restored.private_raw_response == "exact private response"
+
+
+def test_private_raw_response_is_not_in_record_repr() -> None:
+    response = "private synthetic response"
+    invocation = _built(uuid4(), private_raw_response=response)
+    assert response not in repr(invocation)
+
+
+def test_reader_attempt_position_must_be_complete_and_valid() -> None:
+    with pytest.raises(ValueError, match="recorded together"):
+        _built(uuid4(), reader_page_index=0)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        _built(uuid4(), reader_page_index=-1, reader_attempt_number=1)
+    with pytest.raises(ValueError, match="positive integer"):
+        _built(uuid4(), reader_page_index=0, reader_attempt_number=0)
+
+
 def test_created_at_is_timezone_aware(postgres_engine: Engine) -> None:
     """Input: a recorded call. Outcome: an aware UTC time. Why: cost windows need a real clock."""
 
