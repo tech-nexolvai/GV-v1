@@ -12,7 +12,7 @@ import pytest
 
 from evidence.coordinates import PageTransform, StoredPoint
 from evidence.polygon import Polygon
-from extraction.form_reader.agreement import compare_page_answers
+from extraction.form_reader.agreement import ComparedReading, compare_page_answers
 from extraction.form_reader.bedrock import build_converse_request, read_page
 from extraction.form_reader.locator import locate_box
 from extraction.form_reader.mapping import map_page_to_fields
@@ -35,7 +35,14 @@ from extraction.form_reader.schema import (
     NormalizedBox,
     PageFormAnswer,
 )
-from workflow.form_reader import FormPageImage, read_form_pages
+from extraction.ink import InkClass, InkLabel, PageInk
+from workflow.form_reader import (
+    FormPageImage,
+    LocatedReading,
+    apply_ink,
+    candidate_outcome,
+    read_form_pages,
+)
 
 
 def _dimension(
@@ -869,6 +876,7 @@ def test_approximate_qwen_location_does_not_change_agreement() -> None:
         transform=_transform(),
         regions=(),
         gv_mark_checker=lambda _polygon: False,
+        ink=CLEAN,  # the page's ink is known and the box is on the vendor's (#979)
     )
     recorder = ThreadSafeAttemptRecorder()
     located = read_form_pages(
@@ -970,3 +978,236 @@ def test_form_reader_never_maps_agreement_without_a_clean_located_label(
             mapping.questions[0].review_reason
             == "GV's markup is on this label — check the vendor's own number"
         )
+
+
+# ---- whose ink (#979): a reading on the reviewer's ink never seals ----
+
+#: The located box, as `read_form_pages` places it: the page's pixels at the transform's dpi.
+LOCATED_BOX = (100, 100, 200, 200)
+LOCATED_POLYGON = ((100, 100), (200, 100), (200, 200), (100, 200))
+READERS = ("us.moonshotai.kimi-k3", "qwen.qwen3-vl-235b-a22b")
+
+
+def _agreed(text: str = '4"') -> ComparedReading:
+    left = _dimension(text, position=0)
+    right = _dimension(text, position=0)
+    return compare_page_answers(
+        _answer(overall=left, scope="run"),
+        _answer(overall=right, scope="run"),
+        first_maker=READERS[0],
+        second_maker=READERS[1],
+    )[0]
+
+
+def _differing() -> ComparedReading:
+    return compare_page_answers(
+        _answer(overall=_dimension('4"', position=0), scope="run"),
+        _answer(overall=_dimension('5"', whole=5, position=0), scope="run"),
+        first_maker=READERS[0],
+        second_maker=READERS[1],
+    )[0]
+
+
+def _page_ink(*labels: InkLabel, dpi: int = 1000) -> PageInk:
+    return PageInk(dpi=dpi, labels=labels, paths=(), stamps=())
+
+
+COVERED_WITH_RED_OVER_IT = _page_ink(
+    InkLabel('4"', LOCATED_BOX, InkClass.COVERED), InkLabel('38"', LOCATED_BOX, InkClass.GV)
+)
+RED_ONLY = _page_ink(InkLabel('38"', LOCATED_BOX, InkClass.GV))
+CLEAN = _page_ink(InkLabel('4"', LOCATED_BOX, InkClass.VENDOR))
+
+
+def _located(
+    reading: ComparedReading, *, ink: InkClass | None, reviewer_text: str = ""
+) -> LocatedReading:
+    return LocatedReading(
+        comparison=reading,
+        location=None,
+        first_countertop_count=1,
+        second_countertop_count=1,
+        document_version_id=uuid4(),
+        page_id=uuid4(),
+        image_polygon=LOCATED_POLYGON,
+        ink=ink,
+        reviewer_text=reviewer_text,
+    )
+
+
+@pytest.mark.parametrize(
+    ("page_ink", "expected_ink"),
+    [(COVERED_WITH_RED_OVER_IT, InkClass.COVERED), (RED_ONLY, InkClass.GV)],
+    ids=["covered", "reviewers-own-number"],
+)
+def test_an_agreement_located_on_the_reviewers_ink_is_held_back_with_what_the_reviewer_wrote(
+    page_ink: PageInk, expected_ink: InkClass
+) -> None:
+    held, ink, reviewer_text = apply_ink(_agreed(), LOCATED_POLYGON, page_ink)
+    assert held.state == "review_required"
+    assert held.value is None
+    assert held.reason == "reviewer-markup"
+    assert ink is expected_ink
+    assert reviewer_text == '38"'
+
+
+def test_a_disagreement_on_the_reviewers_ink_is_still_named_as_such_so_no_value_is_offered() -> (
+    None
+):
+    held, ink, _ = apply_ink(_differing(), LOCATED_POLYGON, RED_ONLY)
+    assert held.state == "review_required"
+    assert held.reason == "reviewer-markup"
+    assert ink is InkClass.GV
+
+
+def test_an_agreement_on_the_vendors_ink_is_left_exactly_as_it_was() -> None:
+    reading = _agreed()
+    kept, ink, reviewer_text = apply_ink(reading, LOCATED_POLYGON, CLEAN)
+    assert kept is reading
+    assert ink is InkClass.VENDOR
+    assert reviewer_text == ""
+
+
+def test_a_page_whose_ink_could_not_be_read_cannot_clear_an_agreement() -> None:
+    held, ink, _ = apply_ink(_agreed(), LOCATED_POLYGON, None)
+    assert held.state == "review_required"
+    assert held.reason == "gv-mark-unchecked"
+    assert ink is None
+    differing = _differing()
+    assert apply_ink(differing, LOCATED_POLYGON, None) == (differing, None, "")
+
+
+def test_a_reading_with_no_located_box_is_left_to_the_location_guard() -> None:
+    reading = _agreed()
+    assert apply_ink(reading, (), COVERED_WITH_RED_OVER_IT) == (reading, None, "")
+
+
+def test_reviewer_markup_has_its_plain_sentence_in_the_mapping() -> None:
+    held, _, _ = apply_ink(_agreed(), LOCATED_POLYGON, RED_ONLY)
+    mapping = map_page_to_fields((held,), first_countertop_count=1, second_countertop_count=1)
+    assert mapping.proposals == ()
+    assert [question.review_reason for question in mapping.questions] == [
+        "covered by reviewer markup"
+    ]
+
+
+def test_a_candidate_on_the_reviewers_ink_has_no_value_and_names_what_the_reviewer_wrote() -> None:
+    held, ink, reviewer_text = apply_ink(_agreed(), LOCATED_POLYGON, COVERED_WITH_RED_OVER_IT)
+    located = _located(held, ink=ink, reviewer_text=reviewer_text)
+    mapping = map_page_to_fields((held,), first_countertop_count=1, second_countertop_count=1)
+    outcome = candidate_outcome(located, mapping)
+    assert outcome.accepted is False
+    assert outcome.value is None
+    assert outcome.review_reason == 'covered by reviewer markup; reviewer wrote 38"'
+    assert outcome.flags == ("reviewer-markup",)
+
+
+def test_a_candidate_on_the_reviewers_ink_is_never_accepted_even_if_a_mapping_offered_it() -> None:
+    # Defence in depth: the comparison is still corroborated here, as if the ink step had been
+    # skipped; the ink on the located reading alone must stop it being offered as a value.
+    reading = _agreed()
+    located = _located(reading, ink=InkClass.COVERED)
+    mapping = map_page_to_fields((reading,), first_countertop_count=1, second_countertop_count=1)
+    assert len(mapping.proposals) == 1
+    outcome = candidate_outcome(located, mapping)
+    assert outcome.accepted is False
+    assert outcome.value is None
+    assert outcome.review_reason == "covered by reviewer markup"
+
+
+def test_a_candidate_on_the_vendors_ink_is_saved_as_before() -> None:
+    agreed = _agreed()
+    mapping = map_page_to_fields((agreed,), first_countertop_count=1, second_countertop_count=1)
+    accepted = candidate_outcome(_located(agreed, ink=InkClass.VENDOR), mapping)
+    assert accepted.accepted is True
+    assert accepted.value is agreed.value
+    assert accepted.review_reason is None
+    assert accepted.flags == ()
+
+    differing = _differing()
+    mapping = map_page_to_fields((differing,), first_countertop_count=1, second_countertop_count=1)
+    question = candidate_outcome(_located(differing, ink=InkClass.VENDOR), mapping)
+    assert question.accepted is False
+    assert question.value is not None and question.value.exact == 5  # the suggestion, as before
+    assert question.review_reason == "readers differ"
+    assert question.flags == ()
+
+
+def _client_agreeing_on_a_located_four_inches():
+    class Client:
+        def converse(self, **_kwargs):
+            return {
+                "output": {
+                    "message": {
+                        "content": [
+                            {
+                                "text": (
+                                    '{"countertops":[{"view_title":"","overall_scope":"run",'
+                                    '"overall":{"position":0,"text":"4\\"","whole":"4",'
+                                    '"numerator":"","denominator":"1","stacked":false,'
+                                    '"kind":"unknown","combined":false,"readable":true,'
+                                    '"box":[100,100,200,200]},"chain":[]}],"notes":""}'
+                                )
+                            }
+                        ]
+                    }
+                },
+                "usage": {"inputTokens": 20, "outputTokens": 10},
+            }
+
+    return Client
+
+
+def _read_one_page(page: FormPageImage):
+    class Rates:
+        def rate_for(self, _model_id):
+            return object()
+
+    return read_form_pages(
+        (page,),
+        reader_ids=READERS,
+        clients=ThreadLocalConverseClients(_client_agreeing_on_a_located_four_inches()),
+        rates=Rates(),
+        calls_per_minute={READERS[0]: 6000, READERS[1]: 6000},
+        max_concurrent_calls=2,
+        max_tokens=1024,
+        max_throttle_retries=0,
+        retry_backoff_seconds=0.01,
+        record_attempt=lambda _attempt: None,
+    )
+
+
+def _page(ink: PageInk | None) -> FormPageImage:
+    return FormPageImage(
+        page_index=2,
+        png=b"\x89PNG\r\n\x1a\nfixture",
+        width_px=1000,
+        height_px=1000,
+        document_version_id=uuid4(),
+        page_id=uuid4(),
+        transform=_transform(),
+        regions=(),
+        gv_mark_checker=lambda _polygon: False,
+        ink=ink,
+    )
+
+
+def test_read_form_pages_holds_back_an_agreement_whose_box_is_on_the_reviewers_ink() -> None:
+    located = _read_one_page(_page(COVERED_WITH_RED_OVER_IT))
+    assert len(located) == 1
+    assert located[0].comparison.state == "review_required"
+    assert located[0].comparison.reason == "reviewer-markup"
+    assert located[0].comparison.value is None
+    assert located[0].ink is InkClass.COVERED
+    assert located[0].reviewer_text == '38"'
+
+
+def test_read_form_pages_keeps_an_agreement_whose_box_is_on_the_vendors_ink() -> None:
+    located = _read_one_page(_page(CLEAN))
+    assert located[0].comparison.state == "corroborated"
+    assert located[0].ink is InkClass.VENDOR
+
+
+def test_read_form_pages_refuses_ink_read_at_another_dpi_than_the_pictures() -> None:
+    with pytest.raises(ValueError, match="dpi"):
+        _read_one_page(_page(_page_ink(dpi=300)))

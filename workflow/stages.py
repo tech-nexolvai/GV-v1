@@ -175,6 +175,7 @@ from extraction.geometry.text_association import (
     associate,
 )
 from extraction.glyph_bands import FractionLayout
+from extraction.ink import PageInk, read_page_ink
 from extraction.layout import (
     BedrockClosedQuestionConfig,
     BedrockClosedQuestionReader,
@@ -1974,6 +1975,7 @@ class DatabaseStages:
             if transform is None:
                 continue
             markup = self._picture_markup(data, page, rendered.dpi)
+            ink = self._page_ink(data, page, rendered.dpi)
 
             def check_form_label_for_gv_mark(
                 polygon: Polygon,
@@ -2023,6 +2025,7 @@ class DatabaseStages:
                     transform=transform,
                     regions=tuple(regions),
                     gv_mark_checker=check_form_label_for_gv_mark,
+                    ink=ink,
                 )
             )
         if not images:
@@ -2045,10 +2048,10 @@ class DatabaseStages:
             session,
             task_run_id=task_run_id,
             extractor="extraction.form_reader",
-            extractor_version="form-reader-v5-gv-mark-v1",
+            extractor_version="form-reader-v5-gv-mark-v1-ink-v1",
             config_hash=(
                 f"dpi={self._dpi};readers={runtime.reader_ids[0]}|{runtime.reader_ids[1]};"
-                f"prompt={runtime.prompt.prompt_id};gv_mark_guard=v1"
+                f"prompt={runtime.prompt.prompt_id};gv_mark_guard=v1;ink=v1"
             ),
             dpi=self._dpi,
         )
@@ -4250,6 +4253,17 @@ class DatabaseStages:
                 refused.append(f"page {page.index}: {str(error).strip() or type(error).__name__}")
         session.flush()
         return {"ran": True, "rendered": rendered_count, "refused": refused}
+
+    @staticmethod
+    def _page_ink(data: bytes, page: Page, dpi: int) -> PageInk | None:
+        """Whose ink each word on the page is (#979), in the page's pixels at `dpi`, the dpi the
+        form readers' picture is rendered at; or `None` where the page's pasted drawings could not
+        be read for it, which holds every agreement on the page back rather than letting one
+        through unchecked."""
+        try:
+            return read_page_ink(data, page.index, dpi=dpi)
+        except UnreadablePdf:
+            return None
 
     def _picture_markup(self, data: bytes, page: Page, dpi: int) -> ColouredMarkup | None:
         """The page's markup drawn in colour, at a picture's `dpi`, for the job that cuts pictures

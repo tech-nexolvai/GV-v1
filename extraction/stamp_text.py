@@ -409,7 +409,12 @@ class ColouredPath:
             _line_meets(line, box) for line in self.lines
         ):
             return True
-        return bool(self.rings) and _covers((box[0], box[1]), self.rings, self.even_odd)
+        return self.covers((box[0], box[1]))
+
+    def covers(self, point: tuple[int, int]) -> bool:
+        """Whether the path's fill covers `point`, by the fill's own rule (#979). A path only
+        stroked, however close its line passes, covers nothing."""
+        return bool(self.rings) and _covers(point, self.rings, self.even_odd)
 
 
 def _pieces(
