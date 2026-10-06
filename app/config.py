@@ -14,6 +14,7 @@ Source: `docs/DESIGN_PLATFORM.md` §4.1 · Verification: `tests/api/test_app.py`
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -82,6 +83,9 @@ class Settings(BaseSettings):
     form_reader_model_rpm: dict[str, int] = Field(default_factory=dict)
     form_reader_max_throttle_retries: int | None = Field(default=None, ge=0)
     form_reader_retry_backoff_seconds: float | None = Field(default=None, gt=0)
+    # The measured reading guidance quotes the client's drawings, so it lives in a private file
+    # outside this public repository; required when the form reader is on (#972).
+    form_reader_prompt_file: Path | None = None
 
     hatchet_token: str = Field(default="", description="Hatchet client token")
     """Empty by default, and the emptiness is caught where it matters. `workflow/hatchet_app.py` builds a
@@ -184,6 +188,7 @@ class Settings(BaseSettings):
                 ("GV_FORM_READER_MAX_TOKENS", self.form_reader_max_tokens),
                 ("GV_FORM_READER_MAX_THROTTLE_RETRIES", self.form_reader_max_throttle_retries),
                 ("GV_FORM_READER_RETRY_BACKOFF_SECONDS", self.form_reader_retry_backoff_seconds),
+                ("GV_FORM_READER_PROMPT_FILE", self.form_reader_prompt_file),
             )
             if value is None
         ]
@@ -194,8 +199,8 @@ class Settings(BaseSettings):
         )
         if missing:
             raise ValueError(
-                "GV_FORM_READER_ENABLED requires explicit concurrency, token, retry, backoff, and "
-                f"per-model RPM settings; missing: {', '.join(missing)}"
+                "GV_FORM_READER_ENABLED requires explicit concurrency, token, retry, backoff, "
+                f"prompt-file and per-model RPM settings; missing: {', '.join(missing)}"
             )
         if any(
             isinstance(rpm, bool) or not isinstance(rpm, int) or rpm <= 0

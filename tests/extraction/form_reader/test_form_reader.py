@@ -4,6 +4,7 @@ import json
 import re
 import time
 from decimal import Decimal
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -16,6 +17,12 @@ from extraction.form_reader.locator import locate_box
 from extraction.form_reader.mapping import map_page_to_fields
 from extraction.form_reader.parser import parse_dimension, validate_page_answer
 from extraction.form_reader.pricing import require_priced_readers
+from extraction.form_reader.prompt_v5 import (
+    BUILT_IN_PROMPT,
+    OUTPUT_CONTRACT_V5,
+    PRIVATE_PROMPT_PREFIX,
+    prompt_from_guidance_file,
+)
 from extraction.form_reader.runner import (
     ThreadLocalConverseClients,
     ThreadSafeAttemptRecorder,
@@ -658,6 +665,69 @@ def test_a_reader_still_malformed_after_its_reask_abstains_on_that_page_only() -
         second_maker=reader_ids[1],
     )
     assert readings and all(reading.state == "review_required" for reading in readings)
+
+
+def test_private_guidance_is_joined_to_the_public_answer_layout(tmp_path) -> None:
+    guidance = tmp_path / "guidance.txt"
+    guidance.write_text("Read the vendor drawing only.\n", encoding="utf-8")
+    prompt = prompt_from_guidance_file(guidance)
+    assert prompt.system_text == f"Read the vendor drawing only.\n\n{OUTPUT_CONTRACT_V5}"
+    assert prompt.prompt_id.startswith(PRIVATE_PROMPT_PREFIX)
+    assert prompt.prompt_id != BUILT_IN_PROMPT.prompt_id
+
+    request = build_converse_request(
+        model_id="qwen.qwen3-vl-235b-a22b",
+        page_png=b"\x89PNG\r\n\x1a\npage",
+        page_index=1,
+        max_tokens=4096,
+        prompt=prompt,
+    )
+    assert request["system"] == [{"text": prompt.system_text}]
+
+    guidance.write_text("Read the vendor drawing only. Changed.\n", encoding="utf-8")
+    assert prompt_from_guidance_file(guidance).prompt_id != prompt.prompt_id
+
+
+def test_guidance_inside_the_repository_or_empty_is_refused(tmp_path) -> None:
+    import extraction.form_reader.prompt_v5 as prompt_module
+
+    inside = Path(prompt_module.__file__)
+    with pytest.raises(ValueError, match="outside the repository"):
+        prompt_from_guidance_file(inside)
+    empty = tmp_path / "empty.txt"
+    empty.write_text("  \n", encoding="utf-8")
+    with pytest.raises(ValueError, match="empty"):
+        prompt_from_guidance_file(empty)
+    with pytest.raises(ValueError, match="does not exist"):
+        prompt_from_guidance_file(tmp_path / "missing.txt")
+
+
+def test_each_attempt_records_the_prompt_it_was_sent_with(tmp_path) -> None:
+    guidance = tmp_path / "guidance.txt"
+    guidance.write_text("Private guidance.", encoding="utf-8")
+    prompt = prompt_from_guidance_file(guidance)
+    sent = []
+
+    class Client:
+        def converse(self, **kwargs):
+            sent.append(kwargs["system"][0]["text"])
+            return {
+                "output": {"message": {"content": [{"text": '{"countertops":[],"notes":""}'}]}},
+                "usage": {"inputTokens": 8, "outputTokens": 4},
+            }
+
+    attempts = []
+    read_page(
+        Client(),
+        model_id="qwen.qwen3-vl-235b-a22b",
+        page_png=b"\x89PNG\r\n\x1a\npage",
+        page_index=0,
+        max_tokens=4096,
+        record_attempt=attempts.append,
+        prompt=prompt,
+    )
+    assert sent == [prompt.system_text]
+    assert [attempt.prompt_id for attempt in attempts] == [prompt.prompt_id]
 
 
 def test_unpriced_reader_pair_is_refused_before_a_provider_call() -> None:

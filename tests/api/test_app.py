@@ -89,10 +89,27 @@ def test_form_reader_accepts_only_a_fully_stated_two_reader_configuration() -> N
         },
         form_reader_max_throttle_retries=2,
         form_reader_retry_backoff_seconds=1.0,
+        form_reader_prompt_file="/private/guidance.txt",
     )
     assert settings.form_reader_enabled
     assert settings.form_reader_primary_model == "us.moonshotai.kimi-k3"
     assert settings.form_reader_second_model == "qwen.qwen3-vl-235b-a22b"
+
+
+def test_form_reader_without_a_prompt_file_is_refused() -> None:
+    """The measured guidance is private (#972); running without it would read with unmeasured text."""
+    with pytest.raises(ValidationError, match="missing: GV_FORM_READER_PROMPT_FILE"):
+        _settings(
+            form_reader_enabled=True,
+            form_reader_max_concurrent_calls=2,
+            form_reader_max_tokens=4096,
+            form_reader_model_rpm={
+                "us.moonshotai.kimi-k3": 10,
+                "qwen.qwen3-vl-235b-a22b": 5,
+            },
+            form_reader_max_throttle_retries=2,
+            form_reader_retry_backoff_seconds=1.0,
+        )
 
 
 def test_the_factory_builds_isolated_instances() -> None:
