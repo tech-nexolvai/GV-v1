@@ -115,9 +115,10 @@ def _document_version(
     revision: PackageRevision,
     *,
     document_kind: DocumentKind,
+    digest: str | None = None,
 ) -> DocumentVersion:
     n = len(session.execute(select(DocumentVersion)).all()) + 1
-    digest = f"{n:064x}"
+    digest = digest or f"{n:064x}"
     document = Document(package_id=revision.package_id, kind=document_kind)
     session.add(document)
     session.flush()
@@ -261,6 +262,25 @@ def test_two_pdf_package_still_falls_back_to_document_kind(session: Session) -> 
     candidate = session.scalars(select(MatchCandidate)).one()
     assert candidate.left_item_id == arch.id
     assert candidate.right_item_id == shop.id
+
+
+def test_one_file_uploaded_as_both_kinds_never_matches_itself(session: Session) -> None:
+    """**#963.** The same bytes as the architectural AND the shop document is one combined set. With
+    the slot deciding, the vendor's item on the "architectural" copy matched its own twin on the shop
+    copy — a vendor-vs-architect comparison of a drawing with itself. Outcome: no role from the slot,
+    so nothing is matched until a person confirms whose drawings they are."""
+    revision = _revision(session)
+    same = "ab" * 32
+    arch_copy = _document_version(
+        session, revision, document_kind=DocumentKind.ARCHITECTURAL, digest=same
+    )
+    shop_copy = _document_version(session, revision, document_kind=DocumentKind.SHOP, digest=same)
+    _item(session, arch_copy, view_role=None, tag="S-101")
+    _item(session, shop_copy, view_role=None, tag="S-101")
+
+    DatabaseStages(missing_space=MISSING_SPACE).match(session, revision.id)
+
+    assert session.scalars(select(MatchCandidate)).all() == []
 
 
 def test_view_role_takes_precedence_over_document_kind(session: Session) -> None:

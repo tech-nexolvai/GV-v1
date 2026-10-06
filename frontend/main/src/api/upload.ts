@@ -21,7 +21,7 @@
  */
 
 import { openReviewSession } from './client';
-import { IncompletePackageUpload } from './uploadState';
+import { IncompletePackageUpload, uploadPlan } from './uploadState';
 
 const BASE = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '');
 
@@ -169,9 +169,13 @@ export async function createPackage(
     { vendor: input.vendor || null },
   );
 
-  const files: Array<[File, DocumentKind]> = [];
-  if (input.architectural) files.push([input.architectural, 'architectural']);
-  if (input.shop) files.push([input.shop, 'shop']);
+  // #963: the same file in both slots is one combined set, uploaded once. The server refuses a
+  // second copy anyway; comparing digests here means the reviewer never sees that refusal.
+  const sameBytes =
+    !!input.architectural &&
+    !!input.shop &&
+    (await sha256(input.architectural)) === (await sha256(input.shop));
+  const files: Array<[File, DocumentKind]> = uploadPlan(input.architectural, input.shop, sameBytes);
 
   try {
     for (const [file, kind] of files) {

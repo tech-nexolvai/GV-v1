@@ -80,6 +80,8 @@ _SIDE_REFUSAL = {
     SideRefusalReason.NO_TRANSFORM: RefusalReason.NO_TRANSFORM,
     SideRefusalReason.NOT_IN_ONE_VIEW: RefusalReason.NOT_IN_ONE_VIEW,
     SideRefusalReason.VIEW_ROLE_UNCONFIRMED: RefusalReason.VIEW_ROLE_UNCONFIRMED,
+    # #963: one file as both drawings is a combined set; whose drawing it is needs a person.
+    SideRefusalReason.SAME_FILE_BOTH_SIDES: RefusalReason.VIEW_ROLE_UNCONFIRMED,
 }
 
 

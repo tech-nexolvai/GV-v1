@@ -14,7 +14,7 @@ import { useRef, useState } from 'react';
 import { ArrowUp, FileText, Loader2, Plus, X } from 'lucide-react';
 import { createPackage } from '../../api/upload';
 import type { UploadProgress } from '../../api/upload';
-import { describeUploadFailure } from '../../api/uploadState';
+import { describeUploadFailure, looksLikeTheSameFile } from '../../api/uploadState';
 import { projectId } from '../../api/config';
 import './NewReviewForm.css';
 
@@ -53,6 +53,7 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
   const shopInput = useRef<HTMLInputElement>(null);
 
   const ready = vendor.trim() !== '' && files.architectural !== null && files.shop !== null;
+  const sameFile = looksLikeTheSameFile(files.architectural, files.shop);
   const missing = [
     vendor.trim() === '' ? 'the vendor' : null,
     files.architectural === null ? "the architect's drawings" : null,
@@ -195,7 +196,9 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
 
       <div className="new-review__foot">
         <p className="new-review__need" aria-live="polite">
-          {ready
+          {ready && sameFile
+            ? "You chose the same file twice. It will be read once, as one combined set, and you will confirm which drawings on it are the architect's and which are the vendor's."
+            : ready
             ? 'Ready to upload. You will review the readings and any values still needed.'
             : `Add ${missing.join(', ').replace(/, ([^,]*)$/, ' and $1')}.`}
         </p>

@@ -141,6 +141,48 @@ def storage_key(document_id: UUID, sha256: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+SAME_FILE_DETAIL: Final = (
+    "This exact file is already in this package as the {kind} drawing. A file that holds both the "
+    "architect's and the vendor's drawings is one combined set: upload it once, and the reviewer "
+    "confirms which drawings on it are whose."
+)
+
+
+def _same_bytes_in_revision(
+    session: Session, revision_id: UUID, sha256: str, *, other_than: UUID | None = None
+) -> Document | None:
+    """A drawing in this revision whose version is exactly these bytes, other than `other_than` (#963).
+
+    One file is one drawing set. Stored once per slot it was read twice, and the slot then made the
+    vendor's own drawing the architect's side — a vendor-vs-architect check could compare a drawing
+    with itself. Refusing the second copy at intake is what keeps a combined set combined.
+    """
+    statement = (
+        select(Document)
+        .join(PackageRevisionDocument, PackageRevisionDocument.document_id == Document.id)
+        .join(DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id)
+        .where(
+            PackageRevisionDocument.package_revision_id == revision_id,
+            DocumentVersion.sha256 == sha256,
+        )
+    )
+    if other_than is not None:
+        statement = statement.where(Document.id != other_than)
+    return session.scalars(statement.limit(1)).first()
+
+
+def _refuse_same_bytes(
+    session: Session, revision_id: UUID, sha256: str, other_than: UUID | None
+) -> None:
+    if (
+        holder := _same_bytes_in_revision(session, revision_id, sha256, other_than=other_than)
+    ) is not None:
+        kind = "architect's" if holder.kind == DocumentKind.ARCHITECTURAL.value else "vendor's"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=SAME_FILE_DETAIL.format(kind=kind)
+        )
+
+
 def _package_revision(
     session: Session, project_id: UUID, package_id: UUID, *, lock: bool = False
 ) -> PackageRevision:
@@ -275,7 +317,7 @@ def register_document(
     # package with no revision would create an identity nothing can ever be uploaded into. The first
     # drawing begins assembly; extraction is deliberately not queued here because its counterpart is
     # still allowed to arrive.
-    revision = _package_revision(session, project_id, package_id)
+    revision = _package_revision(session, project_id, package_id, lock=True)
     if revision.state == PackageState.CREATED:
         transition(
             session,
@@ -289,6 +331,7 @@ def register_document(
             status_code=status.HTTP_409_CONFLICT,
             detail="This drawing package is no longer accepting uploads.",
         )
+    _refuse_same_bytes(session, revision.id, body.sha256, other_than=None)
     # Package-scoped since ADR-0018. A document is one drawing for the life of the package; which
     # revisions include which version of it is recorded when a version is confirmed, below.
     document = Document(package_id=package_id, kind=body.kind)
@@ -377,6 +420,13 @@ def confirm_upload(
     if (existing := _existing_version(session, document.id, body.sha256)) is not None:
         response.status_code = status.HTTP_200_OK
         return existing
+
+    _refuse_same_bytes(
+        session,
+        _package_revision(session, project_id, document.package_id, lock=True).id,
+        body.sha256,
+        other_than=document.id,
+    )
 
     key = storage_key(document.id, body.sha256)
     if not store.exists(key):
@@ -526,6 +576,28 @@ def start_extraction(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Upload at least one confirmed drawing PDF before AI reading can start.",
+        )
+    # A revision assembled before #963 may hold one file as two drawings. It is not read until the
+    # duplicate is removed: read as two it would be read twice and could compare a drawing with itself.
+    shared = session.scalar(
+        select(func.count())
+        .select_from(DocumentVersion)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(PackageRevisionDocument.package_revision_id == revision.id)
+        .group_by(DocumentVersion.sha256)
+        .having(func.count() > 1)
+        .limit(1)
+    )
+    if shared:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This package holds the same file twice. A file with both the architect's and the "
+                "vendor's drawings is one combined set: keep one copy, then start AI reading."
+            ),
         )
 
     transition(

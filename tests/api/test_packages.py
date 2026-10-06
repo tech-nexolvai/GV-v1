@@ -435,6 +435,99 @@ def test_one_combined_drawing_can_start_extraction(session: Session, store: Loca
     assert rows[0].workflow == "extract_package"
 
 
+def test_the_same_file_in_both_slots_is_refused_the_second_time(
+    session: Session, store: LocalStore
+) -> None:
+    """#963: one file holding both drawings is one combined set, never an architect copy and a shop
+    copy. Stored twice it was read twice, and the slot made the vendor's own drawing the architect's
+    side, so a vendor-vs-architect check could compare a drawing with itself."""
+    package_id = _new_package(session)
+    client = _client(session, store)
+    payload = b"%PDF-1.7 combined set\n"
+    _, confirmed = _upload_and_confirm(
+        client, store, package_id, payload, kind=DocumentKind.ARCHITECTURAL
+    )
+    assert confirmed.status_code == 201, confirmed.text
+
+    second = _register(client, hashlib.sha256(payload).hexdigest(), package_id)
+
+    assert second.status_code == 409, second.text
+    assert "already in this package" in second.json()["message"]
+    assert len(list(session.execute(select(DocumentVersion)).scalars())) == 1
+
+
+def test_confirming_bytes_another_drawing_already_holds_is_refused(
+    session: Session, store: LocalStore
+) -> None:
+    """#963: both slots registered before either is confirmed still cannot end with one file twice."""
+    package_id = _new_package(session)
+    client = _client(session, store)
+    payload = b"%PDF-1.7 combined set\n"
+    digest = hashlib.sha256(payload).hexdigest()
+    first = _register(client, digest, package_id, kind=DocumentKind.ARCHITECTURAL).json()
+    second = _register(client, digest, package_id, kind=DocumentKind.SHOP).json()
+    for registered in (first, second):
+        ticket = client.post(
+            f"/api/v1/projects/{PROJECT}/documents/{registered['document_id']}/uploads",
+            json={"sha256": digest},
+        )
+        store.put(ticket.json()["storage_key"], io.BytesIO(payload), content_type="application/pdf")
+
+    def confirm(registered: dict[str, Any]) -> Any:
+        return client.post(
+            f"/api/v1/projects/{PROJECT}/documents/{registered['document_id']}/confirm",
+            json={"sha256": digest, "page_count": 3},
+        )
+
+    assert confirm(first).status_code == 201
+    refused = confirm(second)
+
+    assert refused.status_code == 409, refused.text
+    assert "already in this package" in refused.json()["message"]
+    assert len(list(session.execute(select(DocumentVersion)).scalars())) == 1
+
+
+def test_extraction_refuses_a_revision_already_holding_one_file_twice(
+    session: Session, store: LocalStore
+) -> None:
+    """#963: a package assembled before the guard (one file as both kinds) is not read until fixed."""
+    from app.models.document import Document, PackageRevisionDocument, SourceArtifact
+
+    package_id = _new_package(session)
+    client = _client(session, store)
+    payload = b"%PDF-1.7 combined set\n"
+    digest = hashlib.sha256(payload).hexdigest()
+    _upload_and_confirm(client, store, package_id, payload, kind=DocumentKind.ARCHITECTURAL)
+    # The second copy written the way the API wrote it before #963.
+    revision = session.scalars(
+        select(PackageRevision).where(PackageRevision.package_id == package_id)
+    ).one()
+    document = Document(package_id=package_id, kind=DocumentKind.SHOP.value)
+    artifact = SourceArtifact(storage_key=f"legacy/{digest}", sha256=digest, size=len(payload))
+    session.add_all([document, artifact])
+    session.flush()
+    version = DocumentVersion(
+        document_id=document.id, source_artifact_id=artifact.id, sha256=digest, page_count=3
+    )
+    session.add(version)
+    session.flush()
+    session.add(
+        PackageRevisionDocument(
+            package_revision_id=revision.id,
+            package_id=package_id,
+            document_id=document.id,
+            document_version_id=version.id,
+        )
+    )
+    session.commit()
+
+    extracted = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/extract")
+
+    assert extracted.status_code == 409, extracted.text
+    assert "same file" in extracted.json()["message"]
+    assert _outbox_rows(session) == []
+
+
 def test_extraction_still_refuses_when_no_drawing_is_confirmed(
     session: Session, store: LocalStore
 ) -> None:

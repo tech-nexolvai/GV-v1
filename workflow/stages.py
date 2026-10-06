@@ -7222,13 +7222,34 @@ def _revision_document_roles(
     return frozenset(roles)
 
 
+def _one_file_as_both_roles(session: Session, package_revision_id: UUID) -> bool:
+    """Whether the same bytes are both this revision's architectural and its shop document (#963).
+
+    Such a file is one combined set (ADR-0020), not a two-PDF package: its slot must never decide a
+    role, or the vendor's drawing on the "architectural" copy is matched against its own twin.
+    """
+    kinds_by_bytes: dict[str, set[str]] = {}
+    for kind, sha256 in session.execute(
+        select(Document.kind, DocumentVersion.sha256)
+        .join(PackageRevisionDocument, PackageRevisionDocument.document_id == Document.id)
+        .join(DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id)
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+    ):
+        kinds_by_bytes.setdefault(str(sha256), set()).add(str(kind))
+    both = {DocumentKind.ARCHITECTURAL.value, DocumentKind.SHOP.value}
+    return any(both <= kinds for kinds in kinds_by_bytes.values())
+
+
 def _fallback_to_document_kind_allowed(session: Session, package_revision_id: UUID) -> bool:
-    """Whether legacy two-PDF role inference is available for this revision."""
+    """Whether legacy two-PDF role inference is available for this revision.
+
+    Only for two *different* files (#963): the same bytes in both slots is one combined set.
+    """
 
     return _revision_document_roles(session, package_revision_id) >= {
         MatchDocumentRole.ARCH,
         MatchDocumentRole.SHOP,
-    }
+    } and not _one_file_as_both_roles(session, package_revision_id)
 
 
 def _resolved_match_role(
