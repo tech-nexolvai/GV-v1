@@ -62,6 +62,7 @@ MODEL_VENDORS: Final[dict[str, str]] = {
     "writer.": "writer",
     "nvidia.": "nvidia",
     "moonshot.": "moonshot",
+    "moonshotai.": "moonshot",
 }
 
 #: A cross-region inference profile names the same model from another route; it is not another model.

@@ -93,6 +93,7 @@ class CandidateOut(BaseModel):
     )
     corroboration_status: str | None = None
     corroboration_lane: str | None = None
+    review_reason: str | None = None
     source: str | None = Field(
         default=None,
         description=(
@@ -258,6 +259,7 @@ def list_candidates(
                 confidence=None if row.confidence is None else str(row.confidence),
                 corroboration_status=row.corroboration_status,
                 corroboration_lane=row.corroboration_lane,
+                review_reason=row.review_reason,
                 source=placed[row.id][0],
                 source_refusal=placed[row.id][1],
             )

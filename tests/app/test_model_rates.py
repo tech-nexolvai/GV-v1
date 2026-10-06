@@ -43,13 +43,27 @@ def test_the_shipped_price_file_is_usd_dated_and_covers_every_reader() -> None:
     shipped = load_model_rates(SHIPPED)
 
     assert shipped.currency == "USD"
-    assert shipped.retrieved == date(2026, 10, 4)
+    assert shipped.retrieved == date(2026, 10, 6)
     assert "price list" in shipped.source
     # Every reader a deployment or the agent can run: a measured space, or no rectangle asked (#907).
     runnable = [reader for reader in VISION_READERS if reader.answers_readably]
     assert "qwen.qwen3-vl-235b-a22b" in {reader.model_id for reader in runnable}
     for reader in runnable:
         assert shipped.rate_for(reader.model_id) is not None, reader.model_id
+    assert shipped.rate_for("us.moonshotai.kimi-k3") is not None
+
+
+def test_kimi_k3_is_priced_at_the_aws_us_cris_standard_rate() -> None:
+    """AWS Bedrock model card, retrieved 2026-10-06: US CRIS Standard, $3.30/$16.50 per MTok."""
+    shipped = load_model_rates(SHIPPED)
+
+    rate = shipped.rate_for("moonshotai.kimi-k3")
+    assert rate is not None
+    assert (rate.input_per_1k_tokens, rate.output_per_1k_tokens) == (
+        Decimal("0.0033"),
+        Decimal("0.0165"),
+    )
+    assert call_cost_micros(shipped, "us.moonshotai.kimi-k3", 1000, 100) == 4950
 
 
 def test_qwen_is_priced_at_aws_s_published_on_demand_rate() -> None:

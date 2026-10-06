@@ -122,6 +122,10 @@ class ObservationCandidate(Base, TimestampedUUID, Immutable):
     # be a second answer to the same question, free to disagree with the first.
     source_author: Mapped[str | None] = mapped_column(String(200), default=None)
 
+    # Plain-language explanation shown beside a form-first candidate. It is presentation metadata;
+    # no downstream operand or verdict is allowed to read it.
+    review_reason: Mapped[str | None] = mapped_column(String(300), default=None)
+
     __table_args__ = (
         CheckConstraint(EXACT_OPTIONAL_VALUE, name="observation_candidate_exact_value"),
         CheckConstraint(
