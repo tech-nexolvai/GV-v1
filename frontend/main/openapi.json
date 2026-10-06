@@ -3153,6 +3153,19 @@
         "title": "PackagePage",
         "type": "object"
       },
+      "PagePicturesQueuedOut": {
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "PagePicturesQueuedOut",
+        "type": "object"
+      },
       "PageProposalIn": {
         "additionalProperties": false,
         "description": "Request a proposal for exactly one drawing page.",
@@ -7542,9 +7555,63 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/pages/pictures": {
+      "post": {
+        "description": "Queue the worker's picture job when any page lacks a picture and none is already queued.",
+        "operationId": "prepare_page_pictures_api_v1_projects__project_id__packages__package_id__pages_pictures_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagePicturesQueuedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask the worker to render missing page pictures",
+        "tags": [
+          "drawings"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/pages/{page_number}/picture": {
       "get": {
-        "description": "Page `page_number` (1-based) of this package, as a PNG of the vendor's layer.\n\nWhen the package holds two drawings with that page, the shop drawing's page is shown: the pane\nis where the reviewer reads the vendor's numbers.",
+        "description": "The stored picture of page `page_number`, or 404 while the worker has not rendered it.",
         "operationId": "page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get",
         "parameters": [
           {
@@ -7573,18 +7640,6 @@
             "required": true,
             "schema": {
               "title": "Page Number",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "dpi",
-            "required": false,
-            "schema": {
-              "default": 110,
-              "maximum": 200,
-              "minimum": 50,
-              "title": "Dpi",
               "type": "integer"
             }
           }

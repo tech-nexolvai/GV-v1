@@ -1,71 +1,58 @@
-"""A picture of any drawing page, vendor layer only, for the reviewer's left-hand pane.
+"""The picture of any drawing page, for the reviewer's left-hand pane (#968).
 
-The Measure screen shows the drawing on the left and the form on the right (admin, 2026-10-06). The
-existing vendor page pictures (#948) exist only for a drawing confirmed as the vendor's, which a
-combined set does not have before review. This renders the page on request instead: read-only, no
-model, no row written. The reviewer's markup is left out (`vendor_only=True`), as everywhere a page
-is shown as the vendor's drawing.
+The Measure screen shows the drawing on the left and the form on the right (admin, 2026-10-06).
+Rendering never happens in the API: the worker's page-picture job (`RENDER_VENDOR_PAGE_PICTURES`)
+renders every page of the revision, vendor layer only, and this serves the stored, digest-checked
+picture or says it is not ready and lets the screen ask for it.
 """
 
 from __future__ import annotations
 
-import hashlib
-from typing import Annotated, Final
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from pydantic import BaseModel
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
+from app.api.drawing_parts import _verified_page_picture
 from app.api.drawing_views import NOT_FOUND_DETAIL, _revision
 from app.auth import Principal, require_project_access
-from app.models import Page
-from app.models.document import (
-    Document,
-    DocumentKind,
-    DocumentVersion,
-    PackageRevisionDocument,
-    SourceArtifact,
-)
-from evidence.crop import encode_png
-from extraction.rasterise import render_page
-from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
+from app.models import OutboxEntry, Page
+from app.models.document import Document, DocumentKind, PackageRevisionDocument
 from storage.store import ArtifactStore
+from workflow.outbox import enqueue
+from workflow.vendor_page_pictures import (
+    RENDER_VENDOR_PAGE_PICTURES_WORKFLOW,
+    pages_without_pictures,
+)
+from workflow.vendor_page_pictures import page_picture as recorded_page_picture
 
 router = APIRouter(tags=["drawings"])
 
-#: Enough to read a dimension when zoomed in the browser, small enough to send quickly.
-DEFAULT_DPI: Final = 110
-MAX_DPI: Final = 200
-#: A memory budget for one render, as `render_page` requires one.
-MAX_PIXELS: Final = 40_000_000
+
+class PagePicturesQueuedOut(BaseModel):
+    queued: bool
 
 
-#: Rendered pages by (document digest, page index, dpi). Small and process-local: a page is
-#: re-rendered after a restart, which costs well under a second.
-_CACHE: dict[tuple[str, int, int], bytes] = {}
-_CACHE_LIMIT: Final = 48
-
-
-def _rendered(
-    data: bytes, digest: str, page_index: int, version_id: UUID, content_hash: str, dpi: int
-) -> bytes:
-    key = (digest, page_index, dpi)
-    if key not in _CACHE:
-        image = render_page(
-            data,
-            page_index,
-            document_version_id=version_id,
-            page_content_hash=content_hash,
-            dpi=dpi,
-            maximum_pixels=MAX_PIXELS,
-            vendor_only=True,
+def _page(session: Session, revision_id: UUID, page_number: int) -> Page | None:
+    """Page `page_number` (1-based); the shop drawing's when two documents have that page."""
+    return session.scalars(
+        select(Page)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == Page.document_version_id,
         )
-        if len(_CACHE) >= _CACHE_LIMIT:
-            _CACHE.pop(next(iter(_CACHE)))
-        _CACHE[key] = encode_png(image.width_px, image.height_px, image.rgb_bytes)
-    return _CACHE[key]
+        .join(Document, Document.id == PackageRevisionDocument.document_id)
+        .where(
+            PackageRevisionDocument.package_revision_id == revision_id,
+            Page.index == page_number - 1,
+        )
+        .order_by(case((Document.kind == DocumentKind.SHOP.value, 0), else_=1), Document.id)
+        .limit(1)
+    ).first()
 
 
 @router.get(
@@ -85,47 +72,63 @@ def page_picture(
     project_id: UUID,
     package_id: UUID,
     page_number: int,
-    dpi: Annotated[int, Query(ge=50, le=MAX_DPI)] = DEFAULT_DPI,
 ) -> Response:
-    """Page `page_number` (1-based) of this package, as a PNG of the vendor's layer.
-
-    When the package holds two drawings with that page, the shop drawing's page is shown: the pane
-    is where the reviewer reads the vendor's numbers.
-    """
+    """The stored picture of page `page_number`, or 404 while the worker has not rendered it."""
     revision = _revision(session, project_id, package_id)
-    row = session.execute(
-        select(Page, DocumentVersion, SourceArtifact)
-        .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
-        .join(SourceArtifact, SourceArtifact.id == DocumentVersion.source_artifact_id)
-        .join(
-            PackageRevisionDocument,
-            PackageRevisionDocument.document_version_id == DocumentVersion.id,
-        )
-        .join(Document, Document.id == PackageRevisionDocument.document_id)
-        .where(
-            PackageRevisionDocument.package_revision_id == revision.id,
-            Page.index == page_number - 1,
-        )
-        .order_by(case((Document.kind == DocumentKind.SHOP.value, 0), else_=1), Document.id)
-        .limit(1)
-    ).first()
-    if row is None:
+    page = _page(session, revision.id, page_number)
+    if page is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
-    page, version, artifact = row
-    try:
-        with store.get(artifact.storage_key) as stored:
-            data = stored.read()
-    except (ArtifactCorrupt, FileNotFoundError, IntegrityRecordMissing) as error:
+    picture = recorded_page_picture(session, page.id)
+    if picture is None:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="the stored drawing is unavailable"
-        ) from error
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != version.sha256:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="the stored drawing failed its integrity check, so it cannot be shown",
+            status_code=status.HTTP_404_NOT_FOUND, detail="the page picture is not ready yet"
         )
-    png = _rendered(data, digest, page.index, version.id, page.content_hash, dpi)
+    content = _verified_page_picture(store, picture)
     return Response(
-        content=png, media_type="image/png", headers={"Cache-Control": "private, max-age=600"}
+        content=content, media_type=picture.media_type, headers={"Cache-Control": "no-store"}
     )
+
+
+@router.post(
+    "/projects/{project_id}/packages/{package_id}/pages/pictures",
+    response_model=PagePicturesQueuedOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Ask the worker to render missing page pictures",
+)
+def prepare_page_pictures(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> PagePicturesQueuedOut:
+    """Queue the worker's picture job when any page lacks a picture and none is already queued."""
+    revision = _revision(session, project_id, package_id)
+    page_ids = list(
+        session.scalars(
+            select(Page.id)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .where(PackageRevisionDocument.package_revision_id == revision.id)
+        )
+    )
+    if not pages_without_pictures(session, page_ids):
+        return PagePicturesQueuedOut(queued=False)
+    pending = session.scalar(
+        select(OutboxEntry.id)
+        .where(
+            OutboxEntry.workflow == RENDER_VENDOR_PAGE_PICTURES_WORKFLOW,
+            OutboxEntry.dispatched_at.is_(None),
+            OutboxEntry.payload["package_revision_id"].as_string() == str(revision.id),
+        )
+        .limit(1)
+    )
+    if pending is None:
+        enqueue(
+            session,
+            workflow=RENDER_VENDOR_PAGE_PICTURES_WORKFLOW,
+            payload={"package_revision_id": str(revision.id)},
+        )
+        session.commit()
+    return PagePicturesQueuedOut(queued=True)

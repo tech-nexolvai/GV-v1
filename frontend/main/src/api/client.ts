@@ -1073,6 +1073,14 @@ export async function downloadEvidenceCrop(
 }
 
 /** The immutable crop behind an untyped AI proposal, before a reviewer names its meaning. */
+/** Ask the worker to render any page pictures still missing (#968). Never renders in the API. */
+export function preparePagePictures(projectId: string, packageId: string) {
+  return request<components['schemas']['PagePicturesQueuedOut']>(
+    `/projects/${projectId}/packages/${packageId}/pages/pictures`,
+    { method: 'POST' },
+  );
+}
+
 /** A picture of one drawing page, vendor layer only, for the Measure screen's left pane. */
 export async function downloadPagePicture(
   projectId: string,

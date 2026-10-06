@@ -12,7 +12,8 @@ from app.main import create_app
 from app.models.package import Package
 from storage.local import LocalStore
 from tests.api.test_packages import _settings
-from tests.evidence.test_sides import _read, session, store  # noqa: F401 — fixtures
+from tests.evidence.test_sides import MISSING_SPACE, _read, session, store  # noqa: F401
+from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -41,10 +42,19 @@ def test_any_page_of_a_package_can_be_shown_as_a_picture(
     client = _client(session, store, package.project_id)
     base = f"/api/v1/projects/{package.project_id}/packages/{package.id}/pages"
 
+    # Before the worker has rendered it: not ready, and asking queues the worker's job once.
+    assert client.get(f"{base}/1/picture").status_code == 404
+    assert client.post(f"{base}/pictures").json() == {"queued": True}
+
+    # The worker renders every page of the revision — no confirmed vendor drawing needed.
+    result = DatabaseStages(store, missing_space=MISSING_SPACE).render_vendor_page_pictures(
+        session, revision.id
+    )
+    assert result["rendered"] == 1, result
+
     shown = client.get(f"{base}/1/picture")
     assert shown.status_code == 200, shown.text
     assert shown.headers["content-type"] == "image/png"
     assert shown.content.startswith(b"\x89PNG")
-
+    assert client.post(f"{base}/pictures").json() == {"queued": False}
     assert client.get(f"{base}/9/picture").status_code == 404
-    assert client.get(f"{base}/1/picture?dpi=999").status_code == 422

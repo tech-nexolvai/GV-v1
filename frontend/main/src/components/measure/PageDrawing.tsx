@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { downloadPagePicture } from '../../api/client';
+import { ApiError, downloadPagePicture, preparePagePictures } from '../../api/client';
 import { projectId } from '../../api/config';
 import { PageDrawingView } from './PageDrawingView';
 
@@ -11,6 +11,8 @@ import { PageDrawingView } from './PageDrawingView';
  */
 export function PageDrawing({ packageId, pageNumber }: { packageId: string; pageNumber: number }) {
   const key = `${packageId}:${pageNumber}`;
+  /** Bumped to try again while the worker is still rendering the page. */
+  const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<{ key: string; url?: string; error?: string } | null>(null);
   // Derived, not reset in the effect: a picture for another page is simply not this page's.
   const state = loaded && loaded.key === key ? loaded : null;
@@ -25,7 +27,16 @@ export function PageDrawing({ packageId, pageNumber }: { packageId: string; page
         setLoaded({ key: `${packageId}:${pageNumber}`, url });
       },
       (error: unknown) => {
-        if (!cancelled) {
+        if (cancelled) return;
+        // Not rendered yet: ask the worker (idempotent) and look again shortly, for a while.
+        if (error instanceof ApiError && error.status === 404 && attempt < 40) {
+          if (attempt === 0) void preparePagePictures(projectId(), packageId).catch(() => undefined);
+          window.setTimeout(() => {
+            if (!cancelled) setAttempt((count) => count + 1);
+          }, 3000);
+          return;
+        }
+        {
           setLoaded({
             key: `${packageId}:${pageNumber}`,
             error: error instanceof Error ? error.message : 'The drawing page could not be loaded.',
@@ -37,7 +48,7 @@ export function PageDrawing({ packageId, pageNumber }: { packageId: string; page
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [packageId, pageNumber]);
+  }, [packageId, pageNumber, attempt]);
 
   return <PageDrawingView pageNumber={pageNumber} url={state?.url} error={state?.error} />;
 }

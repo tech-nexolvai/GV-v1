@@ -772,6 +772,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/pages/pictures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask the worker to render missing page pictures
+         * @description Queue the worker's picture job when any page lacks a picture and none is already queued.
+         */
+        post: operations["prepare_page_pictures_api_v1_projects__project_id__packages__package_id__pages_pictures_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/pages/{page_number}/picture": {
         parameters: {
             query?: never;
@@ -781,10 +801,7 @@ export interface paths {
         };
         /**
          * View a drawing page (vendor layer only)
-         * @description Page `page_number` (1-based) of this package, as a PNG of the vendor's layer.
-         *
-         *     When the package holds two drawings with that page, the shop drawing's page is shown: the pane
-         *     is where the reviewer reads the vendor's numbers.
+         * @description The stored picture of page `page_number`, or 404 while the worker has not rendered it.
          */
         get: operations["page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get"];
         put?: never;
@@ -3179,6 +3196,11 @@ export interface components {
             /** Ordering */
             ordering: string;
         };
+        /** PagePicturesQueuedOut */
+        PagePicturesQueuedOut: {
+            /** Queued */
+            queued: boolean;
+        };
         /**
          * PageProposalIn
          * @description Request a proposal for exactly one drawing page.
@@ -5426,11 +5448,41 @@ export interface operations {
             };
         };
     };
+    prepare_page_pictures_api_v1_projects__project_id__packages__package_id__pages_pictures_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PagePicturesQueuedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get: {
         parameters: {
-            query?: {
-                dpi?: number;
-            };
+            query?: never;
             header?: never;
             path: {
                 project_id: string;
