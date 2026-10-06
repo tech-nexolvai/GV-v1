@@ -458,9 +458,7 @@ def persist_slot_readings(
                 None
                 if accepted
                 else (
-                    (held.get(index) if index is not None else None) or "not offered to the form"
-                    if sealed
-                    else owner.outcome.reason
+                    held.get(index) or "not offered to the form" if sealed else owner.outcome.reason
                 )
             )
             flags = [

@@ -181,8 +181,10 @@ def test_text_labels_seal_on_the_file_and_one_reader_and_unnamed_pieces_ask_what
     assert {model for model, _ in readers.requests} == {QWEN}, "a text label needs one reader"
     assert result.overall is not None and result.overall.outcome.state is LabelState.SEALED
     assert all(slot.outcome.state is LabelState.SEALED for slot in result.slots)
-    assert [p.field_key for p in result.mapping.proposals] == [OVERALL_FIELD]
-    assert all(reason.startswith(WHAT_IS_IT) for _, reason in result.mapping.held)
+    assert result.mapping.proposals == (), "the overall waits for its unnamed pieces"
+    held = dict(result.mapping.held)
+    assert all(held[index].startswith(WHAT_IS_IT) for index in (0, 1, 2))
+    assert held[None].startswith("held back")
 
 
 def test_a_named_sealed_chain_fills_the_form_left_to_right() -> None:
@@ -209,7 +211,7 @@ def test_a_reader_that_differs_from_the_file_holds_the_piece_and_the_chain() -> 
     result = read(page, FakeReaders(lambda _model, png: lookup[png]))
 
     assert result.slots[1].outcome.reason_code == "readers-differ"
-    assert [p.field_key for p in result.mapping.proposals] == [OVERALL_FIELD]
+    assert result.mapping.proposals == ()
 
 
 def test_a_label_under_the_reviewers_yellow_box_is_never_read_or_sealed() -> None:
@@ -226,7 +228,7 @@ def test_a_label_under_the_reviewers_yellow_box_is_never_read_or_sealed() -> Non
     assert middle.outcome.reason.startswith("covered by reviewer markup")
     assert middle.outcome.value is None
     assert len(readers.requests) == 3, "the covered label costs no call"
-    assert [p.field_key for p in result.mapping.proposals] == [OVERALL_FIELD]
+    assert result.mapping.proposals == ()
 
 
 def test_glyph_labels_need_two_makers_to_agree() -> None:
@@ -434,9 +436,10 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
     assert first.corroboration_status is None, "sealed but held back: not offered"
     assert first.value_numerator == 12 and first.review_reason is not None
     overall = by_slot["slot:overall"]
-    assert overall.corroboration_status == "CORROBORATED" and overall.value_numerator == 72
+    assert overall.corroboration_status is None and overall.value_numerator == 72
+    assert overall.review_reason is not None and overall.review_reason.startswith("held back")
 
     proposals = session.scalars(
         select(MeasurementProposal).where(MeasurementProposal.package_revision_id == revision.id)
     ).all()
-    assert [(p.field_key, p.candidate_id) for p in proposals] == [(OVERALL_FIELD, overall.id)]
+    assert proposals == [], "a held chain links nothing to the form"

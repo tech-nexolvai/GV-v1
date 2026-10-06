@@ -103,10 +103,23 @@ def test_an_unknown_piece_holds_every_piece_and_asks_what_it_is() -> None:
         pieces((sealed('1"'), FILLER), (sealed('3/4"'), UNKNOWN), (sealed('18"'), CABINET)),
         row_ambiguity=None,
     )
-    assert [p.field_key for p in mapping.proposals] == [OVERALL_FIELD]
+    assert mapping.proposals == ()
     held = dict(mapping.held)
     assert held[1].startswith(WHAT_IS_IT)
     assert "piece 2" in held[0] and "piece 2" in held[2]
+    assert held[None].startswith("held back: piece 2 under this overall")
+
+
+def test_the_overall_is_never_offered_without_its_chain() -> None:
+    """A wall-to-wall line can coincide with the chain's ends; its pieces run through appliance
+    spaces nobody named. The overall waits with them (#987's first verification run)."""
+    mapping = map_row(
+        sealed('120"'),
+        pieces((sealed('24"'), CABINET), (sealed('30"'), UNKNOWN), (sealed('24"'), CABINET)),
+        row_ambiguity=None,
+    )
+    assert mapping.proposals == ()
+    assert None in dict(mapping.held)
 
 
 def test_a_missing_slot_reading_is_never_a_shorter_sum() -> None:
@@ -116,8 +129,8 @@ def test_a_missing_slot_reading_is_never_a_shorter_sum() -> None:
         pieces((sealed('1"'), FILLER), (REVIEW, CABINET), (sealed('18"'), CABINET)),
         row_ambiguity=None,
     )
-    assert [p.field_key for p in mapping.proposals] == [OVERALL_FIELD]
-    assert {index for index, _ in mapping.held} == {0, 2}
+    assert mapping.proposals == ()
+    assert {index for index, _ in mapping.held} == {None, 0, 2}
 
 
 def test_pieces_adding_up_never_changes_what_is_offered() -> None:

@@ -3,7 +3,14 @@
 **Offered, never saved.** A proposal links a sealed candidate to a field of the reviewer's form;
 the reviewer still saves the form, and saving is what makes a measurement (#965's rule, unchanged).
 
-**The overall** goes to `SHOP:countertop_overall_width` when it sealed and the row is trusted.
+**The overall goes with its chain, never alone.** It is offered to `SHOP:countertop_overall_width`
+only when it sealed, the row is trusted, and the whole chain under it is offered too. Measured on
+the first verification run (#987): on a kitchenette elevation the line whose ends coincide with
+the chain is the wall-to-wall dimension, its pieces run through a range and a fridge space, and the
+printed number is not a countertop width at all. Its text sealed correctly; offered alone, it would
+have put a wall's width in the countertop field. Code cannot tell the two lines apart, and a piece
+of unknown kind is exactly where an appliance space hides — so an unnamed or unsealed piece holds
+the overall back with the pieces, for the person to confirm.
 
 **The pieces go only as a whole chain.** Left to right, each to `SHOP:cabinet_width` or
 `SHOP:filler_width` by its kind — but only when every piece of the row sealed and every kind is
@@ -68,8 +75,8 @@ class SlotFieldProposal:
 @dataclass(frozen=True, slots=True)
 class SlotMapping:
     proposals: tuple[SlotFieldProposal, ...]
-    held: tuple[tuple[int, str], ...]
-    """Sealed pieces that are not offered, `(slot index, why)`."""
+    held: tuple[tuple[int | None, str], ...]
+    """Sealed readings that are not offered, `(slot index or None for the overall, why)`."""
 
 
 def map_row(
@@ -87,16 +94,27 @@ def map_row(
     proposals: list[SlotFieldProposal] = []
     if row_ambiguity is not None:
         return SlotMapping((), tuple(_held_all(pieces, "not sure this row is the countertop")))
-    if overall is not None and overall.state is LabelState.SEALED:
-        proposals.append(SlotFieldProposal(OVERALL_FIELD, 0, None))
+    overall_sealed = overall is not None and overall.state is LabelState.SEALED
     blockers = [
         piece
         for piece in pieces
         if piece.outcome.state is not LabelState.SEALED or piece.kind.kind not in _FIELDS
     ]
     if not pieces or blockers:
-        held: list[tuple[int, str]] = []
+        held: list[tuple[int | None, str]] = []
         first = blockers[0].index + 1 if blockers else None
+        if overall_sealed:
+            held.append(
+                (
+                    None,
+                    (
+                        f"held back: piece {first} under this overall needs a look first; "
+                        "confirm this is the countertop's width"
+                        if first is not None
+                        else "no pieces found under this overall"
+                    ),
+                )
+            )
         for piece in pieces:
             if piece.outcome.state is not LabelState.SEALED:
                 continue
@@ -117,6 +135,8 @@ def map_row(
                     )
                 )
         return SlotMapping(tuple(proposals), tuple(held))
+    if overall_sealed:
+        proposals.append(SlotFieldProposal(OVERALL_FIELD, 0, None))
     positions: dict[str, int] = {}
     for piece in pieces:
         field = _FIELDS[piece.kind.kind]
@@ -126,5 +146,5 @@ def map_row(
     return SlotMapping(tuple(proposals), ())
 
 
-def _held_all(pieces: Sequence[PieceReading], reason: str) -> list[tuple[int, str]]:
+def _held_all(pieces: Sequence[PieceReading], reason: str) -> list[tuple[int | None, str]]:
     return [(piece.index, reason) for piece in pieces if piece.outcome.state is LabelState.SEALED]
