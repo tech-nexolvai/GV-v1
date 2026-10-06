@@ -20,6 +20,7 @@ from extraction.form_reader.agreement import ComparedReading, compare_page_answe
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.form_reader.locator import LocatedBox, locate_box
 from extraction.form_reader.mapping import FormMapping, map_page_to_fields
+from extraction.form_reader.prompt_v5 import BUILT_IN_PROMPT, FormPrompt, prompt_from_guidance_file
 from extraction.form_reader.runner import ClientProvider, read_pages_parallel
 from extraction.form_reader.schema import PageFormAnswer
 
@@ -34,6 +35,7 @@ class FormReaderRuntime:
     max_tokens: int
     max_throttle_retries: int
     retry_backoff_seconds: float
+    prompt: FormPrompt
 
 
 def configured_form_reader(settings: Settings) -> FormReaderRuntime | None:
@@ -51,6 +53,10 @@ def configured_form_reader(settings: Settings) -> FormReaderRuntime | None:
         str(settings.form_reader_primary_model),
         str(settings.form_reader_second_model),
     )
+    prompt_file = getattr(settings, "form_reader_prompt_file", None)
+    if prompt_file is None:
+        raise ValueError("enabled form readers require GV_FORM_READER_PROMPT_FILE")
+    prompt = prompt_from_guidance_file(prompt_file)
     rates = rates_from_environment()
     require_priced_readers(readers, rates)
     if rates is None:
@@ -82,6 +88,7 @@ def configured_form_reader(settings: Settings) -> FormReaderRuntime | None:
         max_tokens=int(max_tokens),
         max_throttle_retries=int(retries),
         retry_backoff_seconds=float(backoff),
+        prompt=prompt,
     )
 
 
@@ -169,6 +176,7 @@ def read_form_pages(
     max_throttle_retries: int,
     retry_backoff_seconds: float,
     record_attempt: Callable[[AttemptUsage], None],
+    prompt: FormPrompt = BUILT_IN_PROMPT,
 ) -> tuple[LocatedReading, ...]:
     """Read all supplied pages in parallel, apply outputs in fixed order, and locate Qwen boxes.
 
@@ -190,6 +198,7 @@ def read_form_pages(
         max_throttle_retries=max_throttle_retries,
         retry_backoff_seconds=retry_backoff_seconds,
         record_attempt=record_attempt,
+        prompt=prompt,
     )
     answers: dict[int, dict[str, PageFormAnswer]] = defaultdict(dict)
     for read in reads:
@@ -256,6 +265,7 @@ def persist_form_proposals(
     extraction_run_id: UUID,
     reader_ids: tuple[str, str],
     readings: Sequence[LocatedReading],
+    prompt_id: str,
 ) -> int:
     """Persist candidates and candidate-only MeasurementProposal links; never save form values."""
     from sqlalchemy.orm import Session
@@ -346,7 +356,7 @@ def persist_form_proposals(
                     candidate_id=candidate.id,
                     placement_verified=False,
                     model_id=f"{reader_ids[0]} + {reader_ids[1]}",
-                    prompt_id="form-reader-v5",
+                    prompt_id=prompt_id,
                 )
             )
     session.add_all(proposal_rows)

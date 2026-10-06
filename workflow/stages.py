@@ -2039,6 +2039,7 @@ class DatabaseStages:
             max_throttle_retries=runtime.max_throttle_retries,
             retry_backoff_seconds=runtime.retry_backoff_seconds,
             record_attempt=recorder.record,
+            prompt=runtime.prompt,
         )
         run = open_extraction_run(
             session,
@@ -2047,7 +2048,7 @@ class DatabaseStages:
             extractor_version="form-reader-v5-gv-mark-v1",
             config_hash=(
                 f"dpi={self._dpi};readers={runtime.reader_ids[0]}|{runtime.reader_ids[1]};"
-                "gv_mark_guard=v1"
+                f"prompt={runtime.prompt.prompt_id};gv_mark_guard=v1"
             ),
             dpi=self._dpi,
         )
@@ -2087,6 +2088,7 @@ class DatabaseStages:
             extraction_run_id=run.id,
             reader_ids=runtime.reader_ids,
             readings=readings,
+            prompt_id=runtime.prompt.prompt_id,
         )
         session.flush()
         return count

@@ -17,6 +17,7 @@ from extraction.form_reader.bedrock import (
     read_page,
 )
 from extraction.form_reader.pricing import RateLookup, require_priced_readers
+from extraction.form_reader.prompt_v5 import BUILT_IN_PROMPT, FormPrompt
 from extraction.form_reader.schema import PageFormAnswer
 
 
@@ -124,6 +125,7 @@ def read_pages_parallel(
     max_throttle_retries: int,
     retry_backoff_seconds: float,
     record_attempt: Callable[[AttemptUsage], None],
+    prompt: FormPrompt = BUILT_IN_PROMPT,
 ) -> tuple[PageRead, ...]:
     """Read every page with both configured readers and return results in page/reader order.
 
@@ -177,6 +179,7 @@ def read_pages_parallel(
                     page_index=page_index,
                     max_tokens=max_tokens,
                     record_attempt=record_attempt,
+                    prompt=prompt,
                 )
                 return PageRead(page_index, model_id, answer)
             except MalformedFormAnswer:

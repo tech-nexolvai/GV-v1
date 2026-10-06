@@ -14,7 +14,7 @@ from time import monotonic
 from typing import Any, Protocol
 
 from extraction.form_reader.parser import validate_page_answer
-from extraction.form_reader.prompt_v5 import PROMPT_ID, SYSTEM_PROMPT_V5, TEMPLATE_ID, page_prompt
+from extraction.form_reader.prompt_v5 import BUILT_IN_PROMPT, FormPrompt, page_prompt
 from extraction.form_reader.schema import PageFormAnswer
 
 KIMI_K3_MODEL = "moonshotai.kimi-k3"
@@ -118,7 +118,12 @@ def _base_model_id(model_id: str) -> str:
 
 
 def build_converse_request(
-    *, model_id: str, page_png: bytes, page_index: int, max_tokens: int
+    *,
+    model_id: str,
+    page_png: bytes,
+    page_index: int,
+    max_tokens: int,
+    prompt: FormPrompt = BUILT_IN_PROMPT,
 ) -> dict[str, Any]:
     """Build one page request; attach the image before text as recommended for Kimi K3."""
     if not model_id.strip():
@@ -136,7 +141,7 @@ def build_converse_request(
     }
     request: dict[str, Any] = {
         "modelId": model_id,
-        "system": [{"text": SYSTEM_PROMPT_V5}],
+        "system": [{"text": prompt.system_text}],
         "messages": [message],
         "inferenceConfig": {"maxTokens": max_tokens},
     }
@@ -229,6 +234,7 @@ def read_page(
     page_index: int,
     max_tokens: int,
     record_attempt: UsageRecorder,
+    prompt: FormPrompt = BUILT_IN_PROMPT,
 ) -> PageFormAnswer:
     """Call a configured reader; retry exactly once for malformed output, never for rule outcomes."""
     for attempt in range(2):
@@ -237,6 +243,7 @@ def read_page(
             page_png=page_png,
             page_index=page_index,
             max_tokens=max_tokens,
+            prompt=prompt,
         )
         if attempt:
             request["messages"][0]["content"].append(
@@ -255,8 +262,8 @@ def read_page(
             record_attempt(
                 AttemptUsage(
                     model_id,
-                    PROMPT_ID,
-                    TEMPLATE_ID,
+                    prompt.prompt_id,
+                    prompt.template_id,
                     None,
                     None,
                     int((monotonic() - started) * 1000),
@@ -275,8 +282,8 @@ def read_page(
             record_attempt(
                 AttemptUsage(
                     model_id,
-                    PROMPT_ID,
-                    TEMPLATE_ID,
+                    prompt.prompt_id,
+                    prompt.template_id,
                     input_tokens,
                     output_tokens,
                     int((monotonic() - started) * 1000),
@@ -293,8 +300,8 @@ def read_page(
             record_attempt(
                 AttemptUsage(
                     model_id,
-                    PROMPT_ID,
-                    TEMPLATE_ID,
+                    prompt.prompt_id,
+                    prompt.template_id,
                     input_tokens,
                     output_tokens,
                     int((monotonic() - started) * 1000),
@@ -307,8 +314,8 @@ def read_page(
         record_attempt(
             AttemptUsage(
                 model_id,
-                PROMPT_ID,
-                TEMPLATE_ID,
+                prompt.prompt_id,
+                prompt.template_id,
                 input_tokens,
                 output_tokens,
                 int((monotonic() - started) * 1000),
