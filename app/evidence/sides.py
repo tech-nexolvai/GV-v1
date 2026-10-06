@@ -83,6 +83,7 @@ class SideRefusalReason(StrEnum):
     NO_TRANSFORM = "no_transform"
     NOT_IN_ONE_VIEW = "not_in_one_view"
     VIEW_ROLE_UNCONFIRMED = "view_role_unconfirmed"
+    SAME_FILE_BOTH_SIDES = "same_file_both_sides"
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +154,7 @@ class ReadingSides:
         self._views: dict[UUID, tuple[tuple[DrawingView, Polygon | None], ...]] = {}
         self._kinds: dict[UUID, str | None] = {}
         self._both_kinds: dict[UUID, bool] = {}
+        self._same_file: dict[UUID, bool] = {}
 
     def _page_views(self, page: Page) -> tuple[tuple[DrawingView, Polygon | None], ...]:
         if page.id not in self._views:
@@ -172,28 +174,57 @@ class ReadingSides:
             self._kinds[document_version_id] = None if kind is None else str(kind)
         return self._kinds[document_version_id]
 
+    def _membership_rows(self, document_version_id: UUID) -> list[tuple[UUID, str, str]]:
+        """(revision, kind, sha256) for every drawing in every revision this version is in."""
+        revisions = select(PackageRevisionDocument.package_revision_id).where(
+            PackageRevisionDocument.document_version_id == document_version_id
+        )
+        rows = self._session.execute(
+            select(
+                PackageRevisionDocument.package_revision_id, Document.kind, DocumentVersion.sha256
+            )
+            .join(Document, Document.id == PackageRevisionDocument.document_id)
+            .join(
+                DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id
+            )
+            .where(PackageRevisionDocument.package_revision_id.in_(revisions))
+        ).all()
+        return [(revision_id, str(kind), str(sha256)) for revision_id, kind, sha256 in rows]
+
+    def _same_file_as_both_sides(self, document_version_id: UUID) -> bool:
+        """Whether this version's bytes are uploaded as BOTH the architect's and the shop drawing in
+        some revision it is in (#963). Such a file is one combined set, never two sides."""
+        if document_version_id not in self._same_file:
+            sha = self._session.execute(
+                select(DocumentVersion.sha256).where(DocumentVersion.id == document_version_id)
+            ).scalar_one_or_none()
+            kinds_of_these_bytes: dict[UUID, set[str]] = {}
+            for revision_id, kind, row_sha in self._membership_rows(document_version_id):
+                if row_sha == sha:
+                    kinds_of_these_bytes.setdefault(revision_id, set()).add(kind)
+            wanted = {DocumentKind.ARCHITECTURAL.value, DocumentKind.SHOP.value}
+            self._same_file[document_version_id] = any(
+                wanted <= kinds for kinds in kinds_of_these_bytes.values()
+            )
+        return self._same_file[document_version_id]
+
     def _in_two_pdf_packages(self, document_version_id: UUID) -> bool:
         """Whether every revision this document is in also holds the other drawing's document.
 
         Every, not any: a revision this file is the only drawing of is one where its unconfirmed
         drawings could be either, and an answer that held only in some revisions would be wrong in
-        the others.
+        the others. **Two different files** (#963): the same bytes uploaded as both drawings is one
+        combined set, and its slot must never decide a side.
         """
         if document_version_id not in self._both_kinds:
-            revisions = select(PackageRevisionDocument.package_revision_id).where(
-                PackageRevisionDocument.document_version_id == document_version_id
-            )
-            rows = self._session.execute(
-                select(PackageRevisionDocument.package_revision_id, Document.kind)
-                .join(Document, Document.id == PackageRevisionDocument.document_id)
-                .where(PackageRevisionDocument.package_revision_id.in_(revisions))
-            ).all()
             kinds: dict[UUID, set[str]] = {}
-            for revision_id, kind in rows:
-                kinds.setdefault(revision_id, set()).add(str(kind))
+            for revision_id, kind, _sha in self._membership_rows(document_version_id):
+                kinds.setdefault(revision_id, set()).add(kind)
             wanted = {DocumentKind.ARCHITECTURAL.value, DocumentKind.SHOP.value}
-            self._both_kinds[document_version_id] = bool(kinds) and all(
-                wanted <= found for found in kinds.values()
+            self._both_kinds[document_version_id] = (
+                bool(kinds)
+                and all(wanted <= found for found in kinds.values())
+                and not self._same_file_as_both_sides(document_version_id)
             )
         return self._both_kinds[document_version_id]
 
@@ -245,6 +276,13 @@ class ReadingSides:
         page = self._session.get(Page, row.page_id)
         views = () if page is None else self._page_views(page)
         if not views:
+            if self._same_file_as_both_sides(row.document_version_id):
+                return SideRefusal(
+                    SideRefusalReason.SAME_FILE_BOTH_SIDES,
+                    "this file was uploaded as both the architect's and the vendor's drawing, so its "
+                    "upload slot cannot say whose drawing this page is; keep one copy and confirm "
+                    "the drawings on it",
+                )
             side = _KIND_SIDE.get(self._kind(row.document_version_id) or "")
             if side is None:
                 return SideRefusal(

@@ -107,6 +107,7 @@ def _read(
     kind: str,
     also: str | None = None,
     data: bytes = SHEET,
+    same_bytes: bool = False,
 ) -> PackageRevision:
     """The sheet uploaded as one document of `kind`, and read — with, given `also`, a second
     drawing of that kind in the same package, the way a two-PDF package arrives."""
@@ -164,7 +165,9 @@ def _read(
         other = Document(package_id=package.id, kind=also)
         session.add(other)
         session.flush()
-        other_data = _pdf(b"BT /F1 10 Tf 1 0 0 1 20 70 Tm (ELEVATION) Tj ET\n")
+        other_data = (
+            data if same_bytes else _pdf(b"BT /F1 10 Tf 1 0 0 1 20 70 Tm (ELEVATION) Tj ET\n")
+        )
         other_digest = hashlib.sha256(other_data).hexdigest()
         other_key = storage_key(other.id, other_digest)
         store.put(other_key, io.BytesIO(other_data), content_type="application/pdf")
@@ -347,6 +350,72 @@ def test_a_one_drawing_page_in_a_two_pdf_package_takes_the_uploads_side_until_co
     _one_drawing(session, revision, None)
 
     assert _side(session, revision, '24"') is DocumentRole.SHOP
+
+
+def _sides_of_every_copy(
+    session: Session, revision: PackageRevision, text: str, *, one_drawing: bool
+) -> list[DocumentRole | SideRefusal]:
+    """`text`'s side on each copy of a file uploaded as both drawings (#963)."""
+    pages = (
+        session.execute(
+            select(Page)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .where(PackageRevisionDocument.package_revision_id == revision.id)
+            .order_by(Page.document_version_id)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(pages) == 2
+    sides: list[DocumentRole | SideRefusal] = []
+    for page in pages:
+        if one_drawing:
+            record_panel_view(
+                session,
+                page_id=page.id,
+                annotation_index=0,
+                stored_points=(
+                    (Decimal(0), Decimal(0)),
+                    (Decimal(1), Decimal(0)),
+                    (Decimal(1), Decimal(1)),
+                    (Decimal(0), Decimal(1)),
+                ),
+                proposed_role=None,
+                heading=None,
+                reason="the whole test sheet",
+            )
+        candidate = (
+            session.execute(
+                select(ObservationCandidate).where(
+                    ObservationCandidate.page_id == page.id,
+                    ObservationCandidate.raw_text == text,
+                    ObservationCandidate.value_numerator.is_not(None),
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert candidate is not None
+        sides.append(ReadingSides(session).of(candidate))
+    return sides
+
+
+@pytest.mark.parametrize("one_drawing", [False, True])
+def test_one_file_uploaded_as_both_drawings_takes_no_side_from_the_upload(
+    session: Session, store: LocalStore, one_drawing: bool
+) -> None:
+    """**#963.** The same bytes as the architect's AND the shop document is one combined set, not a
+    two-PDF package. Outcome: no copy takes a side from its slot — otherwise the vendor's drawing on
+    the "architectural" copy would be the architect's, and a vendor-vs-architect check would compare
+    a drawing with itself."""
+    revision = _read(session, store, kind="shop", also="architectural", same_bytes=True)
+
+    sides = _sides_of_every_copy(session, revision, '24"', one_drawing=one_drawing)
+
+    assert all(isinstance(side, SideRefusal) for side in sides), sides
 
 
 def test_a_settings_citation_never_takes_the_uploads_side(
