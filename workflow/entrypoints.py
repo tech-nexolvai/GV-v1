@@ -254,6 +254,7 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
         return EXIT_MISCONFIGURED
 
     from workflow.findings_bedrock import configured_findings_composer
+    from workflow.form_reader import configured_form_reader
     from workflow.hatchet_app import build_worker
     from workflow.stages import DatabaseStages, missing_space_from_environment
 
@@ -286,6 +287,7 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
             store=LocalStore(Path(storage_root)),
             findings_composer=configured_findings_composer(settings),
             missing_space=missing_space,
+            form_reader=configured_form_reader(settings),
         ),
     )
     logger.info("worker starting")

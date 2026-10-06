@@ -40,6 +40,7 @@ from app.models.evidence import (
     ObservationCandidate,
 )
 from app.models.package import Package, PackageRevision
+from app.models.runs import ExtractionRun
 from rules.semantic_types import SemanticType
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
@@ -449,6 +450,15 @@ def confirm_candidate(
     if candidate is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="no such reading in this package"
+        )
+
+    source_route = session.scalar(
+        select(ExtractionRun.extractor).where(ExtractionRun.id == candidate.extraction_run_id)
+    )
+    if source_route == "extraction.form_reader":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="form-first readings are proposals only; save the reviewer form to record a value",
         )
 
     artifact = _candidate_crop_artifact(session, revision, candidate.id)

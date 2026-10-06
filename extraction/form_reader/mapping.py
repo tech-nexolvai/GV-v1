@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from extraction.form_reader.agreement import ComparedReading
-from extraction.form_reader.schema import PageFormAnswer
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,16 +31,17 @@ class FormMapping:
 
 
 def map_page_to_fields(
-    first: PageFormAnswer,
-    second: PageFormAnswer,
     readings: tuple[ComparedReading, ...],
+    *,
+    first_countertop_count: int,
+    second_countertop_count: int,
 ) -> FormMapping:
     """Map only corroborated one-countertop values; all other readings stay questions.
 
     Field keys are the published required-input keys used by the measurement form. Chain order is
     the two readers' common structural order, never inferred from model box coordinates.
     """
-    single_countertop = len(first.countertops) == len(second.countertops) == 1
+    single_countertop = first_countertop_count == second_countertop_count == 1
     proposals: list[FormFieldProposal] = []
     questions: list[FormReviewQuestion] = []
     cabinet_position = 0
@@ -59,24 +59,32 @@ def map_page_to_fields(
         reason = _review_reason(reading)
         field_key: str | None = None
         position = 0
+        if (
+            reading.slot == "chain"
+            and left is not None
+            and right is not None
+            and left.kind == right.kind == "cabinet"
+        ):
+            position = cabinet_position
+            cabinet_position += 1
+        elif (
+            reading.slot == "chain"
+            and left is not None
+            and right is not None
+            and left.kind == right.kind == "filler"
+        ):
+            position = filler_position
+            filler_position += 1
         if single_countertop and reading.state == "corroborated" and left and right:
             if reading.slot == "overall":
-                first_form = first.countertops[0]
-                second_form = second.countertops[0]
-                no_appliance = not any(
-                    dimension.kind == "appliance_space"
-                    for dimension in (*first_form.chain, *second_form.chain)
-                )
-                if first_form.overall_scope == second_form.overall_scope == "run" and no_appliance:
+                # compare_page_answers withholds corroboration for non-run or appliance-spanning
+                # overalls, so a mapped overall has already passed both fixed checks.
+                if reading.reason is None:
                     field_key = "SHOP:countertop_overall_width"
             elif left.kind == right.kind == "cabinet":
                 field_key = "SHOP:cabinet_width"
-                position = cabinet_position
-                cabinet_position += 1
             elif left.kind == right.kind == "filler":
                 field_key = "SHOP:filler_width"
-                position = filler_position
-                filler_position += 1
         if field_key is None:
             if not single_countertop:
                 reason = "multiple countertops on this page; review each reading"

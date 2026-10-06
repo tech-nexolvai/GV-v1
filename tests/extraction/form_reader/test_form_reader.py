@@ -250,7 +250,7 @@ def test_mapping_turns_only_agreed_one_countertop_overall_and_matching_chain_kin
         second_maker="qwen.qwen3-vl-235b-a22b",
     )
 
-    mapping = map_page_to_fields(first, second, comparisons)
+    mapping = map_page_to_fields(comparisons, first_countertop_count=1, second_countertop_count=1)
 
     assert [(item.field_key, item.position) for item in mapping.proposals] == [
         ("SHOP:countertop_overall_width", 0),
@@ -279,7 +279,7 @@ def test_mapping_keeps_disagreements_wrong_kinds_and_multi_countertop_pages_revi
         second_maker="qwen.qwen3-vl-235b-a22b",
     )
 
-    mapping = map_page_to_fields(first, second, comparisons)
+    mapping = map_page_to_fields(comparisons, first_countertop_count=1, second_countertop_count=1)
 
     assert mapping.proposals == ()
     assert len(mapping.questions) == 2
@@ -294,10 +294,45 @@ def test_mapping_keeps_disagreements_wrong_kinds_and_multi_countertop_pages_revi
         first_maker="us.moonshotai.kimi-k3",
         second_maker="qwen.qwen3-vl-235b-a22b",
     )
-    multi_mapping = map_page_to_fields(multiple, multiple, multi_comparisons)
+    multi_mapping = map_page_to_fields(
+        multi_comparisons, first_countertop_count=2, second_countertop_count=2
+    )
     assert multi_mapping.proposals == ()
     assert multi_mapping.questions
     assert all("multiple countertops" in item.review_reason for item in multi_mapping.questions)
+
+
+def test_mapping_keeps_left_to_right_cabinet_slots_when_an_earlier_reading_needs_review() -> None:
+    left = _answer(
+        overall=_dimension('40"', whole=40, position=0),
+        scope="run",
+        chain=(
+            _dimension('12"', whole=12, kind="cabinet", position=1),
+            _dimension('20"', whole=20, kind="cabinet", position=2),
+        ),
+    )
+    right = _answer(
+        overall=_dimension('40"', whole=40, position=0),
+        scope="run",
+        chain=(
+            _dimension('13"', whole=13, kind="cabinet", position=1),
+            _dimension('20"', whole=20, kind="cabinet", position=2),
+        ),
+    )
+    comparisons = compare_page_answers(
+        left,
+        right,
+        first_maker="us.moonshotai.kimi-k3",
+        second_maker="qwen.qwen3-vl-235b-a22b",
+    )
+
+    mapping = map_page_to_fields(comparisons, first_countertop_count=1, second_countertop_count=1)
+
+    assert len(mapping.questions) == 1
+    assert [(item.field_key, item.position) for item in mapping.proposals] == [
+        ("SHOP:countertop_overall_width", 0),
+        ("SHOP:cabinet_width", 1),
+    ]
 
 
 def test_location_is_not_required_and_boxes_cannot_change_the_agreed_value() -> None:
@@ -621,6 +656,7 @@ def test_approximate_qwen_location_does_not_change_agreement() -> None:
         width_px=1000,
         height_px=1000,
         document_version_id=uuid4(),
+        page_id=uuid4(),
         transform=_transform(),
         regions=(),
     )

@@ -6,8 +6,9 @@ Revises: 0069_signed_exports
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision: str = "0070_candidate_review_reason"
 down_revision: str | None = "0069_signed_exports"
