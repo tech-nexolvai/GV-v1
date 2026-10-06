@@ -1292,3 +1292,48 @@ select.value-input {
   display: flex;
   gap: var(--space-2);
 }
+
+/* Review by exception (admin, 2026-10-06): agreed fields settle quietly; questions stand out. */
+.review-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #d4d4d4);
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+.review-summary__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.field-review {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  border: 1px solid currentColor;
+}
+.field-review--agreed { color: #1b7f3a; }
+.field-review--needs_look { color: #a35a00; }
+.field-review--empty { color: #8a8a8a; }
+.field-review--done { color: #3b3b3b; }
+.field-review__reason {
+  margin: 4px 0 6px;
+  font-size: 0.85rem;
+  color: #a35a00;
+}
+.field-review__pictures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+.field-review__pictures img {
+  max-width: 100%;
+}
