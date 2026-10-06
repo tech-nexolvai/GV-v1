@@ -60,10 +60,13 @@ def _components_match(dimension: FormDimension, value: Fraction) -> bool:
     components = (dimension.whole, dimension.numerator, dimension.denominator)
     if all(part is None for part in components):
         return True
-    if dimension.whole is None or dimension.denominator is None:
+    # The prompt asks for an empty string for a missing part, so `2"` arrives as whole 2 with no
+    # fraction parts and `3/4"` as a fraction with no whole. Each is checked on what it states.
+    if dimension.numerator is None and dimension.denominator is None:
+        return dimension.whole is not None and value.denominator == 1 and dimension.whole == value
+    if dimension.denominator is None or dimension.denominator <= 0:
         return False
+    whole = 0 if dimension.whole is None else dimension.whole
     numerator = 0 if dimension.numerator is None else dimension.numerator
-    if dimension.denominator <= 0:
-        return False
-    rendered = Fraction(dimension.whole * dimension.denominator + numerator, dimension.denominator)
+    rendered = Fraction(whole * dimension.denominator + numerator, dimension.denominator)
     return rendered == value
