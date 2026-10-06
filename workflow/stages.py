@@ -1973,6 +1973,18 @@ class DatabaseStages:
             transform = page_transform(page, rendered.dpi)
             if transform is None:
                 continue
+            markup = self._picture_markup(data, page, rendered.dpi)
+
+            def check_form_label_for_gv_mark(
+                polygon: Polygon,
+                *,
+                page_render: RenderedPage = rendered,
+                page_markup: ColouredMarkup | None = markup,
+            ) -> bool | None:
+                if page_markup is None:
+                    return None
+                return gv_mark_in_crop(polygon, page_render, page_markup)
+
             regions: list[tuple[str, Polygon]] = []
             rows = session.execute(
                 select(ObservationCandidate, ExtractionRun.dpi)
@@ -2010,6 +2022,7 @@ class DatabaseStages:
                     page_id=page.id,
                     transform=transform,
                     regions=tuple(regions),
+                    gv_mark_checker=check_form_label_for_gv_mark,
                 )
             )
         if not images:
@@ -2031,9 +2044,10 @@ class DatabaseStages:
             session,
             task_run_id=task_run_id,
             extractor="extraction.form_reader",
-            extractor_version="form-reader-v5",
+            extractor_version="form-reader-v5-gv-mark-v1",
             config_hash=(
-                f"dpi={self._dpi};readers={runtime.reader_ids[0]}|{runtime.reader_ids[1]}"
+                f"dpi={self._dpi};readers={runtime.reader_ids[0]}|{runtime.reader_ids[1]};"
+                "gv_mark_guard=v1"
             ),
             dpi=self._dpi,
         )

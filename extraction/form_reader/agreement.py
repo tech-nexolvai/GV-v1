@@ -26,6 +26,9 @@ ReviewReason = Literal[
     "scope-not-run",
     "reader-topology-differs",
     "appliance-span",
+    "gv-mark",
+    "label-location-unknown",
+    "gv-mark-unchecked",
 ]
 
 

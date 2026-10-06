@@ -106,6 +106,9 @@ def _review_reason(reading: ComparedReading) -> str:
         "scope-not-run": "whole-wall overall, not a run width",
         "reader-topology-differs": "readers describe different drawing parts",
         "appliance-span": "overall includes an appliance space",
+        "gv-mark": "GV's markup is on this label — check the vendor's own number",
+        "label-location-unknown": "label location is unknown; can't rule out GV markup",
+        "gv-mark-unchecked": "couldn't check this label for GV markup; review it",
     }
     if reading.reason in reasons:
         return reasons[reading.reason]

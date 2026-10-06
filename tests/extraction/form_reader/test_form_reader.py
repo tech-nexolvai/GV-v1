@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import time
 from decimal import Decimal
@@ -659,6 +660,7 @@ def test_approximate_qwen_location_does_not_change_agreement() -> None:
         page_id=uuid4(),
         transform=_transform(),
         regions=(),
+        gv_mark_checker=lambda _polygon: False,
     )
     recorder = ThreadSafeAttemptRecorder()
     located = read_form_pages(
@@ -680,3 +682,83 @@ def test_approximate_qwen_location_does_not_change_agreement() -> None:
     assert located[0].comparison.state == "corroborated"
     assert located[0].location is not None
     assert located[0].location.quality == "approximate"
+
+
+@pytest.mark.parametrize(
+    ("box", "mark_result", "expected_reason"),
+    [
+        ([100, 100, 200, 200], True, "gv-mark"),
+        ([100, 100, 200, 200], None, "gv-mark-unchecked"),
+        (None, False, "label-location-unknown"),
+    ],
+)
+def test_form_reader_never_maps_agreement_without_a_clean_located_label(
+    box, mark_result, expected_reason
+) -> None:
+    class Client:
+        def converse(self, **_kwargs):
+            box_json = "null" if box is None else json.dumps(box)
+            return {
+                "output": {
+                    "message": {
+                        "content": [
+                            {
+                                "text": (
+                                    '{"countertops":[{"view_title":"","overall_scope":"run",'
+                                    '"overall":{"position":0,"text":"4\\"","whole":"4",'
+                                    '"numerator":"","denominator":"1","stacked":false,'
+                                    '"kind":"unknown","combined":false,"readable":true,'
+                                    f'"box":{box_json}'
+                                    '},"chain":[]}],"notes":""}'
+                                )
+                            }
+                        ]
+                    }
+                },
+                "usage": {"inputTokens": 20, "outputTokens": 10},
+            }
+
+    class Rates:
+        def rate_for(self, _model_id):
+            return object()
+
+    page = FormPageImage(
+        page_index=2,
+        png=b"\x89PNG\r\n\x1a\nfixture",
+        width_px=1000,
+        height_px=1000,
+        document_version_id=uuid4(),
+        page_id=uuid4(),
+        transform=_transform(),
+        regions=(),
+        gv_mark_checker=lambda _polygon: mark_result,
+    )
+    located = read_form_pages(
+        (page,),
+        reader_ids=("us.moonshotai.kimi-k3", "qwen.qwen3-vl-235b-a22b"),
+        clients=ThreadLocalConverseClients(Client),
+        rates=Rates(),
+        calls_per_minute={
+            "us.moonshotai.kimi-k3": 6000,
+            "qwen.qwen3-vl-235b-a22b": 6000,
+        },
+        max_concurrent_calls=2,
+        max_tokens=1024,
+        max_throttle_retries=0,
+        retry_backoff_seconds=0.01,
+        record_attempt=lambda _attempt: None,
+    )
+    assert len(located) == 1
+    assert located[0].comparison.state == "review_required"
+    assert located[0].comparison.value is None
+    assert located[0].comparison.reason == expected_reason
+    mapping = map_page_to_fields(
+        (located[0].comparison,), first_countertop_count=1, second_countertop_count=1
+    )
+    assert mapping.proposals == ()
+    assert len(mapping.questions) == 1
+    if expected_reason == "gv-mark":
+        assert (
+            mapping.questions[0].review_reason
+            == "GV's markup is on this label — check the vendor's own number"
+        )

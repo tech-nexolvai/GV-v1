@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import UUID, uuid4
 
 from app.config import Settings
@@ -97,6 +97,8 @@ class FormPageImage:
     page_id: UUID
     transform: PageTransform
     regions: tuple[tuple[str, Polygon], ...]
+    gv_mark_checker: Callable[[Polygon], bool | None] | None = None
+    """The existing page-mark detector for a located display crop; None means it could not check."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +112,49 @@ class LocatedReading:
     document_version_id: UUID
     page_id: UUID
     image_polygon: tuple[tuple[int, int], ...]
+
+
+def guard_located_comparison(
+    comparison: ComparedReading,
+    location: LocatedBox | None,
+    mark_checker: Callable[[Polygon], bool | None] | None,
+) -> ComparedReading:
+    """Keep a numeric agreement review-only unless its located label is proved free of GV marks."""
+    if comparison.state != "corroborated":
+        return comparison
+    if location is None:
+        return replace(
+            comparison,
+            state="review_required",
+            value=None,
+            reason="label-location-unknown",
+        )
+    if mark_checker is None:
+        return replace(
+            comparison,
+            state="review_required",
+            value=None,
+            reason="gv-mark-unchecked",
+        )
+    try:
+        marked = mark_checker(location.polygon)
+    except (ArithmeticError, TypeError, ValueError):
+        marked = None
+    if marked is True:
+        return replace(
+            comparison,
+            state="review_required",
+            value=None,
+            reason="gv-mark",
+        )
+    if marked is None:
+        return replace(
+            comparison,
+            state="review_required",
+            value=None,
+            reason="gv-mark-unchecked",
+        )
+    return comparison
 
 
 def read_form_pages(
@@ -175,6 +220,11 @@ def read_form_pages(
                     page_index=page.page_index,
                     regions=page.regions,
                 )
+            comparison = guard_located_comparison(
+                comparison,
+                location,
+                page.gv_mark_checker,
+            )
             result.append(
                 LocatedReading(
                     comparison=comparison,
