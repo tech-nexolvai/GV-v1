@@ -16,5 +16,5 @@ export function OutcomeIcon({ outcome, size = 13, className }: {
   className?: string;
 }) {
   const Shape = SHAPES[outcome];
-  return <Shape size={size} className={className} aria-hidden="true" />;
+  return <Shape size={size} className={className} aria-hidden="true" data-outcome-icon={outcome} />;
 }

@@ -1,0 +1,33 @@
+/* Supporting pages share the existing 4px spacing scale: 24px inset, 32px between sections. */
+.page-frame {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--bg-base);
+  padding: var(--space-8) var(--space-6) var(--space-16);
+  container-type: inline-size;
+}
+
+.page-frame__inner { width: 100%; max-width: 1120px; margin-inline: auto; }
+.page-frame__header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--space-4); padding-bottom: var(--space-6); border-bottom: 1px solid var(--border-default); }
+.page-frame__heading { min-width: 0; flex: 1 1 22rem; }
+.page-frame__heading h1 { font-size: var(--text-2xl); font-weight: var(--weight-semi); }
+.page-frame__description { max-width: 72ch; margin-top: var(--space-2); font-size: var(--text-sm); color: var(--text-muted); overflow-wrap: anywhere; }
+.page-frame__actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.page-frame__body { min-width: 0; padding-top: var(--space-6); }
+.page-frame__state { padding: var(--space-6) 0; color: var(--text-muted); font-size: var(--text-sm); }
+.page-frame__error { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--border-default); border-left: 3px solid var(--gv-crimson); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+.page-frame__error h2 { font-size: var(--text-lg); }
+.page-frame__error p { font-size: var(--text-sm); color: var(--text-muted); }
+
+@media (max-width: 767px) {
+  .page-frame { padding: var(--space-6) var(--space-4) var(--space-12); }
+  .page-frame__header { padding-bottom: var(--space-4); }
+  .page-frame__body { padding-top: var(--space-4); }
+}
+
+@media (pointer: coarse) {
+  .page-frame button, .page-frame input, .page-frame select { min-height: 44px; }
+}

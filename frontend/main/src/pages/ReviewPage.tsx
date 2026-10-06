@@ -5,6 +5,7 @@ import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { ChangedValuesPanel } from '../components/output/ChangedValuesPanel';
 import { SignedDownloads } from '../components/output/SignedDownloads';
+import { receiveReport, type DownloadState, type ReportFormat } from '../components/output/reportDownload';
 import { StatusBadge } from '../components/ui/Badge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
@@ -41,11 +42,12 @@ interface ReviewPageProps {
   onBackToDocuments: () => void;
   /** Reports the vendor once the package has loaded, for the header title. */
   onTitleChange?: (title: string) => void;
+  onPackageChanged?: () => void;
   initialMessage?: string;
   onMessageConsumed?: () => void;
 }
 
-export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onTitleChange, initialMessage, onMessageConsumed }: ReviewPageProps) {
+export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onTitleChange, onPackageChanged, initialMessage, onMessageConsumed }: ReviewPageProps) {
   // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
   const packageId = sessionId;
 
@@ -81,6 +83,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSigningOff, setIsSigningOff] = useState(false);
   const [approved, setApproved] = useState(false);
+  const [recordedStatus, setRecordedStatus] = useState<PackageStatus | null>(null);
+  const [downloadState, setDownloadState] = useState<DownloadState>({ status: 'idle' });
+  const downloadPending = useRef(false);
   // The narration models a reviewer may pick, and the current choice ('' = deployment default).
   const [chatModels, setChatModels] = useState<{ id: string; label: string }[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -439,10 +444,20 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     setIsSigningOff(true);
     try {
       await approvePackage(projectId(), session.id);
+      setApproved(true); // The approval was acknowledged, even if a subsequent read fails.
+      onPackageChanged?.();
       // Re-read rather than assume: approval completes the sitting server-side, and the package
       // state a moment ago is not the one the download button should be reading.
-      setSession(await completeSessionState(session.id));
-      setApproved(true);
+      try {
+        const [detail, sitting] = await Promise.all([
+          getPackage(projectId(), packageId), completeSessionState(session.id),
+        ]);
+        setRecordedStatus(detail.state as PackageStatus);
+        setApproved(detail.state === 'APPROVED');
+        setSession(sitting);
+      } catch (error) {
+        setActionError(`Sign-off was recorded, but its refreshed status could not be loaded. Reload to check it: ${error instanceof Error ? error.message : String(error)}`);
+      }
     } catch (error) {
       setActionError(
         `Sign-off did not complete — ${error instanceof Error ? error.message : String(error)}`,
@@ -466,31 +481,35 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * — not approved, no report generated — surfaces as a message instead of a download that silently
    * does nothing.
    */
-  async function handleDownload(format: 'pdf' | 'workbook' | 'redline') {
-    setActionError(null);
+  async function handleDownload(format: ReportFormat) {
+    if (downloadPending.current) return;
+    downloadPending.current = true;
+    setDownloadState({ status: 'loading', format });
     try {
-      const blob = format === 'pdf'
-        ? await downloadPdfReport(projectId(), packageId)
-        : format === 'redline'
-          ? await downloadRedline(projectId(), packageId)
-          : await downloadReport(projectId(), packageId);
+      await receiveReport(format, (requested) => requested === 'pdf'
+        ? downloadPdfReport(projectId(), packageId)
+        : requested === 'redline'
+          ? downloadRedline(projectId(), packageId)
+          : downloadReport(projectId(), packageId), (blob) => {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
       link.download = `gv-review-${packageId}${format === 'redline' ? '-redline' : ''}.${format === 'workbook' ? 'xlsx' : 'pdf'}`;
       link.click();
       URL.revokeObjectURL(url);
+      });
+      setDownloadState({ status: 'started', format });
     } catch (error) {
-      setActionError(
-        `The report could not be downloaded — ${error instanceof Error ? error.message : String(error)}`,
-      );
+      setDownloadState({ status: 'error', format, message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      downloadPending.current = false;
     }
   }
 
   const pkg = {
     id: packageId,
     vendor: remote.status === 'ready' ? (remote.data.detail.vendor ?? '—') : '—',
-    status: (remote.status === 'ready'
+    status: recordedStatus ?? (remote.status === 'ready'
       ? remote.data.detail.state
       : 'CREATED') as PackageStatus,
     // The project id, until the API carries a human project name. An id a reviewer can quote beats
@@ -553,7 +572,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
           {/* Wired now. It had no handler at all, and its only guard was `needsAction > 0`, so on a
               package with no findings it rendered fully enabled — the one state in which signing off
               means attesting to a review that never ran. Both are conditions here. */}
-          <button
+          {!(approved || pkg.status === 'APPROVED') && <button
             className="btn btn--action"
             onClick={handleSignOff}
             disabled={
@@ -579,13 +598,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
           >
             <CheckSquare size={14} />
             {session?.completed_at != null ? 'Signed off' : isSigningOff ? 'Signing off…' : 'Sign Off'}
-          </button>
+          </button>}
 
           {/* The handoff. Shown once the package is approved, because that is what the endpoint
               requires — a review that left the building unsigned is one nobody stands behind
               (ADR-0010). Before then the workbook exists and is deliberately unreachable. */}
           {(approved || pkg.status === 'APPROVED') && (
-            <SignedDownloads projectId={projectId()} packageId={packageId} download={(format) => void handleDownload(format)} />
+            <SignedDownloads projectId={projectId()} packageId={packageId} download={(format) => void handleDownload(format)} receipt={downloadState} />
           )}
         </div>
       </div>
@@ -595,7 +614,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
           they had mis-clicked rather than that nothing was saved. */}
       {actionError !== null && (
         <div className="upload-error" role="alert">
-          <strong>Not recorded.</strong>
+          <strong>Review update</strong>
           <p>{actionError}</p>
         </div>
       )}
