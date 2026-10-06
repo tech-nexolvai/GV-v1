@@ -14,6 +14,7 @@ import {
   type ReadingLinks,
 } from './readingPartChoices.js';
 import { GvMarksWarning } from './GvMarksWarning.js';
+import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
 
 /**
  * Which confirmed reading is each confirmed part's width: what the computer suggests, and a person
@@ -34,6 +35,7 @@ import { GvMarksWarning } from './GvMarksWarning.js';
 export function ReadingPartsList({
   links,
   saving,
+  feedback,
   renderPicture,
   onConfirm,
   onWithdraw,
@@ -41,6 +43,7 @@ export function ReadingPartsList({
   links: ReadingLinks;
   /** The part being saved, so its buttons cannot be pressed twice. */
   saving: string | null;
+  feedback?: Readonly<Record<string, DecisionFeedback>>;
   /** The part's picture, for a part that has one. */
   renderPicture: (drawing: LinkDrawing, part: LinkPart) => ReactNode;
   onConfirm: (part: LinkPart, readingId: string) => void;
@@ -76,6 +79,7 @@ export function ReadingPartsList({
                 drawing={drawing}
                 part={part}
                 saving={saving === part.item_id}
+                feedback={feedback?.[part.item_id]}
                 picture={part.has_picture && part.proposal_id ? renderPicture(drawing, part) : null}
                 onConfirm={onConfirm}
                 onWithdraw={onWithdraw}
@@ -92,6 +96,7 @@ function PartLinkRow({
   drawing,
   part,
   saving,
+  feedback,
   picture,
   onConfirm,
   onWithdraw,
@@ -99,6 +104,7 @@ function PartLinkRow({
   drawing: LinkDrawing;
   part: LinkPart;
   saving: boolean;
+  feedback?: DecisionFeedback;
   picture: ReactNode;
   onConfirm: (part: LinkPart, readingId: string) => void;
   onWithdraw: (part: LinkPart) => void;
@@ -109,7 +115,8 @@ function PartLinkRow({
   const name = partName(part);
   // Only a reading still on the drawing: one corrected since the page was loaded is never sent.
   const pickable = readingOn(drawing, picked) !== null;
-  const canConfirm = drawing.can_confirm && pickable && !saving;
+  const pending = saving || feedback?.kind === 'saving';
+  const canConfirm = drawing.can_confirm && pickable && !pending;
 
   return (
     <li className="drawing-parts__item" data-decided={part.links.length > 0}>
@@ -140,7 +147,7 @@ function PartLinkRow({
         Its width is the reading
         <select
           value={picked}
-          disabled={!drawing.can_confirm || saving || drawing.readings.length === 0}
+          disabled={!drawing.can_confirm || pending || drawing.readings.length === 0}
           onChange={(event) => setPicked(event.target.value)}
         >
           <option value="">Pick a reading</option>
@@ -167,12 +174,13 @@ function PartLinkRow({
         <button
           type="button"
           className="btn btn--sm btn--subtle"
-          disabled={saving || part.links.length === 0}
+          disabled={pending || part.links.length === 0}
           onClick={() => onWithdraw(part)}
         >
           Take the link back
         </button>
       </div>
+      {feedback && <p className="drawing-parts__feedback" role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedbackText(feedback)}</p>}
     </li>
   );
 }

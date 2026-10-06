@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
 
 import {
   isTheSuggestion,
@@ -30,12 +31,14 @@ import {
 export function CountertopRunsList({
   runs,
   saving,
+  feedback,
   onConfirm,
   onWithdraw,
 }: {
   runs: RunsList;
   /** The countertop being saved, so its buttons cannot be pressed twice. */
   saving: string | null;
+  feedback?: Readonly<Record<string, DecisionFeedback>>;
   onConfirm: (countertop: RunCountertop, partIds: string[], wallConfig: string) => void;
   onWithdraw: (countertop: RunCountertop) => void;
 }) {
@@ -72,6 +75,7 @@ export function CountertopRunsList({
                   countertop={countertop}
                   wallLayoutChoices={runs.wall_layout_choices}
                   saving={saving === countertop.countertop_item_id}
+                  feedback={feedback?.[countertop.countertop_item_id]}
                   onConfirm={onConfirm}
                   onWithdraw={onWithdraw}
                 />
@@ -90,6 +94,7 @@ function CountertopRow({
   countertop,
   wallLayoutChoices,
   saving,
+  feedback,
   onConfirm,
   onWithdraw,
 }: {
@@ -98,6 +103,7 @@ function CountertopRow({
   countertop: RunCountertop;
   wallLayoutChoices: string[];
   saving: boolean;
+  feedback?: DecisionFeedback;
   onConfirm: (countertop: RunCountertop, partIds: string[], wallConfig: string) => void;
   onWithdraw: (countertop: RunCountertop) => void;
 }) {
@@ -108,7 +114,8 @@ function CountertopRow({
   const name = countertop.number === null ? 'A countertop' : `Countertop, part ${countertop.number}`;
   // Only parts still on the drawing: one taken back since the boxes were ticked is never sent.
   const ticked = selected.filter((id) => drawing.parts.some((part) => part.item_id === id));
-  const canConfirm = canSuggest && drawing.can_confirm && ticked.length > 0 && wallConfig !== '' && !saving;
+  const pending = saving || feedback?.kind === 'saving';
+  const canConfirm = canSuggest && drawing.can_confirm && ticked.length > 0 && wallConfig !== '' && !pending;
 
   function toggle(itemId: string, ticked: boolean) {
     setSelected((current) =>
@@ -153,7 +160,7 @@ function CountertopRow({
           </span>
         )}
       </div>
-      <fieldset className="countertop-runs__pick" disabled={!drawing.can_confirm || saving}>
+      <fieldset className="countertop-runs__pick" disabled={!drawing.can_confirm || pending}>
         <legend>Parts in this countertop&apos;s run</legend>
         {drawing.parts.map((part) => (
           <label key={part.item_id}>
@@ -168,7 +175,7 @@ function CountertopRow({
       </fieldset>
       <label className="countertop-runs__layout">
         Wall layout for this countertop (required)
-        <select value={wallConfig} onChange={(event) => setWallConfig(event.target.value)} required>
+        <select value={wallConfig} disabled={pending} onChange={(event) => setWallConfig(event.target.value)} required>
           <option value="">Choose this countertop&apos;s wall layout</option>
           {wallLayoutChoices.map((choice) => (
             <option key={choice} value={choice}>
@@ -176,6 +183,7 @@ function CountertopRow({
             </option>
           ))}
         </select>
+        {wallConfig === '' && <span className="countertop-runs__layout-hint">Choose a layout before confirming this run. Nothing is selected for you.</span>}
       </label>
       <div
         className="drawing-parts__choices"
@@ -194,12 +202,13 @@ function CountertopRow({
           type="button"
           className={`btn btn--sm ${decision?.decision === 'withdrawn' ? 'btn--primary' : 'btn--subtle'}`}
           aria-pressed={decision?.decision === 'withdrawn'}
-          disabled={saving}
+          disabled={pending}
           onClick={() => onWithdraw(countertop)}
         >
           Not this countertop&apos;s run
         </button>
       </div>
+      {feedback && <p className="drawing-parts__feedback" role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedbackText(feedback)}</p>}
     </li>
   );
 }

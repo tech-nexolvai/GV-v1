@@ -8,6 +8,7 @@ import {
 } from '../../api/client';
 import { projectId } from '../../api/config';
 import { type RunCountertop, type RunsList } from './countertopRunChoices.js';
+import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { CountertopRunsList } from './CountertopRunsList.js';
 import './DrawingParts.css';
 
@@ -22,35 +23,30 @@ import './DrawingParts.css';
  */
 export function CountertopRuns({ packageId, refresh }: { packageId: string; refresh: number }) {
   const [runs, setRuns] = useState<RunsList | null>(null);
-  const [saving, setSaving] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
+  const [saveDecision] = useState(createDecisionSaver);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [decided, setDecided] = useState(0);
 
   useEffect(() => {
     let live = true;
     listCountertopRuns(projectId(), packageId)
       .then((result) => {
-        if (live) setRuns(result);
+        if (live) { setRuns(result); setLoadError(null); }
       })
       .catch((caught: unknown) => {
-        if (live) setError(caught instanceof ApiError ? caught.message : String(caught));
+        if (live) setLoadError(caught instanceof ApiError ? caught.message : String(caught));
       });
     return () => {
       live = false;
     };
-  }, [packageId, refresh, decided]);
+  }, [packageId, refresh, decided, loadAttempt]);
 
   async function save(countertop: RunCountertop, decide: () => Promise<unknown>) {
-    setSaving(countertop.countertop_item_id);
-    setError(null);
-    try {
-      await decide();
-      setDecided((count) => count + 1);
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : String(caught));
-    } finally {
-      setSaving(null);
-    }
+    await saveDecision(countertop.countertop_item_id, decide, (item, state) => {
+      setFeedback((current) => ({ ...current, [item]: state }));
+    }, () => setDecided((count) => count + 1));
   }
 
   function confirm(countertop: RunCountertop, partIds: string[], wallConfig: string) {
@@ -66,18 +62,20 @@ export function CountertopRuns({ packageId, refresh }: { packageId: string; refr
   }
 
   if (runs === null || runs.drawings.length === 0) {
-    return error ? (
+    return loadError ? (
       <p className="enter-values__error" role="alert">
-        The runs under each countertop could not be listed: {error}
+        The runs under each countertop could not be listed: {loadError}{' '}
+        <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
       </p>
     ) : null;
   }
   return (
     <>
-      <CountertopRunsList runs={runs} saving={saving} onConfirm={confirm} onWithdraw={withdraw} />
-      {error && (
+      <CountertopRunsList runs={runs} saving={null} feedback={feedback} onConfirm={confirm} onWithdraw={withdraw} />
+      {loadError && (
         <p className="enter-values__error" role="alert">
-          {error}
+          The countertop runs could not refresh: {loadError}{' '}
+          <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
         </p>
       )}
     </>

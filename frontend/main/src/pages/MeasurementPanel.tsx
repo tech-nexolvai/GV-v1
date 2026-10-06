@@ -32,6 +32,8 @@ import { CountertopRuns } from '../components/measure/CountertopRuns';
 import { DrawingParts } from '../components/measure/DrawingParts';
 import { ReadingParts } from '../components/measure/ReadingParts';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
+import { MeasurementSectionNav } from './MeasurementSectionNav';
+import { measurementValueOrigin } from './measurementValueOrigin';
 import { distributionFieldWidthKey } from '../components/measure/fillerDistribution';
 import {
   categoryLabel,
@@ -148,7 +150,7 @@ type Needed = {
   still_reading: boolean;
 };
 
-const REQUIRED_INPUTS_POLL_MS = 2000;
+const REQUIRED_INPUTS_POLL_MS = 5000;
 
 /** Which sheet a measurement is read from, in the words a reviewer uses. */
 const SOURCE_LABEL: Record<string, string> = {
@@ -284,6 +286,7 @@ export function MeasurementPanel({
   /** Single-valued quantities and parameters, keyed by quantity key or parameter name. */
   const [singles, setSingles] = useState<Record<string, string>>({});
   const [reviewerEditedSingles, setReviewerEditedSingles] = useState<Set<string>>(() => new Set());
+  const [reviewerEditedMany, setReviewerEditedMany] = useState<Set<string>>(() => new Set());
   /** Many-valued quantities, in layout order. */
   const [runs, setRuns] = useState<Record<string, string[]>>({});
   const [choices, setChoices] = useState<Record<string, string>>({});
@@ -298,8 +301,13 @@ export function MeasurementPanel({
   const [accepted, setAccepted] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<CandidateOut[]>([]);
   const [semanticTypes, setSemanticTypes] = useState<string[]>([]);
+  const [candidateLoadError, setCandidateLoadError] = useState<string | null>(null);
+  const [vocabularyLoadError, setVocabularyLoadError] = useState<string | null>(null);
+  const [resourceRetry, setResourceRetry] = useState(0);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [candidateError, setCandidateError] = useState<string | null>(null);
+  const [candidateChoices, setCandidateChoices] = useState<Record<string, string>>({});
+  const [candidateErrors, setCandidateErrors] = useState<Record<string, string>>({});
   /** The phases of an assignment in flight, in arrival order. Empty until one is asked for. */
   const [proposalSteps, setProposalSteps] = useState<AssignmentStep[]>([]);
   const [proposal, setProposal] = useState<ProposedMeasurements | null>(null);
@@ -323,13 +331,13 @@ export function MeasurementPanel({
    */
   const [aiFilled, setAiFilled] = useState<Record<string, string[]>>({});
   const reviewerEditedSinglesRef = useRef<Set<string>>(new Set());
+  const reviewerEditedManyRef = useRef<Set<string>>(new Set());
   const resetPackageIdRef = useRef<string | undefined>(undefined);
   const loadedDataPackageIdRef = useRef<string | null>(null);
   const [refreshUnavailable, setRefreshUnavailable] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    let poll: ReturnType<typeof window.setTimeout> | undefined;
     // Polling refreshes the data for the current package. Clearing the contract here would replace
     // the whole Measure screen with its loading state, unmounting placement, run, link, and value
     // editors while a reviewer is working. Only a real package switch resets that local work.
@@ -346,13 +354,19 @@ export function MeasurementPanel({
       const freshEdits = new Set<string>();
       reviewerEditedSinglesRef.current = freshEdits;
       setReviewerEditedSingles(freshEdits);
+      reviewerEditedManyRef.current = new Set();
+      setReviewerEditedMany(new Set());
       setChoices({});
       setSourceChoices({});
       setReferences({});
       setDeclinedCitations({});
       setCandidates([]);
       setSemanticTypes([]);
+      setCandidateLoadError(null);
+      setVocabularyLoadError(null);
       setCandidateError(null);
+      setCandidateChoices({});
+      setCandidateErrors({});
       setProposalSteps([]);
       setProposal(null);
       setProposalError(null);
@@ -394,7 +408,7 @@ export function MeasurementPanel({
           if (reviewerEditedSinglesRef.current.has(field.field_key)) continue;
           if ((next[field.field_key] ?? '').trim()) continue;
           next[field.field_key] = values[0];
-          nextMarks[field.field_key] = field.values.map((reading) => reading.candidate_id);
+          nextMarks[field.field_key] = pageValues.map((reading) => reading.candidate_id);
         }
         return next;
       });
@@ -402,6 +416,7 @@ export function MeasurementPanel({
       setRuns((prior) => {
         const next = { ...prior };
         for (const quantity of required.quantities.filter((q) => q.many)) {
+          if (reviewerEditedManyRef.current.has(quantity.key)) continue;
           const existing = next[quantity.key] ?? [''];
           if (existing.some((value) => value.trim())) continue;
           const confirmed = (confirmedByKey[quantity.key] ?? []).filter((value) => value.trim());
@@ -409,6 +424,7 @@ export function MeasurementPanel({
         }
         for (const field of required.proposed_readings ?? []) {
           if (!field.many) continue;
+          if (reviewerEditedManyRef.current.has(field.field_key)) continue;
           const pageValues = field.values.filter(
             (reading) => reading.page_index === selectedPageNumber - 1,
           );
@@ -430,13 +446,10 @@ export function MeasurementPanel({
       });
     };
 
-    const load = async (includeVocabulary: boolean) => {
+    const load = async () => {
       try {
         if (!selectedPackageId) return;
-        const [fields, vocabulary] = await Promise.all([
-          getRequiredInputs(projectId(), selectedPackageId, selectedPageNumber),
-          includeVocabulary ? listSemanticTypes() : Promise.resolve<string[]>([]),
-        ]);
+        const fields = await getRequiredInputs(projectId(), selectedPackageId, selectedPageNumber);
         if (cancelled) return;
         const required = fields as unknown as Needed;
         if (
@@ -446,13 +459,12 @@ export function MeasurementPanel({
           setSelectedPageNumber(required.page_numbers[0]);
           setCandidates([]);
         } else if (required.page_numbers.includes(selectedPageNumber)) {
-          const read = await listCandidates(
-            projectId(),
-            selectedPackageId,
-            selectedPageNumber,
+          // Optional readings must remain page-scoped. A refused page is not a partial list, and
+          // must not hide the required form or discard a reviewer's in-progress values.
+          void listCandidates(projectId(), selectedPackageId, selectedPageNumber).then(
+            (read) => { if (!cancelled) { setCandidates(read.candidates); setCandidateLoadError(null); } },
+            (caught: unknown) => { if (!cancelled) { setCandidates([]); setCandidateLoadError(caught instanceof ApiError ? caught.message : String(caught)); } },
           );
-          if (cancelled) return;
-          setCandidates(read.candidates);
         } else {
           // Pages are written asynchronously after upload. Keep showing the in-progress state and
           // poll the contract; requesting an unknown page would be a correct 404, not an empty list.
@@ -461,14 +473,15 @@ export function MeasurementPanel({
         setPackageId(selectedPackageId);
         loadedDataPackageIdRef.current = selectedPackageId;
         setNeeded(required);
+        setLoadError(null);
         setRefreshUnavailable(false);
-        if (includeVocabulary) {
-          setSemanticTypes(vocabulary);
-        }
         applyRequiredInputs(required);
-        if (required.still_reading) {
-          poll = window.setTimeout(() => void load(false), REQUIRED_INPUTS_POLL_MS);
-        }
+        // Reading suggestions and vocabulary are helpful, not prerequisites for typing a value.
+        // A failed optional request must not hide or reset the current form and its drafts.
+        void listSemanticTypes().then(
+          (vocabulary) => { if (!cancelled) { setSemanticTypes(vocabulary); setVocabularyLoadError(null); } },
+          (caught: unknown) => { if (!cancelled) setVocabularyLoadError(caught instanceof ApiError ? caught.message : String(caught)); },
+        );
       } catch (caught) {
         if (!cancelled) {
           // A transient poll failure must not replace the loaded form with the fatal load state:
@@ -482,13 +495,12 @@ export function MeasurementPanel({
         }
       }
     };
-    void load(true);
+    void load();
     return () => {
       cancelled = true;
-      if (poll !== undefined) window.clearTimeout(poll);
     };
     // Re-fetch only when the selected package changes, never on a keystroke within its form.
-  }, [selectedPackageId, selectedPageNumber, reload]);
+  }, [selectedPackageId, selectedPageNumber, reload, resourceRetry]);
 
   /**
    * Go back and look while the drawings are still being read.
@@ -506,7 +518,7 @@ export function MeasurementPanel({
    */
   useEffect(() => {
     if (!needed?.still_reading) return;
-    const timer = window.setInterval(() => setReload((count) => count + 1), 5000);
+    const timer = window.setInterval(() => setReload((count) => count + 1), REQUIRED_INPUTS_POLL_MS);
     return () => window.clearInterval(timer);
   }, [needed?.still_reading]);
 
@@ -527,11 +539,19 @@ export function MeasurementPanel({
     );
   }
 
-  const setRun = (key: string, index: number, value: string) =>
+  const markManyEdited = (key: string) => {
+    const next = new Set(reviewerEditedManyRef.current).add(key);
+    reviewerEditedManyRef.current = next;
+    setReviewerEditedMany(next);
+  };
+
+  const setRun = (key: string, index: number, value: string) => {
+    markManyEdited(key);
     setRuns((prior) => ({
       ...prior,
       [key]: (prior[key] ?? ['']).map((v, i) => (i === index ? value : v)),
     }));
+  };
 
   async function confirmFromMeasure(candidate: CandidateOut, semanticType: string) {
     if (!packageId || !needed || !candidate.source || !candidate.value) return;
@@ -539,14 +559,19 @@ export function MeasurementPanel({
       (quantity) => quantity.key === `${candidate.source}:${semanticType}`,
     );
     if (!target) {
-      setCandidateError(
-        `${semanticType} is not a measurement this published rulebook asks for from this document.`,
-      );
+      const message = `${semanticType} is not a measurement this published rulebook asks for from this document.`;
+      setCandidateError(message);
+      setCandidateErrors((current) => ({ ...current, [candidate.candidate_id]: message }));
       return;
     }
 
     setConfirming(candidate.candidate_id);
     setCandidateError(null);
+    setCandidateErrors((current) => {
+      const next = { ...current };
+      delete next[candidate.candidate_id];
+      return next;
+    });
     try {
       const result = await confirmCandidate(
         projectId(),
@@ -594,9 +619,9 @@ export function MeasurementPanel({
       );
       setReadingsConfirmed((count) => count + 1);
     } catch (caught) {
-      setCandidateError(
-        caught instanceof ApiError ? caught.message : 'This AI reading could not be confirmed.',
-      );
+      const message = caught instanceof ApiError ? caught.message : 'This drawing reading could not be confirmed.';
+      setCandidateError(message);
+      setCandidateErrors((current) => ({ ...current, [candidate.candidate_id]: message }));
     } finally {
       setConfirming(null);
     }
@@ -771,6 +796,7 @@ export function MeasurementPanel({
       for (const assignment of result.assignments) {
         const values = assignment.values.map((reading) => reading.value);
         if (assignment.many) {
+          if (reviewerEditedManyRef.current.has(assignment.field_key)) continue;
           const current = (runs[assignment.field_key] ?? []).filter((value) => value.trim());
           if (current.length > 0) continue;
           filledRuns[assignment.field_key] = values;
@@ -833,12 +859,13 @@ export function MeasurementPanel({
     }
   }
 
-  if (loadError) {
+  if (loadError && !needed) {
     return (
       <div className="enter-values">
         <div className="enter-values__error" role="alert">
           {loadError}
         </div>
+        <button type="button" className="value-secondary" onClick={() => setResourceRetry((count) => count + 1)}>Try loading measurements again</button>
       </div>
     );
   }
@@ -887,14 +914,14 @@ export function MeasurementPanel({
   const fieldOrigin = (
     quantity: Quantity,
   ): 'empty' | 'proposed' | 'unplaced' | 'confirmed' | 'tagged' | 'typed' => {
-    if (!hasValue(quantity)) return 'empty';
-    if (quantity.key in aiFilled) {
-      return unverifiedFields.has(quantity.key) ? 'unplaced' : 'proposed';
-    }
     const readings = readingsByKey[quantity.key] ?? [];
-    if (readings.some((reading) => reading.qualification === 'exact_vector_tag')) return 'tagged';
-    if (readings.length > 0) return 'confirmed';
-    return 'typed';
+    return measurementValueOrigin({
+      hasValue: hasValue(quantity),
+      humanEdited: quantity.many ? reviewerEditedMany.has(quantity.key) : reviewerEditedSingles.has(quantity.key),
+      proposed: quantity.key in aiFilled,
+      placementUnverified: unverifiedFields.has(quantity.key),
+      qualifications: readings.map((reading) => reading.qualification),
+    });
   };
 
   /** How many fields the filed proposal covers. Zero when nothing was filed, which is a real
@@ -924,17 +951,16 @@ export function MeasurementPanel({
           opening the page needs first, which is the format of a value. The rest is the rationale
           for the form's existence — worth saying once, in small type, under the instruction. */}
       <header className="enter-values__head">
-        <h1>Enter measurements</h1>
+        <h1>Review measurements</h1>
         <p>
-          Type each value with its unit — <code>25 1/2&quot;</code> or <code>648 mm</code>. A value
-          with no unit is refused rather than guessed at.
+          Check suggested values against the drawing, confirm what each one measures, then fill
+          what is missing. Type every value with its unit — <code>25 1/2&quot;</code> or <code>648 mm</code>.
         </p>
-        <p className="enter-values__hint">
-          Parsed exactly and compared by the rule engine; nothing is rounded and nothing is
-          inferred. Every field below comes from the {needed.rules_published} published rules, so a
-          check can only fail to decide for a reason you can see — never because a field was
-          missing.
-        </p>
+        <details className="measure-guidance">
+          <summary>How these values are used</summary>
+          <p>A suggestion is not a confirmed measurement. Values without units are refused. The {needed.rules_published} published rules compare saved values exactly; missing or uncertain inputs can leave a check undecided.</p>
+          <p><strong>Save values</strong> records the form without running checks. <strong>Run checks</strong> saves first and queues checks only if saving succeeds.</p>
+        </details>
         {refreshUnavailable && (
           <p className="enter-values__hint" role="status">
             Could not refresh the drawing data just now. Your unsaved measurements are still here;
@@ -943,9 +969,13 @@ export function MeasurementPanel({
         )}
       </header>
 
+      <MeasurementSectionNav />
+      {loadError && <p className="enter-values__error" role="alert">The latest refresh failed; your entered values are still here. {loadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
+
       {/* **Before any reading can fill a field on a combined sheet** (#795): a reading is used only on
           the side of the drawing it sits in, so the drawings' roles come first. Nothing renders for
           a package of two separate PDFs. Each answer re-reads the readings, which now have a side. */}
+      <div id="measure-drawings" className="measure-step-target">
       {packageId && (
         <DrawingRoles
           key={`${packageId}-drawing-roles`}
@@ -963,9 +993,12 @@ export function MeasurementPanel({
           onDecided={() => setPartsDecided((count) => count + 1)}
         />
       )}
+      </div>
 
       {/* **Which parts sit under each countertop** (#893): suggested from the confirmed parts above,
           and each countertop's run decided by a person. Read again whenever a part is decided. */}
+      <div id="measure-runs" className="measure-step-target">
+      <p className="measure-step-intro">After confirming vendor parts above, choose the parts beneath each countertop and the reading for each part&apos;s width. Each run needs your wall-layout choice; none is selected automatically.</p>
       {packageId && (
         <CountertopRuns key={`${packageId}-countertop-runs`} packageId={packageId} refresh={reload + partsDecided} />
       )}
@@ -980,8 +1013,11 @@ export function MeasurementPanel({
           refresh={reload + partsDecided + readingsConfirmed}
         />
       )}
+      </div>
 
-      <section className="enter-values__section">
+      <section className="enter-values__section measure-step-target" id="measure-values">
+        {candidateLoadError && <p className="enter-values__error" role="alert">Drawing readings could not be refreshed. You can still enter values. {candidateLoadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
+        {vocabularyLoadError && <p className="enter-values__error" role="alert">Reading meanings could not be loaded. You can still enter values. {vocabularyLoadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
         <div className="measure-page-picker">
           <label htmlFor="measure-page-number">Review one page</label>
           <select
@@ -1239,10 +1275,11 @@ export function MeasurementPanel({
                     <select
                       className="value-input"
                       aria-label={`Meaning for AI reading ${candidate.value}`}
-                      defaultValue=""
-                      disabled={isConfirming || !candidate.crop_key || availableTypes.length === 0}
+                      value={candidateChoices[candidate.candidate_id] ?? ''}
+                      disabled={confirming !== null || !candidate.crop_key || availableTypes.length === 0}
                       onChange={(event) => {
                         const type = event.target.value;
+                        setCandidateChoices((current) => ({ ...current, [candidate.candidate_id]: type }));
                         if (type) void confirmFromMeasure(candidate, type);
                       }}
                     >
@@ -1255,6 +1292,12 @@ export function MeasurementPanel({
                     </select>
                   </label>
                   {isConfirming && <span className="ai-proposal__saving">Saving confirmation…</span>}
+                  {candidateErrors[candidate.candidate_id] && (
+                    <p className="enter-values__error" role="alert">
+                      {candidateErrors[candidate.candidate_id]}{' '}
+                      {candidateChoices[candidate.candidate_id] && <button type="button" disabled={confirming !== null} onClick={() => void confirmFromMeasure(candidate, candidateChoices[candidate.candidate_id])}>Try this confirmation again</button>}
+                    </p>
+                  )}
                 </div>
               );
             })}
@@ -1274,21 +1317,6 @@ export function MeasurementPanel({
             value below.
           </p>
         )}
-        <FillerDistributionPanel
-          quantities={needed.quantities}
-          parameters={needed.parameters}
-          singles={singles}
-          runs={runs}
-          fieldWidth={fieldDimensionKey ? (singles[fieldDimensionKey] ?? '') : ''}
-          onFieldWidthChange={(value) => {
-            if (!fieldDimensionKey) return;
-            const nextEdits = new Set(reviewerEditedSinglesRef.current).add(fieldDimensionKey);
-            reviewerEditedSinglesRef.current = nextEdits;
-            setReviewerEditedSingles(nextEdits);
-            setSingles((prior) => ({ ...prior, [fieldDimensionKey]: value }));
-          }}
-          onCalculate={(request) => calculateFillerDistribution(projectId(), request)}
-        />
         {/* **Grouped by the sheet the value is read from.**
             A flat list of fourteen fields asked the reviewer to jump between two drawings on every
             row. Grouped, they fill the shop drawing's fields with the shop drawing open, which is
@@ -1387,6 +1415,7 @@ export function MeasurementPanel({
                               aria-label={`Remove item ${index + 1} from ${fieldLabel(quantity)}`}
                               onClick={() => {
                                 releaseField(quantity.key);
+                                markManyEdited(quantity.key);
                                 setRuns((prior) => ({
                                   ...prior,
                                   [quantity.key]: (prior[quantity.key] ?? []).filter(
@@ -1402,12 +1431,13 @@ export function MeasurementPanel({
                         <button
                           type="button"
                           className="value-add interactive"
-                          onClick={() =>
+                          onClick={() => {
+                            markManyEdited(quantity.key);
                             setRuns((prior) => ({
                               ...prior,
                               [quantity.key]: [...(prior[quantity.key] ?? []), ''],
-                            }))
-                          }
+                            }));
+                          }}
                         >
                           <Plus size={14} aria-hidden="true" /> Add another
                         </button>
@@ -1449,9 +1479,24 @@ export function MeasurementPanel({
             </div>
           );
         })}
+        <FillerDistributionPanel
+          quantities={needed.quantities}
+          parameters={needed.parameters}
+          singles={singles}
+          runs={runs}
+          fieldWidth={fieldDimensionKey ? (singles[fieldDimensionKey] ?? '') : ''}
+          onFieldWidthChange={(value) => {
+            if (!fieldDimensionKey) return;
+            const nextEdits = new Set(reviewerEditedSinglesRef.current).add(fieldDimensionKey);
+            reviewerEditedSinglesRef.current = nextEdits;
+            setReviewerEditedSingles(nextEdits);
+            setSingles((prior) => ({ ...prior, [fieldDimensionKey]: value }));
+          }}
+          onCalculate={(request) => calculateFillerDistribution(projectId(), request)}
+        />
       </section>
 
-      <section className="enter-values__section">
+      <section className="enter-values__section measure-step-target" id="measure-settings">
         <h2>Settings</h2>
         <p className="enter-values__hint">
           Values for this job rather than dimensions off a drawing. Where the rulebook suggests one it
@@ -1727,6 +1772,7 @@ function AiReadings({
 
 function MeasureCandidateCrop({ candidate, packageId }: { candidate: CandidateOut; packageId: string }) {
   const [state, setState] = useState<{ url: string } | { error: string } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [inView, setInView] = useState(false);
   const placeholderRef = useRef<HTMLSpanElement | null>(null);
 
@@ -1767,10 +1813,10 @@ function MeasureCandidateCrop({ candidate, packageId }: { candidate: CandidateOu
       live = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [candidate.candidate_id, packageId, shouldLoad]);
+  }, [candidate.candidate_id, packageId, shouldLoad, attempt]);
 
   if (state && 'error' in state) {
-    return <span className="ai-proposal__no-crop">{state.error}</span>;
+    return <span className="ai-proposal__no-crop">{state.error} <button type="button" className="value-secondary" onClick={() => { setState(null); setAttempt((count) => count + 1); }}>Retry crop</button></span>;
   }
   if (!state || !('url' in state)) {
     return (
@@ -1863,6 +1909,7 @@ function SettingPassageCrop({
   name: string;
 }) {
   const [state, setState] = useState<{ url: string } | { error: string } | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -1881,13 +1928,14 @@ function SettingPassageCrop({
       live = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [packageId, pointer.proposal_id]);
+  }, [packageId, pointer.proposal_id, attempt]);
 
   const page = pointer.page_index + 1;
   if (state && 'error' in state) {
     return (
       <p className="setting-citation__note">
         {state.error} Open page {page} of the {uploadLabel(pointer.document_kind)} and read it there.
+        {' '}<button type="button" className="value-secondary" onClick={() => { setState(null); setAttempt((count) => count + 1); }}>Retry passage picture</button>
       </p>
     );
   }

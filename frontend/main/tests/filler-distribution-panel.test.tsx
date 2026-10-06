@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { FillerDistributionPanel } from '../src/components/measure/FillerDistributionPanel.js';
+import { distributionInputKey, distributionIsCurrent } from '../src/components/measure/distributionSnapshot.js';
 import {
   buildFillerDistributionRequest,
   CABINET_BOUND_NAMES,
@@ -51,6 +52,12 @@ const classified = buildFillerDistributionRequest({
   cabinetBounds: bounds,
 });
 assert.deepEqual(classified.missing, []);
+assert.ok(classified.request);
+const pinnedPreview = { inputKey: distributionInputKey(classified.request) };
+assert.equal(distributionIsCurrent(pinnedPreview, classified.request), true);
+assert.equal(distributionIsCurrent(pinnedPreview, { ...classified.request, field_width: '71"' }), false);
+assert.equal(distributionIsCurrent(pinnedPreview, null), false);
+assert.equal(distributionIsCurrent({ inputKey: null }, classified.request), false);
 assert.deepEqual(
   classified.request?.assembly.cabinets.map((cabinet) => cabinet.type),
   ['double_door', 'equipment'],
@@ -229,6 +236,8 @@ const proposed = renderToStaticMarkup(
 );
 
 assert.match(proposed, /Proposal returned/);
+assert.match(proposed, /inputs used for this preview were not recorded/i);
+assert.match(proposed, /preview does not save measurements/i);
 // The reviewer is told how the drawing is being corrected, not just that it was.
 assert.match(proposed, /Wall to wall width in the architectural drawing/);
 // Both regular cabinets moved, and the equipment cabinet is marked as the one that cannot.
