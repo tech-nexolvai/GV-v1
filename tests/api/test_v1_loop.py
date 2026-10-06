@@ -376,14 +376,27 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     # 6. The reviewer addresses every abstention and signs off.
     _address_every_abstention(client, session, package_id, revision)
 
+    # Approval freezes the record, but no pre-review file may escape while the worker prepares it.
+    pending = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report")
+    assert pending.status_code == 409
+    assert "signed exports" in pending.text
+    from app.models.review import Approval
+    from workflow.signed_outputs import generate_signed_outputs
+
+    approval = session.scalar(select(Approval).where(Approval.package_revision_id == revision.id))
+    assert approval is not None
+    generate_signed_outputs(session, store, approval.id)
+    session.commit()
+
     # 7. And takes the review away.
     report = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report")
     assert report.status_code == 200, report.text
     assert report.content.startswith(b"PK\x03\x04"), "the report is not a workbook"
     assert "attachment" in report.headers["content-disposition"]
     summary = load_workbook(io.BytesIO(report.content))["Review Summary"]
-    assert summary["B11"].value == "AWAITING REVIEWER SIGN-OFF — download remains blocked"
-    assert summary["B12"].value == "not yet recorded"
+    assert summary["B11"].value == "SIGNED OFF — report released after approval"
+    assert summary["B12"].value == "ana@example.com"
+    assert summary["B13"].value != "not yet recorded"
 
     pdf = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report.pdf")
     assert pdf.status_code == 200, pdf.text
@@ -397,7 +410,9 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     assert redline.content.startswith(b"%PDF-"), "the evidence-grounded redline is not a PDF"
     # The placed label, external callout header and stored-fact note all name this
     # same finding. The source drawing did not contain any of them.
-    drawing_page_text = PdfReader(io.BytesIO(redline.content)).pages[0].extract_text() or ""
+    drawing_page_text = " ".join(
+        page.extract_text() or "" for page in PdfReader(io.BytesIO(redline.content)).pages
+    )
     assert "02 · CT-DEPTH-001 · PASS" in drawing_page_text
     assert "02  CT-DEPTH-001 · PASS" in drawing_page_text
     assert "CT-DEPTH-001 · PASS." in drawing_page_text

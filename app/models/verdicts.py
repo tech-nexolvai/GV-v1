@@ -399,4 +399,5 @@ class OutputArtifact(Base, TimestampedUUID, Immutable):
         # Content-addressed: regenerating an unchanged revision produces the same bytes under the
         # same key, and one row is the truthful record of that.
         UniqueConstraint("storage_key", "sha256", name="uq_output_artifacts_key_sha"),
+        UniqueConstraint("id", "package_revision_id", name="uq_output_artifacts_id_revision"),
     )

@@ -5294,6 +5294,15 @@ class DatabaseStages:
             "refusals": abstained[:REPORTED_REFUSALS],
         }
 
+    def generate_signed_outputs(self, session: Session, approval_id: UUID) -> Mapping[str, object]:
+        """Publish only the frozen approval record, without extraction or narration."""
+        from workflow.signed_outputs import generate_signed_outputs
+
+        if self._store is None:
+            raise ValueError("signed exports require the configured artifact store")
+        bundle = generate_signed_outputs(session, self._store, approval_id)
+        return {"bundle_id": str(bundle.id)}
+
     def generate_outputs(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
         """Turn this revision's findings into a workbook and branded PDF somebody can be handed.
 

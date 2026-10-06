@@ -947,6 +947,19 @@ export function approvePackage(projectId: string, reviewSessionId: string) {
   );
 }
 
+export interface SignedExportStatus {
+  approval_id: string;
+  status: 'not_requested' | 'preparing' | 'ready' | 'failed';
+}
+
+export function getSignedExports(projectId: string, packageId: string) {
+  return request<SignedExportStatus>(`/projects/${projectId}/packages/${packageId}/signed-exports`);
+}
+
+export function prepareSignedExports(projectId: string, packageId: string) {
+  return request<SignedExportStatus>(`/projects/${projectId}/packages/${packageId}/signed-exports`, { method: 'POST' });
+}
+
 /**
  * The signed-off review, as workbook bytes.
  *

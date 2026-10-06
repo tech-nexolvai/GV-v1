@@ -102,6 +102,12 @@ from app.models.runs import (
     TaskRun,
     WorkflowRun,
 )
+from app.models.signed_exports import (
+    ApprovalExportAction,
+    ApprovalExportBundle,
+    ApprovalExportFailure,
+    ApprovalExportSnapshot,
+)
 from app.models.verdicts import (
     CheckRun,
     Finding,
@@ -116,6 +122,10 @@ __all__ = [
     "AgentNodeInvocationState",
     "Alias",
     "Approval",
+    "ApprovalExportAction",
+    "ApprovalExportBundle",
+    "ApprovalExportFailure",
+    "ApprovalExportSnapshot",
     "ApprovalSource",
     "ApprovedFinding",
     "ApprovedMatch",

@@ -96,6 +96,7 @@ from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from evidence.coordinates import PageTransform, PdfPoint, StoredPoint
 from evidence.polygon import Polygon
+from reports.signed_review import SignedReview, with_review_pdf
 from storage.hashing import content_key, sha256_stream
 from storage.store import ArtifactStore, StoredArtifact
 from verdict.finding import Finding
@@ -455,6 +456,7 @@ def render_redline(
     *,
     clearance: VendorClearance | None = None,
     changed_values: ChangedValues | None = None,
+    signed_review: SignedReview | None = None,
 ) -> StoredArtifact:
     """Overlay the findings onto the source pages and store the result.
 
@@ -504,6 +506,10 @@ def render_redline(
     document = _compose(
         package, reader, marks, findings, marked, unplaced, clearance, changed_values
     )
+    if signed_review is not None:
+        if clearance is None or signed_review.approval_id != clearance.approval_id:
+            raise VendorApprovalUnavailable("signed redline review does not match its approval")
+        document = with_review_pdf(document, signed_review)
 
     digest, _ = sha256_stream(BytesIO(document))
     key = content_key(f"redlines/{package.package_revision_id}/{mode.value}", digest, suffix=".pdf")
@@ -1124,6 +1130,8 @@ def _listing(
 
     total_findings = len(findings)
     line("Redline summary", font="Helvetica-Bold", size=LISTING_FONT_SIZE * 1.8)
+    if clearance is None:
+        line("BEFORE REVIEW — NOT A FINAL REPORT", font="Helvetica-Bold", size=12.0)
     paragraph(
         f"{total_findings} finding(s) in this report for package revision "
         f"{package.package_revision_id}. {marked} marked on a drawing page. "

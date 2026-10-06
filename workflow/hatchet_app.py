@@ -93,10 +93,13 @@ def build_worker(
         stages=stages,
         max_concurrent_packages=settings.max_concurrent_packages,
     )
+    from workflow.signed_export_worker import register_signed_exports
+
+    signed_exports = register_signed_exports(hatchet, factory, stages)
     return hatchet.worker(
         WORKER_NAME,
         slots=settings.max_concurrent_page_tasks,
-        workflows=[workflow],
+        workflows=[workflow, signed_exports],
     )
 
 

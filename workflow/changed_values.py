@@ -100,13 +100,22 @@ def layered_parameter_sets(
     return tuple(merged if layer is company else layer for layer in stored)
 
 
-def changed_values_for_revision(session: Session, revision_id: UUID) -> ChangedValues:
+def changed_values_for_revision(
+    session: Session, revision_id: UUID, *, finding_ids: tuple[UUID, ...] | None = None
+) -> ChangedValues:
     """Resolve only current findings; mismatched batches or missing citations abstain."""
     rows = session.execute(
         select(Finding, CheckRun, StoredRuleSnapshot)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
         .join(StoredRuleSnapshot, StoredRuleSnapshot.id == CheckRun.rule_snapshot_id)
-        .where(Finding.package_revision_id == revision_id, CheckRun.superseded_at.is_(None))
+        .where(
+            Finding.package_revision_id == revision_id,
+            (
+                CheckRun.superseded_at.is_(None)
+                if finding_ids is None
+                else Finding.id.in_(finding_ids)
+            ),
+        )
     ).all()
     if not rows:
         return ChangedValues("not_run", NOT_RUN, (), ())
