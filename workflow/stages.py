@@ -2430,19 +2430,20 @@ class DatabaseStages:
                 self._mark_regions_the_agent_contradicted(
                     session, page_index=page.index, candidates=page_rows, agent_rows=agent_rows
                 )
-            layout_written, layout_refusals = self._timed_call(
+            with self._measure(
                 "extraction.page.layout_detection",
                 run_id=run_key,
                 page_index=page.index,
-                function=self._classify_page_layouts,
-                session=session,
-                package_revision_id=package_revision_id,
-                version_id=version_id,
-                data=data,
-                page=page,
-                extraction_run_id=run.id,
-                discriminators=layout_discriminators,
-            )
+            ):
+                layout_written, layout_refusals = self._classify_page_layouts(
+                    session=session,
+                    package_revision_id=package_revision_id,
+                    version_id=version_id,
+                    data=data,
+                    page=page,
+                    extraction_run_id=run.id,
+                    discriminators=layout_discriminators,
+                )
             self._timed_call(
                 "extraction.page.persist_flush",
                 run_id=run_key,
