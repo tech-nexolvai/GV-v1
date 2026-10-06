@@ -103,7 +103,12 @@ def _authorise(principal: Principal) -> None:
 
 
 def _review(db: Session, review_session_id: UUID) -> ReviewSession:
-    review = db.get(ReviewSession, review_session_id)
+    review = db.scalar(
+        select(ReviewSession)
+        .where(ReviewSession.id == review_session_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if review is None:
         raise NoSuchReviewSession(f"no review session {review_session_id}")
     return review
@@ -191,6 +196,9 @@ def approve_package(
     )
     complete_session(db, review_session_id=review.id)
     db.flush()
+    from app.review.signed_exports import request_signed_exports
+
+    request_signed_exports(db, approval.id)
     return ApprovalDecision(approval, tuple(finding.id for finding in findings), event)
 
 

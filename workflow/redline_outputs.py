@@ -43,8 +43,10 @@ from reports.redline import (
     RedlinePackage,
     RedlinePage,
     ReportMode,
+    VendorClearance,
     render_redline,
 )
+from reports.signed_review import SignedReview
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore, StoredArtifact
 from verdict.outcomes import Outcome, Severity, is_decision
@@ -68,6 +70,7 @@ def render_evidence_grounded_redline(
     package_revision_id: UUID,
     findings: Sequence[tuple[FindingRow, CheckRun, str, str]],
     changed_values: ChangedValues | None = None,
+    signed_review: SignedReview | None = None,
 ) -> RedlineOutput:
     """Render one internal redline only when a finding has a typed, stored location.
 
@@ -79,7 +82,7 @@ def render_evidence_grounded_redline(
         return RedlineOutput(None, "this revision has no live findings")
 
     references = _typed_references(session, findings)
-    if not any(references.values()):
+    if not any(references.values()) and signed_review is None:
         return RedlineOutput(
             None,
             "no live finding is backed by a typed canonical reading with a recorded location",
@@ -101,7 +104,21 @@ def render_evidence_grounded_redline(
     # approved route in reports.publication.
     return RedlineOutput(
         render_redline(
-            package, rendered, ReportMode.INTERNAL, store, changed_values=changed_values
+            package,
+            rendered,
+            ReportMode.INTERNAL if signed_review is None else ReportMode.VENDOR,
+            store,
+            changed_values=changed_values,
+            clearance=(
+                None
+                if signed_review is None
+                else VendorClearance(
+                    approval_id=signed_review.approval_id,
+                    approved_by=signed_review.approved_by,
+                    approved_at=signed_review.approved_at,
+                )
+            ),
+            signed_review=signed_review,
         ),
         None,
     )

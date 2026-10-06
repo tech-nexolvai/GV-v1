@@ -1102,6 +1102,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/signed-exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Status
+         * @description Read availability only; downloading or inspecting never generates files.
+         */
+        get: operations["export_status_api_v1_projects__project_id__packages__package_id__signed_exports_get"];
+        put?: never;
+        /**
+         * Request Exports
+         * @description Explicitly prepare the signed files for an existing approval, without signing again.
+         */
+        post: operations["request_exports_api_v1_projects__project_id__packages__package_id__signed_exports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/views": {
         parameters: {
             query?: never;
@@ -4021,6 +4045,19 @@ export interface components {
          * @enum {string}
          */
         Severity: "FLAG" | "CRITICAL" | "MAJOR" | "MINOR" | "ADVISORY";
+        /** SignedExportRequestOut */
+        SignedExportRequestOut: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "not_requested" | "preparing" | "ready" | "failed";
+        };
         /** SnapPointOut */
         SnapPointOut: {
             /** Source */
@@ -5848,6 +5885,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewSessionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_status_api_v1_projects__project_id__packages__package_id__signed_exports_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedExportRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_exports_api_v1_projects__project_id__packages__package_id__signed_exports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedExportRequestOut"];
                 };
             };
             /** @description Validation Error */

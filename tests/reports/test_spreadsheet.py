@@ -199,7 +199,7 @@ def test_summary_is_branded_and_records_only_the_signoff_supplied_to_the_writer(
     rows = _sheet(data, SUMMARY_SHEET)
 
     assert rows[0][0] == "GRANITI VICENTIA × NEXOLV"
-    assert rows[1][0] == "SHOP DRAWING REVIEW — HUMAN-OPERATED V1"
+    assert rows[1][0] == "SHOP DRAWING REVIEW — SIGNED REVIEW"
     assert any(row[:2] == ["APPROVED BY", "reviewer@example.com"] for row in rows)
     assert any(row[:2] == ["APPROVED AT", "2026-09-09T12:00:00Z"] for row in rows)
 

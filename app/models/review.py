@@ -161,6 +161,7 @@ class ReviewAction(Base, TimestampedUUID, Immutable):
         ),
         # Lets the ledger and the exception table bind to the *kind* of action, below.
         UniqueConstraint("id", "action", name="uq_review_actions_id_action"),
+        UniqueConstraint("id", "package_revision_id", name="uq_review_actions_id_revision"),
         CheckConstraint(f"action IN ({ACTION_VALUES})", name="review_action_kind"),
         CheckConstraint("actor <> ''", name="review_action_actor_present"),
         CheckConstraint(

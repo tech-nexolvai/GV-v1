@@ -263,6 +263,18 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
         logger.error("cannot start the worker: %s", error)
         return EXIT_MISCONFIGURED
 
+    import os
+    from pathlib import Path
+
+    from storage.local import LocalStore
+
+    storage_root = os.environ.get("GV_DEV_STORAGE")
+    if not storage_root:
+        logger.error(
+            "cannot start the worker: GV_DEV_STORAGE must name the configured artifact store"
+        )
+        return EXIT_MISCONFIGURED
+
     # **The worker gets the real stages.** It resolved `NoStages()` until now, because nothing was
     # ever passed — so a deployed worker ran the whole pipeline and recorded that it had implemented
     # none of it. `DatabaseStages` implements one stage for real and keeps `NoStages`' answer for the
@@ -271,6 +283,7 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
         settings,
         factory=factory,
         stages=DatabaseStages(
+            store=LocalStore(Path(storage_root)),
             findings_composer=configured_findings_composer(settings),
             missing_space=missing_space,
         ),

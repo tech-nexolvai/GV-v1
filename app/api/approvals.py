@@ -18,7 +18,7 @@ would let a package leave in a state nobody signed for — the exact thing ADR-0
 from __future__ import annotations
 
 import hashlib
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -29,12 +29,19 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_artifact_store, get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models.package import Package, PackageRevision, PackageState
+from app.models.signed_exports import (
+    ApprovalExportBundle,
+    ApprovalExportFailure,
+    ApprovalExportSnapshot,
+)
 from app.models.verdicts import OutputArtifact, OutputArtifactKind
 from app.review.approval import (
     ApprovalNotAuthorised,
     ApprovalRefused,
     approve_package,
 )
+from app.review.publication import UnapprovedContent, sign_off
+from app.review.signed_exports import SignedExportRefused, load_snapshot, request_signed_exports
 from storage.store import ArtifactStore
 
 router = APIRouter(tags=["approvals"])
@@ -100,7 +107,7 @@ def approve(
     except ApprovalNotAuthorised as refusal:
         session.rollback()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(refusal)) from refusal
-    except ApprovalRefused as refusal:
+    except (ApprovalRefused, SignedExportRefused) as refusal:
         # 409 rather than 400: the request is well-formed and the package is not ready. A client that
         # retries after the reviewer addresses the abstentions will succeed unchanged.
         session.rollback()
@@ -152,23 +159,59 @@ def _download_artifact(
             ),
         )
 
-    artifact = session.execute(
-        select(OutputArtifact)
-        .where(
-            OutputArtifact.package_revision_id == revision.id,
-            OutputArtifact.kind == kind.value,
+    try:
+        signed = sign_off(session, revision.id)
+        snapshot = session.scalar(
+            select(ApprovalExportSnapshot).where(
+                ApprovalExportSnapshot.approval_id == signed.approval_id
+            )
         )
-        .order_by(OutputArtifact.created_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if artifact is None:
+        if snapshot is None:
+            raise SignedExportRefused(
+                "signed exports have not been requested for this approval; before-review files are not final reports"
+            )
+        load_snapshot(session, snapshot)
+        bundle = session.scalar(
+            select(ApprovalExportBundle).where(ApprovalExportBundle.snapshot_id == snapshot.id)
+        )
+        if bundle is None:
+            if (
+                session.scalar(
+                    select(ApprovalExportFailure.id)
+                    .where(ApprovalExportFailure.snapshot_id == snapshot.id)
+                    .limit(1)
+                )
+                is not None
+            ):
+                raise SignedExportRefused(
+                    "signed export generation failed; no final files were published. Check worker logs and retry availability; before-review files are not final reports"
+                )
+            raise SignedExportRefused(
+                "signed exports are being prepared; before-review files cannot be downloaded as final reports"
+            )
+        artifacts = {}
+        for artifact_kind, artifact_id in (
+            (OutputArtifactKind.FINDINGS_PDF, bundle.pdf_id),
+            (OutputArtifactKind.FINDINGS_WORKBOOK, bundle.workbook_id),
+            (OutputArtifactKind.REDLINE, bundle.redline_id),
+        ):
+            item = session.get(OutputArtifact, artifact_id)
+            if (
+                item is None
+                or item.package_revision_id != revision.id
+                or item.kind != artifact_kind.value
+                or item.findings != len(signed.finding_ids)
+            ):
+                raise SignedExportRefused(
+                    "signed export bundle is incomplete or belongs to a different revision"
+                )
+            artifacts[artifact_kind] = item
+        artifact = artifacts[kind]
+    except (SignedExportRefused, UnapprovedContent) as refusal:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                f"no {label} has been generated for this package. The checks produce it, so a package "
-                "with none has not finished running them."
-            ),
-        )
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(refusal),
+        ) from refusal
 
     content = store.get(artifact.storage_key).read()
     if hashlib.sha256(content).hexdigest() != artifact.sha256:
@@ -190,6 +233,93 @@ def _download_artifact(
                 f'attachment; filename="gv-review-{package_id}-r{revision.revision_number}.{extension}"'
             )
         },
+    )
+
+
+class SignedExportRequestOut(BaseModel):
+    approval_id: UUID
+    status: Literal["not_requested", "preparing", "ready", "failed"]
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/signed-exports",
+    response_model=SignedExportRequestOut,
+)
+def export_status(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> SignedExportRequestOut:
+    """Read availability only; downloading or inspecting never generates files."""
+    revision = _revision(session, project_id, package_id)
+    if revision.state != PackageState.APPROVED.value:
+        raise HTTPException(status_code=409, detail="this package has not been signed off")
+    try:
+        signed = sign_off(session, revision.id)
+        snapshot = session.scalar(
+            select(ApprovalExportSnapshot).where(
+                ApprovalExportSnapshot.approval_id == signed.approval_id
+            )
+        )
+        if snapshot is None:
+            return SignedExportRequestOut(approval_id=signed.approval_id, status="not_requested")
+        load_snapshot(session, snapshot)
+        bundle = session.scalar(
+            select(ApprovalExportBundle.id).where(ApprovalExportBundle.snapshot_id == snapshot.id)
+        )
+        if (
+            bundle is None
+            and session.scalar(
+                select(ApprovalExportFailure.id)
+                .where(ApprovalExportFailure.snapshot_id == snapshot.id)
+                .limit(1)
+            )
+            is not None
+        ):
+            return SignedExportRequestOut(approval_id=signed.approval_id, status="failed")
+        return SignedExportRequestOut(
+            approval_id=signed.approval_id, status="ready" if bundle is not None else "preparing"
+        )
+    except (SignedExportRefused, UnapprovedContent) as refusal:
+        raise HTTPException(status_code=409, detail=str(refusal)) from refusal
+
+
+@router.post(
+    "/projects/{project_id}/packages/{package_id}/signed-exports",
+    response_model=SignedExportRequestOut,
+    status_code=202,
+)
+def request_exports(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    _: Annotated[Principal, Depends(require_action(Action.APPROVE_PACKAGE))],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> SignedExportRequestOut:
+    """Explicitly prepare the signed files for an existing approval, without signing again."""
+    revision = _revision(session, project_id, package_id)
+    if revision.state != PackageState.APPROVED.value:
+        raise HTTPException(
+            status_code=409, detail="sign off this package before requesting signed exports"
+        )
+    try:
+        signed = sign_off(session, revision.id)
+        snapshot = request_signed_exports(session, signed.approval_id)
+        ready = (
+            session.scalar(
+                select(ApprovalExportBundle.id).where(
+                    ApprovalExportBundle.snapshot_id == snapshot.id
+                )
+            )
+            is not None
+        )
+        session.commit()
+    except (SignedExportRefused, UnapprovedContent) as refusal:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(refusal)) from refusal
+    return SignedExportRequestOut(
+        approval_id=signed.approval_id, status="ready" if ready else "preparing"
     )
 
 
