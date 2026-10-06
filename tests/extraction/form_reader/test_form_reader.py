@@ -543,7 +543,7 @@ def test_wrong_overall_position_goes_to_person() -> None:
     assert result[0].reason == "reader-topology-differs"
 
 
-def test_bedrock_request_uses_structured_output_for_kimi_only() -> None:
+def test_bedrock_request_asks_kimi_for_low_effort_and_no_schema_mode() -> None:
     png = b"\x89PNG\r\n\x1a\nfixture"
     kimi = build_converse_request(
         model_id="us.moonshotai.kimi-k3", page_png=png, page_index=3, max_tokens=4096
@@ -551,7 +551,8 @@ def test_bedrock_request_uses_structured_output_for_kimi_only() -> None:
     qwen = build_converse_request(
         model_id="qwen.qwen3-vl-235b-a22b", page_png=png, page_index=3, max_tokens=4096
     )
-    assert kimi["outputConfig"]["textFormat"]["type"] == "json_schema"
+    assert kimi["outputConfig"] == {"effort": "low"}
+    assert "textFormat" not in kimi["outputConfig"]
     assert "outputConfig" not in qwen
     assert kimi["messages"][0]["content"][0]["image"]["format"] == "png"
 
