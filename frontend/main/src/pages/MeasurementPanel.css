@@ -1295,10 +1295,10 @@ select.value-input {
 
 /* The drawing on the left, the form on the right (admin, 2026-10-06). */
 .page-drawing {
-  border: 1px solid var(--border, #d4d4d4);
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   padding: 8px;
-  background: var(--surface, #fff);
+  background: var(--bg-surface);
 }
 .page-drawing__title {
   margin: 0 0 6px;
