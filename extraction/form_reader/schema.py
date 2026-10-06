@@ -79,6 +79,41 @@ class FormDimension(BaseModel):
     def empty_text_is_missing(cls, value: object) -> object:
         return None if value == "" else value
 
+    @field_validator("kind", mode="before")
+    @classmethod
+    def overall_is_not_a_piece_kind(cls, value: object) -> object:
+        """A reader that labels the overall width "overall" has not misread anything.
+
+        Kind is a suggestion that never sets a value, and the overall has no piece kind at all, so
+        this word means "unknown" rather than a malformed answer (#977).
+        """
+        return "unknown" if value == "overall" else value
+
+    @field_validator("box", mode="before")
+    @classmethod
+    def unusable_box_is_no_box(cls, value: object) -> object:
+        """A box outside the 0..1000 grid, or not four whole numbers, is dropped, not fatal.
+
+        The box is a display hint only; the printed text decides. A reader that gets the grid wrong
+        (Kimi often answers in pixels) must not have a correct reading thrown away for it (#977).
+        """
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)) and len(value) == 4:
+            coordinates = list(value)
+        elif isinstance(value, dict) and set(value) == {"x0", "y0", "x1", "y1"}:
+            coordinates = [value["x0"], value["y0"], value["x1"], value["y1"]]
+        else:
+            return None
+        if not all(
+            isinstance(c, int) and not isinstance(c, bool) and 0 <= c <= 1000 for c in coordinates
+        ):
+            return None
+        x0, y0, x1, y1 = coordinates
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return value
+
 
 class CountertopForm(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)

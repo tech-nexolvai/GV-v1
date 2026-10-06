@@ -18,6 +18,7 @@ from extraction.form_reader.prompt_v5 import BUILT_IN_PROMPT, FormPrompt, page_p
 from extraction.form_reader.schema import PageFormAnswer
 
 KIMI_K3_MODEL = "moonshotai.kimi-k3"
+KIMI_EFFORT = "low"
 
 
 class ConverseClient(Protocol):
@@ -146,18 +147,11 @@ def build_converse_request(
         "inferenceConfig": {"maxTokens": max_tokens},
     }
     if _base_model_id(model_id) == KIMI_K3_MODEL:
-        request["outputConfig"] = {
-            "textFormat": {
-                "type": "json_schema",
-                "structure": {
-                    "jsonSchema": {
-                        "name": "countertop_page_reading_v5",
-                        "description": "Copied dimension labels and display boxes for one page.",
-                        "schema": json.dumps(form_json_schema(), separators=(",", ":")),
-                    }
-                },
-            }
-        }
+        # Kimi spends most of its time on hidden reasoning that is billed as output: 60-170 s a
+        # page at the default effort, under 10 s at low effort with the same answer (measured
+        # 2026-10-07). Its JSON-schema text format is deliberately not requested: with low effort it
+        # made the answer worse, and the strict parser is the gate either way (#977).
+        request["outputConfig"] = {"effort": KIMI_EFFORT}
     return request
 
 
