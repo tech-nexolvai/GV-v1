@@ -25,9 +25,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from decimal import Decimal
 from time import monotonic
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr, ValidationError
 
 from extraction.form_reader.bedrock import (
     KIMI_EFFORT,
@@ -46,19 +46,41 @@ from extraction.slot_reader.seal import ReaderAnswer
 from extraction.slot_reader.walls import WALL_PROMPT, WALL_PROMPT_ID, Side, WallAnswer
 from vocabulary.semantic_types import ProductType
 
+if TYPE_CHECKING:
+    from extraction.slot_reader.anthropic import BatchSpendGuard
+
 __all__ = [
     "CROP_PROMPT",
     "CROP_PROMPT_ID",
+    "ROW_PROMPT",
+    "ROW_PROMPT_ID",
     "CropJob",
+    "RowChoiceAnswer",
     "build_crop_request",
+    "build_row_request",
     "build_wall_request",
     "crop_prompt_id",
     "read_crop",
     "read_crops_parallel",
+    "read_row_choice",
     "read_walls",
 ]
 
 CROP_PROMPT_ID: Final = "slot-crop-v1"
+ROW_PROMPT_ID: Final = "slot-row-choice-v1"
+
+ROW_PROMPT: Final = (
+    "This is a vendor's cabinet shop drawing sheet (black ink is the vendor's; ignore coloured "
+    "reviewer marks). Numbered coloured boxes mark candidate dimension rows found on the drawing. "
+    "Task: which numbered box marks the COUNTERTOP PIECE ROW — the horizontal chain of piece "
+    "widths (fillers, cabinets, appliance spaces) on the vendor's FRONT VIEW / ELEVATION that "
+    "runs along the stone countertop and measures the pieces under it from one end of the stone "
+    "top to the other? It is NOT an upper-cabinet row, NOT a wall-to-wall or room dimension, NOT "
+    "a row inside a plan (top) view or a section view, and NOT the architect's small drawing. "
+    "Numbers in red or inside yellow boxes are the reviewer's markup, not the vendor's. Reply "
+    'with ONLY a JSON object: {"row": <number, or 0 if none of the boxes is it>, '
+    '"why": "<one short sentence>"}'
+)
 
 CROP_PROMPT: Final = (
     "This picture is cut from a cabinet shop drawing. It shows ONE dimension label with its "
@@ -94,6 +116,20 @@ class _CropAnswer(BaseModel):
     combined: StrictBool
     readable: StrictBool
     no_dimension: StrictBool
+
+
+class _RowChoiceReply(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    row: StrictInt
+    why: StrictStr
+
+
+@dataclass(frozen=True, slots=True)
+class RowChoiceAnswer:
+    model_id: str
+    row: int
+    why: str
 
 
 def _base_model_id(model_id: str) -> str:
@@ -145,6 +181,122 @@ def build_crop_request(
     else:
         request["inferenceConfig"]["temperature"] = 0
     return request
+
+
+def build_row_request(*, model_id: str, page_png: bytes, max_tokens: int) -> dict[str, Any]:
+    """Ask Opus to choose only among the code-ranked, numbered vendor-page candidates."""
+    if not model_id.strip():
+        raise ValueError("a row reader model id must be stated")
+    if not page_png.startswith(_PNG_SIGNATURE):
+        raise ValueError("a row reader requires a rendered PNG page")
+    if isinstance(max_tokens, bool) or max_tokens < 1:
+        raise ValueError("max_tokens must be a positive integer")
+    request: dict[str, Any] = {
+        "modelId": model_id,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"image": {"format": "png", "source": {"bytes": page_png}}},
+                    {"text": ROW_PROMPT},
+                ],
+            }
+        ],
+        "inferenceConfig": {"maxTokens": max_tokens},
+    }
+    if _base_model_id(model_id) == KIMI_K3_MODEL:
+        request["outputConfig"] = {"effort": KIMI_EFFORT}
+    else:
+        request["inferenceConfig"]["temperature"] = 0
+    return request
+
+
+def read_row_choice(
+    client: ConverseClient,
+    *,
+    model_id: str,
+    page_png: bytes,
+    page_index: int,
+    candidate_count: int,
+    max_tokens: int,
+    record_attempt: Callable[[AttemptUsage], None],
+    question_packet: Mapping[str, object] | None = None,
+) -> RowChoiceAnswer:
+    """Ask once, re-asking only malformed JSON; an out-of-range row is a reviewer decision."""
+    if not 1 <= candidate_count <= 6:
+        raise ValueError("row choice requires one to six code-ranked candidates")
+    for attempt in range(2):
+        request = build_row_request(model_id=model_id, page_png=page_png, max_tokens=max_tokens)
+        if attempt:
+            request["messages"][0]["content"].append(
+                {"text": "Your previous reply was malformed. Return the one JSON object only."}
+            )
+        started = monotonic()
+        try:
+            response = client.converse(**request)
+        except Exception as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    ROW_PROMPT_ID,
+                    ROW_PROMPT_ID,
+                    None,
+                    None,
+                    int((monotonic() - started) * 1000),
+                    False,
+                    type(error).__name__,
+                    page_index,
+                    attempt_number=attempt + 1,
+                    question_packet=question_packet,
+                )
+            )
+            raise
+        input_tokens, output_tokens = _response_usage(response)
+        elapsed = int((monotonic() - started) * 1000)
+        raw: str | None = None
+        try:
+            raw = _response_text(response)
+            parsed = _RowChoiceReply.model_validate(_extract_json_object(raw))
+            if not 0 <= parsed.row <= candidate_count:
+                raise MalformedFormAnswer("row choice is outside the numbered candidates")
+        except (MalformedFormAnswer, ValidationError) as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    ROW_PROMPT_ID,
+                    ROW_PROMPT_ID,
+                    input_tokens,
+                    output_tokens,
+                    elapsed,
+                    True,
+                    page_index=page_index,
+                    raw_response_text=raw,
+                    attempt_number=attempt + 1,
+                    question_packet=question_packet,
+                )
+            )
+            if attempt:
+                raise MalformedFormAnswer(
+                    "row answer remained malformed after one re-ask"
+                ) from error
+            continue
+        record_attempt(
+            AttemptUsage(
+                model_id,
+                ROW_PROMPT_ID,
+                ROW_PROMPT_ID,
+                input_tokens,
+                output_tokens,
+                elapsed,
+                False,
+                page_index=page_index,
+                raw_response_text=raw,
+                attempt_number=attempt + 1,
+                question_packet=question_packet,
+            )
+        )
+        return RowChoiceAnswer(model_id=model_id, row=parsed.row, why=parsed.why[:300])
+    raise AssertionError("unreachable")
 
 
 def read_crop(
@@ -417,6 +569,8 @@ class CropJob:
     png: bytes
     view_png: bytes | None = None
     wall_question: bool = False
+    row_question: bool = False
+    candidate_count: int | None = None
     question_packet: Mapping[str, object] | None = None
 
 
@@ -433,7 +587,9 @@ def read_crops_parallel(
     record_attempt: Callable[[AttemptUsage], None],
     product: ProductType | None = None,
     spend_cap_usd: Decimal | None = None,
-) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | None]:
+    spend_guard: BatchSpendGuard | None = None,
+    pacer: ModelPacer | None = None,
+) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | None]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
 
     Label crops and wall questions share one pool, one pacer and one concurrency cap, so asking
@@ -457,16 +613,19 @@ def read_crops_parallel(
     if missing:
         raise ValueError(f"missing per-model pacing limits for: {', '.join(sorted(missing))}")
     require_priced_readers(readers, rates)
-    pacer = ModelPacer(calls_per_minute)
-    spend_guard = None
+    shared_pacer = pacer or ModelPacer(calls_per_minute)
+    if spend_cap_usd is not None and spend_guard is not None:
+        raise ValueError("pass either a Claude spend cap or its shared reservation guard, not both")
     if spend_cap_usd is not None:
         from extraction.slot_reader.anthropic import BatchSpendGuard
 
-        spend_guard = BatchSpendGuard(spend_cap_usd, rates)  # type: ignore[arg-type]
+        spend_guard = BatchSpendGuard(spend_cap_usd, rates)
 
-    def invoke(job: CropJob) -> tuple[tuple[str, str], ReaderAnswer | WallAnswer | None]:
+    def invoke(
+        job: CropJob,
+    ) -> tuple[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | None]:
         for throttle_attempt in range(max_throttle_retries + 1):
-            pacer.wait(job.model_id)
+            shared_pacer.wait(job.model_id)
             try:
                 client = clients.for_current_thread()
                 if spend_guard is not None:
@@ -476,8 +635,24 @@ def read_crops_parallel(
                     )
 
                     client = SpendLimitedClient(client, spend_guard)
-                answer: ReaderAnswer | WallAnswer
-                if job.wall_question or (job.view_png is not None and job.question_packet is None):
+                answer: ReaderAnswer | WallAnswer | RowChoiceAnswer
+                if job.row_question:
+                    count = job.candidate_count
+                    if isinstance(count, bool) or not isinstance(count, int):
+                        raise ValueError("a row question must record its candidate count")
+                    answer = read_row_choice(
+                        client,
+                        model_id=job.model_id,
+                        page_png=job.png,
+                        page_index=job.page_index,
+                        candidate_count=count,
+                        max_tokens=max_tokens,
+                        record_attempt=record_attempt,
+                        question_packet=job.question_packet,
+                    )
+                elif job.wall_question or (
+                    job.view_png is not None and job.question_packet is None
+                ):
                     if job.view_png is None:
                         raise ValueError("a wall question packet must include its full vendor view")
                     answer = read_walls(
@@ -515,7 +690,7 @@ def read_crops_parallel(
                 time.sleep(retry_backoff_seconds * (2**throttle_attempt))
         raise AssertionError("unreachable")
 
-    answers: dict[tuple[str, str], ReaderAnswer | WallAnswer | None] = {}
+    answers: dict[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | None] = {}
     with ThreadPoolExecutor(max_workers=max_concurrent_calls) as executor:
         futures = [executor.submit(invoke, job) for job in jobs]
         for future in as_completed(futures):

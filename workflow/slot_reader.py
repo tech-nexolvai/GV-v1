@@ -37,13 +37,16 @@ from uuid import UUID, uuid4
 from evidence.coordinates import PageTransform
 from evidence.crop import RenderedPage, _crop_rgb, encode_png
 from extraction.form_reader.bedrock import AttemptUsage
-from extraction.geometry.rows import MEASURED_SETTINGS, Box, RowSettings
+from extraction.form_reader.runner import ModelPacer
+from extraction.geometry.rows import MEASURED_SETTINGS, Box, CountertopRowCandidate, RowSettings
 from extraction.glyph_bands import FractionBarGeometry, stacked_fractions
 from extraction.ink import InkAt, InkClass, InkLabel, PageInk
 from extraction.rows import RowsAndInk
 from extraction.slot_reader.bedrock import (
     CROP_PROMPT_ID,
+    ROW_PROMPT_ID,
     CropJob,
+    RowChoiceAnswer,
     crop_prompt_id,
     read_crops_parallel,
 )
@@ -162,6 +165,8 @@ class SlotReaderRuntime:
     """Enable storing a private, hash-bound question packet for every reader attempt."""
     spend_cap_usd: Decimal | None = None
     """Per-reading-batch maximum when using the direct Claude route; otherwise unset."""
+    claude_row_reader: bool = False
+    """Ask Claude Opus to select one of the first six code-ranked rows before reading labels."""
 
     @property
     def prompt_id(self) -> str:
@@ -181,6 +186,7 @@ class SlotReaderRuntime:
             f"fraction_bar={self.fraction_bar.config_hash};"
             f"walls={self.wall_settings.config_hash};"
             "rules=drawn-length-veto,label-expansion,counter-break"
+            f"{',claude-row-v1' if self.claude_row_reader else ''}"
         )
 
     @property
@@ -265,6 +271,7 @@ def configured_slot_reader(
             if claude_enabled
             else None
         ),
+        claude_row_reader=claude_enabled,
     )
 
 
@@ -331,6 +338,11 @@ class PageSlotResult:
     walls: PageWalls | None = None
     owner_candidate_ids: Mapping[str, UUID] = field(default_factory=dict)
     wall_candidate_id: UUID | None = None
+    row_choice: RowChoiceAnswer | None = None
+    row_choice_number: int | None = None
+    row_candidate_ids: tuple[UUID, ...] = ()
+    row_choice_png: bytes | None = None
+    row_choice_box_px: tuple[int, int, int, int] | None = None
 
 
 def _pixels(rows: RowsAndInk, box: Box, rendered: RenderedPage) -> tuple[int, int, int, int]:
@@ -429,6 +441,45 @@ def _question_packet(
     return packet_body
 
 
+def _row_question_packet(
+    page: SlotPage,
+    *,
+    candidate_ids: Sequence[UUID],
+    numbered_view_png: bytes,
+    store: ArtifactStore | None,
+) -> dict[str, object]:
+    """Bind the exact numbered vendor view and the ordered code candidates to a row attempt."""
+    from io import BytesIO
+
+    digest = hashlib.sha256(numbered_view_png).hexdigest()
+    storage_key: str | None = None
+    if store is not None:
+        if page.transform is None:
+            raise ValueError("a persisted reader packet requires the published PageTransform")
+        storage_key = (
+            f"reader-questions/{page.document_version_id}/pages/{page.page_index}/"
+            f"rows-{digest}.png"
+        )
+        saved = store.put(storage_key, BytesIO(numbered_view_png), content_type="image/png")
+        if saved.sha256 != digest:
+            raise ValueError("stored numbered row image hash does not match its request bytes")
+    packet: dict[str, object] = {
+        "question_id": f"p{page.page_index}:row-choice",
+        "document_version_id": str(page.document_version_id),
+        "page_index": page.page_index,
+        "source_page_sha256": page.rendered.page_content_hash,
+        "prompt_id": ROW_PROMPT_ID,
+        "candidate_ids": [str(candidate_id) for candidate_id in candidate_ids],
+        "candidate_count": len(candidate_ids),
+        "page_transform": _transform_packet(page.transform),
+        "images": {"numbered_vendor_view": {"sha256": digest, "storage_key": storage_key}},
+    }
+    packet["packet_sha256"] = hashlib.sha256(
+        json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return packet
+
+
 def _owner_candidate_key(owner_index: int | None) -> str:
     return "overall" if owner_index is None else f"slot:{owner_index}"
 
@@ -436,6 +487,23 @@ def _owner_candidate_key(owner_index: int | None) -> str:
 #: E3's mark colour for the row and its ends: a colour neither the vendor's black nor GV's red,
 #: yellow or blue uses.
 _MAGENTA: Final = bytes((230, 0, 200))
+_ROW_COLOURS: Final = (
+    bytes((220, 20, 60)),
+    bytes((0, 100, 220)),
+    bytes((0, 135, 70)),
+    bytes((145, 70, 190)),
+    bytes((220, 125, 0)),
+    bytes((0, 135, 150)),
+)
+_DIGIT_PIXELS: Final = {
+    "0": ("111", "101", "101", "101", "111"),
+    "1": ("010", "110", "010", "010", "111"),
+    "2": ("110", "001", "010", "100", "111"),
+    "3": ("110", "001", "010", "001", "110"),
+    "4": ("101", "101", "111", "001", "001"),
+    "5": ("111", "100", "110", "001", "110"),
+    "6": ("011", "100", "110", "101", "010"),
+}
 
 
 def _marked_png(
@@ -448,6 +516,7 @@ def _marked_png(
     max_side: int,
     outline: tuple[int, int, int, int] | None = None,
     mark_color: bytes = _MAGENTA,
+    numbered_outlines: Sequence[tuple[tuple[int, int, int, int], bytes, int]] = (),
 ) -> bytes:
     """A crop of the render with the row marked (E3's pictures), shrunk to `max_side` at most.
 
@@ -458,12 +527,12 @@ def _marked_png(
     rgb = bytearray(_crop_rgb(rendered, box))
     stride = width * 3
 
-    def paint(x0: int, y0: int, x1: int, y1: int) -> None:
+    def paint(x0: int, y0: int, x1: int, y1: int, colour: bytes = mark_color) -> None:
         x0, x1 = max(0, x0), min(width, x1)
         y0, y1 = max(0, y0), min(height, y1)
         if x0 >= x1 or y0 >= y1:
             return
-        run = mark_color * (x1 - x0)
+        run = colour * (x1 - x0)
         for row in range(y0, y1):
             rgb[row * stride + x0 * 3 : row * stride + x1 * 3] = run
 
@@ -479,6 +548,24 @@ def _marked_png(
         paint(x0 - left, y1 - top - thickness, x1 - left, y1 - top)
         paint(x0 - left, y0 - top, x0 - left + thickness, y1 - top)
         paint(x1 - left - thickness, y0 - top, x1 - left, y1 - top)
+    for (x0, y0, x1, y1), colour, number in numbered_outlines:
+        paint(x0 - left, y0 - top, x1 - left, y0 - top + thickness, colour)
+        paint(x0 - left, y1 - top - thickness, x1 - left, y1 - top, colour)
+        paint(x0 - left, y0 - top, x0 - left + thickness, y1 - top, colour)
+        paint(x1 - left - thickness, y0 - top, x1 - left, y1 - top, colour)
+        scale = max(2, rendered.dpi // 72)
+        badge_left = max(0, x0 - left + thickness)
+        badge_top = max(0, y0 - top + thickness)
+        glyph = _DIGIT_PIXELS[str(number)]
+        badge_width = len(glyph[0]) * scale + 2 * scale
+        badge_height = len(glyph) * scale + 2 * scale
+        paint(badge_left, badge_top, badge_left + badge_width, badge_top + badge_height, colour)
+        for glyph_y, glyph_row in enumerate(glyph):
+            for glyph_x, pixel in enumerate(glyph_row):
+                if pixel == "1":
+                    gx = badge_left + scale + glyph_x * scale
+                    gy = badge_top + scale + glyph_y * scale
+                    paint(gx, gy, gx + scale, gy + scale, bytes((255, 255, 255)))
     factor = -(-max(width, height) // max_side)
     if factor <= 1:
         return encode_png(width, height, bytes(rgb))
@@ -490,6 +577,42 @@ def _marked_png(
     shrunk = trimmed.reshape(small_h, factor, small_w, factor, 3).sum(axis=(1, 3))
     shrunk = (shrunk + (factor * factor) // 2) // (factor * factor)
     return encode_png(small_w, small_h, shrunk.astype(np.uint8).tobytes())
+
+
+def _numbered_rows_png(page: SlotPage) -> tuple[bytes, tuple[CountertopRowCandidate, ...]]:
+    """Show the top six code-ranked candidate dimension lines, each in a distinct numbered box."""
+    candidates = page.rows.candidates.rows.candidates[:6]
+    if not candidates:
+        return _crop_png(page.rendered, (0, 0, page.rendered.width_px, page.rendered.height_px)), ()
+    outlines: list[tuple[tuple[int, int, int, int], bytes, int]] = []
+    for number, row in enumerate(candidates, start=1):
+        first = page.rows.to_pixels(row.x0, row.y)
+        last = page.rows.to_pixels(row.x1, row.y)
+        x0, x1 = sorted((first[0], last[0]))
+        center_y = (first[1] + last[1]) // 2
+        outlines.append(
+            (
+                (
+                    max(0, x0 - 8),
+                    max(0, center_y - 18),
+                    min(page.rendered.width_px, x1 + 8),
+                    min(page.rendered.height_px, center_y + 18),
+                ),
+                _ROW_COLOURS[number - 1],
+                number,
+            )
+        )
+    full_page = (0, 0, page.rendered.width_px, page.rendered.height_px)
+    image = _marked_png(
+        page.rendered,
+        full_page,
+        ends_x=(),
+        line=None,
+        thickness=max(2, page.rendered.dpi // 120),
+        max_side=1800,
+        numbered_outlines=outlines,
+    )
+    return image, candidates
 
 
 def _wall_job_pictures(
@@ -565,7 +688,72 @@ def read_slot_pages(
     if runtime.question_packets and store is None:
         raise ValueError("reader question packets require a private artifact store")
     readers = runtime.form.reader_ids
-    planned: list[tuple[SlotPage, SlotPlan]] = []
+    page_rows = {page.page_index: page.rows.candidates.rows for page in pages}
+    row_images: dict[int, bytes] = {}
+    row_ids: dict[int, tuple[UUID, ...]] = {}
+    row_jobs: list[CropJob] = []
+    if runtime.claude_row_reader:
+        if not readers or readers[0] != "anthropic.claude-opus-5-5":
+            raise ValueError("Claude row selection requires Opus as the first configured reader")
+        for page in pages:
+            candidates = page_rows[page.page_index].candidates[:6]
+            if not candidates:
+                continue
+            numbered_png, _ = _numbered_rows_png(page)
+            candidate_ids = tuple(uuid4() for _ in candidates)
+            row_images[page.page_index] = numbered_png
+            row_ids[page.page_index] = candidate_ids
+            packet = (
+                _row_question_packet(
+                    page,
+                    candidate_ids=candidate_ids,
+                    numbered_view_png=numbered_png,
+                    store=store,
+                )
+                if runtime.question_packets
+                else None
+            )
+            row_jobs.append(
+                CropJob(
+                    key=_row_key(page.page_index),
+                    model_id=readers[0],
+                    page_index=page.page_index,
+                    png=numbered_png,
+                    row_question=True,
+                    candidate_count=len(candidates),
+                    question_packet=packet,
+                )
+            )
+    shared_spend_guard = None
+    shared_pacer = ModelPacer(runtime.form.calls_per_minute)
+    if runtime.spend_cap_usd is not None:
+        from extraction.slot_reader.anthropic import BatchSpendGuard
+
+        if runtime.form.rates is None:
+            raise ValueError("Claude reader spend cap requires published model rates")
+        shared_spend_guard = BatchSpendGuard(runtime.spend_cap_usd, runtime.form.rates)
+
+    def run_jobs(
+        items: Sequence[CropJob],
+    ) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | None]:
+        return read_crops_parallel(
+            items,
+            clients=runtime.form.clients,
+            rates=runtime.form.rates,
+            calls_per_minute=runtime.form.calls_per_minute,
+            max_concurrent_calls=runtime.form.max_concurrent_calls,
+            max_tokens=runtime.form.max_tokens,
+            max_throttle_retries=runtime.form.max_throttle_retries,
+            retry_backoff_seconds=runtime.form.retry_backoff_seconds,
+            record_attempt=record_attempt,
+            product=runtime.product,
+            spend_guard=shared_spend_guard,
+            spend_cap_usd=runtime.spend_cap_usd if shared_spend_guard is None else None,
+            pacer=shared_pacer,
+        )
+
+    row_answers = run_jobs(row_jobs) if row_jobs else {}
+    planned: list[tuple[SlotPage, SlotPlan, RowChoiceAnswer | None, int | None]] = []
     jobs: list[CropJob] = []
     crops: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]] = {}
     walls_asked: dict[
@@ -581,13 +769,24 @@ def read_slot_pages(
                 f"page {page.page_index}'s ink was read at {page.ink.dpi} dpi but its picture is "
                 f"at {page.rendered.dpi} dpi"
             )
+        page_row_answer = row_answers.get((_row_key(page.page_index), readers[0]))
+        row_choice = page_row_answer if isinstance(page_row_answer, RowChoiceAnswer) else None
+        row_number = None if row_choice is None else row_choice.row
+        candidates = page_rows[page.page_index].candidates[:6]
+        selected_row = (
+            candidates[row_number - 1]
+            if row_number is not None and 0 < row_number <= len(candidates)
+            else None
+        )
         plan = plan_slots(
             page.rows.candidates.rows,
             page.rows.ink,
             settings=runtime.crop_settings,
             row_settings=runtime.row_settings,
+            selected_row=selected_row,
+            row_choice_made=runtime.claude_row_reader and bool(candidates),
         )
-        planned.append((page, plan))
+        planned.append((page, plan, row_choice, row_number))
         owners = [*plan.slots, *([plan.overall] if plan.overall is not None else [])]
         page_candidate_ids = {_owner_candidate_key(owner.index): uuid4() for owner in owners}
         owner_candidate_ids[page.page_index] = page_candidate_ids
@@ -667,26 +866,13 @@ def read_slot_pages(
                 for model in readers
             )
 
-    form = runtime.form
-    answers = read_crops_parallel(
-        jobs,
-        clients=form.clients,
-        rates=form.rates,
-        calls_per_minute=form.calls_per_minute,
-        max_concurrent_calls=form.max_concurrent_calls,
-        max_tokens=form.max_tokens,
-        max_throttle_retries=form.max_throttle_retries,
-        retry_backoff_seconds=form.retry_backoff_seconds,
-        record_attempt=record_attempt,
-        product=runtime.product,
-        spend_cap_usd=runtime.spend_cap_usd,
-    )
+    answers = run_jobs(jobs)
 
     label_answers: dict[tuple[str, str], ReaderAnswer | None] = {
-        key: answer for key, answer in answers.items() if not isinstance(answer, WallAnswer)
+        key: answer for key, answer in answers.items() if isinstance(answer, ReaderAnswer)
     }
     results: list[PageSlotResult] = []
-    for page, plan in planned:
+    for page, plan, row_choice, row_number in planned:
 
         def owner_result(
             owner: PlannedOwner, count: int, page: SlotPage = page, plan: SlotPlan = plan
@@ -756,6 +942,15 @@ def read_slot_pages(
                 walls=walls,
                 owner_candidate_ids=owner_candidate_ids[page.page_index],
                 wall_candidate_id=wall_candidate_ids.get(page.page_index),
+                row_choice=row_choice,
+                row_choice_number=row_number,
+                row_candidate_ids=row_ids.get(page.page_index, ()),
+                row_choice_png=row_images.get(page.page_index),
+                row_choice_box_px=(
+                    (0, 0, page.rendered.width_px, page.rendered.height_px)
+                    if page.page_index in row_images
+                    else None
+                ),
             )
         )
     return tuple(results)
@@ -763,6 +958,10 @@ def read_slot_pages(
 
 def _walls_key(page_index: int) -> str:
     return f"p{page_index}:walls"
+
+
+def _row_key(page_index: int) -> str:
+    return f"p{page_index}:row-choice"
 
 
 def _row_texts(owners: Sequence[OwnerResult]) -> list[str]:
@@ -1040,6 +1239,14 @@ def persist_slot_readings(
     wall_rows: list[tuple[PageSlotResult, UUID | None]] = []
     for result in results:
         if result.plan.row is None:
+            if result.row_choice_png is not None and result.row_choice_box_px is not None:
+                _persist_unselected_row_choice(
+                    session,
+                    result,
+                    extraction_run_id=extraction_run_id,
+                    store=store,
+                )
+                count += 1
             continue
         page = session.get(PageModel, result.page_id)
         if page is None:
@@ -1087,6 +1294,12 @@ def persist_slot_readings(
                 _box_flag("slot-box", owner.band_px),
                 f"row-rank:{result.plan.row.rank}",
             ]
+            if result.row_choice_number is not None and result.row_choice_number > 0:
+                flags.append(f"row-choice:{result.row_choice_number}")
+                if result.row_choice_number <= len(result.row_candidate_ids):
+                    flags.append(
+                        f"row-choice-candidate:{result.row_candidate_ids[result.row_choice_number - 1]}"
+                    )
             if result.plan.ambiguity is not None:
                 flags.append("row-ambiguous")
             if result.row_hold is not None:
@@ -1165,6 +1378,82 @@ def persist_slot_readings(
         walls=wall_rows,
     )
     return count
+
+
+def _persist_unselected_row_choice(
+    session: object,
+    result: PageSlotResult,
+    *,
+    extraction_run_id: UUID,
+    store: ArtifactStore | None,
+) -> None:
+    """Keep a Claude-0 result visible as a review-only row question with its numbered view."""
+    from io import BytesIO
+
+    from sqlalchemy.orm import Session
+
+    from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind, ObservationCandidate
+    from storage.hashing import content_key, sha256_stream
+
+    if not isinstance(session, Session):
+        raise TypeError("session must be a SQLAlchemy Session")
+    if result.row_choice_box_px is None or result.row_choice_png is None:
+        raise ValueError("an unselected row record requires its numbered vendor view")
+    reason = (
+        result.row_choice.why
+        if result.row_choice is not None and result.row_choice.why
+        else "No candidate row was selected; the reviewer must choose the countertop row."
+    )
+    candidate = ObservationCandidate(
+        id=uuid4(),
+        document_version_id=result.document_version_id,
+        page_id=result.page_id,
+        extraction_run_id=extraction_run_id,
+        raw_text="",
+        value_numerator=None,
+        value_denominator=None,
+        unit=None,
+        semantic_guess=None,
+        polygon=_polygon(result.row_choice_box_px),
+        coordinate_space="image",
+        confidence=None,
+        ambiguity_flags=[
+            "slot-reader-row-choice",
+            f"row-choice:{result.row_choice_number or 0}",
+            *(
+                f"row-candidate:{i}:{candidate_id}"
+                for i, candidate_id in enumerate(result.row_candidate_ids, start=1)
+            ),
+        ],
+        review_reason=reason[:300],
+    )
+    session.add(candidate)
+    session.flush()
+    if store is None:
+        return
+    stream = BytesIO(result.row_choice_png)
+    digest, _ = sha256_stream(stream)
+    key = content_key(
+        f"evidence-crops/{result.document_version_id}/pages/{result.page_index}/row-choice",
+        digest,
+        suffix=".png",
+    )
+    stream.seek(0)
+    store.put(key, stream, content_type="image/png")
+    session.add(
+        EvidenceArtifact(
+            candidate_id=candidate.id,
+            canonical_observation_id=None,
+            document_version_id=result.document_version_id,
+            page_id=result.page_id,
+            kind=EvidenceArtifactKind.CROP.value,
+            storage_key=key,
+            sha256=digest,
+            media_type="image/png",
+            coordinate_space="image",
+        )
+    )
+    session.flush()
 
 
 def _persist_walls(

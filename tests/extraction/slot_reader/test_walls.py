@@ -88,8 +88,16 @@ def test_one_reader_alone_never_seals() -> None:
 
 
 def test_two_readers_of_one_maker_are_refused() -> None:
-    with pytest.raises(ValueError):
-        seal_walls((answer(QWEN, YES, YES), answer(QWEN, YES, YES)), hatch=None, row_ambiguity=None)
+    for pair in (
+        (answer(QWEN, YES, YES), answer(QWEN, YES, YES)),
+        (
+            answer("anthropic.claude-opus-5-5", YES, YES),
+            answer("anthropic.claude-sonnet-5-5", YES, YES),
+        ),
+    ):
+        outcome = seal_walls(pair, hatch=None, row_ambiguity=None)
+        assert outcome.config is None and outcome.code == "reader-independence"
+        assert "reviewer must choose" in (outcome.reason or "")
 
 
 def test_a_row_that_may_not_be_the_countertop_never_seals() -> None:

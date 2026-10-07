@@ -142,10 +142,6 @@ def seal_walls(
     """
     if len(answers) > 2:
         raise ValueError("a row's walls are asked of exactly two readers")
-    if len(answers) == 2:
-        makers = {_maker(answer.model_id) for answer in answers}
-        if UNKNOWN_MODEL_VENDOR in makers or len(makers) != 2:
-            raise ValueError("walls are sealed only by two readers of known, different makers")
     left = right = behind = None
     if len(answers) == 2:
         first, second = answers
@@ -156,6 +152,13 @@ def seal_walls(
     def held(code: str, reason: str) -> WallOutcome:
         return WallOutcome(None, code, reason, left, right, behind)
 
+    if len(answers) == 2:
+        makers = {_maker(answer.model_id) for answer in answers}
+        if UNKNOWN_MODEL_VENDOR in makers or len(makers) != 2:
+            return held(
+                "reader-independence",
+                "the wall answers are not from two known, different makers; reviewer must choose",
+            )
     if len(answers) < 2:
         return held("one-reader-missing", "only one reader answered about the walls")
     if row_ambiguity is not None:

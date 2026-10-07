@@ -35,10 +35,6 @@ class SpendCapExceeded(RuntimeError):
     """A request was refused before generation because its worst-case charge would exceed cap."""
 
 
-class _CostRate:
-    def rate_for(self, model_id: str) -> object | None: ...
-
-
 @dataclass(frozen=True, slots=True)
 class _Reservation:
     reserved_usd: Decimal
@@ -55,7 +51,7 @@ class BatchSpendGuard:
     retain their reservation: a lost response must not make budget appear available again.
     """
 
-    def __init__(self, maximum_usd: Decimal, rates: _CostRate) -> None:
+    def __init__(self, maximum_usd: Decimal, rates: object) -> None:
         if not maximum_usd.is_finite() or maximum_usd < 0:
             raise ValueError("Claude reader spend cap must be finite and non-negative")
         self._maximum_usd = maximum_usd
@@ -66,7 +62,10 @@ class BatchSpendGuard:
     def reserve(self, model_id: str, input_tokens: int, output_limit: int) -> _Reservation:
         if input_tokens < 0 or output_limit < 1:
             raise ValueError("token counts must be non-negative and output limit positive")
-        rate = self._rates.rate_for(model_id)
+        rate_for = getattr(self._rates, "rate_for", None)
+        if not callable(rate_for):
+            raise TypeError("Claude reader spend cap requires a rate lookup")
+        rate = rate_for(model_id)
         input_rate = getattr(rate, "input_per_1k_tokens", None)
         output_rate = getattr(rate, "output_per_1k_tokens", None)
         if not isinstance(input_rate, Decimal) or not isinstance(output_rate, Decimal):
@@ -95,7 +94,10 @@ class BatchSpendGuard:
             or not isinstance(output_tokens, int)
         ):
             return
-        rate = self._rates.rate_for(reservation.model_id)
+        rate_for = getattr(self._rates, "rate_for", None)
+        if not callable(rate_for):
+            return
+        rate = rate_for(reservation.model_id)
         input_rate = getattr(rate, "input_per_1k_tokens", None)
         output_rate = getattr(rate, "output_per_1k_tokens", None)
         if not isinstance(input_rate, Decimal) or not isinstance(output_rate, Decimal):

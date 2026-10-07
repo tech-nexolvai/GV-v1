@@ -14,18 +14,25 @@ import pytest
 
 from evidence.crop import encode_png
 from extraction.form_reader.bedrock import AttemptUsage
+from extraction.form_reader.runner import ModelPacer
+from extraction.slot_reader.anthropic import BatchSpendGuard
 from extraction.slot_reader.bedrock import (
     CROP_PROMPT,
+    ROW_PROMPT,
     CropJob,
+    RowChoiceAnswer,
     build_crop_request,
+    build_row_request,
     build_wall_request,
     read_crops_parallel,
+    read_row_choice,
 )
 from extraction.slot_reader.seal import ReaderAnswer
 from extraction.slot_reader.walls import WALL_PROMPT, Side, WallAnswer
 
 QWEN = "qwen.qwen3-vl-235b-a22b"
 KIMI = "us.moonshotai.kimi-k3"
+OPUS = "anthropic.claude-opus-5-5"
 PNG = encode_png(2, 2, bytes(12))
 
 
@@ -125,6 +132,36 @@ def test_claude_spend_cap_holds_before_parallel_generation() -> None:
     assert clients.requests == []
 
 
+def test_claude_spend_guard_is_shared_across_separate_row_and_value_batches() -> None:
+    model = OPUS
+    clients = FakeClients(
+        lambda _request: {
+            "output": {"message": {"content": [{"text": json.dumps(good('2"'))}]}},
+            "usage": {"inputTokens": 10, "outputTokens": 3000},
+        }
+    )
+    guard = BatchSpendGuard(Decimal("0.10"), AnthropicRates())
+    pacer = ModelPacer({model: 6000})
+    options = {
+        "rates": AnthropicRates(),
+        "calls_per_minute": {model: 6000},
+        "max_concurrent_calls": 1,
+        "max_tokens": 3000,
+        "max_throttle_retries": 0,
+        "retry_backoff_seconds": 0.001,
+        "record_attempt": lambda _attempt: None,
+        "spend_guard": guard,
+        "pacer": pacer,
+    }
+
+    first = read_crops_parallel([CropJob("row", model, 0, PNG)], clients=clients, **options)
+    second = read_crops_parallel([CropJob("label", model, 0, PNG)], clients=clients, **options)
+
+    assert isinstance(first[("row", model)], ReaderAnswer)
+    assert second[("label", model)] is None
+    assert len(clients.requests) == 1, "the second batch must not reset the first batch's reserve"
+
+
 def test_slot_question_sends_marked_full_view_before_close_up() -> None:
     full_view = encode_png(4, 2, bytes(24))
     request = build_crop_request(
@@ -140,6 +177,73 @@ def test_slot_question_sends_marked_full_view_before_close_up() -> None:
         PNG,
     ]
     assert content[-1]["text"] == CROP_PROMPT
+
+
+def test_row_request_shows_one_numbered_vendor_view_and_the_approved_prompt() -> None:
+    request = build_row_request(model_id=OPUS, page_png=PNG, max_tokens=3000)
+
+    content = request["messages"][0]["content"]
+    assert len(content) == 2
+    assert content[0]["image"]["source"]["bytes"] == PNG
+    assert content[1]["text"] == ROW_PROMPT
+    assert request["inferenceConfig"]["maxTokens"] == 3000
+
+
+def test_row_reader_reasks_only_a_malformed_answer_and_records_both_attempts() -> None:
+    calls = 0
+    attempts: list[AttemptUsage] = []
+
+    def answer(_request: dict[str, Any]) -> Mapping[str, Any]:
+        nonlocal calls
+        calls += 1
+        return reply("not json" if calls == 1 else {"row": 2, "why": "front elevation"})
+
+    result = read_row_choice(
+        FakeClients(answer),
+        model_id=OPUS,
+        page_png=PNG,
+        page_index=3,
+        candidate_count=4,
+        max_tokens=3000,
+        record_attempt=attempts.append,
+    )
+
+    assert result == RowChoiceAnswer(OPUS, 2, "front elevation")
+    assert calls == 2
+    assert [attempt.malformed for attempt in attempts] == [True, False]
+    assert [attempt.raw_response_text for attempt in attempts] == [
+        "not json",
+        '{"row": 2, "why": "front elevation"}',
+    ]
+
+
+def test_row_reader_zero_is_a_valid_reviewer_choice_not_a_retry() -> None:
+    attempts: list[AttemptUsage] = []
+    result = read_row_choice(
+        FakeClients(lambda _request: reply({"row": 0, "why": "no candidate fits"})),
+        model_id=OPUS,
+        page_png=PNG,
+        page_index=0,
+        candidate_count=3,
+        max_tokens=3000,
+        record_attempt=attempts.append,
+    )
+
+    assert result.row == 0
+    assert len(attempts) == 1 and not attempts[0].malformed
+
+
+def test_row_question_uses_the_same_read_pool_result_shape() -> None:
+    model = OPUS
+    answers = run(
+        FakeClients(lambda _request: reply({"row": 1, "why": "countertop row"})),
+        [CropJob("p0:row-choice", model, 0, PNG, row_question=True, candidate_count=2)],
+        rates=AnthropicRates(),
+        calls_per_minute={model: 6000},
+        max_tokens=3000,
+    )
+
+    assert answers == {("p0:row-choice", model): RowChoiceAnswer(model, 1, "countertop row")}
 
 
 def test_each_reader_attempt_retains_its_exact_question_packet() -> None:

@@ -488,6 +488,8 @@ def plan_slots(
     *,
     settings: CropSettings,
     row_settings: RowSettings,
+    selected_row: CountertopRowCandidate | None = None,
+    row_choice_made: bool = False,
 ) -> SlotPlan:
     """The rank-1 row's slots and overall, each with its label runs and their crops.
 
@@ -495,7 +497,24 @@ def plan_slots(
     plan's `ambiguity` says why the row cannot be trusted, and the caller sends its readings to a
     person.
     """
-    row, ambiguity = choose_row(rows)
+    row: CountertopRowCandidate | None
+    ambiguity: str | None
+    if row_choice_made:
+        if selected_row is None:
+            return SlotPlan(
+                row=None,
+                ambiguity="the row reader selected no candidate; the reviewer must choose the row",
+                slots=(),
+                overall=None,
+            )
+        if selected_row not in rows.candidates[:6]:
+            raise ValueError("the row reader may select only one of the first six code candidates")
+        row = selected_row
+        ambiguity = (
+            "the selected row has no overall width" if selected_row.overall is None else None
+        )
+    else:
+        row, ambiguity = choose_row(rows)
     if row is None:
         return SlotPlan(row=None, ambiguity=None, slots=(), overall=None)
     xs = row.ticks
