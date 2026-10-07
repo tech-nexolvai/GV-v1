@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -18,10 +19,11 @@ import pytest
 
 from app.config import Settings
 from extraction.form_reader.bedrock import AttemptUsage
-from extraction.geometry.rows import MEASURED_SETTINGS
+from extraction.geometry.rows import MEASURED_SETTINGS, Box, PageRows
 from extraction.ink import read_page_ink
 from extraction.rasterise import render_page
 from extraction.rows import page_rows_and_ink
+from extraction.slot_reader.kinds import PieceKind, propose_kind
 from extraction.slot_reader.mapping import (
     CABINET_FIELD,
     FILLER_FIELD,
@@ -450,43 +452,52 @@ def test_one_reader_seeing_vif_is_enough_to_hold_the_row() -> None:
         "REF",
         "refrigerator",
         "FRIDGE",
-        "DW",
-        "DISHWASHER",
         "RANGE",
+        "STOVE",
         "OVEN",
-        "COOKTOP",
-        "MW",
-        "MICROWAVE",
         "W/D",
         "WASHER",
         "DRYER",
-        "ICE",
-        "WINE",
+        "TALL",
+        "PANTRY",
     ],
 )
-def test_vendor_appliance_word_inside_a_slot_span_holds_the_whole_row(word: str) -> None:
+def test_vendor_counter_break_word_inside_a_slot_span_holds_the_whole_row(word: str) -> None:
     page = slot_page(sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, word)))
     lookup = crops_to_texts(page, TEXTS)
     result = read(page, FakeReaders(lambda _model, png: lookup[png]))
 
-    assert result.row_hold is not None and result.row_hold.code == "appliance-space"
+    assert result.row_hold is not None and result.row_hold.code == "counter-break"
     assert result.row_hold.reason == (
-        "this row includes an appliance space; it may be the wall-to-wall line, not the countertop"
+        "this row includes a tall appliance or range bay; it may be the wall-to-wall line, not the countertop"
     )
     assert result.mapping.proposals == ()
     assert result.mapping.held
 
 
-def test_appliance_word_in_a_slot_label_holds_the_whole_row() -> None:
+def test_counter_break_word_in_a_slot_label_holds_the_whole_row() -> None:
     page = slot_page(sheets.sheet(sheets.text_labels(('12"', '24" RANGE', '12"'), OVERALL)))
     lookup = crops_to_texts(page, TEXTS | {1: '24" RANGE'})
     result = read(page, FakeReaders(lambda _model, png: lookup[png]))
 
-    assert result.row_hold is not None and result.row_hold.code == "appliance-space"
+    assert result.row_hold is not None and result.row_hold.code == "counter-break"
     assert result.mapping.proposals == ()
 
 
-def test_a_gv_appliance_word_does_not_hold_an_otherwise_sealed_vendor_row() -> None:
+def test_reader_only_counter_break_word_does_not_count_as_vendor_ink() -> None:
+    page = slot_page(sheets.sheet(text_labels()))
+    lookup = crops_to_texts(page, TEXTS)
+
+    def reader_text(model: str, png: bytes) -> str:
+        text = lookup[png]
+        return f"{text} RANGE" if model == KIMI and text == '24"' else text
+
+    result = read(page, FakeReaders(reader_text))
+
+    assert result.row_hold is None
+
+
+def test_a_gv_counter_break_word_does_not_hold_an_otherwise_sealed_vendor_row() -> None:
     page = slot_page(
         sheets.sheet(
             text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, "RANGE", colour="1 0 0 rg")
@@ -506,6 +517,109 @@ def test_a_substring_is_not_an_appliance_word() -> None:
 
     assert result.row_hold is None
     assert len(result.mapping.proposals) == 4
+
+
+@pytest.mark.parametrize("word", ["DW", "DISHWASHER", "ICE", "WINE", "MW", "MICROWAVE", "COOKTOP"])
+def test_an_undercounter_appliance_word_does_not_hold_the_row(word: str) -> None:
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, word)))
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        ("Undercounter", "Refrigerator"),
+        ("UNDER-COUNTER", "FRIDGE"),
+        ("UNDER", "COUNTER", "REF"),
+        ("U/C", "REF"),
+        ("UC", "REF"),
+        ("Microwave", "Oven"),
+        ("MW", "OVEN"),
+    ],
+)
+def test_a_safe_phrase_does_not_hold_the_row(words: tuple[str, ...]) -> None:
+    x = 220
+    drawing = text_labels()
+    for word in words:
+        drawing += sheets.text(x, sheets.CHAIN_Y - 40, word)
+        x += len(word) * 3 + 4
+    page = slot_page(sheets.sheet(drawing))
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+def test_counter_break_word_outside_row_span_does_not_hold() -> None:
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(120, sheets.CHAIN_Y - 40, "RANGE")))
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+def test_ambiguous_row_with_break_word_outside_span_offers_no_countertop() -> None:
+    """A future row chooser must not turn an ambiguous bay-spanning row into a proposal."""
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(120, sheets.CHAIN_Y - 40, "RANGE")))
+    original = page.rows.candidates.rows
+    first = original.candidates[0]
+    twin = replace(first, y=first.y + 100, rank=2)
+    page = replace(
+        page,
+        rows=replace(
+            page.rows,
+            candidates=replace(
+                page.rows.candidates,
+                rows=PageRows(candidates=(first, twin), rejected=original.rejected),
+            ),
+        ),
+    )
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.plan.ambiguity == "another row on the page fits as well"
+    assert result.row_hold is None
+    assert result.mapping.proposals == ()
+
+
+def test_counter_break_word_in_another_drawing_box_does_not_hold() -> None:
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, "RANGE")))
+    plan = plan_slots(
+        page.rows.candidates.rows,
+        page.rows.ink,
+        settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+    )
+    assert plan.row is not None
+    y = plan.row.y
+    width, height = page.rows.ink.width, page.rows.ink.height
+    row_drawing = Box(Decimal(0), y - 20, width, y + 20)
+    other_drawing = Box(Decimal(0), y + 21, width, height)
+    page = replace(
+        page,
+        rows=replace(
+            page.rows,
+            ink=replace(page.rows.ink, drawing_boxes=(row_drawing, other_drawing)),
+        ),
+    )
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+def test_dishwasher_can_name_a_piece_without_holding_its_row() -> None:
+    assert (
+        propose_kind(("DW",), index=1, count=3, wall_ends=frozenset()).kind
+        is PieceKind.APPLIANCE_SPACE
+    )
 
 
 def test_other_words_still_go_to_the_person() -> None:
@@ -695,7 +809,7 @@ def _by_slot(session: Any, run: Any) -> dict[str, Any]:
     return found
 
 
-def test_appliance_row_persists_the_reason_but_no_form_proposals(session: Any) -> None:
+def test_counter_break_row_persists_the_reason_but_no_form_proposals(session: Any) -> None:
     from sqlalchemy import select
 
     from app.models.evidence import MeasurementProposal
@@ -710,10 +824,10 @@ def test_appliance_row_persists_the_reason_but_no_form_proposals(session: Any) -
         readers,
     )
 
-    assert result.row_hold is not None and result.row_hold.code == "appliance-space"
+    assert result.row_hold is not None and result.row_hold.code == "counter-break"
     for candidate in _by_slot(session, run).values():
         if "wall-reader" not in candidate.ambiguity_flags:
-            assert "row-hold:appliance-space" in candidate.ambiguity_flags
+            assert "row-hold:counter-break" in candidate.ambiguity_flags
             assert candidate.review_reason == result.row_hold.reason
     assert (
         session.scalars(

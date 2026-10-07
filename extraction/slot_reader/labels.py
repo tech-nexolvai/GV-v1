@@ -37,13 +37,13 @@ from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation, is_compound
 
 __all__ = [
-    "APPLIANCE_SPACE",
+    "COUNTER_BREAK",
     "FIELD_CUT_INCLUDED",
     "VIF",
     "ExpandedLabel",
     "Expansion",
     "RowHold",
-    "appliance_hold",
+    "counter_break_hold",
     "expand_label",
     "plain_dimension",
     "row_hold",
@@ -66,16 +66,22 @@ _SUM_WORDS: Final = frozenset({"FILLER"})
 
 _FIELD_CUT: Final = re.compile(r"(?<![A-Za-z])INCLUDING\s+FIELD\s+CUT(?![A-Za-z])", re.IGNORECASE)
 _VIF: Final = re.compile(r"(?<![A-Za-z])VIF(?![A-Za-z])", re.IGNORECASE)
-_APPLIANCE: Final = re.compile(
-    r"(?<![A-Za-z0-9])(?:REFRIGERATOR|DISHWASHER|MICROWAVE|COOKTOP|FRIDGE|WASHER|DRYER|RANGE|OVEN|WINE|REF|DW|MW|W/D|ICE)(?![A-Za-z0-9])",
+_COUNTER_BREAK: Final = re.compile(
+    r"(?<![A-Za-z0-9])(?:REFRIGERATOR|FRIDGE|WASHER|DRYER|RANGE|STOVE|PANTRY|OVEN|TALL|REF|W/D)(?![A-Za-z0-9])",
     re.IGNORECASE,
+)
+_UNDERCOUNTER: Final = re.compile(
+    r"(?<![A-Za-z0-9])(?:UNDER(?:-|\s)?COUNTER|U/C|UC)(?![A-Za-z0-9])", re.IGNORECASE
+)
+_MICROWAVE_OVEN: Final = re.compile(
+    r"(?<![A-Za-z0-9])(?:MICROWAVE|MW)\s+OVEN(?![A-Za-z0-9])", re.IGNORECASE
 )
 
 FIELD_CUT_INCLUDED: Final = ("field-cut-included", "width already includes the field cut")
 VIF: Final = ("vif", "VIF: provisional, verify in field")
-APPLIANCE_SPACE: Final = (
-    "appliance-space",
-    "this row includes an appliance space; it may be the wall-to-wall line, not the countertop",
+COUNTER_BREAK: Final = (
+    "counter-break",
+    "this row includes a tall appliance or range bay; it may be the wall-to-wall line, not the countertop",
 )
 
 
@@ -164,11 +170,19 @@ class RowHold:
     """The text it was found in, as the source gave it."""
 
 
-def appliance_hold(texts: Iterable[str]) -> RowHold | None:
-    """Hold the whole row if a slot label or vendor-layer word names an appliance."""
-    for text in texts:
-        if text and _APPLIANCE.search(text):
-            return RowHold(*APPLIANCE_SPACE, text)
+def counter_break_hold(phrases: Iterable[str]) -> RowHold | None:
+    """Hold a row for a tall-appliance bay, but not an undercounter or microwave-oven phrase.
+
+    The caller groups vendor words into phrases on one line before calling this. A model's text
+    never supplies an unlocated word from another drawing.
+    """
+    for phrase in phrases:
+        text = " ".join(phrase.split())
+        if not text or _UNDERCOUNTER.search(text):
+            continue
+        without_microwave_oven = _MICROWAVE_OVEN.sub(" ", text)
+        if _COUNTER_BREAK.search(without_microwave_oven):
+            return RowHold(*COUNTER_BREAK, phrase)
     return None
 
 

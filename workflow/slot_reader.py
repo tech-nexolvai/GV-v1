@@ -12,7 +12,8 @@ one outside the form — treats these the same way.
 
 **The admin's V1 rules (#992), each of which only holds back or seals under stricter
 conditions:** a sealed reading the drawn length rejects goes back to the person; a row whose texts
-say `INCLUDING FIELD CUT` or `VIF`, or whose vendor slot spans name an appliance, offers nothing;
+say `INCLUDING FIELD CUT` or `VIF`, or whose vendor drawing names a tall appliance or range bay
+inside its slot spans, offers nothing;
 and each row's walls are asked of both readers,
 a layout sealed only on their agreement and recorded as a `wall_config` layout *proposal* — which
 a check may use only under the conditions `workflow/layout_proposals.py` states, and only when the
@@ -36,11 +37,11 @@ from evidence.crop import RenderedPage, _crop_rgb, encode_png
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.geometry.rows import MEASURED_SETTINGS, Box, RowSettings
 from extraction.glyph_bands import FractionBarGeometry, stacked_fractions
-from extraction.ink import InkAt, InkClass, PageInk
+from extraction.ink import InkAt, InkClass, InkLabel, PageInk
 from extraction.rows import RowsAndInk
 from extraction.slot_reader.bedrock import CROP_PROMPT_ID, CropJob, read_crops_parallel
 from extraction.slot_reader.kinds import KindProposal, PieceKind, WallEnd, propose_kind
-from extraction.slot_reader.labels import RowHold, appliance_hold, expand_label, row_hold
+from extraction.slot_reader.labels import RowHold, counter_break_hold, expand_label, row_hold
 from extraction.slot_reader.mapping import PieceReading, SlotMapping, map_row
 from extraction.slot_reader.runs import (
     E2_CROP_SETTINGS,
@@ -159,7 +160,7 @@ class SlotReaderRuntime:
             f"crop={self.crop_settings.config_hash};"
             f"fraction_bar={self.fraction_bar.config_hash};"
             f"walls={self.wall_settings.config_hash};"
-            "rules=drawn-length-veto,label-expansion,appliance-space"
+            "rules=drawn-length-veto,label-expansion,counter-break"
         )
 
     @property
@@ -255,7 +256,7 @@ class PageSlotResult:
     overall: OwnerResult | None
     mapping: SlotMapping
     row_hold: RowHold | None = None
-    """Field-cut, VIF or vendor-layer appliance text: the whole countertop waits (#992)."""
+    """Field-cut, VIF or a vendor-layer counter-break phrase: the row waits (#992)."""
     vetoed: tuple[int | None, ...] = ()
     """Sealed readings the drawn length rejected (#992), by slot (`None` for the overall)."""
     walls: PageWalls | None = None
@@ -387,7 +388,8 @@ def read_slot_pages(
 
     Since #992, admin-approved rules sit between sealing and mapping, each only holding back:
     a row whose texts say `INCLUDING FIELD CUT` or `VIF` offers nothing; a sealed reading the drawn
-    length rejects goes back to the person; a vendor appliance word in a slot span holds the whole
+    length rejects goes back to the person; a vendor counter-break phrase in the row's pasted
+    drawing and slot span holds the whole
     row; and the row's wall question is asked in the same batch
     (same pacer and limits) and sealed only when both readers agree.
 
@@ -482,7 +484,7 @@ def read_slot_pages(
 
         slots = tuple(owner_result(owner, len(plan.slots)) for owner in plan.slots)
         overall = None if plan.overall is None else owner_result(plan.overall, len(plan.slots))
-        hold = _appliance_row_hold(page, plan, slots, walls_asked.get(page.page_index))
+        hold = _counter_break_row_hold(page, plan, slots, runtime)
         if hold is None:
             hold = row_hold(_row_texts([*slots, *((overall,) if overall is not None else ())]))
         slots, overall, vetoed = _veto_by_drawn_length(slots, overall)
@@ -554,52 +556,91 @@ def _row_texts(owners: Sequence[OwnerResult]) -> list[str]:
     return texts
 
 
-def _appliance_row_hold(
+def _line_phrases(
+    words: Sequence[InkLabel], *, gap_px: int, baseline_fraction: Decimal
+) -> list[str]:
+    """Join vendor words on the same baseline when their gap is within E2's fragment reach."""
+    lines: list[list[InkLabel]] = []
+    for word in sorted(words, key=lambda item: (item.box[3], item.box[0])):
+        height = max(1, word.box[3] - word.box[1])
+        match = next(
+            (
+                line
+                for line in lines
+                if abs(line[0].box[3] - word.box[3])
+                <= baseline_fraction * min(height, max(1, line[0].box[3] - line[0].box[1]))
+            ),
+            None,
+        )
+        if match is None:
+            lines.append([word])
+        else:
+            match.append(word)
+    phrases: list[str] = []
+    for line in lines:
+        ordered = sorted(line, key=lambda item: item.box[0])
+        phrase = [ordered[0].text]
+        previous = ordered[0]
+        for word in ordered[1:]:
+            if word.box[0] - previous.box[2] > gap_px:
+                phrases.append(" ".join(phrase))
+                phrase = []
+            phrase.append(word.text)
+            previous = word
+        phrases.append(" ".join(phrase))
+    return phrases
+
+
+def _counter_break_row_hold(
     page: SlotPage,
     plan: SlotPlan,
     slots: Sequence[OwnerResult],
-    pictures: (
-        tuple[bytes, bytes, tuple[int, int, int, int], tuple[int, int, int, int], HatchSeen] | None
-    ),
+    runtime: SlotReaderRuntime,
 ) -> RowHold | None:
-    """Use only vendor-ink labels and words inside this row's slot spans in its vendor view.
+    """Use vendor labels in the row's slots and vendor words in its one pasted drawing.
 
-    The view bounds are the same deterministic bounds used for the wall question. A word's centre
-    must fall in both the view and a slot's horizontal span; nearby GV marks are excluded by the
-    ink classifier, even when their text names an appliance.
+    A word's horizontal centre must lie between the first and last tick. The matching stamp box
+    sets the vertical scope; there is deliberately no smaller vertical window. The ink classifier
+    excludes GV words before grouping phrases, so its markup cannot hold the vendor row.
     """
-    texts = [
-        text
+    phrases = [
+        label.label.text
         for slot in slots
         for label in slot.labels
-        if label.outcome.ink is InkClass.VENDOR
-        for text in (
-            label.label.text,
-            *(answer for _reader, answer in label.outcome.reader_texts),
-        )
-        if text
+        if label.outcome.ink is InkClass.VENDOR and label.label.text
     ]
-    if page.ink is not None and plan.row is not None and pictures is not None:
-        view = pictures[3]
-        spans = [
-            (
-                page.rows.to_pixels(slot.owner.x0, slot.owner.line_y)[0],
-                page.rows.to_pixels(slot.owner.x1, slot.owner.line_y)[0],
-            )
-            for slot in slots
+    if page.ink is not None and plan.row is not None and slots:
+        row = plan.row
+        slack = runtime.wall_settings.frame_slack_pt
+        frames = [
+            box
+            for box in page.rows.ink.drawing_boxes
+            if box.x0 - slack <= row.x0
+            and row.x1 <= box.x1 + slack
+            and box.top - slack <= row.y <= box.bottom + slack
         ]
-        for word in page.ink.labels:
-            if word.ink is not InkClass.VENDOR:
-                continue
-            x = (word.box[0] + word.box[2]) // 2
-            y = (word.box[1] + word.box[3]) // 2
-            if (
-                view[0] <= x <= view[2]
-                and view[1] <= y <= view[3]
-                and any(min(left, right) <= x <= max(left, right) for left, right in spans)
-            ):
-                texts.append(word.text)
-    return appliance_hold(texts)
+        if frames:
+            frame = min(frames, key=lambda box: box.width * box.height)
+            bounds = _pixels(page.rows, frame, page.rendered)
+            left = page.rows.to_pixels(row.x0, row.y)[0]
+            right = page.rows.to_pixels(row.x1, row.y)[0]
+            words = [
+                word
+                for word in page.ink.labels
+                if word.ink is InkClass.VENDOR
+                and bounds[0] <= (word.box[0] + word.box[2]) // 2 <= bounds[2]
+                and bounds[1] <= (word.box[1] + word.box[3]) // 2 <= bounds[3]
+                and min(left, right) <= (word.box[0] + word.box[2]) // 2 <= max(left, right)
+            ]
+            gap_px = int(runtime.crop_settings.fragment_gap_pt * Decimal(page.rendered.dpi) / 72)
+            phrases.extend(
+                _line_phrases(
+                    words,
+                    gap_px=gap_px,
+                    baseline_fraction=runtime.crop_settings.baseline_fraction,
+                )
+            )
+    return counter_break_hold(phrases)
 
 
 def _drawn(owner: OwnerResult) -> DrawnReading | None:
