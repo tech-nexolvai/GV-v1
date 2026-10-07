@@ -8,9 +8,16 @@ from eval.form_first_safety import (
     adversarial_guards,
     evaluate,
     published_ct_width_snapshot,
+    release_gate_record,
     run_width_check,
 )
-from eval.release_gates import GOLD_REGRESSION_GATE, GateStatus, ReleaseGateInputs, run_gates
+from eval.release_gates import (
+    GOLD_REGRESSION_GATE,
+    SAFETY_METRICS_GATE,
+    GateStatus,
+    ReleaseGateInputs,
+    run_gates,
+)
 from verdict.outcomes import Outcome
 
 
@@ -165,10 +172,71 @@ def test_slot_crop_run_is_labelled_as_a_separate_measurement_path() -> None:
     assert report.reader_path == "slot_crop"
 
 
+def test_current_product_piece_chain_is_checked_without_inventing_kinds() -> None:
+    snapshot = published_ct_width_snapshot()
+    truth = WidthInputs(
+        overall=Fraction(7),
+        cabinets=None,
+        fillers=None,
+        wall_layout="back_only",
+        field_cut=Fraction(1),
+        pieces=(Fraction(4), Fraction(2)),
+    )
+    proposed = WidthInputs(
+        overall=Fraction(6),
+        cabinets=None,
+        fillers=None,
+        wall_layout="back_only",
+        field_cut=Fraction(1),
+        pieces=(Fraction(4), Fraction(2)),
+    )
+
+    report = evaluate(
+        (SafetyCase("slot-chain", truth, proposed, raw_attempts_complete=True),),
+        snapshot,
+        reader_path="slot_crop",
+    )
+
+    assert report.false_passes == 1
+    assert report.scores[0].truth_outcome is Outcome.FAIL
+    assert report.scores[0].proposed_outcome is Outcome.PASS
+
+
 def test_current_release_gate_does_not_pass_without_complete_manifest_and_thresholds() -> None:
     report = {result.gate_id: result for result in run_gates(ReleaseGateInputs()).results}
 
     assert report[GOLD_REGRESSION_GATE].status is GateStatus.NOT_EVALUATED
+
+
+def test_form_first_gate_record_marks_a_partial_run_not_evaluated() -> None:
+    report = evaluate(
+        (
+            SafetyCase("measured", _inputs(), _inputs(), raw_attempts_complete=True),
+            SafetyCase("missing", _inputs(), None, raw_attempts_complete=True),
+        )
+    )
+    results = {
+        result.gate_id: result
+        for result in run_gates(
+            release_gate_record(report, gold_set_version="synthetic-v1")
+        ).results
+    }
+
+    assert results[GOLD_REGRESSION_GATE].status is GateStatus.NOT_EVALUATED
+    assert results[SAFETY_METRICS_GATE].status is GateStatus.NOT_EVALUATED
+
+
+def test_form_first_gate_record_counts_a_complete_manifest_without_faking_other_metrics() -> None:
+    report = evaluate((SafetyCase("only", _inputs(), _inputs(), raw_attempts_complete=True),))
+    results = {
+        result.gate_id: result
+        for result in run_gates(
+            release_gate_record(report, gold_set_version="synthetic-v1")
+        ).results
+    }
+
+    assert results[GOLD_REGRESSION_GATE].status is GateStatus.PASS
+    assert results[SAFETY_METRICS_GATE].status is GateStatus.NOT_EVALUATED
 
 
 def test_adversarial_inventory_names_all_eight_existing_guards() -> None:

@@ -20,6 +20,7 @@ from typing import Final, Literal
 
 import yaml  # type: ignore[import-untyped]  # PyYAML does not publish inline type information.
 
+from eval.release_gates import ReleaseGateInputs
 from rules.parameters import ParameterLayer, ParameterValue, Provenance, ResolvedParameter
 from rules.schema import Quantity, Rule
 from rules.snapshot import RuleSnapshot, publish
@@ -44,15 +45,13 @@ class WidthInputs:
     fillers: tuple[Fraction, ...] | None
     wall_layout: str | None
     field_cut: Fraction | None
+    pieces: tuple[Fraction, ...] | None = None
 
     @property
     def complete(self) -> bool:
         return (
             self.overall is not None
-            and self.cabinets is not None
-            and bool(self.cabinets)
-            and self.fillers is not None
-            and bool(self.fillers)
+            and (bool(self.pieces) or (bool(self.cabinets) and bool(self.fillers)))
             and self.wall_layout in _WALL_LAYOUTS
             and self.field_cut is not None
         )
@@ -137,33 +136,34 @@ def run_width_check(inputs: WidthInputs, snapshot: RuleSnapshot) -> Finding:
     register_all()
     if inputs.wall_layout is not None and inputs.wall_layout not in _WALL_LAYOUTS:
         raise ValueError("wall layout must be one of the published CT-WIDTH-001 choices")
+    operands = {"countertop_width": _measure(inputs.overall, "countertop_width")}
+    if inputs.pieces is not None:
+        operands["piece_widths"] = VerdictOperand(
+            name="piece_widths",
+            value=tuple(Measurement(v, Unit.INCH, str(v)) for v in inputs.pieces),
+            status=EvidenceStatus.CORROBORATED,
+            source="SHOP",
+            evidence_ref="form-first-eval:piece_widths",
+        )
+    if inputs.cabinets is not None:
+        operands["cabinet_widths"] = VerdictOperand(
+            name="cabinet_widths",
+            value=tuple(Measurement(v, Unit.INCH, str(v)) for v in inputs.cabinets),
+            status=EvidenceStatus.CORROBORATED,
+            source="SHOP",
+            evidence_ref="form-first-eval:cabinet_widths",
+        )
+    if inputs.fillers is not None:
+        operands["filler_widths"] = VerdictOperand(
+            name="filler_widths",
+            value=tuple(Measurement(v, Unit.INCH, str(v)) for v in inputs.fillers),
+            status=EvidenceStatus.CORROBORATED,
+            source="SHOP",
+            evidence_ref="form-first-eval:filler_widths",
+        )
     return execute(
         snapshot,
-        {
-            "countertop_width": _measure(inputs.overall, "countertop_width"),
-            "cabinet_widths": VerdictOperand(
-                name="cabinet_widths",
-                value=(
-                    None
-                    if inputs.cabinets is None
-                    else tuple(Measurement(v, Unit.INCH, str(v)) for v in inputs.cabinets)
-                ),
-                status=EvidenceStatus.CORROBORATED,
-                source="SHOP",
-                evidence_ref="form-first-eval:cabinet_widths",
-            ),
-            "filler_widths": VerdictOperand(
-                name="filler_widths",
-                value=(
-                    None
-                    if inputs.fillers is None
-                    else tuple(Measurement(v, Unit.INCH, str(v)) for v in inputs.fillers)
-                ),
-                status=EvidenceStatus.CORROBORATED,
-                source="SHOP",
-                evidence_ref="form-first-eval:filler_widths",
-            ),
-        },
+        operands,
         _parameter(inputs.field_cut),
         discriminators={} if inputs.wall_layout is None else {"wall_config": inputs.wall_layout},
     )
@@ -258,6 +258,29 @@ def adversarial_guards() -> tuple[tuple[str, str], ...]:
     )
 
 
+def release_gate_record(report: SafetyReport, *, gold_set_version: str) -> ReleaseGateInputs:
+    """Supply honest manifest accounting; never invent other release metrics or thresholds.
+
+    The full gate still needs localisation, numeric/unit precision, and approved thresholds.
+    This adapter only lets its gold-regression gate tell complete from partial form-first replay.
+    """
+    if not gold_set_version.strip():
+        raise ValueError("a confirmed gold-set version is required")
+    return ReleaseGateInputs(
+        gold_set_version=gold_set_version,
+        metrics={
+            "gold_manifest_case_ids": tuple(score.case_id for score in report.scores),
+            "gold_executed_case_ids": tuple(
+                score.case_id for score in report.scores if score.measured
+            ),
+            "gold_skipped_case_ids": tuple(
+                score.case_id for score in report.scores if not score.measured
+            ),
+            "rule_snapshot_ids": (report.snapshot_id,),
+        },
+    )
+
+
 __all__ = [
     "CaseScore",
     "ReaderPath",
@@ -267,5 +290,6 @@ __all__ = [
     "adversarial_guards",
     "evaluate",
     "published_ct_width_snapshot",
+    "release_gate_record",
     "run_width_check",
 ]
