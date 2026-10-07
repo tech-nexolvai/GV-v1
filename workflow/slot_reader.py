@@ -10,16 +10,25 @@ extractor name, `extraction.form_reader`, with their own version and configurati
 path that treats form-first readings as proposals only — the measure form, the refusal to confirm
 one outside the form — treats these the same way.
 
-Source: issue #987 · Verification: `tests/workflow/test_slot_reader.py`
+**The admin's three V1 rules (#992), each of which only holds back or seals under stricter
+conditions:** a sealed reading the drawn length rejects goes back to the person; a row whose texts
+say `INCLUDING FIELD CUT` or `VIF` offers nothing; and each row's walls are asked of both readers,
+a layout sealed only on their agreement and recorded as a `wall_config` layout *proposal* — which
+a check may use only under the conditions `workflow/layout_proposals.py` states, and only when the
+reviewer has stated no layout. Agreed `a"+b"` and `N"(K EQ)` labels are expanded in `seal.py`.
+
+Source: issues #987, #992 · Verification: `tests/workflow/test_slot_reader.py`
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
-from typing import Final
+from fractions import Fraction
+from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
 from evidence.crop import RenderedPage, _crop_rgb, encode_png
@@ -30,6 +39,7 @@ from extraction.ink import InkAt, InkClass, PageInk
 from extraction.rows import RowsAndInk
 from extraction.slot_reader.bedrock import CROP_PROMPT_ID, CropJob, read_crops_parallel
 from extraction.slot_reader.kinds import KindProposal, PieceKind, WallEnd, propose_kind
+from extraction.slot_reader.labels import RowHold, expand_label, row_hold
 from extraction.slot_reader.mapping import PieceReading, SlotMapping, map_row
 from extraction.slot_reader.runs import (
     E2_CROP_SETTINGS,
@@ -50,7 +60,27 @@ from extraction.slot_reader.seal import (
     plain_dimension,
     seal_label,
 )
+from extraction.slot_reader.veto import DrawnReading, drawn_length_vetoes
+from extraction.slot_reader.walls import (
+    E3_WALL_SETTINGS,
+    WALL_PROMPT_ID,
+    HatchSeen,
+    WallAnswer,
+    WallOutcome,
+    WallSettings,
+    seal_walls,
+    wall_pictures,
+)
 from workflow.form_reader import FormReaderRuntime
+from workflow.layout_proposals import (
+    WALL_CANDIDATE_TEXT,
+    WALL_READER_FLAG,
+    WALLS_HELD_FLAG,
+    WALLS_SEALED_FLAG,
+)
+
+if TYPE_CHECKING:
+    from storage.store import ArtifactStore
 
 __all__ = [
     "FRACTION_BAR_ENV",
@@ -113,6 +143,8 @@ class SlotReaderRuntime:
     allow_stacked: bool
     """The admin's yes/no (#987): may a stacked fraction seal on two readers' identical text?
     Off unless the deployment says so."""
+    wall_settings: WallSettings = E3_WALL_SETTINGS
+    """The wall pictures' and hatch check's lengths (#992): E3's unless a caller states others."""
 
     @property
     def text_lane_reader(self) -> str:
@@ -120,12 +152,27 @@ class SlotReaderRuntime:
         return self.form.reader_ids[1]
 
     @property
+    def config_detail(self) -> str:
+        """Every setting a reading depends on, in full."""
+        return (
+            f"crop={self.crop_settings.config_hash};"
+            f"fraction_bar={self.fraction_bar.config_hash};"
+            f"walls={self.wall_settings.config_hash};"
+            "rules=drawn-length-veto,label-expansion"
+        )
+
+    @property
     def config_hash(self) -> str:
+        """The run's identity: the readers and prompts in words, the rest as a digest.
+
+        A digest because `extraction_runs.config_hash` holds 200 characters and the crop settings
+        alone are several times that: the full text made every slot-reader run unstorable.
+        """
+        detail = hashlib.sha256(self.config_detail.encode()).hexdigest()[:16]
         return (
             f"readers={self.form.reader_ids[0]}|{self.form.reader_ids[1]};"
-            f"prompt={CROP_PROMPT_ID};stacked_agreement={self.allow_stacked};"
-            f"crop={self.crop_settings.config_hash};"
-            f"fraction_bar={self.fraction_bar.config_hash}"
+            f"prompt={CROP_PROMPT_ID}+{WALL_PROMPT_ID};stacked_agreement={self.allow_stacked};"
+            f"detail={detail}"
         )
 
 
@@ -184,6 +231,20 @@ class OwnerResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PageWalls:
+    """The row's wall question (#992): the two pictures shown, both answers, code's hatch check,
+    and the layout they sealed or why the person decides."""
+
+    row_png: bytes
+    view_png: bytes
+    row_box_px: tuple[int, int, int, int]
+    view_box_px: tuple[int, int, int, int]
+    hatch: HatchSeen
+    answers: tuple[WallAnswer, ...]
+    outcome: WallOutcome
+
+
+@dataclass(frozen=True, slots=True)
 class PageSlotResult:
     page_index: int
     page_id: UUID
@@ -192,6 +253,11 @@ class PageSlotResult:
     slots: tuple[OwnerResult, ...]
     overall: OwnerResult | None
     mapping: SlotMapping
+    row_hold: RowHold | None = None
+    """`INCLUDING FIELD CUT` or `VIF` in any text of the row: the whole countertop waits (#992)."""
+    vetoed: tuple[int | None, ...] = ()
+    """Sealed readings the drawn length rejected (#992), by slot (`None` for the overall)."""
+    walls: PageWalls | None = None
 
 
 def _pixels(rows: RowsAndInk, box: Box, rendered: RenderedPage) -> tuple[int, int, int, int]:
@@ -207,6 +273,89 @@ def _pixels(rows: RowsAndInk, box: Box, rendered: RenderedPage) -> tuple[int, in
 def _crop_png(rendered: RenderedPage, box: tuple[int, int, int, int]) -> bytes:
     left, top, right, bottom = box
     return encode_png(right - left, bottom - top, _crop_rgb(rendered, box))
+
+
+#: E3's mark colour for the row and its ends: a colour neither the vendor's black nor GV's red,
+#: yellow or blue uses.
+_MAGENTA: Final = bytes((230, 0, 200))
+
+
+def _marked_png(
+    rendered: RenderedPage,
+    box: tuple[int, int, int, int],
+    *,
+    ends_x: Sequence[int],
+    line: tuple[int, int, int] | None,
+    thickness: int,
+    max_side: int,
+) -> bytes:
+    """A crop of the render with the row marked (E3's pictures), shrunk to `max_side` at most.
+
+    `ends_x` are page-pixel columns drawn top to bottom; `line` is `(x0, x1, y)` in page pixels.
+    """
+    left, top, right, bottom = box
+    width, height = right - left, bottom - top
+    rgb = bytearray(_crop_rgb(rendered, box))
+    stride = width * 3
+
+    def paint(x0: int, y0: int, x1: int, y1: int) -> None:
+        x0, x1 = max(0, x0), min(width, x1)
+        y0, y1 = max(0, y0), min(height, y1)
+        if x0 >= x1 or y0 >= y1:
+            return
+        run = _MAGENTA * (x1 - x0)
+        for row in range(y0, y1):
+            rgb[row * stride + x0 * 3 : row * stride + x1 * 3] = run
+
+    half = thickness // 2
+    for x in ends_x:
+        paint(x - left - half, 0, x - left - half + thickness, height)
+    if line is not None:
+        x0, x1, y = line
+        paint(x0 - left, y - top - half, x1 - left, y - top - half + thickness)
+    factor = -(-max(width, height) // max_side)
+    if factor <= 1:
+        return encode_png(width, height, bytes(rgb))
+    import numpy as np
+
+    pixels = np.frombuffer(bytes(rgb), dtype=np.uint8).reshape(height, width, 3)
+    small_h, small_w = height // factor, width // factor
+    trimmed = pixels[: small_h * factor, : small_w * factor].astype(np.uint32)
+    shrunk = trimmed.reshape(small_h, factor, small_w, factor, 3).sum(axis=(1, 3))
+    shrunk = (shrunk + (factor * factor) // 2) // (factor * factor)
+    return encode_png(small_w, small_h, shrunk.astype(np.uint8).tobytes())
+
+
+def _wall_job_pictures(
+    page: SlotPage, plan: SlotPlan, settings: WallSettings
+) -> tuple[bytes, bytes, tuple[int, int, int, int], tuple[int, int, int, int], HatchSeen] | None:
+    """The row picture and the vendor view for the wall question, and code's hatch check."""
+    row = plan.row
+    if row is None:
+        return None
+    pictures = wall_pictures(row, page.rows.ink, settings=settings)
+    row_px = _pixels(page.rows, pictures.row, page.rendered)
+    view_px = _pixels(page.rows, pictures.view, page.rendered)
+    left_end = page.rows.to_pixels(row.x0, row.y)
+    right_end = page.rows.to_pixels(row.x1, row.y)
+    thickness = max(2, page.rendered.dpi // 100)
+    row_png = _marked_png(
+        page.rendered,
+        row_px,
+        ends_x=(left_end[0], right_end[0]),
+        line=(left_end[0], right_end[0], left_end[1]),
+        thickness=thickness + 1,
+        max_side=settings.picture_max_side_px,
+    )
+    view_png = _marked_png(
+        page.rendered,
+        view_px,
+        ends_x=(),
+        line=(left_end[0], right_end[0], left_end[1]),
+        thickness=thickness + 2,
+        max_side=settings.picture_max_side_px,
+    )
+    return row_png, view_png, row_px, view_px, pictures.hatch
 
 
 def _stacked_by_bar(label: PlannedLabel, height: Decimal, geometry: FractionBarGeometry) -> bool:
@@ -235,13 +384,22 @@ def read_slot_pages(
 ) -> tuple[PageSlotResult, ...]:
     """Read every page's slots: plan, crop, ask the readers in parallel, seal, name, map.
 
-    `wall_ends` says which ends of a page's row stand against a wall; no detector exists yet, so by
-    default none does and no piece takes its kind from its position (#987).
+    Since #992, three admin-approved rules sit between sealing and mapping, each only holding back:
+    a row whose texts say `INCLUDING FIELD CUT` or `VIF` offers nothing; a sealed reading the drawn
+    length rejects goes back to the person; and the row's wall question is asked in the same batch
+    (same pacer and limits) and sealed only when both readers agree.
+
+    `wall_ends` says which ends of a page's row stand against a wall *for naming a piece's kind*;
+    the sealed walls are not fed to it — the wall-end kind rule is not decided (#987) — so by
+    default none does and no piece takes its kind from its position.
     """
     readers = runtime.form.reader_ids
     planned: list[tuple[SlotPage, SlotPlan]] = []
     jobs: list[CropJob] = []
     crops: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]] = {}
+    walls_asked: dict[
+        int, tuple[bytes, bytes, tuple[int, int, int, int], tuple[int, int, int, int], HatchSeen]
+    ] = {}
     for page in pages:
         if page.ink is not None and page.ink.dpi != page.rendered.dpi:
             raise ValueError(
@@ -266,13 +424,26 @@ def read_slot_pages(
                 if _hard_guarded(label, ink) or not label.has_digit:
                     continue
                 if label.lane is Lane.TEXT:
-                    if label.text is None or plain_dimension(normalise_text(label.text)) is None:
+                    if label.text is None:
+                        continue
+                    printed = normalise_text(label.text)
+                    # A plain dimension, or one of the two worded forms code may expand (#992):
+                    # either needs the reader to print the same text before it counts.
+                    if plain_dimension(printed) is None and expand_label(printed) is None:
                         continue
                     wanted: tuple[str, ...] = (runtime.text_lane_reader,)
                 else:
                     wanted = readers
                 png = _crop_png(page.rendered, crop_px)
                 jobs.extend(CropJob(key, model, page.page_index, png) for model in wanted)
+        wall_pictures_for = _wall_job_pictures(page, plan, runtime.wall_settings)
+        if wall_pictures_for is not None:
+            walls_asked[page.page_index] = wall_pictures_for
+            row_png, view_png = wall_pictures_for[0], wall_pictures_for[1]
+            jobs.extend(
+                CropJob(_walls_key(page.page_index), model, page.page_index, row_png, view_png)
+                for model in readers
+            )
 
     form = runtime.form
     answers = read_crops_parallel(
@@ -287,6 +458,9 @@ def read_slot_pages(
         record_attempt=record_attempt,
     )
 
+    label_answers: dict[tuple[str, str], ReaderAnswer | None] = {
+        key: answer for key, answer in answers.items() if not isinstance(answer, WallAnswer)
+    }
     results: list[PageSlotResult] = []
     for page, plan in planned:
 
@@ -299,13 +473,15 @@ def read_slot_pages(
                 owner,
                 count,
                 crops=crops,
-                answers=answers,
+                answers=label_answers,
                 runtime=runtime,
                 wall_ends=wall_ends(page),
             )
 
         slots = tuple(owner_result(owner, len(plan.slots)) for owner in plan.slots)
         overall = None if plan.overall is None else owner_result(plan.overall, len(plan.slots))
+        hold = row_hold(_row_texts([*slots, *((overall,) if overall is not None else ())]))
+        slots, overall, vetoed = _veto_by_drawn_length(slots, overall)
         mapping = map_row(
             None if overall is None else overall.outcome,
             [
@@ -318,7 +494,28 @@ def read_slot_pages(
                 if item.owner.index is not None
             ],
             row_ambiguity=plan.ambiguity,
+            row_hold=None if hold is None else hold.reason,
         )
+        walls: PageWalls | None = None
+        asked = walls_asked.get(page.page_index)
+        if asked is not None:
+            row_png, view_png, row_px, view_px, hatch = asked
+            wall_answers = tuple(
+                answer
+                for model in readers
+                if isinstance(
+                    answer := answers.get((_walls_key(page.page_index), model)), WallAnswer
+                )
+            )
+            walls = PageWalls(
+                row_png=row_png,
+                view_png=view_png,
+                row_box_px=row_px,
+                view_box_px=view_px,
+                hatch=hatch,
+                answers=wall_answers,
+                outcome=seal_walls(wall_answers, hatch=hatch, row_ambiguity=plan.ambiguity),
+            )
         results.append(
             PageSlotResult(
                 page_index=page.page_index,
@@ -328,9 +525,88 @@ def read_slot_pages(
                 slots=slots,
                 overall=overall,
                 mapping=mapping,
+                row_hold=hold,
+                vetoed=vetoed,
+                walls=walls,
             )
         )
     return tuple(results)
+
+
+def _walls_key(page_index: int) -> str:
+    return f"p{page_index}:walls"
+
+
+def _row_texts(owners: Sequence[OwnerResult]) -> list[str]:
+    """Every text any source gave for any label of the row: the file's, each reader's, the agreed."""
+    texts: list[str] = []
+    for owner in owners:
+        for item in owner.labels:
+            if item.label.text:
+                texts.append(item.label.text)
+            texts.extend(text for _source, text in item.outcome.reader_texts)
+            if item.outcome.sealed_text:
+                texts.append(item.outcome.sealed_text)
+    return texts
+
+
+def _drawn(owner: OwnerResult) -> DrawnReading | None:
+    """A sealed owner's value beside its drawn length, exactly; `None` when it did not seal."""
+    outcome = owner.outcome
+    if outcome.state is not LabelState.SEALED or outcome.value is None:
+        return None
+    if outcome.label_index is None:
+        return None
+    label = owner.labels[outcome.label_index]
+    drawn = Fraction(owner.owner.x1 - owner.owner.x0)
+    if drawn <= 0:
+        return None
+    return DrawnReading(
+        owner.owner.index, outcome.value.exact, drawn, "stacked" in label.outcome.flags
+    )
+
+
+def _veto_by_drawn_length(
+    slots: tuple[OwnerResult, ...], overall: OwnerResult | None
+) -> tuple[tuple[OwnerResult, ...], OwnerResult | None, tuple[int | None, ...]]:
+    """Hand back to the person every sealed reading the drawn length rejects (#992).
+
+    The reading's value becomes its label's suggestion — shown to the person, never a value — and
+    nothing else about it changes.
+    """
+    pieces = [reading for owner in slots if (reading := _drawn(owner)) is not None]
+    whole = None if overall is None else _drawn(overall)
+    vetoes = drawn_length_vetoes(pieces, whole)
+    if not vetoes:
+        return slots, overall, ()
+
+    def held(owner: OwnerResult) -> OwnerResult:
+        reason = vetoes.get(owner.owner.index)
+        if reason is None or owner.outcome.label_index is None:
+            return owner
+        position = owner.outcome.label_index
+        chosen = owner.labels[position]
+        label_outcome = replace(
+            chosen.outcome,
+            state=LabelState.REVIEW,
+            value=None,
+            suggestion=chosen.outcome.value,
+            reason_code="drawn-length",
+            reason=reason,
+            flags=(*chosen.outcome.flags, "drawn-length"),
+        )
+        labels = list(owner.labels)
+        labels[position] = replace(chosen, outcome=label_outcome)
+        return replace(
+            owner,
+            labels=tuple(labels),
+            outcome=OwnerOutcome(LabelState.REVIEW, None, position, "drawn-length", reason),
+        )
+
+    held_slots = tuple(held(owner) for owner in slots)
+    held_overall = None if overall is None else (held(overall) if None in vetoes else overall)
+    order = [owner.owner.index for owner in slots] + [None]
+    return held_slots, held_overall, tuple(index for index in order if index in vetoes)
 
 
 def _owner_result(
@@ -412,14 +688,24 @@ def persist_slot_readings(
     extraction_run_id: UUID,
     reader_ids: tuple[str, str],
     results: Sequence[PageSlotResult],
+    store: ArtifactStore | None = None,
 ) -> int:
     """Persist one candidate per slot and overall, and candidate-only links for mapped ones.
 
     What Phase 5's screen needs rides on the candidate as plain flags, because the current schema
     has no columns for it: `slot:<i>` or `slot:overall`, `slot-box:` and `crop-box:` in the page's
     pixels, `kind:` and `kind-evidence:`, `ink:`, `lane:`, `row-rank:`, each reader's text as
-    `reader:<model>:<text>`, and every guard that fired. The label's box is the polygon. Raw
-    per-attempt answers wait for #983.
+    `reader:<model>:<text>`, every guard that fired (`drawn-length` for the veto, `row-hold:<code>`
+    for a held countertop). The label's box is the polygon. Each reader's raw answer is in its
+    private invocation record (#985).
+
+    **Walls (#992).** One more candidate per page whose row was asked: `walls`, its polygon the row
+    picture's box, with each reader's answer, code's hatch check and the outcome as flags
+    (`walls-sealed:<layout>` or `walls-held:<code>`). With a `store`, the two pictures the readers
+    saw are kept as its evidence artifacts, and — only when *every* row read here sealed the same
+    layout — that layout is recorded as a `wall_config` layout proposal (`WALL_PROMPT_ID`, both
+    readers named). Whether a check may use it is decided when the check is asked for
+    (`workflow/layout_proposals.py:reader_sealed_discriminators`), never here.
     """
     from sqlalchemy.orm import Session
 
@@ -432,12 +718,27 @@ def persist_slot_readings(
         raise TypeError("session must be a SQLAlchemy Session")
     count = 0
     rows: list[MeasurementProposal] = []
+    wall_rows: list[tuple[PageSlotResult, UUID | None]] = []
     for result in results:
         if result.plan.row is None:
             continue
         page = session.get(PageModel, result.page_id)
         if page is None:
             raise ValueError("slot-reader page disappeared before persistence")
+        if result.walls is not None:
+            wall_rows.append(
+                (
+                    result,
+                    _persist_walls(
+                        session,
+                        result,
+                        result.walls,
+                        extraction_run_id=extraction_run_id,
+                        store=store,
+                    ),
+                )
+            )
+            count += 1
         candidates: dict[int | None, ObservationCandidate] = {}
         held = dict(result.mapping.held)
         offered = {proposal.slot_index for proposal in result.mapping.proposals}
@@ -469,6 +770,8 @@ def persist_slot_readings(
             ]
             if result.plan.ambiguity is not None:
                 flags.append("row-ambiguous")
+            if result.row_hold is not None:
+                flags.append(f"row-hold:{result.row_hold.code}")
             if owner.kind is not None:
                 flags.append(f"kind:{owner.kind.kind.value}")
                 flags.append(f"kind-evidence:{owner.kind.evidence}")
@@ -535,4 +838,120 @@ def persist_slot_readings(
             )
     session.add_all(rows)
     session.flush()
+    _propose_sealed_walls(
+        session,
+        package_revision_id=package_revision_id,
+        reader_ids=reader_ids,
+        walls=wall_rows,
+    )
     return count
+
+
+def _persist_walls(
+    session: object,
+    result: PageSlotResult,
+    walls: PageWalls,
+    *,
+    extraction_run_id: UUID,
+    store: ArtifactStore | None,
+) -> UUID | None:
+    """The page's wall candidate, and the row picture's artifact id when a store keeps it."""
+    from io import BytesIO
+
+    from sqlalchemy.orm import Session
+
+    from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind, ObservationCandidate
+    from storage.hashing import content_key, sha256_stream
+
+    assert isinstance(session, Session)
+    outcome = walls.outcome
+    flags = [WALL_READER_FLAG, f"row-rank:{result.plan.row.rank if result.plan.row else None}"]
+    flags.append(
+        f"{WALLS_SEALED_FLAG}{outcome.config}"
+        if outcome.config is not None
+        else f"{WALLS_HELD_FLAG}{outcome.code}"
+    )
+    for answer in walls.answers:
+        flags.append(
+            f"wall-reader:{answer.model_id}:left={answer.left.value},right={answer.right.value},"
+            f"behind={answer.behind.value},view={answer.view}"
+        )
+    flags.append(f"hatch:left={walls.hatch.left},right={walls.hatch.right}")
+    flags.append(_box_flag("view-box", walls.view_box_px))
+    candidate = ObservationCandidate(
+        document_version_id=result.document_version_id,
+        page_id=result.page_id,
+        extraction_run_id=extraction_run_id,
+        raw_text=f"{WALL_CANDIDATE_TEXT}{outcome.config or 'for the person'}",
+        polygon=_polygon(walls.row_box_px),
+        coordinate_space="image",
+        ambiguity_flags=list(dict.fromkeys(flags)),
+        review_reason=None if outcome.reason is None else outcome.reason[:300],
+    )
+    session.add(candidate)
+    session.flush()
+    if store is None:
+        return None
+    row_artifact: UUID | None = None
+    for png in (walls.row_png, walls.view_png):
+        stream = BytesIO(png)
+        digest, _ = sha256_stream(stream)
+        key = content_key(
+            f"evidence-crops/{result.document_version_id}/pages/{result.page_index}/walls",
+            digest,
+            suffix=".png",
+        )
+        stream.seek(0)
+        store.put(key, stream, content_type="image/png")
+        artifact = EvidenceArtifact(
+            candidate_id=candidate.id,
+            canonical_observation_id=None,
+            document_version_id=result.document_version_id,
+            page_id=result.page_id,
+            kind=EvidenceArtifactKind.CROP.value,
+            storage_key=key,
+            sha256=digest,
+            media_type="image/png",
+            coordinate_space="image",
+        )
+        session.add(artifact)
+        session.flush()
+        row_artifact = row_artifact or artifact.id
+    return row_artifact
+
+
+def _propose_sealed_walls(
+    session: object,
+    *,
+    package_revision_id: UUID,
+    reader_ids: tuple[str, str],
+    walls: Sequence[tuple[PageSlotResult, UUID | None]],
+) -> None:
+    """Record `wall_config` as a layout proposal only when every row read sealed the same layout.
+
+    `wall_config` is one value per package revision, so one row the readers could not settle, or
+    two rows that disagree, leaves no proposal: the person chooses, as before.
+    """
+    from sqlalchemy.orm import Session
+
+    from workflow.layout_proposals import record_layout_proposal
+
+    assert isinstance(session, Session)
+    if not walls:
+        return
+    layouts = {result.walls.outcome.config for result, _ in walls if result.walls is not None}
+    if len(layouts) != 1:
+        return
+    (layout,) = layouts
+    artifact = walls[0][1]
+    if layout is None or artifact is None:
+        return
+    record_layout_proposal(
+        session,
+        package_revision_id=package_revision_id,
+        discriminator_name="wall_config",
+        proposed_value=layout,
+        crop_artifact_id=artifact,
+        model_id=f"{reader_ids[0]} + {reader_ids[1]}",
+        prompt_id=WALL_PROMPT_ID,
+    )

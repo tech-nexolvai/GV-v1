@@ -15,6 +15,7 @@ from extraction.slot_reader.mapping import (
     CABINET_FIELD,
     FILLER_FIELD,
     OVERALL_FIELD,
+    PIECE_FIELD,
     WHAT_IS_IT,
     PieceReading,
     map_row,
@@ -76,7 +77,9 @@ def pieces(*items: tuple[OwnerOutcome, KindProposal]) -> list[PieceReading]:
     return [PieceReading(index, outcome, kind) for index, (outcome, kind) in enumerate(items)]
 
 
-def test_a_whole_sealed_named_chain_is_offered_left_to_right() -> None:
+def test_a_whole_sealed_named_chain_is_offered_as_piece_widths_only() -> None:
+    """CT-WIDTH-001 (#993) sends piece widths beside a cabinet or filler list to review, so a row
+    offered as pieces is never offered to the kind fields too."""
     mapping = map_row(
         sealed('36"'),
         pieces(
@@ -89,17 +92,47 @@ def test_a_whole_sealed_named_chain_is_offered_left_to_right() -> None:
     )
     assert [(p.field_key, p.position, p.slot_index) for p in mapping.proposals] == [
         (OVERALL_FIELD, 0, None),
-        (FILLER_FIELD, 0, 0),
-        (CABINET_FIELD, 0, 1),
-        (CABINET_FIELD, 1, 2),
-        (FILLER_FIELD, 1, 3),
+        (PIECE_FIELD, 0, 0),
+        (PIECE_FIELD, 1, 1),
+        (PIECE_FIELD, 2, 2),
+        (PIECE_FIELD, 3, 3),
     ]
     assert mapping.held == ()
 
 
-def test_an_unknown_piece_holds_every_piece_and_asks_what_it_is() -> None:
+def test_a_named_chain_without_a_sealed_overall_still_fills_the_kind_fields() -> None:
+    mapping = map_row(
+        None,
+        pieces((sealed('1"'), FILLER), (sealed('15"'), CABINET), (sealed('2"'), FILLER)),
+        row_ambiguity=None,
+    )
+    assert [(p.field_key, p.position, p.slot_index) for p in mapping.proposals] == [
+        (FILLER_FIELD, 0, 0),
+        (CABINET_FIELD, 0, 1),
+        (FILLER_FIELD, 1, 2),
+    ]
+
+
+def test_a_fully_sealed_row_offers_every_piece_whatever_its_kind() -> None:
+    """#992: the countertop's width sums every piece of its row, so kinds no longer gate it. An
+    unknown piece still keeps the kind fields back: those go only as a whole named chain."""
     mapping = map_row(
         sealed('36"'),
+        pieces((sealed('1"'), FILLER), (sealed('3/4"'), UNKNOWN), (sealed('18"'), CABINET)),
+        row_ambiguity=None,
+    )
+    assert [(p.field_key, p.position, p.slot_index) for p in mapping.proposals] == [
+        (OVERALL_FIELD, 0, None),
+        (PIECE_FIELD, 0, 0),
+        (PIECE_FIELD, 1, 1),
+        (PIECE_FIELD, 2, 2),
+    ]
+    assert mapping.held == ()
+
+
+def test_an_unknown_piece_under_no_sealed_overall_still_asks_what_it_is() -> None:
+    mapping = map_row(
+        None,
         pieces((sealed('1"'), FILLER), (sealed('3/4"'), UNKNOWN), (sealed('18"'), CABINET)),
         row_ambiguity=None,
     )
@@ -107,19 +140,40 @@ def test_an_unknown_piece_holds_every_piece_and_asks_what_it_is() -> None:
     held = dict(mapping.held)
     assert held[1].startswith(WHAT_IS_IT)
     assert "piece 2" in held[0] and "piece 2" in held[2]
-    assert held[None].startswith("held back: piece 2 under this overall")
 
 
-def test_the_overall_is_never_offered_without_its_chain() -> None:
-    """A wall-to-wall line can coincide with the chain's ends; its pieces run through appliance
-    spaces nobody named. The overall waits with them (#987's first verification run)."""
+def test_the_overall_is_never_offered_without_its_whole_chain() -> None:
+    """A wall-to-wall line can coincide with the chain's ends (#987's first verification run): the
+    overall never goes alone, so one unsealed piece holds it and every piece back."""
     mapping = map_row(
         sealed('120"'),
-        pieces((sealed('24"'), CABINET), (sealed('30"'), UNKNOWN), (sealed('24"'), CABINET)),
+        pieces((sealed('24"'), CABINET), (REVIEW, UNKNOWN), (sealed('24"'), CABINET)),
         row_ambiguity=None,
     )
     assert mapping.proposals == ()
-    assert None in dict(mapping.held)
+    assert dict(mapping.held)[None].startswith("held back: piece 2 under this overall")
+
+
+def test_no_piece_widths_without_a_sealed_overall() -> None:
+    mapping = map_row(
+        REVIEW,
+        pieces((sealed('1"'), FILLER), (sealed('18"'), CABINET)),
+        row_ambiguity=None,
+    )
+    keys = {p.field_key for p in mapping.proposals}
+    assert PIECE_FIELD not in keys and OVERALL_FIELD not in keys
+
+
+def test_a_held_row_offers_nothing_and_says_why() -> None:
+    reason = "width already includes the field cut"
+    mapping = map_row(
+        sealed('36"'),
+        pieces((sealed('18"'), CABINET), (sealed('18"'), CABINET)),
+        row_ambiguity=None,
+        row_hold=reason,
+    )
+    assert mapping.proposals == ()
+    assert dict(mapping.held) == {None: reason, 0: reason, 1: reason}
 
 
 def test_a_missing_slot_reading_is_never_a_shorter_sum() -> None:

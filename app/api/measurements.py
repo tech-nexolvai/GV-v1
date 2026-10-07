@@ -122,7 +122,10 @@ from workflow.assignment_bedrock import (
 )
 from workflow.classifications import record_classifications
 from workflow.layout_proposals import (
+    DISCRIMINATOR_FROM_READERS,
+    DISCRIMINATOR_FROM_REVIEWER,
     confirmed_discriminators,
+    reader_sealed_wall_config,
     record_layout_confirmation,
     stored_layout_proposals,
 )
@@ -1055,6 +1058,20 @@ def enter_measurements(
     )
 
 
+def _declared_discriminators(session: Session) -> dict[str, tuple[str, ...]]:
+    """Each discriminator the published rulebook declares, with the values it offers."""
+    store = snapshot_store(session)
+    rules = [
+        snapshot.rule
+        for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
+        if snapshot is not None
+    ]
+    return {
+        discriminator.name: tuple(discriminator.choices)
+        for discriminator in required_inputs(rules).discriminators
+    }
+
+
 def _check_discriminators(session: Session, stated: dict[str, str]) -> None:
     """Refuse a discriminator the rulebook does not declare, or a value it does not offer.
 
@@ -1068,16 +1085,7 @@ def _check_discriminators(session: Session, stated: dict[str, str]) -> None:
     """
     if not stated:
         return
-    store = snapshot_store(session)
-    rules = [
-        snapshot.rule
-        for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
-        if snapshot is not None
-    ]
-    declared = {
-        discriminator.name: discriminator.choices
-        for discriminator in required_inputs(rules).discriminators
-    }
+    declared = _declared_discriminators(session)
     for name, value in stated.items():
         if name not in declared:
             raise HTTPException(
@@ -1137,10 +1145,27 @@ def request_checks(
         )
     confirmed = confirmed_discriminators(session, revision.id)
     _check_discriminators(session, confirmed)
+    discriminators = dict(confirmed)
+    sources = {name: DISCRIMINATOR_FROM_REVIEWER for name in confirmed}
+    # The one value a check may take from the drawing rather than a person (#992, admin-approved):
+    # the wall layout two readers agreed on, only where the reviewer has stated none. A reviewer's
+    # value always wins, and the payload says which one the run used and where it came from.
+    if "wall_config" not in discriminators:
+        sealed = reader_sealed_wall_config(session, revision.id)
+        declared = _declared_discriminators(session)
+        if sealed is not None and sealed.value in declared.get("wall_config", ()):
+            discriminators["wall_config"] = sealed.value
+            sources["wall_config"] = (
+                f"{DISCRIMINATOR_FROM_READERS} {sealed.model_id} (proposal {sealed.proposal_id})"
+            )
     accepted = enqueue(
         session,
         workflow=RUN_CHECKS_WORKFLOW,
-        payload={"package_revision_id": str(revision.id), "discriminators": confirmed},
+        payload={
+            "package_revision_id": str(revision.id),
+            "discriminators": discriminators,
+            "discriminator_sources": sources,
+        },
     )
     try:
         session.commit()
