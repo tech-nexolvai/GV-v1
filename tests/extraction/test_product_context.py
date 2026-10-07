@@ -42,6 +42,7 @@ from extraction.slot_reader.bedrock import (
     crop_prompt_id,
     read_crops_parallel,
 )
+from extraction.slot_reader.walls import WALL_PROMPT, WALL_PROMPT_ID
 from tests.workflow.test_slot_reader import (
     TEXTS,
     FakeReaders,
@@ -260,13 +261,23 @@ def test_the_slot_reader_runtime_tells_every_reader_and_records_the_product() ->
     (without,) = read_slot_pages([page], runtime=plain, record_attempt=lambda _a: None)
     (with_line,) = read_slot_pages([page], runtime=told, record_attempt=attempts.append)
 
-    assert told_readers.sent and all(
-        _texts(request) == [LINE, CROP_PROMPT] for request in told_readers.sent
-    )
-    assert all(_texts(request) == [CROP_PROMPT] for request in plain_readers.sent)
+    # Label crops carry the product line; the wall question (#992) is a separately measured prompt
+    # and is sent unchanged, so its identity stays its own.
+    told_crops = [r for r in told_readers.sent if WALL_PROMPT not in _texts(r)]
+    told_walls = [r for r in told_readers.sent if WALL_PROMPT in _texts(r)]
+    plain_crops = [r for r in plain_readers.sent if WALL_PROMPT not in _texts(r)]
+    plain_walls = [r for r in plain_readers.sent if WALL_PROMPT in _texts(r)]
+    assert told_crops and all(_texts(request) == [LINE, CROP_PROMPT] for request in told_crops)
+    assert all(_texts(request) == [CROP_PROMPT] for request in plain_crops)
+    assert [_texts(r) for r in told_walls] == [_texts(r) for r in plain_walls]
+    assert all(LINE not in _texts(request) for request in told_walls)
     assert with_line.mapping.proposals == without.mapping.proposals
-    assert {attempt.prompt_id for attempt in attempts} == {"slot-crop-v1+product=countertop"}
+    assert {attempt.prompt_id for attempt in attempts} <= {
+        "slot-crop-v1+product=countertop",
+        WALL_PROMPT_ID,
+    }
+    assert "slot-crop-v1+product=countertop" in {attempt.prompt_id for attempt in attempts}
     assert told.prompt_id == "slot-crop-v1+product=countertop"
-    assert "prompt=slot-crop-v1+product=countertop;" in told.config_hash
+    assert f"prompt=slot-crop-v1+product=countertop+{WALL_PROMPT_ID};" in told.config_hash
     assert plain.prompt_id == "slot-crop-v1"
-    assert "prompt=slot-crop-v1;" in plain.config_hash
+    assert f"prompt=slot-crop-v1+{WALL_PROMPT_ID};" in plain.config_hash
