@@ -245,11 +245,7 @@ def test_partial_claude_row_cannot_pass_from_a_short_form_list(
         operands=supplied,
         discriminators={"wall_config": "back_left_right"},
     ).run_checks(session, revision.id)
-    finding = next(
-        finding
-        for finding in _live_findings(session, revision.id)
-        if finding.rule_id == "CT-WIDTH-001"
-    )
+    finding = _findings_by_rule(session, revision.id)["CT-WIDTH-001"]
     assert finding.outcome == Outcome.REVIEW_REQUIRED.value
     assert "unresolved piece" in finding.trace["reason"]
 
@@ -294,11 +290,7 @@ def test_partial_claude_row_never_passes_from_a_short_form_list(
         operands=supplied,
         discriminators={"wall_config": "back_left_right"},
     ).run_checks(session, revision.id)
-    finding = next(
-        finding
-        for finding in _live_findings(session, revision.id)
-        if finding.rule_id == "CT-WIDTH-001"
-    )
+    finding = _findings_by_rule(session, revision.id)["CT-WIDTH-001"]
     assert finding.outcome == Outcome.REVIEW_REQUIRED.value
     assert "unresolved piece" in finding.trace["reason"]
 

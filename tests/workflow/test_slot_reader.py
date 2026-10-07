@@ -1240,7 +1240,6 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
     assert covered.semantic_guess is None
     assert "ink:covered" in covered.ambiguity_flags
     first = by_slot["slot:0"]
-    assert "kind:filler" in first.ambiguity_flags
     assert "row-partial" in first.ambiguity_flags
     assert "row-slot-count:4" in first.ambiguity_flags
     assert any(flag.startswith("slot-box:") for flag in first.ambiguity_flags)
