@@ -197,7 +197,7 @@ def anthropic_messages_request(**kwargs: Any) -> dict[str, object]:
     if not isinstance(model_id, str) or not model_id.startswith(MODEL_PREFIX):
         raise ValueError("Claude slot-reader model ids must start with 'anthropic.'")
     model = model_id.removeprefix(MODEL_PREFIX)
-    system = _text_blocks(kwargs.get("system"))
+    system_value = kwargs.get("system")
     messages = kwargs.get("messages")
     if not isinstance(messages, list) or len(messages) != 1:
         raise ValueError("Claude slot-reader request must contain one user message")
@@ -208,12 +208,16 @@ def anthropic_messages_request(**kwargs: Any) -> dict[str, object]:
     max_tokens = config.get("maxTokens") if isinstance(config, Mapping) else None
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
         raise ValueError("Claude slot-reader request requires a positive max token count")
-    return {
+    request: dict[str, object] = {
         "model": model,
         "max_tokens": max_tokens,
-        "system": system,
         "messages": [{"role": "user", "content": _message_content(message.get("content"))}],
     }
+    # The Messages API makes `system` optional. The slot-reader prompts are self-contained and
+    # its existing Bedrock-shaped request builders intentionally omit this field.
+    if system_value is not None:
+        request["system"] = _text_blocks(system_value)
+    return request
 
 
 class AnthropicMessagesClient:

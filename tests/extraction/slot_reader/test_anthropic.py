@@ -54,6 +54,15 @@ def test_messages_request_keeps_both_images_and_maps_the_exact_token_bound() -> 
     assert content[1]["source"]["data"] == base64.b64encode(b"crop").decode("ascii")
 
 
+def test_messages_request_allows_self_contained_reader_prompts_without_system_field() -> None:
+    request = anthropic_messages_request(
+        **{key: value for key, value in REQUEST.items() if key != "system"}
+    )
+
+    assert "system" not in request
+    assert request["messages"] == anthropic_messages_request(**REQUEST)["messages"]
+
+
 def test_request_refuses_a_non_anthropic_model() -> None:
     with pytest.raises(ValueError, match="anthropic"):
         anthropic_messages_request(**{**REQUEST, "modelId": "qwen.qwen3-vl-235b-a22b"})
