@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 import eval.form_first_product as product
 from eval.form_first_product import _complete_slot_row, _key_inputs, audit_saved_attempts
 from eval.form_first_safety import SafetyCase, WidthInputs
@@ -167,7 +169,7 @@ def test_shortened_offered_chain_is_not_counted_as_a_complete_product_row() -> N
 
 
 def test_key_replay_never_borrows_product_wall_answer_as_human_truth(
-    tmp_path: Path, monkeypatch: object
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     key = tmp_path / "form_key.json"
     key.write_text(
@@ -189,7 +191,7 @@ def test_key_replay_never_borrows_product_wall_answer_as_human_truth(
             product.AttemptAudit(2, 1, 1, True, None),
         )
 
-    monkeypatch.setattr(product, "product_case_for_page", saved_case)  # type: ignore[attr-defined]
+    monkeypatch.setattr(product, "product_case_for_page", saved_case)
     report, _audits = product.evaluate_keyed_product_run(
         SimpleNamespace(),  # type: ignore[arg-type]
         package_revision_id=uuid4(),
@@ -200,3 +202,110 @@ def test_key_replay_never_borrows_product_wall_answer_as_human_truth(
     assert report.unaccounted == 1
     assert report.false_passes == 0
     assert not report.zero_false_pass
+
+
+def test_product_projection_reads_exact_saved_row_and_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = uuid4()
+    revision_id = uuid4()
+    proposal_id = uuid4()
+    package = SimpleNamespace(product_type="countertop", project_id=uuid4())
+    revision = SimpleNamespace(package_id=uuid4())
+    run = SimpleNamespace(id=run_id)
+    overall = SimpleNamespace(
+        ambiguity_flags=[
+            "slot-reader",
+            "slot:overall",
+            "reader:maker.first:8",
+            "reader:maker.second:8",
+        ],
+        corroboration_status="CORROBORATED",
+        value_numerator=8,
+        value_denominator=1,
+        unit="in",
+    )
+    piece = SimpleNamespace(
+        ambiguity_flags=["slot-reader", "slot:0", "reader:maker.first:8", "reader:maker.second:8"],
+        corroboration_status="CORROBORATED",
+        value_numerator=8,
+        value_denominator=1,
+        unit="in",
+    )
+    wall = SimpleNamespace(
+        ambiguity_flags=[
+            "wall-reader:maker.first:left=no,right=no,behind=yes,view=plan",
+            "wall-reader:maker.second:left=no,right=no,behind=yes,view=plan",
+        ]
+    )
+    proposals = [
+        (
+            SimpleNamespace(
+                proposal_id=proposal_id,
+                field_key=product.OVERALL_FIELD,
+                position=0,
+                model_id="maker.first + maker.second",
+            ),
+            overall,
+            run,
+        ),
+        (
+            SimpleNamespace(
+                proposal_id=proposal_id,
+                field_key=product.PIECE_FIELD,
+                position=0,
+                model_id="maker.first + maker.second",
+            ),
+            piece,
+            run,
+        ),
+    ]
+    wall_raw = '{"left":"no","right":"no","behind":"yes","view":"plan"}'
+    attempts = (
+        _attempt(MODELS[0], page=0),
+        _attempt(MODELS[1], page=0),
+        _attempt(MODELS[0], page=0),
+        _attempt(MODELS[1], page=0),
+        _attempt(MODELS[0], prompt_id="slot-walls-v1", raw=wall_raw, page=0),
+        _attempt(MODELS[1], prompt_id="slot-walls-v1", raw=wall_raw, page=0),
+    )
+
+    class FakeSession:
+        execute_count = 0
+        scalars_count = 0
+
+        def get(self, model: object, _key: object) -> SimpleNamespace:
+            return revision if model is product.PackageRevision else package
+
+        def execute(self, _query: object) -> list[object]:
+            self.execute_count += 1
+            return (
+                SimpleNamespace(all=lambda: proposals) if self.execute_count == 1 else [(0, wall)]
+            )
+
+        def scalars(self, _query: object) -> tuple[object, ...]:
+            self.scalars_count += 1
+            return attempts if self.scalars_count == 1 else (overall, piece)
+
+    monkeypatch.setattr(
+        product,
+        "reader_sealed_wall_config",
+        lambda *_args: SimpleNamespace(value="back_only", extraction_run_id=run_id),
+    )
+    monkeypatch.setattr(product, "_field_cut", lambda *_args: Fraction(1))
+
+    case, audit = product.product_case_for_page(
+        FakeSession(),  # type: ignore[arg-type]
+        package_revision_id=revision_id,
+        page_number=1,
+        truth=None,
+        case_id="one",
+    )
+
+    assert audit.complete
+    assert audit.label_attempts == 4
+    assert audit.wall_attempts == 2
+    assert case.proposed is not None
+    assert case.proposed.pieces == (Fraction(8),)
+    assert case.proposed.wall_layout == "back_only"
+    assert case.proposed.field_cut == Fraction(1)
