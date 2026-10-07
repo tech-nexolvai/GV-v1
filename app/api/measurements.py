@@ -110,6 +110,7 @@ from rules.parameter_sources import SOURCE_GUIDANCE, allowed_sources
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
 from rules.required_inputs import allowed_categories_for, required_inputs
 from rules.schema import Quantity, Rule
+from rules.semantic_types import SemanticType
 from storage.store import ArtifactStore
 from units.imperial import format_inches
 from units.measurement import Measurement
@@ -1150,12 +1151,13 @@ def request_checks(
     # The one value a check may take from the drawing rather than a person (#992, admin-approved):
     # the wall layout two readers agreed on, only where the reviewer has stated none. A reviewer's
     # value always wins, and the payload says which one the run used and where it came from.
-    if "wall_config" not in discriminators:
+    wall = SemanticType.WALL_CONFIG.value
+    if wall not in discriminators:
         sealed = reader_sealed_wall_config(session, revision.id)
         declared = _declared_discriminators(session)
-        if sealed is not None and sealed.value in declared.get("wall_config", ()):
-            discriminators["wall_config"] = sealed.value
-            sources["wall_config"] = (
+        if sealed is not None and sealed.value in declared.get(wall, ()):
+            discriminators[wall] = sealed.value
+            sources[wall] = (
                 f"{DISCRIMINATOR_FROM_READERS} {sealed.model_id} (proposal {sealed.proposal_id})"
             )
     accepted = enqueue(

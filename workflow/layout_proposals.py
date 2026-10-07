@@ -38,6 +38,7 @@ from app.models.evidence import (
     ObservationCandidate,
 )
 from app.models.runs import ExtractionRun
+from rules.semantic_types import SemanticType
 
 __all__ = [
     "DISCRIMINATOR_FROM_READERS",
@@ -65,7 +66,7 @@ WALL_READER_FLAG: Final = "wall-reader"
 WALLS_SEALED_FLAG: Final = "walls-sealed:"
 WALLS_HELD_FLAG: Final = "walls-held:"
 WALL_CANDIDATE_TEXT: Final = "walls: "
-WALL_CONFIG: Final = "wall_config"
+WALL_CONFIG: Final = SemanticType.WALL_CONFIG.value
 #: Where a discriminator in a check request came from, as its payload records it (#992).
 DISCRIMINATOR_FROM_REVIEWER: Final = "reviewer"
 DISCRIMINATOR_FROM_READERS: Final = "two AI readers agreed:"

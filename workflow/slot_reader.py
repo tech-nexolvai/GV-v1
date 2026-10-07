@@ -934,6 +934,7 @@ def _propose_sealed_walls(
     """
     from sqlalchemy.orm import Session
 
+    from rules.semantic_types import SemanticType
     from workflow.layout_proposals import record_layout_proposal
 
     assert isinstance(session, Session)
@@ -949,7 +950,7 @@ def _propose_sealed_walls(
     record_layout_proposal(
         session,
         package_revision_id=package_revision_id,
-        discriminator_name="wall_config",
+        discriminator_name=SemanticType.WALL_CONFIG.value,
         proposed_value=layout,
         crop_artifact_id=artifact,
         model_id=f"{reader_ids[0]} + {reader_ids[1]}",
