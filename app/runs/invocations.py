@@ -138,6 +138,9 @@ class _InvocationRecordLike(Protocol):
     def reader_attempt_number(self) -> int | None: ...
 
     @property
+    def reader_question_packet(self) -> Mapping[str, object] | None: ...
+
+    @property
     def input_tokens(self) -> int: ...
 
     @property
@@ -209,6 +212,11 @@ def record(
         private_raw_response=invocation.private_raw_response,
         reader_page_index=invocation.reader_page_index,
         reader_attempt_number=invocation.reader_attempt_number,
+        reader_question_packet=(
+            None
+            if invocation.reader_question_packet is None
+            else dict(invocation.reader_question_packet)
+        ),
         input_tokens=invocation.input_tokens,
         output_tokens=invocation.output_tokens,
         cost_micros=invocation.cost_micros,

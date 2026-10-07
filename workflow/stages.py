@@ -2154,6 +2154,9 @@ class DatabaseStages:
                     private_raw_response=attempt.raw_response_text,
                     reader_page_index=attempt.page_index,
                     reader_attempt_number=attempt.attempt_number,
+                    reader_question_packet=(
+                        None if attempt.question_packet is None else dict(attempt.question_packet)
+                    ),
                 ),
                 flush=False,
             )
@@ -2179,6 +2182,9 @@ class DatabaseStages:
             return None
         if not rows.candidates.rows.candidates:
             return None
+        transform = page_transform(page, rendered.dpi)
+        if transform is None:
+            return None
         return SlotPage(
             page_index=page.index,
             page_id=page.id,
@@ -2186,6 +2192,7 @@ class DatabaseStages:
             rendered=rendered,
             rows=rows,
             ink=ink,
+            transform=transform,
         )
 
     def _read_slots(
@@ -2205,7 +2212,9 @@ class DatabaseStages:
         assert self._slot_reader is not None
         runtime = replace(self._slot_reader, product=product)
         recorder = ThreadSafeAttemptRecorder()
-        results = read_slot_pages(pages, runtime=runtime, record_attempt=recorder.record)
+        results = read_slot_pages(
+            pages, runtime=runtime, record_attempt=recorder.record, store=self._store
+        )
         run = open_extraction_run(
             session,
             task_run_id=task_run_id,

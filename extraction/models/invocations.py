@@ -54,6 +54,7 @@ Design: `docs/DESIGN_AI.md` §4.5 · Verification: `tests/extraction/models/test
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from uuid import UUID
@@ -142,6 +143,7 @@ class InvocationRecord:
     private_raw_response: str | None = field(default=None, repr=False)
     reader_page_index: int | None = None
     reader_attempt_number: int | None = None
+    reader_question_packet: Mapping[str, object] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Refuse a count or a cost that is not exactly an integer, before it can be stored."""
@@ -185,6 +187,10 @@ class InvocationRecord:
             raise ValueError("bound_pt must be a finite, non-negative Decimal")
         if self.private_raw_response is not None and not isinstance(self.private_raw_response, str):
             raise TypeError("private_raw_response must be a string or None")
+        if self.reader_question_packet is not None and not isinstance(
+            self.reader_question_packet, Mapping
+        ):
+            raise TypeError("reader_question_packet must be a JSON-safe mapping or None")
         if (self.reader_page_index is None) != (self.reader_attempt_number is None):
             raise ValueError(
                 "reader_page_index and reader_attempt_number must be recorded together"

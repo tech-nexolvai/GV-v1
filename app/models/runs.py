@@ -246,6 +246,10 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
     """Exact raw provider answer, when returned. Private audit data; never a public response field."""
     reader_page_index: Mapped[int | None] = mapped_column(Integer(), default=None)
     reader_attempt_number: Mapped[int | None] = mapped_column(Integer(), default=None)
+    reader_question_packet: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), default=None
+    )
+    """Hash-bound description of the exact two images and transform used for this attempt."""
 
     __table_args__ = (
         CheckConstraint("model_id <> ''", name="model_invocation_model_id"),

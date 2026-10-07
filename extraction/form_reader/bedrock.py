@@ -42,6 +42,7 @@ class AttemptUsage:
     page_index: int = 0
     raw_response_text: str | None = field(default=None, repr=False)
     attempt_number: int = 1
+    question_packet: Mapping[str, object] | None = field(default=None, repr=False)
 
 
 UsageRecorder = Callable[[AttemptUsage], None]

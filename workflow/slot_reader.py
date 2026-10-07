@@ -25,14 +25,16 @@ Source: issues #987, #992 · Verification: `tests/workflow/test_slot_reader.py`
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
+from evidence.coordinates import PageTransform
 from evidence.crop import RenderedPage, _crop_rgb, encode_png
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.geometry.rows import MEASURED_SETTINGS, Box, RowSettings
@@ -125,13 +127,13 @@ def fraction_bar_from_environment(environ: Mapping[str, str] = os.environ) -> Fr
     """The fraction-bar lengths as stated; refused, never filled in, when one is missing."""
     values: dict[str, Decimal] = {}
     missing: list[str] = []
-    for name, field in FRACTION_BAR_ENV.items():
+    for name, setting_name in FRACTION_BAR_ENV.items():
         raw = environ.get(name, "").strip()
         if not raw:
             missing.append(name)
             continue
         try:
-            values[field] = Decimal(raw)
+            values[setting_name] = Decimal(raw)
         except InvalidOperation as error:
             raise ValueError(f"{name} is not a number: {raw!r}") from error
     if missing:
@@ -156,6 +158,8 @@ class SlotReaderRuntime:
     product: ProductType | None = None
     """The drawing set's product, told to each crop reader as one line of context (#994). Set per
     package by the extraction stage; `None` sends exactly the pre-#994 request."""
+    question_packets: bool = False
+    """Opt-in for full-view plus close-up packets; the existing one-crop route stays default."""
 
     @property
     def prompt_id(self) -> str:
@@ -188,6 +192,7 @@ class SlotReaderRuntime:
         return (
             f"readers={self.form.reader_ids[0]}|{self.form.reader_ids[1]};"
             f"prompt={self.prompt_id}+{WALL_PROMPT_ID};stacked_agreement={self.allow_stacked};"
+            f"question_packets={self.question_packets};"
             f"detail={detail}"
         )
 
@@ -211,6 +216,7 @@ def configured_slot_reader(
         row_settings=MEASURED_SETTINGS,
         fraction_bar=fraction_bar_from_environment(environ),
         allow_stacked=bool(getattr(settings, "slot_reader_stacked_agreement", False)),
+        question_packets=bool(getattr(settings, "claude_reader_enabled", False)),
     )
 
 
@@ -225,6 +231,7 @@ class SlotPage:
     rows: RowsAndInk
     ink: PageInk | None
     """Whose ink each word is (#979), at the render's dpi; `None` holds every reading back."""
+    transform: PageTransform | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +281,8 @@ class PageSlotResult:
     vetoed: tuple[int | None, ...] = ()
     """Sealed readings the drawn length rejected (#992), by slot (`None` for the overall)."""
     walls: PageWalls | None = None
+    owner_candidate_ids: Mapping[str, UUID] = field(default_factory=dict)
+    wall_candidate_id: UUID | None = None
 
 
 def _pixels(rows: RowsAndInk, box: Box, rendered: RenderedPage) -> tuple[int, int, int, int]:
@@ -291,6 +300,91 @@ def _crop_png(rendered: RenderedPage, box: tuple[int, int, int, int]) -> bytes:
     return encode_png(right - left, bottom - top, _crop_rgb(rendered, box))
 
 
+def _span_view_png(page: SlotPage, owner: PlannedOwner) -> bytes:
+    """The full vendor page with only the chosen span boxed; the box never supplies a value."""
+    first = page.rows.to_pixels(owner.x0, owner.line_y)
+    second = page.rows.to_pixels(owner.x1, owner.line_y)
+    left, right = sorted((first[0], second[0]))
+    center_y = (first[1] + second[1]) // 2
+    outline = (
+        max(0, left),
+        max(0, center_y - 14),
+        min(page.rendered.width_px, max(left + 1, right)),
+        min(page.rendered.height_px, center_y + 14),
+    )
+    return _marked_png(
+        page.rendered,
+        (0, 0, page.rendered.width_px, page.rendered.height_px),
+        ends_x=(),
+        line=None,
+        thickness=max(2, page.rendered.dpi // 120),
+        max_side=1800,
+        outline=outline,
+        mark_color=bytes((255, 0, 0)),
+    )
+
+
+def _transform_packet(transform: PageTransform | None) -> dict[str, object] | None:
+    if transform is None:
+        return None
+    return {
+        "dpi": transform.dpi,
+        "rotation": transform.rotation,
+        "media_box": [str(value) for value in transform.media_box],
+        "crop_box": [str(value) for value in transform.crop_box],
+    }
+
+
+def _question_packet(
+    page: SlotPage,
+    *,
+    question_id: str,
+    candidate_id: UUID,
+    prompt_id: str,
+    full_view_png: bytes,
+    close_up_png: bytes,
+    store: ArtifactStore | None,
+) -> dict[str, object]:
+    """Bind the exact encoded images, prompt, candidate key and coordinate transform."""
+    from io import BytesIO
+
+    full_hash = hashlib.sha256(full_view_png).hexdigest()
+    close_hash = hashlib.sha256(close_up_png).hexdigest()
+    full_key: str | None = None
+    close_key: str | None = None
+    if store is not None:
+        if page.transform is None:
+            raise ValueError("a persisted reader packet requires the published PageTransform")
+        base = f"reader-questions/{page.document_version_id}/pages/{page.page_index}"
+        full_key = f"{base}/full-{full_hash}.png"
+        close_key = f"{base}/close-{close_hash}.png"
+        full_saved = store.put(full_key, BytesIO(full_view_png), content_type="image/png")
+        close_saved = store.put(close_key, BytesIO(close_up_png), content_type="image/png")
+        if full_saved.sha256 != full_hash or close_saved.sha256 != close_hash:
+            raise ValueError("stored reader question image hash does not match its request bytes")
+    packet_body: dict[str, object] = {
+        "question_id": question_id,
+        "document_version_id": str(page.document_version_id),
+        "page_index": page.page_index,
+        "source_page_sha256": page.rendered.page_content_hash,
+        "prompt_id": prompt_id,
+        "candidate_ids": [str(candidate_id)],
+        "page_transform": _transform_packet(page.transform),
+        "images": {
+            "full_view": {"sha256": full_hash, "storage_key": full_key},
+            "close_up": {"sha256": close_hash, "storage_key": close_key},
+        },
+    }
+    packet_body["packet_sha256"] = hashlib.sha256(
+        json.dumps(packet_body, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return packet_body
+
+
+def _owner_candidate_key(owner_index: int | None) -> str:
+    return "overall" if owner_index is None else f"slot:{owner_index}"
+
+
 #: E3's mark colour for the row and its ends: a colour neither the vendor's black nor GV's red,
 #: yellow or blue uses.
 _MAGENTA: Final = bytes((230, 0, 200))
@@ -304,6 +398,8 @@ def _marked_png(
     line: tuple[int, int, int] | None,
     thickness: int,
     max_side: int,
+    outline: tuple[int, int, int, int] | None = None,
+    mark_color: bytes = _MAGENTA,
 ) -> bytes:
     """A crop of the render with the row marked (E3's pictures), shrunk to `max_side` at most.
 
@@ -319,7 +415,7 @@ def _marked_png(
         y0, y1 = max(0, y0), min(height, y1)
         if x0 >= x1 or y0 >= y1:
             return
-        run = _MAGENTA * (x1 - x0)
+        run = mark_color * (x1 - x0)
         for row in range(y0, y1):
             rgb[row * stride + x0 * 3 : row * stride + x1 * 3] = run
 
@@ -329,6 +425,12 @@ def _marked_png(
     if line is not None:
         x0, x1, y = line
         paint(x0 - left, y - top - half, x1 - left, y - top - half + thickness)
+    if outline is not None:
+        x0, y0, x1, y1 = outline
+        paint(x0 - left, y0 - top, x1 - left, y0 - top + thickness)
+        paint(x0 - left, y1 - top - thickness, x1 - left, y1 - top)
+        paint(x0 - left, y0 - top, x0 - left + thickness, y1 - top)
+        paint(x1 - left - thickness, y0 - top, x1 - left, y1 - top)
     factor = -(-max(width, height) // max_side)
     if factor <= 1:
         return encode_png(width, height, bytes(rgb))
@@ -397,6 +499,7 @@ def read_slot_pages(
     runtime: SlotReaderRuntime,
     record_attempt: Callable[[AttemptUsage], None],
     wall_ends: Callable[[SlotPage], frozenset[WallEnd]] = lambda _page: frozenset(),
+    store: ArtifactStore | None = None,
 ) -> tuple[PageSlotResult, ...]:
     """Read every page's slots: plan, crop, ask the readers in parallel, seal, name, map.
 
@@ -411,6 +514,8 @@ def read_slot_pages(
     the sealed walls are not fed to it — the wall-end kind rule is not decided (#987) — so by
     default none does and no piece takes its kind from its position.
     """
+    if runtime.question_packets and store is None:
+        raise ValueError("reader question packets require a private artifact store")
     readers = runtime.form.reader_ids
     planned: list[tuple[SlotPage, SlotPlan]] = []
     jobs: list[CropJob] = []
@@ -418,7 +523,11 @@ def read_slot_pages(
     walls_asked: dict[
         int, tuple[bytes, bytes, tuple[int, int, int, int], tuple[int, int, int, int], HatchSeen]
     ] = {}
+    owner_candidate_ids: dict[int, dict[str, UUID]] = {}
+    wall_candidate_ids: dict[int, UUID] = {}
     for page in pages:
+        if runtime.question_packets and page.transform is None:
+            raise ValueError("reader question packets require the published PageTransform")
         if page.ink is not None and page.ink.dpi != page.rendered.dpi:
             raise ValueError(
                 f"page {page.page_index}'s ink was read at {page.ink.dpi} dpi but its picture is "
@@ -432,6 +541,8 @@ def read_slot_pages(
         )
         planned.append((page, plan))
         owners = [*plan.slots, *([plan.overall] if plan.overall is not None else [])]
+        page_candidate_ids = {_owner_candidate_key(owner.index): uuid4() for owner in owners}
+        owner_candidate_ids[page.page_index] = page_candidate_ids
         for owner in owners:
             for position, label in enumerate(owner.labels):
                 key = _key(page.page_index, owner.index, position)
@@ -453,13 +564,58 @@ def read_slot_pages(
                 else:
                     wanted = readers
                 png = _crop_png(page.rendered, crop_px)
-                jobs.extend(CropJob(key, model, page.page_index, png) for model in wanted)
+                if runtime.question_packets:
+                    view_png = _span_view_png(page, owner)
+                    packet = _question_packet(
+                        page,
+                        question_id=key,
+                        candidate_id=page_candidate_ids[_owner_candidate_key(owner.index)],
+                        prompt_id=runtime.prompt_id,
+                        full_view_png=view_png,
+                        close_up_png=png,
+                        store=store,
+                    )
+                    jobs.extend(
+                        CropJob(
+                            key,
+                            model,
+                            page.page_index,
+                            png,
+                            view_png,
+                            question_packet=packet,
+                        )
+                        for model in wanted
+                    )
+                else:
+                    jobs.extend(CropJob(key, model, page.page_index, png) for model in wanted)
         wall_pictures_for = _wall_job_pictures(page, plan, runtime.wall_settings)
         if wall_pictures_for is not None:
             walls_asked[page.page_index] = wall_pictures_for
+            wall_candidate_ids[page.page_index] = uuid4()
             row_png, view_png = wall_pictures_for[0], wall_pictures_for[1]
+            wall_packet = (
+                _question_packet(
+                    page,
+                    question_id=_walls_key(page.page_index),
+                    candidate_id=wall_candidate_ids[page.page_index],
+                    prompt_id=WALL_PROMPT_ID,
+                    full_view_png=view_png,
+                    close_up_png=row_png,
+                    store=store,
+                )
+                if runtime.question_packets
+                else None
+            )
             jobs.extend(
-                CropJob(_walls_key(page.page_index), model, page.page_index, row_png, view_png)
+                CropJob(
+                    _walls_key(page.page_index),
+                    model,
+                    page.page_index,
+                    row_png,
+                    view_png,
+                    wall_question=True,
+                    question_packet=wall_packet,
+                )
                 for model in readers
             )
 
@@ -549,6 +705,8 @@ def read_slot_pages(
                 row_hold=hold,
                 vetoed=vetoed,
                 walls=walls,
+                owner_candidate_ids=owner_candidate_ids[page.page_index],
+                wall_candidate_id=wall_candidate_ids.get(page.page_index),
             )
         )
     return tuple(results)
@@ -911,6 +1069,7 @@ def persist_slot_readings(
                         f"reader:{source}:{text}" for source, text in label.outcome.reader_texts
                     )
             candidate = ObservationCandidate(
+                id=result.owner_candidate_ids.get(_owner_candidate_key(index)),
                 document_version_id=result.document_version_id,
                 page_id=result.page_id,
                 extraction_run_id=extraction_run_id,
@@ -991,6 +1150,7 @@ def _persist_walls(
     flags.append(f"hatch:left={walls.hatch.left},right={walls.hatch.right}")
     flags.append(_box_flag("view-box", walls.view_box_px))
     candidate = ObservationCandidate(
+        id=result.wall_candidate_id,
         document_version_id=result.document_version_id,
         page_id=result.page_id,
         extraction_run_id=extraction_run_id,

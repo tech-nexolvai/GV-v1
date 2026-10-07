@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     # limits, and the whole-page reading stays for a page with no row. The fraction-bar lengths
     # (`GV_READER_FRACTION_*`) are required by the worker when it is on.
     slot_reader_enabled: bool = False
+    # Grounded full-view plus close-up reader route (#1001 onward). It is separate from the
+    # existing one-crop route and defaults off until every proof gate is met.
+    claude_reader_enabled: bool = False
     # The admin's yes/no (#987): may a stacked fraction seal when two readers of different makers
     # give the identical text on a code-made crop? Off: a stacked fraction goes to the person.
     slot_reader_stacked_agreement: bool = False
@@ -181,6 +184,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _form_reader_bounds_are_stated(self) -> Settings:
+        if self.claude_reader_enabled and not self.slot_reader_enabled:
+            raise ValueError(
+                "GV_CLAUDE_READER_ENABLED requires GV_SLOT_READER_ENABLED and its form-reader "
+                "runtime; the Claude route must not run as an ungrounded whole-page fallback"
+            )
         if self.slot_reader_enabled and not self.form_reader_enabled:
             raise ValueError(
                 "GV_SLOT_READER_ENABLED requires GV_FORM_READER_ENABLED: the slot reader uses the "
