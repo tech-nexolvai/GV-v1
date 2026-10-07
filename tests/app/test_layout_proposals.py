@@ -252,6 +252,7 @@ def test_required_inputs_returns_the_layout_proposal_beside_choices(session: Ses
         "model_id": "amazon.nova-lite-v1:0",
         "prompt_id": "layout-discriminator-v1",
         "confirmed": False,
+        "requires_confirmation": True,
     }
 
 
