@@ -86,6 +86,14 @@ class Settings(BaseSettings):
     # The measured reading guidance quotes the client's drawings, so it lives in a private file
     # outside this public repository; required when the form reader is on (#972).
     form_reader_prompt_file: Path | None = None
+    # Slot reads (#987): code finds each slot and cuts its crop; two readers read the crops. Off by
+    # default, and only with the form reader on — it uses the form reader's readers, prices and
+    # limits, and the whole-page reading stays for a page with no row. The fraction-bar lengths
+    # (`GV_READER_FRACTION_*`) are required by the worker when it is on.
+    slot_reader_enabled: bool = False
+    # The admin's yes/no (#987): may a stacked fraction seal when two readers of different makers
+    # give the identical text on a code-made crop? Off: a stacked fraction goes to the person.
+    slot_reader_stacked_agreement: bool = False
 
     hatchet_token: str = Field(default="", description="Hatchet client token")
     """Empty by default, and the emptiness is caught where it matters. `workflow/hatchet_app.py` builds a
@@ -173,6 +181,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _form_reader_bounds_are_stated(self) -> Settings:
+        if self.slot_reader_enabled and not self.form_reader_enabled:
+            raise ValueError(
+                "GV_SLOT_READER_ENABLED requires GV_FORM_READER_ENABLED: the slot reader uses the "
+                "form reader's readers, prices and limits"
+            )
+        if self.slot_reader_stacked_agreement and not self.slot_reader_enabled:
+            raise ValueError(
+                "GV_SLOT_READER_STACKED_AGREEMENT only means something with GV_SLOT_READER_ENABLED"
+            )
         if not self.form_reader_enabled:
             return self
         if not self.form_reader_primary_model.strip() or not self.form_reader_second_model.strip():

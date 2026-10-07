@@ -256,6 +256,7 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
     from workflow.findings_bedrock import configured_findings_composer
     from workflow.form_reader import configured_form_reader
     from workflow.hatchet_app import build_worker
+    from workflow.slot_reader import configured_slot_reader
     from workflow.stages import DatabaseStages, missing_space_from_environment
 
     try:
@@ -287,7 +288,8 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
             store=LocalStore(Path(storage_root)),
             findings_composer=configured_findings_composer(settings),
             missing_space=missing_space,
-            form_reader=configured_form_reader(settings),
+            form_reader=(form_reader := configured_form_reader(settings)),
+            slot_reader=configured_slot_reader(settings, form_reader),
         ),
     )
     logger.info("worker starting")

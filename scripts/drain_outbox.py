@@ -305,7 +305,10 @@ def _stages(
     from workflow.glyph_route import glyph_route_from_environment
     from workflow.reader_pictures import picture_settings_from_environment
     from workflow.reading_agent import reading_agent_from_environment
+    from workflow.slot_reader import configured_slot_reader
 
+    settings = Settings()  # type: ignore[call-arg]
+    form_reader = configured_form_reader(settings)
     return DatabaseStages(
         store,
         operands=None,
@@ -313,7 +316,7 @@ def _stages(
         association=association,
         localized_ocr=localized,
         automatic_typing=automatic_typing,
-        findings_composer=configured_findings_composer(Settings()),  # type: ignore[call-arg]
+        findings_composer=configured_findings_composer(settings),
         # Off unless GV_GLYPH_TEMPLATES names a template set a person labelled (#756).
         glyph_route=glyph_route_from_environment(),
         # Off unless GV_READING_AGENT is on, and then every one of its settings is required (#757).
@@ -332,7 +335,9 @@ def _stages(
         # Unstated, building the stages fails with an error naming the variable, so no page is
         # read without it.
         missing_space=missing_space_from_environment(),
-        form_reader=configured_form_reader(Settings()),  # type: ignore[call-arg]
+        form_reader=form_reader,
+        # Off unless GV_SLOT_READER_ENABLED, and then only beside the form reader (#987).
+        slot_reader=configured_slot_reader(settings, form_reader),
         # Required wherever parts are suggested, which is wherever the reader's settings are (#897).
         part_pictures=_part_picture_configuration(  # type: ignore[arg-type]
             required=association is not None

@@ -1,0 +1,162 @@
+"""The crop readers, against a fake Bedrock client (#987). Verification for
+`extraction/slot_reader/bedrock.py`. No network, no credentials, no client values."""
+
+from __future__ import annotations
+
+import json
+import re
+import threading
+from collections.abc import Callable, Mapping
+from typing import Any
+
+import pytest
+
+from evidence.crop import encode_png
+from extraction.form_reader.bedrock import AttemptUsage
+from extraction.slot_reader.bedrock import (
+    CROP_PROMPT,
+    CropJob,
+    build_crop_request,
+    read_crops_parallel,
+)
+
+QWEN = "qwen.qwen3-vl-235b-a22b"
+KIMI = "us.moonshotai.kimi-k3"
+PNG = encode_png(2, 2, bytes(12))
+
+
+def reply(payload: object) -> dict[str, Any]:
+    text = payload if isinstance(payload, str) else json.dumps(payload)
+    return {
+        "output": {"message": {"content": [{"text": text}]}},
+        "usage": {"inputTokens": 10, "outputTokens": 5},
+    }
+
+
+def good(text: str) -> dict[str, object]:
+    return {
+        "text": text,
+        "stacked": False,
+        "combined": False,
+        "readable": True,
+        "no_dimension": False,
+    }
+
+
+class FakeClients:
+    def __init__(self, answer: Callable[[dict[str, Any]], Mapping[str, Any]]) -> None:
+        self.answer = answer
+        self.requests: list[dict[str, Any]] = []
+        self.lock = threading.Lock()
+
+    def for_current_thread(self) -> FakeClients:
+        return self
+
+    def converse(self, **kwargs: Any) -> Mapping[str, Any]:
+        with self.lock:
+            self.requests.append(kwargs)
+        return self.answer(kwargs)
+
+
+class Rates:
+    def rate_for(self, model_id: str) -> object | None:
+        return object()
+
+
+def run(clients: FakeClients, jobs: list[CropJob], **overrides: Any) -> dict[tuple[str, str], Any]:
+    attempts: list[AttemptUsage] = []
+    options: dict[str, Any] = {
+        "clients": clients,
+        "rates": Rates(),
+        "calls_per_minute": {QWEN: 6000, KIMI: 6000},
+        "max_concurrent_calls": 4,
+        "max_tokens": 400,
+        "max_throttle_retries": 1,
+        "retry_backoff_seconds": 0.001,
+        "record_attempt": attempts.append,
+    }
+    options.update(overrides)
+    return read_crops_parallel(jobs, **options)
+
+
+def test_kimi_is_asked_at_low_effort_and_qwen_at_temperature_zero() -> None:
+    kimi = build_crop_request(model_id=KIMI, crop_png=PNG, max_tokens=400)
+    qwen = build_crop_request(model_id=QWEN, crop_png=PNG, max_tokens=400)
+    assert kimi["outputConfig"] == {"effort": "low"}
+    assert "temperature" not in kimi["inferenceConfig"]
+    assert qwen["inferenceConfig"]["temperature"] == 0 and "outputConfig" not in qwen
+    content = qwen["messages"][0]["content"]
+    assert "image" in content[0] and content[1]["text"] == CROP_PROMPT
+
+
+def test_the_prompt_never_asks_for_the_parts_of_a_number() -> None:
+    """Whole, numerator and denominator are never used (E2 guard 2), so they are not asked for."""
+    for word in ("whole", "numerator", "denominator"):
+        assert f'"{word}"' not in CROP_PROMPT
+
+
+def test_the_prompts_example_numbers_are_invented() -> None:
+    """The prompt is public; its only numbers are the invented examples written here."""
+    assert set(re.findall(r"\d+", CROP_PROMPT)) <= {"250", "9", "7", "8", "4", "1", "6"}
+
+
+def test_every_job_is_answered_under_its_own_key() -> None:
+    clients = FakeClients(lambda request: reply(good(request["modelId"][:4])))
+    jobs = [CropJob(f"k{i}", model, 0, PNG) for i in range(3) for model in (QWEN, KIMI)]
+
+    answers = run(clients, jobs)
+
+    assert set(answers) == {(job.key, job.model_id) for job in jobs}
+    assert answers[("k1", QWEN)].text == "qwen"
+    assert answers[("k2", KIMI)].text == "us.m"
+
+
+def test_a_malformed_answer_is_asked_once_more_then_abstains() -> None:
+    clients = FakeClients(lambda _request: reply("not json"))
+    answers = run(clients, [CropJob("k", QWEN, 0, PNG)])
+
+    assert answers == {("k", QWEN): None}
+    assert len(clients.requests) == 2
+
+
+def test_an_answer_with_a_wrong_type_is_malformed_not_coerced() -> None:
+    payload = good('2"') | {"readable": "yes"}
+    clients = FakeClients(lambda _request: reply(payload))
+    assert run(clients, [CropJob("k", QWEN, 0, PNG)]) == {("k", QWEN): None}
+
+
+def test_a_throttled_call_is_retried() -> None:
+    calls = {"n": 0}
+
+    class ThrottlingException(Exception):
+        pass
+
+    def answer(_request: dict[str, Any]) -> Mapping[str, Any]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ThrottlingException("slow down")
+        return reply(good('2"'))
+
+    answers = run(FakeClients(answer), [CropJob("k", QWEN, 0, PNG)])
+    answered = answers[("k", QWEN)]
+    assert answered is not None and answered.text == '2"'
+
+
+def test_an_unpriced_or_unpaced_reader_is_refused_before_any_call() -> None:
+    clients = FakeClients(lambda _request: reply(good('2"')))
+
+    class NoRates:
+        def rate_for(self, model_id: str) -> object | None:
+            return None
+
+    with pytest.raises(ValueError, match="no stated price"):
+        run(clients, [CropJob("k", QWEN, 0, PNG)], rates=NoRates())
+    with pytest.raises(ValueError, match="pacing"):
+        run(clients, [CropJob("k", QWEN, 0, PNG)], calls_per_minute={KIMI: 60})
+    assert clients.requests == []
+
+
+def test_a_crop_is_read_once_by_each_reader() -> None:
+    clients = FakeClients(lambda _request: reply(good('2"')))
+    with pytest.raises(ValueError):
+        run(clients, [CropJob("k", QWEN, 0, PNG), CropJob("k", QWEN, 0, PNG)])

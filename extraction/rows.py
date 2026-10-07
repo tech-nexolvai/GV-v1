@@ -23,7 +23,7 @@ Source: issue #980 · Verification: `tests/extraction/test_rows.py`
 from __future__ import annotations
 
 import io
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -41,10 +41,16 @@ from extraction.geometry.rows import (
     RowSettings,
     build_rows,
 )
-from extraction.reader import UnreadablePdf, page_frame
+from extraction.reader import UnreadablePdf, page_frame, pixel_placement
 from extraction.stamp_text import drawing_ink, path_ink, stamps_only
 
-__all__ = ["PageRowCandidates", "countertop_row_candidates", "ink_from_page"]
+__all__ = [
+    "PageRowCandidates",
+    "RowsAndInk",
+    "countertop_row_candidates",
+    "ink_from_page",
+    "page_rows_and_ink",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +172,64 @@ def _stamp_boxes(data: bytes, page_index: int) -> tuple[Box, ...]:
         return tuple(boxes)
 
 
+@dataclass(frozen=True, slots=True)
+class RowsAndInk:
+    """One page's rows, with the ink they were built from and the page's pixel placement.
+
+    For a caller that needs to look again at the same strokes the rows came from — Phase 4's slot
+    reader assembles each label's whole run of strokes and cuts its crop (#987) — without
+    flattening and reading the page a second time, and so without a second copy that could
+    disagree with the first.
+    """
+
+    candidates: PageRowCandidates
+    ink: PageInk
+    """The page's black and grey ink, in pdfplumber's frame (page points, `top` downward)."""
+    to_pixels: Callable[[Decimal, Decimal], tuple[int, int]]
+    """Where a pdfplumber `(x, top)` lands in the page's pixels at the dpi asked for: the placement
+    `extraction/ink.py` places every word by, so a crop and the ink check share one frame."""
+
+
+def page_rows_and_ink(
+    data: bytes, page_index: int, *, dpi: int, settings: RowSettings
+) -> RowsAndInk:
+    """`countertop_row_candidates`, also handing back the ink and the pixel placement it used.
+
+    Raises `UnreadablePdf` exactly where `countertop_row_candidates` does.
+    """
+    drawings = _stamp_boxes(data, page_index)
+    flattened = stamps_only(data, page_index)
+    try:
+        with pdfplumber.open(io.BytesIO(flattened)) as document:
+            page = document.pages[page_index]
+            transform, height = page_frame(page, dpi)
+            ink = ink_from_page(page, drawing_boxes=drawings)
+            pixel = pixel_placement(page, dpi)
+    except UnreadablePdf:
+        raise
+    except Exception as error:
+        raise UnreadablePdf(
+            f"page {page_index}'s pasted drawings could not be read for their rows: {error}"
+        ) from error
+
+    def place(x: Decimal, top: Decimal) -> StoredPoint:
+        return transform.to_stored(transform.to_image(PdfPoint(x=x, y=height - top)))
+
+    def to_pixels(x: Decimal, top: Decimal) -> tuple[int, int]:
+        point = pixel(x, top)
+        return (point.x, point.y)
+
+    return RowsAndInk(
+        candidates=PageRowCandidates(
+            page_index=page_index,
+            rows=build_rows(ink, settings, place=place),
+            drawings=len(drawings),
+        ),
+        ink=ink,
+        to_pixels=to_pixels,
+    )
+
+
 def countertop_row_candidates(
     data: bytes, page_index: int, *, dpi: int, settings: RowSettings
 ) -> PageRowCandidates:
@@ -183,25 +247,4 @@ def countertop_row_candidates(
             place of a refusal: a page with no rows and a page that could not be read are different
             answers.
     """
-    drawings = _stamp_boxes(data, page_index)
-    flattened = stamps_only(data, page_index)
-    try:
-        with pdfplumber.open(io.BytesIO(flattened)) as document:
-            page = document.pages[page_index]
-            transform, height = page_frame(page, dpi)
-            ink = ink_from_page(page, drawing_boxes=drawings)
-    except UnreadablePdf:
-        raise
-    except Exception as error:
-        raise UnreadablePdf(
-            f"page {page_index}'s pasted drawings could not be read for their rows: {error}"
-        ) from error
-
-    def place(x: Decimal, top: Decimal) -> StoredPoint:
-        return transform.to_stored(transform.to_image(PdfPoint(x=x, y=height - top)))
-
-    return PageRowCandidates(
-        page_index=page_index,
-        rows=build_rows(ink, settings, place=place),
-        drawings=len(drawings),
-    )
+    return page_rows_and_ink(data, page_index, dpi=dpi, settings=settings).candidates
