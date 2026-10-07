@@ -59,6 +59,11 @@ class FindingsPdfInput:
     findings: tuple[StoredFinding, ...]
     changed_values: ChangedValues | None = None
     signed_review: SignedReview | None = None
+    product_type: str | None = None
+    """What the reviewer said the drawing set is for (#994), e.g. ``countertop``. When stated, only
+    that product's checks were run and the cover says so, so a check that was not run can never be
+    read as one that passed. ``None`` — a set from before #994 — draws nothing: every product's
+    checks ran, and the cover is exactly what it was."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.package_revision_id, UUID):
@@ -71,6 +76,10 @@ class FindingsPdfInput:
             not isinstance(self.vendor, str) or not self.vendor.strip()
         ):
             raise ValueError("vendor must be a non-empty string when supplied")
+        if self.product_type is not None and (
+            not isinstance(self.product_type, str) or not self.product_type.strip()
+        ):
+            raise ValueError("product_type must be a non-empty string when supplied")
         if not isinstance(self.findings, tuple) or not self.findings:
             raise ValueError("findings must be a non-empty tuple")
         if not all(isinstance(finding, StoredFinding) for finding in self.findings):
@@ -285,6 +294,13 @@ class _Document:
             _PAGE_HEIGHT - 362,
             f"VENDOR {_text(self.source.vendor)}",
         )
+        if self.source.product_type is not None:
+            product = self.source.product_type.strip().upper()
+            self.canvas.drawString(
+                _MARGIN,
+                _PAGE_HEIGHT - 380,
+                f"DRAWING SET FOR {product} — ONLY {product} CHECKS WERE RUN",
+            )
 
         cards = (("PASS", passed), ("FAIL", failed), ("REVIEW", review))
         card_width = (_CONTENT_WIDTH - 20) / 3

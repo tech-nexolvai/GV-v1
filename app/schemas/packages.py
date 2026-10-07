@@ -32,6 +32,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.document import DocumentKind
+from vocabulary.semantic_types import ProductType
 
 #: A lowercase hex SHA-256, matched against the same shape the database checks
 #: (`source_artifact_sha256`). Validated at the boundary as well as in the schema so a malformed hash
@@ -52,6 +53,28 @@ class PackageCreate(BaseModel):
             "vendor name is worse than an absent one, because it reads as a fact."
         ),
     )
+    product_type: ProductType = Field(
+        description=(
+            "What product this drawing set is for, chosen by the reviewer (#994). Only the published "
+            "checks for this product are run, and the readers are told it. Must be one of the "
+            "values `GET /product-types` lists: a product with no published check is refused, "
+            "because a set checked against nothing would look exactly like a clean one."
+        ),
+    )
+
+
+class ProductTypeChoice(BaseModel):
+    """One product a drawing set may be for, as the upload screen offers it (#994).
+
+    Listed from the published rulebook rather than typed into the UI, so a product appears only
+    once there is at least one check for it.
+    """
+
+    value: ProductType
+    label: str
+    """Plain English for the dropdown, e.g. `Countertop`. Display only; `value` is what is sent."""
+    published_checks: int
+    """How many published rules check this product — what choosing it will run."""
 
 
 class PackageOut(BaseModel):
@@ -67,6 +90,9 @@ class PackageOut(BaseModel):
     id: UUID
     project_id: UUID
     vendor: str | None
+    product_type: ProductType | None
+    """What the drawing set is for (#994). `null` for a package created before the reviewer could
+    say — its checks run for every product, as they always did."""
     created_at: datetime
     current_revision_id: UUID
     current_revision_number: int

@@ -46,6 +46,7 @@
     "src/components/measure/settingPointers.ts",
     "src/components/measure/settingSources.ts",
     "src/components/settings/CompanySettingsList.tsx",
-    "src/components/settings/companySettings.ts"
+    "src/components/settings/companySettings.ts",
+    "src/components/upload/ProductTypeField.tsx"
   ]
 }

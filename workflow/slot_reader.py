@@ -39,7 +39,12 @@ from extraction.geometry.rows import MEASURED_SETTINGS, Box, RowSettings
 from extraction.glyph_bands import FractionBarGeometry, stacked_fractions
 from extraction.ink import InkAt, InkClass, InkLabel, PageInk
 from extraction.rows import RowsAndInk
-from extraction.slot_reader.bedrock import CROP_PROMPT_ID, CropJob, read_crops_parallel
+from extraction.slot_reader.bedrock import (
+    CROP_PROMPT_ID,
+    CropJob,
+    crop_prompt_id,
+    read_crops_parallel,
+)
 from extraction.slot_reader.kinds import KindProposal, PieceKind, WallEnd, propose_kind
 from extraction.slot_reader.labels import RowHold, counter_break_hold, expand_label, row_hold
 from extraction.slot_reader.mapping import PieceReading, SlotMapping, map_row
@@ -73,6 +78,7 @@ from extraction.slot_reader.walls import (
     seal_walls,
     wall_pictures,
 )
+from vocabulary.semantic_types import ProductType
 from workflow.form_reader import FormReaderRuntime
 from workflow.layout_proposals import (
     WALL_CANDIDATE_TEXT,
@@ -147,6 +153,14 @@ class SlotReaderRuntime:
     Off unless the deployment says so."""
     wall_settings: WallSettings = E3_WALL_SETTINGS
     """The wall pictures' and hatch check's lengths (#992): E3's unless a caller states others."""
+    product: ProductType | None = None
+    """The drawing set's product, told to each crop reader as one line of context (#994). Set per
+    package by the extraction stage; `None` sends exactly the pre-#994 request."""
+
+    @property
+    def prompt_id(self) -> str:
+        """The crop prompt's recorded identity, naming the product when the requests carry it."""
+        return crop_prompt_id(self.product)
 
     @property
     def text_lane_reader(self) -> str:
@@ -173,7 +187,7 @@ class SlotReaderRuntime:
         detail = hashlib.sha256(self.config_detail.encode()).hexdigest()[:16]
         return (
             f"readers={self.form.reader_ids[0]}|{self.form.reader_ids[1]};"
-            f"prompt={CROP_PROMPT_ID}+{WALL_PROMPT_ID};stacked_agreement={self.allow_stacked};"
+            f"prompt={self.prompt_id}+{WALL_PROMPT_ID};stacked_agreement={self.allow_stacked};"
             f"detail={detail}"
         )
 
@@ -460,6 +474,7 @@ def read_slot_pages(
         max_throttle_retries=form.max_throttle_retries,
         retry_backoff_seconds=form.retry_backoff_seconds,
         record_attempt=record_attempt,
+        product=runtime.product,
     )
 
     label_answers: dict[tuple[str, str], ReaderAnswer | None] = {
@@ -782,8 +797,12 @@ def persist_slot_readings(
     reader_ids: tuple[str, str],
     results: Sequence[PageSlotResult],
     store: ArtifactStore | None = None,
+    prompt_id: str = CROP_PROMPT_ID,
 ) -> int:
     """Persist one candidate per slot and overall, and candidate-only links for mapped ones.
+
+    `prompt_id` is the crop prompt the readings were taken with — `SlotReaderRuntime.prompt_id`,
+    which names the drawing set's product when the readers were told it (#994).
 
     What Phase 5's screen needs rides on the candidate as plain flags, because the current schema
     has no columns for it: `slot:<i>` or `slot:overall`, `slot-box:` and `crop-box:` in the page's
@@ -926,7 +945,7 @@ def persist_slot_readings(
                     candidate_id=candidates[proposal.slot_index].id,
                     placement_verified=True,
                     model_id=f"{reader_ids[0]} + {reader_ids[1]}",
-                    prompt_id=CROP_PROMPT_ID,
+                    prompt_id=prompt_id,
                 )
             )
     session.add_all(rows)

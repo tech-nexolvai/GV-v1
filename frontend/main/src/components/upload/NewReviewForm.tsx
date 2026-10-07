@@ -1,5 +1,6 @@
 /**
- * Start a review: who sent the drawings, the architect's set, and the vendor's shop drawings.
+ * Start a review: who sent the drawings, what product they are for, the architect's set, and the
+ * vendor's shop drawings.
  *
  * This is the first thing on the start screen, where a chat product puts its composer — starting a
  * review *is* the first message. It replaces a modal that opened with a made-up vendor already typed
@@ -12,10 +13,19 @@
 
 import { useRef, useState } from 'react';
 import { ArrowUp, FileText, Loader2, Plus, X } from 'lucide-react';
+import { listProductTypes } from '../../api/client';
 import { createPackage } from '../../api/upload';
 import type { UploadProgress } from '../../api/upload';
-import { describeUploadFailure, looksLikeTheSameFile } from '../../api/uploadState';
+import { useAsync } from '../../api/useAsync';
+import {
+  defaultProductType,
+  describeUploadFailure,
+  looksLikeTheSameFile,
+} from '../../api/uploadState';
+import type { ProductType } from '../../api/uploadState';
 import { projectId } from '../../api/config';
+import { ProductTypeField } from './ProductTypeField';
+import type { ProductChoicesState } from './ProductTypeField';
 import './NewReviewForm.css';
 
 interface NewReviewFormProps {
@@ -40,6 +50,8 @@ function formatSize(bytes: number): string {
 
 export function NewReviewForm({ onCreated }: NewReviewFormProps) {
   const [vendor, setVendor] = useState('');
+  const products = useAsync(() => listProductTypes(), []);
+  const [chosenProduct, setChosenProduct] = useState<ProductType | null>(null);
   const [files, setFiles] = useState<Record<Slot, File | null>>({ architectural: null, shop: null });
   const [slotError, setSlotError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<Slot | null>(null);
@@ -52,10 +64,29 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
   const architecturalInput = useRef<HTMLInputElement>(null);
   const shopInput = useRef<HTMLInputElement>(null);
 
-  const ready = vendor.trim() !== '' && files.architectural !== null && files.shop !== null;
+  const productState: ProductChoicesState =
+    products.status === 'ready'
+      ? { status: 'ready', choices: products.data }
+      : products.status === 'error'
+      ? { status: 'error', message: products.error.message }
+      : { status: 'loading' };
+  // The reviewer's choice, or Countertop until they make one (#994). Only a product the API offered.
+  const productType =
+    products.status === 'ready'
+      ? (products.data.some((choice) => choice.value === chosenProduct)
+          ? chosenProduct
+          : defaultProductType(products.data))
+      : null;
+
+  const ready =
+    vendor.trim() !== '' &&
+    productType !== null &&
+    files.architectural !== null &&
+    files.shop !== null;
   const sameFile = looksLikeTheSameFile(files.architectural, files.shop);
   const missing = [
     vendor.trim() === '' ? 'the vendor' : null,
+    productType === null ? 'what the drawing set is for' : null,
     files.architectural === null ? "the architect's drawings" : null,
     files.shop === null ? 'the shop drawings' : null,
   ].filter(Boolean) as string[];
@@ -71,7 +102,7 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
   }
 
   async function start() {
-    if (!ready || running) return;
+    if (!ready || running || productType === null) return;
     setRunning(true);
     setError(null);
     setSavedPackageId(null);
@@ -79,7 +110,12 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
     try {
       const { packageId } = await createPackage(
         projectId(),
-        { vendor: vendor.trim(), architectural: files.architectural, shop: files.shop },
+        {
+          vendor: vendor.trim(),
+          productType,
+          architectural: files.architectural,
+          shop: files.shop,
+        },
         (progress: UploadProgress) => {
           setStep(progress.file ? `${progress.step} ${progress.file}` : progress.step);
         },
@@ -127,6 +163,8 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
           required
         />
       </label>
+
+      <ProductTypeField state={productState} value={productType} onChange={setChosenProduct} />
 
       <div className="new-review__slots">
         {(Object.keys(SLOT_COPY) as Slot[]).map((slot) => {

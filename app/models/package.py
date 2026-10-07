@@ -16,6 +16,7 @@ from sqlalchemy import CheckConstraint, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, Immutable, TimestampedUUID
+from vocabulary.semantic_types import ProductType
 
 
 class PackageState(StrEnum):
@@ -41,6 +42,9 @@ class PackageState(StrEnum):
 
 
 PACKAGE_STATE_VALUES = ", ".join(f"'{state.value}'" for state in PackageState)
+
+#: The products a package may be for: the rulebook's own `ProductType` vocabulary (#994).
+PRODUCT_TYPE_VALUES = ", ".join(f"'{product.value}'" for product in ProductType)
 
 
 class Project(Base, TimestampedUUID):
@@ -68,6 +72,23 @@ class Package(Base, TimestampedUUID):
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="RESTRICT"))
     vendor: Mapped[str | None] = mapped_column(String(200), default=None)
+    product_type: Mapped[str | None] = mapped_column(String(32))
+    """What product the drawing set is for, as the reviewer chose it at upload (#994).
+
+    No Python-side default on purpose: a package built without one leaves the column out of its
+    `INSERT`, so code and tests that write a package against a schema from before 0073 still work.
+
+    A `ProductType` value. The check run evaluates only the published rules for this product, and
+    the readers are told it as context. **NULL means not stated** — every package created before
+    #994 — and keeps the old behaviour: every product's rules run. Never inferred from the vendor,
+    the file names or the drawing; the API requires it for a new package instead."""
+
+    __table_args__ = (
+        CheckConstraint(
+            f"product_type IS NULL OR product_type IN ({PRODUCT_TYPE_VALUES})",
+            name="package_product_type",
+        ),
+    )
 
 
 class PackageRevision(Base, TimestampedUUID):
@@ -144,3 +165,13 @@ class PackageStateEvent(Base, TimestampedUUID, Immutable):
         CheckConstraint("actor <> ''", name="package_event_actor"),
         UniqueConstraint("package_revision_id", "sequence"),
     )
+
+
+def package_product(package: Package) -> ProductType | None:
+    """The product a package's drawing set is for, or `None` where it was never stated (#994).
+
+    One reading of the column for every consumer — the check run, the readers and the report — so
+    none of them can treat an unknown stored value as "every product". The CHECK constraint makes
+    such a value unstorable; `ProductType(...)` raising here is the second line.
+    """
+    return None if package.product_type is None else ProductType(package.product_type)

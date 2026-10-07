@@ -9,6 +9,7 @@ const row: DocumentRow = {
     id: 'synthetic-document-id-preserved-in-full', project_id: 'synthetic-project-id-preserved-in-full',
     current_revision_id: 'synthetic-revision-id-preserved-in-full', current_revision_number: 2,
     vendor: 'Synthetic vendor <untrusted>', state: 'AWAITING_REVIEW', created_at: '2026-10-03T10:00:00Z',
+    product_type: null,
   },
   reviewer: 'Synthetic reviewer', counts: null, countsError: 'summary unavailable',
 };
@@ -32,6 +33,12 @@ assert.doesNotMatch(unavailable, /<dd>Not listed<\/dd>/);
 const notListed = renderToStaticMarkup(<DocumentDetails row={missing} reviewerUnavailable={false} />);
 assert.match(notListed, /<dd>Not listed<\/dd>/);
 assert.match(notListed, /<dt>Category<\/dt><dd>Not provided<\/dd>/, 'do not invent missing category');
+const countertop: DocumentRow = { ...row, document: { ...row.document, product_type: 'countertop' } };
+assert.match(
+  renderToStaticMarkup(<DocumentDetails row={countertop} reviewerUnavailable={false} />),
+  /<dt>Category<\/dt><dd>Countertop \(only its checks are run\)<\/dd>/,
+  'the product the reviewer chose at upload (#994)',
+);
 // DOM order keeps the action and results above metadata at every breakpoint.
 const page = readFileSync('src/pages/PackagesPage.tsx', 'utf8');
 assert.ok(page.indexOf('Open review\n') < page.indexOf('<DocumentDetails row='));

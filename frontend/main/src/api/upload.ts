@@ -21,7 +21,8 @@
  */
 
 import { openReviewSession } from './client';
-import { IncompletePackageUpload, uploadPlan } from './uploadState';
+import { IncompletePackageUpload, packageCreateBody, uploadPlan } from './uploadState';
+import type { ProductType } from './uploadState';
 
 const BASE = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '');
 
@@ -148,6 +149,8 @@ export async function uploadDocument(
 
 export interface NewPackage {
   vendor: string;
+  /** What the drawing set is for (#994): only that product's published checks run. */
+  productType: ProductType;
   architectural?: File | null;
   shop?: File | null;
 }
@@ -166,7 +169,7 @@ export async function createPackage(
   onProgress?.({ step: 'Creating document set' });
   const created = await post<{ id: string; current_revision_id: string }>(
     `/projects/${projectId}/packages`,
-    { vendor: input.vendor || null },
+    packageCreateBody(input.vendor, input.productType),
   );
 
   // #963: the same file in both slots is one combined set, uploaded once. The server refuses a

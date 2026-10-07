@@ -1,5 +1,12 @@
 import type { DocumentRow } from './documentRows';
 
+/** What the reviewer said the set is for (#994). A set from before then says nothing: every
+ * product's checks ran for it, and inventing a category would misdescribe what was checked. */
+function productWords(product: DocumentRow['document']['product_type']): string {
+  if (product === null) return 'Not provided';
+  return `${product.charAt(0).toUpperCase()}${product.slice(1)} (only its checks are run)`;
+}
+
 /** Keep identifiers available without letting them obscure the review's vendor and results. */
 export function DocumentRecord({ row }: { row: DocumentRow }) {
   const pkg = row.document;
@@ -20,7 +27,7 @@ export function DocumentDetails({ row, reviewerUnavailable }: { row: DocumentRow
         <dt>Project ID</dt><dd>{pkg.project_id}</dd>
         <dt>Revision ID</dt><dd>{pkg.current_revision_id}</dd>
         <dt>Reviewer</dt><dd>{row.reviewer ?? (reviewerUnavailable ? 'Unavailable' : 'Not listed')}</dd>
-        <dt>Category</dt><dd>Not provided</dd>
+        <dt>Category</dt><dd>{productWords(pkg.product_type)}</dd>
       </dl>
     </details>
   );

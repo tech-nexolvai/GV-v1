@@ -287,13 +287,16 @@ def test_evidence_crop_migration_leaves_legacy_rows_untouched(
     _upgrade(postgres_engine)
     config = alembic_config()
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+    factory = session_factory(postgres_engine)
+    # The package, document and run are written at head and survive the downgrade: the ORM writes
+    # every mapped column, and `packages` gained one after 0065 (#994).
+    with unit_of_work(factory) as session:
+        version_id, page_id, extraction_id = _persist_context(session)
     command.downgrade(config, "0065_check_run_defaults_citation")
 
-    factory = session_factory(postgres_engine)
     artifact_id = uuid4()
     crop_key = "evidence/crops/legacy.png"
     with unit_of_work(factory) as session:
-        version_id, page_id, extraction_id = _persist_context(session)
         candidate = _candidate(version_id, page_id, extraction_id, "legacy crop")
         # This migration test is deliberately running below migration 0070, where the
         # current ORM model's `review_reason` column does not exist yet. Insert the
