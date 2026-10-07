@@ -130,6 +130,7 @@ jobs:
           path: .test_durations
           if-no-files-found: error
           retention-days: 1
+          include-hidden-files: true
 
   # The frontend sat in the repository unchecked, and a dependency conflict shipped to main as a
   # result: openapi-typescript pins peer typescript@^5.x, the project is on 6, and `npm ci` failed
