@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -18,11 +19,17 @@ import pytest
 
 from app.config import Settings
 from extraction.form_reader.bedrock import AttemptUsage
-from extraction.geometry.rows import MEASURED_SETTINGS
+from extraction.geometry.rows import MEASURED_SETTINGS, Box, PageRows
 from extraction.ink import read_page_ink
 from extraction.rasterise import render_page
 from extraction.rows import page_rows_and_ink
-from extraction.slot_reader.mapping import CABINET_FIELD, FILLER_FIELD, OVERALL_FIELD, WHAT_IS_IT
+from extraction.slot_reader.kinds import PieceKind, propose_kind
+from extraction.slot_reader.mapping import (
+    CABINET_FIELD,
+    FILLER_FIELD,
+    OVERALL_FIELD,
+    PIECE_FIELD,
+)
 from extraction.slot_reader.runs import E2_CROP_SETTINGS, plan_slots
 from extraction.slot_reader.seal import LabelState
 from tests.extraction.slot_reader import sheets
@@ -58,12 +65,23 @@ class Rates:
         return object()
 
 
-class FakeReaders:
-    """Answers each crop with `read(model, crop_png)`; records every request."""
+UNSURE_WALLS = {"left": "unsure", "right": "unsure", "behind": "unsure", "view": "elevation"}
+BOTH_WALLS = {"left": "yes", "right": "yes", "behind": "yes", "view": "elevation"}
 
-    def __init__(self, read: Callable[[str, bytes], str]) -> None:
+
+class FakeReaders:
+    """Answers each crop with `read(model, crop_png)` and each row's wall question with
+    `walls(model)`; records every request."""
+
+    def __init__(
+        self,
+        read: Callable[[str, bytes], str],
+        walls: Callable[[str], Mapping[str, str]] = lambda _model: UNSURE_WALLS,
+    ) -> None:
         self.read = read
+        self.walls = walls
         self.requests: list[tuple[str, bytes]] = []
+        self.wall_requests: list[tuple[str, bytes, bytes]] = []
         self.lock = threading.Lock()
 
     def for_current_thread(self) -> FakeReaders:
@@ -71,7 +89,16 @@ class FakeReaders:
 
     def converse(self, **kwargs: Any) -> Mapping[str, Any]:
         model = kwargs["modelId"]
-        png = kwargs["messages"][0]["content"][0]["image"]["source"]["bytes"]
+        content = kwargs["messages"][0]["content"]
+        pictures = [part["image"]["source"]["bytes"] for part in content if "image" in part]
+        if len(pictures) == 2:
+            with self.lock:
+                self.wall_requests.append((model, pictures[0], pictures[1]))
+            return {
+                "output": {"message": {"content": [{"text": json.dumps(dict(self.walls(model)))}]}},
+                "usage": {"inputTokens": 20, "outputTokens": 9},
+            }
+        png = pictures[0]
         with self.lock:
             self.requests.append((model, png))
         text = self.read(model, png)
@@ -153,17 +180,25 @@ def read(page: SlotPage, readers: FakeReaders, **options: Any) -> PageSlotResult
     (result,) = read_slot_pages(
         [page], runtime=runtime(readers, **options), record_attempt=attempts.append
     )
-    assert len(attempts) == len(readers.requests)
+    assert len(attempts) == len(readers.requests) + len(readers.wall_requests)
     return result
 
 
-TEXTS: dict[int | None, str] = {0: '12"', 1: '24"', 2: '36"', None: '72"'}
+#: Drawn to scale, as a shop drawing is: the sheet's slots are 50, 100 and 50 points long, so at
+#: 0.24" a point they print 12", 24" and 12", and the 200-point overall 48".
+PIECES = ('12"', '24"', '12"')
+OVERALL = '48"'
+TEXTS: dict[int | None, str] = {0: '12"', 1: '24"', 2: '12"', None: '48"'}
+
+
+def text_labels() -> bytes:
+    return sheets.text_labels(PIECES, OVERALL)
 
 
 def named_sheet(extra: bytes = b"") -> bytes:
     """Text labels with the vendor's words beside them: `Filler`, a cabinet tag, `Filler`."""
-    drawing = sheets.text_labels().replace(
-        b'1 0 0 1 318.00 604.00 Tm (36") Tj', b'1 0 0 1 333.00 604.00 Tm (36") Tj'
+    drawing = text_labels().replace(
+        b'1 0 0 1 318.00 604.00 Tm (12") Tj', b'1 0 0 1 333.00 604.00 Tm (12") Tj'
     )
     drawing += sheets.text(190, sheets.CHAIN_Y + 4, "Filler")
     drawing += sheets.text(265, sheets.CHAIN_Y + 4, "B24")
@@ -171,8 +206,10 @@ def named_sheet(extra: bytes = b"") -> bytes:
     return sheets.sheet(drawing + extra)
 
 
-def test_text_labels_seal_on_the_file_and_one_reader_and_unnamed_pieces_ask_what_they_are() -> None:
-    page = slot_page(sheets.sheet(sheets.text_labels()))
+def test_text_labels_seal_on_the_file_and_one_reader_and_unnamed_pieces_still_fill_the_width() -> (
+    None
+):
+    page = slot_page(sheets.sheet(text_labels()))
     lookup = crops_to_texts(page, TEXTS)
     readers = FakeReaders(lambda _model, png: lookup[png])
 
@@ -181,10 +218,14 @@ def test_text_labels_seal_on_the_file_and_one_reader_and_unnamed_pieces_ask_what
     assert {model for model, _ in readers.requests} == {QWEN}, "a text label needs one reader"
     assert result.overall is not None and result.overall.outcome.state is LabelState.SEALED
     assert all(slot.outcome.state is LabelState.SEALED for slot in result.slots)
-    assert result.mapping.proposals == (), "the overall waits for its unnamed pieces"
-    held = dict(result.mapping.held)
-    assert all(held[index].startswith(WHAT_IS_IT) for index in (0, 1, 2))
-    assert held[None].startswith("held back")
+    # #992: a fully sealed row offers every piece, whatever its kind; unnamed pieces still keep
+    # the cabinet and filler fields back.
+    assert [(p.field_key, p.position, p.slot_index) for p in result.mapping.proposals] == [
+        (OVERALL_FIELD, 0, None),
+        (PIECE_FIELD, 0, 0),
+        (PIECE_FIELD, 1, 1),
+        (PIECE_FIELD, 2, 2),
+    ]
 
 
 def test_a_named_sealed_chain_fills_the_form_left_to_right() -> None:
@@ -197,12 +238,16 @@ def test_a_named_sealed_chain_fills_the_form_left_to_right() -> None:
         "cabinet",
         "filler",
     ]
+    # Piece widths only: CT-WIDTH-001 (#993) sends piece widths beside a cabinet or filler list to
+    # review, so a named row is offered whole, not twice.
     assert [(p.field_key, p.position, p.slot_index) for p in result.mapping.proposals] == [
         (OVERALL_FIELD, 0, None),
-        (FILLER_FIELD, 0, 0),
-        (CABINET_FIELD, 0, 1),
-        (FILLER_FIELD, 1, 2),
+        (PIECE_FIELD, 0, 0),
+        (PIECE_FIELD, 1, 1),
+        (PIECE_FIELD, 2, 2),
     ]
+    keys = {p.field_key for p in result.mapping.proposals}
+    assert CABINET_FIELD not in keys and FILLER_FIELD not in keys
 
 
 def test_a_reader_that_differs_from_the_file_holds_the_piece_and_the_chain() -> None:
@@ -291,6 +336,335 @@ def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() ->
     assert set(FRACTION_BAR_ENV) == set(FRACTION_ENV)
 
 
+def test_the_run_identity_fits_its_column() -> None:
+    """`extraction_runs.config_hash` holds 200 characters; the full settings are many times that."""
+    configured = runtime(FakeReaders(lambda _m, _p: ""))
+    assert len(f"dpi=300;{configured.config_hash}") <= 200
+    assert len(configured.config_detail) > 200
+
+
+# ---------------------------------------------------------------------------------------------
+# The admin's three rules (#992): drawn-length veto, labels from agreed text, walls by agreement
+# ---------------------------------------------------------------------------------------------
+
+
+def glyph_page() -> SlotPage:
+    return slot_page(sheets.sheet(sheets.glyph_labels()))
+
+
+def agreed(page: SlotPage, texts: Mapping[int | None, str], **options: Any) -> PageSlotResult:
+    """Both readers print `texts` for each label: whatever they agree on, right or wrong."""
+    lookup = crops_to_texts(page, texts)
+    return read(page, FakeReaders(lambda _model, png: lookup[png], **options))
+
+
+def test_a_misread_both_readers_agree_on_is_rejected_by_the_drawn_length() -> None:
+    page = glyph_page()
+    result = agreed(page, TEXTS | {2: '120"'})
+
+    misread = result.slots[2]
+    assert misread.outcome.state is LabelState.REVIEW
+    assert misread.outcome.reason == "doesn't match the drawn length"
+    assert misread.outcome.value is None
+    label = misread.labels[misread.outcome.label_index or 0].outcome
+    assert label.suggestion is not None and label.suggestion.exact == 120, "kept, never changed"
+    assert 2 in result.vetoed
+    assert result.mapping.proposals == (), "a vetoed piece holds the whole row"
+
+
+def test_correct_readings_drawn_to_scale_are_never_vetoed() -> None:
+    result = agreed(glyph_page(), TEXTS)
+    assert result.vetoed == ()
+    assert [p.field_key for p in result.mapping.proposals].count(PIECE_FIELD) == 3
+
+
+def test_an_agreed_sum_is_one_piece_and_fills_the_width_in_order() -> None:
+    result = agreed(glyph_page(), TEXTS | {0: '10"+2" Filler'})
+
+    first = result.slots[0]
+    assert first.outcome.state is LabelState.SEALED
+    assert first.outcome.value is not None and first.outcome.value.exact == 12
+    assert first.kind is not None and first.kind.kind.value == "filler"
+    pieces = [p for p in result.mapping.proposals if p.field_key == PIECE_FIELD]
+    assert [(p.position, p.slot_index) for p in pieces] == [(0, 0), (1, 1), (2, 2)]
+
+
+def test_a_text_label_with_a_sum_is_shown_to_its_reader_and_seals_on_the_same_text() -> None:
+    page = slot_page(sheets.sheet(sheets.text_labels(('10"+2"', '24"', '12"'), OVERALL)))
+    lookup = crops_to_texts(page, TEXTS | {0: '10"+2"'})
+    readers = FakeReaders(lambda _model, png: lookup[png])
+
+    result = read(page, readers)
+
+    assert len(readers.requests) == 4, "the summed label is read too"
+    assert result.slots[0].outcome.state is LabelState.SEALED
+    assert result.slots[0].outcome.value is not None
+    assert result.slots[0].outcome.value.exact == 12
+
+
+def test_an_agreed_equal_share_count_is_one_entry_of_its_total() -> None:
+    result = agreed(glyph_page(), TEXTS | {1: '24"(2EQ)'})
+    middle = result.slots[1]
+    assert middle.outcome.state is LabelState.SEALED
+    assert middle.outcome.value is not None and middle.outcome.value.exact == 24
+    assert PIECE_FIELD in {p.field_key for p in result.mapping.proposals}
+
+
+@pytest.mark.parametrize(
+    ("texts", "code", "reason"),
+    [
+        (
+            {None: '48" (INCLUDING FIELD CUT)'},
+            "field-cut-included",
+            "width already includes the field cut",
+        ),
+        ({1: '24" VIF'}, "vif", "VIF: provisional, verify in field"),
+    ],
+)
+def test_field_cut_or_vif_anywhere_holds_the_whole_countertop(
+    texts: Mapping[int | None, str], code: str, reason: str
+) -> None:
+    result = agreed(glyph_page(), TEXTS | texts)
+
+    assert result.row_hold is not None and result.row_hold.code == code
+    assert result.mapping.proposals == ()
+    held = dict(result.mapping.held)
+    assert held, "every sealed reading says why it waits"
+    assert all(why == reason for why in held.values())
+
+
+def test_one_reader_seeing_vif_is_enough_to_hold_the_row() -> None:
+    page = glyph_page()
+    lookup = crops_to_texts(page, TEXTS)
+
+    def kimi_sees_vif(model: str, png: bytes) -> str:
+        text = lookup[png]
+        return f"{text} VIF" if model == KIMI and text == '24"' else text
+
+    result = read(page, FakeReaders(kimi_sees_vif))
+    assert result.row_hold is not None and result.row_hold.code == "vif"
+    assert result.mapping.proposals == ()
+
+
+@pytest.mark.parametrize(
+    "word",
+    [
+        "REF",
+        "refrigerator",
+        "FRIDGE",
+        "RANGE",
+        "STOVE",
+        "OVEN",
+        "W/D",
+        "WASHER",
+        "DRYER",
+        "TALL",
+        "PANTRY",
+    ],
+)
+def test_vendor_counter_break_word_inside_a_slot_span_holds_the_whole_row(word: str) -> None:
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, word)))
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is not None and result.row_hold.code == "counter-break"
+    assert result.row_hold.reason == (
+        "this row includes a tall appliance or range bay; it may be the wall-to-wall line, not the countertop"
+    )
+    assert result.mapping.proposals == ()
+    assert result.mapping.held
+
+
+def test_counter_break_word_in_a_slot_label_holds_the_whole_row() -> None:
+    page = slot_page(sheets.sheet(sheets.text_labels(('12"', '24" RANGE', '12"'), OVERALL)))
+    lookup = crops_to_texts(page, TEXTS | {1: '24" RANGE'})
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is not None and result.row_hold.code == "counter-break"
+    assert result.mapping.proposals == ()
+
+
+def test_reader_only_counter_break_word_does_not_count_as_vendor_ink() -> None:
+    page = slot_page(sheets.sheet(text_labels()))
+    lookup = crops_to_texts(page, TEXTS)
+
+    def reader_text(model: str, png: bytes) -> str:
+        text = lookup[png]
+        return f"{text} RANGE" if model == KIMI and text == '24"' else text
+
+    result = read(page, FakeReaders(reader_text))
+
+    assert result.row_hold is None
+
+
+def test_a_gv_counter_break_word_does_not_hold_an_otherwise_sealed_vendor_row() -> None:
+    page = slot_page(
+        sheets.sheet(
+            text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, "RANGE", colour="1 0 0 rg")
+        )
+    )
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+def test_a_substring_is_not_an_appliance_word() -> None:
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, "NICE")))
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+@pytest.mark.parametrize("word", ["DW", "DISHWASHER", "ICE", "WINE", "MW", "MICROWAVE", "COOKTOP"])
+def test_an_undercounter_appliance_word_does_not_hold_the_row(word: str) -> None:
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, word)))
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        ("Undercounter", "Refrigerator"),
+        ("UNDER-COUNTER", "FRIDGE"),
+        ("UNDER", "COUNTER", "REF"),
+        ("U/C", "REF"),
+        ("UC", "REF"),
+        ("Microwave", "Oven"),
+        ("MW", "OVEN"),
+    ],
+)
+def test_a_safe_phrase_does_not_hold_the_row(words: tuple[str, ...]) -> None:
+    x = 220
+    drawing = text_labels()
+    for word in words:
+        drawing += sheets.text(x, sheets.CHAIN_Y - 40, word)
+        x += len(word) * 3 + 4
+    page = slot_page(sheets.sheet(drawing))
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+def test_counter_break_word_outside_row_span_does_not_hold() -> None:
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(120, sheets.CHAIN_Y - 40, "RANGE")))
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+def test_ambiguous_row_with_break_word_outside_span_offers_no_countertop() -> None:
+    """A future row chooser must not turn an ambiguous bay-spanning row into a proposal."""
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(120, sheets.CHAIN_Y - 40, "RANGE")))
+    original = page.rows.candidates.rows
+    first = original.candidates[0]
+    twin = replace(first, y=first.y + 100, rank=2)
+    page = replace(
+        page,
+        rows=replace(
+            page.rows,
+            candidates=replace(
+                page.rows.candidates,
+                rows=PageRows(candidates=(first, twin), rejected=original.rejected),
+            ),
+        ),
+    )
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.plan.ambiguity == "another row on the page fits as well"
+    assert result.row_hold is None
+    assert result.mapping.proposals == ()
+
+
+def test_counter_break_word_in_another_drawing_box_does_not_hold() -> None:
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, "RANGE")))
+    plan = plan_slots(
+        page.rows.candidates.rows,
+        page.rows.ink,
+        settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+    )
+    assert plan.row is not None
+    y = plan.row.y
+    width, height = page.rows.ink.width, page.rows.ink.height
+    row_drawing = Box(Decimal(0), y - 20, width, y + 20)
+    other_drawing = Box(Decimal(0), y + 21, width, height)
+    page = replace(
+        page,
+        rows=replace(
+            page.rows,
+            ink=replace(page.rows.ink, drawing_boxes=(row_drawing, other_drawing)),
+        ),
+    )
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+def test_dishwasher_can_name_a_piece_without_holding_its_row() -> None:
+    assert (
+        propose_kind(("DW",), index=1, count=3, wall_ends=frozenset()).kind
+        is PieceKind.APPLIANCE_SPACE
+    )
+
+
+def test_other_words_still_go_to_the_person() -> None:
+    result = agreed(glyph_page(), TEXTS | {0: '12" Panel'})
+    assert result.slots[0].outcome.reason_code == "not-plain"
+    assert result.mapping.proposals == ()
+
+
+def test_walls_are_asked_once_per_row_of_both_readers_and_seal_on_agreement() -> None:
+    page = glyph_page()
+    lookup = crops_to_texts(page, TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup[png], walls=lambda _model: BOTH_WALLS)
+
+    result = read(page, readers)
+
+    asked = [model for model, _row, _view in readers.wall_requests]
+    assert len(asked) == 2 and set(asked) == {KIMI, QWEN}
+    row_png, view_png = readers.wall_requests[0][1], readers.wall_requests[0][2]
+    assert row_png.startswith(b"\x89PNG") and view_png.startswith(b"\x89PNG")
+    assert result.walls is not None
+    assert result.walls.outcome.config == "back_left_right"
+    assert len(result.walls.answers) == 2
+
+
+def test_walls_the_readers_do_not_agree_on_go_to_the_person() -> None:
+    page = glyph_page()
+    lookup = crops_to_texts(page, TEXTS)
+    readers = FakeReaders(
+        lambda _model, png: lookup[png],
+        walls=lambda model: BOTH_WALLS if model == QWEN else UNSURE_WALLS,
+    )
+    result = read(page, readers)
+    assert result.walls is not None and result.walls.outcome.config is None
+    assert result.walls.outcome.reason
+
+
+def test_the_wall_answer_never_changes_a_reading_or_a_proposal() -> None:
+    page = glyph_page()
+    lookup = crops_to_texts(page, TEXTS)
+    sealed = read(page, FakeReaders(lambda _m, png: lookup[png], walls=lambda _m: BOTH_WALLS))
+    unsure = read(page, FakeReaders(lambda _m, png: lookup[png]))
+    assert sealed.mapping == unsure.mapping
+    assert [slot.outcome for slot in sealed.slots] == [slot.outcome for slot in unsure.slots]
+
+
 # ---------------------------------------------------------------------------------------------
 # Persistence (PostgreSQL; skipped without DATABASE_URL, run in CI)
 # ---------------------------------------------------------------------------------------------
@@ -314,11 +688,8 @@ def session(postgres_engine: Any) -> Iterator[Any]:
         opened.close()
 
 
-def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_are_linked(
-    session: Any,
-) -> None:
-    from sqlalchemy import select
-
+def _scaffold(session: Any) -> tuple[Any, Any, Any, Any]:
+    """A revision with one shop page and an extraction run: (revision, version, page, run)."""
     from app.models import (
         Document,
         DocumentVersion,
@@ -330,9 +701,7 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
         SourceArtifact,
     )
     from app.models.document import DocumentKind, Page
-    from app.models.evidence import MeasurementProposal, ObservationCandidate
     from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
-    from workflow.slot_reader import persist_slot_readings
 
     project = Project(id=uuid4(), name="slot reader tests")
     session.add(project)
@@ -391,8 +760,15 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
     )
     session.add(run)
     session.flush()
+    return revision, version, page_row, run
 
-    data = named_sheet(sheets.yellow_box(241, sheets.CHAIN_Y + 3, 13, 7))
+
+def _read_persisted(
+    session: Any, data: bytes, readers: Callable[[SlotPage], FakeReaders], **persist: Any
+) -> tuple[Any, Any, PageSlotResult, int]:
+    from workflow.slot_reader import persist_slot_readings
+
+    revision, version, page_row, run = _scaffold(session)
     page = slot_page(data)
     page = SlotPage(
         page_index=0,
@@ -402,28 +778,84 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
         rows=page.rows,
         ink=page.ink,
     )
-    lookup = crops_to_texts(page, TEXTS)
     (result,) = read_slot_pages(
-        [page],
-        runtime=runtime(FakeReaders(lambda _model, png: lookup[png])),
-        record_attempt=lambda _a: None,
+        [page], runtime=runtime(readers(page)), record_attempt=lambda _a: None
     )
-
     count = persist_slot_readings(
         session,
         package_revision_id=revision.id,
         extraction_run_id=run.id,
         reader_ids=(KIMI, QWEN),
         results=[result],
+        **persist,
     )
+    return revision, run, result, count
 
-    assert count == 4  # three slots and the overall
+
+def _by_slot(session: Any, run: Any) -> dict[str, Any]:
+    from sqlalchemy import select
+
+    from app.models.evidence import ObservationCandidate
+
     rows = session.scalars(
         select(ObservationCandidate).where(ObservationCandidate.extraction_run_id == run.id)
     ).all()
-    by_slot = {
-        next(flag for flag in row.ambiguity_flags if flag.startswith("slot:")): row for row in rows
-    }
+    found: dict[str, Any] = {}
+    for row in rows:
+        if "wall-reader" in row.ambiguity_flags:
+            found["walls"] = row
+            continue
+        found[next(flag for flag in row.ambiguity_flags if flag.startswith("slot:"))] = row
+    return found
+
+
+def test_counter_break_row_persists_the_reason_but_no_form_proposals(session: Any) -> None:
+    from sqlalchemy import select
+
+    from app.models.evidence import MeasurementProposal
+
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = crops_to_texts(page, TEXTS)
+        return FakeReaders(lambda _model, png: lookup[png])
+
+    revision, run, result, _count = _read_persisted(
+        session,
+        sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, "RANGE")),
+        readers,
+    )
+
+    assert result.row_hold is not None and result.row_hold.code == "counter-break"
+    for candidate in _by_slot(session, run).values():
+        if "wall-reader" not in candidate.ambiguity_flags:
+            assert "row-hold:counter-break" in candidate.ambiguity_flags
+            assert candidate.review_reason == result.row_hold.reason
+    assert (
+        session.scalars(
+            select(MeasurementProposal).where(
+                MeasurementProposal.package_revision_id == revision.id
+            )
+        ).all()
+        == []
+    )
+
+
+def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_are_linked(
+    session: Any,
+) -> None:
+    from sqlalchemy import select
+
+    from app.models.evidence import MeasurementProposal
+
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = crops_to_texts(page, TEXTS)
+        return FakeReaders(lambda _model, png: lookup[png])
+
+    revision, run, _result, count = _read_persisted(
+        session, named_sheet(sheets.yellow_box(241, sheets.CHAIN_Y + 3, 13, 7)), readers
+    )
+
+    assert count == 5  # three slots, the overall and the row's walls
+    by_slot = _by_slot(session, run)
     covered = by_slot["slot:1"]
     assert covered.value_numerator is None and covered.corroboration_status is None
     assert covered.review_reason is not None and covered.review_reason.startswith("covered by")
@@ -436,10 +868,135 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
     assert first.corroboration_status is None, "sealed but held back: not offered"
     assert first.value_numerator == 12 and first.review_reason is not None
     overall = by_slot["slot:overall"]
-    assert overall.corroboration_status is None and overall.value_numerator == 72
+    assert overall.corroboration_status is None and overall.value_numerator == 48
     assert overall.review_reason is not None and overall.review_reason.startswith("held back")
 
     proposals = session.scalars(
         select(MeasurementProposal).where(MeasurementProposal.package_revision_id == revision.id)
     ).all()
     assert proposals == [], "a held chain links nothing to the form"
+
+
+def test_a_fully_sealed_row_links_every_piece_in_order_and_a_veto_is_kept_as_a_suggestion(
+    session: Any,
+) -> None:
+    from sqlalchemy import select
+
+    from app.models.evidence import MeasurementProposal
+
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = crops_to_texts(page, TEXTS)
+        return FakeReaders(lambda _model, png: lookup[png])
+
+    revision, run, _result, _count = _read_persisted(
+        session, sheets.sheet(sheets.glyph_labels()), readers
+    )
+    by_slot = _by_slot(session, run)
+    links = session.scalars(
+        select(MeasurementProposal)
+        .where(
+            MeasurementProposal.package_revision_id == revision.id,
+            MeasurementProposal.field_key == PIECE_FIELD,
+        )
+        .order_by(MeasurementProposal.position)
+    ).all()
+    assert [link.candidate_id for link in links] == [
+        by_slot["slot:0"].id,
+        by_slot["slot:1"].id,
+        by_slot["slot:2"].id,
+    ]
+
+    def misreaders(page: SlotPage) -> FakeReaders:
+        lookup = crops_to_texts(page, TEXTS | {2: '120"'})
+        return FakeReaders(lambda _model, png: lookup[png])
+
+    revision, run, _result, _count = _read_persisted(
+        session, sheets.sheet(sheets.glyph_labels()), misreaders
+    )
+    vetoed = _by_slot(session, run)["slot:2"]
+    assert "drawn-length" in vetoed.ambiguity_flags
+    assert vetoed.review_reason == "doesn't match the drawn length"
+    assert vetoed.corroboration_status is None
+    assert vetoed.value_numerator == 120, "the agreed text stays, as a suggestion for the person"
+    assert (
+        session.scalars(
+            select(MeasurementProposal).where(
+                MeasurementProposal.package_revision_id == revision.id
+            )
+        ).all()
+        == []
+    )
+
+
+def test_a_sealed_wall_layout_is_kept_with_its_pictures_and_proposed(
+    session: Any, tmp_path: Any
+) -> None:
+    from sqlalchemy import select
+
+    from app.models.evidence import EvidenceArtifact, LayoutProposal
+    from storage.local import LocalStore
+    from workflow.layout_proposals import reader_sealed_wall_config
+
+    store = LocalStore(tmp_path / "artifacts")
+
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = crops_to_texts(page, TEXTS)
+        return FakeReaders(lambda _model, png: lookup[png], walls=lambda _model: BOTH_WALLS)
+
+    revision, run, result, _count = _read_persisted(
+        session, sheets.sheet(sheets.glyph_labels()), readers, store=store
+    )
+
+    walls = _by_slot(session, run)["walls"]
+    assert "walls-sealed:back_left_right" in walls.ambiguity_flags
+    assert sum(flag.startswith("wall-reader:") for flag in walls.ambiguity_flags) == 2
+    assert walls.value_numerator is None, "a wall answer is never a value"
+    artifacts = session.scalars(
+        select(EvidenceArtifact).where(EvidenceArtifact.candidate_id == walls.id)
+    ).all()
+    assert len(artifacts) == 2
+    assert result.walls is not None
+    stored = {store.get(artifact.storage_key).read() for artifact in artifacts}
+    assert stored == {result.walls.row_png, result.walls.view_png}, "exactly what the readers saw"
+    proposal = session.scalars(
+        select(LayoutProposal).where(LayoutProposal.package_revision_id == revision.id)
+    ).one()
+    assert proposal.discriminator_name == "wall_config"
+    assert proposal.proposed_value == "back_left_right"
+    assert proposal.prompt_id == "slot-walls-v1"
+    assert proposal.model_id == f"{KIMI} + {QWEN}"
+    sealed = reader_sealed_wall_config(session, revision.id)
+    assert sealed is not None and sealed.value == "back_left_right"
+
+
+def test_walls_the_readers_do_not_settle_propose_nothing(session: Any, tmp_path: Any) -> None:
+    from sqlalchemy import select
+
+    from app.models.evidence import LayoutProposal
+    from storage.local import LocalStore
+    from workflow.layout_proposals import reader_sealed_wall_config
+
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = crops_to_texts(page, TEXTS)
+        return FakeReaders(
+            lambda _model, png: lookup[png],
+            walls=lambda model: BOTH_WALLS if model == QWEN else UNSURE_WALLS,
+        )
+
+    revision, run, _result, _count = _read_persisted(
+        session,
+        sheets.sheet(sheets.glyph_labels()),
+        readers,
+        store=LocalStore(tmp_path / "artifacts"),
+    )
+
+    walls = _by_slot(session, run)["walls"]
+    assert any(flag.startswith("walls-held:") for flag in walls.ambiguity_flags)
+    assert walls.review_reason
+    assert (
+        session.scalars(
+            select(LayoutProposal).where(LayoutProposal.package_revision_id == revision.id)
+        ).all()
+        == []
+    )
+    assert reader_sealed_wall_config(session, revision.id) is None

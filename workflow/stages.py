@@ -252,6 +252,7 @@ from rules.applicability import Abstention, CheckContext, resolve
 from rules.parameters import ParameterSet, resolve_all
 from rules.project import ProjectScope
 from rules.required_inputs import DiscriminatorNeed, required_inputs
+from rules.schema import Rule
 from rules.semantic_types import ProductType, SemanticType
 from rules.snapshot import RuleSnapshot
 from storage.hashing import ArtifactCorrupt, content_key, sha256_stream
@@ -289,7 +290,7 @@ from workflow.form_reader import (
 )
 from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
-from workflow.layout_proposals import record_layout_proposal
+from workflow.layout_proposals import discriminator_note, record_layout_proposal
 from workflow.measurements import run_parameters_for
 from workflow.part_operands import (
     CountertopScope,
@@ -1539,6 +1540,7 @@ class DatabaseStages:
         ocr_engine: OcrEngine | None = None,
         operands: Mapping[str, Mapping[str, VerdictOperand]] | None = None,
         discriminators: Mapping[str, str] | None = None,
+        discriminator_sources: Mapping[str, str] | None = None,
         association: AssociationSettings | None = None,
         localized_ocr: LocalizedOcrSettings | None = None,
         automatic_typing: AutomaticTypingSettings | None = None,
@@ -1721,6 +1723,19 @@ class DatabaseStages:
         # becoming a verdict input while allowing the live worker to see a later human confirmation.
         self._operands = None if operands is None else dict(operands)
         self._discriminators = dict(discriminators or {})
+        # Where each came from, as the check request recorded it (#992): a layout two readers
+        # agreed on is named so on every finding that used it, so no one mistakes it for a choice.
+        self._discriminator_sources = dict(discriminator_sources or {})
+
+    def _discriminator_notes(self, rule: Rule) -> tuple[str, ...]:
+        """The note a finding carries when its rule's variant was chosen by the readers (#992)."""
+        name = getattr(rule.applicability, "discriminator", None)
+        if not isinstance(name, str) or name not in self._discriminators:
+            return ()
+        note = discriminator_note(
+            name, self._discriminators[name], self._discriminator_sources.get(name)
+        )
+        return () if note is None else (note,)
 
     def _stated_missing_space(self) -> MissingSpace:
         """The reader's missing-space setting, or an error naming it: no page's text is read with
@@ -2193,6 +2208,7 @@ class DatabaseStages:
             extraction_run_id=run.id,
             reader_ids=runtime.form.reader_ids,
             results=results,
+            store=self._store,
         )
         session.flush()
         return count
@@ -6302,7 +6318,12 @@ class DatabaseStages:
                             finding, reason=f"{selected.missing[rule_id]} ({finding.reason})"
                         )
                     finding = replace(
-                        finding, notes=(*finding.notes, *selected.notes.get(rule_id, ()))
+                        finding,
+                        notes=(
+                            *finding.notes,
+                            *selected.notes.get(rule_id, ()),
+                            *self._discriminator_notes(applicable.snapshot.rule),
+                        ),
                     )
                     record_finding(
                         session,
@@ -6353,9 +6374,11 @@ class DatabaseStages:
                         revision_layout = self._discriminators.get(SemanticType.WALL_CONFIG.value)
                         if revision_layout is not None:
                             layout = revision_layout
-                            provenance = (
-                                f"Wall layout: {wall_layout_name(layout)}, revision-wide choice."
-                            )
+                            provenance = discriminator_note(
+                                SemanticType.WALL_CONFIG.value,
+                                layout,
+                                self._discriminator_sources.get(SemanticType.WALL_CONFIG.value),
+                            ) or (f"Wall layout: {wall_layout_name(layout)}, revision-wide choice.")
                     discriminators = dict(self._discriminators)
                     # A revision-wide value must never leak into either of two live countertops.
                     discriminators.pop(SemanticType.WALL_CONFIG.value, None)

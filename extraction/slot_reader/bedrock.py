@@ -9,7 +9,12 @@ clients, the same concurrency cap and throttle back-off, the same one re-ask for
 and then an abstention — which sends that crop to the person, never the whole set. Kimi K3 is asked
 at low effort, as the form reader asks it (#978).
 
-Source: issue #987 · Verification: `tests/extraction/slot_reader/test_bedrock.py`
+**The wall question rides in the same batch (#992)**: a job with a second picture asks E3's narrow
+yes/no question about the row's walls instead (`walls.WALL_PROMPT`), under the same pacer, so a
+model's request rate never doubles. Every attempt's raw text is kept on its usage record, which the
+worker stores privately (#985).
+
+Source: issues #987, #992 · Verification: `tests/extraction/slot_reader/test_bedrock.py`
 """
 
 from __future__ import annotations
@@ -36,14 +41,17 @@ from extraction.form_reader.bedrock import (
 from extraction.form_reader.pricing import RateLookup, require_priced_readers
 from extraction.form_reader.runner import ClientProvider, ModelPacer, _is_throttle
 from extraction.slot_reader.seal import ReaderAnswer
+from extraction.slot_reader.walls import WALL_PROMPT, WALL_PROMPT_ID, Side, WallAnswer
 
 __all__ = [
     "CROP_PROMPT",
     "CROP_PROMPT_ID",
     "CropJob",
     "build_crop_request",
+    "build_wall_request",
     "read_crop",
     "read_crops_parallel",
+    "read_walls",
 ]
 
 CROP_PROMPT_ID: Final = "slot-crop-v1"
@@ -141,14 +149,16 @@ def read_crop(
                     False,
                     type(error).__name__,
                     page_index,
+                    attempt_number=attempt + 1,
                 )
             )
             raise
         input_tokens, output_tokens = _response_usage(response)
         elapsed = int((monotonic() - started) * 1000)
+        raw: str | None = None
         try:
-            payload = _extract_json_object(_response_text(response))
-            parsed = _CropAnswer.model_validate(payload)
+            raw = _response_text(response)
+            parsed = _CropAnswer.model_validate(_extract_json_object(raw))
         except (MalformedFormAnswer, ValidationError) as error:
             record_attempt(
                 AttemptUsage(
@@ -160,6 +170,8 @@ def read_crop(
                     elapsed,
                     True,
                     page_index=page_index,
+                    raw_response_text=raw,
+                    attempt_number=attempt + 1,
                 )
             )
             if attempt:
@@ -177,6 +189,8 @@ def read_crop(
                 elapsed,
                 False,
                 page_index=page_index,
+                raw_response_text=raw,
+                attempt_number=attempt + 1,
             )
         )
         return ReaderAnswer(
@@ -190,14 +204,172 @@ def read_crop(
     raise AssertionError("unreachable")
 
 
+class _WallReply(BaseModel):
+    """The wall answer's shape. A side outside yes/no/unsure makes the answer malformed."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    left: StrictStr
+    right: StrictStr
+    behind: StrictStr
+    view: StrictStr = ""
+    left_evidence: StrictStr = ""
+    right_evidence: StrictStr = ""
+    behind_evidence: StrictStr = ""
+
+
+def _side(value: str) -> Side:
+    try:
+        return Side(value.strip().lower())
+    except ValueError as error:
+        raise MalformedFormAnswer(f"a wall side must be yes, no or unsure: {value!r}") from error
+
+
+def _wall_answer(model_id: str, reply: _WallReply) -> WallAnswer:
+    view = reply.view.strip().lower()
+    return WallAnswer(
+        model_id=model_id,
+        left=_side(reply.left),
+        right=_side(reply.right),
+        behind=_side(reply.behind),
+        # Anything but a clear "plan" can never seal a back-only layout, so it is "other".
+        view="plan" if view == "plan" else "elevation" if view == "elevation" else "other",
+        evidence=(reply.left_evidence, reply.right_evidence, reply.behind_evidence),
+    )
+
+
+_PNG_SIGNATURE: Final = bytes((0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+
+
+def build_wall_request(
+    *, model_id: str, row_png: bytes, view_png: bytes, max_tokens: int
+) -> dict[str, Any]:
+    """One wall question: the row picture, the whole view, then the question (E3's order)."""
+    if not model_id.strip():
+        raise ValueError("a wall reader model id must be stated")
+    if not (row_png.startswith(_PNG_SIGNATURE) and view_png.startswith(_PNG_SIGNATURE)):
+        raise ValueError("a wall reader is shown PNGs")
+    if isinstance(max_tokens, bool) or max_tokens <= 0:
+        raise ValueError("max_tokens must be a positive integer")
+    request: dict[str, Any] = {
+        "modelId": model_id,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"image": {"format": "png", "source": {"bytes": row_png}}},
+                    {"image": {"format": "png", "source": {"bytes": view_png}}},
+                    {"text": WALL_PROMPT},
+                ],
+            }
+        ],
+        "inferenceConfig": {"maxTokens": max_tokens},
+    }
+    if _base_model_id(model_id) == KIMI_K3_MODEL:
+        request["outputConfig"] = {"effort": KIMI_EFFORT}
+    else:
+        request["inferenceConfig"]["temperature"] = 0
+    return request
+
+
+def read_walls(
+    client: ConverseClient,
+    *,
+    model_id: str,
+    row_png: bytes,
+    view_png: bytes,
+    page_index: int,
+    max_tokens: int,
+    record_attempt: Callable[[AttemptUsage], None],
+) -> WallAnswer:
+    """Ask one reader about one row's walls; re-ask once on a malformed answer, then raise.
+
+    Every attempt's raw text is recorded with its usage (#985), privately, as the form reader's is.
+    """
+    for attempt in range(2):
+        request = build_wall_request(
+            model_id=model_id, row_png=row_png, view_png=view_png, max_tokens=max_tokens
+        )
+        if attempt:
+            request["messages"][0]["content"].append(
+                {"text": "Your previous reply was malformed. Return the one JSON object only."}
+            )
+        started = monotonic()
+        try:
+            response = client.converse(**request)
+        except Exception as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    WALL_PROMPT_ID,
+                    WALL_PROMPT_ID,
+                    None,
+                    None,
+                    int((monotonic() - started) * 1000),
+                    False,
+                    type(error).__name__,
+                    page_index,
+                    attempt_number=attempt + 1,
+                )
+            )
+            raise
+        input_tokens, output_tokens = _response_usage(response)
+        elapsed = int((monotonic() - started) * 1000)
+        raw: str | None = None
+        try:
+            raw = _response_text(response)
+            answer = _wall_answer(model_id, _WallReply.model_validate(_extract_json_object(raw)))
+        except (MalformedFormAnswer, ValidationError) as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    WALL_PROMPT_ID,
+                    WALL_PROMPT_ID,
+                    input_tokens,
+                    output_tokens,
+                    elapsed,
+                    True,
+                    page_index=page_index,
+                    raw_response_text=raw,
+                    attempt_number=attempt + 1,
+                )
+            )
+            if attempt:
+                raise MalformedFormAnswer(
+                    "wall answer remained malformed after one re-ask"
+                ) from error
+            continue
+        record_attempt(
+            AttemptUsage(
+                model_id,
+                WALL_PROMPT_ID,
+                WALL_PROMPT_ID,
+                input_tokens,
+                output_tokens,
+                elapsed,
+                False,
+                page_index=page_index,
+                raw_response_text=raw,
+                attempt_number=attempt + 1,
+            )
+        )
+        return answer
+    raise AssertionError("unreachable")
+
+
 @dataclass(frozen=True, slots=True)
 class CropJob:
-    """One reader, one crop. `key` is the caller's, to put the answer back where it belongs."""
+    """One reader, one crop. `key` is the caller's, to put the answer back where it belongs.
+
+    With `view_png`, the job is a row's wall question (#992): `png` is the row picture and
+    `view_png` the whole vendor view; the answer is a `WallAnswer`.
+    """
 
     key: str
     model_id: str
     page_index: int
     png: bytes
+    view_png: bytes | None = None
 
 
 def read_crops_parallel(
@@ -211,8 +383,11 @@ def read_crops_parallel(
     max_throttle_retries: int,
     retry_backoff_seconds: float,
     record_attempt: Callable[[AttemptUsage], None],
-) -> dict[tuple[str, str], ReaderAnswer | None]:
+) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | None]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
+
+    Label crops and wall questions share one pool, one pacer and one concurrency cap, so asking
+    both never doubles a model's request rate.
 
     Refuses to start when any reader has no stated price or pacing limit, as the form reader does.
     """
@@ -234,18 +409,30 @@ def read_crops_parallel(
     require_priced_readers(readers, rates)
     pacer = ModelPacer(calls_per_minute)
 
-    def invoke(job: CropJob) -> tuple[tuple[str, str], ReaderAnswer | None]:
+    def invoke(job: CropJob) -> tuple[tuple[str, str], ReaderAnswer | WallAnswer | None]:
         for throttle_attempt in range(max_throttle_retries + 1):
             pacer.wait(job.model_id)
             try:
-                answer = read_crop(
-                    clients.for_current_thread(),
-                    model_id=job.model_id,
-                    crop_png=job.png,
-                    page_index=job.page_index,
-                    max_tokens=max_tokens,
-                    record_attempt=record_attempt,
-                )
+                answer: ReaderAnswer | WallAnswer
+                if job.view_png is not None:
+                    answer = read_walls(
+                        clients.for_current_thread(),
+                        model_id=job.model_id,
+                        row_png=job.png,
+                        view_png=job.view_png,
+                        page_index=job.page_index,
+                        max_tokens=max_tokens,
+                        record_attempt=record_attempt,
+                    )
+                else:
+                    answer = read_crop(
+                        clients.for_current_thread(),
+                        model_id=job.model_id,
+                        crop_png=job.png,
+                        page_index=job.page_index,
+                        max_tokens=max_tokens,
+                        record_attempt=record_attempt,
+                    )
                 return (job.key, job.model_id), answer
             except MalformedFormAnswer:
                 return (job.key, job.model_id), None
@@ -255,7 +442,7 @@ def read_crops_parallel(
                 time.sleep(retry_backoff_seconds * (2**throttle_attempt))
         raise AssertionError("unreachable")
 
-    answers: dict[tuple[str, str], ReaderAnswer | None] = {}
+    answers: dict[tuple[str, str], ReaderAnswer | WallAnswer | None] = {}
     with ThreadPoolExecutor(max_workers=max_concurrent_calls) as executor:
         futures = [executor.submit(invoke, job) for job in jobs]
         for future in as_completed(futures):

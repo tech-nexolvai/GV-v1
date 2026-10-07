@@ -145,12 +145,45 @@ def test_a_stacked_fraction_goes_to_the_person_unless_the_admin_allows_it() -> N
     assert allowed.state is LabelState.SEALED and "stacked" in allowed.flags
 
 
-def test_words_sums_and_counts_never_seal_even_when_agreed() -> None:
-    for text in ('4"+1" Filler', '96"(6EQ)', '30" (INCLUDING FIELD CUT)'):
-        outcome = seal(answers=(answer(KIMI, text), answer(QWEN, text)))
+def test_other_words_and_counts_never_seal_even_when_agreed() -> None:
+    for text in ('4" Panel', '96" 6 EQ', "(6EQ)", '4+1"', '96"(1EQ)'):
+        outcome = seal(answers=(answer(KIMI, text, combined=True), answer(QWEN, text)))
         assert outcome.state is LabelState.REVIEW and outcome.reason_code == "not-plain"
         assert outcome.sealed_text == text, "the agreed words stay as evidence of the kind"
         assert outcome.value is None
+
+
+def test_an_agreed_sum_or_equal_shares_seals_as_one_exact_value() -> None:
+    """#992: the two worded forms the admin approved, expanded from the agreed text alone."""
+    for text, value, how in (
+        ('4"+1" Filler', Fraction(5), "sum"),
+        ('1 1/2"+3/4"', Fraction(9, 4), "sum"),
+        ('96"(6EQ)', Fraction(96), "equal-shares"),
+        ('96" (6 EQ)', Fraction(96), "equal-shares"),
+    ):
+        outcome = seal(
+            answers=(answer(KIMI, text, combined=True), answer(QWEN, text, combined=True))
+        )
+        assert outcome.state is LabelState.SEALED, text
+        assert outcome.value is not None and outcome.value.exact == value
+        assert f"expanded:{how}" in outcome.flags
+
+
+def test_a_sum_the_readers_print_differently_is_not_expanded() -> None:
+    outcome = seal(answers=(answer(KIMI, '4"+1" Filler'), answer(QWEN, '4"+1"')))
+    assert outcome.state is LabelState.REVIEW and outcome.reason_code == "readers-differ"
+
+
+def test_a_field_cut_or_vif_label_never_seals_and_names_why() -> None:
+    for text, code in (('30" (INCLUDING FIELD CUT)', "field-cut-included"), ("990 [39]VIF", "vif")):
+        outcome = seal(answers=(answer(KIMI, text), answer(QWEN, text)))
+        assert outcome.state is LabelState.REVIEW and outcome.reason_code == code
+        assert outcome.value is None and outcome.suggestion is None
+
+
+def test_a_plain_text_a_reader_calls_combined_still_waits() -> None:
+    outcome = seal(answers=(answer(KIMI, '14 3/8"', combined=True), answer(QWEN, '14 3/8"')))
+    assert outcome.state is LabelState.REVIEW and outcome.reason_code == "not-plain"
 
 
 def test_a_bare_number_has_no_unit_and_never_seals() -> None:

@@ -8,21 +8,21 @@ a line break, a run of spaces. Nothing else is forgiven: `13 1/8"` and `131/8"` 
 
 **The value comes from the sealed text alone** (E2 guard 2), parsed by `units/`. The readers are not
 asked for whole, numerator and denominator at all: in E2 both readers once filed identical wrong
-parts for a label whose text they had read right. A sealed text that is not a plain dimension —
-words, a sum, a count, brackets that are not an mm [inch] pair — is held for the person, because
-`units/` would read `181"(10EQ)` as `181"` and drop the rest.
+parts for a label whose text they had read right. A sealed text that is not a plain dimension is
+held for the person, except the two forms the admin approved (#992), which `labels.py` expands by
+exact arithmetic on that same text: `a"+b"` (one piece, a + b) and `N"(K EQ)` (one entry, N).
+`INCLUDING FIELD CUT` and `VIF` never seal; they hold the whole row (`labels.row_hold`).
 
 **Every guard only withholds.** The reviewer's ink on the crop (E2 guard 1, decided by code's colour
 check, never the readers'), a label at the drawing's edge (E2 guard 3), a stacked fraction (#762),
 a crowded crop, an uncertain slot or row, a reader that abstained or was unsure: each sends the
 reading to the person with a plain reason. None of them can make a reading count.
 
-Source: issue #987 · Verification: `tests/extraction/slot_reader/test_seal.py`
+Source: issues #987, #992 · Verification: `tests/extraction/slot_reader/test_seal.py`
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -31,10 +31,9 @@ from typing import Final
 from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
 from extraction.form_reader.mapping import REVIEWER_MARKUP_REASON
 from extraction.ink import InkAt, InkClass
+from extraction.slot_reader.labels import expand_label, plain_dimension, row_hold
 from extraction.slot_reader.runs import Lane, PlannedLabel
 from units.measurement import Measurement
-from units.normalise import UnitNormalisationError, normalise_to_inches
-from units.notation import canonical_notation, is_compound
 from vocabulary.cabinet_codes import is_cabinet_code, is_finish_code
 
 __all__ = [
@@ -51,10 +50,6 @@ __all__ = [
 
 #: The file's own text, as a source. Its "maker" is the drawing, which no model shares.
 TEXT_LAYER: Final = "pdf-text-layer"
-
-#: A plain dimension: digits, spaces, a fraction slash, inch and foot marks, a dash, a decimal
-#: point, and the brackets of an mm [inch] pair. Anything else is words, a sum or a count.
-_PLAIN: Final = re.compile(r"[0-9 /\"'\-.\[\]]+")
 
 _QUOTES: Final = {
     "“": '"',
@@ -75,22 +70,6 @@ def normalise_text(text: str) -> str:
         text = text.replace(glyph, plain)
     text = text.replace("''", '"')
     return " ".join(text.split())
-
-
-def plain_dimension(text: str) -> Measurement | None:
-    """The exact value of a plain dimension's text, or `None` where it is not one.
-
-    `None` for text with anything but the characters of a dimension, for a compound, and for text
-    `units/` cannot give a unit — a bare `30` is not assumed to be inches.
-    """
-    if not text or _PLAIN.fullmatch(text) is None or is_compound(text):
-        return None
-    try:
-        notation, _millimetres = canonical_notation(text)
-        value = normalise_to_inches(notation)
-    except (UnitNormalisationError, TypeError, ValueError, ArithmeticError):
-        return None
-    return Measurement(value.exact, value.unit, text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,8 +259,22 @@ def seal_label(
         return review("unreadable", "a reader could not read it clearly")
     if agreed is None:
         return review("readers-differ", "readers differ")
+    hold = row_hold([agreed])
+    if hold is not None:
+        return review(hold.code, hold.reason, keep_suggestion=False)
     value = plain_dimension(agreed)
-    if value is None or any(answer.combined for answer in answers):
+    if value is not None and any(answer.combined for answer in answers):
+        # A reader saw words or a sum the agreed text does not show: the crop holds more than the
+        # label both copied, and which is the piece's width is the person's call.
+        value = None
+    elif value is None:
+        # Words or a sum both sources printed identically: only the two forms the admin approved
+        # are expanded, by exact arithmetic on that text (#992). Anything else waits for a person.
+        expanded = expand_label(agreed)
+        if expanded is not None:
+            value = expanded.value
+            flags.append(f"expanded:{expanded.how.value}")
+    if value is None:
         return review("not-plain", "the label has words or a sum; review the value")
     return LabelOutcome(
         state=LabelState.SEALED,

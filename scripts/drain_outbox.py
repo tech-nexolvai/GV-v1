@@ -281,6 +281,7 @@ def _hunt_values(
 def _stages(
     *,
     discriminators: Mapping[str, str] | None = None,
+    discriminator_sources: Mapping[str, str] | None = None,
     timings: TimingRecorder | None = None,
 ) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
@@ -313,6 +314,7 @@ def _stages(
         store,
         operands=None,
         discriminators=dict(discriminators or {}),
+        discriminator_sources=dict(discriminator_sources or {}),
         association=association,
         localized_ocr=localized,
         automatic_typing=automatic_typing,
@@ -350,6 +352,7 @@ def _run_checks(
     package_revision_id: UUID,
     idempotency_key: str,
     discriminators: Mapping[str, str] | None = None,
+    discriminator_sources: Mapping[str, str] | None = None,
 ) -> Mapping[str, object]:
     """Run the checks for one revision, with what the reviewer supplied.
 
@@ -369,7 +372,7 @@ def _run_checks(
     if revision is None:
         return {"implemented": True, "ran": False, "reason": "no such package revision"}
     _resume_from_reviewer_input(session, revision)
-    stages = _stages(discriminators=discriminators)
+    stages = _stages(discriminators=discriminators, discriminator_sources=discriminator_sources)
     workflow_run_id = UUID(idempotency_key)
     _ensure_workflow_run(session, package_revision_id, workflow_run_id, WorkflowRun)
     # **Named by the row that asked, so asking twice runs twice.** Without it the key is the stage
@@ -642,7 +645,14 @@ def _consume(
         # claim this process checks rather than assumes. A malformed declaration lets a rule abstain
         # rather than selecting a layout by guess.
         stated = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
-        return _run_checks(session, revision_id, idempotency_key, stated)
+        # Where each came from (#992): a value the readers agreed on is named so on its finding.
+        raw_sources = payload.get("discriminator_sources")
+        sources = (
+            {str(k): str(v) for k, v in raw_sources.items()}
+            if isinstance(raw_sources, dict)
+            else {}
+        )
+        return _run_checks(session, revision_id, idempotency_key, stated, sources)
     if workflow == CUT_PART_PICTURES_WORKFLOW:
         # A person added a part (#897): cut its picture, and any other still missing.
         return _cut_part_pictures(session, revision_id)

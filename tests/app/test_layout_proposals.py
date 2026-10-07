@@ -332,3 +332,217 @@ def test_layout_tables_are_declared_append_only_in_their_migration() -> None:
     spec.loader.exec_module(migration)
 
     assert set(migration.IMMUTABLE_TABLES) == {"layout_proposals", "layout_confirmations"}
+
+
+# ---------------------------------------------------------------------------------------------
+# The wall layout two readers agreed on (#992)
+# ---------------------------------------------------------------------------------------------
+
+READERS = "us.moonshotai.kimi-k3 + qwen.qwen3-vl-235b-a22b"
+
+
+def _wall_run(
+    session: Session, revision_id: UUID, rows: list[str | None], *, propose: str | None
+) -> LayoutProposal | None:
+    """One slot-reader run's wall candidates — a sealed layout per row, or `None` for a row that
+    went to the person — and, when asked, the readers' layout proposal from that run."""
+    version_id = session.execute(
+        select(PackageRevisionDocument.document_version_id).where(
+            PackageRevisionDocument.package_revision_id == revision_id
+        )
+    ).scalar_one()
+    page = session.execute(select(Page).where(Page.document_version_id == version_id)).scalar_one()
+    workflow_run = WorkflowRun(package_revision_id=revision_id, engine_run_id=str(uuid4()))
+    session.add(workflow_run)
+    session.flush()
+    task_run = TaskRun(
+        workflow_run_id=workflow_run.id,
+        idempotency_key=str(uuid4()),
+        task_type="extract",
+        attempt=1,
+        outcome="SUCCEEDED",
+    )
+    session.add(task_run)
+    session.flush()
+    run = ExtractionRun(
+        task_run_id=task_run.id,
+        extractor="extraction.form_reader",
+        extractor_version="slot-reader-v1-ink-v1",
+        config_hash=str(uuid4()),
+    )
+    session.add(run)
+    session.flush()
+    artifacts: list[UUID] = []
+    for layout in rows:
+        candidate = ObservationCandidate(
+            document_version_id=version_id,
+            page_id=page.id,
+            extraction_run_id=run.id,
+            raw_text=f"walls: {layout or 'for the person'}",
+            polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
+            ambiguity_flags=[
+                "wall-reader",
+                f"walls-sealed:{layout}" if layout else "walls-held:walls-not-agreed",
+            ],
+        )
+        session.add(candidate)
+        session.flush()
+        artifact = EvidenceArtifact(
+            candidate_id=candidate.id,
+            canonical_observation_id=None,
+            document_version_id=version_id,
+            page_id=page.id,
+            kind=EvidenceArtifactKind.CROP.value,
+            storage_key=f"evidence-crops/{uuid4()}.png",
+            sha256="3" * 64,
+            media_type="image/png",
+            coordinate_space="image",
+        )
+        session.add(artifact)
+        session.flush()
+        artifacts.append(artifact.id)
+    proposal = None
+    if propose is not None:
+        proposal = record_layout_proposal(
+            session,
+            package_revision_id=revision_id,
+            discriminator_name="wall_config",
+            proposed_value=propose,
+            crop_artifact_id=artifacts[0],
+            model_id=READERS,
+            prompt_id="slot-walls-v1",
+        )
+    session.commit()
+    return proposal
+
+
+def _requested(session: Session, package_id: UUID, body: dict[str, Any] | None = None) -> Any:
+    response = _client(session).post(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}/checks", json=body
+    )
+    assert response.status_code == 202, response.text
+    accepted = UUID(response.json()["accepted_id"])
+    entry = session.execute(select(OutboxEntry).where(OutboxEntry.id == accepted)).scalar_one()
+    return entry.payload
+
+
+def test_the_check_request_uses_the_layout_two_readers_agreed_on_and_says_so(
+    session: Session,
+) -> None:
+    _publish_rulebook(session)
+    package_id, revision_id, _crop = _package_with_crop(session)
+    proposal = _wall_run(
+        session, revision_id, ["back_left_right", "back_left_right"], propose="back_left_right"
+    )
+    assert proposal is not None
+
+    payload = _requested(session, package_id)
+
+    assert payload["discriminators"] == {"wall_config": "back_left_right"}
+    source = payload["discriminator_sources"]["wall_config"]
+    assert source.startswith("two AI readers agreed:")
+    assert READERS in source and str(proposal.id) in source
+    assert (
+        session.execute(select(LayoutConfirmation)).scalars().all() == []
+    ), "the readers' value is not recorded as anyone's confirmation"
+
+
+def test_a_value_the_reviewer_states_always_wins(session: Session) -> None:
+    _publish_rulebook(session)
+    package_id, revision_id, _crop = _package_with_crop(session)
+    _wall_run(session, revision_id, ["back_left_right"], propose="back_left_right")
+
+    stated = _requested(session, package_id, {"discriminators": {"wall_config": "back_only"}})
+    assert stated["discriminators"] == {"wall_config": "back_only"}
+    assert stated["discriminator_sources"] == {"wall_config": "reviewer"}
+    # And it stays the reviewer's on the next request, which states nothing.
+    again = _requested(session, package_id)
+    assert again["discriminators"] == {"wall_config": "back_only"}
+    assert again["discriminator_sources"] == {"wall_config": "reviewer"}
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        ["back_left_right", None],  # one row went to the person
+        ["back_left_right", "back_only"],  # two rows disagree
+    ],
+)
+def test_a_run_whose_rows_do_not_all_seal_the_same_layout_supplies_none(
+    session: Session, rows: list[str | None]
+) -> None:
+    _publish_rulebook(session)
+    package_id, revision_id, _crop = _package_with_crop(session)
+    _wall_run(session, revision_id, rows, propose="back_left_right")
+
+    payload = _requested(session, package_id)
+    assert payload["discriminators"] == {}
+    assert payload["discriminator_sources"] == {}
+
+
+def test_an_older_runs_layout_is_not_used_when_the_newest_run_did_not_seal(
+    session: Session,
+) -> None:
+    _publish_rulebook(session)
+    package_id, revision_id, _crop = _package_with_crop(session)
+    _wall_run(session, revision_id, ["back_left_right"], propose="back_left_right")
+    _wall_run(session, revision_id, [None], propose=None)
+
+    assert _requested(session, package_id)["discriminators"] == {}
+
+
+def test_a_newer_proposal_that_says_otherwise_withholds_the_readers_layout(
+    session: Session,
+) -> None:
+    _publish_rulebook(session)
+    package_id, revision_id, crop_id = _package_with_crop(session)
+    _wall_run(session, revision_id, ["back_left_right"], propose="back_left_right")
+    _record_wall_config_proposal(session, revision_id, crop_id)  # one model: back_only
+    session.commit()
+
+    assert _requested(session, package_id)["discriminators"] == {}
+
+
+def test_a_single_models_proposal_never_reaches_the_check(session: Session) -> None:
+    _publish_rulebook(session)
+    package_id, revision_id, crop_id = _package_with_crop(session)
+    record_layout_proposal(
+        session,
+        package_revision_id=revision_id,
+        discriminator_name="wall_config",
+        proposed_value="back_left_right",
+        crop_artifact_id=crop_id,
+        model_id="qwen.qwen3-vl-235b-a22b",
+        prompt_id="layout-discriminator-v1",
+    )
+    session.commit()
+
+    assert _requested(session, package_id)["discriminators"] == {}
+
+
+def test_the_finding_note_names_the_readers_only_when_they_chose() -> None:
+    from workflow.layout_proposals import discriminator_note
+
+    note = discriminator_note("wall_config", "back_left_right", "two AI readers agreed: a + b")
+    assert note is not None and "two AI readers" in note and "back_left_right" in note
+    assert discriminator_note("wall_config", "back_only", "reviewer") is None
+    assert discriminator_note("wall_config", "back_only", None) is None
+
+
+def test_a_finding_whose_layout_the_readers_chose_carries_the_note() -> None:
+    from workflow.stages import DatabaseStages
+
+    width = Rule.model_validate(
+        yaml.safe_load((RULEBOOK / "ct_width_001.yaml").read_text(encoding="utf-8"))
+    )
+    readers = DatabaseStages(
+        discriminators={"wall_config": "back_left_right"},
+        discriminator_sources={"wall_config": f"two AI readers agreed: {READERS}"},
+    )
+    (note,) = readers._discriminator_notes(width)
+    assert "two AI readers" in note
+    reviewer = DatabaseStages(
+        discriminators={"wall_config": "back_left_right"},
+        discriminator_sources={"wall_config": "reviewer"},
+    )
+    assert reviewer._discriminator_notes(width) == ()

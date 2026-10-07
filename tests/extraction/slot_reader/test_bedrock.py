@@ -17,8 +17,11 @@ from extraction.slot_reader.bedrock import (
     CROP_PROMPT,
     CropJob,
     build_crop_request,
+    build_wall_request,
     read_crops_parallel,
 )
+from extraction.slot_reader.seal import ReaderAnswer
+from extraction.slot_reader.walls import WALL_PROMPT, Side, WallAnswer
 
 QWEN = "qwen.qwen3-vl-235b-a22b"
 KIMI = "us.moonshotai.kimi-k3"
@@ -160,3 +163,73 @@ def test_a_crop_is_read_once_by_each_reader() -> None:
     clients = FakeClients(lambda _request: reply(good('2"')))
     with pytest.raises(ValueError):
         run(clients, [CropJob("k", QWEN, 0, PNG), CropJob("k", QWEN, 0, PNG)])
+
+
+# ---------------------------------------------------------------------------------------------
+# The wall question (#992)
+# ---------------------------------------------------------------------------------------------
+
+VIEW = encode_png(3, 2, bytes(18))
+
+
+def walls(
+    left: str = "yes", right: str = "yes", behind: str = "unsure", view: str = "elevation"
+) -> dict[str, str]:
+    return {
+        "left": left,
+        "right": right,
+        "behind": behind,
+        "view": view,
+        "left_evidence": "hatched wall",
+        "right_evidence": "hatched wall",
+        "behind_evidence": "",
+    }
+
+
+def test_the_wall_question_shows_the_row_then_the_view_and_asks_kimi_at_low_effort() -> None:
+    kimi = build_wall_request(model_id=KIMI, row_png=PNG, view_png=VIEW, max_tokens=400)
+    qwen = build_wall_request(model_id=QWEN, row_png=PNG, view_png=VIEW, max_tokens=400)
+    assert kimi["outputConfig"] == {"effort": "low"}
+    assert "temperature" not in kimi["inferenceConfig"]
+    assert qwen["inferenceConfig"]["temperature"] == 0
+    content = qwen["messages"][0]["content"]
+    assert content[0]["image"]["source"]["bytes"] == PNG
+    assert content[1]["image"]["source"]["bytes"] == VIEW
+    assert content[2]["text"] == WALL_PROMPT
+
+
+def test_label_crops_and_wall_questions_share_one_batch_and_each_gets_its_own_answer() -> None:
+    def answer(request: dict[str, Any]) -> Mapping[str, Any]:
+        pictures = [part for part in request["messages"][0]["content"] if "image" in part]
+        return reply(walls(view="Plan") if len(pictures) == 2 else good('2"'))
+
+    attempts: list[AttemptUsage] = []
+    answers = run(
+        FakeClients(answer),
+        [CropJob("label", QWEN, 0, PNG), CropJob("walls", QWEN, 0, PNG, VIEW)],
+        record_attempt=attempts.append,
+    )
+
+    label, wall = answers[("label", QWEN)], answers[("walls", QWEN)]
+    assert isinstance(label, ReaderAnswer) and label.text == '2"'
+    assert isinstance(wall, WallAnswer)
+    assert (wall.left, wall.right, wall.behind, wall.view) == (
+        Side.YES,
+        Side.YES,
+        Side.UNSURE,
+        "plan",
+    )
+    assert {attempt.prompt_id for attempt in attempts} == {"slot-crop-v1", "slot-walls-v1"}
+    assert all(attempt.raw_response_text for attempt in attempts), "raw answers are kept (#985)"
+
+
+def test_a_wall_side_outside_yes_no_unsure_is_malformed_and_abstains() -> None:
+    clients = FakeClients(lambda _request: reply(walls(left="probably")))
+    assert run(clients, [CropJob("walls", KIMI, 0, PNG, VIEW)]) == {("walls", KIMI): None}
+    assert len(clients.requests) == 2, "asked once more, then abstains"
+
+
+def test_an_unclear_view_is_never_a_plan() -> None:
+    clients = FakeClients(lambda _request: reply(walls(view="section")))
+    answer = run(clients, [CropJob("walls", KIMI, 0, PNG, VIEW)])[("walls", KIMI)]
+    assert isinstance(answer, WallAnswer) and answer.view == "other"
