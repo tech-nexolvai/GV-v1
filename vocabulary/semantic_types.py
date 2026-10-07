@@ -75,6 +75,12 @@ class SemanticType(str, Enum):
     CABINET_WIDTH = "cabinet_width"
     FILLER_WIDTH = "filler_width"
     COUNTERTOP_OVERALL_WIDTH = "countertop_overall_width"
+    #: One piece of the run under a countertop, whatever kind it is — cabinet, filler, panel (#991).
+    #: The width check adds every piece in the row (admin, 2026-10-07): readers agree on a piece's
+    #: width far more reliably than on its kind, and the sum does not depend on the kind. A piece
+    #: read this way is never a `CABINET_WIDTH` or a `FILLER_WIDTH`; the checks that need the kind
+    #: (`CAB-FILLER-001`) still ask for those.
+    COUNTERTOP_PIECE_WIDTH = "countertop_piece_width"
 
     # -- no client code exists for these -------------------------------------
     WALL_CONFIG = "wall_config"

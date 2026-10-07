@@ -104,11 +104,17 @@ def store() -> Iterator[LocalStore]:
         yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
 
 
-def _rule(name: str, *, version: str | None = None, **defaults: str) -> Rule:
-    """A rulebook file as a rule, with a default in inches declared for each setting named."""
+def _rule(
+    name: str, *, version: str | None = None, undefault: tuple[str, ...] = (), **defaults: str
+) -> Rule:
+    """A rulebook file as a rule, with a default in inches declared for each setting named, and the
+    default (and its note) removed from each setting in `undefault`."""
     data: dict[str, Any] = yaml.safe_load((RULEBOOK / name).read_text(encoding="utf-8"))
     if version is not None:
         data["version"] = version
+    for setting in undefault:
+        data["parameters"][setting].pop("default")
+        data["parameters"][setting].pop("note", None)
     for setting, value in defaults.items():
         data["parameters"][setting]["default"] = {"value": value, "unit": "in"}
     return Rule.model_validate(data)
@@ -322,7 +328,8 @@ def test_a_company_standard_or_defaulted_setting_is_never_proposed(
     session: Session, store: LocalStore
 ) -> None:
     """The architect's confirmed drawing states the field cut and the overhang. The field cut is
-    GV's own and outstanding; the overhang has a declared default. Outcome: the field cut ends at
+    GV's own and — with its 1 in default removed, as before #991 — outstanding; the overhang has a
+    declared default. Outcome: the field cut ends at
     once, without a search, saying it is never read off a package; the overhang is not looked for at
     all; nothing is filed. Then the rule drops the default, and the same sheet gets the overhang
     proposed: the default was the only thing keeping it out."""
@@ -330,7 +337,9 @@ def test_a_company_standard_or_defaulted_setting_is_never_proposed(
     revision = _read(session, store, sheet, kind="shop")
     _drawings(session, revision, sheet, ViewRole.ARCH)
     _publish(
-        session, _rule("ct_width_001.yaml"), _rule("ct_depth_001.yaml", countertop_overhang="1")
+        session,
+        _rule("ct_width_001.yaml", undefault=("field_cut",)),
+        _rule("ct_depth_001.yaml", countertop_overhang="1"),
     )
 
     assert outstanding_settings(session, revision.id) == ("cabinet_depth", "field_cut")
@@ -430,7 +439,6 @@ def test_every_outstanding_setting_ends_in_exactly_one_proposal_or_not_found(
         "double_door_cab_width_min",
         "drawer_cab_width_max",
         "drawer_cab_width_min",
-        "field_cut",
         "single_door_cab_width_max",
         "single_door_cab_width_min",
         "sink_interior_depth",
@@ -453,9 +461,8 @@ def test_every_outstanding_setting_ends_in_exactly_one_proposal_or_not_found(
     assert reasons["backsplash_thickness"] == (
         'no passage in this package\'s own words mentions backsplash, "back splash"'
     )
-    assert reasons["field_cut"] == (
-        "field_cut comes from Company standard, which is never read off a package"
-    )
+    # The field cut has GV's 1 in standard since #991, so it is not looked for at all.
+    assert "field_cut" not in settings
     assert reasons["single_door_cab_width_min"] == (
         "no search words are written for single_door_cab_width_min (vocabulary/parameter_terms.py)"
     )

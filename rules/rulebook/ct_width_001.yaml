@@ -1,5 +1,5 @@
 id: CT-WIDTH-001
-version: 1.0.1
+version: 1.1.0
 product_type: countertop
 check_type: internal
 severity: FLAG
@@ -7,10 +7,13 @@ arithmetic_unit: in
 
 name: Countertop width verification
 description: >
-  Compare the shop countertop's authored overall inch width with the exact sum of the
-  same assembly's cabinets, fillers and layout-driven field-cut allowance. The cabinet-run
-  filler that may be trimmed on site remains a filler; it is not one of the countertop's
-  separate one-inch field-cut allowances.
+  Compare the shop countertop's authored overall inch width with the exact length of the row
+  under it plus the layout-driven field-cut allowance. The row is every piece under the
+  countertop, left to right, whatever kind each piece is; where no piece list is given, it is
+  the same assembly's cabinets plus its fillers, as before. Both given with different totals is
+  a question for the reviewer, never a choice between them. The cabinet-run filler that may be
+  trimmed on site remains a piece of the row; it is not one of the countertop's separate
+  one-inch field-cut allowances.
 
 applicability:
   discriminator: wall_config
@@ -31,6 +34,11 @@ inputs:
     semantic_type: countertop_overall_width
     scope: same_assembly
     cardinality: one
+  piece_widths:
+    source: SHOP
+    semantic_type: countertop_piece_width
+    scope: same_assembly
+    cardinality: many
   cabinet_widths:
     source: SHOP
     semantic_type: cabinet_width
@@ -45,16 +53,20 @@ inputs:
 parameters:
   field_cut:
     scope: project
+    default:
+      value: 1
+      unit: in
+    note: >-
+      company standard 1 in per wall end (Raj, CLIENT_FACTS Q1: "1 inch is typical, customizable
+      per project"; adopted by the admin on 2026-10-07). A company or project value replaces it.
 
 derivations:
-  - name: cabinet_total
-    operation: sum
+  - name: row_width
+    operation: row_total
     operands:
-      values: cabinet_widths
-  - name: filler_total
-    operation: sum
-    operands:
-      values: filler_widths
+      pieces: piece_widths
+      cabinets: cabinet_widths
+      fillers: filler_widths
   - name: field_cut_total
     operation: scale
     operands:
@@ -64,8 +76,7 @@ derivations:
     operation: sum
     operands:
       values:
-        - cabinet_total
-        - filler_total
+        - row_width
         - field_cut_total
 
 operation:

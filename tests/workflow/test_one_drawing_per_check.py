@@ -245,11 +245,12 @@ def test_every_one_assembly_input_of_that_side_is_withheld_not_only_the_cabinets
     session: Session, store: LocalStore
 ) -> None:
     """A countertop from one drawing judged against cabinets from two is the same mixture, so the
-    countertop and fillers go too, each with the reason."""
+    countertop and fillers go too, each with the reason — and the row's piece widths (#991), even
+    with none labelled, so the check cannot fall back to a list from either drawing."""
     revision = _labelled(session, store, with_the_other_drawing=True)
 
     evidence = evidence_operands(session, revision.id, _rules())
 
-    assert set(evidence.ambiguous[RULE]) == WIDTH_INPUTS
+    assert set(evidence.ambiguous[RULE]) == WIDTH_INPUTS | {"piece_widths"}
     assert not WIDTH_INPUTS & set(evidence.operands.get(RULE, {}))
     assert set(evidence.ambiguous[RULE].values()) == {DRAWINGS_SPANNED.format(count=2)}

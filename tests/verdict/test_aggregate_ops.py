@@ -180,9 +180,15 @@ def test_all_five_operations_have_versioned_registry_specs() -> None:
         "count_equals",
         "sum_within_tolerance",
         "all_within_tolerance",
+        "row_total",
     }
     assert all(spec.version == "1.0.0" for spec in AGGREGATE_SPECS)
     kinds = {spec.name: spec.kind for spec in AGGREGATE_SPECS}
     assert kinds["sum"] is OperationKind.DERIVATION
     assert kinds["count"] is OperationKind.DERIVATION
     assert kinds["count_equals"] is OperationKind.VERDICT
+    assert kinds["row_total"] is OperationKind.DERIVATION
+    # Only `row_total` may be handed an input nobody supplied (#991); every other aggregate abstains.
+    optional = {spec.name: spec.optional for spec in AGGREGATE_SPECS}
+    assert optional.pop("row_total") == {"pieces", "cabinets", "fillers"}
+    assert all(not names for names in optional.values())

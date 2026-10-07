@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from units.imperial import format_inches
 from units.measurement import Measurement
 from units.policy import require_same_unit
 from verdict.outcomes import Outcome
@@ -181,6 +182,129 @@ def all_within_tolerance(
     )
 
 
+def _abstain(outcome: Outcome, why: str, *intermediates: tuple[str, object]) -> OperationResult:
+    return OperationResult(
+        outcome=outcome,
+        delta=None,
+        intermediates=tuple(intermediates),
+        comparison=why,
+        tolerance=None,
+    )
+
+
+def _written(value: Measurement) -> str:
+    """`40 3/8 in`, as the drawing writes it — never `323/8` (see `scalar._value_text`)."""
+    return f"{format_inches(value.exact)} {value.unit.value}"
+
+
+def _total(values: Sequence[Measurement], name: str) -> tuple[Measurement, str]:
+    measurements = _require_measurements(values, name)
+    total, _running = _running_totals(measurements)
+    addends = " + ".join(format_inches(value.exact) for value in measurements)
+    return total, f"{name} {addends} = {_written(total)}"
+
+
+def row_total(
+    *,
+    pieces: Sequence[Measurement] | None,
+    cabinets: Sequence[Measurement] | None,
+    fillers: Sequence[Measurement] | None,
+) -> DerivationResult | OperationResult:
+    """The exact length of one countertop's row, from whichever complete source was given (#991).
+
+    A row can be stated two ways: as its **pieces** left to right, whatever each one is, or as its
+    **cabinets** and its **fillers**. The sum is the same either way — which is why the width check
+    no longer needs to know which piece is which — and the kinds are the part readers get wrong.
+
+    ``None`` means *nobody supplied that list* (the engine's word for it, `OperationSpec.optional`).
+    An empty list never arrives: the engine returns the rule's ``on_missing`` before this runs.
+
+    | pieces | cabinets and fillers   | result                                                    |
+    |--------|------------------------|-----------------------------------------------------------|
+    | given  | neither                | the pieces' sum                                           |
+    | none   | both                   | cabinets + fillers, exactly as `CT-WIDTH-001` 1.0.1 did    |
+    | given  | both, same total       | that total, with both sums in the trace                   |
+    | given  | both, different totals | REVIEW_REQUIRED — two statements of one row disagree      |
+    | given  | only one of the two    | REVIEW_REQUIRED — a half-stated second source can neither |
+    |        |                        | confirm the pieces nor be safely ignored                  |
+    | none   | one or neither         | NOT_FOUND — no complete statement of the row              |
+
+    **Never picks a source.** Two disagreeing totals are a question about the drawing or the form,
+    and preferring one would make whichever we preferred the answer — the failure `AGENTS.md` §2.4
+    forbids. Mixed units across the lists raise, and the engine turns that into REVIEW_REQUIRED.
+    """
+    kinds_given = (cabinets is not None, fillers is not None)
+    if pieces is None:
+        if cabinets is None or fillers is None:
+            absent = [
+                name
+                for name, value in (("cabinets", cabinets), ("fillers", fillers))
+                if value is None
+            ]
+            return _abstain(
+                Outcome.NOT_FOUND,
+                "no piece widths were given for the row, and its "
+                f"{' and '.join(absent)} widths are missing too, so the row's length is unknown. "
+                "A missing piece is not zero.",
+            )
+        cabinet_total, cabinet_text = _total(cabinets, "cabinets")
+        filler_total, filler_text = _total(fillers, "fillers")
+        unit = require_same_unit(cabinet_total, filler_total)
+        total = Measurement(cabinet_total.exact + filler_total.exact, unit, None)
+        return DerivationResult(
+            value=total,
+            intermediates=(
+                ("source", "cabinets and fillers"),
+                ("cabinet_total", cabinet_total),
+                ("filler_total", filler_total),
+            ),
+            expression=f"{cabinet_text}; {filler_text}; row = {_written(total)}",
+        )
+
+    piece_total, piece_text = _total(pieces, "pieces")
+    if kinds_given == (False, False):
+        return DerivationResult(
+            value=piece_total,
+            intermediates=(("source", "pieces"), ("piece_total", piece_total)),
+            expression=piece_text,
+        )
+    if cabinets is None or fillers is None:
+        given = "cabinet" if cabinets is not None else "filler"
+        return _abstain(
+            Outcome.REVIEW_REQUIRED,
+            f"the row's pieces add up to {_written(piece_total)}, and a "
+            f"{given} list was also given without the "
+            f"{'filler' if given == 'cabinet' else 'cabinet'} list. Half a second statement of the "
+            "row can neither confirm the pieces nor be ignored: complete it or clear it.",
+            ("piece_total", piece_total),
+        )
+
+    cabinet_total, cabinet_text = _total(cabinets, "cabinets")
+    filler_total, filler_text = _total(fillers, "fillers")
+    unit = require_same_unit(piece_total, cabinet_total, filler_total)
+    kinds_total = Measurement(cabinet_total.exact + filler_total.exact, unit, None)
+    if kinds_total.exact != piece_total.exact:
+        return _abstain(
+            Outcome.REVIEW_REQUIRED,
+            f"the row's pieces add up to {_written(piece_total)}, but its cabinets and fillers "
+            f"add up to {_written(kinds_total)}. Two statements of the same row "
+            "disagree, and neither is preferred.",
+            ("piece_total", piece_total),
+            ("cabinet_total", cabinet_total),
+            ("filler_total", filler_total),
+        )
+    return DerivationResult(
+        value=piece_total,
+        intermediates=(
+            ("source", "pieces, confirmed by cabinets and fillers"),
+            ("piece_total", piece_total),
+            ("cabinet_total", cabinet_total),
+            ("filler_total", filler_total),
+        ),
+        expression=f"{piece_text}; {cabinet_text}; {filler_text}; row = {_written(piece_total)}",
+    )
+
+
 AGGREGATE_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec("sum", "1.0.0", {"values": Arity.LIST}, sum, OperationKind.DERIVATION),
     OperationSpec("count", "1.0.0", {"values": Arity.LIST}, count, OperationKind.DERIVATION),
@@ -201,6 +325,14 @@ AGGREGATE_SPECS: tuple[OperationSpec, ...] = (
         "1.0.0",
         {"values": Arity.LIST, "expected": Arity.SCALAR, "tolerance": Arity.SCALAR},
         all_within_tolerance,
+    ),
+    OperationSpec(
+        "row_total",
+        "1.0.0",
+        {"pieces": Arity.LIST, "cabinets": Arity.LIST, "fillers": Arity.LIST},
+        row_total,
+        OperationKind.DERIVATION,
+        optional=frozenset({"pieces", "cabinets", "fillers"}),
     ),
 )
 

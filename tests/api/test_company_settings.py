@@ -66,10 +66,11 @@ def _by_name(response: Any) -> dict[str, dict[str, Any]]:
 
 
 def test_the_list_holds_gvs_standards_and_nothing_per_project(session: Session) -> None:
-    """**#817, the admin's decision of 2026-10-02.** Outcome: exactly the five settings the rulebook
-    gives a default — the back-offset minimum with its 2.5" in use, and so on. Not the per-project
-    ones (side panel, overhang, backsplash, cabinet depth, field cut, the cabinet width bounds), and
-    not the sink's cut-sheet size, which is one review's."""
+    """**#817, the admin's decision of 2026-10-02.** Outcome: exactly the six settings the rulebook
+    gives a default — the back-offset minimum with its 2.5" in use, and so on, and since #991 the
+    field cut at GV's 1" (admin, 2026-10-07). Not the per-project ones (side panel, overhang,
+    backsplash, cabinet depth, the cabinet width bounds), and not the sink's cut-sheet size, which
+    is one review's."""
     response = _client(session).get(URL)
 
     assert response.status_code == 200, response.text
@@ -80,7 +81,15 @@ def test_the_list_holds_gvs_standards_and_nothing_per_project(session: Session) 
         "sink_cutout_clearance",
         "filler_min",
         "filler_max",
+        "field_cut",
     }
+    field_cut = settings["field_cut"]
+    assert (field_cut["scope"], field_cut["rulebook_default"], field_cut["in_use_from"]) == (
+        "project",
+        "1 in",
+        "rulebook",
+    )
+    assert (field_cut["rulebook_note"] or "").startswith("company standard 1 in")
     offset = settings["back_offset_minimum"]
     assert (offset["rulebook_default"], offset["in_use"], offset["in_use_from"]) == (
         "2 1/2 in",
