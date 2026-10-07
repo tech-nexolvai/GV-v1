@@ -37,9 +37,8 @@ jobs:
     # were passing, the clock ran out. Ten minutes had stopped meaning "something is stuck" and
     # started meaning "somebody added tests", which is the wrong thing for a timeout to detect.
     #
-    # The real cost is that every database-backed test builds its own schema by running every
-    # migration, so the suite gets slower with each migration as well as with each test. Making that
-    # cheaper is worth doing on its own terms; raising this is not a substitute for it.
+    # PostgreSQL schema setup is already shared once per pytest session; each DB test truncates its
+    # own rows. Capture test durations first, then use them to balance independent CI shards.
     timeout-minutes: 20
     services:
       postgres:
@@ -112,7 +111,7 @@ jobs:
       - name: Tests
         run: |
           set +e
-          pytest -q
+          pytest -q --durations=50 --store-durations --durations-path=.test_durations
           code=$?
           set -e
           if [ "$code" -eq 5 ]; then
@@ -120,6 +119,17 @@ jobs:
             exit 0
           fi
           exit "$code"
+
+      # The first complete, unsplit run seeds deterministic duration-based balancing for later
+      # matrix jobs. This is a small metadata artifact, not a test result or database cache.
+      - name: Save pytest duration seed
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pytest-durations
+          path: .test_durations
+          if-no-files-found: error
+          retention-days: 1
 
   # The frontend sat in the repository unchecked, and a dependency conflict shipped to main as a
   # result: openapi-typescript pins peer typescript@^5.x, the project is on 6, and `npm ci` failed
