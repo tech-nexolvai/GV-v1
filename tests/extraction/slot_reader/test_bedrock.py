@@ -179,6 +179,50 @@ def test_slot_question_sends_marked_full_view_before_close_up() -> None:
     assert content[-1]["text"] == CROP_PROMPT
 
 
+def test_claude_span_prompt_asks_ownership_separately_from_exact_copy() -> None:
+    full_view = encode_png(4, 2, bytes(24))
+    request = build_crop_request(
+        model_id=OPUS,
+        full_view_png=full_view,
+        crop_png=PNG,
+        max_tokens=2000,
+        grounded_claude=True,
+    )
+    content = request["messages"][0]["content"]
+
+    assert [part["image"]["source"]["bytes"] for part in content if "image" in part] == [
+        full_view,
+        PNG,
+    ]
+    assert "belongs" in content[-1]["text"]
+    assert "copy its characters exactly" in content[-1]["text"]
+    assert request["inferenceConfig"]["maxTokens"] == 2000
+
+
+def test_claude_span_answer_requires_ownership_and_reasks_only_when_malformed() -> None:
+    calls = 0
+
+    def response(_request: dict[str, Any]) -> Mapping[str, Any]:
+        nonlocal calls
+        calls += 1
+        payload = good('2"') if calls == 1 else good('2"') | {"belongs": True}
+        return reply(payload)
+
+    model = OPUS
+    answers = run(
+        FakeClients(response),
+        [CropJob("slot", model, 0, PNG, grounded_claude=True)],
+        rates=AnthropicRates(),
+        calls_per_minute={model: 6000},
+        max_tokens=2000,
+        max_throttle_retries=0,
+    )
+
+    assert calls == 2
+    assert answers[("slot", model)] is not None
+    assert answers[("slot", model)].belongs is True
+
+
 def test_row_request_shows_one_numbered_vendor_view_and_the_approved_prompt() -> None:
     request = build_row_request(model_id=OPUS, page_png=PNG, max_tokens=3000)
 

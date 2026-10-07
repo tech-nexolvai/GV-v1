@@ -26,6 +26,8 @@ from extraction.slot_reader.seal import (
 
 QWEN = "qwen.qwen3-vl-235b-a22b"
 KIMI = "us.moonshotai.kimi-k3"
+OPUS = "anthropic.claude-opus-5-5"
+SONNET = "anthropic.claude-sonnet-5-5"
 VENDOR = InkAt(InkClass.VENDOR, "")
 _BOX = Box(Decimal(10), Decimal(10), Decimal(20), Decimal(15))
 
@@ -59,6 +61,7 @@ def seal(
     stacked_by_bar: bool = False,
     allow_stacked: bool = False,
     row_ambiguity: str | None = None,
+    allow_claude_pair: bool = False,
 ) -> LabelOutcome:
     return seal_label(
         label,
@@ -67,6 +70,7 @@ def seal(
         stacked_by_bar=stacked_by_bar,
         allow_stacked=allow_stacked,
         row_ambiguity=row_ambiguity,
+        allow_claude_pair=allow_claude_pair,
     )
 
 
@@ -106,6 +110,49 @@ def test_same_maker_agreement_never_seals() -> None:
         seal(answers=(answer(KIMI, '2"'), answer("moonshotai.kimi-k3", '2"')))
     with pytest.raises(ValueError, match="different makers"):
         seal(answers=(answer("acme.unknown-a", '2"'), answer("acme.unknown-b", '2"')))
+
+
+def test_approved_claude_pair_is_provisional_until_the_drawing_witness_runs() -> None:
+    outcome = seal(
+        answers=(answer(OPUS, '2"'), answer(SONNET, '2"')),
+        allow_claude_pair=True,
+    )
+
+    assert outcome.state is LabelState.PROVISIONAL
+    assert outcome.value is None
+    assert outcome.suggestion is not None and outcome.suggestion.exact == Fraction(2)
+
+    with pytest.raises(ValueError, match="different makers"):
+        seal(answers=(answer(OPUS, '2"'), answer(SONNET, '2"')))
+
+
+def test_claude_pair_disagreement_stays_with_the_reviewer() -> None:
+    outcome = seal(
+        answers=(answer(OPUS, '2"'), answer(SONNET, '3"')),
+        allow_claude_pair=True,
+    )
+
+    assert outcome.state is LabelState.REVIEW
+    assert outcome.reason_code == "readers-differ"
+    assert outcome.value is None
+
+
+def test_claude_pair_requires_both_readers_to_claim_span_ownership() -> None:
+    absent = seal(
+        answers=(
+            answer(OPUS, "", belongs=False, readable=False, no_dimension=True),
+            answer(SONNET, "", belongs=False, readable=False, no_dimension=True),
+        ),
+        allow_claude_pair=True,
+    )
+    disputed = seal(
+        answers=(answer(OPUS, "", belongs=False, readable=False), answer(SONNET, '2"')),
+        allow_claude_pair=True,
+    )
+
+    assert absent.state is LabelState.NOT_A_DIMENSION
+    assert disputed.state is LabelState.REVIEW
+    assert disputed.value is None
 
 
 def test_a_label_on_the_reviewers_ink_never_seals_and_carries_no_value() -> None:

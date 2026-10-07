@@ -50,6 +50,8 @@ if TYPE_CHECKING:
     from extraction.slot_reader.anthropic import BatchSpendGuard
 
 __all__ = [
+    "CLAUDE_SPAN_PROMPT",
+    "CLAUDE_SPAN_PROMPT_ID",
     "CROP_PROMPT",
     "CROP_PROMPT_ID",
     "ROW_PROMPT",
@@ -68,6 +70,7 @@ __all__ = [
 
 CROP_PROMPT_ID: Final = "slot-crop-v1"
 ROW_PROMPT_ID: Final = "slot-row-choice-v1"
+CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v1"
 
 ROW_PROMPT: Final = (
     "This is a vendor's cabinet shop drawing sheet (black ink is the vendor's; ignore coloured "
@@ -99,6 +102,20 @@ CROP_PROMPT: Final = (
     "arrow, a letter or a line), else false}"
 )
 
+CLAUDE_SPAN_PROMPT: Final = (
+    "Picture 1 is the full vendor shop drawing. A thin red box marks one span of the selected "
+    "countertop dimension row. Picture 2 is a close-up of that same span. Is the printed "
+    "dimension label in Picture 2 the label that belongs to the exact red-boxed span in Picture 1? "
+    "Do not use a neighbour's label, an overall when a piece is marked, a height, or red/yellow "
+    "reviewer markup. If it belongs, copy its characters exactly as printed, including inch marks, "
+    "fractions, metric text in brackets, and words. Do not calculate, convert, correct, or complete "
+    "the text. If the label does not belong to the marked span, is absent, or you are unsure, set "
+    "belongs to false and return an empty text. Return only this JSON: "
+    '{"belongs": true|false, "text": "exact printed label or empty string", '
+    '"stacked": true|false, "combined": true|false, "readable": true|false, '
+    '"no_dimension": true|false}'
+)
+
 
 def crop_prompt_id(product: ProductType | None = None) -> str:
     """The id a crop request is recorded under: `CROP_PROMPT_ID`, plus the product when the request
@@ -116,6 +133,10 @@ class _CropAnswer(BaseModel):
     combined: StrictBool
     readable: StrictBool
     no_dimension: StrictBool
+
+
+class _GroundedCropAnswer(_CropAnswer):
+    belongs: StrictBool
 
 
 class _RowChoiceReply(BaseModel):
@@ -143,6 +164,7 @@ def build_crop_request(
     max_tokens: int,
     product: ProductType | None = None,
     full_view_png: bytes | None = None,
+    grounded_claude: bool = False,
 ) -> dict[str, Any]:
     """One slot question: whole marked vendor view, close-up, then the question.
 
@@ -170,7 +192,7 @@ def build_crop_request(
                     ),
                     {"image": {"format": "png", "source": {"bytes": crop_png}}},
                     *([] if product is None else [{"text": product_context_line(product)}]),
-                    {"text": CROP_PROMPT},
+                    {"text": CLAUDE_SPAN_PROMPT if grounded_claude else CROP_PROMPT},
                 ],
             }
         ],
@@ -310,9 +332,10 @@ def read_crop(
     product: ProductType | None = None,
     full_view_png: bytes | None = None,
     question_packet: Mapping[str, object] | None = None,
+    grounded_claude: bool = False,
 ) -> ReaderAnswer:
     """Ask one reader about one crop; re-ask once on a malformed answer, then raise."""
-    prompt_id = crop_prompt_id(product)
+    prompt_id = CLAUDE_SPAN_PROMPT_ID if grounded_claude else crop_prompt_id(product)
     for attempt in range(2):
         request = build_crop_request(
             model_id=model_id,
@@ -320,6 +343,7 @@ def read_crop(
             max_tokens=max_tokens,
             product=product,
             full_view_png=full_view_png,
+            grounded_claude=grounded_claude,
         )
         if attempt:
             request["messages"][0]["content"].append(
@@ -350,7 +374,13 @@ def read_crop(
         raw: str | None = None
         try:
             raw = _response_text(response)
-            parsed = _CropAnswer.model_validate(_extract_json_object(raw))
+            if grounded_claude:
+                parsed_grounded = _GroundedCropAnswer.model_validate(_extract_json_object(raw))
+                parsed: _CropAnswer = parsed_grounded
+                belongs = parsed_grounded.belongs
+            else:
+                parsed = _CropAnswer.model_validate(_extract_json_object(raw))
+                belongs = True
         except (MalformedFormAnswer, ValidationError) as error:
             record_attempt(
                 AttemptUsage(
@@ -394,6 +424,7 @@ def read_crop(
             no_dimension=parsed.no_dimension,
             stacked=parsed.stacked,
             combined=parsed.combined,
+            belongs=belongs,
         )
     raise AssertionError("unreachable")
 
@@ -571,6 +602,7 @@ class CropJob:
     wall_question: bool = False
     row_question: bool = False
     candidate_count: int | None = None
+    grounded_claude: bool = False
     question_packet: Mapping[str, object] | None = None
 
 
@@ -676,6 +708,7 @@ def read_crops_parallel(
                         product=product,
                         full_view_png=job.view_png,
                         question_packet=job.question_packet,
+                        grounded_claude=job.grounded_claude,
                     )
                 return (job.key, job.model_id), answer
             except MalformedFormAnswer:

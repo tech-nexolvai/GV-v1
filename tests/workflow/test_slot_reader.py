@@ -1233,6 +1233,76 @@ def test_a_fully_sealed_row_links_every_piece_in_order_and_a_veto_is_kept_as_a_s
     )
 
 
+def test_claude_proposals_need_a_drawn_length_witness_before_they_are_sealed() -> None:
+    from extraction.geometry.rows import Box
+    from extraction.ink import InkClass
+    from extraction.slot_reader.runs import Lane, PlannedLabel, PlannedOwner
+    from extraction.slot_reader.seal import LabelOutcome, OwnerOutcome, plain_dimension
+    from workflow.slot_reader import LabelResult, OwnerResult, _veto_by_drawn_length
+
+    def provisional_owner(index: int, inches: str) -> OwnerResult:
+        x0 = Decimal(index * 10)
+        x1 = x0 + Decimal(10)
+        box = Box(x0, Decimal(1), x1, Decimal(3))
+        label = PlannedLabel(
+            box=box,
+            crop=box,
+            lane=Lane.GLYPHS,
+            text=None,
+            text_stacked=False,
+            has_digit=True,
+            touches_edge=False,
+            ambiguous_slot=False,
+            crowded=False,
+            ticks_in_crop=True,
+            path_boxes=(),
+        )
+        value = plain_dimension(f'{inches}"')
+        assert value is not None
+        outcome = LabelOutcome(
+            LabelState.PROVISIONAL,
+            None,
+            value,
+            None,
+            None,
+            None,
+            InkClass.VENDOR,
+            (),
+            (("opus", f'{inches}"'), ("sonnet", f'{inches}"')),
+        )
+        owner = PlannedOwner(index, x0, x1, Decimal(2), box, (label,))
+        label_result = LabelResult(label, outcome, (0, 0, 1, 1), (0, 0, 1, 1))
+        return OwnerResult(
+            owner,
+            (0, 0, 1, 1),
+            (label_result,),
+            OwnerOutcome(LabelState.PROVISIONAL, None, 0, None, None),
+            None,
+            (),
+        )
+
+    # With no independent dimensions, even unanimous model text remains only a reviewer proposal.
+    only_one = provisional_owner(0, "10")
+    held, _, _ = _veto_by_drawn_length((only_one,), None)
+    assert held[0].outcome.state is LabelState.REVIEW
+    assert held[0].outcome.reason_code == "drawn-length-unverified"
+    assert held[0].outcome.value is None
+
+    # Three agreeing, proportionate dimensions provide a deterministic witness.
+    proportionate = tuple(provisional_owner(index, "10") for index in range(3))
+    accepted, _, _ = _veto_by_drawn_length(proportionate, None)
+    assert all(owner.outcome.state is LabelState.SEALED for owner in accepted)
+
+    # A unanimous but geometrically inconsistent copy is still held, never parsed into a value.
+    inconsistent = tuple(
+        provisional_owner(index, "20" if index == 2 else "10") for index in range(3)
+    )
+    rejected, _, _ = _veto_by_drawn_length(inconsistent, None)
+    assert rejected[2].outcome.state is LabelState.REVIEW
+    assert rejected[2].outcome.reason_code == "drawn-length"
+    assert rejected[2].outcome.value is None
+
+
 def test_a_sealed_wall_layout_is_kept_with_its_pictures_and_proposed(
     session: Any, tmp_path: Any
 ) -> None:
