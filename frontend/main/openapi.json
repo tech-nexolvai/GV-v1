@@ -3720,6 +3720,17 @@
       "ProposedFieldOut": {
         "description": "One field and the readings proposed to fill it, in drawing order.",
         "properties": {
+          "expected_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Count"
+          },
           "field_key": {
             "title": "Field Key",
             "type": "string"
@@ -3857,6 +3868,17 @@
           "page_index": {
             "title": "Page Index",
             "type": "integer"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
           },
           "value": {
             "title": "Value",

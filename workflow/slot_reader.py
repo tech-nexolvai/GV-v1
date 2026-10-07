@@ -911,6 +911,7 @@ def read_slot_pages(
             ],
             row_ambiguity=plan.ambiguity,
             row_hold=None if hold is None else hold.reason,
+            allow_partial_proposals=runtime.claude_row_reader,
         )
         walls: PageWalls | None = None
         asked = walls_asked.get(page.page_index)
@@ -1343,7 +1344,17 @@ def persist_slot_readings(
                 f"slot:{'overall' if index is None else index}",
                 _box_flag("slot-box", owner.band_px),
                 f"row-rank:{result.plan.row.rank}",
+                f"row-slot-count:{len(result.slots)}",
             ]
+            if prompt_id == CLAUDE_SPAN_PROMPT_ID and (
+                sum(1 for slot_index in offered if slot_index is not None) < len(result.slots)
+                or None not in offered
+            ):
+                # Persist the completeness boundary with the proposal. The check stage uses this
+                # to keep a sparse form list from becoming a shorter unscoped operand.
+                flags.append("row-partial")
+            if prompt_id == CLAUDE_SPAN_PROMPT_ID:
+                flags.append("reader-mode:claude")
             if result.row_choice_number is not None and result.row_choice_number > 0:
                 flags.append(f"row-choice:{result.row_choice_number}")
                 if result.row_choice_number <= len(result.row_candidate_ids):

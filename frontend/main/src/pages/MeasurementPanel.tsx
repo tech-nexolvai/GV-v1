@@ -35,6 +35,7 @@ import { ReadingParts } from '../components/measure/ReadingParts';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { MeasurementSectionNav } from './MeasurementSectionNav';
 import { measurementValueOrigin } from './measurementValueOrigin';
+import { proposalCoversEveryPosition, proposalValuesAtPositions } from '../lib/measurement-proposals';
 import { fieldReview, reviewCounts, type FieldReview, type ReviewedCandidate } from './fieldReview';
 import { distributionFieldWidthKey } from '../components/measure/fillerDistribution';
 import {
@@ -138,7 +139,9 @@ type ProposedField = {
   many: boolean;
   /** Whether the drawing's own geometry confirmed where these readings sit. */
   placement_verified: boolean;
-  values: { candidate_id: string; value: string; page_index: number }[];
+  /** Expected positions in a many-valued row, including blank slots. */
+  expected_count?: number | null;
+  values: { candidate_id: string; value: string; page_index: number; position?: number | null }[];
 };
 type Needed = {
   page_numbers: number[];
@@ -432,10 +435,11 @@ export function MeasurementPanel({
           const pageValues = field.values.filter(
             (reading) => reading.page_index === selectedPageNumber - 1,
           );
-          const values = pageValues.map((reading) => reading.value).filter((value) => value.trim());
-          if (!values.length) continue;
+          if (!pageValues.length) continue;
           if (confirmedByKey[field.field_key]?.length) continue;
           if ((next[field.field_key] ?? []).some((value) => value.trim())) continue;
+          const expectedCount = field.expected_count ?? pageValues.length;
+          const values = proposalValuesAtPositions(pageValues, expectedCount);
           next[field.field_key] = values;
           nextMarks[field.field_key] = pageValues.map((reading) => reading.candidate_id);
         }
@@ -673,6 +677,17 @@ export function MeasurementPanel({
     for (const [key, candidateIds] of Object.entries(aiFilled)) {
       const quantity = needed.quantities.find((item) => item.key === key);
       if (!quantity || candidateIds.length === 0) continue;
+      const proposal = needed.proposed_readings.find((item) => item.field_key === key);
+      // Sparse form proposals remain editable suggestions. Do not confirm them as a complete
+      // evidence list; the reviewer can fill the blank positions first, and the confirmed run
+      // resolver still requires a width link for every member.
+      if (
+        quantity.many &&
+        proposal?.expected_count != null &&
+        !proposalCoversEveryPosition(proposal.values, proposal.expected_count)
+      ) {
+        continue;
+      }
       try {
         // In order: a many-valued field's readings are a run, and the evidence path orders a run by
         // the time its readings were confirmed.
@@ -798,7 +813,10 @@ export function MeasurementPanel({
       const filledRuns: Record<string, string[]> = {};
       const marks: Record<string, string[]> = {};
       for (const assignment of result.assignments) {
-        const values = assignment.values.map((reading) => reading.value);
+        const expectedCount = assignment.expected_count ?? assignment.values.length;
+        const values = assignment.many
+          ? proposalValuesAtPositions(assignment.values, expectedCount)
+          : assignment.values.map((reading) => reading.value);
         if (assignment.many) {
           if (reviewerEditedManyRef.current.has(assignment.field_key)) continue;
           const current = (runs[assignment.field_key] ?? []).filter((value) => value.trim());
@@ -1517,6 +1535,19 @@ export function MeasurementPanel({
                         <p className="enter-values__hint enter-values__hint--tight">
                           In order, left to right — two runs are compared position by position.
                         </p>
+                        {needed.proposed_readings
+                          .filter((field) => field.field_key === quantity.key && field.expected_count != null)
+                          .map((field) => {
+                            const pageValues = field.values.filter(
+                              (reading) => reading.page_index === selectedPageNumber - 1,
+                            );
+                            if (pageValues.length >= (field.expected_count ?? 0)) return null;
+                            return (
+                              <p className="enter-values__hint enter-values__hint--tight" role="status" key={field.field_key}>
+                                {pageValues.length} of {field.expected_count} piece widths were read. Fill the blank positions before running the width check.
+                              </p>
+                            );
+                          })}
                       </>
                     ) : (
                       <input

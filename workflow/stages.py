@@ -1907,8 +1907,8 @@ class DatabaseStages:
             ).one()
         self._meter = _SpendMeter(
             cap_micros=self._ai_budget_micros,
-            spent_micros=int(spent),
-            unpriced_calls=int(unpriced),
+            spent_micros=int(spent or 0),
+            unpriced_calls=int(unpriced or 0),
         )
 
         results: list[PageResult] = []
@@ -6132,6 +6132,11 @@ class DatabaseStages:
         )
 
         countertop_subjects = countertop_scopes(session, package_revision_id)
+        partial_claude_row = (
+            _latest_claude_row_is_partial(session, package_revision_id)
+            if countertop_subjects is None
+            else False
+        )
         scoped_rules = frozenset({"CT-WIDTH-001", "CAB-FILLER-001"})
 
         # **The products the reviewer said this set is for, or every product (#994).** The resolver
@@ -6334,6 +6339,18 @@ class DatabaseStages:
                             outcome=Outcome.REVIEW_REQUIRED,
                             severity=applicable.snapshot.rule.severity,
                             reason="Choose the wall layout for this countertop before checking its width.",
+                            snapshot_id=applicable.snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        )
+                    elif rule_id == "CT-WIDTH-001" and partial_claude_row:
+                        finding = Finding(
+                            rule_id=rule_id,
+                            outcome=Outcome.REVIEW_REQUIRED,
+                            severity=applicable.snapshot.rule.severity,
+                            reason=(
+                                "This countertop row has an unresolved piece. Confirm the run and "
+                                "link every piece width before checking it."
+                            ),
                             snapshot_id=applicable.snapshot.snapshot_id,
                             engine_version=ENGINE_VERSION,
                         )
@@ -6544,6 +6561,43 @@ def _revision_product(session: Session, package_revision_id: UUID) -> ProductTyp
         return None
     package = session.get(Package, revision.package_id)
     return None if package is None else package_product(package)
+
+
+def _latest_claude_row_is_partial(session: Session, package_revision_id: UUID) -> bool:
+    """Whether the latest slot-reader pass left any Claude-selected row incomplete.
+
+    A partial form list is a useful reviewer prompt, but without a confirmed run there is no safe
+    way to know that the saved many-valued input contains every drawing slot. Keep the check in
+    REVIEW_REQUIRED until the reviewer confirms structure; the run resolver then requires a live
+    width link for every member. Older extraction attempts do not keep a corrected reread blocked.
+    """
+    rows = session.execute(
+        select(ObservationCandidate, ExtractionRun.created_at)
+        .join(ExtractionRun, ExtractionRun.id == ObservationCandidate.extraction_run_id)
+        .join(Page, Page.id == ObservationCandidate.page_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == Page.document_version_id,
+        )
+        .where(
+            PackageRevisionDocument.package_revision_id == package_revision_id,
+            ExtractionRun.extractor == "extraction.form_reader",
+        )
+    ).all()
+    slot_rows = [
+        (candidate, created_at)
+        for candidate, created_at in rows
+        if "slot-reader" in candidate.ambiguity_flags
+    ]
+    if not slot_rows:
+        return False
+    latest_run_time = max(created_at for _candidate, created_at in slot_rows)
+    return any(
+        created_at == latest_run_time
+        and "row-partial" in candidate.ambiguity_flags
+        and "reader-mode:claude" in candidate.ambiguity_flags
+        for candidate, created_at in slot_rows
+    )
 
 
 def _unresolved(snapshot: RuleSnapshot, abstention: Abstention) -> Finding:

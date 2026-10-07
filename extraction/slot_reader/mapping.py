@@ -102,6 +102,7 @@ def map_row(
     *,
     row_ambiguity: str | None,
     row_hold: str | None = None,
+    allow_partial_proposals: bool = False,
 ) -> SlotMapping:
     """The form-field proposals for one row, and why each sealed piece not offered was held.
 
@@ -131,6 +132,40 @@ def map_row(
             for position, piece in enumerate(pieces)
         )
         return SlotMapping(tuple(proposals), ())
+    if allow_partial_proposals and pieces and (unsealed or (not overall_sealed and not named)):
+        # A sealed piece is still a useful form proposal when a neighbour needs the reviewer.
+        # Keep its *drawing position*: compacting [sealed, gap, sealed] into [sealed, sealed]
+        # would silently shift the second width onto the missing piece. The overall remains held
+        # until the row is complete, and the check stage independently requires a confirmed run
+        # for a partial Claude row (so this sparse list can never become a shorter operand).
+        proposals = [
+            SlotFieldProposal(PIECE_FIELD, piece.index, piece.index)
+            for piece in pieces
+            if piece.outcome.state is LabelState.SEALED
+        ]
+        partial_held: list[tuple[int | None, str]] = []
+        first_unsealed = next(
+            (piece.index + 1 for piece in pieces if piece.outcome.state is not LabelState.SEALED),
+            None,
+        )
+        if overall_sealed:
+            partial_held.append(
+                (
+                    None,
+                    (
+                        f"held back: piece {first_unsealed} under this overall needs a look first; "
+                        "confirm this is the countertop's width"
+                        if first_unsealed is not None
+                        else "held back: the overall needs a look before this row can be checked"
+                    ),
+                )
+            )
+        partial_held.extend(
+            (piece.index, piece.outcome.reason or "needs a value")
+            for piece in pieces
+            if piece.outcome.state is not LabelState.SEALED
+        )
+        return SlotMapping(tuple(proposals), tuple(partial_held))
     if pieces and not unsealed and named:
         return SlotMapping(tuple(_named(pieces)), ())
     blockers = [

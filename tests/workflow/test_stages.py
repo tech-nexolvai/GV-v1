@@ -205,6 +205,104 @@ def test_nothing_decides_without_operands(session: Session) -> None:
     assert Outcome.FAIL.value not in outcomes
 
 
+def test_partial_claude_row_cannot_pass_from_a_short_form_list(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partial list can coincidentally equal the overall; without a confirmed run, hold it."""
+    from workflow import stages as stages_module
+
+    revision = _revision(session)
+    _publish_rulebook(session)
+
+    def measurement(value: int) -> Measurement:
+        return Measurement(Fraction(value), Unit.INCH, f"{value} in")
+
+    supplied = {
+        "CT-WIDTH-001": {
+            "countertop_width": VerdictOperand(
+                name="countertop_width",
+                value=measurement(4),
+                status=EvidenceStatus.HUMAN_CONFIRMED,
+                source="SHOP",
+            ),
+            "piece_widths": VerdictOperand(
+                name="piece_widths",
+                value=(measurement(1), measurement(1)),
+                status=EvidenceStatus.HUMAN_CONFIRMED,
+                source="SHOP",
+            ),
+        }
+    }
+    monkeypatch.setattr(stages_module, "_latest_claude_row_is_partial", lambda *_args: False)
+    DatabaseStages(
+        operands=supplied,
+        discriminators={"wall_config": "back_left_right"},
+    ).run_checks(session, revision.id)
+    assert _outcome_for(session, revision, "CT-WIDTH-001") == Outcome.PASS.value
+
+    monkeypatch.setattr(stages_module, "_latest_claude_row_is_partial", lambda *_args: True)
+    DatabaseStages(
+        operands=supplied,
+        discriminators={"wall_config": "back_left_right"},
+    ).run_checks(session, revision.id)
+    finding = next(
+        finding
+        for finding in _live_findings(session, revision.id)
+        if finding.rule_id == "CT-WIDTH-001"
+    )
+    assert finding.outcome == Outcome.REVIEW_REQUIRED.value
+    assert "unresolved piece" in finding.trace["reason"]
+
+
+def test_partial_claude_row_never_passes_from_a_short_form_list(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A short partial list can coincidentally add to the overall; it still needs a run."""
+    from workflow import stages as stages_module
+
+    revision = _revision(session)
+    _publish_rulebook(session)
+
+    def measurement(value: int) -> Measurement:
+        return Measurement(Fraction(value), Unit.INCH, f"{value} in")
+
+    supplied = {
+        "CT-WIDTH-001": {
+            "countertop_width": VerdictOperand(
+                name="countertop_width",
+                value=measurement(4),
+                status=EvidenceStatus.HUMAN_CONFIRMED,
+                source="SHOP",
+            ),
+            "piece_widths": VerdictOperand(
+                name="piece_widths",
+                value=(measurement(1), measurement(1)),
+                status=EvidenceStatus.HUMAN_CONFIRMED,
+                source="SHOP",
+            ),
+        }
+    }
+    monkeypatch.setattr(stages_module, "_latest_claude_row_is_partial", lambda *_args: False)
+    DatabaseStages(
+        operands=supplied,
+        discriminators={"wall_config": "back_left_right"},
+    ).run_checks(session, revision.id)
+    assert _outcome_for(session, revision, "CT-WIDTH-001") == Outcome.PASS.value
+
+    monkeypatch.setattr(stages_module, "_latest_claude_row_is_partial", lambda *_args: True)
+    DatabaseStages(
+        operands=supplied,
+        discriminators={"wall_config": "back_left_right"},
+    ).run_checks(session, revision.id)
+    finding = next(
+        finding
+        for finding in _live_findings(session, revision.id)
+        if finding.rule_id == "CT-WIDTH-001"
+    )
+    assert finding.outcome == Outcome.REVIEW_REQUIRED.value
+    assert "unresolved piece" in finding.trace["reason"]
+
+
 def test_an_abstention_says_which_input_was_missing(session: Session) -> None:
     """ "NOT_FOUND" is not actionable; naming the operand is.
 
