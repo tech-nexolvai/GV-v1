@@ -244,7 +244,7 @@ def product_case_for_page(
     package = None if revision is None else session.get(Package, revision.package_id)
     if package is None:
         raise ValueError("package revision not found")
-    if getattr(package, "product_type", None) != "countertop":
+    if package.product_type != "countertop":
         empty = AttemptAudit(0, 0, 0, False, "package product is not countertop")
         return SafetyCase(case_id, truth, None, False, empty.reason), empty
 

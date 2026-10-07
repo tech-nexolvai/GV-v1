@@ -23,6 +23,7 @@ import yaml  # type: ignore[import-untyped]  # PyYAML does not publish inline ty
 from eval.release_gates import ReleaseGateInputs
 from rules.parameters import ParameterLayer, ParameterValue, Provenance, ResolvedParameter
 from rules.schema import Quantity, Rule
+from rules.semantic_types import SemanticType
 from rules.snapshot import RuleSnapshot, publish
 from units.measurement import Measurement, Unit
 from verdict.engine import execute
@@ -165,7 +166,11 @@ def run_width_check(inputs: WidthInputs, snapshot: RuleSnapshot) -> Finding:
         snapshot,
         operands,
         _parameter(inputs.field_cut),
-        discriminators={} if inputs.wall_layout is None else {"wall_config": inputs.wall_layout},
+        discriminators=(
+            {}
+            if inputs.wall_layout is None
+            else {SemanticType.WALL_CONFIG.value: inputs.wall_layout}
+        ),
     )
 
 
