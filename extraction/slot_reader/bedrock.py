@@ -23,6 +23,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from decimal import Decimal
 from time import monotonic
 from typing import Any, Final
 
@@ -431,6 +432,7 @@ def read_crops_parallel(
     retry_backoff_seconds: float,
     record_attempt: Callable[[AttemptUsage], None],
     product: ProductType | None = None,
+    spend_cap_usd: Decimal | None = None,
 ) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | None]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
 
@@ -456,17 +458,30 @@ def read_crops_parallel(
         raise ValueError(f"missing per-model pacing limits for: {', '.join(sorted(missing))}")
     require_priced_readers(readers, rates)
     pacer = ModelPacer(calls_per_minute)
+    spend_guard = None
+    if spend_cap_usd is not None:
+        from extraction.slot_reader.anthropic import BatchSpendGuard
+
+        spend_guard = BatchSpendGuard(spend_cap_usd, rates)  # type: ignore[arg-type]
 
     def invoke(job: CropJob) -> tuple[tuple[str, str], ReaderAnswer | WallAnswer | None]:
         for throttle_attempt in range(max_throttle_retries + 1):
             pacer.wait(job.model_id)
             try:
+                client = clients.for_current_thread()
+                if spend_guard is not None:
+                    from extraction.slot_reader.anthropic import (
+                        SpendCapExceeded,
+                        SpendLimitedClient,
+                    )
+
+                    client = SpendLimitedClient(client, spend_guard)
                 answer: ReaderAnswer | WallAnswer
                 if job.wall_question or (job.view_png is not None and job.question_packet is None):
                     if job.view_png is None:
                         raise ValueError("a wall question packet must include its full vendor view")
                     answer = read_walls(
-                        clients.for_current_thread(),
+                        client,
                         model_id=job.model_id,
                         row_png=job.png,
                         view_png=job.view_png,
@@ -477,7 +492,7 @@ def read_crops_parallel(
                     )
                 else:
                     answer = read_crop(
-                        clients.for_current_thread(),
+                        client,
                         model_id=job.model_id,
                         crop_png=job.png,
                         page_index=job.page_index,
@@ -491,6 +506,10 @@ def read_crops_parallel(
             except MalformedFormAnswer:
                 return (job.key, job.model_id), None
             except Exception as error:
+                from extraction.slot_reader.anthropic import SpendCapExceeded
+
+                if isinstance(error, SpendCapExceeded):
+                    return (job.key, job.model_id), None
                 if not _is_throttle(error) or throttle_attempt >= max_throttle_retries:
                     raise
                 time.sleep(retry_backoff_seconds * (2**throttle_attempt))

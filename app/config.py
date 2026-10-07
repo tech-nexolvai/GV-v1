@@ -16,7 +16,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.review.chat_models import ChatModelChoice
@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     # Grounded full-view plus close-up reader route (#1001 onward). It is separate from the
     # existing one-crop route and defaults off until every proof gate is met.
     claude_reader_enabled: bool = False
+    anthropic_api_key: SecretStr | None = Field(
+        default=None, validation_alias="ANTHROPIC_API_KEY", repr=False
+    )
+    claude_reader_model_rpm: dict[str, int] = Field(default_factory=dict)
+    claude_reader_timeout_seconds: int = Field(default=180, ge=1)
+    claude_reader_budget_usd: Decimal = Field(default=Decimal("2.00"), gt=0, le=2)
     # The admin's yes/no (#987): may a stacked fraction seal when two readers of different makers
     # give the identical text on a code-made crop? Off: a stacked fraction goes to the person.
     slot_reader_stacked_agreement: bool = False
@@ -188,6 +194,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "GV_CLAUDE_READER_ENABLED requires GV_SLOT_READER_ENABLED and its form-reader "
                 "runtime; the Claude route must not run as an ungrounded whole-page fallback"
+            )
+        if self.claude_reader_enabled and (
+            self.anthropic_api_key is None or not self.anthropic_api_key.get_secret_value().strip()
+        ):
+            raise ValueError("GV_CLAUDE_READER_ENABLED requires ANTHROPIC_API_KEY")
+        if self.claude_reader_enabled and self.claude_reader_budget_usd > Decimal("2.00"):
+            raise ValueError(
+                "GV_CLAUDE_READER_BUDGET_USD must not exceed the approved $2 per-set cap"
             )
         if self.slot_reader_enabled and not self.form_reader_enabled:
             raise ValueError(

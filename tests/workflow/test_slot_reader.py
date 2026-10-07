@@ -19,6 +19,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from pydantic import SecretStr
 
 from app.config import Settings
 from evidence.coordinates import PageTransform
@@ -374,11 +375,14 @@ def test_a_reader_whose_answer_stays_malformed_abstains_and_the_reading_waits() 
     assert result.mapping.proposals == ()
 
 
-def test_the_slot_reader_is_off_unless_switched_on() -> None:
+def test_the_slot_reader_is_off_unless_switched_on(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(database_url="postgresql+psycopg://x@localhost/x")
     assert settings.slot_reader_enabled is False
     assert settings.slot_reader_stacked_agreement is False
     assert configured_slot_reader(settings, None) is None
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "private-test-key")
+    with_key = Settings(database_url="postgresql+psycopg://x@localhost/x")
+    assert "private-test-key" not in repr(with_key)
 
 
 def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() -> None:
@@ -386,6 +390,12 @@ def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() ->
         Settings(database_url="postgresql+psycopg://x@localhost/x", slot_reader_enabled=True)
     with pytest.raises(ValueError, match="GV_SLOT_READER_ENABLED"):
         Settings(database_url="postgresql+psycopg://x@localhost/x", claude_reader_enabled=True)
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        Settings(
+            database_url="postgresql+psycopg://x@localhost/x",
+            slot_reader_enabled=True,
+            claude_reader_enabled=True,
+        )
 
     class On:
         slot_reader_enabled = True
@@ -400,12 +410,33 @@ def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() ->
     configured = configured_slot_reader(On(), form, environ=FRACTION_ENV)
     assert configured is not None and configured.allow_stacked is False
     assert configured.question_packets is False
+    claude_settings = type(
+        "ClaudeOn",
+        (On,),
+        {
+            "claude_reader_enabled": True,
+            "anthropic_api_key": SecretStr("private-test-key"),
+            "claude_reader_model_rpm": {
+                "anthropic.claude-opus-5-5": 60,
+                "anthropic.claude-sonnet-5-5": 60,
+            },
+            "claude_reader_timeout_seconds": 180,
+        },
+    )()
     claude_enabled = configured_slot_reader(
-        type("ClaudeOn", (On,), {"claude_reader_enabled": True})(),
+        claude_settings,
         form,
         environ=FRACTION_ENV,
     )
     assert claude_enabled is not None and claude_enabled.question_packets is True
+    assert claude_enabled.allow_stacked is True
+    assert claude_enabled.spend_cap_usd == Decimal("2.00")
+    assert claude_enabled.form.max_concurrent_calls == 1
+    assert claude_enabled.form.reader_ids == (
+        "anthropic.claude-opus-5-5",
+        "anthropic.claude-sonnet-5-5",
+    )
+    assert claude_enabled.form.max_tokens == 3000
     assert set(FRACTION_BAR_ENV) == set(FRACTION_ENV)
 
 

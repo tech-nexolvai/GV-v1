@@ -95,6 +95,13 @@ class PageRead:
 
 
 def _is_throttle(error: Exception) -> bool:
+    status = getattr(error, "status_code", None)
+    if (
+        isinstance(status, int)
+        and not isinstance(status, bool)
+        and (status == 429 or 500 <= status < 600)
+    ):
+        return True
     response = getattr(error, "response", None)
     if isinstance(response, Mapping):
         error_data = response.get("Error")

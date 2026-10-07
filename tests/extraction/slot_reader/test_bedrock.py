@@ -7,6 +7,7 @@ import json
 import re
 import threading
 from collections.abc import Callable, Mapping
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -60,10 +61,27 @@ class FakeClients:
             self.requests.append(kwargs)
         return self.answer(kwargs)
 
+    def count_input_tokens(self, **_kwargs: Any) -> int:
+        return 10
+
 
 class Rates:
     def rate_for(self, model_id: str) -> object | None:
         return object()
+
+
+class AnthropicRates:
+    def rate_for(self, model_id: str) -> object | None:
+        if model_id != "anthropic.claude-opus-5-5":
+            return None
+        return type(
+            "Rate",
+            (),
+            {
+                "input_per_1k_tokens": Decimal("0.004"),
+                "output_per_1k_tokens": Decimal("0.020"),
+            },
+        )()
 
 
 def run(clients: FakeClients, jobs: list[CropJob], **overrides: Any) -> dict[tuple[str, str], Any]:
@@ -90,6 +108,21 @@ def test_kimi_is_asked_at_low_effort_and_qwen_at_temperature_zero() -> None:
     assert qwen["inferenceConfig"]["temperature"] == 0 and "outputConfig" not in qwen
     content = qwen["messages"][0]["content"]
     assert "image" in content[0] and content[1]["text"] == CROP_PROMPT
+
+
+def test_claude_spend_cap_holds_before_parallel_generation() -> None:
+    model = "anthropic.claude-opus-5-5"
+    clients = FakeClients(lambda _request: reply(good('12"')))
+    answers = run(
+        clients,
+        [CropJob("slot", model, 0, PNG)],
+        rates=AnthropicRates(),
+        calls_per_minute={model: 6000},
+        spend_cap_usd=Decimal("0.001"),
+    )
+
+    assert answers[("slot", model)] is None
+    assert clients.requests == []
 
 
 def test_slot_question_sends_marked_full_view_before_close_up() -> None:

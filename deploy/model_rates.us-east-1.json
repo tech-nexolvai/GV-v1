@@ -1,6 +1,6 @@
 {
-  "source": "AWS Bedrock public price list (pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-east-1/index.json, publication 2026-10-03T00:11:38Z), us-east-1, standard on-demand, per 1,000 tokens. Existing rates were retained from the 2026-10-04 retrieval; Moonshot Kimi K3 US CRIS Standard rates were read from the AWS Bedrock model card on 2026-10-06",
-  "retrieved": "2026-10-06",
+  "source": "AWS Bedrock public price list (pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-east-1/index.json, publication 2026-10-03T00:11:38Z), us-east-1, standard on-demand, per 1,000 tokens; Moonshot Kimi K3 US CRIS Standard rates from the AWS Bedrock model card (2026-10-06); Anthropic Claude model pricing from https://www.anthropic.com/claude-sonnet-5-5 (2026-10-08), per 1,000 tokens",
+  "retrieved": "2026-10-08",
   "currency": "USD",
   "rates": {
     "amazon.nova-pro-v1:0": {
@@ -38,6 +38,14 @@
     "moonshotai.kimi-k3": {
       "input_per_1k_tokens": "0.0033",
       "output_per_1k_tokens": "0.0165"
+    },
+    "anthropic.claude-opus-5-5": {
+      "input_per_1k_tokens": "0.004",
+      "output_per_1k_tokens": "0.02"
+    },
+    "anthropic.claude-sonnet-5-5": {
+      "input_per_1k_tokens": "0.002",
+      "output_per_1k_tokens": "0.01"
     }
   }
 }

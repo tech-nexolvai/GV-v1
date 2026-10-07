@@ -2017,6 +2017,11 @@ class DatabaseStages:
                 # stays for the pages where code finds no row.
                 slot_pages.append(slot_page)
                 continue
+            if not _whole_page_fallback_enabled(self._slot_reader):
+                # Claude's grounded path must not fall back to the unrelated whole-page form
+                # reader when no slot row exists. That would bypass its row-selection abstention
+                # and run outside the slot batch's spend cap; leave the page for the reviewer.
+                continue
             markup = self._picture_markup(data, page, rendered.dpi)
 
             def check_form_label_for_gv_mark(
@@ -2211,6 +2216,18 @@ class DatabaseStages:
         """
         assert self._slot_reader is not None
         runtime = replace(self._slot_reader, product=product)
+        if runtime.spend_cap_usd is not None:
+            if self._meter is None:
+                raise RuntimeError("Claude reader cannot run before the drawing-set spend meter")
+            runtime = replace(
+                runtime,
+                spend_cap_usd=_remaining_claude_budget(
+                    runtime.spend_cap_usd,
+                    cap_micros=self._meter.cap_micros,
+                    spent_micros=self._meter.spent_micros,
+                    unpriced_calls=self._meter.unpriced_calls,
+                ),
+            )
         recorder = ThreadSafeAttemptRecorder()
         results = read_slot_pages(
             pages, runtime=runtime, record_attempt=recorder.record, store=self._store
@@ -6745,6 +6762,25 @@ def _shop_document_versions_for(session: Session, package_revision_id: UUID) -> 
         .scalars()
         .all()
     )
+
+
+def _whole_page_fallback_enabled(slot_reader: object | None) -> bool:
+    """Only the legacy slot route may fall back to whole-page proposals on unranked pages."""
+    return not bool(getattr(slot_reader, "question_packets", False))
+
+
+def _remaining_claude_budget(
+    requested_usd: Decimal,
+    *,
+    cap_micros: int,
+    spent_micros: int,
+    unpriced_calls: int,
+) -> Decimal:
+    """Claude's cap is bounded by both its per-set limit and the set-wide invocation meter."""
+    if unpriced_calls:
+        return Decimal(0)
+    remaining = Decimal(max(0, cap_micros - spent_micros)) / Decimal(1_000_000)
+    return min(requested_usd, remaining)
 
 
 def _layout_discriminators(session: Session) -> tuple[DiscriminatorNeed, ...]:

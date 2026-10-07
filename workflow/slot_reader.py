@@ -159,7 +159,9 @@ class SlotReaderRuntime:
     """The drawing set's product, told to each crop reader as one line of context (#994). Set per
     package by the extraction stage; `None` sends exactly the pre-#994 request."""
     question_packets: bool = False
-    """Opt-in for full-view plus close-up packets; the existing one-crop route stays default."""
+    """Enable storing a private, hash-bound question packet for every reader attempt."""
+    spend_cap_usd: Decimal | None = None
+    """Per-reading-batch maximum when using the direct Claude route; otherwise unset."""
 
     @property
     def prompt_id(self) -> str:
@@ -193,6 +195,7 @@ class SlotReaderRuntime:
             f"readers={self.form.reader_ids[0]}|{self.form.reader_ids[1]};"
             f"prompt={self.prompt_id}+{WALL_PROMPT_ID};stacked_agreement={self.allow_stacked};"
             f"question_packets={self.question_packets};"
+            f"spend_cap_usd={self.spend_cap_usd};"
             f"detail={detail}"
         )
 
@@ -210,13 +213,58 @@ def configured_slot_reader(
             "GV_SLOT_READER_ENABLED requires GV_FORM_READER_ENABLED: the slot reader uses the form "
             "reader's readers, prices and limits, and its whole-page reading for pages with no row"
         )
+    claude_enabled = bool(getattr(settings, "claude_reader_enabled", False))
+    if claude_enabled:
+        from extraction.form_reader.pricing import require_priced_readers
+        from extraction.slot_reader.anthropic import ThreadLocalAnthropicClients
+
+        model_ids = (
+            "anthropic.claude-opus-5-5",
+            "anthropic.claude-sonnet-5-5",
+        )
+        rates = getattr(form, "rates", None)
+        require_priced_readers(model_ids, rates)
+        rpm = getattr(settings, "claude_reader_model_rpm", {})
+        missing = set(model_ids) - set(rpm)
+        if missing:
+            raise ValueError(
+                "GV_CLAUDE_READER_ENABLED requires explicit per-model pacing for: "
+                + ", ".join(sorted(missing))
+            )
+        key = getattr(settings, "anthropic_api_key", None)
+        if key is None or not hasattr(key, "get_secret_value"):
+            raise ValueError("GV_CLAUDE_READER_ENABLED requires ANTHROPIC_API_KEY")
+        key_value = key.get_secret_value()
+        if not isinstance(key_value, str) or not key_value.strip():
+            raise ValueError("GV_CLAUDE_READER_ENABLED requires ANTHROPIC_API_KEY")
+        clients = ThreadLocalAnthropicClients(
+            key_value,
+            timeout_seconds=int(getattr(settings, "claude_reader_timeout_seconds", 180)),
+        )
+        form = replace(
+            form,
+            reader_ids=model_ids,
+            clients=clients,
+            calls_per_minute=dict(rpm),
+            # One in-flight paid request means the batch reservation cannot be oversubscribed by
+            # concurrent calls. The two models are still independently paced.
+            max_concurrent_calls=1,
+            max_tokens=max(form.max_tokens, 3000),
+        )
     return SlotReaderRuntime(
         form=form,
         crop_settings=E2_CROP_SETTINGS,
         row_settings=MEASURED_SETTINGS,
         fraction_bar=fraction_bar_from_environment(environ),
-        allow_stacked=bool(getattr(settings, "slot_reader_stacked_agreement", False)),
-        question_packets=bool(getattr(settings, "claude_reader_enabled", False)),
+        allow_stacked=(
+            bool(getattr(settings, "slot_reader_stacked_agreement", False)) or claude_enabled
+        ),
+        question_packets=claude_enabled,
+        spend_cap_usd=(
+            getattr(settings, "claude_reader_budget_usd", Decimal("2.00"))
+            if claude_enabled
+            else None
+        ),
     )
 
 
@@ -631,6 +679,7 @@ def read_slot_pages(
         retry_backoff_seconds=form.retry_backoff_seconds,
         record_attempt=record_attempt,
         product=runtime.product,
+        spend_cap_usd=runtime.spend_cap_usd,
     )
 
     label_answers: dict[tuple[str, str], ReaderAnswer | None] = {
