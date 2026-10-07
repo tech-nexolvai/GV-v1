@@ -21,7 +21,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.document import Page
+from app.models.document import PackageRevisionDocument, Page
 from app.models.evidence import MeasurementProposal, ObservationCandidate
 from app.models.package import Package, PackageRevision
 from app.models.parameters import declared_defaults, load_parameter_sets
@@ -34,17 +34,22 @@ from eval.form_first_safety import (
     published_ct_width_snapshot,
 )
 from extraction.form_reader.bedrock import _extract_json_object
-from extraction.slot_reader.bedrock import CROP_PROMPT_ID
+from extraction.slot_reader.bedrock import CROP_PROMPT_ID, crop_prompt_id
 from extraction.slot_reader.walls import WALL_PROMPT_ID
 from rules.parameters import ParameterSet, resolve_all
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation
+from vocabulary.semantic_types import ProductType
 from workflow.changed_values import layered_parameter_sets
 from workflow.layout_proposals import reader_sealed_wall_config
 from workflow.measurements import run_parameters_for
 
 OVERALL_FIELD = "SHOP:countertop_overall_width"
 PIECE_FIELD = "SHOP:countertop_piece_width"
+_CROP_PROMPT_IDS = frozenset(
+    (CROP_PROMPT_ID, *(crop_prompt_id(product) for product in ProductType))
+)
+_AUDITED_PROMPT_IDS = (*sorted(_CROP_PROMPT_IDS), WALL_PROMPT_ID)
 _KEY_DUAL = re.compile(
     r"^\s*\d+(?:\.\d+)?\s*mm\s*\[\s*(\d+(?:\s+\d+/\d+)?)\s*(?:in|\")\s*\]\s*$",
     re.IGNORECASE,
@@ -62,6 +67,18 @@ class AttemptAudit:
     reason: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class RunAttemptAudit:
+    """Counts all persisted reader attempts, including pages without a keyed countertop."""
+
+    attempts: int
+    label_attempts: int
+    wall_attempts: int
+    form_attempts: int
+    complete: bool
+    reason: str | None
+
+
 def _answer(raw: str | None) -> dict[str, Any] | None:
     if raw is None:
         return None
@@ -70,6 +87,104 @@ def _answer(raw: str | None) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         return None
     return answer if isinstance(answer, dict) else None
+
+
+def audit_all_attempts(
+    attempts: tuple[ModelInvocation, ...], *, page_indexes: frozenset[int]
+) -> RunAttemptAudit:
+    """Audit every stored call, not just calls on keyed pages or accepted proposals.
+
+    A rejected malformed answer must still have its private raw text, while a failed network
+    attempt may have none. This checks stored-call completeness; the current schema has no crop
+    request id with which to prove an unrecorded provider call never happened.
+    """
+    label = wall = form = 0
+
+    def result(reason: str | None) -> RunAttemptAudit:
+        return RunAttemptAudit(len(attempts), label, wall, form, reason is None, reason)
+
+    if not page_indexes or not attempts:
+        return result("the run has no pages or stored reader attempts")
+    seen_pages: set[int] = set()
+    for row in attempts:
+        if row.prompt_id in _CROP_PROMPT_IDS:
+            label += 1
+            category = "label"
+        elif row.prompt_id == WALL_PROMPT_ID:
+            wall += 1
+            category = "wall"
+        elif row.prompt_id.startswith("form-reader-"):
+            form += 1
+            category = "form"
+        else:
+            return result("an invocation prompt is not a reader prompt")
+        if (
+            row.reader_page_index not in page_indexes
+            or row.reader_attempt_number is None
+            or row.reader_attempt_number < 1
+            or not row.model_id
+            or row.cost_micros is None
+            or row.cost_micros < 0
+        ):
+            return result("a stored reader attempt lacks valid page, model, number, or price")
+        seen_pages.add(row.reader_page_index)
+        if row.outcome not in {"ok", "rejected", "failed"}:
+            return result("a stored reader attempt has an unknown outcome")
+        if row.outcome in {"ok", "rejected"} and row.private_raw_response is None:
+            return result("a completed reader attempt has no private raw answer")
+        if row.outcome != "ok":
+            continue
+        parsed = _answer(row.private_raw_response)
+        if parsed is None:
+            return result("a successful reader answer cannot be parsed")
+        if category == "label" and not isinstance(parsed.get("text"), str):
+            return result("a successful label answer has no text")
+        if category == "wall" and any(
+            not isinstance(parsed.get(side), str) for side in ("left", "right", "behind", "view")
+        ):
+            return result("a successful wall answer is incomplete")
+        if category == "form" and not isinstance(parsed.get("countertops"), list):
+            return result("a successful form answer has no countertop list")
+    if seen_pages != page_indexes:
+        return result("a page has no stored reader attempt")
+    return result(None)
+
+
+def audit_revision_attempts(session: Session, package_revision_id: UUID) -> RunAttemptAudit:
+    """Apply the run-wide raw audit to the product workflow saved for one revision."""
+    versions = select(PackageRevisionDocument.document_version_id).where(
+        PackageRevisionDocument.package_revision_id == package_revision_id
+    )
+    page_indexes = tuple(
+        session.scalars(select(Page.index).where(Page.document_version_id.in_(versions)))
+    )
+    if len(page_indexes) != len(set(page_indexes)):
+        return RunAttemptAudit(
+            0,
+            0,
+            0,
+            0,
+            False,
+            "multiple documents reuse page indexes; invocation records do not identify the document",
+        )
+    workflow_ids = tuple(
+        session.scalars(
+            select(WorkflowRun.id).where(WorkflowRun.package_revision_id == package_revision_id)
+        )
+    )
+    if len(workflow_ids) != 1:
+        return RunAttemptAudit(0, 0, 0, 0, False, "expected exactly one product workflow run")
+    run_ids = (
+        select(ExtractionRun.id)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .where(TaskRun.workflow_run_id == workflow_ids[0])
+    )
+    attempts = tuple(
+        session.scalars(
+            select(ModelInvocation).where(ModelInvocation.extraction_run_id.in_(run_ids))
+        )
+    )
+    return audit_all_attempts(attempts, page_indexes=frozenset(page_indexes))
 
 
 def _reader_texts(
@@ -100,8 +215,12 @@ def audit_saved_attempts(
     compared as a multiset, not assigned to a guessed crop. This is an audit of the persisted
     answers, not a claim that the current schema proves the identity of each image sent.
     """
-    relevant = tuple(row for row in attempts if row.prompt_id in {CROP_PROMPT_ID, WALL_PROMPT_ID})
-    label_attempts = sum(row.prompt_id == CROP_PROMPT_ID for row in relevant)
+    relevant = tuple(
+        row
+        for row in attempts
+        if row.reader_page_index == page_index and row.prompt_id in _AUDITED_PROMPT_IDS
+    )
+    label_attempts = sum(row.prompt_id in _CROP_PROMPT_IDS for row in relevant)
     wall_attempts = sum(row.prompt_id == WALL_PROMPT_ID for row in relevant)
 
     def result(complete: bool, reason: str | None) -> AttemptAudit:
@@ -119,6 +238,15 @@ def audit_saved_attempts(
     ):
         return result(False, "a stored reader attempt lacks page, model, number, or raw answer")
 
+    for row in relevant:
+        if row.prompt_id != WALL_PROMPT_ID or row.outcome != "ok":
+            continue
+        parsed = _answer(row.private_raw_response)
+        if parsed is None or any(
+            not isinstance(parsed.get(side), str) for side in ("left", "right", "behind", "view")
+        ):
+            return result(False, "a successful wall attempt cannot be parsed")
+
     expected: Counter[tuple[str, str]] = Counter()
     for candidate in candidates:
         expected.update(_reader_texts(candidate, model_ids))
@@ -126,7 +254,7 @@ def audit_saved_attempts(
         return result(False, "a sealed proposal has no recorded reader text")
     observed: Counter[tuple[str, str]] = Counter()
     for row in relevant:
-        if row.prompt_id != CROP_PROMPT_ID or row.reader_page_index != page_index:
+        if row.prompt_id not in _CROP_PROMPT_IDS:
             continue
         if row.outcome != "ok":
             continue
@@ -140,6 +268,8 @@ def audit_saved_attempts(
     if wall_layout_used:
         expected_walls: Counter[tuple[int, str, str, str, str, str]] = Counter()
         for wall_page_index, candidate in wall_candidates:
+            if wall_page_index != page_index:
+                continue
             for flag in candidate.ambiguity_flags:
                 for model_id in model_ids:
                     prefix = f"wall-reader:{model_id}:"
@@ -269,7 +399,7 @@ def product_case_for_page(
                 WorkflowRun.package_revision_id == package_revision_id,
                 ExtractionRun.extractor_version.startswith("slot-reader"),
                 ModelInvocation.reader_page_index == page_number - 1,
-                ModelInvocation.prompt_id.in_((CROP_PROMPT_ID, WALL_PROMPT_ID)),
+                ModelInvocation.prompt_id.in_(_AUDITED_PROMPT_IDS),
             )
             .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
             .limit(1)
@@ -444,6 +574,26 @@ def _key_inputs(
     )
 
 
+def _countertop_proposed_on_empty_page(
+    session: Session, package_revision_id: UUID, page_number: int
+) -> bool:
+    """A no-countertop key page is not a width case, but a proposed countertop is a safety error."""
+    return (
+        session.scalar(
+            select(MeasurementProposal.id)
+            .join(ObservationCandidate, ObservationCandidate.id == MeasurementProposal.candidate_id)
+            .join(Page, Page.id == ObservationCandidate.page_id)
+            .where(
+                MeasurementProposal.package_revision_id == package_revision_id,
+                Page.index == page_number - 1,
+                MeasurementProposal.field_key.in_((OVERALL_FIELD, PIECE_FIELD)),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
 def evaluate_keyed_product_run(
     session: Session,
     *,
@@ -461,13 +611,21 @@ def evaluate_keyed_product_run(
     entries = payload.get("countertops") if isinstance(payload, dict) else None
     if not isinstance(entries, list) or not entries:
         raise ValueError("confirmed form key has no countertop cases")
-    page_counts = Counter(entry.get("page") for entry in entries if isinstance(entry, dict))
+    page_counts = Counter(
+        entry.get("page")
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("present") is not False
+    )
     cases: list[SafetyCase] = []
     audits: list[AttemptAudit] = []
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict) or not isinstance(entry.get("page"), int):
             raise TypeError("a confirmed key case lacks a numeric page number")
         page = entry["page"]
+        if entry.get("present") is False:
+            if _countertop_proposed_on_empty_page(session, package_revision_id, page):
+                raise ValueError("a countertop was proposed on a key page without one")
+            continue
         case, audit = product_case_for_page(
             session,
             package_revision_id=package_revision_id,
@@ -488,11 +646,16 @@ def evaluate_keyed_product_run(
             SafetyCase(case.case_id, truth, case.proposed, case.raw_attempts_complete, reason)
         )
         audits.append(audit)
+    if not cases:
+        raise ValueError("confirmed form key has no countertop cases")
     return evaluate(tuple(cases), reader_path="slot_crop"), tuple(audits)
 
 
 __all__ = [
     "AttemptAudit",
+    "RunAttemptAudit",
+    "audit_all_attempts",
+    "audit_revision_attempts",
     "audit_saved_attempts",
     "evaluate_keyed_product_run",
     "product_case_for_page",

@@ -9,7 +9,12 @@ from uuid import uuid4
 import pytest
 
 import eval.form_first_product as product
-from eval.form_first_product import _complete_slot_row, _key_inputs, audit_saved_attempts
+from eval.form_first_product import (
+    _complete_slot_row,
+    _key_inputs,
+    audit_all_attempts,
+    audit_saved_attempts,
+)
 from eval.form_first_safety import SafetyCase, WidthInputs
 
 MODELS = ("maker.first", "maker.second")
@@ -31,6 +36,7 @@ def _attempt(
         outcome=outcome,
         reader_page_index=page,
         reader_attempt_number=number,
+        cost_micros=1,
     )
 
 
@@ -61,6 +67,62 @@ def test_both_saved_label_answers_complete_the_audit() -> None:
 
     assert result.complete
     assert result.label_attempts == 2
+
+
+def test_product_prompt_labels_are_audited_and_other_pages_are_not_double_counted() -> None:
+    result = audit_saved_attempts(
+        (
+            _attempt(MODELS[0], prompt_id="slot-crop-v1+product=countertop"),
+            _attempt(MODELS[1], prompt_id="slot-crop-v1+product=countertop"),
+            _attempt(MODELS[0], prompt_id="slot-crop-v1+product=countertop", page=2),
+            _attempt(MODELS[1], prompt_id="slot-walls-v1", page=2),
+        ),
+        (_candidate(),),
+        page_index=1,
+        model_ids=MODELS,
+        wall_layout_used=False,
+    )
+
+    assert result.complete
+    assert result.attempts == 2
+    assert result.label_attempts == 2
+    assert result.wall_attempts == 0
+
+
+def test_run_audit_counts_every_page_and_every_reader_prompt_once() -> None:
+    result = audit_all_attempts(
+        (
+            _attempt(MODELS[0], page=0),
+            _attempt(
+                MODELS[1],
+                prompt_id="slot-walls-v1",
+                page=0,
+                raw='{"left":"yes","right":"no","behind":"yes","view":"plan"}',
+            ),
+            _attempt(
+                MODELS[0],
+                prompt_id="form-reader-private-fixture+product=countertop",
+                page=1,
+                raw='{"countertops":[]}',
+            ),
+        ),
+        page_indexes=frozenset({0, 1}),
+    )
+
+    assert result.complete
+    assert result.attempts == 3
+    assert (result.label_attempts, result.wall_attempts, result.form_attempts) == (1, 1, 1)
+
+
+def test_run_audit_refuses_missing_page_or_unclassified_prompt() -> None:
+    missing = audit_all_attempts((_attempt(MODELS[0], page=0),), page_indexes=frozenset({0, 1}))
+    unknown = audit_all_attempts(
+        (_attempt(MODELS[0], prompt_id="unclassified", page=0),),
+        page_indexes=frozenset({0}),
+    )
+
+    assert not missing.complete and missing.reason == "a page has no stored reader attempt"
+    assert not unknown.complete and unknown.reason == "an invocation prompt is not a reader prompt"
 
 
 def test_missing_or_unparseable_raw_answer_is_unaccounted() -> None:
@@ -106,6 +168,19 @@ def test_wall_layout_needs_both_readers_private_answers() -> None:
 
     assert not result.complete
     assert result.reason == "a sealed wall is not backed by stored raw answers"
+
+
+def test_unselected_wall_attempts_still_require_parseable_raw_answers() -> None:
+    result = audit_saved_attempts(
+        (_attempt(MODELS[0], prompt_id="slot-walls-v1", raw="not json"),),
+        (),
+        page_index=1,
+        model_ids=MODELS,
+        wall_layout_used=False,
+    )
+
+    assert not result.complete
+    assert result.reason == "a successful wall attempt cannot be parsed"
 
 
 def test_rejected_malformed_retry_is_accounted_but_not_used_as_a_value() -> None:
@@ -202,6 +277,59 @@ def test_key_replay_never_borrows_product_wall_answer_as_human_truth(
     assert report.unaccounted == 1
     assert report.false_passes == 0
     assert not report.zero_false_pass
+
+
+def test_a_key_page_with_no_countertop_is_not_a_ct_width_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = tmp_path / "form_key.json"
+    key.write_text(
+        json.dumps(
+            {
+                "countertops": [
+                    {"page": 1, "present": False},
+                    {"page": 2, "present": True, "overall": '8"', "pieces": [['8"', "cabinet"]]},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    seen: list[int] = []
+
+    def saved_case(*_args: object, **kwargs: object) -> tuple[SafetyCase, product.AttemptAudit]:
+        seen.append(int(kwargs["page_number"]))
+        return (
+            SafetyCase(str(kwargs["case_id"]), None, None, raw_attempts_complete=True),
+            product.AttemptAudit(0, 0, 0, True, None),
+        )
+
+    monkeypatch.setattr(product, "product_case_for_page", saved_case)
+    monkeypatch.setattr(product, "_countertop_proposed_on_empty_page", lambda *_args: False)
+    report, _audits = product.evaluate_keyed_product_run(
+        SimpleNamespace(),  # type: ignore[arg-type]
+        package_revision_id=uuid4(),
+        key_path=key,
+        truth_wall_layouts={},
+    )
+
+    assert seen == [2]
+    assert len(report.scores) == 1
+
+
+def test_a_proposal_on_a_no_countertop_key_page_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = tmp_path / "form_key.json"
+    key.write_text(json.dumps({"countertops": [{"page": 1, "present": False}]}), encoding="utf-8")
+    monkeypatch.setattr(product, "_countertop_proposed_on_empty_page", lambda *_args: True)
+
+    with pytest.raises(ValueError, match="without one"):
+        product.evaluate_keyed_product_run(
+            SimpleNamespace(),  # type: ignore[arg-type]
+            package_revision_id=uuid4(),
+            key_path=key,
+            truth_wall_layouts={},
+        )
 
 
 def test_product_projection_reads_exact_saved_row_and_settings(

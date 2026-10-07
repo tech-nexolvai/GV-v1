@@ -1,5 +1,6 @@
 """Made-up adversarial inputs exercise the existing reader/evidence guards, never client data."""
 
+from decimal import Decimal
 from fractions import Fraction
 
 import pytest
@@ -8,7 +9,12 @@ from eval.form_first_safety import WidthInputs, published_ct_width_snapshot, run
 from extraction.form_reader.agreement import ComparedReading, compare_page_answers
 from extraction.form_reader.mapping import map_page_to_fields
 from extraction.form_reader.schema import CountertopForm, FormDimension, PageFormAnswer
-from extraction.ink import InkClass, InkLabel, PageInk
+from extraction.geometry.rows import Box
+from extraction.ink import InkAt, InkClass, InkLabel, PageInk
+from extraction.slot_reader.labels import counter_break_hold, row_hold
+from extraction.slot_reader.runs import Lane, PlannedLabel
+from extraction.slot_reader.seal import LabelState, ReaderAnswer, owner_outcome, seal_label
+from extraction.slot_reader.veto import DrawnReading, drawn_length_vetoes
 from verdict.outcomes import Outcome
 from workflow.form_reader import apply_ink, guard_located_comparison
 
@@ -183,3 +189,77 @@ def test_missing_filler_is_not_found_by_the_published_rule() -> None:
 
     assert finding.outcome is Outcome.NOT_FOUND
     assert finding.trace is None
+
+
+def test_jointly_wrong_fraction_is_withheld_by_the_drawn_length_veto() -> None:
+    # Two readers can copy the same truncated number. Other sealed pieces establish the row's
+    # scale; geometry may object, but it never supplies a replacement number.
+    pieces = (
+        DrawnReading(0, Fraction(15, 4), Fraction(31), False),
+        DrawnReading(1, Fraction(10), Fraction(10), False),
+        DrawnReading(2, Fraction(20), Fraction(20), False),
+    )
+
+    vetoes = drawn_length_vetoes(pieces, None)
+
+    assert 0 in vetoes
+    # Leave-one-out scaling may conservatively hold its neighbours too; it never repairs the
+    # wrong reading or declares the row safe.
+
+
+@pytest.mark.parametrize("label", ['30" (INCLUDING FIELD CUT)', '30" VIF'])
+def test_provisional_or_inclusive_width_holds_the_row_and_cannot_pass(label: str) -> None:
+    hold = row_hold((label,))
+    finding = run_width_check(
+        WidthInputs(
+            overall=None,
+            cabinets=None,
+            fillers=None,
+            wall_layout="back_only",
+            field_cut=Fraction(1),
+            pieces=(Fraction(10), Fraction(20)),
+        ),
+        published_ct_width_snapshot(),
+    )
+
+    assert hold is not None
+    assert finding.outcome is Outcome.NOT_FOUND
+
+
+def test_unread_slot_and_tall_appliance_bay_are_review_only() -> None:
+    unread = owner_outcome(())
+    tall_bay = counter_break_hold(("Refrigerator",))
+
+    assert unread.state is LabelState.REVIEW and unread.reason_code == "no-label"
+    assert tall_bay is not None and tall_bay.code == "counter-break"
+
+
+def test_same_maker_cannot_seal_a_glyph_label() -> None:
+    box = Box(Decimal(1), Decimal(1), Decimal(5), Decimal(4))
+    label = PlannedLabel(
+        box=box,
+        crop=box,
+        lane=Lane.GLYPHS,
+        text=None,
+        text_stacked=False,
+        has_digit=True,
+        touches_edge=False,
+        ambiguous_slot=False,
+        crowded=False,
+        ticks_in_crop=True,
+        path_boxes=(),
+    )
+    answers = (
+        ReaderAnswer("us.moonshotai.kimi-k3", '8"', True, False, False, False),
+        ReaderAnswer("moonshotai.kimi-k3", '8"', True, False, False, False),
+    )
+
+    with pytest.raises(ValueError, match="different makers"):
+        seal_label(
+            label,
+            answers=answers,
+            ink=InkAt(InkClass.VENDOR, ""),
+            stacked_by_bar=False,
+            allow_stacked=False,
+            row_ambiguity=None,
+        )

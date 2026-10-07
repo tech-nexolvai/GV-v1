@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from eval.form_first_product import evaluate_keyed_product_run
+from eval.form_first_product import audit_revision_attempts, evaluate_keyed_product_run
 from eval.form_first_safety import release_gate_record
 from eval.release_gates import GOLD_REGRESSION_GATE, run_gates
 
@@ -52,6 +52,7 @@ def main() -> int:
                     key_path=arguments.key,
                     truth_wall_layouts=truth_walls,
                 )
+                run_audit = audit_revision_attempts(session, arguments.revision)
                 gates = run_gates(
                     release_gate_record(report, gold_set_version=arguments.gold_set_version)
                 )
@@ -69,6 +70,12 @@ def main() -> int:
                     "stored_label_attempts": sum(audit.label_attempts for audit in audits),
                     "stored_wall_attempts": sum(audit.wall_attempts for audit in audits),
                     "audit_complete_cases": sum(audit.complete for audit in audits),
+                    "run_attempts": run_audit.attempts,
+                    "run_label_attempts": run_audit.label_attempts,
+                    "run_wall_attempts": run_audit.wall_attempts,
+                    "run_form_attempts": run_audit.form_attempts,
+                    "run_audit_complete": run_audit.complete,
+                    "run_audit_reason": run_audit.reason,
                     "gold_regression_gate": regression.status.value,
                     "full_release_gate": "PASS" if gates.ships else "NOT_READY",
                     "unaccounted_reasons": {
