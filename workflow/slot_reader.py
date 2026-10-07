@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
@@ -77,10 +78,12 @@ from extraction.slot_reader.veto import DrawnReading, drawn_length_vetoes
 from extraction.slot_reader.walls import (
     E3_WALL_SETTINGS,
     WALL_PROMPT_ID,
+    CodeWallClues,
     HatchSeen,
     WallAnswer,
     WallOutcome,
     WallSettings,
+    code_wall_outcome,
     seal_walls,
     wall_pictures,
 )
@@ -319,8 +322,20 @@ class PageWalls:
     row_box_px: tuple[int, int, int, int]
     view_box_px: tuple[int, int, int, int]
     hatch: HatchSeen
+    code_clues: CodeWallClues
     answers: tuple[WallAnswer, ...]
     outcome: WallOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class WallQuestion:
+    row_png: bytes
+    view_png: bytes
+    row_box_px: tuple[int, int, int, int]
+    view_box_px: tuple[int, int, int, int]
+    hatch: HatchSeen
+    code_clues: CodeWallClues
+    code_outcome: WallOutcome | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -757,9 +772,7 @@ def read_slot_pages(
     planned: list[tuple[SlotPage, SlotPlan, RowChoiceAnswer | None, int | None]] = []
     jobs: list[CropJob] = []
     crops: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]] = {}
-    walls_asked: dict[
-        int, tuple[bytes, bytes, tuple[int, int, int, int], tuple[int, int, int, int], HatchSeen]
-    ] = {}
+    walls_asked: dict[int, WallQuestion] = {}
     owner_candidate_ids: dict[int, dict[str, UUID]] = {}
     wall_candidate_ids: dict[int, UUID] = {}
     for page in pages:
@@ -841,9 +854,21 @@ def read_slot_pages(
                     jobs.extend(CropJob(key, model, page.page_index, png) for model in wanted)
         wall_pictures_for = _wall_job_pictures(page, plan, runtime.wall_settings)
         if wall_pictures_for is not None:
-            walls_asked[page.page_index] = wall_pictures_for
+            code_clues = _code_wall_clues(page, plan, wall_pictures_for)
+            code_outcome = code_wall_outcome(code_clues, row_ambiguity=plan.ambiguity)
+            walls_asked[page.page_index] = WallQuestion(
+                row_png=wall_pictures_for[0],
+                view_png=wall_pictures_for[1],
+                row_box_px=wall_pictures_for[2],
+                view_box_px=wall_pictures_for[3],
+                hatch=wall_pictures_for[4],
+                code_clues=code_clues,
+                code_outcome=code_outcome,
+            )
             wall_candidate_ids[page.page_index] = uuid4()
             row_png, view_png = wall_pictures_for[0], wall_pictures_for[1]
+            if code_outcome is not None:
+                continue
             wall_packet = (
                 _question_packet(
                     page,
@@ -916,22 +941,34 @@ def read_slot_pages(
         walls: PageWalls | None = None
         asked = walls_asked.get(page.page_index)
         if asked is not None:
-            row_png, view_png, row_px, view_px, hatch = asked
-            wall_answers = tuple(
-                answer
-                for model in readers
-                if isinstance(
-                    answer := answers.get((_walls_key(page.page_index), model)), WallAnswer
+            row_png, view_png = asked.row_png, asked.view_png
+            wall_answers = (
+                ()
+                if asked.code_outcome is not None
+                else tuple(
+                    answer
+                    for model in readers
+                    if isinstance(
+                        answer := answers.get((_walls_key(page.page_index), model)), WallAnswer
+                    )
                 )
+            )
+            wall_outcome = asked.code_outcome or seal_walls(
+                wall_answers,
+                hatch=asked.hatch,
+                row_ambiguity=plan.ambiguity,
+                code_clues=asked.code_clues,
+                allow_claude_pair=runtime.claude_row_reader,
             )
             walls = PageWalls(
                 row_png=row_png,
                 view_png=view_png,
-                row_box_px=row_px,
-                view_box_px=view_px,
-                hatch=hatch,
+                row_box_px=asked.row_box_px,
+                view_box_px=asked.view_box_px,
                 answers=wall_answers,
-                outcome=seal_walls(wall_answers, hatch=hatch, row_ambiguity=plan.ambiguity),
+                hatch=asked.hatch,
+                code_clues=asked.code_clues,
+                outcome=wall_outcome,
             )
         results.append(
             PageSlotResult(
@@ -986,6 +1023,18 @@ def _line_phrases(
     words: Sequence[InkLabel], *, gap_px: int, baseline_fraction: Decimal
 ) -> list[str]:
     """Join vendor words on the same baseline when their gap is within E2's fragment reach."""
+    return [
+        phrase
+        for phrase, _left, _right, _baseline in _line_phrase_records(
+            words, gap_px=gap_px, baseline_fraction=baseline_fraction
+        )
+    ]
+
+
+def _line_phrase_records(
+    words: Sequence[InkLabel], *, gap_px: int, baseline_fraction: Decimal
+) -> list[tuple[str, int, int, int]]:
+    """The same phrases plus their horizontal extent, for matching wall clues to row ends."""
     lines: list[list[InkLabel]] = []
     for word in sorted(words, key=lambda item: (item.box[3], item.box[0])):
         height = max(1, word.box[3] - word.box[1])
@@ -1002,19 +1051,114 @@ def _line_phrases(
             lines.append([word])
         else:
             match.append(word)
-    phrases: list[str] = []
+    phrases: list[tuple[str, int, int, int]] = []
     for line in lines:
         ordered = sorted(line, key=lambda item: item.box[0])
         phrase = [ordered[0].text]
+        phrase_left = ordered[0].box[0]
+        phrase_right = ordered[0].box[2]
+        baseline = (ordered[0].box[1] + ordered[0].box[3]) // 2
         previous = ordered[0]
         for word in ordered[1:]:
             if word.box[0] - previous.box[2] > gap_px:
-                phrases.append(" ".join(phrase))
+                phrases.append((" ".join(phrase), phrase_left, phrase_right, baseline))
                 phrase = []
+                phrase_left = word.box[0]
+                baseline = (word.box[1] + word.box[3]) // 2
             phrase.append(word.text)
+            phrase_right = word.box[2]
             previous = word
-        phrases.append(" ".join(phrase))
+        phrases.append((" ".join(phrase), phrase_left, phrase_right, baseline))
     return phrases
+
+
+def _code_wall_clues(
+    page: SlotPage,
+    plan: SlotPlan,
+    wall_pictures_for: tuple[
+        bytes, bytes, tuple[int, int, int, int], tuple[int, int, int, int], HatchSeen
+    ],
+) -> CodeWallClues:
+    """Recognise only positive vendor clues at row ends; missing text never means an open end."""
+    left = right = False
+    hatch = wall_pictures_for[4]
+    left = hatch.left
+    right = hatch.right
+    if page.ink is None or plan.row is None or not plan.slots:
+        return CodeWallClues(left=left or None, right=right or None)
+
+    view = wall_pictures_for[3]
+    view_left, view_top, view_right, view_bottom = view
+    start = page.rows.to_pixels(plan.row.x0, plan.row.y)[0]
+    end = page.rows.to_pixels(plan.row.x1, plan.row.y)[0]
+    low, high = sorted((start, end))
+    gap_px = int(E2_CROP_SETTINGS.fragment_gap_pt * Decimal(page.rendered.dpi) / 72)
+    vendor_words = [
+        word
+        for word in page.ink.labels
+        if word.ink is InkClass.VENDOR
+        and view_left <= (word.box[0] + word.box[2]) // 2 <= view_right
+        and view_top <= (word.box[1] + word.box[3]) // 2 <= view_bottom
+        and low <= (word.box[0] + word.box[2]) // 2 <= high
+    ]
+    phrases = _line_phrase_records(
+        vendor_words,
+        gap_px=gap_px,
+        baseline_fraction=E2_CROP_SETTINGS.baseline_fraction,
+    )
+    for phrase, phrase_left, phrase_right, center_y in phrases:
+        normalized = re.sub(r"[^a-z]+", " ", phrase.lower()).strip()
+        center = (phrase_left + phrase_right) // 2
+        if normalized == "wall to wall":
+            left = right = True
+        endpoints: tuple[tuple[PlannedOwner, str], ...] = (
+            (plan.slots[0], "left"),
+            (plan.slots[-1], "right"),
+        )
+        if plan.slots[0].index == plan.slots[-1].index:
+            distances = (abs(center - low), abs(high - center))
+            endpoints = ((plan.slots[0], "left" if distances[0] < distances[1] else "right"),)
+            if distances[0] == distances[1]:
+                endpoints = ()
+        for owner, side in endpoints:
+            first = page.rows.to_pixels(owner.x0, plan.row.y)[0]
+            last = page.rows.to_pixels(owner.x1, plan.row.y)[0]
+            slot_left, slot_right = sorted((first, last))
+            band_left, band_top, band_right, band_bottom = _pixels(
+                page.rows, owner.band, page.rendered
+            )
+            in_slot = (
+                slot_left <= center <= slot_right
+                and band_left <= center <= band_right
+                and band_top <= center_y <= band_bottom
+            )
+            if in_slot and re.search(r"\b(?:filler|field\s+cut|wall)\b", normalized):
+                if side == "left":
+                    left = True
+                else:
+                    right = True
+
+    # The slot labels are also vendor clues, but their text and ink must both be from the file.
+    if plan.slots:
+        label_endpoints: tuple[tuple[PlannedOwner, str], ...] = (
+            (plan.slots[0], "left"),
+            (plan.slots[-1], "right"),
+        )
+        if plan.slots[0].index == plan.slots[-1].index:
+            label_endpoints = ()
+        for owner, side in label_endpoints:
+            for label in owner.labels:
+                if not label.text or not re.search(
+                    r"\b(?:filler|field\s+cut|wall)\b", label.text, re.IGNORECASE
+                ):
+                    continue
+                ink = page.ink.at(_pixels(page.rows, label.crop, page.rendered))
+                if ink.ink is InkClass.VENDOR:
+                    if side == "left":
+                        left = True
+                    else:
+                        right = True
+    return CodeWallClues(left=left or None, right=right or None)
 
 
 def _counter_break_row_hold(
@@ -1547,6 +1691,9 @@ def _persist_walls(
             f"behind={answer.behind.value},view={answer.view}"
         )
     flags.append(f"hatch:left={walls.hatch.left},right={walls.hatch.right}")
+    flags.append(f"wall-clue:left={walls.code_clues.left},right={walls.code_clues.right}")
+    if outcome.source is not None:
+        flags.append(f"wall-source:{outcome.source}")
     flags.append(_box_flag("view-box", walls.view_box_px))
     candidate = ObservationCandidate(
         id=result.wall_candidate_id,
@@ -1606,10 +1753,13 @@ def _propose_sealed_walls(
     from sqlalchemy.orm import Session
 
     from rules.semantic_types import SemanticType
-    from workflow.layout_proposals import record_layout_proposal
+    from workflow.layout_proposals import (
+        DRAWING_CLUE_WALL_PROMPT_ID,
+        record_layout_proposal,
+    )
 
     assert isinstance(session, Session)
-    if not walls:
+    if not walls or any(result.walls is None for result, _artifact in walls):
         return
     layouts = {result.walls.outcome.config for result, _ in walls if result.walls is not None}
     if len(layouts) != 1:
@@ -1618,12 +1768,20 @@ def _propose_sealed_walls(
     artifact = walls[0][1]
     if layout is None or artifact is None:
         return
+    code_only = all(
+        result.walls is not None and result.walls.outcome.source == "vendor-drawing-clues"
+        for result, _artifact in walls
+    )
     record_layout_proposal(
         session,
         package_revision_id=package_revision_id,
         discriminator_name=SemanticType.WALL_CONFIG.value,
         proposed_value=layout,
         crop_artifact_id=artifact,
-        model_id=f"{reader_ids[0]} + {reader_ids[1]}",
-        prompt_id=WALL_PROMPT_ID,
+        model_id=(
+            "deterministic:vendor-drawing-clues"
+            if code_only
+            else f"{reader_ids[0]} + {reader_ids[1]}"
+        ),
+        prompt_id=DRAWING_CLUE_WALL_PROMPT_ID if code_only else WALL_PROMPT_ID,
     )

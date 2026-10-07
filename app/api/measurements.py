@@ -123,8 +123,8 @@ from workflow.assignment_bedrock import (
 )
 from workflow.classifications import record_classifications
 from workflow.layout_proposals import (
-    DISCRIMINATOR_FROM_READERS,
     DISCRIMINATOR_FROM_REVIEWER,
+    DRAWING_CLUE_WALL_PROMPT_IDS,
     confirmed_discriminators,
     reader_sealed_wall_config,
     record_layout_confirmation,
@@ -665,6 +665,10 @@ def _stored_layout_proposal_out(
             model_id=proposal.model_id,
             prompt_id=proposal.prompt_id,
             confirmed=confirmed.get(proposal.discriminator_name) == proposal.proposed_value,
+            requires_confirmation=(
+                proposal.discriminator_name == SemanticType.WALL_CONFIG.value
+                and proposal.prompt_id not in DRAWING_CLUE_WALL_PROMPT_IDS
+            ),
         )
         for proposal in stored_layout_proposals(session, revision.id)
     }
@@ -1164,18 +1168,20 @@ def request_checks(
     _check_discriminators(session, confirmed)
     discriminators = dict(confirmed)
     sources = {name: DISCRIMINATOR_FROM_REVIEWER for name in confirmed}
-    # The one value a check may take from the drawing rather than a person (#992, admin-approved):
-    # the wall layout two readers agreed on, only where the reviewer has stated none. A reviewer's
-    # value always wins, and the payload says which one the run used and where it came from.
+    # A complete vendor-drawing clue may settle the wall layout. A reader-only layout remains a
+    # proposal in the Measure form; the reviewer must explicitly select it before it can feed a
+    # check, so an unconfirmed reader opinion cannot create a PASS.
     wall = SemanticType.WALL_CONFIG.value
     if wall not in discriminators:
         sealed = reader_sealed_wall_config(session, revision.id)
         declared = _declared_discriminators(session)
-        if sealed is not None and sealed.value in declared.get(wall, ()):
+        if (
+            sealed is not None
+            and sealed.prompt_id in DRAWING_CLUE_WALL_PROMPT_IDS
+            and sealed.value in declared.get(wall, ())
+        ):
             discriminators[wall] = sealed.value
-            sources[wall] = (
-                f"{DISCRIMINATOR_FROM_READERS} {sealed.model_id} (proposal {sealed.proposal_id})"
-            )
+            sources[wall] = f"vendor drawing clues (proposal {sealed.proposal_id})"
     accepted = enqueue(
         session,
         workflow=RUN_CHECKS_WORKFLOW,

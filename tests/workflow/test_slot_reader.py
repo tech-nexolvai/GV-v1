@@ -1464,3 +1464,55 @@ def test_walls_the_readers_do_not_settle_propose_nothing(session: Any, tmp_path:
         == []
     )
     assert reader_sealed_wall_config(session, revision.id) is None
+
+
+def test_vendor_filler_word_is_a_positive_wall_clue_but_gv_ink_is_not() -> None:
+    from dataclasses import replace
+
+    from extraction.ink import InkClass, InkLabel
+    from extraction.slot_reader.walls import E3_WALL_SETTINGS
+    from workflow.slot_reader import _code_wall_clues, _wall_job_pictures
+
+    page = slot_page(sheets.sheet(text_labels()))
+    plan = plan_slots(
+        page.rows.candidates.rows,
+        page.rows.ink,
+        settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+    )
+    assert plan.row is not None and plan.ambiguity is None and page.ink is not None
+    pictures = _wall_job_pictures(page, plan, E3_WALL_SETTINGS)
+    assert pictures is not None
+    slot = plan.slots[0]
+    center_x = page.rows.to_pixels((slot.x0 + slot.x1) / 2, plan.row.y)[0]
+    center_y = page.rows.to_pixels(plan.row.x0, plan.row.y)[1]
+
+    def clues(ink_class: InkClass, x: int = center_x) -> Any:
+        label = InkLabel("FILLER", (x - 8, center_y - 3, x + 8, center_y + 3), ink_class)
+        updated = replace(page, ink=replace(page.ink, labels=(*page.ink.labels, label)))
+        return _code_wall_clues(updated, plan, pictures)
+
+    assert clues(InkClass.VENDOR).left is True
+    assert clues(InkClass.GV).left is None
+    row_start = page.rows.to_pixels(plan.row.x0, plan.row.y)[0]
+    assert clues(InkClass.VENDOR, row_start - 20).left is None
+
+
+def test_two_positive_drawing_wall_clues_skip_the_reader_question(monkeypatch: Any) -> None:
+    from extraction.slot_reader.walls import CodeWallClues
+
+    page = slot_page(sheets.sheet(text_labels()))
+    clients = FakeReaders(lambda _model, _png: '12"')
+    monkeypatch.setattr(
+        "workflow.slot_reader._code_wall_clues",
+        lambda _page, _plan, _pictures: CodeWallClues(left=True, right=True),
+    )
+
+    (result,) = read_slot_pages(
+        [page], runtime=runtime(clients), record_attempt=lambda _attempt: None
+    )
+
+    assert result.walls is not None
+    assert result.walls.outcome.config == "back_left_right"
+    assert result.walls.outcome.source == "vendor-drawing-clues"
+    assert clients.wall_requests == []

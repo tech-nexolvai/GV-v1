@@ -3,16 +3,14 @@
 The classifier proposes; the reviewer confirms. Keeping those two writes separate is what prevents a
 closed-question model answer from becoming rule applicability by accident.
 
-**One exception, approved by the admin on 2026-10-07 (#992): the wall layout two readers agreed on.**
-The slot reader asks Qwen3-VL and Kimi K3 about each countertop row's walls and seals a layout only
-when both, of different makers, say the same and code's hatch check does not object
-(`extraction/slot_reader/walls.py`). When the reviewer has not stated `wall_config`, the check
-request may use that sealed layout — and records that it came from the readers. It may only when
+**Wall layouts may come from positive vendor-drawing clues or be proposed by readers.** A complete
+code-backed clue is recorded separately. Reader-only proposals remain unselected in the Measure
+form and are not sent to a check until the reviewer explicitly chooses one. It may only be used when
 all of these hold, each of which can only withhold it:
 
 - the newest slot-reader run of the revision asked about walls, and **every** row it asked about
   sealed the **same** layout (one row for the person, or two that disagree, and there is none);
-- a layout proposal with the readers' agreement prompt id and that value belongs to that run;
+- a layout proposal with an approved prompt id and that value belongs to that run;
 - no `wall_config` proposal of any source, as new or newer, says otherwise.
 
 A single model's proposal, one from an older run, or one a newer proposal contradicts is never used.
@@ -43,6 +41,8 @@ from rules.semantic_types import SemanticType
 __all__ = [
     "DISCRIMINATOR_FROM_READERS",
     "DISCRIMINATOR_FROM_REVIEWER",
+    "DRAWING_CLUE_WALL_PROMPT_ID",
+    "DRAWING_CLUE_WALL_PROMPT_IDS",
     "READER_AGREEMENT_PROMPT_IDS",
     "WALLS_HELD_FLAG",
     "WALLS_SEALED_FLAG",
@@ -57,10 +57,11 @@ __all__ = [
     "stored_layout_proposals",
 ]
 
-#: The prompt ids whose layout proposals are two readers' agreement, not one model's answer:
-#: `extraction/slot_reader/walls.py:WALL_PROMPT_ID` (not imported: the API must not reach
-#: extraction code; `tests/extraction/slot_reader/test_walls.py` keeps the two the same).
+#: Prompt ids whose layout proposals represent two-reader agreement, not one answer. Kept local so
+#: the API does not import the extraction layer.
 READER_AGREEMENT_PROMPT_IDS: Final = frozenset({"slot-walls-v1"})
+DRAWING_CLUE_WALL_PROMPT_ID: Final = "slot-walls-drawing-clues-v1"
+DRAWING_CLUE_WALL_PROMPT_IDS: Final = frozenset({DRAWING_CLUE_WALL_PROMPT_ID})
 #: How the slot reader marks each row's wall candidate, and its outcome.
 WALL_READER_FLAG: Final = "wall-reader"
 WALLS_SEALED_FLAG: Final = "walls-sealed:"
@@ -240,7 +241,9 @@ def reader_sealed_wall_config(
             LayoutProposal.package_revision_id == package_revision_id,
             LayoutProposal.discriminator_name == WALL_CONFIG,
             LayoutProposal.proposed_value == layout,
-            LayoutProposal.prompt_id.in_(READER_AGREEMENT_PROMPT_IDS),
+            LayoutProposal.prompt_id.in_(
+                READER_AGREEMENT_PROMPT_IDS | DRAWING_CLUE_WALL_PROMPT_IDS
+            ),
             ObservationCandidate.extraction_run_id == run_id,
         )
         .order_by(LayoutProposal.created_at.desc(), LayoutProposal.id.desc())

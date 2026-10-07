@@ -319,6 +319,7 @@ class LayoutProposalOut(BaseModel):
     model_id: str
     prompt_id: str
     confirmed: bool = False
+    requires_confirmation: bool = True
 
 
 class DiscriminatorOut(BaseModel):

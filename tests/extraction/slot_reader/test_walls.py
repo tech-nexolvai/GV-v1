@@ -17,10 +17,12 @@ from extraction.slot_reader.walls import (
     E3_WALL_SETTINGS,
     WALL_PROMPT,
     WALL_PROMPT_ID,
+    CodeWallClues,
     HatchSeen,
     Side,
     WallAnswer,
     _bin,
+    code_wall_outcome,
     hatch_at,
     seal_walls,
 )
@@ -28,6 +30,8 @@ from workflow.layout_proposals import READER_AGREEMENT_PROMPT_IDS
 
 QWEN = "qwen.qwen3-vl-235b-a22b"
 KIMI = "us.moonshotai.kimi-k3"
+OPUS = "anthropic.claude-opus-5-5"
+SONNET = "anthropic.claude-sonnet-5-5"
 YES, NO, UNSURE = Side.YES, Side.NO, Side.UNSURE
 
 
@@ -98,6 +102,45 @@ def test_two_readers_of_one_maker_are_refused() -> None:
         outcome = seal_walls(pair, hatch=None, row_ambiguity=None)
         assert outcome.config is None and outcome.code == "reader-independence"
         assert "reviewer must choose" in (outcome.reason or "")
+
+
+def test_the_approved_claude_pair_can_only_propose_after_exact_agreement() -> None:
+    pair = (answer(OPUS, YES, YES), answer(SONNET, YES, YES))
+    held = seal_walls(pair, hatch=None, row_ambiguity=None)
+    proposed = seal_walls(pair, hatch=None, row_ambiguity=None, allow_claude_pair=True)
+
+    assert held.code == "reader-independence"
+    assert proposed.config == BACK_LEFT_RIGHT and proposed.source == "readers"
+
+
+def test_code_clues_only_set_positive_ends_and_never_infer_an_open_end() -> None:
+    both_ends = code_wall_outcome(CodeWallClues(left=True, right=True), row_ambiguity=None)
+    assert both_ends is not None and both_ends.config == BACK_LEFT_RIGHT
+    assert code_wall_outcome(CodeWallClues(left=True, right=None), row_ambiguity=None) is None
+    assert code_wall_outcome(CodeWallClues(left=None, right=None), row_ambiguity=None) is None
+    assert (
+        code_wall_outcome(CodeWallClues(left=True, right=True), row_ambiguity="uncertain row")
+        is None
+    )
+
+
+def test_partial_code_clue_needs_both_readers_to_agree_on_the_other_end() -> None:
+    accepted = seal_walls(
+        both(YES, YES),
+        hatch=NO_HATCH,
+        row_ambiguity=None,
+        code_clues=CodeWallClues(left=True),
+    )
+    disagreement = seal_walls(
+        (answer(OPUS, YES, YES), answer(SONNET, YES, NO)),
+        hatch=NO_HATCH,
+        row_ambiguity=None,
+        code_clues=CodeWallClues(left=True),
+        allow_claude_pair=True,
+    )
+
+    assert accepted.config == BACK_LEFT_RIGHT and accepted.source == "drawing-and-readers"
+    assert disagreement.config is None and disagreement.code == "walls-not-agreed"
 
 
 def test_a_row_that_may_not_be_the_countertop_never_seals() -> None:
