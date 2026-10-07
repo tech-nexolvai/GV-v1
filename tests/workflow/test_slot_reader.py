@@ -444,6 +444,70 @@ def test_one_reader_seeing_vif_is_enough_to_hold_the_row() -> None:
     assert result.mapping.proposals == ()
 
 
+@pytest.mark.parametrize(
+    "word",
+    [
+        "REF",
+        "refrigerator",
+        "FRIDGE",
+        "DW",
+        "DISHWASHER",
+        "RANGE",
+        "OVEN",
+        "COOKTOP",
+        "MW",
+        "MICROWAVE",
+        "W/D",
+        "WASHER",
+        "DRYER",
+        "ICE",
+        "WINE",
+    ],
+)
+def test_vendor_appliance_word_inside_a_slot_span_holds_the_whole_row(word: str) -> None:
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, word)))
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is not None and result.row_hold.code == "appliance-space"
+    assert result.row_hold.reason == (
+        "this row includes an appliance space; it may be the wall-to-wall line, not the countertop"
+    )
+    assert result.mapping.proposals == ()
+    assert result.mapping.held
+
+
+def test_appliance_word_in_a_slot_label_holds_the_whole_row() -> None:
+    page = slot_page(sheets.sheet(sheets.text_labels(('12"', '24" RANGE', '12"'), OVERALL)))
+    lookup = crops_to_texts(page, TEXTS | {1: '24" RANGE'})
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is not None and result.row_hold.code == "appliance-space"
+    assert result.mapping.proposals == ()
+
+
+def test_a_gv_appliance_word_does_not_hold_an_otherwise_sealed_vendor_row() -> None:
+    page = slot_page(
+        sheets.sheet(
+            text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, "RANGE", colour="1 0 0 rg")
+        )
+    )
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
+def test_a_substring_is_not_an_appliance_word() -> None:
+    page = slot_page(sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, "NICE")))
+    lookup = crops_to_texts(page, TEXTS)
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    assert result.row_hold is None
+    assert len(result.mapping.proposals) == 4
+
+
 def test_other_words_still_go_to_the_person() -> None:
     result = agreed(glyph_page(), TEXTS | {0: '12" Panel'})
     assert result.slots[0].outcome.reason_code == "not-plain"
@@ -629,6 +693,36 @@ def _by_slot(session: Any, run: Any) -> dict[str, Any]:
             continue
         found[next(flag for flag in row.ambiguity_flags if flag.startswith("slot:"))] = row
     return found
+
+
+def test_appliance_row_persists_the_reason_but_no_form_proposals(session: Any) -> None:
+    from sqlalchemy import select
+
+    from app.models.evidence import MeasurementProposal
+
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = crops_to_texts(page, TEXTS)
+        return FakeReaders(lambda _model, png: lookup[png])
+
+    revision, run, result, _count = _read_persisted(
+        session,
+        sheets.sheet(text_labels() + sheets.text(230, sheets.CHAIN_Y - 40, "RANGE")),
+        readers,
+    )
+
+    assert result.row_hold is not None and result.row_hold.code == "appliance-space"
+    for candidate in _by_slot(session, run).values():
+        if "wall-reader" not in candidate.ambiguity_flags:
+            assert "row-hold:appliance-space" in candidate.ambiguity_flags
+            assert candidate.review_reason == result.row_hold.reason
+    assert (
+        session.scalars(
+            select(MeasurementProposal).where(
+                MeasurementProposal.package_revision_id == revision.id
+            )
+        ).all()
+        == []
+    )
 
 
 def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_are_linked(

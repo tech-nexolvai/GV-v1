@@ -37,11 +37,13 @@ from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation, is_compound
 
 __all__ = [
+    "APPLIANCE_SPACE",
     "FIELD_CUT_INCLUDED",
     "VIF",
     "ExpandedLabel",
     "Expansion",
     "RowHold",
+    "appliance_hold",
     "expand_label",
     "plain_dimension",
     "row_hold",
@@ -64,9 +66,17 @@ _SUM_WORDS: Final = frozenset({"FILLER"})
 
 _FIELD_CUT: Final = re.compile(r"(?<![A-Za-z])INCLUDING\s+FIELD\s+CUT(?![A-Za-z])", re.IGNORECASE)
 _VIF: Final = re.compile(r"(?<![A-Za-z])VIF(?![A-Za-z])", re.IGNORECASE)
+_APPLIANCE: Final = re.compile(
+    r"(?<![A-Za-z0-9])(?:REFRIGERATOR|DISHWASHER|MICROWAVE|COOKTOP|FRIDGE|WASHER|DRYER|RANGE|OVEN|WINE|REF|DW|MW|W/D|ICE)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 
 FIELD_CUT_INCLUDED: Final = ("field-cut-included", "width already includes the field cut")
 VIF: Final = ("vif", "VIF: provisional, verify in field")
+APPLIANCE_SPACE: Final = (
+    "appliance-space",
+    "this row includes an appliance space; it may be the wall-to-wall line, not the countertop",
+)
 
 
 def plain_dimension(text: str) -> Measurement | None:
@@ -152,6 +162,14 @@ class RowHold:
     reason: str
     text: str
     """The text it was found in, as the source gave it."""
+
+
+def appliance_hold(texts: Iterable[str]) -> RowHold | None:
+    """Hold the whole row if a slot label or vendor-layer word names an appliance."""
+    for text in texts:
+        if text and _APPLIANCE.search(text):
+            return RowHold(*APPLIANCE_SPACE, text)
+    return None
 
 
 def row_hold(texts: Iterable[str]) -> RowHold | None:
